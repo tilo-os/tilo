@@ -13,7 +13,7 @@ Before=graphical.target display-manager.service greetd.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/tilo-launcher sandbox-view build --retire-with-systemd
+ExecStart=/usr/libexec/tilo/tilo-launcher sandbox-view build --retire-with-systemd
 # The view is mounted in the host's mount namespace, where every launch
 # finds it: no namespace-based sandboxing (ProtectSystem=, PrivateTmp=, ...),
 # which would build it in a private namespace nobody else sees.

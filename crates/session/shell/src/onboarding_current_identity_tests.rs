@@ -14,7 +14,7 @@ fn private(path: &Path) {
 fn current_owner_prepared_activation_keeps_original_record_device_and_selected_data() {
     // SAFETY: observes credentials only; this explicit qualifier cannot skip root custody.
     assert_eq!(
-        unsafe { libc::geteuid() },
+        rustix::process::geteuid().as_raw(),
         0,
         "requires native root-owned host qualification"
     );

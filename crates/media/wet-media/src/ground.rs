@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use crate::colour::{Rgb, encode8, from_linear};
 use crate::grid::{float, read, smoothstep, unit};
 
-/// The texture of the support.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Texture {

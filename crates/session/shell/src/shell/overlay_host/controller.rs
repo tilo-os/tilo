@@ -53,7 +53,7 @@ impl ShellOverlayHost {
             NavIntent::Activate => return ControllerDelivery::Key(ControllerKey::Activate),
             NavIntent::Back => return ControllerDelivery::Key(ControllerKey::Back),
             NavIntent::Actions => self.toggle_focused_app_actions(),
-            NavIntent::Search => self.open_palette_with_scope(SearchScope::All),
+            NavIntent::Search => self.toggle_global_search(),
             NavIntent::Help => self.toggle_controller_guide(),
             NavIntent::Overview => {
                 if let Some(chrome) = self.chrome.clone() {

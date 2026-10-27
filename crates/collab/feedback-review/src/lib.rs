@@ -66,7 +66,6 @@ pub use view::{Exposure, ModelText, model_view, placeholder};
 /// Steps in one review request. Longer recordings are reviewed as several
 /// bounded requests, so one model call stays inside a small local context.
 pub const MAX_STEPS: usize = 64;
-/// Texts attached to one step.
 pub const MAX_TEXTS_PER_STEP: usize = 48;
 /// Unicode scalar values in one text.
 pub const MAX_TEXT_CHARS: usize = 2_000;
@@ -74,7 +73,6 @@ pub const MAX_TEXT_CHARS: usize = 2_000;
 pub const MAX_TOTAL_TEXT_CHARS: usize = 12_000;
 /// Unicode scalar values in an app name, action label or resource kind.
 pub const MAX_LABEL_CHARS: usize = 160;
-/// Bytes in a stable node id.
 pub const MAX_NODE_ID_BYTES: usize = 256;
 /// Unicode scalar values in a step title.
 pub const MAX_TITLE_CHARS: usize = 96;
@@ -109,7 +107,6 @@ pub enum TextOrigin {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StepKind {
-    /// The person opened the app.
     Opened,
     /// The person invoked the action named by the step's label.
     Invoked,
@@ -408,9 +405,6 @@ pub fn valid_title(title: &str) -> bool {
 
 impl ReviewTraceRequest {
     /// Check every bound of the contract.
-    ///
-    /// # Errors
-    /// Returns the first [`ContractError`] found.
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.steps.is_empty() || self.steps.len() > MAX_STEPS {
             return Err(ContractError::StepCount);
@@ -451,7 +445,6 @@ impl ReviewTraceRequest {
         Ok(())
     }
 
-    /// The text `node` carries at `step`.
     #[must_use]
     pub fn text(&self, step: u32, node: &str) -> Option<&ReviewText> {
         self.steps
@@ -474,9 +467,6 @@ impl ReviewTraceRequest {
 impl ReviewProposals {
     /// Check that every proposal addresses this request and every title is
     /// one line for a step that exists.
-    ///
-    /// # Errors
-    /// Returns the first [`ContractError`] found.
     pub fn validate_against(&self, request: &ReviewTraceRequest) -> Result<(), ContractError> {
         if self.redactions.len() > MAX_REDACTIONS {
             return Err(ContractError::TooManyRedactions);
@@ -505,9 +495,6 @@ impl ReviewProposals {
 }
 
 /// Validate and review without a model: the deterministic floor, with its titles.
-///
-/// # Errors
-/// Returns an error when the request or resulting review exceeds the contract.
 pub fn review_without_model(
     request: &ReviewTraceRequest,
 ) -> Result<ReviewProposals, ContractError> {

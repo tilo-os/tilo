@@ -10,6 +10,10 @@ import time
 
 
 stopping = False
+# How long the browser's descendants get to close after TERM before KILL.
+# Fixtures that always honour TERM raise it so a loaded host cannot turn
+# their graceful close into an escalation.
+TERM_GRACE = float(os.environ.get('TILO_OWNED_BROWSER_TERM_GRACE_SECS', '2'))
 
 
 def stop(_number, _frame):
@@ -50,6 +54,56 @@ def owned_fields(pid, birth):
     return None
 
 
+def describe_threads(pid):
+    """Each live thread of `pid` and where in the kernel it waits: a killed
+    process stays an unreapable zombie until every thread has exited, so a
+    thread stuck in uninterruptible sleep (D) names what holds it."""
+    threads = []
+    try:
+        tasks = sorted(Path(f'/proc/{pid}/task').iterdir(), key=lambda entry: int(entry.name))
+    except (FileNotFoundError, ProcessLookupError, NotADirectoryError):
+        return ''
+    for task in tasks:
+        def read(name):
+            try:
+                return (task / name).read_text().strip()
+            except (OSError, ValueError):
+                return ''
+        stat = read('stat')
+        if not stat:
+            continue
+        state = stat[stat.rindex(')') + 2:].split()[0]
+        detail = f'{task.name}:{state}'
+        wchan = read('wchan')
+        if wchan and wchan != '0':
+            detail += f'@{wchan}'
+        stack = read('stack')
+        if stack and state == 'D':
+            frames = [line.split(' ', 1)[-1].split('+', 1)[0] for line in stack.splitlines()][:6]
+            detail += '<' + '<'.join(frames)
+        threads.append(detail)
+    if not threads:
+        return ''
+    described = ' threads=' + ','.join(threads)
+    if any(':D' in thread for thread in threads):
+        # What its threads may be closing: an exiting thread in D is usually
+        # releasing one of these.
+        targets = {}
+        try:
+            for fd in Path(f'/proc/{pid}/fd').iterdir():
+                try:
+                    target = os.readlink(fd)
+                except OSError:
+                    continue
+                kind = target.split(':', 1)[0] if ':' in target and not target.startswith('/') else target
+                targets[kind] = targets.get(kind, 0) + 1
+        except OSError:
+            pass
+        if targets:
+            described += ' fds=' + ','.join(f'{kind}x{count}' for kind, count in sorted(targets.items())[:40])
+    return described
+
+
 def describe_children(sent):
     states = []
     for pid, birth in children():
@@ -60,7 +114,7 @@ def describe_children(sent):
         if fields is not None:
             signals = ','.join(action.name for action in (signal.SIGTERM, signal.SIGKILL)
                                if (pid, birth, action) in sent) or 'none'
-            states.append(f'pid={pid} birth={birth} state={fields[0]} sent={signals}')
+            states.append(f'pid={pid} birth={birth} state={fields[0]} sent={signals}{describe_threads(pid)}')
     return '; '.join(states) or 'no visible owned children (waitpid not yet proven)'
 
 
@@ -70,7 +124,7 @@ def quiesce():
     sent = set()
     while not reap():
         elapsed = time.monotonic() - started
-        action = signal.SIGKILL if kill_deadline is not None or elapsed > 2 else signal.SIGTERM
+        action = signal.SIGKILL if kill_deadline is not None or elapsed > TERM_GRACE else signal.SIGTERM
         for pid, birth in children():
             key = (pid, birth, action)
             if key in sent:
@@ -130,4 +184,12 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    code = main()
+    # Interpreter shutdown puts the default TERM and INT actions back. A close
+    # request landing then (the caller sends TERM after a grace period, which
+    # a loaded host can make overlap a clean exit) would end the supervisor by
+    # that signal after it proved every descendant reaped, and its caller
+    # reads an exit by signal as a failed shutdown. Every descendant is
+    # already reaped here, so the request has nothing left to stop.
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+    sys.exit(code)

@@ -132,7 +132,6 @@ pub struct Plan {
     /// The Landlock ruleset, when the job runs under Landlock.
     #[serde(skip)]
     pub landlock: Option<OwnedFd>,
-    /// Its rules.
     pub rules: Vec<Rule>,
     /// BPF programs (`struct sock_filter` arrays, as bytes), installed in
     /// order.

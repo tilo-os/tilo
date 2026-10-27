@@ -34,11 +34,30 @@ export function focusedApp(snapshot) {
   return snapshot.entries?.find(entry => same(entry.route))?.app ?? null;
 }
 
-/** Resolve once `predicate(snapshot)` holds, or reject after `timeoutMs`. */
-export function untilSnapshot(navigation, predicate, {timeoutMs = 10_000, timers = globalThis} = {}) {
+/** How many frames the desktop draws after a link's command before the
+ * link may give up on its window: the desktop acts on a command in the
+ * frame after it. */
+const FRAMES_TO_SHOW = 3;
+
+/**
+ * Resolve once `predicate(snapshot)` holds, or reject once `timeoutMs` passed
+ * and the desktop drew `FRAMES_TO_SHOW` frames since (`frames()`, the
+ * mount's presented frames), so it had its chance to show it. A desktop
+ * that draws slowly (a busy device, a software rasteriser compiling its
+ * pipelines: a frame took seconds there) is waited for, not failed: the
+ * whole page stopped after 10 s while the window was still on its way.
+ */
+export function untilSnapshot(navigation, predicate, {timeoutMs = 10_000, timers = globalThis, frames = () => Infinity} = {}) {
   return new Promise((resolve, reject) => {
     let stop = () => {};
-    const timer = timers.setTimeout(() => { stop(); reject(new Error('The desktop did not show the link in time')); }, timeoutMs);
+    let timer;
+    const from = frames();
+    const expire = () => {
+      if (frames() - from < FRAMES_TO_SHOW) { timer = timers.setTimeout(expire, timeoutMs / 10); return; }
+      stop();
+      reject(new Error('The desktop did not show the link in time'));
+    };
+    timer = timers.setTimeout(expire, timeoutMs);
     const check = snapshot => {
       if (!predicate(snapshot)) return false;
       timers.clearTimeout(timer);
@@ -49,6 +68,28 @@ export function untilSnapshot(navigation, predicate, {timeoutMs = 10_000, timers
     if (check(navigation.getSnapshot())) return;
     stop = navigation.subscribe(check);
   });
+}
+
+/** How often, and how long, a link waits for its resource to be offered. */
+const VIEWABLE_POLL_MS = 100;
+const VIEWABLE_WAIT_MS = 10_000;
+
+/**
+ * The view invocation for `target`'s resource once `mount` offers it. A
+ * resource can reach the page after its app's record: a Chat message is
+ * kept in a part of the chat's messages, a record that syncs on its own
+ * route and that the window takes up when it arrives. Only after the wait
+ * is the resource not there.
+ */
+export async function untilViewable(mount, target, options, {timers = globalThis, waitMs = VIEWABLE_WAIT_MS} = {}) {
+  for (let waited = 0; ; waited += VIEWABLE_POLL_MS) {
+    try {
+      return viewInvocation(mount.actions(target.resource.id, options), target.resource, target.view);
+    } catch (error) {
+      if (error.message !== UNAVAILABLE || waited >= waitMs) throw error;
+    }
+    await new Promise(done => timers.setTimeout(done, VIEWABLE_POLL_MS));
+  }
 }
 
 /**
@@ -64,12 +105,13 @@ export async function openTarget({mount, navigation, target, mode, timers}) {
     if (focusedApp(snapshot) !== target.app) {
       await navigation.dispatch({kind: 'open', app: target.app, generation: snapshot.generation});
     }
-    const shown = await untilSnapshot(navigation, next => focusedApp(next) === target.app, {timers});
+    const frames = () => mount.state?.()?.frames ?? Infinity;
+    const shown = await untilSnapshot(navigation, next => focusedApp(next) === target.app, {timers, frames});
     window = shown.active.tab;
   }
   if (!target.resource) return;
   const options = window === undefined ? undefined : {window};
-  const {action, args} = viewInvocation(mount.actions(target.resource.id, options), target.resource, target.view);
+  const {action, args} = await untilViewable(mount, target, options, {timers});
   let result;
   try {
     result = mount.invokeAction(target.resource.id, action, args, options);

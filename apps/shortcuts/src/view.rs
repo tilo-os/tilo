@@ -3,7 +3,8 @@
 //! The sidebar lists the overview, the drafts and the saved shortcuts; the
 //! content is the page of the selected one: the overview (asking the agent
 //! for a draft, recent runs), the editor of a draft, or a saved shortcut with
-//! its run, edit and delete actions.
+//! its inputs and Run. The window bar names the page and holds the
+//! library's and the page's other actions ([`window_bar`]).
 //!
 //! Every control is bound to a published action — a document action on the
 //! drafts, a door effect, or a view action for what is only presentation
@@ -27,12 +28,12 @@ use ui::prelude::*;
 use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::Path;
 use ui::widget::{
-    Actions as ActionGroup, ButtonRole, ControlSize, ListRow, ModalDialog, NumberInput, Section,
-    SectionHeader, labeled_field,
+    Actions as ActionGroup, ArrivingView, ButtonRole, ControlSize, Filterable, ListRow,
+    ModalDialog, NumberInput, Section, SectionHeader, SkeletonShape, labeled_field,
 };
 use ui::{LocalState, RemoteActions, TextKind};
 
-use crate::door::{self, Door, DoorCore, DoorEffect, DoorState, Loaded, Notice, RunStatus};
+use crate::door::{self, Door, DoorCore, DoorEffect, DoorState, Notice, RunStatus};
 use crate::editor::{self, Choice};
 use crate::model::{Draft, INPUT_TYPES, Workbench, block_at};
 use tilo_automation::grant::{self, Permission};
@@ -61,7 +62,7 @@ pub struct EditorInput {
     /// The saved shortcut whose page is open, when no draft is.
     pub open_saved: Option<String>,
     pub catalog: ActionCatalog,
-    pub catalogue: Loaded<()>,
+    pub catalogue: Arrival<()>,
     pub saved: Vec<Shortcut>,
     pub problems: BTreeMap<String, Vec<String>>,
     pub picker: Option<String>,
@@ -191,6 +192,7 @@ fn shape_of(steps: &[Step], out: &mut String) {
 #[derive(Clone)]
 struct Ui {
     actions: Actions<Workbench>,
+    dispatcher: Dispatcher<Workbench>,
     live: Live<Workbench>,
     core: Rc<RefCell<DoorCore>>,
     door: LocalState<DoorState>,
@@ -236,7 +238,6 @@ impl Ui {
         }
     }
 
-    /// `button`, invoking one door effect.
     fn door_button(&self, button: Button, effect: &DoorEffect) -> Button {
         self.actions.bind_effect_invocation(button, effect)
     }
@@ -245,6 +246,38 @@ impl Ui {
     fn open(&self, item: String) {
         self.selected.set(Some(item));
         self.pane.set(NavPane::Content);
+    }
+}
+
+/// The action picker's own view, narrowed by the shared filter field.
+struct PickerChoices {
+    query: LocalState<String>,
+    view: ModelView<String>,
+}
+
+impl Filterable for PickerChoices {
+    fn set_filter(&mut self, query: &str) {
+        if self.query.with(|shown| shown != query) {
+            self.query.set(query.to_owned());
+        }
+    }
+}
+
+impl ui::widget::Decorator for PickerChoices {
+    type Inner = ModelView<String>;
+
+    fn inner(&self) -> &ModelView<String> {
+        &self.view
+    }
+
+    fn inner_mut(&mut self) -> &mut ModelView<String> {
+        &mut self.view
+    }
+
+    ui::provides!(dyn Filterable; inner = view);
+
+    fn name(&self) -> &'static str {
+        "PickerChoices"
     }
 }
 
@@ -258,6 +291,7 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
     )));
     let ui = Ui {
         actions: cx.actions(),
+        dispatcher: cx.dispatcher(),
         live: cx.live().clone(),
         core: Rc::clone(&core),
         door: door_state,
@@ -278,11 +312,15 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
     let shell = NavShell::new()
         .content_kind(ui::widget::ContentKind::Page)
         .with_id("shortcuts-shell")
+        .with_window_toolbar()
         .mode(NavMode::Push)
         .with_pane_state(&ui.pane)
         .sidebar(Box::new(LibraryNav::new(&ui)))
-        .sidebar_header("", sidebar_actions(&ui))
         .content(editor_pane(&ui, Rc::clone(&follow)));
+    let shell = window_bar::ShortcutsWindow {
+        shell,
+        ui: ui.clone(),
+    };
     let handler = Rc::clone(&core);
     cx.effects(move |effect: DoorEffect, cx| {
         let mut core = handler
@@ -300,6 +338,8 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
         })),
     )
 }
+
+mod window_bar;
 
 /// What [`follow`] last derived the editor from: the open sidebar item, the
 /// open draft, the door, the open picker and whether the save sheet shows.
@@ -399,11 +439,7 @@ fn follow(live: Live<Workbench>, ui: &Ui) -> Box<dyn FnMut()> {
         let next = EditorInput {
             draft,
             open_saved,
-            catalogue: match &door.catalogue {
-                Loaded::Loading => Loaded::Loading,
-                Loaded::Ready(_) => Loaded::Ready(()),
-                Loaded::Failed(reason) => Loaded::Failed(reason.clone()),
-            },
+            catalogue: door.catalogue.as_ref().map(|_| ()).map_err(Clone::clone),
             catalog,
             saved,
             problems,
@@ -445,21 +481,6 @@ fn draft_label(name: &str) -> String {
     } else {
         name.to_owned()
     }
-}
-
-// ---------------------------------------------------------------- sidebar
-
-/// The sidebar's actions: start a shortcut, read the library again.
-fn sidebar_actions(ui: &Ui) -> Vec<Element> {
-    let new_draft = ui.bind(
-        Button::icon_only("new-shortcut", Icon::Plus, "New shortcut"),
-        Workbench::NEW_DRAFT.map(|()| String::from("New shortcut")),
-    );
-    let reload = ui.door_button(
-        Button::icon_only("reload", Icon::Refresh, "Reload shortcuts"),
-        &DoorEffect::Refresh,
-    );
-    vec![Box::new(new_draft), Box::new(reload)]
 }
 
 /// The destinations: the overview, then the drafts and the saved shortcuts.
@@ -537,8 +558,6 @@ impl ui::widget::Decorator for LibraryNav {
     }
 }
 
-// ------------------------------------------------------------------ pages
-
 /// A page: a column of what it shows, under the outcome of the last save or
 /// delete.
 fn page(ui: &Ui, items: Vec<Element>) -> Element {
@@ -580,8 +599,6 @@ fn notice(ui: &Ui) -> Element {
     ))
 }
 
-// --------------------------------------------------------------- overview
-
 /// Whether the workspace offers the agent's transform to draft with.
 fn drafting_offered(door: &DoorState) -> bool {
     door.catalogue
@@ -598,11 +615,7 @@ fn overview_page(ui: &Ui) -> Element {
             (
                 drafting_offered(door),
                 door.drafted.clone(),
-                match &door.library {
-                    Loaded::Loading => Loaded::Loading,
-                    Loaded::Failed(reason) => Loaded::Failed(reason.clone()),
-                    Loaded::Ready(library) => Loaded::Ready(library.len()),
-                },
+                door.library.as_ref().map(Vec::len).map_err(Clone::clone),
                 door.runs
                     .iter()
                     .map(|run| (run.serial, run.name.clone(), run.status.clone()))
@@ -621,19 +634,18 @@ fn overview_body(ui: &Ui, description: &LocalState<String>, door: &DoorState) ->
         items.push(describe_panel(ui, description, door.drafted.as_ref()));
     }
     match &door.library {
-        Loaded::Loading => items.push(Box::new(
-            Row::new()
-                .push(Box::new(Spinner::new()))
-                .push(Box::new(caption("shortcuts-loading"))),
+        Arrival::Pending { from } => items.push(ArrivingView::placeholder(
+            from.clone(),
+            SkeletonShape::Text { lines: 2 },
         )),
-        Loaded::Failed(reason) => items.push(Box::new(
+        Arrival::Failed(reason) => items.push(Box::new(
             Banner::warning(ui::i18n!("shortcuts-library-unavailable"))
                 .with_message(reason.clone()),
         )),
-        Loaded::Ready(_) => {}
+        Arrival::Ready(_) => {}
     }
     if door.runs.is_empty() {
-        if matches!(&door.library, Loaded::Ready(library) if library.is_empty()) {
+        if matches!(&door.library, Arrival::Ready(library) if library.is_empty()) {
             items.push(Box::new(
                 EmptyState::new(ui::i18n!("shortcuts-saved-empty")).with_message(ui::i18n!(
                     if drafting {
@@ -789,8 +801,6 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
     Box::new(Section::titled(ui::i18n!("shortcuts-runs"), rows))
 }
 
-// ------------------------------------------------------------ saved shortcut
-
 /// What the last run of `shortcut` came to, in words.
 fn last_run_text(door: &DoorState, shortcut: &str) -> String {
     let Some(run) = door.last_run(shortcut) else {
@@ -839,28 +849,7 @@ fn saved_page(ui: &Ui, input: &EditorInput, shortcut: &Shortcut) -> Element {
         .map(|input| (input.clone(), LocalState::new(String::new())))
         .collect();
     let run = run_button(ui, &id, &fields);
-    let edit = ui.bind(
-        Button::new(&format!("edit-{id}"), "shortcuts-edit"),
-        Workbench::OPEN_SHORTCUT.map({
-            let json = serde_json::to_value(shortcut).unwrap_or(Value::Null);
-            move |()| json.clone()
-        }),
-    );
-    let delete = ui.door_button(
-        Button::new(&format!("delete-{id}"), "shortcuts-delete").role(ButtonRole::Destructive),
-        &DoorEffect::Delete {
-            shortcut: id.clone(),
-        },
-    );
-
-    let mut items: Vec<Element> = vec![
-        Box::new(
-            Text::new(&shortcut.name)
-                .with_role(TextRole::Title)
-                .with_heading_level(1),
-        ),
-        saved_facts(ui, shortcut),
-    ];
+    let mut items: Vec<Element> = vec![saved_facts(ui, shortcut)];
     if !fields.is_empty() {
         let mut form: Vec<Element> = Vec::new();
         for (param, value) in &fields {
@@ -877,13 +866,7 @@ fn saved_page(ui: &Ui, input: &EditorInput, shortcut: &Shortcut) -> Element {
             form,
         )));
     }
-    // Deleting sits apart from the actions that carry on with the shortcut.
-    items.push(Box::new(
-        Row::new()
-            .with_justify(ui::taffy::JustifyContent::SpaceBetween)
-            .push(Box::new(ActionGroup::new(delete)))
-            .push(Box::new(ActionGroup::new(run).secondary(edit))),
-    ));
+    items.push(Box::new(ActionGroup::new(run)));
 
     let numbered: Vec<Element> = shortcut
         .steps
@@ -924,8 +907,6 @@ fn saved_facts(ui: &Ui, shortcut: &Shortcut) -> Element {
         },
     ))
 }
-
-// ----------------------------------------------------------------- editor
 
 fn editor_pane(ui: &Ui, follow: Rc<RefCell<Box<dyn FnMut()>>>) -> Element {
     let builder = ui.clone();
@@ -1158,25 +1139,12 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
     .with_id("draft-name")
     .with_accessible_name("shortcuts-name")
     .with_initial_value(&draft.name);
-    let review = {
-        let sheet = ui.sheet.clone();
-        Button::new("review-save", "shortcuts-review")
-            .role(ButtonRole::Primary)
-            .on_view(move || sheet.set(true))
-    };
-    let discard = ui.bind(
-        Button::new("discard-draft", "shortcuts-discard-button").role(ButtonRole::Destructive),
-        Workbench::DISCARD.map({
-            let draft = draft_id.clone();
-            move |()| draft.clone()
-        }),
-    );
     let problems = {
         let editor = ui.editor.clone();
         Text::from_state(&editor, |input| {
             let count: usize = input.problems.values().map(Vec::len).sum();
             match (input.problems.get(""), count) {
-                (_, 0) => String::from("Ready to save"),
+                (_, 0) => save_blocker(input).unwrap_or_else(|| String::from("Ready to save")),
                 (Some(top), _) => top.join("; "),
                 (None, 1) => String::from("1 step needs attention"),
                 (None, count) => format!("{count} problems to fix before saving"),
@@ -1186,15 +1154,11 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
         .with_role(TextRole::Caption)
         .with_live(ui::a11y::Politeness::Polite)
     };
-    let status = Row::new()
-        .with_justify(ui::taffy::JustifyContent::SpaceBetween)
-        .push(Box::new(problems))
-        .push(Box::new(ActionGroup::new(review).secondary(discard)));
     let mut items: Vec<Element> = vec![
         Box::new(labeled_field("shortcuts-name", name)),
-        Box::new(status),
+        Box::new(problems),
     ];
-    if let Loaded::Failed(reason) = &input.catalogue {
+    if let Arrival::Failed(reason) = &input.catalogue {
         items.push(Box::new(
             Banner::warning(ui::i18n!("shortcuts-catalogue-unavailable"))
                 .with_message(reason.clone()),
@@ -1208,6 +1172,22 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
     )));
     items.push(output_section(ui, input, &draft_id, draft));
     page(ui, items)
+}
+
+/// Why the open draft cannot be saved yet besides what the checker finds:
+/// it does nothing, or the actions its steps choose from are not known here.
+pub(crate) fn save_blocker(input: &EditorInput) -> Option<String> {
+    let (_, draft) = input.draft.as_ref()?;
+    if draft.program().steps.is_empty() {
+        return Some(String::from("Add a step to save this shortcut"));
+    }
+    match &input.catalogue {
+        Arrival::Pending { .. } => Some(String::from("Reading the actions your apps offer…")),
+        Arrival::Failed(_) => Some(String::from(
+            "Can't save here: the actions your apps offer could not be read",
+        )),
+        Arrival::Ready(()) => None,
+    }
 }
 
 /// Scheduling edits only this draft; the existing save sheet reviews authority.
@@ -1583,8 +1563,38 @@ fn block_offers() -> Vec<BlockOffer> {
     ]
 }
 
-/// The live catalogue, grouped by app, each action with what it takes.
+/// Whether `query` names `fields`: empty matches everything.
+fn matches_query(query: &str, fields: &[&str]) -> bool {
+    let query = query.trim().to_lowercase();
+    query.is_empty()
+        || fields
+            .iter()
+            .any(|field| field.to_lowercase().contains(&query))
+}
+
+/// The live catalogue, grouped by app, each action with what it takes, in a
+/// filter field that narrows it by action, app or resource.
 fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> Element {
+    let query = LocalState::new(String::new());
+    let view = {
+        let ui = ui.clone();
+        let input = input.clone();
+        let draft_id = draft_id.clone();
+        let address = address.to_owned();
+        ModelView::from_state(&query, move |query: &String| {
+            action_picker_body(&ui, &input, &draft_id, &address, query)
+        })
+    };
+    Box::new(PickerChoices { query, view })
+}
+
+fn action_picker_body(
+    ui: &Ui,
+    input: &EditorInput,
+    draft_id: &Id,
+    address: &str,
+    query: &str,
+) -> Element {
     let close = {
         let picker = ui.picker.clone();
         Button::new(
@@ -1600,6 +1610,7 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
     let mut groups: Vec<Element> = Vec::new();
     let blocks: Vec<Element> = block_offers()
         .into_iter()
+        .filter(|offer| matches_query(query, &[offer.label, offer.detail]))
         .map(|offer| {
             let mut row =
                 ListRow::new(format!("offer-{}", offer.id), offer.label).secondary(offer.detail);
@@ -1613,13 +1624,27 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
             Box::new(row) as Element
         })
         .collect();
-    groups.push(Box::new(
-        Section::new(blocks).with_header(SectionHeader::group(ui::i18n!("shortcuts-blocks"))),
-    ));
+    if !blocks.is_empty() {
+        groups.push(Box::new(
+            Section::new(blocks).with_header(SectionHeader::group(ui::i18n!("shortcuts-blocks"))),
+        ));
+    }
     for group in editor::picker(&input.catalog) {
         let mut rows: Vec<Element> = Vec::new();
         for kind in group.kinds {
             for offer in kind.offers {
+                if !matches_query(
+                    query,
+                    &[
+                        &offer.label,
+                        &group.label,
+                        &offer.resource_label,
+                        &offer.resource,
+                        &offer.action,
+                    ],
+                ) {
+                    continue;
+                }
                 let step = serde_json::to_value(offer.step()).unwrap_or(Value::Null);
                 let secondary = if offer.needs.is_empty() {
                     offer.resource_label.clone()
@@ -1645,14 +1670,18 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
                 rows.push(Box::new(row));
             }
         }
-        groups.push(Box::new(
-            Section::new(rows).with_header(SectionHeader::group(group.label)),
-        ));
+        if !rows.is_empty() {
+            groups.push(Box::new(
+                Section::new(rows).with_header(SectionHeader::group(group.label)),
+            ));
+        }
     }
     if groups.is_empty() {
         groups.push(Box::new(caption(match input.catalogue {
-            Loaded::Loading => "shortcuts-loading",
-            _ => "shortcuts-catalogue-empty",
+            Arrival::Pending { .. } => "shortcuts-catalogue-loading",
+            Arrival::Failed(_) => "shortcuts-catalogue-unavailable",
+            Arrival::Ready(()) if !query.trim().is_empty() => "shortcuts-no-matching-actions",
+            Arrival::Ready(()) => "shortcuts-catalogue-empty",
         })));
     }
     Box::new(
@@ -2013,7 +2042,9 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
         }
     }
     if permissions.is_empty() {
-        body = body.push(Box::new(caption("shortcuts-grant-none")));
+        body = body.push(Box::new(
+            caption("shortcuts-grant-none").with_id("shortcuts-grant-none"),
+        ));
     } else {
         for permission in &permissions {
             body = body.push(Box::new(Text::new(&format!(
@@ -2206,4 +2237,45 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
         }
     }
     (body, nested)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_action_filter_matches_labels_apps_and_resources() {
+        assert!(matches_query("", &["Create note", "Notes", "Notes note"]));
+        assert!(matches_query(
+            "note",
+            &["Create note", "Notes", "Notes note"]
+        ));
+        assert!(matches_query(
+            "  NOTES ",
+            &["Create note", "Notes", "Notes note"]
+        ));
+        assert!(matches_query(
+            "folder",
+            &["Create note", "Notes", "Favorite folder"]
+        ));
+        assert!(!matches_query(
+            "calendar",
+            &["Create note", "Notes", "Notes note"]
+        ));
+    }
+
+    #[test]
+    fn the_open_picker_is_the_view_the_window_search_narrows() {
+        let query = LocalState::new(String::new());
+        let view = ModelView::from_state(&query, |query: &String| {
+            Box::new(Text::new(query)) as Element
+        });
+        let mut picker = PickerChoices {
+            query: query.clone(),
+            view,
+        };
+        picker.set_filter("new note");
+        assert_eq!(query.get(), "new note");
+        assert_eq!(picker.filter_count(), None);
+    }
 }

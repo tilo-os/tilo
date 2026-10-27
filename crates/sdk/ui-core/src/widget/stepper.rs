@@ -91,7 +91,6 @@ impl<'a> StepperFace<'a> {
         }
     }
 
-    /// The station under the pointer.
     #[must_use]
     pub fn hovered(mut self, station: Option<usize>) -> Self {
         self.hovered = station;
@@ -163,7 +162,6 @@ impl<'a> StepperFace<'a> {
         needed > width
     }
 
-    /// The height at `width`.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let m = StepMetrics::new(theme);
         if self.is_compact(text, theme, width) {
@@ -186,7 +184,6 @@ impl<'a> StepperFace<'a> {
         }
     }
 
-    /// Paint into `rect`.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if self.steps.is_empty() || rect.width() <= 0.0 {
             return;
@@ -250,7 +247,7 @@ impl<'a> StepperFace<'a> {
                 ctx.scene.fill(
                     Fill::NonZero,
                     ctx.transform,
-                    colors.intent.neutral_fill,
+                    colors.intent.value_fill,
                     None,
                     &Circle::new(centre, radius),
                 );
@@ -690,7 +687,6 @@ mod tests {
             face.height(&mut text, &theme, 260.0) > face.height(&mut text, &theme, 900.0),
             "the compact form stacks its two lines"
         );
-        // Larger text compacts sooner.
         assert!(face.is_compact(&mut text, &Theme::dark().with_text_scale(2.0), 600.0));
         let done = StepperFace::new(&STEPS, 9);
         assert_eq!(done.position_text(), "Step 4 of 4");

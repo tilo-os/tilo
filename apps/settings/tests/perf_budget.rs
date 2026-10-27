@@ -77,7 +77,7 @@ fn mount(config: &crate::support::ScratchConfig) -> Framed<SettingsApp> {
 fn mount_on(config: &crate::support::ScratchConfig, category: Category) -> Framed<SettingsApp> {
     Framed::new(
         ui::State::new(),
-        config.app().with_category(category).with_width_hint(W),
+        config.app().with_category(category),
         viewport((W, H)),
         ui::Theme::dark(),
     )
@@ -215,20 +215,33 @@ fn scroll_frame() {
     budget("scroll frame", p50, 4_000);
 }
 
+/// A keystroke in the window bar's search: the bar hands the query to
+/// Settings, which narrows its sidebar in place.
 #[test]
-fn keystroke_in_search() {
+fn keystroke_in_window_search() {
     let config = crate::support::ScratchConfig::new();
     let mut app = mount(&config);
-    let h = Framed::harness_mut(&mut app);
-    h.click_named("settings.search").expect("search field");
+    let mut search = ui::widget::SearchDriver::default();
+    {
+        let settings: &mut SettingsApp = &mut app;
+        search.open(ui::window_toolbar::SearchOffer::of(settings).into());
+    }
+    let mut query = String::new();
     let mut samples = Vec::new();
-    h.begin_profiling();
     for ch in "displaysoundnetwork".chars() {
+        query.push(ch);
         let t = Instant::now();
-        h.type_text(&ch.to_string());
+        let settings: &mut SettingsApp = &mut app;
+        search.drive(
+            settings,
+            &query,
+            ui::widget::FindOptions::default(),
+            None,
+            false,
+        );
+        Framed::harness_mut(&mut app).relayout();
         samples.push(t.elapsed().as_micros() as u64);
     }
-    passes("keystroke", &h.take_profile_samples());
     let (p50, _) = summary("settings keystroke", &mut samples);
     budget("keystroke", p50, 4_000);
 }
@@ -411,17 +424,6 @@ mod hosted {
             );
         }
         let _ = summary("hosted settings scroll step", &mut scroll);
-        app.harness()
-            .click_named("settings.search")
-            .expect("search");
-        let mut keys = Vec::new();
-        for ch in "displaysound".chars() {
-            let t = Instant::now();
-            app.harness().type_text(&ch.to_string());
-            app.settle();
-            keys.push(t.elapsed().as_micros() as u64);
-        }
-        let _ = summary("hosted settings keystroke", &mut keys);
     }
 
     /// The action surface Settings publishes on a page, measured the way the

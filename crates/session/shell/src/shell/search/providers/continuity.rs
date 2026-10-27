@@ -204,6 +204,78 @@ fn dispatch_device_action(
     Ok(())
 }
 
+/// Routing through the person's devices: one action per device this one
+/// routes or could route through, one per device routing through this one,
+/// and this device's switch.
+fn device_vpn_actions(status: &settings_store::device_vpn::DeviceVpnStatus) -> Vec<DeviceAction> {
+    let token = |device: &str| opaque("so.tilo.continuity.device-vpn.v1", device.as_bytes());
+    let named = |label: &str| {
+        if label.is_empty() {
+            t("search-continuity-certified-device")
+        } else {
+            label.to_owned()
+        }
+    };
+    let mut actions = Vec::new();
+    for row in status.rows() {
+        let args = [("device", named(&row.label).into())];
+        let (verb, title, action) = if row.is_on() {
+            (
+                "stop",
+                "search-continuity-vpn-stop",
+                DeviceFabricUiAction::StopRouteThrough {
+                    device: row.device.clone(),
+                },
+            )
+        } else {
+            (
+                "through",
+                "search-continuity-vpn-through",
+                DeviceFabricUiAction::RouteThrough {
+                    device: row.device.clone(),
+                },
+            )
+        };
+        actions.push(DeviceAction {
+            id: format!("vpn.{verb}.{}", token(&row.device)),
+            title: t_args(title, &args),
+            subtitle: t("search-continuity-vpn-subtitle"),
+            action,
+            confirm: false,
+        });
+    }
+    for user in &status.exit_users {
+        actions.push(DeviceAction {
+            id: format!("vpn.exit.stop.{}", token(&user.device)),
+            title: t_args(
+                "search-continuity-vpn-exit-stop",
+                &[("device", named(&user.label).into())],
+            ),
+            subtitle: t("search-continuity-vpn-exit-subtitle"),
+            action: DeviceFabricUiAction::StopExitUser {
+                device: user.device.clone(),
+            },
+            confirm: false,
+        });
+    }
+    if status.exit_available {
+        let on = !status.exit_on;
+        actions.push(DeviceAction {
+            id: format!("vpn.exit.{}", if on { "share" } else { "unshare" }),
+            title: t(if on {
+                "search-continuity-vpn-share"
+            } else {
+                "search-continuity-vpn-unshare"
+            }),
+            subtitle: t("search-continuity-vpn-exit-subtitle"),
+            action: DeviceFabricUiAction::ShareConnection { on },
+            // Sharing opens this device's connection to the person's others.
+            confirm: on,
+        });
+    }
+    actions
+}
+
 /// A device's identity as it appears in action ids: a digest, never the id.
 fn device_token(id: &DeviceId) -> String {
     opaque("so.tilo.continuity.device.v1", id.as_str().as_bytes())
@@ -592,6 +664,21 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
         });
     }
 
+    for device in &eligible {
+        actions.push(DeviceAction {
+            id: format!("window.show-on.{}", device_token(&device.id)),
+            title: t_args(
+                "search-continuity-window-to",
+                &[("device", device.label.as_str().into())],
+            ),
+            subtitle: t("search-continuity-window-to-subtitle"),
+            action: DeviceFabricUiAction::ShowWindowOn {
+                target: device.id.clone(),
+            },
+            confirm: false,
+        });
+    }
+
     for device in eligible.iter().copied().filter(|device| device.display) {
         let token = device_token(&device.id);
         let title_args = [("device", device.label.as_str().into())];
@@ -761,6 +848,9 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
                 confirm: approved,
             });
         }
+    }
+    if let Some(status) = &view.device_vpn {
+        actions.extend(device_vpn_actions(status));
     }
     for device in view.devices.iter().filter(|device| !device.is_local) {
         actions.push(DeviceAction {
@@ -957,7 +1047,7 @@ fn result_bytes(result: &SearchResult) -> usize {
         .id
         .len()
         .saturating_add(result.title.len())
-        .saturating_add(result.subtitle.as_ref().map_or(0, String::len))
+        .saturating_add(result.secondary_len())
         .saturating_add(result.provider_id.len())
 }
 
@@ -1144,9 +1234,6 @@ impl SearchProvider for DeviceContinuityActionsProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
-    fn available_in_active_app_scope(&self) -> bool {
-        true
-    }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         (self.bridge)(DeviceFabricUiAction::Snapshot).map_or_else(
@@ -1311,9 +1398,6 @@ impl SearchProvider for CallContinuityActionsProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
     }
-    fn available_in_active_app_scope(&self) -> bool {
-        true
-    }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         let Ok(view) = (self.realtime)(RealtimeContinuityUiAction::Snapshot) else {
@@ -1385,7 +1469,7 @@ pub const CONTINUE_PROVIDER_ID: &str = "continuity.continue";
 const CONTINUE_ID: &str = "continuity.continue";
 const CONTINUE_DISMISS_ID: &str = "continuity.continue.dismiss";
 
-/// The palette's door to the top bar's "Continue <app> from <device>"
+/// The palette's door to the top bar's "Continue \<app\> from \<device\>"
 /// offer: accept it (focus that tab here) or dismiss it.
 #[derive(Default)]
 pub struct ContinueFromDeviceProvider {
@@ -1455,9 +1539,6 @@ impl SearchProvider for ContinueFromDeviceProvider {
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::Action]
-    }
-    fn available_in_active_app_scope(&self) -> bool {
-        true
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
@@ -1918,6 +1999,7 @@ mod tests {
                     label: title.into(),
                     note: String::new(),
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,
@@ -1933,7 +2015,7 @@ mod tests {
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
         use crate::shell::search::{SearchRegistry, SearchScope};
         let mut tree = WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let workspace = tree.desktop.workspaces[0].id;
         let strip = tree.desktop.workspaces[0].strips[0].id;
         tree.desktop.workspaces[0].strips[0].window_groups = vec![

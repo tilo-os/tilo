@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use ui::framework::{EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
 
-use super::{AutoCommit, CodeApp, Command, PanelTab, Staging, TreeId, explorer};
+use super::{AutoCommit, CodeApp, Command, PanelTab, Staging, TreeId};
 use crate::actions;
 use crate::effects::CodeEditorEffect;
 use crate::project::Project;
@@ -39,7 +39,6 @@ impl CodeApp {
         matches!(effect, CodeEditorEffect::ReadText { .. }).then(answer)
     }
 
-    /// Answer one of the published effects.
     pub(crate) fn answer_effect(
         &mut self,
         effect: CodeEditorEffect,
@@ -56,37 +55,26 @@ impl CodeApp {
                 let node = self.file_node(&file)?;
                 self.open_node(node);
             }
-            CodeEditorEffect::Reveal {
-                file,
-                path,
-                line,
-                column,
-                results,
-            } => {
-                let target = file
-                    .as_deref()
-                    .and_then(|file| self.session.project.node_for_resource(file))
-                    .or_else(|| {
-                        path.as_deref()
-                            .and_then(|path| self.session.project.reveal_path(Path::new(path)))
-                    })
-                    .ok_or_else(|| "Code location no longer exists".to_string())?;
-                explorer::refresh(&mut self.sidebar, &self.session.project);
-                self.open_node(target);
-                self.pending_jump = Some((line, column));
-                if results {
-                    self.panel_visible = true;
-                    self.panel.set_tab(PanelTab::Search);
-                    self.panel_toggle.set_expanded(true);
+            reveal @ CodeEditorEffect::Reveal { .. } => return self.answer_reveal(reveal, cx),
+            CodeEditorEffect::OpenFile { path: Some(path) } => {
+                self.ensure_no_file_effect()?;
+                self.notice = None;
+                if self.open_disk_file(Path::new(&path)).transpose()?.is_none() {
+                    self.file_reply = Some(cx.reply());
+                    return Ok(Effected::Pending);
                 }
             }
-            CodeEditorEffect::OpenFile { path: Some(path) } => {
-                self.notice = None;
-                self.open_disk_file(Path::new(&path))?;
-            }
             CodeEditorEffect::OpenFolder { path: Some(path) } => {
+                self.ensure_no_file_effect()?;
                 self.notice = None;
-                self.open_project_dir(Path::new(&path))?;
+                if self
+                    .open_project_dir(Path::new(&path))
+                    .transpose()?
+                    .is_none()
+                {
+                    self.file_reply = Some(cx.reply());
+                    return Ok(Effected::Pending);
+                }
             }
             CodeEditorEffect::Save { file, path } => {
                 self.ensure_no_file_effect()?;
@@ -129,6 +117,62 @@ impl CodeApp {
             other => return Err(format!("`{}` is not handled here", other.id())),
         }
         Ok(Effected::done())
+    }
+
+    /// Show the location a [`CodeEditorEffect::Reveal`] names. A path in a
+    /// folder the tree has not read is answered once it is read.
+    fn answer_reveal(
+        &mut self,
+        effect: CodeEditorEffect,
+        cx: &mut EffectCx<Project, Self>,
+    ) -> EffectAnswer {
+        let CodeEditorEffect::Reveal {
+            file,
+            path,
+            line,
+            column,
+            results,
+        } = effect
+        else {
+            return Err("effect is not a reveal".into());
+        };
+        let reveal = move |app: &mut Self, target: TreeId| {
+            app.explorer.show(&app.session.project);
+            app.open_node(target);
+            app.pending_jump = Some((line, column));
+            if results {
+                app.panel_visible = true;
+                app.panel.set_tab(PanelTab::Search);
+            }
+        };
+        if let Some(target) = file
+            .as_deref()
+            .and_then(|file| self.session.project.node_for_resource(file))
+        {
+            reveal(self, target);
+            return Ok(Effected::done());
+        }
+        let path = path.ok_or_else(|| "Code location no longer exists".to_string())?;
+        self.ensure_no_file_effect()?;
+        let answered = std::rc::Rc::new(std::cell::Cell::new(None));
+        let noted = std::rc::Rc::clone(&answered);
+        self.reveal_on_disk(PathBuf::from(path), move |app, target| {
+            let answer = target
+                .map(|target| reveal(app, target))
+                .ok_or_else(|| "Code location no longer exists".to_string());
+            // Answered by the effect itself when the reveal waited on nothing.
+            if app.file_reply.is_some() {
+                app.finish_file_effect(answer);
+            } else {
+                noted.set(Some(answer));
+            }
+        });
+        if let Some(answer) = answered.take() {
+            answer?;
+            return Ok(Effected::done());
+        }
+        self.file_reply = Some(cx.reply());
+        Ok(Effected::Pending)
     }
 
     /// Flip one of the person's preferences and say what it is now.
@@ -199,7 +243,6 @@ impl CodeApp {
         }
     }
 
-    /// The node of the project file `file`.
     fn file_node(&self, file: &str) -> Result<TreeId, String> {
         self.session
             .project
@@ -222,7 +265,8 @@ impl CodeApp {
         doc: &AutoCommit,
         node: TreeId,
         target: Option<PathBuf>,
-    ) -> bool {
+        then: super::file_workflow::AfterSave,
+    ) {
         if let Some(path) = target {
             let name = path.file_name().map_or_else(
                 || "untitled".to_string(),
@@ -236,7 +280,7 @@ impl CodeApp {
             }
             self.invalidate_search_projection();
         }
-        self.save_buffer(doc, node, true)
+        self.save_buffer_then(doc, node, true, then);
     }
 
     /// What the file effects can do right now.
@@ -363,10 +407,10 @@ impl CodeApp {
 
     /// Open the sample project a capture's fixture wrote, on its main file.
     pub(crate) fn open_sample(&mut self, root: &Path) {
-        if self.open_project_dir(root).is_ok() {
+        if matches!(self.open_project_dir(root), Some(Ok(()))) {
             let main = crate::disk::canonical(&root.join("src").join("main.rs"));
             if let Some(node) = self.session.project.reveal_path(&main) {
-                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.explorer.show(&self.session.project);
                 self.open_node(node);
             }
         }
@@ -387,7 +431,7 @@ impl CodeApp {
         {
             let path = crate::disk::canonical(&root.join(crate::sample_project::HARDWARE_FILE));
             if let Some(node) = self.session.project.reveal_path(&path) {
-                explorer::refresh(&mut self.sidebar, &self.session.project);
+                self.explorer.show(&self.session.project);
                 self.open_node(node);
             }
         }
@@ -426,7 +470,6 @@ impl CodeApp {
             }
             Some("selection") => self.shots_select_words(),
             Some("completion") => self.shots_completion_demo(doc),
-            Some("find" | "find-options") => self.shots_open_find("primes", doc),
             Some("search") => self.shots_project_search("fn main"),
             Some("conflict") => self.shots_conflict(),
             Some("indexing") => self.shots_indexing(),
@@ -507,16 +550,5 @@ impl CodeApp {
 
     pub(crate) fn lsp_enabled_for_test(&self) -> bool {
         self.lsp_enabled()
-    }
-
-    pub(crate) fn find_options_shown_for_test(&self) -> bool {
-        ui::widget::Widget::accessibility(&self.find).is_some_and(|node| {
-            node.children.iter().any(|child| {
-                child.action_target.as_deref() == Some("find-MatchCase")
-                    && child
-                        .bounds
-                        .is_some_and(|bounds| bounds.x1 > bounds.x0 && bounds.y1 > bounds.y0)
-            })
-        })
     }
 }

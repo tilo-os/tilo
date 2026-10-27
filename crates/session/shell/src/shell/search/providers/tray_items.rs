@@ -49,7 +49,6 @@ pub fn menu_id(key: &str, id: i32) -> String {
     format!("menu:{id}:{key}")
 }
 
-/// A tray row's names, each of which names it.
 fn names(names: &[&str]) -> Vec<(String, ui::search::FieldWeight)> {
     names
         .iter()

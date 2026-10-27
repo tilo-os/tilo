@@ -1,6 +1,5 @@
 //! The window's retained views, built from the app's state: the navigation
-//! rail, each screen's header actions, the connection list, the connection
-//! form and the session states.
+//! rail, the connection list, the connection form and the session states.
 //!
 //! Views hold no state of their own. Every control pushes an [`Action`] into
 //! the shared [`Requests`] queue; the app drains it after routing each event
@@ -11,7 +10,6 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::icons::Icon;
-use ui::search::{SearchRequest, search_button};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Banner, Button, ButtonRole, Element, EmptyState, Field, Form, FormPage, FormSection,
@@ -90,20 +88,6 @@ pub(crate) fn rail(
                 requests.borrow_mut().push(Action::Show(destination));
             }
         })
-}
-
-/// The list's header actions: search, and a new connection once there is a
-/// list to add to (an empty list offers it in its empty state).
-pub(crate) fn list_actions(requests: &Requests, has_connections: bool) -> Vec<Element> {
-    let mut actions: Vec<Element> = vec![Box::new(search_button(SearchRequest::this_app()))];
-    if has_connections {
-        actions.push(Box::new(
-            Button::new("remote.connection.new", "New connection")
-                .with_icon(Icon::Plus)
-                .on_click(queue(requests, Action::NewConnection)),
-        ));
-    }
-    actions
 }
 
 /// What one row of the connection list shows.
@@ -435,9 +419,9 @@ fn sign_in_fields(
     )
 }
 
-/// The add / edit form. Save and Cancel stand in the header row, so they
-/// stay in view however long the form grows; deleting a saved connection is
-/// the form's last, separate action.
+/// The add / edit form. Save and Back are the window bar's, so they stay in
+/// view however long the form grows, and the bar names the form; deleting a
+/// saved connection is the form's last, separate action.
 pub(crate) fn connection_form(
     requests: &Requests,
     fields: &FormFields,
@@ -448,29 +432,10 @@ pub(crate) fn connection_form(
         form = form.with_actions(Actions::new(
             Button::new("remote.form.delete", "Delete connection")
                 .role(ButtonRole::Destructive)
-                .on_click(queue(requests, Action::RequestDelete(id))),
+                .on_view(queue(requests, Action::RequestDelete(id))),
         ));
     }
-    let title = if model.editing.is_some() {
-        "Edit connection"
-    } else {
-        "New connection"
-    };
-    Box::new(FormPage::new(title, form))
-}
-
-/// The form's header actions: leaving it, and saving the connection.
-pub(crate) fn form_actions(requests: &Requests) -> Vec<Element> {
-    vec![
-        Box::new(
-            Button::new("remote.form.cancel", "Cancel").on_click(queue(requests, Action::Back)),
-        ),
-        Box::new(
-            Button::new("remote.form.save", "Save")
-                .role(ButtonRole::Primary)
-                .on_click(queue(requests, Action::SaveForm)),
-        ),
-    ]
+    Box::new(FormPage::untitled(form))
 }
 
 /// A session that shows no remote surface: connecting, failed, unavailable
@@ -499,38 +464,4 @@ pub(crate) fn session_status(requests: &Requests, model: StatusModel) -> Element
         ),
         None => Box::new(state),
     }
-}
-
-/// The session's header actions while it is live: fitting and filling the
-/// window with a remote desktop, and ending the session. A session that is
-/// not live offers its one way forward in the content instead.
-pub(crate) fn session_actions(
-    requests: &Requests,
-    framebuffer: bool,
-    scale_to_fit: bool,
-) -> Vec<Element> {
-    let mut actions: Vec<Element> = Vec::new();
-    if framebuffer {
-        actions.push(Box::new(
-            Button::new(
-                "remote.session.scale",
-                if scale_to_fit {
-                    "Actual size"
-                } else {
-                    "Fit to window"
-                },
-            )
-            .on_click(queue(requests, Action::ToggleScale)),
-        ));
-        actions.push(Box::new(
-            Button::icon_only("remote.session.fullscreen", Icon::Maximize2, "Full screen")
-                .on_click(queue(requests, Action::ToggleFullscreen)),
-        ));
-    }
-    actions.push(Box::new(
-        Button::new("remote.session.disconnect", "Disconnect")
-            .role(ButtonRole::Destructive)
-            .on_click(queue(requests, Action::Disconnect)),
-    ));
-    actions
 }

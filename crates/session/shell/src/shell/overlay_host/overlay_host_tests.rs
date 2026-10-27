@@ -310,16 +310,11 @@ fn history_target(id: &str) -> ui::HistoryResourceTarget {
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
-    /// The tiled recap derives its rows from the room document the chrome is
-    /// holding — not from a seeded list.
-    fn room_activity_window_shows_the_live_rooms_history() {
+fn room_activity_reads_the_live_room_and_opens_what_it_names() {
+    /// The activity model derives its rows from the room document the
+    /// chrome is holding — not from a seeded list.
+    fn room_activity_reads_the_live_rooms_history() {
         let mut h = build_harness();
-        h.chrome.borrow_mut().open_room_activity(None);
-        assert!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
-                .is_some()
-        );
         {
             let state = h.chrome.borrow();
             let mut tree = state.tree_mut();
@@ -333,15 +328,6 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
             tilo_resource::history::commit_stamped(&mut tree.doc);
             h.host.room_activity_mut().refresh(tree);
         }
-        h.host
-            .room_activity_mut()
-            .layout_window(Rect::new(100.0, 80.0, 1500.0, 820.0));
-        let window = h.host.room_activity().rect();
-        assert!(window.area() > 0.0, "the window content laid out");
-        assert!(
-            window.x1 <= 1600.0 && window.y1 <= 900.0,
-            "inside the viewport"
-        );
         assert!(
             !h.host.room_activity().entries().is_empty(),
             "a renamed workspace should appear in the activity feed"
@@ -357,97 +343,6 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
             names.iter().any(|s| !s.is_empty()),
             "rows carry real summaries: {names:?}"
         );
-    }
-
-    /// Hover has to reach the timeline inside the sheet — it is what reveals
-    /// a row's `[Revert]`. The generic absorb gate would otherwise eat it.
-    fn pointer_over_the_sheet_reaches_the_timeline() {
-        let mut h = build_activity_harness();
-        h.host
-            .room_activity_mut()
-            .set_view(crate::shell::room_activity::ActivityView::Explore);
-        h.host.force_room_activity_settled();
-        paint(&mut h);
-
-        let rows = h.host.room_activity().timeline().rect();
-        assert!(rows.area() > 0.0);
-        let first_row = h
-            .host
-            .room_activity()
-            .timeline()
-            .row_rect(0)
-            .expect("the room has at least one row laid out");
-        let mods = Modifiers::default();
-        let handled = pump(&mut h, &cursor_moved_at(first_row.center()), mods);
-        assert!(handled, "the sheet claims pointer events over itself");
-        assert_eq!(
-            h.host.room_activity().timeline().hover_row(),
-            Some(0),
-            "the hover landed on the row under the cursor"
-        );
-    }
-
-    fn escape_does_not_destroy_the_room_activity_window() {
-        let mut h = build_harness();
-        h.chrome.borrow_mut().open_room_activity(None);
-
-        let mods = Modifiers::default();
-        let handled = pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods);
-        assert!(!handled);
-        assert!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
-                .is_some(),
-            "ordinary window lifecycle uses its chrome close control"
-        );
-    }
-
-    fn clicking_elsewhere_does_not_destroy_the_room_activity_window() {
-        let mut h = build_harness();
-        h.chrome.borrow_mut().open_room_activity(None);
-        let outside = Point::new(20.0, 400.0);
-        let mods = Modifiers::default();
-        let _ = pump(&mut h, &cursor_moved_at(outside), mods);
-        let _ = pump(&mut h, &mouse_press(), mods);
-        assert!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
-                .is_some(),
-            "focus changes do not dismiss an ordinary tiled window"
-        );
-    }
-
-    /// Typing narrows by contributor while the activity window is focused;
-    /// Escape clears that typeahead without destroying the window.
-    fn typing_filters_by_contributor_without_stealing_escape() {
-        let mut h = build_activity_harness();
-        h.host
-            .room_activity_mut()
-            .set_view(crate::shell::room_activity::ActivityView::Explore);
-        h.host.force_room_activity_settled();
-        paint(&mut h);
-        assert!(h.host.room_activity().visible_len() > 0);
-
-        let mods = Modifiers::default();
-        let handled = pump(&mut h, &key_press(Key::Character("z".into())), mods);
-        assert!(handled, "the sheet took the keystroke");
-        assert_eq!(
-            h.host.room_activity().timeline().author_query(),
-            "z",
-            "the typeahead echoes what was typed"
-        );
-        assert_eq!(
-            h.host.room_activity().visible_len(),
-            0,
-            "no contributor in this room is named 'z'"
-        );
-
-        let handled = pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), mods);
-        assert!(handled);
-        assert!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
-                .is_some(),
-            "Escape clears the typeahead without destroying an ordinary window"
-        );
-        assert_eq!(h.host.room_activity().timeline().author_query(), "");
     }
 
     fn history_open_distinguishes_files_links_and_semantic_ids() {
@@ -487,9 +382,8 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         ShellOverlayHost::open_room_activity_target(&chrome, &target);
         // The open is queued off the compositor thread: its refusal arrives
         // as a launch event that the host settles on its next drain.
-        let mut host =
-            ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let host = ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+        let deadline = tilo_test_env::hang_deadline();
         while chrome.borrow().notifications().is_empty() {
             assert!(
                 std::time::Instant::now() < deadline,
@@ -526,63 +420,48 @@ fn room_activity_window_shows_filters_and_survives_dismissal_gestures() {
         crate::shell::launcher::clear_pending_placements();
     }
 
-    room_activity_window_shows_the_live_rooms_history();
-    pointer_over_the_sheet_reaches_the_timeline();
-    escape_does_not_destroy_the_room_activity_window();
-    clicking_elsewhere_does_not_destroy_the_room_activity_window();
-    typing_filters_by_contributor_without_stealing_escape();
+    room_activity_reads_the_live_rooms_history();
     history_open_distinguishes_files_links_and_semantic_ids();
     room_activity_preflight_failure_clears_placement_and_emits_one_notice();
 }
 
-/// Painting frames in which nothing changed does not refresh the passive
+/// Frames in which nothing changed do not refresh the passive
 /// Activity awareness (no tree write lock, no record reads), and a change to
 /// the workspace document refreshes it again.
 #[test]
 fn activity_refresh_skips_unchanged_frames() {
-    /// Counts the pane's refreshes: each asks once for the review snapshot.
-    #[derive(Default)]
-    struct CountingHost {
-        refreshes: std::cell::Cell<usize>,
-    }
-    impl tilo_desktop::activity::ActivityHost for CountingHost {
-        fn task_review_snapshot(
-            &self,
-            _room: &str,
-        ) -> Option<Result<Arc<tilo_desktop::activity::TaskReviewSnapshot>, String>> {
-            self.refreshes.set(self.refreshes.get().saturating_add(1));
-            None
-        }
-    }
-
     let mut h = build_harness();
-    let host = std::rc::Rc::new(CountingHost::default());
-    h.host.room_activity_mut().set_host(host.clone());
-    assert!(
-        h.host.activity_window_rect().is_none(),
-        "the Activity window is closed: only the passive awareness refreshes"
-    );
-    paint(&mut h);
-    let settled = host.refreshes.get();
+    let refreshes = crate::shell::room_activity::refreshes;
+    // Every frame runs at one pinned instant, so the once-a-second
+    // fallback cannot fire however long the frames take.
+    let at = ui::time::now();
+    let doc = AutoCommit::new();
+    let paint_at = |h: &mut Harness, at| {
+        ui::time::testing::with_monotonic_time(at, || {
+            h.host.update(&doc, &automerge::ROOT);
+        });
+    };
+    paint_at(&mut h, at);
+    let settled = refreshes();
     assert!(settled >= 1, "the first frame refreshes the awareness");
 
-    let started = Instant::now();
     for _ in 0..10 {
-        paint(&mut h);
+        paint_at(&mut h, at);
     }
-    // Only the once-a-second fallback may refresh while nothing changes: at
-    // most once, plus once per further second the frames took to paint.
-    let fallbacks = started
-        .elapsed()
-        .as_millis()
-        .checked_div(ACTIVITY_AWARENESS_FALLBACK.as_millis())
-        .and_then(|seconds| usize::try_from(seconds).ok())
-        .expect("a fallback interval");
-    let idle = host.refreshes.get().saturating_sub(settled);
-    assert!(
-        idle <= fallbacks.saturating_add(1),
-        "{idle} refreshes over 10 unchanged frames painted in {:?}",
-        started.elapsed()
+    assert_eq!(
+        refreshes(),
+        settled,
+        "unchanged frames do not refresh the awareness"
+    );
+
+    let fallback = at
+        .checked_add(ACTIVITY_AWARENESS_FALLBACK)
+        .expect("a fallback instant");
+    paint_at(&mut h, fallback);
+    assert_eq!(
+        refreshes(),
+        settled.saturating_add(1),
+        "the fallback refreshes an unchanged awareness once its interval passed"
     );
 
     {
@@ -595,10 +474,10 @@ fn activity_refresh_skips_unchanged_frames() {
         tilo_desktop_model::desktop_doc::seed(&mut tree.doc, &tree.desktop);
         tilo_resource::history::commit_stamped(&mut tree.doc);
     }
-    let before = host.refreshes.get();
-    paint(&mut h);
+    let before = refreshes();
+    paint_at(&mut h, fallback);
     assert_eq!(
-        host.refreshes.get(),
+        refreshes(),
         before.saturating_add(1),
         "a changed workspace document refreshes the awareness once"
     );
@@ -610,9 +489,6 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
-
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
 #[allow(
@@ -826,9 +702,11 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
         let chrome = ChromeState::new(tree);
         let mut host =
             ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
-        host.enable_host_desktop_onboarding(std::path::PathBuf::from(
-            "/var/empty/tilo-first-login-tour-test",
-        ));
+        host.enable_test_onboarding(
+            crate::onboarding_view::OnboardingView::isolated_host_desktop(
+                std::path::PathBuf::from("/var/empty/tilo-first-login-tour-test"),
+            ),
+        );
         host.set_onboarding_visual_state_for_snapshot(
             crate::onboarding_view::OnboardingVisualState::TourNavigate,
         );
@@ -968,7 +846,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
     }
 
     fn accessibility_overlay_paths_share_the_published_coexistence_order() {
-        let mut h = build_activity_harness();
+        let mut h = build_harness();
         h.host
             .workspace_settings_overlay
             .open_remove_member_sheet("peer".to_string());
@@ -986,11 +864,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
                 .filter(|node| node.live.is_none())
                 .filter_map(|node| node.name.as_deref())
                 .collect::<Vec<_>>(),
-            [
-                "Workspace permission decision",
-                "Workspace activity",
-                "Quick Settings"
-            ],
+            ["Workspace permission decision", "Quick Settings"],
             "the published child order is the address space used by geometry and focus"
         );
 
@@ -1000,12 +874,8 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
             "the prose-only member sheet owns child zero"
         );
         assert!(
-            h.host.synthetic_accessibility_rect(&[1]).is_some(),
-            "Room Activity moves to child one when the member sheet is visible"
-        );
-        assert!(
-            h.host.synthetic_accessibility_rect(&[2, 0]).is_some(),
-            "Quick Settings moves to child two when both earlier overlays are visible"
+            h.host.synthetic_accessibility_rect(&[1, 0]).is_some(),
+            "Quick Settings moves to child one when the member sheet is visible"
         );
     }
 
@@ -1051,7 +921,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
     }
 
     fn accessibility_focus_routes_through_shifted_overlay_indices() {
-        let mut h = build_activity_harness();
+        let mut h = build_harness();
         h.host
             .workspace_settings_overlay
             .open_remove_member_sheet("peer".to_string());
@@ -1067,7 +937,6 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
             chrome.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
         }
         h.host.force_ws_settings_settled();
-        h.host.force_room_activity_settled();
         h.host.force_quick_settings_settled();
         paint(&mut h);
 
@@ -1088,10 +957,6 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
         );
         assert!(
             h.host.focus_synthetic_accessibility(&[2, 0]),
-            "Room Activity's first control remains focusable at its shifted path"
-        );
-        assert!(
-            h.host.focus_synthetic_accessibility(&[3, 0]),
             "Quick Settings' first control remains focusable after every earlier overlay"
         );
         assert!(
@@ -1106,20 +971,17 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
     accessibility_focus_routes_through_shifted_overlay_indices();
 }
 
-fn build_activity_harness() -> Harness {
-    let mut tree = WorkspaceTree::bootstrap_demo();
-    crate::shell::test_support::collaborator_renames_active_workspace(&mut tree);
-    let workspace = tree.desktop.active.raw();
-    let chrome = ChromeState::new(tree);
-    chrome.borrow_mut().open_room_activity(None);
-    let content = Box::new(StubContent::new());
-    let mut host = ShellOverlayHost::new(content)
-        .with_chrome(chrome.clone())
-        .with_content_workspace(workspace);
-    assert!(
-        host.tick_workspace_content_for_tests(),
-        "the fixture installs the production retained workspace tree"
+/// A harness whose chrome acts as one explicit person, so who owns a room
+/// and who the chrome asks for are the same answer whatever identity another
+/// test of the process puts in the environment meanwhile.
+fn build_fixture_harness() -> Harness {
+    let chrome = ChromeState::new_with_fixture_handle(
+        WorkspaceTree::bootstrap_demo().shared(),
+        crate::shell::hosted_inputs::HostedTileInputs::fixture()
+            .expect("deterministic hosted inputs"),
     );
+    let host = ShellOverlayHost::with_fixture_content(Box::new(StubContent::new()))
+        .with_chrome(chrome.clone());
     build_harness_with_host(host, chrome)
 }
 
@@ -1241,49 +1103,42 @@ fn super_chords_open_their_surfaces_once() {
         );
     }
 
-    fn super_h_opens_and_refocuses_the_recap_without_taking_ctrl_h() {
+    fn super_h_opens_whats_new_without_taking_ctrl_h() {
         let mut h = build_harness();
         let sup = Modifiers::from(ModifiersState::SUPER);
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
-                .is_none()
-        );
+        let opened = |h: &mut Harness| h.chrome.borrow_mut().take_activity_open_request();
+        assert!(opened(&mut h).is_none());
 
         assert!(pump(&mut h, &key_press(Key::Character("h".into())), sup));
-        let first =
-            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
-                .expect("Super+H opens the recap");
+        assert!(opened(&mut h).is_some(), "Super+H opens Activity");
+        assert_eq!(
+            h.host.room_activity().serve_focus().map(|focus| focus.view),
+            Some(tilo_actions::remote::workspace_activity::View::WhatsNew)
+        );
 
         assert!(pump(&mut h, &key_press(Key::Character("H".into())), sup));
-        assert_eq!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree()),
-            Some(first),
-            "the shortcut focuses the singleton instead of toggling it away"
+        assert!(
+            opened(&mut h).is_some(),
+            "pressed again it opens Activity again, bringing its window forward"
         );
 
         assert!(
             !pump(&mut h, &key_press(Key::Character("h".into())), ctrl),
             "Ctrl+H remains available to the focused app"
         );
-        assert!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
-                .is_some()
-        );
+        assert!(opened(&mut h).is_none());
     }
 
-    fn super_shift_h_opens_the_full_history_explorer_directly() {
+    fn super_shift_h_opens_the_full_history_directly() {
         let mut h = build_harness();
         let chord = Modifiers::from(ModifiersState::SUPER | ModifiersState::SHIFT);
 
         assert!(pump(&mut h, &key_press(Key::Character("h".into())), chord));
-        assert!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&h.chrome.borrow().tree())
-                .is_some()
-        );
+        assert!(h.chrome.borrow_mut().take_activity_open_request().is_some());
         assert_eq!(
-            h.host.room_activity().view(),
-            crate::shell::room_activity::ActivityView::Explore
+            h.host.room_activity().serve_focus().map(|focus| focus.view),
+            Some(tilo_actions::remote::workspace_activity::View::History)
         );
     }
 
@@ -1336,8 +1191,8 @@ fn super_chords_open_their_surfaces_once() {
     super_p_opens_the_display_sheet_and_escape_closes_it();
     super_l_requests_the_compositor_lock_once();
     typed_session_actions_run_through_the_power_flyouts_executor();
-    super_h_opens_and_refocuses_the_recap_without_taking_ctrl_h();
-    super_shift_h_opens_the_full_history_explorer_directly();
+    super_h_opens_whats_new_without_taking_ctrl_h();
+    super_shift_h_opens_the_full_history_directly();
     super_shift_r_opens_recording_setup_then_saves_an_armed_replay();
     super_shift_p_opens_pip_directly_without_toggling_projection();
 }
@@ -1412,7 +1267,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         assert!(h.host.take_capture_intents().is_empty());
     }
 
-    fn alt_print_photographs_the_focused_window_as_shown() {
+    fn alt_print_photographs_the_focused_window_whole() {
         let target = ui::widget::CaptureTarget {
             id: "group:4:tab:9".into(),
             title: "Notes".into(),
@@ -1420,14 +1275,15 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
             visible_rect: Rect::new(100.0, 40.0, 900.0, 860.0),
             virtual_rect: Rect::new(100.0, 40.0, 1400.0, 860.0),
             complete_rect: Some(Rect::new(100.0, 40.0, 900.0, 4000.0)),
+            focused: true,
+            on_active_strip: true,
         };
         let intent = instant_window_capture(target.clone());
+        // A window capture is of the window, whole, wherever it is: the
+        // compositor repaints the target, so nothing about the intent is
+        // tied to what is on screen.
         assert_eq!(intent.source, ui::widget::SourceMode::Window);
-        assert_eq!(
-            intent.extent,
-            ui::widget::CaptureExtent::Visible,
-            "the window as it is on screen, not its whole document"
-        );
+        assert!(intent.anchors.is_empty());
         assert_eq!(intent.regions, vec![target.visible_rect]);
         assert_eq!(intent.targets, vec![target]);
         assert_eq!(
@@ -1537,8 +1393,8 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         ));
         assert!(h.chrome.borrow().quick_settings.wifi_password.is_some());
         assert_eq!(
-            h.host.wifi_password_input.value(),
-            "ab",
+            h.host.wifi_password_field().map(TextInput::value),
+            Some("ab"),
             "after capture closes, the original credential field must regain its text focus and selection"
         );
 
@@ -1630,6 +1486,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
             current_name: Some("before".to_string()),
             filters: Vec::new(),
             scope: None,
+            recent: Vec::new(),
             reply,
         });
         assert!(h.host.pump_file_picker());
@@ -1745,7 +1602,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
     capture_entry_always_uses_the_requested_mode_instead_of_the_previous_one();
     shift_print_captures_the_whole_screen_without_a_chooser();
     alt_print_without_a_window_opens_the_chooser_instead_of_nothing();
-    alt_print_photographs_the_focused_window_as_shown();
+    alt_print_photographs_the_focused_window_whole();
     instant_capture_waits_while_a_capture_is_in_progress();
 }
 
@@ -1893,16 +1750,18 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
             roots: vec![folder.path().to_path_buf()],
             home: None,
         }),
+        recent: Vec::new(),
         reply,
     });
     assert!(h.host.pump_file_picker());
+    settle_file_picker(&mut h);
 
     assert!(pump(
         &mut h,
         &key_press(Key::Named(NamedKey::Enter)),
         Modifiers::default()
     ));
-    h.host.pump_file_picker();
+    settle_file_picker(&mut h);
     assert!(
         received.try_recv().is_err(),
         "nothing is chosen before the answer"
@@ -1932,6 +1791,18 @@ fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
         b"original",
         "the app writes, not the chooser"
     );
+}
+
+/// Pump the chooser until its worker has answered everything it was asked
+/// (its listing, a typed name's check), as the compositor does each time
+/// the worker wakes it.
+fn settle_file_picker(h: &mut Harness) {
+    tilo_test_env::wait_until("the chooser's worker to answer", || {
+        h.host.pump_file_picker();
+        !h.host
+            .file_picker()
+            .is_some_and(ui::widget::FilePicker::reading)
+    });
 }
 
 fn key_press(logical_key: Key) -> WindowEvent {
@@ -1983,7 +1854,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// footer action. Joining another workspace is in the workspace menu,
     /// and what happened here is History's.
     fn collaborator_dropdown_offers_invite_and_nothing_else_in_its_footer() {
-        let mut h = build_harness();
+        let mut h = build_fixture_harness();
         adopt_rooms(&h);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
@@ -2002,7 +1873,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// before minting, since an unnamed token leaves the host's own roster
     /// reading a bare peer id once the guest arrives.
     fn collaborator_invite_button_asks_who_before_minting() {
-        let mut h = build_harness();
+        let mut h = build_fixture_harness();
         adopt_rooms(&h);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
@@ -2035,7 +1906,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// offer to. The room is adopted first so peer-sync is the *only*
     /// capability missing.
     fn collaborator_actions_are_absent_when_peer_sync_is_off() {
-        let mut h = build_harness();
+        let mut h = build_fixture_harness();
         adopt_rooms(&h);
         assert!(!h.chrome.borrow().peer_sync_enabled);
         h.chrome.borrow_mut().overlays.collaborators = true;
@@ -2053,15 +1924,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// paint — a rect that outlives its button is invisible but still
     /// clickable.
     fn collaborator_actions_are_absent_without_the_invite_capability() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let chrome = ChromeState::new_with_fixture_handle(
-            tree.shared(),
-            crate::shell::hosted_inputs::HostedTileInputs::fixture()
-                .expect("deterministic hosted inputs"),
-        );
-        let host = ShellOverlayHost::with_fixture_content(Box::new(StubContent::new()))
-            .with_chrome(chrome.clone());
-        let mut h = build_harness_with_host(host, chrome);
+        let mut h = build_fixture_harness();
         {
             // Owned by somebody else, and the local user holds no grant
             // here — the ordinary position of a guest in a room.
@@ -2087,7 +1950,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
     /// The rects must not survive the dropdown closing, or empty space
     /// where a button used to be stays clickable.
     fn collaborator_action_rects_are_cleared_when_the_dropdown_closes() {
-        let mut h = build_harness();
+        let mut h = build_fixture_harness();
         adopt_rooms(&h);
         h.chrome.borrow_mut().peer_sync_enabled = true;
         h.chrome.borrow_mut().overlays.collaborators = true;
@@ -2116,7 +1979,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 fn adopt_rooms(h: &Harness) {
     let st = h.chrome.borrow();
     st.tree_mut()
-        .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+        .adopt_ownerless_workspaces_with(|room| st.local_user_for_room(room));
 }
 
 /// A click anywhere inside the popover asks the network for nothing.
@@ -2196,8 +2059,8 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
         assert_eq!(
             h.chrome.borrow().search_scope,
-            SearchScope::All,
-            "Super+Space searches the machine"
+            SearchScope::Workspace,
+            "Super+Space opens global search on the workspace in front, the launcher's scope"
         );
         h.host.palette.set_query("zzyzx");
         // Retained application indexes are built from the compositor update
@@ -2205,7 +2068,7 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         // real lifecycle here: the first update starts the worker and a later
         // one publishes its immutable snapshot and refreshes the visible rows.
         let index_started = std::time::Instant::now();
-        while index_started.elapsed() < HANG_BOUND {
+        while index_started.elapsed() < tilo_test_env::hang_bound() {
             h.host.update(&doc, &automerge::ROOT);
             if h.host
                 .search_results
@@ -2264,14 +2127,14 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
                 .desktop
                 .active_workspace()
                 .expect("an active room")
-                .room;
+                .room();
             let other = tree
                 .desktop
                 .workspaces
                 .iter()
-                .find(|w| w.room != here)
+                .find(|w| w.room() != here)
                 .expect("the fixture has more than one room");
-            (here, other.room, other.name.clone())
+            (here, other.room(), other.name.clone())
         };
 
         // A record that lives over there and nowhere else.
@@ -2289,7 +2152,9 @@ fn palette_search_reaches_apps_note_bodies_and_records_in_other_rooms() {
         let mut doc = AutoCommit::new();
         let sup = Modifiers::from(ModifiersState::SUPER);
         assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Space)), sup));
-        assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
+        assert_eq!(h.chrome.borrow().search_scope, SearchScope::Workspace);
+        // Scoped to the workspace, typing still reaches other rooms' records:
+        // the scope ranks what is here first, it hides nothing.
         h.host.palette.set_query("field-guide");
         h.host.refresh_search_results(&doc, &automerge::ROOT);
 
@@ -2639,8 +2504,10 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
 
     let mut tree = WorkspaceTree::default();
     let mut workspace = Workspace::new(WorkspaceId(1), "Home");
-    workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
-    let room = workspace.room;
+    workspace.set_owner(crate::shell::state::local_user_id_for_room(
+        &workspace.room(),
+    ));
+    let room = workspace.room();
     tree.desktop.active = workspace.id;
     tree.desktop.workspaces.push(workspace);
     let chrome = ChromeState::new(tree);
@@ -2701,7 +2568,7 @@ fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() 
         .desktop
         .workspaces
         .iter()
-        .find(|w| w.room == room)
+        .find(|w| w.room() == room)
         .expect("home");
     assert_eq!(home.role_of(&principal), Some(CapRole::Owner));
     assert_eq!(home.role_of("quickuser"), None);
@@ -2730,11 +2597,11 @@ fn roster_follow_fixture() -> Harness {
 #[test]
 fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("painted Ada Follow");
     {
         let chrome = h.chrome.borrow_mut();
@@ -2764,7 +2631,7 @@ fn roster_follow_click_keeps_the_painted_person_when_live_rows_reorder() {
 #[test]
 fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -2791,7 +2658,7 @@ fn roster_follow_keyboard_rejects_a_departed_painted_person_before_repaint() {
 #[test]
 fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     {
         let chrome = h.chrome.borrow_mut();
         chrome
@@ -2817,7 +2684,7 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
     assert!(
         h.host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[2])
+            .accessibility_rect_for_path(&[3])
             .is_none()
     );
 
@@ -2828,11 +2695,11 @@ fn roster_follow_keyboard_pointer_cancel_and_reopen_keep_the_chosen_person() {
         h.host.followed_peer.is_none(),
         "reopening must not resurrect old focus"
     );
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Bob Follow after reordering");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -2861,7 +2728,7 @@ fn people_completed_click_defers_follow_until_release() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("painted Ada Follow");
     let mods = Modifiers::default();
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
@@ -2882,7 +2749,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
         let target = h
             .host
             .collaborators_overlay
-            .accessibility_rect_for_path(&[2])
+            .accessibility_rect_for_path(&[3])
             .expect("painted Ada Follow");
         let mods = Modifiers::default();
         assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
@@ -2921,7 +2788,7 @@ fn people_completed_click_cancels_after_reorder_and_focus_loss() {
 #[test]
 fn people_completed_submit_repeat_cannot_resume_follow_after_local_handoff() {
     let mut h = roster_follow_fixture();
-    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[2]));
+    assert!(h.host.collaborators_overlay.focus_accessibility_path(&[3]));
     let mods = Modifiers::default();
     assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Enter)), mods));
     assert_eq!(h.host.followed_peer.as_deref(), Some("ada"));
@@ -3006,7 +2873,7 @@ fn people_completed_cancel_survives_dismissal_reopen_and_a_fresh_click() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -3029,7 +2896,7 @@ fn people_completed_missing_person_returning_cannot_resurrect_a_press() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -3066,7 +2933,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     let target = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada");
     assert!(pump(&mut h, &cursor_moved_at(target.center()), mods));
     assert!(pump(&mut h, &mouse_press(), mods));
@@ -3075,7 +2942,7 @@ fn people_completed_resize_does_not_move_an_armed_click() {
     let moved = h
         .host
         .collaborators_overlay
-        .accessibility_rect_for_path(&[2])
+        .accessibility_rect_for_path(&[3])
         .expect("Ada after resize");
     assert_ne!(target, moved);
     assert!(pump(&mut h, &cursor_moved_at(moved.center()), mods));
@@ -3326,6 +3193,42 @@ fn people_viewport_resize_ends_a_scrollbar_drag_without_invoking_a_target() {
     assert!(h.host.followed_peer.is_none());
 }
 
+/// Clear all's Undo lasts its window on an idle desktop too: the
+/// compositor wakes when it ends, so the Undo it showed goes away.
+#[test]
+fn clear_all_wakes_the_compositor_when_its_undo_ends() {
+    let h = build_harness();
+    let undo_wake = |h: &Harness| {
+        h.host
+            .wake_deadline_sources(Instant::now())
+            .into_iter()
+            .find(|(name, _)| *name == "notification-undo")
+            .expect("the undo's end is a wake source")
+            .1
+    };
+    assert_eq!(undo_wake(&h), None, "nothing to undo, nothing to wake for");
+    let id = h
+        .chrome
+        .borrow_mut()
+        .push_notification("Build finished", "");
+    h.chrome.borrow_mut().dismiss_notification(id);
+    let cleared = Instant::now();
+    h.chrome.borrow_mut().clear_notification_history();
+    let deadline = undo_wake(&h).expect("the compositor wakes when the undo ends");
+    assert!(
+        deadline > cleared
+            && deadline <= Instant::now() + tilo_desktop::notifications::CLEAR_UNDO_WINDOW,
+        "it wakes when the window ends"
+    );
+    assert!(h.chrome.borrow().can_undo_notification_history_clear());
+    assert!(
+        !ui::time::testing::with_monotonic_time(deadline, || {
+            h.chrome.borrow().can_undo_notification_history_clear()
+        }),
+        "at its end the undo is over"
+    );
+}
+
 #[test]
 fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
     let mut h = people_viewport_probe_fixture();
@@ -3336,9 +3239,23 @@ fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
     assert!(pump(&mut h, &cursor_moved_at(center), mods));
     let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
     assert!(pump(&mut h, &wheel, mods));
+    // The notches glide on for a few frames; the idle wait is after.
+    let mut at = Instant::now();
+    let mut frames = 0;
+    while ui::time::testing::with_monotonic_time(at, || {
+        h.host.collaborators_overlay.needs_animation_frame()
+    }) {
+        frames += 1;
+        assert!(frames < 600, "the glide comes to rest");
+        at += Duration::from_millis(16);
+        ui::time::testing::with_monotonic_time(at, || {
+            h.host.collaborators_overlay.advance_scroll()
+        });
+    }
+    assert!(frames > 0, "the notches glide on");
     let deadline = h
         .host
-        .wake_deadline_sources(Instant::now())
+        .wake_deadline_sources(at)
         .into_iter()
         .find(|(name, _)| *name == "people")
         .expect("People contributes its child widget deadline")
@@ -3348,7 +3265,9 @@ fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
         "the shared scrollbar fade must wake an otherwise idle compositor"
     );
     assert!(
-        !h.host.collaborators_overlay.needs_animation_frame(),
+        !ui::time::testing::with_monotonic_time(at, || {
+            h.host.collaborators_overlay.needs_animation_frame()
+        }),
         "the idle interval before a scroll fade uses a deadline rather than busy frames"
     );
     assert!(pump(
@@ -3698,7 +3617,7 @@ fn semantic_codec_worker_receipt(result: Result<(), String>) {
     );
     h.host.sync(&doc, &automerge::ROOT);
     started
-        .recv_timeout(std::time::Duration::from_secs(2))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("actual worker started");
     for _ in 0..3 {
         h.host.sync(&doc, &automerge::ROOT);
@@ -3713,7 +3632,7 @@ fn semantic_codec_worker_receipt(result: Result<(), String>) {
         h.host.sync(&doc, &automerge::ROOT);
         match ticket() {
             Ok(None) => assert!(
-                waiting_since.elapsed() < std::time::Duration::from_secs(2),
+                waiting_since.elapsed() < tilo_test_env::hang_bound(),
                 "worker result must arrive"
             ),
             Ok(Some(_)) => {
@@ -3760,7 +3679,7 @@ fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
             started_tx.lock().unwrap().send(()).unwrap();
             gate.lock()
                 .unwrap()
-                .recv_timeout(std::time::Duration::from_secs(2))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap();
             marker.store(true, Ordering::Release);
             Ok(crate::onboarding::MintedIdentity {
@@ -3785,7 +3704,7 @@ fn onboarding_semantic_create_finishes_only_after_the_normal_minter_returns() {
     assert!(!returned.load(Ordering::Acquire));
     let unblock = std::thread::spawn(move || {
         started
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("normal minter entered");
         release.send(()).unwrap();
     });
@@ -3881,8 +3800,13 @@ fn the_strip_switcher_makes_names_and_switches_strips() {
         none
     ));
     assert_eq!(focused(&h), 1, "down a strip");
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    pump(&mut h, &ui::synthetic_input::mouse_wheel(0.0, 1.0), none);
+    // The next notch comes a moment later, as a hand turning the wheel does.
+    let later = ui::time::now()
+        .checked_add(std::time::Duration::from_millis(20))
+        .expect("a later instant");
+    ui::time::testing::with_monotonic_time(later, || {
+        pump(&mut h, &ui::synthetic_input::mouse_wheel(0.0, 1.0), none);
+    });
     assert_eq!(focused(&h), 0, "back up");
 
     // Escape closes it.
@@ -3909,6 +3833,10 @@ fn the_strip_switcher_opens_when_the_pointer_comes_to_rest_on_the_ribbon() {
     );
     let y = zone.center().y;
     let x1 = zone.x1 - 2.0;
+    // The pointer moves on a pinned clock, a frame apart, so the dwell it
+    // ends with is the one the test gives it, not the machine's speed.
+    let step = std::time::Duration::from_millis(12);
+    let mut at = ui::time::now();
     for x in [
         x1 - 400.0,
         x1 - 250.0,
@@ -3919,20 +3847,29 @@ fn the_strip_switcher_opens_when_the_pointer_comes_to_rest_on_the_ribbon() {
         x1 - 2.0,
         x1,
     ] {
-        pump(&mut h, &cursor_moved_at(Point::new(x, y)), none);
-        std::thread::sleep(std::time::Duration::from_millis(12));
+        at = at.checked_add(step).expect("a later instant");
+        ui::time::testing::with_monotonic_time(at, || {
+            pump(&mut h, &cursor_moved_at(Point::new(x, y)), none);
+        });
     }
-    std::thread::sleep(std::time::Duration::from_millis(80));
-    h.host.update(&doc, &automerge::ROOT);
+    let rested = at
+        .checked_add(std::time::Duration::from_millis(80))
+        .expect("a later instant");
+    ui::time::testing::with_monotonic_time(rested, || {
+        h.host.update(&doc, &automerge::ROOT);
+    });
     assert!(
         h.chrome.borrow().strip_switcher_open(),
         "resting on the ribbon opens the labels"
     );
     // Leaving it closes it.
-    pump(
-        &mut h,
-        &cursor_moved_at(Point::new(zone.x0 - 600.0, y)),
-        none,
-    );
+    let left = rested.checked_add(step).expect("a later instant");
+    ui::time::testing::with_monotonic_time(left, || {
+        pump(
+            &mut h,
+            &cursor_moved_at(Point::new(zone.x0 - 600.0, y)),
+            none,
+        );
+    });
     assert!(!h.chrome.borrow().strip_switcher_open());
 }

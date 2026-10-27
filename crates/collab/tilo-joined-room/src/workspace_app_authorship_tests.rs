@@ -129,7 +129,7 @@ fn the_owners_own_grants_never_restrict_their_app_delegation() {
                 &fixture.key,
                 fixture.now,
             )?;
-            candidate.durable_mutation_messages(
+            candidate.publication_mut().durable_mutation_messages(
                 &before,
                 &fixture.key,
                 fixture.now,

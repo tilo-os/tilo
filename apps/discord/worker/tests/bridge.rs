@@ -37,8 +37,6 @@ tilo_agent_participant::app_worker!();
 const APP: &str = "so.tilo.discord";
 const CHAT: &str = "so.tilo.chat";
 const ADA: [u8; 32] = [8; 32];
-/// Long enough for the worker's gateway session and the bridge's passes.
-const WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct Blobs {
@@ -286,7 +284,7 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Option<T>>,
 {
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     // Steps that did not succeed meanwhile, shown when it times out.
     let mut unfinished = Vec::new();
     loop {
@@ -321,6 +319,10 @@ where
 
 /// How a test's bridge is set up.
 #[derive(Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent way a test's server and room start"
+)]
 struct Setup {
     /// Bridge only this Discord channel.
     only: Option<&'static str>,
@@ -336,6 +338,9 @@ struct Setup {
     /// Messages Bo wrote before the bridge first ran: channel, text, when
     /// (Unix ms).
     history: &'static [(&'static str, &'static str, u64)],
+    /// Messages an earlier bridge of this bot posted through its webhook,
+    /// before this one first ran: channel, shown name, text, when.
+    bridged_before: &'static [(&'static str, &'static str, &'static str, u64)],
 }
 
 /// A Discord server laid out before its bridge: a category "Channels" with #general and a
@@ -378,7 +383,6 @@ struct Bridge {
 }
 
 impl Bridge {
-    /// The bridge, and the runner that runs its bot.
     async fn start() -> (Self, BotRunner) {
         Self::start_with(Setup::default()).await
     }
@@ -396,6 +400,10 @@ impl Bridge {
         let bo = User::new("3001", "Bo");
         for (channel, text, at_ms) in setup.history {
             fake.post_written(channel, &bo, text, *at_ms);
+        }
+        for (channel, name, text, at_ms) in setup.bridged_before {
+            let (webhook, _) = fake.create_webhook(channel);
+            fake.post_written_through(&webhook, channel, name, text, *at_ms);
         }
         let scratch = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
@@ -428,7 +436,6 @@ impl Bridge {
         let owner = hex::encode(cert.user_public_key);
         let ada = hex::encode(ADA);
 
-        // The room's Chat, with Ada in it.
         room.rooms
             .prepare_application(&room.id, &cert, &room.catalogue, CHAT, "")
             .await
@@ -462,7 +469,6 @@ impl Bridge {
                 .await;
         }
 
-        // The guild record, connected to the fake server and the room's Chat.
         room.rooms
             .prepare_application(&room.id, &cert, &room.catalogue, APP, "")
             .await
@@ -490,7 +496,6 @@ impl Bridge {
             .await
             .unwrap();
 
-        // The worker, holding the bot token in the host's store.
         let secrets = ui::secrets::SecretStore::memory(APP);
         secrets
             .item("bot-token", "default")
@@ -501,7 +506,7 @@ impl Bridge {
         let process = ConnectorProcess::start(
             APP,
             WorkerCommand {
-                program: env!("CARGO_BIN_EXE_discord-worker").into(),
+                program: tilo_test_env::package_binary!("discord-worker"),
                 args: Vec::new(),
                 env: [
                     ("DISCORD_API_BASE".into(), fake.api_base()),
@@ -520,12 +525,10 @@ impl Bridge {
         .await
         .unwrap();
 
-        // The bridge, installed from its program file.
         let program = concat!(env!("CARGO_MANIFEST_DIR"), "/../bridge/program.json");
         let bot = installed::install(&scratch.path().join("bot"), program, serde_json::Map::new())
             .await
             .unwrap();
-        // A member of the room, signing what it changes with its own device.
         let certifier = HostRootCertifier::new(SigningKey::from_bytes(&[1; 32]));
         keep_member(&room.rooms, &room.id, &cert, &certifier, &bot)
             .await
@@ -587,6 +590,44 @@ impl Bridge {
         self.room.part_as(&self.ada, invoke.into()).await;
     }
 
+    /// Ada reacts to `message` with `emoji` (`added`), or takes it back: the
+    /// framework's field edit of the message's reactions, as her page makes
+    /// it.
+    async fn ada_reacts(&self, message: &str, emoji: &str, added: bool) {
+        let reactions = chat::parts::ChatPart::paths()
+            .messages
+            .item(&Id::from_raw(message))
+            .reactions;
+        let edit = if added {
+            reactions.react(emoji)
+        } else {
+            reactions.unreact(emoji)
+        };
+        self.as_ada_on_messages(edit).await;
+    }
+
+    /// The reactions on Chat message `id`: emoji, persona and name.
+    async fn reactions_on(&self, id: &str) -> Vec<(String, Option<String>, Option<String>)> {
+        chat::messages::read_part(&self.room.part().await)
+            .messages
+            .iter()
+            .find(|(message, _)| message.as_str() == id)
+            .map(|(_, message)| {
+                message
+                    .reactions
+                    .iter()
+                    .map(|r| {
+                        (
+                            r.emoji.0.clone(),
+                            r.persona.as_ref().map(|p| p.0.clone()),
+                            r.name.as_ref().map(|n| n.0.clone()),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Ada posts `text` in #general; the new message's id.
     async fn ada_says(&self, text: &str) -> String {
         self.room
@@ -596,7 +637,6 @@ impl Bridge {
             .expect("the post is in a part")
     }
 
-    /// The Chat message with `text`, by id.
     async fn chat_message(&self, text: &str) -> Option<(String, chat::record::Message)> {
         chat::messages::read_part(&self.room.part().await)
             .messages
@@ -675,6 +715,131 @@ async fn a_message_crosses_the_bridge_both_ways_under_its_authors_name() {
     );
 }
 
+/// Ada links her Discord account: the room's host fetches its avatar small,
+/// for her Tilo profile to wear, and what she writes in Tilo shows in
+/// Discord as her name with her handle, under the same picture.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_linked_account_lends_its_picture_and_handle() {
+    use discord_wire::event::{link_check, link_proof};
+    let (bridge, mut runner) = Bridge::start().await;
+    let png = picture(7);
+    let _ = bridge
+        .fake
+        .put_cdn("avatars/4001/f00d.png", "image/png", &png);
+    // The bridge offers the account, as `/link` has it, and Ada takes it.
+    bridge
+        .room
+        .rooms
+        .author_application(
+            &bridge.room.id,
+            &bridge.room.cert,
+            &bridge.room.catalogue,
+            APP,
+            "",
+            {
+                let owner = hex::encode(bridge.room.cert.user_public_key);
+                move |doc| {
+                    let mut replica = Replica::<Guild>::from_doc(std::mem::take(doc))
+                        .as_bot_for("bridge-test", &owner)
+                        .in_app(APP, "Discord");
+                    let applied = replica
+                        .apply(Guild::OFFER_LINK.with(guild::OfferLink {
+                            check: link_check(&link_proof("ADA-TOKEN")),
+                            discord_user: "4001".into(),
+                            user_name: "ada.l".into(),
+                            display_name: None,
+                            avatar: Some("f00d".into()),
+                            interaction: None,
+                        }))
+                        .map(drop);
+                    std::mem::swap(doc, replica.doc_mut());
+                    applied.map_err(|error| format!("{error:?}"))
+                }
+            },
+        )
+        .await
+        .unwrap();
+    bridge
+        .room
+        .rooms
+        .author_application(
+            &bridge.room.id,
+            &bridge.room.cert,
+            &bridge.room.catalogue,
+            APP,
+            "",
+            {
+                let ada = bridge.ada.clone();
+                move |doc| {
+                    let mut replica = Replica::<Guild>::from_doc(std::mem::take(doc))
+                        .as_invoker(&ada)
+                        .in_app(APP, "Discord");
+                    let applied = replica
+                        .apply_confirmed(Guild::COMPLETE_LINK.with(guild::CompleteLink {
+                            proof: link_proof("ADA-TOKEN"),
+                        }))
+                        .map(drop);
+                    std::mem::swap(doc, replica.doc_mut());
+                    applied.map_err(|error| error.to_string())
+                }
+            },
+        )
+        .await
+        .unwrap();
+    let photo = settle(&mut runner, "the link's picture", || async {
+        let guild = bridge.room.guild().await;
+        let link = guild.links.find(&Id::from_raw("4001"))?;
+        link.photo.clone().zip(link.photo_avatar.clone())
+    })
+    .await;
+    use base64::Engine as _;
+    assert_eq!(
+        photo,
+        (
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(&png)
+            ),
+            "f00d".to_owned()
+        ),
+        "the avatar as the profile's picture, of the hash it is"
+    );
+    let fetched = bridge
+        .fake
+        .requests()
+        .into_iter()
+        .find(|request| request.path.contains("/avatars/4001/"))
+        .expect("the room's host fetched the avatar");
+    assert!(
+        fetched
+            .query
+            .iter()
+            .any(|(key, value)| key == "size" && value == "64"),
+        "small: {:?}",
+        fetched.query
+    );
+
+    bridge.ada_says("hello as myself").await;
+    let sent = settle(&mut runner, "Tilo to Discord", || async {
+        bridge.in_discord("hello as myself")
+    })
+    .await;
+    assert_eq!(sent["author"]["username"], "Ada (@ada.l)", "{sent:#}");
+    let executed = bridge
+        .fake
+        .requests_to("POST", "/webhooks/")
+        .into_iter()
+        .find(|request| request.json["content"] == "hello as myself")
+        .expect("the webhook was executed")
+        .json;
+    assert!(
+        executed["avatar_url"]
+            .as_str()
+            .is_some_and(|url| url.contains("/avatars/4001/f00d.")),
+        "the webhook wears the same picture: {executed:#}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     let (bridge, mut runner) = Bridge::start().await;
@@ -701,14 +866,7 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
     .await;
 
     // A reaction is the bot's reaction on it.
-    bridge
-        .as_ada_on_messages(
-            chat::parts::ChatPart::REACT.with(chat::messages::chat_part::React {
-                message: Id::from_raw(&first),
-                emoji: "👍".into(),
-            }),
-        )
-        .await;
+    bridge.ada_reacts(&first, "👍", true).await;
     settle(&mut runner, "reaction", || async {
         bridge
             .fake
@@ -800,7 +958,7 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
         edited
             .reactions
             .iter()
-            .any(|reacted| reacted.emoji == "🎉")
+            .any(|reacted| reacted.emoji.0 == "🎉")
             .then_some(())
     })
     .await;
@@ -831,6 +989,30 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
     let attachment = format!("{:?}", file.attachment);
     assert!(attachment.contains("notes.txt"), "{attachment}");
 
+    // A picture lands as an image of its size: the bot queues fetching it,
+    // its connector fetches it, and the bot settles and clears the entry.
+    let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    png.extend_from_slice(&640_u32.to_be_bytes());
+    png.extend_from_slice(&480_u32.to_be_bytes());
+    bridge.fake.post_file(
+        CHANNEL_GENERAL,
+        &bo,
+        "Bo's photo",
+        ("photo.png", "image/png", &png),
+    );
+    let (_, photo) = settle(&mut runner, "picture", || async {
+        bridge.chat_message("Bo's photo").await
+    })
+    .await;
+    assert!(
+        matches!(
+            &photo.attachment,
+            Some(chat::model::Attachment::Image { name, w: 640, h: 480, .. }) if name == "photo.png"
+        ),
+        "{:?}",
+        photo.attachment
+    );
+
     bridge.fake.delete(&posted, None);
     settle(&mut runner, "delete", || async {
         (!bridge
@@ -845,29 +1027,108 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
     .await;
 }
 
-/// Run `runner` until a whole `window` passes with no REST call, at most
-/// for [`WAIT`]; the REST calls made meanwhile.
-async fn quiet(runner: &mut BotRunner, fake: &FakeDiscord, window: Duration) -> Vec<String> {
-    let deadline = tokio::time::Instant::now() + WAIT;
-    let start = fake.requests().len();
-    let mut seen = start;
-    let mut since = tokio::time::Instant::now();
-    loop {
-        runner.step().await.unwrap();
-        let now = fake.requests().len();
-        if now != seen {
-            (seen, since) = (now, tokio::time::Instant::now());
-        } else if since.elapsed() >= window {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "never went quiet: {:#?}",
-            calls(fake.requests().get(start..).unwrap_or_default())
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    calls(fake.requests().get(start..).unwrap_or_default())
+/// Reactions cross both ways, each Discord member their own reaction in
+/// Tilo, the server's custom emoji standing for the workspace's emoji of
+/// the same name, and nothing mirrored in going back out.
+#[tokio::test(flavor = "multi_thread")]
+async fn reactions_cross_both_ways_and_custom_emoji_by_name() {
+    let (bridge, mut runner) = Bridge::start().await;
+    // The server has an emoji `tilo_hello`; the bridge learns it.
+    bridge.fake.set_emojis(&[("tilo_hello", "55", false)]);
+    settle(&mut runner, "emoji observed", || async {
+        (bridge.room.guild().await.emoji("tilo_hello") == Some("55")).then_some(())
+    })
+    .await;
+    let first = bridge.ada_says("react to me").await;
+    let sent = settle(&mut runner, "post", || async {
+        bridge.discord_of(MappedKind::Message, &first).await
+    })
+    .await;
+
+    // Tilo to Discord: a Unicode emoji as itself, a workspace emoji as the
+    // server's emoji of its name.
+    bridge.ada_reacts(&first, "👍", true).await;
+    bridge.ada_reacts(&first, ":tilo_hello:", true).await;
+    settle(&mut runner, "Tilo reactions in Discord", || async {
+        (bridge.fake.bot_reactions_on(&sent) == ["👍", "tilo_hello:55"]).then_some(())
+    })
+    .await;
+    // A workspace emoji the server has none of stays in Tilo.
+    bridge.ada_reacts(&first, ":pizza:", true).await;
+    let calls = quiet(&mut runner, &bridge, "after pizza").await;
+    assert!(
+        !calls.iter().any(|call| call.contains("/reactions/")),
+        "{calls:?}"
+    );
+    assert_eq!(bridge.fake.bot_reactions_on(&sent), ["👍", "tilo_hello:55"]);
+
+    // Discord to Tilo: each member's own reaction, under their name; a
+    // custom emoji as its `:name:`.
+    let bo = User::new("3001", "Bo");
+    let cy = User::new("3002", "Cy");
+    bridge.fake.react(CHANNEL_GENERAL, &sent, &bo, "🎉");
+    bridge.fake.react(CHANNEL_GENERAL, &sent, &cy, "🎉");
+    bridge.fake.react(CHANNEL_GENERAL, &sent, &bo, ":party:");
+    let bridged = |reactions: &[(String, Option<String>, Option<String>)]| {
+        let mut theirs: Vec<(String, String, String)> = reactions
+            .iter()
+            .filter_map(|(emoji, persona, name)| {
+                Some((emoji.clone(), persona.clone()?, name.clone()?))
+            })
+            .collect();
+        theirs.sort();
+        theirs
+    };
+    settle(&mut runner, "Discord reactions in Tilo", || async {
+        let theirs = bridged(&bridge.reactions_on(&first).await);
+        (theirs
+            == [
+                (":party:".into(), "discord/3001".into(), "Bo".into()),
+                ("🎉".into(), "discord/3001".into(), "Bo".into()),
+                ("🎉".into(), "discord/3002".into(), "Cy".into()),
+            ])
+        .then_some(())
+    })
+    .await;
+    // What came in from Discord does not go back out as the bot's.
+    quiet(&mut runner, &bridge, "after Bo and Cy").await;
+    assert_eq!(bridge.fake.bot_reactions_on(&sent), ["👍", "tilo_hello:55"]);
+
+    // Taking reactions back follows on both sides.
+    bridge.fake.unreact(CHANNEL_GENERAL, &sent, &bo, "🎉");
+    settle(&mut runner, "Bo's reaction gone", || async {
+        let theirs = bridged(&bridge.reactions_on(&first).await);
+        (theirs
+            == [
+                (":party:".into(), "discord/3001".into(), "Bo".into()),
+                ("🎉".into(), "discord/3002".into(), "Cy".into()),
+            ])
+        .then_some(())
+    })
+    .await;
+    bridge.ada_reacts(&first, "👍", false).await;
+    bridge.ada_reacts(&first, ":tilo_hello:", false).await;
+    settle(&mut runner, "Ada's reactions gone from Discord", || async {
+        bridge.fake.bot_reactions_on(&sent).is_empty().then_some(())
+    })
+    .await;
+}
+
+/// Run `runner` until everything already set going has played out; the
+/// REST calls made meanwhile. Bo says `marker` in #general: Discord delivers
+/// it after every event the bridge's own calls caused, and the runner takes
+/// events in order and finishes a run's calls before the next run, so once
+/// the marker is in Chat nothing that came before it is still pending.
+async fn quiet(runner: &mut BotRunner, bridge: &Bridge, marker: &str) -> Vec<String> {
+    let start = bridge.fake.requests().len();
+    bridge
+        .fake
+        .post(CHANNEL_GENERAL, &User::new("3001", "Bo"), marker);
+    settle(runner, marker, || async {
+        bridge.chat_message(marker).await.map(drop)
+    })
+    .await;
+    calls(bridge.fake.requests().get(start..).unwrap_or_default())
 }
 
 fn calls(requests: &[fake_discord::Recorded]) -> Vec<String> {
@@ -906,14 +1167,14 @@ fn layout(fake: &FakeDiscord) -> (Vec<Value>, Vec<Value>) {
 #[tokio::test(flavor = "multi_thread")]
 async fn adopting_a_server_changes_nothing_in_it_but_webhooks() {
     let (bridge, mut runner) = Bridge::start().await;
-    quiet(&mut runner, &bridge.fake, Duration::from_secs(2)).await;
+    quiet(&mut runner, &bridge, "adopted").await;
     let changed: std::collections::BTreeSet<String> = changes(&bridge.fake).into_iter().collect();
     assert_eq!(
         changed,
         webhooks_of(&[CHANNEL_GENERAL, fake_discord::CHANNEL_GOAL])
     );
     // Idle: nothing changes, so nothing is called.
-    let idle = quiet(&mut runner, &bridge.fake, Duration::from_secs(3)).await;
+    let idle = quiet(&mut runner, &bridge, "idle").await;
     assert!(idle.is_empty(), "{idle:#?}");
 }
 
@@ -934,7 +1195,7 @@ async fn an_existing_server_is_adopted_as_it_is() {
         ..Setup::default()
     })
     .await;
-    quiet(&mut runner, &bridge.fake, Duration::from_secs(2)).await;
+    quiet(&mut runner, &bridge, "adopted").await;
     let changed: std::collections::BTreeSet<String> = changes(&bridge.fake).into_iter().collect();
     assert_eq!(
         changed,
@@ -1052,6 +1313,28 @@ async fn a_new_room_takes_on_its_servers_layout_and_history() {
     assert!(bridge.room.guild().await.tilo_only.is_empty());
 }
 
+/// A room meeting a server that a bridge of the same bot posted in before
+/// reads its history before it adopts that bridge's webhook: what the
+/// bridge posted there is never taken in as written in Discord.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_room_leaves_out_what_its_bot_posted_before() {
+    let (bridge, mut runner) = Bridge::start_with(Setup {
+        room_seeded: true,
+        bridged_before: &[(CHANNEL_GENERAL, "Ada", "from the Lounge", WRITTEN_MS)],
+        history: &[(CHANNEL_GENERAL, "Hi?", WRITTEN_MS + 60_000)],
+        ..Setup::default()
+    })
+    .await;
+    settle(&mut runner, "Bo's history is in Chat", || async {
+        bridge.chat_message("Hi?").await
+    })
+    .await;
+    assert!(
+        bridge.chat_message("from the Lounge").await.is_none(),
+        "the bridge's own post came back in as Discord's"
+    );
+}
+
 /// Opted in, the bridge adds roles of its own and permissions for them, and
 /// makes in Discord only the channels Tilo makes later; still nothing of
 /// the server's own is changed.
@@ -1064,7 +1347,7 @@ async fn opted_in_the_bridge_adds_its_own_roles_and_new_channels_only() {
         ..Setup::default()
     })
     .await;
-    quiet(&mut runner, &bridge.fake, Duration::from_secs(2)).await;
+    quiet(&mut runner, &bridge, "adopted").await;
     let bridge_roles: Vec<String> = bridge
         .fake
         .roles()
@@ -1130,7 +1413,7 @@ async fn a_bridge_of_one_channel_touches_nothing_else_in_the_server() {
         ..Setup::default()
     })
     .await;
-    quiet(&mut runner, &bridge.fake, Duration::from_secs(2)).await;
+    quiet(&mut runner, &bridge, "adopted").await;
 
     // Only #general came into Chat, and the one change in the server is
     // its webhook: no roles, permissions, layout or slash commands.
@@ -1166,7 +1449,7 @@ async fn a_bridge_of_one_channel_touches_nothing_else_in_the_server() {
         bridge.chat_message("here").await.map(drop)
     })
     .await;
-    quiet(&mut runner, &bridge.fake, Duration::from_secs(1)).await;
+    // #goal's message came first, so it was handled before "here" was.
     assert!(bridge.chat_message("elsewhere").await.is_none());
 }
 
@@ -1175,7 +1458,7 @@ async fn a_bridge_of_one_channel_touches_nothing_else_in_the_server() {
 /// `#chat` and `#voice` a room opens with.
 fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
     let chat = chat::Chat::read(doc).map_err(|error| error.to_string())?;
-    for channel in chat.channels.ids().cloned().collect::<Vec<_>>() {
+    for channel in chat.channels.ids().cloned() {
         chat::demo::apply_as(
             doc,
             owner,
@@ -1183,7 +1466,7 @@ fn lay_out_with_general_and_lounge(doc: &mut AutoCommit, owner: &str) -> Result<
         )
         .map_err(|error| error.to_string())?;
     }
-    for category in chat.categories.ids().cloned().collect::<Vec<_>>() {
+    for category in chat.categories.ids().cloned() {
         chat::demo::apply_as(
             doc,
             owner,
@@ -1283,4 +1566,229 @@ fn seed_channels(doc: &mut AutoCommit, owner: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+/// A picture an emoji may keep: a PNG's signature and `fill`.
+fn picture(fill: u8) -> Vec<u8> {
+    let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+    png.extend(std::iter::repeat_n(fill, 64));
+    png
+}
+
+impl Bridge {
+    /// Ada changes the workspace's emoji (Chat's workspace record, which
+    /// every app of the room opens) from her own device: `change` makes the
+    /// invocation, applied to the record as the room holds it now.
+    async fn ada_emoji(
+        &self,
+        change: impl FnOnce() -> Invoke<ui::tilo_workspace_emoji::WorkspaceEmoji>,
+    ) {
+        let record = collab_types::workspace_record_id(ui::tilo_workspace_emoji::KIND);
+        let saved = self
+            .room
+            .rooms
+            .record_document(&self.room.id, CHAT, &record)
+            .await
+            .unwrap();
+        let bytes = self.emoji_changed(&record, saved, change());
+        self.room
+            .rooms
+            .author_room_record(
+                &self.room.id,
+                &self.room.cert,
+                (CHAT, record.as_str()),
+                move |doc| {
+                    tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
+                        .map(drop)
+                        .map_err(|error| error.to_string())
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// The emoji record `saved` with Ada's `invoke` applied, saved.
+    fn emoji_changed(
+        &self,
+        record: &str,
+        saved: Option<Vec<u8>>,
+        invoke: Invoke<ui::tilo_workspace_emoji::WorkspaceEmoji>,
+    ) -> Vec<u8> {
+        use ui::tilo_workspace_emoji::{KIND, WorkspaceEmoji};
+        let mut doc = saved
+            .map(|bytes| AutoCommit::load(&bytes).unwrap())
+            .unwrap_or_default();
+        ui::record::init_scoped(
+            &mut doc,
+            &ui::record::RecordId::parse(record).unwrap(),
+            &ui::record::RecordKind::new(KIND),
+            CHAT,
+            Some(&self.room.id),
+        );
+        let mut replica = Replica::<WorkspaceEmoji>::from_doc(doc)
+            .as_invoker(&self.ada)
+            .in_app(CHAT, "Chat");
+        replica.apply_confirmed(invoke).unwrap();
+        replica.doc_mut().save()
+    }
+
+    async fn ada_adds_emoji(&self, name: &str, fill: u8) {
+        use ui::tilo_workspace_emoji::workspace_emoji::AddEmoji;
+        use ui::tilo_workspace_emoji::{EmojiImage, WorkspaceEmoji};
+        self.ada_emoji(|| {
+            WorkspaceEmoji::ADD_EMOJI.with(AddEmoji {
+                name: name.into(),
+                image: EmojiImage(picture(fill)).to_base64(),
+            })
+        })
+        .await;
+    }
+
+    async fn ada_removes_emoji(&self, name: &str) {
+        use ui::tilo_workspace_emoji::WorkspaceEmoji;
+        use ui::tilo_workspace_emoji::workspace_emoji::RemoveEmoji;
+        self.ada_emoji(|| WorkspaceEmoji::REMOVE_EMOJI.with(RemoveEmoji { name: name.into() }))
+            .await;
+    }
+
+    /// The id of the server's emoji `name` the bot uploaded.
+    fn uploaded(&self, name: &str) -> Option<String> {
+        self.fake
+            .emojis()
+            .iter()
+            .find(|e| {
+                e.get("name").and_then(Value::as_str) == Some(name)
+                    && e.pointer("/user/id").and_then(Value::as_str) == Some(fake_discord::BOT_USER)
+            })
+            .and_then(|e| e.get("id").and_then(Value::as_str).map(str::to_owned))
+    }
+}
+
+/// The workspace's emoji reach the server as emoji the bridge uploads,
+/// renames and deletes, and stand for `:name:` in reactions and messages;
+/// the server's own emoji are never touched; a permission the bot lacks or
+/// a full server is said on the bridge's record, and reactions carry on.
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_emoji_are_uploaded_renamed_and_deleted_in_the_server() {
+    let (bridge, mut runner) = Bridge::start().await;
+    // The server has an emoji of its own named like a workspace emoji.
+    bridge.fake.set_emojis(&[("party", "55", false)]);
+    settle(&mut runner, "server emoji observed", || async {
+        (bridge.room.guild().await.emoji("party") == Some("55")).then_some(())
+    })
+    .await;
+
+    // Added in Tilo: uploaded, with its picture, under its name.
+    bridge.ada_adds_emoji("tilo_wave", 1).await;
+    bridge.ada_adds_emoji("party", 2).await;
+    let wave = settle(&mut runner, "uploaded", || async {
+        let id = bridge.uploaded("tilo_wave")?;
+        let mapped = bridge.discord_of(MappedKind::Emoji, "tilo_wave").await?;
+        (mapped == id).then_some(id)
+    })
+    .await;
+    assert_eq!(bridge.fake.emoji_picture(&wave), Some(picture(1)));
+    // The server's own `party` stands for the workspace's: nothing else is
+    // uploaded, and it is left as it was.
+    assert_eq!(bridge.uploaded("party"), None);
+    assert_eq!(bridge.discord_of(MappedKind::Emoji, "party").await, None);
+
+    // Text and reactions from Tilo use the server's emoji.
+    let first = bridge.ada_says("hi :tilo_wave: and :party:").await;
+    let sent = settle(&mut runner, "post", || async {
+        bridge.discord_of(MappedKind::Message, &first).await
+    })
+    .await;
+    assert!(
+        bridge
+            .in_discord(&format!("hi <:tilo_wave:{wave}> and <:party:55>"))
+            .is_some(),
+        "{:#?}",
+        bridge.fake.messages_in(CHANNEL_GENERAL)
+    );
+    bridge.ada_reacts(&first, ":tilo_wave:", true).await;
+    settle(&mut runner, "reaction", || async {
+        (bridge.fake.bot_reactions_on(&sent) == [format!("tilo_wave:{wave}")]).then_some(())
+    })
+    .await;
+
+    // Renamed in Tilo (removed and added again with its picture): the same
+    // Discord emoji, renamed.
+    bridge.ada_removes_emoji("tilo_wave").await;
+    bridge.ada_adds_emoji("hello", 1).await;
+    settle(&mut runner, "renamed", || async {
+        (bridge.uploaded("hello").as_deref() == Some(wave.as_str())
+            && bridge
+                .discord_of(MappedKind::Emoji, "hello")
+                .await
+                .as_deref()
+                == Some(wave.as_str())
+            && bridge
+                .discord_of(MappedKind::Emoji, "tilo_wave")
+                .await
+                .is_none())
+        .then_some(())
+    })
+    .await;
+
+    // Removed in Tilo: deleted in Discord; the server's own stays.
+    bridge.ada_removes_emoji("hello").await;
+    bridge.ada_removes_emoji("party").await;
+    settle(&mut runner, "deleted", || async {
+        (bridge
+            .fake
+            .emojis()
+            .iter()
+            .all(|e| e["id"] != wave.as_str())
+            && bridge
+                .discord_of(MappedKind::Emoji, "hello")
+                .await
+                .is_none())
+        .then_some(())
+    })
+    .await;
+    assert!(bridge.fake.emojis().iter().any(|e| e["id"] == "55"));
+    assert!(
+        !calls(&bridge.fake.requests())
+            .iter()
+            .any(|call| call.contains("/emojis/55")),
+        "the server's own emoji is never changed"
+    );
+
+    // Without Create Expressions: said on the bridge's record, nothing
+    // uploaded, and the bridge carries on.
+    bridge.fake.set_expressions(false, false, 50);
+    bridge.ada_adds_emoji("cat", 3).await;
+    settle(&mut runner, "permission problem", || async {
+        (bridge.room.guild().await.emoji_problem.as_deref()
+            == Some(discord_worker::perform::EMOJI_PERMISSION_PROBLEM))
+        .then_some(())
+    })
+    .await;
+    assert_eq!(bridge.uploaded("cat"), None);
+    // Once granted (Discord reports the role's change), it is brought over
+    // and the line is cleared.
+    bridge.fake.set_expressions(true, false, 50);
+    settle(&mut runner, "uploaded once allowed", || async {
+        (bridge.uploaded("cat").is_some() && bridge.room.guild().await.emoji_problem.is_none())
+            .then_some(())
+    })
+    .await;
+
+    // A full server: said, and a reaction with the emoji stays in Tilo.
+    bridge.fake.set_expressions(true, false, 2);
+    bridge.ada_adds_emoji("dog", 4).await;
+    settle(&mut runner, "full", || async {
+        (bridge.room.guild().await.emoji_problem.as_deref()
+            == Some(discord_worker::perform::EMOJI_FULL_PROBLEM))
+        .then_some(())
+    })
+    .await;
+    assert_eq!(bridge.uploaded("dog"), None);
+    bridge.ada_reacts(&first, ":dog:", true).await;
+    let calls = quiet(&mut runner, &bridge, "after dog").await;
+    assert!(
+        !calls.iter().any(|call| call.contains("/reactions/")),
+        "{calls:?}"
+    );
 }

@@ -10,7 +10,12 @@
 //! - content the record references and this device lacks is asked of the
 //!   host, which answers from this device or the record's route
 //!   ([`CollabRequest::WantContent`](super::CollabRequest::WantContent)), and
-//!   reads as [`ContentState::Pending`] until it is here;
+//!   reads as where the host says the want stands until it is here
+//!   ([`CollabEvent::RecordContentState`](super::CollabEvent::RecordContentState)):
+//!   [`ContentState::Pending`] while a connected device is asked for it,
+//!   [`ContentState::Waiting`] while none that could hand it over is
+//!   connected, [`ContentState::Unavailable`] once every connected one said
+//!   it keeps none;
 //! - content that arrives ([`CollabEvent::RecordContent`](super::CollabEvent::RecordContent))
 //!   is verified and kept in the store, where the app's next read finds it.
 //!   The event syncs the window, and [`arrivals`] moves: an app waiting for
@@ -58,6 +63,8 @@ fn arrived_somewhere() {
 struct LaneState {
     /// Content asked for and not yet here.
     wanted: BTreeSet<String>,
+    /// Where the host said a want stands, for those it said so of.
+    standing: HashMap<String, ContentState>,
     /// Requests the window has yet to send.
     asks: Vec<String>,
     offers: Vec<(String, Vec<u8>)>,
@@ -101,6 +108,18 @@ impl ContentLane {
                 .entry((app.to_owned(), record.to_owned()))
                 .or_default(),
         )
+    }
+
+    /// The lane of a window's record `record` of app `app`: the one its
+    /// route carries. A package's primary record travels as the route
+    /// without a record, so its lane is that route's.
+    pub fn of_record(app: &str, record: &crate::record::RecordId) -> Arc<Self> {
+        let wire = if record.is_package_primary() {
+            ""
+        } else {
+            record.as_str()
+        };
+        Self::of(app, wire)
     }
 
     /// The content store of the record `route` names, when it is not the
@@ -175,10 +194,16 @@ impl ContentLane {
         self.wake();
     }
 
-    fn is_wanted(&self, hash: &str) -> bool {
-        self.state
-            .lock()
-            .is_ok_and(|state| state.wanted.contains(hash))
+    /// Where a want of `hash` stands, while it is wanted.
+    fn standing(&self, hash: &str) -> Option<ContentState> {
+        let state = self.state.lock().ok()?;
+        state.wanted.contains(hash).then(|| {
+            state
+                .standing
+                .get(hash)
+                .copied()
+                .unwrap_or(ContentState::Pending)
+        })
     }
 
     /// The requests to send on the record's route now.
@@ -215,6 +240,18 @@ impl ContentLane {
         arrived_somewhere();
     }
 
+    /// The record's host said where a want of `hash` stands. A window
+    /// waiting for the content looks again: what it shows follows.
+    pub fn stands(&self, hash: String, standing: ContentState) {
+        if let Ok(mut state) = self.state.lock() {
+            if !state.wanted.contains(&hash) || standing == ContentState::Resolved {
+                return;
+            }
+            state.standing.insert(hash, standing);
+        }
+        arrived_somewhere();
+    }
+
     fn take_arrived(&self) -> Vec<(String, Vec<u8>)> {
         self.state
             .lock()
@@ -225,6 +262,7 @@ impl ContentLane {
     fn settled(&self, hash: &str) {
         if let Ok(mut state) = self.state.lock() {
             state.wanted.remove(hash);
+            state.standing.remove(hash);
         }
     }
 }
@@ -293,13 +331,10 @@ impl ContentBackend for RecordContent {
         self.keep_arrived();
         match self.local.state(hash) {
             ContentState::Resolved => ContentState::Resolved,
-            local => {
-                if self.lane.is_wanted(&hash.to_ascii_lowercase()) {
-                    ContentState::Pending
-                } else {
-                    local
-                }
-            }
+            local => self
+                .lane
+                .standing(&hash.to_ascii_lowercase())
+                .unwrap_or(local),
         }
     }
 
@@ -307,11 +342,99 @@ impl ContentBackend for RecordContent {
         self.local.shared() || self.lane.is_served()
     }
 
+    /// The route only brings what the record's other readers hold for it, so
+    /// what this store reads is as scoped as the window's own store.
+    fn room_scoped(&self) -> bool {
+        self.local.room_scoped()
+    }
+
     fn collect_unreferenced(
         &self,
         live: &std::collections::BTreeSet<String>,
     ) -> Result<Collected, ContentError> {
         self.local.collect_unreferenced(live)
+    }
+}
+
+/// Content a record references that cannot arrive: every device that
+/// could hand it over said it keeps none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContentUnavailable;
+
+impl std::fmt::Display for ContentUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::I18nManager::lookup_plain(
+            "content-unavailable",
+        ))
+    }
+}
+
+/// The content a view shows, each address a read
+/// ([`crate::arriving::Arriving`]): ready once its bytes are on this device
+/// (read them from the store), pending while it is on its way from the
+/// room ([`crate::room_sync::source`]), failed when no device has it.
+/// Content this device has is ready on the first read, so a view of it
+/// opens complete.
+#[derive(Clone)]
+pub struct ContentReads {
+    store: ContentStore,
+    reads: std::rc::Rc<
+        std::cell::RefCell<HashMap<String, crate::arriving::Arriving<(), ContentUnavailable>>>,
+    >,
+}
+
+impl ContentReads {
+    /// Reads of the content in `store`, the one the window's host lent.
+    #[must_use]
+    pub fn new(store: ContentStore) -> Self {
+        Self {
+            store,
+            reads: std::rc::Rc::default(),
+        }
+    }
+
+    /// The content at `hash`, as a read: the first read of content this
+    /// device lacks asks the room for it. Each call brings the read to
+    /// where the content stands, so a view that reads it as it draws
+    /// follows it.
+    #[must_use]
+    pub fn read(&self, hash: &str) -> crate::arriving::Arriving<(), ContentUnavailable> {
+        let arriving = self
+            .reads
+            .borrow_mut()
+            .entry(hash.to_owned())
+            .or_insert_with(|| {
+                if !self.store.has(hash) {
+                    // Opening content a record references and this device
+                    // lacks asks the record's route for it.
+                    let _ = self.store.open(hash);
+                }
+                crate::arriving::Arriving::pending(crate::arriving::Source::Local)
+            })
+            .clone();
+        let now = content_standing(self.store.state(hash));
+        if arriving.with(|was| *was != now) {
+            arriving.stand(now);
+        }
+        arriving
+    }
+
+    /// The store the content is read from.
+    #[must_use]
+    pub fn store(&self) -> &ContentStore {
+        &self.store
+    }
+}
+
+/// Where content that stands at `state` has got to, as an arrival.
+fn content_standing(state: ContentState) -> crate::arriving::Arrival<(), ContentUnavailable> {
+    use crate::arriving::Arrival;
+    match state {
+        ContentState::Resolved => Arrival::Ready(()),
+        ContentState::Pending | ContentState::Waiting => Arrival::Pending {
+            from: crate::room_sync::source(),
+        },
+        ContentState::Unavailable => Arrival::Failed(ContentUnavailable),
     }
 }
 

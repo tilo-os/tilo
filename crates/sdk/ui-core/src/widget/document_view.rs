@@ -25,7 +25,7 @@ use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt,
 /// column), flex growth (a `Scrollable` under a fixed bar) and its basis,
 /// so the child sizes exactly as if the boundary were not there. A child
 /// out of the flow takes the boundary out too.
-fn boundary_style(child: Option<&Style>) -> Style {
+pub(crate) fn boundary_style(child: Option<&Style>) -> Style {
     let mut style = Style {
         display: taffy::Display::Flex,
         flex_direction: taffy::FlexDirection::Column,
@@ -140,6 +140,22 @@ where
     pub fn autofocus_on_change(mut self, autofocus: bool) -> Self {
         self.autofocus = autofocus;
         self
+    }
+
+    /// The subtree showing now.
+    pub(crate) fn child(&self) -> &dyn Widget {
+        self.child.as_ref()
+    }
+
+    /// The subtree showing now, mutably.
+    pub(crate) fn child_mut(&mut self) -> &mut dyn Widget {
+        self.child.as_mut()
+    }
+
+    /// Take the subtree showing now out of the view, `with` standing in it.
+    pub(crate) fn replace_child(&mut self, with: Element) -> Element {
+        self.structure_dirty = true;
+        std::mem::replace(&mut self.child, with)
     }
 
     /// Reconcile a time-sensitive projection through the host's existing wake

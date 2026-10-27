@@ -289,6 +289,12 @@ impl WeatherSnapshot {
     pub fn wind_in(&self, value: f64, units: Units) -> f64 {
         crate::units::convert_wind(value, self.source_units.wind, units.wind)
     }
+
+    /// The precipitation depth as a reading in the person's unit, with that
+    /// unit's decimals (`2.4` millimetres, `0.09` inches).
+    pub fn precip_reading(&self, value: f64, units: Units) -> String {
+        units.precip_reading(value, self.source_units.precip)
+    }
 }
 
 /// The top-level application model: the saved locations, which one is
@@ -439,7 +445,6 @@ mod tests {
 
     #[test]
     fn locations_add_dedup_and_select_relative() {
-        // Case `add_then_dedup_by_coords`.
         {
             let mut m = WeatherModel::default();
             let i0 = m.add_location(loc());
@@ -448,7 +453,6 @@ mod tests {
             assert_eq!(i1, 0, "near-identical coords must dedup");
             assert_eq!(m.locations.len(), 1);
         }
-        // Case `select_relative_wraps`.
         {
             let mut m = WeatherModel::default();
             m.locations.push(loc());
@@ -464,7 +468,6 @@ mod tests {
 
     #[test]
     fn location_removal_and_moves_keep_selection_on_place() {
-        // Case `remove_keeps_selection_valid`.
         {
             let mut m = WeatherModel::default();
             m.locations.push(loc());
@@ -475,7 +478,6 @@ mod tests {
             assert_eq!(m.selected, 0);
             assert_eq!(m.locations.len(), 1);
         }
-        // Case `remove_above_selection_keeps_same_place_in_view`.
         {
             let mut m = WeatherModel::default();
             let a = SavedLocation::new("A", "", "C", "CC", 1.0, 1.0, "auto");
@@ -491,7 +493,6 @@ mod tests {
                 "selection tracks the place, not the slot"
             );
         }
-        // Case `move_location_reorders_and_keeps_selection_on_place`.
         {
             let mut m = WeatherModel::default();
             let a = SavedLocation::new("A", "", "C", "CC", 1.0, 1.0, "auto");
@@ -506,12 +507,10 @@ mod tests {
             assert_eq!(m.locations[1].id, c_id, "C shifted into the middle");
             assert_eq!(m.locations[2].id, a_id, "A landed at the end");
             assert_eq!(m.selected_location().unwrap().id, a_id, "view still on A");
-            // Moving C to the front.
             let c_pos = m.locations.iter().position(|l| l.id == c_id).unwrap();
             assert!(m.move_location(c_pos, 0));
             assert_eq!(m.locations[0].id, c_id);
         }
-        // Case `move_location_rejects_out_of_range`.
         {
             let mut m = WeatherModel::default();
             m.locations.push(loc());

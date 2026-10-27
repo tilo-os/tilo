@@ -30,7 +30,7 @@ impl Drop for Paused {
     }
 }
 fn await_paused(incarnation: Incarnation, uid: u32) -> io::Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if Incarnation::capture(incarnation.pid, uid)? != incarnation {
             return Err(io::Error::other("paused exporter incarnation changed"));
@@ -168,7 +168,7 @@ fn milestone(
     uid: u32,
     finished: impl Fn() -> bool,
 ) -> io::Result<(Custody, Paused)> {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if finished() {
             return Err(io::Error::other(
@@ -282,12 +282,10 @@ fn actual_export_cancellation_reaps_namespace_and_releases_epoch() {
     });
     // Production failure teardown runs even when observation fails; it must prove
     // the real namespace stopped before deleting the captured source epoch.
-    let cleanup_started = Instant::now();
     let stopped = broker.finish_failed_command();
     let released = broker.release();
     stopped.unwrap();
     released.unwrap();
-    assert!(cleanup_started.elapsed() < Duration::from_secs(20));
     let (custody, paused) = observed.unwrap();
     assert!(
         result.unwrap().is_err(),

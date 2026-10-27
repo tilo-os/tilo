@@ -13,7 +13,10 @@ struct HostedPumpProbe {
     actions: usize,
 }
 impl Widget for HostedPumpProbe {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "hosted-pump-probe");
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {
@@ -22,9 +25,13 @@ impl Widget for HostedPumpProbe {
             self.label = label;
         }
     }
+}
+
+impl crate::widget::ResourceOperations for HostedPumpProbe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -832,16 +839,15 @@ mod input_publication {
     }
 
     impl Widget for InputProbe {
-        crate::provides!(dyn crate::resources::PublishesResources);
+        crate::provides!(
+            dyn crate::resources::PublishesResources,
+            dyn crate::widget::ResourceOperations
+        );
 
         crate::testing::inert_widget_methods!(
             unregistered_leaf_layout,
             name = "input-publication-probe"
         );
-
-        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-            &[COUNTER_TYPE]
-        }
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             match event {
@@ -875,6 +881,12 @@ mod input_publication {
                 }
                 _ => {}
             }
+        }
+    }
+
+    impl crate::widget::ResourceOperations for InputProbe {
+        fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+            &[COUNTER_TYPE]
         }
     }
 

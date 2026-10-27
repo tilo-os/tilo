@@ -505,8 +505,6 @@ fn without_edits(
     (statuses, whole)
 }
 
-// USER REQUIREMENT (2026-10-19, ledger "Saving"): "Autosave is silent; show
-// something only when a save stalls or fails"
 #[test]
 fn scrolling_selecting_and_hovering_change_no_history_chrome_or_repaint() {
     let at = |x: f64, y: f64| PhysicalPosition::new(x, y);
@@ -537,14 +535,11 @@ fn scrolling_selecting_and_hovering_change_no_history_chrome_or_repaint() {
             app,
             &surface,
             vec![
-                // Hovering over the list, then over another row.
                 ("hover", moved(300.0, 400.0)),
                 ("hover", moved(320.0, 440.0)),
-                // Scrolling down, and back up.
                 ("scroll", wheel(-40.0)),
                 ("scroll", wheel(-40.0)),
                 ("scroll", wheel(40.0)),
-                // Selecting across a task's title, away from its checkbox.
                 ("select", moved(40.0, 400.0)),
                 ("select", button(ElementState::Pressed)),
                 ("select", moved(200.0, 400.0)),

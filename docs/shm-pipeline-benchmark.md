@@ -19,7 +19,7 @@ use eight warmups and 100 samples per case: 500 samples per case. The integratio
 base is `1e3b221d24740e0f4d94d3ffbb358c7474433531`; the added harness is recorded
 by its source hash. Production code was unchanged. The release profile uses
 O3, fat LTO, one codegen unit and the existing x86-64-v3/hardening flags.
-[Raw samples and final source/binary/compiler identities](benchmarks/shm-pipeline-2026-10-06.json)
+[Raw samples and final source/binary/compiler identities](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/shm-pipeline-2026-10-06.json)
 are preserved. This unpinned shared host does not establish isolated-machine
 tail guarantees. All times below are nearest-rank milliseconds; the copies
 column uses per-sample publication plus snapshot time before taking its median.

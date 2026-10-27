@@ -24,7 +24,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::Widget;
-use ui::widget::toast::{ToastAnchor, ToastKind};
+use ui::widget::toast::ToastKind;
 use ui::widget::{Button, ButtonFace, ButtonRole, ColorSwatchFace, ControlSize, SegmentedFace};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -415,8 +415,6 @@ impl WordProcessorWidget {
         }
     }
 
-    // ---- horizontal ruler ----------------------------------------------------
-
     /// The caret paragraph's left/hanging indent (px), read from the cached block
     /// views (the `indent` block attr), so the draw pass (which has no
     /// `state`) can read it. `0.0` when unset.
@@ -467,6 +465,7 @@ impl WordProcessorWidget {
             page_w,
             margin_left: self.margins.left,
             margin_right: self.margins.right,
+            margin_scale: self.page_margin_scale,
             indent_left: self.caret_block_indent(),
             indent_first: self.caret_block_first_line_indent(),
             tab_stops: self.caret_block_tab_stops(),
@@ -815,7 +814,9 @@ impl WordProcessorWidget {
         let strip_x1 = x - gap;
         self.layout_chips = chips;
 
-        // Trailing: the zoom field, then the counts before it.
+        // Trailing: the zoom field, then the counts before it. A band with no
+        // room left for a count drops it — the zoom control stays, because a
+        // phone has no other way to zoom.
         let zoom_w = self.zoom_input.preferred_width(theme, tr);
         let zoom = Rect::new(
             bar.x1 - s3 - zoom_w,
@@ -874,6 +875,27 @@ impl WordProcessorWidget {
             }
         }
         let _ = left;
+    }
+
+    /// The page the caret stands on, of how many the document has.
+    pub(super) fn page_readout(&self) -> String {
+        t_args(
+            "status-page",
+            &[
+                arg("page", num::i64_of_usize(self.caret_page() + 1)),
+                arg("pages", num::i64_of_usize(self.pages.max(1))),
+            ],
+        )
+    }
+
+    /// The page index the caret stands on, from the last laid pass: the page
+    /// its block was laid onto.
+    pub(super) fn caret_page(&self) -> usize {
+        let caret = &self.inner.caret;
+        self.laid
+            .iter()
+            .find(|laid| laid.id == caret.block)
+            .map_or(0, |laid| laid.page)
     }
 
     /// The live value of the layout mode in use, or nothing at rest.
@@ -1088,7 +1110,8 @@ impl WordProcessorWidget {
 
     /// "Paragraph style": the named style under the caret, picked from a
     /// menu, then the style's properties, which change every paragraph of
-    /// that style.
+    /// that style. Font, bold and italic are not among them: they are set on
+    /// the selection, from the toolbar, in one place.
     fn draw_panel_style(
         &mut self,
         ctx: &mut PanelCtx<'_>,
@@ -1119,32 +1142,6 @@ impl WordProcessorWidget {
         self.style_pick_rect = Self::host_menu(&mut self.style_pick, ctx, rect, viewport);
         ctx.caption(&t("panel-style-hint"));
 
-        // Font family, as a segmented control.
-        ctx.field_label(&t("panel-font"));
-        let fonts = ["sans", "serif", "mono"];
-        let labels = [
-            t("panel-font-sans"),
-            t("panel-font-serif"),
-            t("panel-font-mono"),
-        ];
-        let selected = fonts
-            .iter()
-            .position(|f| *f == st.font.as_str())
-            .unwrap_or(0);
-        let rects = ctx.segmented(&labels, selected, self.pointer);
-        for (rect, font) in rects.into_iter().zip(fonts) {
-            self.panel_hits.push((rect, PanelHit::SetFont(font)));
-        }
-
-        // Bold and italic, as two toggles side by side.
-        ctx.field_label(&t("panel-weight"));
-        let (rb, ri) = ctx.pair();
-        ctx.button(rb, &t("panel-bold"), Some(st.bold), self.pointer);
-        ctx.button(ri, &t("panel-italic"), Some(st.italic), self.pointer);
-        if ctx.visible(rb) {
-            self.panel_hits.push((rb, PanelHit::ToggleBold));
-            self.panel_hits.push((ri, PanelHit::ToggleItalic));
-        }
         self.draw_panel_style_properties(ctx, st);
     }
 
@@ -1324,8 +1321,6 @@ impl WordProcessorWidget {
         }
     }
 
-    // ---- document outline / navigation pane -------------------------------
-
     /// The document outline: one entry per `heading` block (in document order),
     /// derived from the already-materialized `self.blocks` so it works mid-frame
     /// without re-materializing the doc. Excludes generated TOC lines.
@@ -1408,26 +1403,6 @@ impl WordProcessorWidget {
         // Scroll the freshly-inserted TOC (always at the document top) into
         // view: the table itself is the visible result.
         self.scroll_y = 0.0;
-    }
-
-    /// Draw the transient confirmation through the shared toast-card renderer.
-    /// It remains anchored above the status bar and is dismissed by the next
-    /// interaction.
-    pub(super) fn draw_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let area = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1 - self.layout_bar_height,
-        );
-        self.toast
-            .paint(scene, transform, tr, theme, area, ToastAnchor::BottomCenter);
     }
 }
 

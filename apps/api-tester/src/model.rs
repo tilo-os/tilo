@@ -395,6 +395,73 @@ pub struct HistoryEntry {
     pub status: u16,
     /// Round-trip time in milliseconds.
     pub duration_ms: u64,
+    /// The request as it was authored, so replaying the entry replays the
+    /// request and not only its method and URL.
+    pub replay: Option<RequestSnapshot>,
+}
+
+/// A request as it was authored, kept with the history entry that sent it:
+/// everything the builder holds, and the credential's *reference* rather
+/// than the credential, which never leaves the device it was typed on.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestSnapshot {
+    pub method: HttpMethod,
+    pub url: String,
+    pub params: Vec<KeyValue>,
+    pub headers: Vec<KeyValue>,
+    pub body_mode: BodyMode,
+    pub body: String,
+    pub form: Vec<KeyValue>,
+    /// The authentication scheme's public label, if one was set.
+    pub scheme: String,
+    /// The device-local reference to the credential, never its value.
+    pub credential: String,
+}
+
+impl RequestSnapshot {
+    /// The snapshot of `request`.
+    pub fn of(request: &Request) -> Self {
+        let (scheme, credential) = match &request.auth {
+            Auth::SecretRef { id, scheme } => (scheme.clone(), id.clone()),
+            Auth::None => (String::new(), String::new()),
+            // A literal credential in a builder request is on its way to the
+            // secret store; its scheme is public, its value is not recorded.
+            other => (other.label().to_owned(), String::new()),
+        };
+        Self {
+            method: request.method,
+            url: request.url.clone(),
+            params: request.params.clone(),
+            headers: request.headers.clone(),
+            body_mode: request.body_mode,
+            body: request.body_text.clone(),
+            form: request.form.clone(),
+            scheme,
+            credential,
+        }
+    }
+
+    /// The request this snapshot held, as a new request in the builder: it
+    /// keeps the credential's reference, which the secret store answers for.
+    pub fn to_request(&self) -> Request {
+        let mut request = Request::new("New request");
+        request.method = self.method;
+        request.url = self.url.clone();
+        request.params = self.params.clone();
+        request.headers = self.headers.clone();
+        request.body_mode = self.body_mode;
+        request.body_text = self.body.clone();
+        request.form = self.form.clone();
+        request.auth = if self.credential.is_empty() {
+            Auth::None
+        } else {
+            Auth::SecretRef {
+                id: self.credential.clone(),
+                scheme: self.scheme.clone(),
+            }
+        };
+        request
+    }
 }
 
 /// The outcome of a sent request, rendered by the response viewer.
@@ -403,10 +470,18 @@ pub struct ResponseData {
     pub status: u16,
     pub status_text: String,
     pub duration_ms: u64,
-    /// Size of the response body in bytes.
+    /// Size of the response body in bytes: what arrived, or the length the
+    /// server declared when only its start was downloaded.
     pub size_bytes: usize,
+    /// Whether `size_bytes` is the body's size, rather than how much of a
+    /// body of undeclared length arrived before the download stopped.
+    pub size_exact: bool,
+    /// How many of the body's bytes `body` shows.
+    pub shown_bytes: usize,
+    /// Whether the body is binary, so `body` is a hex dump of its start.
+    pub binary: bool,
     pub headers: Vec<KeyValue>,
-    /// The raw response body text.
+    /// The body as text: as received, or a hex dump when it is binary.
     pub body: String,
     /// Best-effort content type pulled from the response headers.
     pub content_type: String,
@@ -416,9 +491,10 @@ impl ResponseData {
     /// Whether the body is JSON (so the viewer should pretty-print +
     /// syntax-highlight it).
     pub fn is_json(&self) -> bool {
-        self.content_type.contains("json")
-            || self.body.trim_start().starts_with('{')
-            || self.body.trim_start().starts_with('[')
+        !self.binary
+            && (self.content_type.contains("json")
+                || self.body.trim_start().starts_with('{')
+                || self.body.trim_start().starts_with('['))
     }
 
     /// A short human label for the HTTP status family — drives the status
@@ -462,7 +538,6 @@ mod tests {
         for m in HttpMethod::ALL {
             assert_eq!(HttpMethod::from_str(m.as_str()), m, "round trip {m:?}");
         }
-        // Unknown verbs fall back to GET.
         assert_eq!(HttpMethod::from_str("frobnicate"), HttpMethod::Get);
 
         for (method, has_body) in [
@@ -486,6 +561,9 @@ mod tests {
             status_text: "OK".into(),
             duration_ms: 1,
             size_bytes: 0,
+            size_exact: true,
+            shown_bytes: 0,
+            binary: false,
             headers: vec![],
             body: String::new(),
             content_type: String::new(),

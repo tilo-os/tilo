@@ -290,7 +290,6 @@ fn a_window_moved_between_displays_hears_the_new_scale_before_its_new_size() {
     );
 
     for (to, back) in [(other, home), (home, other)] {
-        // The move chord acts on the focused window.
         let _ = desk.fb.host_mut().focus_window_on_strip(strip, group, tab);
         desk.frame();
         assert_eq!(

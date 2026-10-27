@@ -3,7 +3,7 @@ use crate::model::{Palette, Recurrence};
 use automerge::ROOT;
 use chrono::Datelike;
 use ui::headless::Framed;
-use ui::widget::Edits;
+use ui::widget::{Edits, ExternalDatePickerHit};
 
 /// A document holding `calendar`, written through the calendar's own verbs
 /// and edits.
@@ -131,7 +131,7 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
         edit.start,
         Some(day.and_hms_opt(2, 30, 0).unwrap()),
         "status={:?}, selection={:?}, dispatched={:?}",
-        h.app.status,
+        h.app.status.text(),
         h.app.selection,
         h.app.last_dispatched()
     );
@@ -157,7 +157,7 @@ fn fold_timeline_drag_preserves_elapsed_duration_and_authored_zone() {
         edit.start,
         Some(day.and_hms_opt(4, 30, 0).unwrap()),
         "status={:?}, selection={:?}, dispatched={:?}, spans={:?}",
-        h.app.status,
+        h.app.status.text(),
         h.app.selection,
         h.app.last_dispatched(),
         h.app.timeline_spans(&[day])
@@ -329,45 +329,27 @@ fn task_completion_toggles_by_checkbox_and_label() {
         app.apply_action(Action::ToggleTask(id), &mut Edits::lend(&mut state));
         assert_ne!(app.model.task(id).unwrap().done, before);
     }
-    // Case `sidebar_task_label_and_open_targets_coexist`.
+    // Case `sidebar_task_rows_complete_and_open_their_tasks`.
     {
-        // The mini task rail must offer BOTH a completion target (checkbox +
-        // label) and a select target (open the task) for the same row.
+        // The chosen list's tasks in the sidebar offer BOTH completion (the
+        // row's check) and opening the task (the row's Open action).
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
         present(&mut app, &mut state, &automerge::ROOT);
-        // With no synced accounts the sidebar has room for the task rail
-        // (a machine full of remote calendars still lists tasks in the
-        // agenda/day views — the rail is the space-permitting extra).
-        app.accounts = AccountStore::default();
         app.list_sel = Some(ListSel::Today);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
-        app.relayout();
-        // Draw to populate the hit-map.
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-
-        let open_task = app
-            .hits
+        app.show_shell();
+        let (sections, _) = app.places.shown().expect("the places are shown");
+        let tasks = sections
             .iter()
-            .filter(|(_, a)| matches!(a, Action::OpenTask(_)))
-            .count();
-        let toggle_in_rail = app
-            .hits
-            .iter()
-            .any(|(_, a)| matches!(a, Action::ToggleTask(_)));
-        assert!(open_task > 0, "task rows must be selectable to view detail");
+            .find(|section| section.id == "tasks")
+            .expect("the chosen list's tasks are a section");
+        assert!(!tasks.items.is_empty(), "today has tasks");
         assert!(
-            toggle_in_rail,
-            "checkbox+label must offer a completion target"
+            tasks
+                .items
+                .iter()
+                .all(|item| item.checked.is_some() && item.actions),
+            "each task row completes its task and offers Open"
         );
     }
     // Case `toggling_via_label_hit_flips_completion`.
@@ -464,23 +446,17 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
         // wide → narrow → wide sequence.
         let mut app = CalendarApp::new_demo();
 
-        // Wide first frame: persistent sidebar, detail docked beside calendar.
+        // Wide first frame: the sheet floats over the shell's content column.
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
         assert!(app.content_rect.width() > 0.0);
         assert!(app.detail_rect.width() > 0.0);
         let wide_content = app.content_rect;
 
-        // Resize the SAME instance narrow. A cached-from-first-frame mode would
-        // stay Persistent; a correctly re-derived one flips to Overlay.
+        // Resize the SAME instance narrow: the layout re-derives from the
+        // current size, not the first frame.
         app.rect = Rect::new(0.0, 0.0, 480.0, 720.0);
         app.relayout();
-        assert_eq!(
-            app.sidebar.mode(),
-            SidebarMode::Overlay,
-            "breakpoint must re-derive from the current width, not the first frame"
-        );
         // Narrow + detail open: the sheet floats over the full-width
         // calendar.
         assert_eq!(app.content_rect.width(), 480.0);
@@ -493,7 +469,6 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
         // Back to wide — proves it toggles both directions, not just once.
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
         assert!(app.detail_rect.width() > 0.0);
         assert_eq!(app.content_rect, wide_content);
     }
@@ -573,10 +548,8 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
             let wide = widest_cell(&hn.app, view);
             assert!(wide > 0.0, "{view:?}: expected grid cells in the hit map");
 
-            // Resize narrower — still wide enough that the sidebar stays docked,
-            // isolating the grid's own reflow from any breakpoint change.
+            // Resize narrower: the grid reflows to the new width.
             hn.resize(1000, 800);
-            assert_eq!(hn.app.sidebar.mode(), SidebarMode::Persistent);
             let narrow = widest_cell(&hn.app, view);
             assert!(
                 narrow + 1.0 < wide,
@@ -841,38 +814,49 @@ fn view_and_anchor_navigation_update_shared_state() {
         // Month view by default → Next advances one month.
         assert_ne!(app.anchor.month(), m0);
     }
-    // Case `mini_month_outcome_updates_the_shared_calendar_anchor`.
+    // Case `the_month_navigator_moves_the_shared_calendar_anchor`.
     {
-        let mut h = Harness::new(1280, 1200);
-        h.app.show_calendar();
-        h.relayout();
-        let before = h.app.anchor;
-        let previous = h
-            .hit_center(|action| matches!(action, Action::MiniMonth(_)))
-            .expect("the sidebar mini-month has a previous-month target");
-
-        h.click(previous);
-
+        let mut app = CalendarApp::new_demo();
+        let mut state = demo_document(&app);
+        present(&mut app, &mut state, &automerge::ROOT);
+        let mut harness = sidebar_harness(&app, (1280, 1200));
+        let before = app.anchor;
+        let (day, rect) = find::<DatePicker>(harness.root_widget())
+            .expect("the month stands at the sidebar's foot")
+            .hit_regions_external()
+            .into_iter()
+            .find_map(|(hit, rect)| match hit {
+                ExternalDatePickerHit::Date(day) if day != before => Some((day, rect)),
+                _ => None,
+            })
+            .expect("another day in the month");
+        harness.click_at(rect.center().x, rect.center().y);
+        app.take_shell_events(&mut Edits::lend(&mut state));
+        assert_eq!(app.anchor, day, "the chosen day is the calendar's anchor");
         assert_eq!(
-            h.app.anchor,
-            date::add_months(before, -1),
-            "the component interprets its target and the root updates the anchor"
+            app.month.shown().map(|shown| shown.selected),
+            Some(day),
+            "and the month shows it chosen"
         );
     }
-    // Case `clicking_a_view_segment_switches_the_view`.
+    // Case `choosing_week_in_the_bar_switches_the_view`.
     {
         let mut h = Harness::new(1280, 800);
         h.app.show_calendar();
         h.relayout();
         assert_eq!(h.app.view, View::Month);
-        let p = h
-            .hit_center(|a| matches!(a, Action::View(View::Week)))
-            .expect("Week segment present");
-        h.click(p);
+        h.press_bar_action(&crate::window_bar::view_slot(View::Week));
         assert_eq!(
             h.app.view,
             View::Week,
-            "clicking the Week segment switched the view"
+            "choosing Week in the bar switched the view"
+        );
+        assert_eq!(
+            ui::window_toolbar::declared()
+                .and_then(|toolbar| toolbar.views)
+                .map(|views| views.chosen),
+            Some(crate::window_bar::view_slot(View::Week)),
+            "the bar's switcher shows Week chosen"
         );
     }
 }
@@ -913,6 +897,12 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
             dispatched.arguments.get("event"),
             Some(&serde_json::json!(id.to_string()))
         );
+        // Nothing was written in the draft, so nothing was taken away: a
+        // status would announce an act there is nothing to undo.
+        assert!(
+            !app.status.is_shown(),
+            "a draft with nothing in it goes without a word"
+        );
     }
     // Case `dismissing_an_edited_new_event_keeps_its_autosaved_changes`.
     {
@@ -947,14 +937,11 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         h.app.show_calendar();
         h.relayout();
         let before = h.app.model.events.len();
-        let p = h
-            .hit_center(|a| matches!(a, Action::NewEvent))
-            .expect("New button present");
-        h.click(p);
+        h.press_bar_action(crate::window_bar::NEW);
         assert_eq!(
             h.app.model.events.len(),
             before + 1,
-            "click created an event"
+            "the bar's New event created an event"
         );
         assert!(
             matches!(h.app.selection, Some(Sel::Event(_))),
@@ -968,10 +955,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         let mut h = Harness::new(1280, 800);
         h.app.shots_show_calendar();
         h.relayout();
-        let p = h
-            .hit_center(|a| matches!(a, Action::NewEvent))
-            .expect("New button");
-        h.click(p);
+        h.press_bar_action(crate::window_bar::NEW);
         h.relayout();
         let id = selected_event_id(&h.app);
         assert!(
@@ -986,7 +970,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         assert!(h.app.model.event(id).is_none(), "the draft is gone");
         assert!(h.app.fresh_draft.is_none());
         assert!(
-            h.app.status.is_none(),
+            !h.app.status.is_shown(),
             "discarding is not reported as a deletion"
         );
     }
@@ -999,10 +983,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         // otherwise sit over the New button behind its dismiss scrim.
         h.app.show_calendar();
         h.relayout();
-        let p = h
-            .hit_center(|a| matches!(a, Action::NewEvent))
-            .expect("New button");
-        h.click(p);
+        h.press_bar_action(crate::window_bar::NEW);
         let id = selected_event_id(&h.app);
         assert!(
             h.app.model.event(id).unwrap().title.is_empty(),
@@ -1059,10 +1040,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         // demo's open modal.
         h.app.show_calendar();
         h.relayout();
-        let p = h
-            .hit_center(|a| matches!(a, Action::NewEvent))
-            .expect("New button");
-        h.click(p);
+        h.press_bar_action(crate::window_bar::NEW);
         let id = selected_event_id(&h.app);
         assert!(
             h.app.title_input.is_focused(),
@@ -1255,7 +1233,7 @@ fn large_text_layouts_stay_in_bounds() {
         assert!(app.detail_open);
         assert!(app.rect.contains_rect(app.detail_rect));
         assert!(
-            app.status.is_none(),
+            !app.status.is_shown(),
             "creating an event does not raise a toast"
         );
     }
@@ -1448,114 +1426,151 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
     }
 }
 
+/// The calendar window as it runs: the shell around the calendar, at
+/// `size`.
+fn shell_window(
+    size: (u32, u32),
+) -> ui::framework::testing::TestApp<crate::resource::CalendarShell> {
+    let mut window = ui::framework::testing::TestApp::<crate::resource::CalendarShell>::capture_at(
+        Some("month"),
+        size,
+    )
+    .expect("the calendar opens");
+    window.settle();
+    window
+}
+
+/// Where the shell puts the sidebar, whether it shows it, and its column
+/// and the calendar's.
+fn shell_layout(
+    window: &mut ui::framework::testing::TestApp<crate::resource::CalendarShell>,
+) -> (ui::widget::SidebarPlacement, bool, Rect, Rect) {
+    window
+        .with_widget::<ui::widget::NavShell, _>(|shell| {
+            let geometry = shell.geometry();
+            (
+                geometry.sidebar,
+                shell.is_sidebar_open(),
+                geometry.sidebar_column,
+                geometry.content_column,
+            )
+        })
+        .expect("the calendar stands in the shell")
+}
+
 #[test]
 fn sidebar_presentation_follows_width_and_hides_via_its_toggle() {
-    // Case `wide_window_docks_the_sidebar_and_floats_the_editor_sheet`.
+    use ui::widget::SidebarPlacement;
+    // Case `wide_window_docks_the_sidebar_beside_the_calendar`.
     {
-        let mut app = CalendarApp::new_demo();
-        app.detail_open = true;
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
-        assert!(app.content_rect.x0 >= app.sidebar.rect().x1 - 0.5);
-        // The editor is a modal sheet over the whole window: the calendar
-        // keeps its full width behind it.
-        assert!(app.detail_rect.area() > 0.0);
-        assert_eq!(app.content_rect.x1, app.rect.x1);
-        assert!(app.rect.contains_rect(app.detail_rect));
-        assert!(app.detail_rect.x0 > app.rect.x0 + 1.0);
-        assert!(app.detail_rect.x1 < app.rect.x1 - 1.0);
-        assert!(app.detail_rect.y0 > app.rect.y0 + 1.0);
+        let mut window = shell_window((1280, 800));
+        let (placement, open, sidebar, content) = shell_layout(&mut window);
+        assert_eq!(placement, SidebarPlacement::Docked);
+        assert!(open, "a wide window shows the sidebar");
         assert!(
-            (app.detail_rect.center().x - app.rect.center().x).abs() < 1.0,
-            "the sheet is centred on the window"
+            content.x0 >= sidebar.x1 - 0.5,
+            "the calendar stands beside it"
+        );
+        let calendar = window.surface_mut::<CalendarApp>().rect;
+        assert!(
+            (calendar.x0 - content.x0).abs() < 0.5,
+            "the calendar fills the content column"
         );
     }
-    // Case `narrow_window_turns_the_sidebar_into_a_drawer`.
+    // Case `narrow_window_floats_the_sidebar_as_a_drawer`.
     {
-        let mut app = CalendarApp::new_demo();
-        app.rect = Rect::new(0.0, 0.0, 480.0, 600.0);
-        app.relayout();
-        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
-        assert_eq!(app.content_rect.x0, app.rect.x0);
+        let mut window = shell_window((480, 600));
+        let (placement, open, _, _) = shell_layout(&mut window);
+        assert_eq!(placement, SidebarPlacement::Drawer);
+        assert!(!open, "the calendar is in front by default");
         assert!(
-            !app.sidebar.visible(),
-            "the calendar is in front by default"
+            window.surface_mut::<CalendarApp>().rect.width() > 470.0,
+            "the calendar keeps the window's width"
         );
-        app.sidebar.set_open(true);
-        app.relayout();
-        assert!(app.sidebar.visible());
+        window.surface_mut::<CalendarApp>().stage_sidebar(true);
+        window.settle();
+        assert!(shell_layout(&mut window).1, "the drawer opens over it");
+        // Opening the editor puts the drawer away so it isn't over the sheet.
+        let id = window.surface_mut::<CalendarApp>().model.events[0].id;
+        window.surface_mut::<CalendarApp>().select_event(id);
+        window.settle();
+        assert!(window.surface_mut::<CalendarApp>().detail_open);
+        assert!(
+            !shell_layout(&mut window).1,
+            "opening an event dismisses the drawer"
+        );
+    }
+    // Case `the_bars_sidebar_toggle_hides_then_shows_it`.
+    {
+        let mut window = shell_window((1280, 800));
+        let docked = shell_layout(&mut window).3;
         assert_eq!(
-            app.sidebar.rect().width(),
-            app.rect.width(),
-            "the list and the calendar take turns filling the window"
+            ui::window_toolbar::declared().and_then(|toolbar| toolbar.sidebar),
+            Some(true),
+            "the bar's toggle shows the sidebar shown"
         );
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        window.settle();
+        let (_, open, _, content) = shell_layout(&mut window);
+        assert!(!open, "the bar's toggle hid the sidebar");
+        assert!(content.x0 < docked.x0, "the calendar takes the room");
+        assert_eq!(
+            ui::window_toolbar::declared().and_then(|toolbar| toolbar.sidebar),
+            Some(false),
+            "the bar's toggle stays to show it again"
+        );
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        window.settle();
+        assert!(shell_layout(&mut window).1, "and shows it again");
     }
-    // Case `desktop_sidebar_hides_and_only_the_sidebar_hides`.
-    {
-        let mut app = CalendarApp::new_demo();
-        app.detail_open = true;
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        assert!(app.sidebar.visible());
-        let expanded_content_x0 = app.content_rect.x0;
+}
 
-        app.sidebar.set_collapsed(true);
-        app.relayout();
-        assert!(!app.sidebar.visible());
-        assert_eq!(app.content_rect.x0, app.rect.x0);
+/// Opens the narrow window's drawer and says where it stands.
+fn open_drawer(
+    window: &mut ui::framework::testing::TestApp<crate::resource::CalendarShell>,
+) -> Rect {
+    window.surface_mut::<CalendarApp>().stage_sidebar(true);
+    window.settle();
+    let (placement, open, sidebar, _) = shell_layout(window);
+    assert_eq!(placement, ui::widget::SidebarPlacement::Drawer);
+    assert!(open, "the drawer opens");
+    sidebar
+}
+
+#[test]
+fn the_drawer_goes_away_by_a_press_beside_it_escape_or_a_chosen_place() {
+    let mut window = shell_window((480, 800));
+    // Case `a_press_beside_the_drawer`.
+    {
+        let drawer = open_drawer(&mut window);
+        window.harness().click_at(drawer.x1 + 40.0, 400.0);
+        window.settle();
         assert!(
-            app.detail_rect.area() > 0.0,
-            "the editor stays open; only the sidebar hid"
+            !shell_layout(&mut window).1,
+            "a press beside it puts it away"
         );
-
-        app.sidebar.set_collapsed(false);
-        app.relayout();
-        assert!(app.sidebar.visible());
-        assert_eq!(app.content_rect.x0, expanded_content_x0);
     }
-    // Case `the_drawer_closes_through_its_own_toggle`.
+    // Case `escape`.
     {
-        let mut h = Harness::new(420, 800);
-        h.app.show_calendar();
-        h.app.sidebar.set_open(true);
-        h.relayout();
-        assert!(h.app.sidebar.visible(), "drawer is open");
-        let toggle = h
-            .app
-            .hits
-            .iter()
-            .filter(|(r, a)| {
-                matches!(a, Action::ToggleSidebar) && h.app.sidebar.rect().contains_rect(*r)
-            })
-            .map(|(r, _)| r.center())
-            .next()
-            .expect("the drawer carries its toggle");
-        h.click(toggle);
-        assert!(!h.app.sidebar.is_open(), "the toggle closed the drawer");
+        open_drawer(&mut window);
+        window.harness().key("Escape");
+        window.settle();
+        assert!(!shell_layout(&mut window).1, "Escape puts it away");
     }
-    // Case `the_sidebar_toggle_hides_then_the_header_toggle_shows_it`.
+    // Case `choosing_a_place`.
     {
-        let mut h = Harness::new(1280, 800);
-        // The topbar's expand chevron lives behind the modal's dismiss scrim, so
-        // exercise the sidebar collapse from the calendar screen (the state a
-        // user collapses the rail from).
-        h.app.show_calendar();
-        h.relayout();
-        assert!(h.app.sidebar.visible(), "starts shown on a wide window");
-        let hide = h
-            .hit_center(|a| matches!(a, Action::ToggleSidebar))
-            .expect("the sidebar toggle");
-        h.click(hide);
-        assert!(h.app.sidebar.is_collapsed());
-        h.relayout();
-        let show = h
-            .hit_center(|a| matches!(a, Action::ToggleSidebar))
-            .expect("the header carries the toggle while the sidebar is hidden");
-        assert!(show.x < 60.0, "at the leading edge of the header");
-        h.click(show);
-        assert!(!h.app.sidebar.is_collapsed());
-        assert!(h.app.sidebar.visible());
+        open_drawer(&mut window);
+        let row = place_row(window.harness(), "list:today");
+        window.harness().click_at(row.center().x, row.center().y);
+        window.settle();
+        assert!(
+            window.surface_mut::<CalendarApp>().list_sel.is_some(),
+            "the chosen place is shown"
+        );
+        assert!(
+            !shell_layout(&mut window).1,
+            "choosing a place puts it away"
+        );
     }
 }
 
@@ -1577,20 +1592,6 @@ fn the_editor_sheet_floats_over_the_calendar_at_every_width() {
         app.relayout();
         assert_eq!(app.detail_rect.area(), 0.0);
         assert!(app.modal.is_none());
-    }
-    // Case `opening_an_event_in_a_narrow_window_closes_the_drawer`.
-    {
-        let mut app = CalendarApp::new_demo();
-        app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
-        app.relayout();
-        app.sidebar.set_open(true);
-        let id = app.model.events[0].id;
-        app.select_event(id);
-        assert!(app.detail_open);
-        assert!(
-            !app.sidebar.is_open(),
-            "opening an event dismisses the drawer"
-        );
     }
     // Case `clicking_an_event_chip_opens_its_editor`.
     {
@@ -1698,62 +1699,35 @@ fn done_dismisses_the_mobile_editor_of_an_event_with_a_conflict() {
 }
 
 #[test]
-fn view_switcher_lives_in_the_header_or_the_drawer_without_duplicates() {
-    // Case `view_switcher_stays_in_the_header_until_it_does_not_fit`.
-    {
-        let mut app = CalendarApp::new_demo();
-        app.detail_open = false;
-        app.selection = None;
-
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        assert!(app.topbar.switcher_visible());
-
-        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-        app.relayout();
-        assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
-        app.sidebar.set_collapsed(true);
-        app.relayout();
-        assert!(
-            app.topbar.switcher_visible(),
-            "a roomy header keeps the switcher beside a hidden sidebar"
-        );
-
-        app.rect = Rect::new(0.0, 0.0, 460.0, 800.0);
-        app.relayout();
-        assert!(
-            !app.topbar.switcher_visible(),
-            "a cramped header moves the switcher into the drawer"
-        );
-    }
-    // Case `the_drawer_offers_a_pointer_reachable_view_switcher`.
-    {
-        let mut h = Harness::new(460, 720);
+fn the_view_switcher_and_period_controls_are_the_window_bars_alone() {
+    for (width, height) in [(1280, 800), (460, 720)] {
+        let mut h = Harness::new(width, height);
         h.app.shots_show_calendar();
         h.relayout();
-        assert_eq!(h.app.sidebar.mode(), SidebarMode::Overlay);
-        h.app.sidebar.set_open(true);
-        h.relayout();
-        assert_eq!(h.app.view, View::Month);
-        let p = h
-            .hit_center(|a| matches!(a, Action::View(View::Week)))
-            .expect("the drawer carries a Week view target");
-        h.click(p);
-        assert_eq!(h.app.view, View::Week);
-        assert!(!h.app.sidebar.is_open(), "picking a view closes the drawer");
-    }
-    // Case `a_wide_window_has_one_switcher`.
-    {
-        let mut h = Harness::new(1280, 800);
-        h.app.shots_show_calendar();
-        h.relayout();
-        let view_targets = h
-            .app
-            .hits
-            .iter()
-            .filter(|(_, a)| matches!(a, Action::View(_)))
-            .count();
-        assert_eq!(view_targets, View::ALL.len(), "exactly one switcher");
+        assert!(
+            !h.app.hits.iter().any(|(_, a)| matches!(
+                a,
+                Action::View(_) | Action::Prev | Action::Next | Action::Today | Action::NewEvent
+            )),
+            "no toolbar of the calendar's own at {width}x{height}"
+        );
+        assert!(
+            (h.app.view_rect().y0 - h.app.rect.y0).abs() < 0.5,
+            "the view starts at the top at {width}x{height}"
+        );
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let week = toolbar
+            .views
+            .as_ref()
+            .and_then(|views| views.choices.iter().find(|v| v.label == "Week"))
+            .map(|v| v.id.clone())
+            .expect("the bar's switcher offers Week");
+        h.press_bar_action(&week);
+        assert_eq!(
+            h.app.view,
+            View::Week,
+            "the bar chooses the view at {width}x{height}"
+        );
     }
 }
 
@@ -1859,34 +1833,21 @@ fn calendar_options_come_from_the_shared_account_store() {
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn accessibility_exports_named_stable_controls_that_reuse_actions() {
-    // Case `accessibility_exposes_sidebar_lists_and_calendar_visibility_controls`.
+    // Case `the_sidebar_offers_the_lists_and_each_calendars_visibility`.
     {
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
         present(&mut app, &mut state, &automerge::ROOT);
-        app.rect = Rect::new(0.0, 0.0, 1_280.0, 800.0);
-        app.relayout();
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut scene = Scene::new();
-        app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
+        let (sections, selected) = app.places.shown().expect("the places are shown");
+        let rows: Vec<&ui::widget::NavItem> =
+            sections.iter().flat_map(|section| &section.items).collect();
+        assert!(
+            rows.iter()
+                .any(|item| item.id == "list:today" && item.label == "Today"),
+            "the Today smart list is a place in the sidebar"
         );
-
-        let tree = app.accessibility().expect("calendar has a semantic window");
-        let today = tree
-            .children
-            .iter()
-            .find(|node| node.action_target.as_deref() == Some("calendar.list:today"))
-            .expect("Today smart list is reachable to assistive technology");
-        assert_eq!(today.role, Role::RadioButton);
         assert_eq!(
-            today.state.checked,
-            Some(false),
+            selected, None,
             "no task list is chosen until the person picks one"
         );
         app.apply_action(Action::List(ListSel::Today), &mut Edits::lend(&mut state));
@@ -1902,17 +1863,15 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             .next()
             .map(|calendar| (calendar.id.clone(), calendar.visible))
             .expect("demo has one configured remote calendar");
-        let target = format!(
-            "{}:visibility",
-            crate::actions::calendar_resource_id(&calendar_id)
-        );
-        let visibility = tree
-            .children
+        let row = rows
             .iter()
-            .find(|node| node.action_target.as_deref() == Some(target.as_str()))
-            .expect("calendar visibility is a semantic checkbox");
-        assert_eq!(visibility.role, Role::Checkbox);
-        assert_eq!(visibility.state.checked, Some(before));
+            .find(|item| item.id == format!("calendar:{calendar_id}"))
+            .expect("each calendar is a row");
+        assert_eq!(
+            row.checked,
+            Some(before),
+            "a checked row shows the calendar"
+        );
 
         let resource = published_resource(
             &app,
@@ -1939,32 +1898,7 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
                 .all_calendars()
                 .find_map(|(_, item)| (item.id == calendar_id).then_some(item.visible)),
             Some(!before),
-            "the pointer action reaches the Settings-owned absolute setter"
-        );
-
-        let mut scene = Scene::new();
-        app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        assert!(app.perform_semantic_action(
-            &target,
-            &A11yAction::ToggleCheck,
-            &mut Edits::lend(&mut state),
-            &automerge::ROOT,
-        ));
-        assert_eq!(
-            app.accounts
-                .accounts
-                .iter()
-                .flat_map(|account| account.calendars.iter())
-                .find(|item| item.id == calendar_id)
-                .map(|item| item.visible),
-            Some(before),
-            "screen-reader activation follows the same absolute Settings-backed operation as the row"
+            "the row's check reaches the Settings-owned absolute setter"
         );
 
         // Showing or hiding is absolute: asking twice converges on the
@@ -1981,7 +1915,7 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             "two replays retain the requested absolute visibility state"
         );
     }
-    // Case `accessibility_exports_named_topbar_controls_and_reuses_actions`.
+    // Case `the_window_bars_new_event_reuses_the_action`.
     {
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
@@ -2000,17 +1934,10 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         );
         let tree = app.accessibility().expect("calendar has a semantic window");
         assert_eq!(tree.role, Role::Window);
-        assert!(tree.children.iter().any(|node| {
-            node.name.as_deref() == Some("New event")
-                && node.action_target.as_deref() == Some("calendar.new-event")
-        }));
+        // New event is the window bar's: the bar's press runs it.
         let before = app.model.events.len();
-        assert!(app.perform_semantic_action(
-            "calendar.new-event",
-            &A11yAction::Activate,
-            &mut Edits::lend(&mut state),
-            &automerge::ROOT,
-        ));
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: "new".into() });
+        ui::widget::Widget::settle(&mut app, &mut Edits::lend(&mut state), &automerge::ROOT);
         assert_eq!(app.model.events.len(), before + 1);
     }
     // Case `accessibility_exports_stable_event_and_task_action_targets`.
@@ -2249,7 +2176,7 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         let mut state = demo_document(&app);
         app.start_sync(&mut Edits::lend(&mut state));
         assert!(!app.syncing, "nothing to sync → no background work");
-        assert!(app.status.as_deref().unwrap_or("").contains("account"));
+        assert!(app.status.text().unwrap_or("").contains("account"));
     }
     // Case `poll_sync_drains_a_finished_worker_into_the_model`.
     {
@@ -2350,7 +2277,10 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
         app.poll_sync(&mut Edits::lend(&mut state));
         assert!(!app.syncing, "the in-flight flag is cleared");
         assert!(app.sync_rx.is_none(), "the dead channel is dropped");
-        assert_eq!(app.status.as_deref(), Some("Sync failed"));
+        assert_eq!(
+            app.status.text(),
+            Some(crate::resource::t("calendar-sync-failed").as_str())
+        );
     }
 }
 
@@ -2499,7 +2429,7 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         assert_eq!(app.calendar_filter.as_deref(), Some("icloud/holidays"));
         assert!(
             app.status
-                .as_deref()
+                .text()
                 .is_some_and(|status| status.contains("is hidden")),
             "the collection view must explain its intentionally empty result"
         );
@@ -2518,46 +2448,35 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         );
         app.show_all_calendars();
         assert!(app.calendar_filter.is_none());
-        assert_eq!(app.status.as_deref(), Some("Showing all calendars"));
+        assert_eq!(
+            app.status.text(),
+            Some(crate::resource::t("calendar-showing-all").as_str())
+        );
     }
-    // Case `collapsing_an_account_hides_its_calendar_rows_in_the_sidebar`.
+    // Case `collapsing_an_account_folds_its_calendars_in_the_sidebar`.
     {
-        fn cal_rows(app: &mut CalendarApp, tr: &mut TextRenderer, theme: &Theme) -> usize {
-            let mut scene = Scene::new();
-            app.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                tr,
-                theme,
-                &PresenceCtx::empty(),
-            );
-            app.hits
-                .iter()
-                .filter(|(_, a)| matches!(a, Action::SetCalendarVisible { .. }))
-                .count()
+        fn account_section(app: &CalendarApp, id: &str) -> ui::widget::NavSection {
+            app.show_shell();
+            let (sections, _) = app.places.shown().expect("the places are shown");
+            sections
+                .into_iter()
+                .find(|section| section.id == format!("account:{id}"))
+                .expect("each account is a section")
         }
 
         let mut app = CalendarApp::new_demo();
         let mut state = demo_document(&app);
         present(&mut app, &mut state, &automerge::ROOT);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
-        app.relayout();
-
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-
         let acc_id = app.accounts.accounts[0].id.clone();
         let acc_cals = app.accounts.accounts[0].calendars.len();
         assert!(acc_cals > 0, "the first sample account has calendars");
 
-        let before = cal_rows(&mut app, &mut tr, &theme);
-        // The account header is a real collapse target in the hit-map.
+        let section = account_section(&app, &acc_id);
         assert!(
-            app.hits
-                .iter()
-                .any(|(_, a)| matches!(a, Action::ToggleAccountCollapsed(id) if *id == acc_id)),
-            "the account header carries a collapse target"
+            section.collapsible && !section.collapsed,
+            "the account folds"
         );
+        assert_eq!(section.items.len(), acc_cals, "its calendars are its rows");
 
         app.apply_action(
             Action::ToggleAccountCollapsed(acc_id.clone()),
@@ -2567,29 +2486,133 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
             app.accounts.accounts[0].collapsed,
             "the account is now collapsed"
         );
-
-        let after = cal_rows(&mut app, &mut tr, &theme);
-        assert_eq!(
-            after,
-            before - acc_cals,
-            "collapsing removes exactly that account's calendar rows"
+        assert!(
+            account_section(&app, &acc_id).collapsed,
+            "and its section says so"
         );
-
-        // Header stays clickable so the list can be re-expanded.
         app.apply_action(
-            Action::ToggleAccountCollapsed(acc_id),
+            Action::ToggleAccountCollapsed(acc_id.clone()),
             &mut Edits::lend(&mut state),
         );
         assert!(
             !app.accounts.accounts[0].collapsed,
-            "clicking again re-expands it"
+            "toggling again re-expands it"
         );
-        assert_eq!(
-            cal_rows(&mut app, &mut tr, &theme),
-            before,
-            "expanding restores the rows"
-        );
+        assert!(!account_section(&app, &acc_id).collapsed);
     }
+}
+
+/// The calendar's sidebar in a shell of its own at `size`, a stand-in
+/// beside it where the calendar goes.
+fn sidebar_harness(app: &CalendarApp, size: (u32, u32)) -> ui::headless::FrameHarness {
+    let shell = ui::widget::NavShell::new()
+        .content_kind(ui::widget::ContentKind::Document)
+        .sidebar(super::sidebar(&app.places, &app.month))
+        .content(Box::new(ui::widget::Spacer::new()));
+    let mut harness =
+        ui::headless::FrameHarness::for_root(ui::State::new(), shell, size, Theme::dark());
+    for _ in 0..2 {
+        harness.relayout_at(size).expect("the shell lays out");
+    }
+    harness
+}
+
+/// The first widget of type `T` in `root`'s tree.
+fn find<T: 'static>(root: &dyn ui::widget::Widget) -> Option<&T> {
+    let any = root.as_any();
+    if let Some(found) = any.and_then(|any| any.downcast_ref::<T>()) {
+        return Some(found);
+    }
+    // What a When shows stands in its place, so look inside it too.
+    if let Some(when) = any.and_then(|any| any.downcast_ref::<ui::widget::When>()) {
+        return find::<T>(when.child());
+    }
+    root.children().into_iter().find_map(find::<T>)
+}
+
+/// The sidebar list's row `place`, as `harness` last laid it out.
+fn place_row(harness: &ui::headless::FrameHarness, place: &str) -> Rect {
+    let list = find::<ui::widget::NavList>(harness.root_widget()).expect("the places list");
+    list.row_rect(place).unwrap_or_else(|| {
+        panic!(
+            "{place} is a row in the sidebar: {:?} in {:?}",
+            list.visible_item_ids(),
+            list.get_rect()
+        )
+    })
+}
+
+/// What the person does in the shell's sidebar comes back as the
+/// calendar's own actions: choosing a list shows its tasks, a calendar's
+/// row shows or hides it, a task's row completes it and its Open action
+/// opens it, and folding an account is kept.
+#[test]
+fn the_sidebar_runs_what_the_person_does_as_the_calendars_actions() {
+    let mut app = CalendarApp::new_demo();
+    let mut state = demo_document(&app);
+    present(&mut app, &mut state, &automerge::ROOT);
+    app.accounts.accounts.truncate(1);
+    app.detail_open = false;
+    app.selection = None;
+    app.show_shell();
+    let size = (1280, 1400);
+    let mut harness = sidebar_harness(&app, size);
+
+    let today = place_row(&harness, "list:today");
+    harness.click_at(today.center().x, today.center().y);
+    app.take_shell_events(&mut Edits::lend(&mut state));
+    assert_eq!(app.list_sel, Some(ListSel::Today), "the list is chosen");
+
+    let (calendar, before) = app.accounts.accounts[0]
+        .calendars
+        .first()
+        .map(|calendar| (calendar.id.clone(), calendar.visible))
+        .expect("the sample account has a calendar");
+    let row = place_row(&harness, &format!("calendar:{calendar}"));
+    harness.click_at(row.center().x, row.center().y);
+    app.take_shell_events(&mut Edits::lend(&mut state));
+    assert_eq!(
+        app.accounts
+            .all_calendars()
+            .find_map(|(_, item)| (item.id == calendar).then_some(item.visible)),
+        Some(!before),
+        "the row's check shows or hides the calendar"
+    );
+
+    // The list shows what the calendar shows now.
+    let mut harness = sidebar_harness(&app, size);
+    let (sections, _) = app.places.shown().expect("the places are shown");
+    let place = sections
+        .iter()
+        .find(|section| section.id == "tasks")
+        .and_then(|section| section.items.first())
+        .map(|item| item.id.clone())
+        .expect("today's tasks are in the sidebar");
+    let task: Id = place
+        .strip_prefix("task:")
+        .and_then(|id| id.parse().ok())
+        .expect("a task's place");
+    let row = place_row(&harness, &place);
+    harness.dispatch_to_root(&winit::event::WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(row.center().x, row.center().y),
+    });
+    harness.relayout_at(size).expect("the shell lays out");
+    let open = find::<ui::widget::NavList>(harness.root_widget())
+        .and_then(|list| list.item_action_rect(&place, "open"))
+        .expect("the task's row offers Open");
+    harness.click_at(open.center().x, open.center().y);
+    app.take_shell_events(&mut Edits::lend(&mut state));
+    assert_eq!(app.selection, Some(Sel::Task(task)), "Open opens the task");
+
+    let mut harness = sidebar_harness(&app, size);
+    let row = place_row(&harness, &place);
+    harness.click_at(row.center().x, row.center().y);
+    app.take_shell_events(&mut Edits::lend(&mut state));
+    assert!(
+        app.model.task(task).is_some_and(|task| task.done),
+        "the task's check completes it"
+    );
 }
 
 // --- end-to-end click routing through the real handle_event -----------
@@ -2701,6 +2724,33 @@ impl Harness {
         self.dispatch(&named_key(named));
     }
 
+    /// Press `event` in the window's bar, as the desktop hands the press to
+    /// the app, let the app apply it and draw the next frame.
+    fn press_bar(&mut self, event: ui::window_toolbar::ToolbarEvent) {
+        ui::window_toolbar::deliver(event);
+        let (app, doc) = self.parts();
+        ui::widget::Widget::settle(app, &mut Edits::lend(doc), &automerge::ROOT);
+        self.relayout();
+    }
+
+    /// Press the bar's action `id` ([`Self::press_bar`]), which the window's
+    /// bar must offer now.
+    fn press_bar_action(&mut self, id: &str) {
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let offered = toolbar
+            .leading
+            .iter()
+            .chain(&toolbar.actions)
+            .any(|action| action.id == id && action.enabled)
+            || toolbar
+                .views
+                .iter()
+                .flat_map(|views| &views.choices)
+                .any(|view| view.id == id);
+        assert!(offered, "the window's bar offers {id}: {toolbar:?}");
+        self.press_bar(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
+    }
+
     /// Centre of the first hit rect carrying an action matching `pred`.
     fn hit_center<F: Fn(&Action) -> bool>(&self, pred: F) -> Option<Point> {
         self.app
@@ -2722,14 +2772,22 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         // The reported bug: a short window squashed the fixed 06:00–21:00 slots
         // and hid everything outside them. Fixed: every hour keeps at least the
         // legible minimum, the grid spans the full 24h, and the body scrolls.
-        let mut h = Harness::new(1000, 560);
+        // The calendar's column in a 1000 px window beside the sidebar.
+        let sidebar = Theme::dark().tokens.metrics.sidebar_width;
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a sidebar width in whole logical pixels"
+        )]
+        let width = 1000 - sidebar as u32;
+        let mut h = Harness::new(width, 560);
         h.app.show_calendar();
         h.app.view = View::Week;
         h.relayout();
 
         let g = h.app.timeline.test_layout_geometry(h.app.view_rect());
-        // The visible seven-day grid is narrow after navigation takes its
-        // column. Its minimum reserves two caption lines per half hour.
+        // The visible seven-day grid is narrow beside the sidebar. Its
+        // minimum reserves two caption lines per half hour.
         let theme = &h.app.layout_theme;
         let minimum = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
             let title = theme.text(ui::tokens::TextRole::Caption).strong();
@@ -3012,6 +3070,34 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
         assert!(
             ics.contains("TRIGGER:-PT30M"),
             "the alert reaches the exported alarm"
+        );
+    }
+}
+
+/// Every alert the editor offers is one the event keeps: the pick reaches the
+/// document, not only the editor's own copy, which the next sync replaces.
+#[test]
+fn every_offered_alert_reaches_the_document() {
+    let mut app = CalendarApp::new_demo();
+    let mut state = demo_document(&app);
+    present(&mut app, &mut state, &automerge::ROOT);
+    let Some(Sel::Event(id)) = app.selection else {
+        panic!("event selected");
+    };
+    for (minutes, _) in editor::ALERTS {
+        pick(
+            &mut app,
+            &mut state,
+            |choices| &mut choices.alert,
+            &minutes.to_string(),
+        );
+        assert_eq!(
+            crate::resource::read_doc(&state)
+                .event(id)
+                .unwrap()
+                .reminder_min,
+            Some(minutes),
+            "the {minutes}-minute alert is kept"
         );
     }
 }
@@ -3375,7 +3461,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 }],
                 ..caldav::SyncResult::default()
             },
-            SyncOutcome::Synced {
+            &SyncOutcome::Synced {
                 calendars: 1,
                 events: 1,
             },
@@ -3400,7 +3486,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 }],
                 ..caldav::SyncResult::default()
             },
-            SyncOutcome::Synced {
+            &SyncOutcome::Synced {
                 calendars: 1,
                 events: 1,
             },
@@ -3422,7 +3508,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                 }],
                 ..caldav::SyncResult::default()
             },
-            SyncOutcome::Synced {
+            &SyncOutcome::Synced {
                 calendars: 1,
                 events: 0,
             },
@@ -3477,7 +3563,7 @@ fn caldav_reconciliation_keeps_stable_resources_by_href() {
                         }],
                         ..caldav::SyncResult::default()
                     },
-                    SyncOutcome::Synced {
+                    &SyncOutcome::Synced {
                         calendars: 1,
                         events: 0,
                     },
@@ -3837,5 +3923,50 @@ fn dragging_a_repeating_event_asks_only_this_or_all_future() {
             .count(),
         1,
         "no second series"
+    );
+}
+
+#[test]
+fn a_sideways_swipe_on_the_calendar_steps_its_period() {
+    let mut h = Harness::new(420, 800);
+    let (app, doc) = h.parts();
+    app.apply_action(Action::CloseDetail, &mut Edits::lend(doc));
+    app.apply_action(Action::View(View::Week), &mut Edits::lend(doc));
+    h.relayout();
+    let week = h.app.anchor;
+    let area = h.app.content_rect;
+    let (left, right) = (area.x0 + area.width() * 0.2, area.x0 + area.width() * 0.8);
+    let y = area.center().y;
+
+    Framed::harness_mut(&mut h.app).swipe_at((right, y), (left, y));
+    assert_eq!(
+        h.app.anchor,
+        week + Duration::days(7),
+        "a leftward swipe shows the next week"
+    );
+    Framed::harness_mut(&mut h.app).swipe_at((left, y), (right, y));
+    assert_eq!(
+        h.app.anchor, week,
+        "a rightward swipe shows the previous week again"
+    );
+
+    Framed::harness_mut(&mut h.app).swipe_at(
+        (area.center().x, area.y0 + 40.0),
+        (area.center().x, area.y1 - 40.0),
+    );
+    assert_eq!(
+        h.app.anchor, week,
+        "a downward drag scrolls; it does not step the week"
+    );
+
+    let (app, doc) = h.parts();
+    app.apply_action(Action::View(View::Month), &mut Edits::lend(doc));
+    h.relayout();
+    let month = h.app.anchor.month();
+    Framed::harness_mut(&mut h.app).swipe_at((right, y), (left, y));
+    assert_ne!(
+        h.app.anchor.month(),
+        month,
+        "a leftward swipe shows the next month"
     );
 }

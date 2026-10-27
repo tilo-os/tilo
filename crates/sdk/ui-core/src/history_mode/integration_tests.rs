@@ -3,7 +3,7 @@ use crate::application::{LaunchTarget, RestoreInput};
 use crate::application_test_support::{
     APP, ProbeHost, runner_permissions, runner_probe_definition,
 };
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::{AppModel, ModelPath, poll_resource_operation, start_operation};
 use crate::{
     State,
     headless::FrameHarness,
@@ -994,7 +994,10 @@ fn tiled_history_keeps_pending_owners_and_checks_current_authority() {
 pub(crate) struct TileEditor<T: Widget = crate::testing::OwnedText>(pub(crate) T);
 crate::testing::test_app_widget!(impl [T: Widget + 'static] TileEditor<T>, "Tile editor");
 impl<T: Widget + 'static> Widget for TileEditor<T> {
-    crate::provides!(dyn crate::record::capability::RecordScoped);
+    crate::provides!(
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::widget::ResourceOperations
+    );
 
     crate::testing::delegate_widget_methods!(0: sync, draw, get_rect);
     fn name(&self) -> &str {
@@ -1011,18 +1014,6 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
     }
     fn has_separate_document_owner(&self) -> bool {
         false
-    }
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.0.start_operation(
-            op,
-            &mut crate::widget::Edits::lend(doc.document_mut()),
-            path,
-        )
     }
     fn build_layout(
         &mut self,
@@ -1061,6 +1052,22 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
             event,
             &mut ctx.reborrow(ctx.path, ctx.taffy.children(ctx.node_id).unwrap()[0]),
         );
+    }
+}
+
+impl<T: Widget + 'static> crate::widget::ResourceOperations for TileEditor<T> {
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        start_operation(
+            &mut self.0,
+            op,
+            &mut crate::widget::Edits::lend(doc.document_mut()),
+            path,
+        )
     }
 }
 
@@ -1979,7 +1986,8 @@ fn admit(
     doc: &mut automerge::AutoCommit,
 ) {
     assert!(matches!(
-        tile.start_operation(
+        start_operation(
+            &mut *tile,
             &crate::widget::ResourceOperation::local(
                 invocation,
                 tilo_actions::OperationKind::Effect,
@@ -2081,7 +2089,8 @@ impl Widget for RetainedLifecycleProbe {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::record::capability::RecordScoped
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::widget::ResourceOperations
     );
 
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
@@ -2167,9 +2176,13 @@ impl Widget for RetainedLifecycleProbe {
                 .unwrap();
         }
     }
+}
+
+impl crate::widget::ResourceOperations for RetainedLifecycleProbe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[RETAINED_LIFECYCLE_OPERATION]
     }
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -2199,6 +2212,7 @@ impl Widget for RetainedLifecycleProbe {
         self.handles.admitted.set(Some(invocation));
         Ok(Some(crate::widget::ResourceOperationStart::Accepted))
     }
+
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -2300,7 +2314,10 @@ crate::testing::test_app_widget!(
 );
 
 impl Widget for ReleasableLifecycleProbe {
-    crate::provides!(dyn crate::record::capability::RecordScoped);
+    crate::provides!(
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::widget::ResourceOperations
+    );
 
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
     fn name(&self) -> &'static str {
@@ -2342,6 +2359,9 @@ impl Widget for ReleasableLifecycleProbe {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
+}
+
+impl crate::widget::ResourceOperations for ReleasableLifecycleProbe {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -2363,6 +2383,7 @@ impl Widget for ReleasableLifecycleProbe {
         increment(&self.handles.starts);
         Ok(Some(crate::widget::ResourceOperationStart::Accepted))
     }
+
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -2730,9 +2751,14 @@ fn closed_hidden_owner_never_receives_queued_lifecycle_result() {
     assert_eq!(handles.updates.get(), updates);
     assert!(handles.queued.borrow().is_some());
     let update = unsafe {
-        (*tile_pointer)
-            .poll_resource_operation(invocation, false, &automerge::AutoCommit::new(), &ROOT)
-            .unwrap()
+        poll_resource_operation(
+            &mut *tile_pointer,
+            invocation,
+            false,
+            &automerge::AutoCommit::new(),
+            &ROOT,
+        )
+        .unwrap()
     };
     assert!(matches!(
         update,
@@ -2800,9 +2826,14 @@ fn rebound_owner_cannot_inherit_retained_result_or_invocation() {
         "every queued result stays with the owner that admitted it"
     );
     let update = unsafe {
-        (*tile_pointer)
-            .poll_resource_operation(invocation, false, &driver.state_mut().doc, &ROOT)
-            .expect("the retained operation can complete under the still-current old owner")
+        poll_resource_operation(
+            &mut *tile_pointer,
+            invocation,
+            false,
+            &driver.state_mut().doc,
+            &ROOT,
+        )
+        .expect("the retained operation can complete under the still-current old owner")
     };
 
     assert!(matches!(
@@ -2909,7 +2940,7 @@ fn refused_transition_does_not_repoll_an_undrained_stream_update() {
     }
     assert_eq!(handles.polls.get(), 1);
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Item { sequence: 1, .. })
     ));
     tile.sync(&outer, &ROOT);
@@ -2961,18 +2992,14 @@ fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_wor
         tile.update(&outer, &ROOT);
     }
     assert_eq!(accepted(&handles.accepted).len(), 1);
-    let old_update = tile
-        .poll_resource_operation(old_invocation, false, &outer, &ROOT)
-        .unwrap();
+    let old_update =
+        poll_resource_operation(&mut tile, old_invocation, false, &outer, &ROOT).unwrap();
     assert!(matches!(
         old_update,
         tilo_actions::InvocationUpdate::Succeeded { invocation, .. }
             if invocation == old_invocation
     ));
-    assert!(
-        tile.poll_resource_operation(old_invocation, false, &outer, &ROOT)
-            .is_none()
-    );
+    assert!(poll_resource_operation(&mut tile, old_invocation, false, &outer, &ROOT).is_none());
 
     handles
         .sender
@@ -2988,14 +3015,11 @@ fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_wor
         Some(&("second".to_owned(), "fresh second result".to_owned()))
     );
     assert!(matches!(
-        tile.poll_resource_operation(fresh_invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, fresh_invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. })
             if invocation == fresh_invocation
     ));
-    assert!(
-        tile.poll_resource_operation(fresh_invocation, false, &outer, &ROOT)
-            .is_none()
-    );
+    assert!(poll_resource_operation(&mut tile, fresh_invocation, false, &outer, &ROOT).is_none());
 }
 
 #[test]
@@ -3020,7 +3044,7 @@ fn recovered_missing_target_still_releases_after_terminal_invocation_map_removal
         .unwrap();
     tile.sync(&outer, &ROOT);
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Succeeded { .. })
     ));
     let late_sender = handles.sender.borrow().clone();
@@ -3118,7 +3142,7 @@ fn renewed_same_id_custody_releases_terminally_polled_old_queue_before_sync() {
     tile.sync(&outer, &ROOT);
     assert!(tile.record_transition_error().is_some() || tile.history_owner().is_none());
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Failed { invocation: failed, .. })
             if failed == invocation
     ));
@@ -3157,7 +3181,8 @@ fn renewed_lifetime_blocks_recovery_event_before_old_custody_release() {
     let invocation = tilo_actions::InvocationId::new();
     assert!(matches!(
         unsafe {
-            (*tile_pointer).start_operation(
+            start_operation(
+                &mut *tile_pointer,
                 &crate::widget::ResourceOperation::local(
                     invocation,
                     tilo_actions::OperationKind::Effect,
@@ -3227,7 +3252,7 @@ fn explicit_current_bind_cancels_missing_target_without_later_replay() {
     assert_eq!(handles.releases.get(), 0);
     assert_eq!(handles.last_owner.borrow().as_deref(), Some("current"));
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. })
             if completed == invocation
     ));
@@ -3351,14 +3376,11 @@ fn busy_old_owner_preserves_completed_cancelled_result_until_retry() {
     assert_eq!(handles.releases.get(), 1);
     assert_eq!(handles.completions.get(), 1);
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Cancelled { invocation: completed, .. })
             if completed == invocation
     ));
-    assert!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT)
-            .is_none()
-    );
+    assert!(poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT).is_none());
     assert_eq!(stored_body(&candidate_store, &candidate), "candidate");
 }
 
@@ -3400,7 +3422,7 @@ fn cached_item_blocks_release_until_broker_drains_then_preserves_terminal_order(
             message: Some("after item".into()),
         });
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Item { sequence: 1, .. })
     ));
 
@@ -3408,16 +3430,13 @@ fn cached_item_blocks_release_until_broker_drains_then_preserves_terminal_order(
     assert!(tile.record_transition_error().is_none());
     assert_eq!(handles.releases.get(), 1);
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Cancelled {
             invocation: completed,
             message: Some(message),
         }) if completed == invocation && message == "after item"
     ));
-    assert!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT)
-            .is_none()
-    );
+    assert!(poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT).is_none());
     assert_eq!(stored_body(&candidate_store, &candidate), "candidate");
 }
 
@@ -3450,7 +3469,7 @@ fn pending_missing_target_retries_after_cached_item_is_delivered() {
     tile.sync(&outer, &ROOT);
     assert!(tile.record_transition_error().is_some());
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Item {
             sequence: 1,
             value,
@@ -3479,16 +3498,13 @@ fn pending_missing_target_retries_after_cached_item_is_delivered() {
     assert_eq!(stored_body(&candidate_store, &candidate), "candidate");
     assert!(tile.record_transition_error().is_none());
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Cancelled {
             invocation: completed,
             message: Some(message),
         }) if completed == invocation && message == "after item"
     ));
-    assert!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT)
-            .is_none()
-    );
+    assert!(poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT).is_none());
     assert_eq!(handles.releases.get(), 1);
 }
 
@@ -3552,7 +3568,7 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
     assert!(tile.record_transition_error().is_some());
     assert_eq!(handles.releases.get(), 0);
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Item {
             invocation: observed, sequence: 1, value,
         }) if observed == invocation && value == serde_json::json!("old item")
@@ -3568,14 +3584,11 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
             },
         });
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Succeeded { invocation: observed, output })
             if observed == invocation && output.value == Some(serde_json::json!("old result"))
     ));
-    assert!(
-        tile.poll_resource_operation(invocation, false, &outer, &ROOT)
-            .is_none()
-    );
+    assert!(poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT).is_none());
     assert_eq!(handles.completions.get(), 1);
 
     if refuse_release {
@@ -3619,10 +3632,7 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
         ] {
             assert_eq!(stored_body(store, checkout), body);
         }
-        assert!(
-            tile.poll_resource_operation(invocation, false, &outer, &ROOT)
-                .is_none()
-        );
+        assert!(poll_resource_operation(&mut tile, invocation, false, &outer, &ROOT).is_none());
     }
     assert_eq!(handles.releases.get(), 0);
 
@@ -3657,13 +3667,10 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
         .unwrap();
     tile.sync(&outer, &ROOT);
     assert!(matches!(
-        tile.poll_resource_operation(fresh, false, &outer, &ROOT),
+        poll_resource_operation(&mut tile, fresh, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Succeeded { invocation: observed, .. }) if observed == fresh
     ));
-    assert!(
-        tile.poll_resource_operation(fresh, false, &outer, &ROOT)
-            .is_none()
-    );
+    assert!(poll_resource_operation(&mut tile, fresh, false, &outer, &ROOT).is_none());
     assert_eq!(
         accepted(&handles.accepted),
         [

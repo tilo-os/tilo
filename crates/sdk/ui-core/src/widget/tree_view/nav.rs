@@ -10,7 +10,7 @@
 
 use std::rc::Rc;
 
-use super::{NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeModel, TreeRowKey, TreeView};
+use super::{NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeImpl, TreeModel, TreeRowKey};
 use crate::chrome::{
     NavCount, NavRowFace, NavRowStyle, NavSectionFace, SelectionState, nav_badge_column,
     nav_item_height, nav_rail_item_height, nav_rail_row_height, nav_row_height, nav_row_layout,
@@ -70,14 +70,32 @@ pub(crate) struct NavItemSpec {
     /// Every badge code of the row's section, which share one column.
     pub section_badges: Rc<Vec<String>>,
     pub swatch: Option<Color>,
+    pub art: Option<crate::widget::nav_list::NavArt>,
     pub checked: Option<bool>,
     pub level: Option<f32>,
     pub presence: Vec<String>,
+    pub person: Option<crate::widget::nav_list::NavPerson>,
+    pub unread: bool,
 }
 
 impl NavItemSpec {
     /// The face of this row over `row`, labelled `label`, without state.
     pub(crate) fn face<'a>(&'a self, row: Rect, label: &'a str, theme: &Theme) -> NavRowFace<'a> {
+        let mut face = self.plain_face(row, label);
+        if self.badge.is_some() {
+            let codes: Vec<&str> = self.section_badges.iter().map(String::as_str).collect();
+            face.badge_column = Some(crate::text_render::with_layout_renderer(
+                theme.text_scale,
+                |text| nav_badge_column(theme, text, &codes),
+            ));
+        }
+        face
+    }
+
+    /// [`Self::face`] without the badge column, which only painting and
+    /// hit-testing read: what the row says to assistive technology is not
+    /// made of the width every badge of its section lays out at.
+    fn plain_face<'a>(&'a self, row: Rect, label: &'a str) -> NavRowFace<'a> {
         let mut face = NavRowFace::new(row, label).depth(self.depth);
         face.under_section = self.under_section;
         face.icon = self.icon;
@@ -90,17 +108,28 @@ impl NavItemSpec {
             .as_ref()
             .map(|(label, tone)| (label.as_str(), *tone));
         face.badge = self.badge.as_deref();
-        if self.badge.is_some() {
-            let codes: Vec<&str> = self.section_badges.iter().map(String::as_str).collect();
-            face.badge_column = Some(crate::text_render::with_layout_renderer(
-                theme.text_scale,
-                |text| nav_badge_column(theme, text, &codes),
-            ));
-        }
         face.swatch = self.swatch;
+        face.avatar = self.art.as_ref().map(|art| {
+            crate::widget::AvatarFace::new(&art.name, &art.name)
+                .square()
+                .neutral()
+                .image(art.image.as_ref())
+        });
+        if let Some(person) = &self.person {
+            let name = person.name.as_deref().unwrap_or(label);
+            let mut avatar = crate::widget::AvatarFace::new(name, &person.identity)
+                .image(person.image.as_ref())
+                .presence(person.colour)
+                .presence_ring();
+            if person.speaking {
+                avatar = avatar.speaking(1.0);
+            }
+            face.avatar = Some(avatar);
+        }
         face.checked = self.checked;
         face.level = self.level;
         face.presence = &self.presence;
+        face.unread = self.unread;
         face
     }
 }
@@ -117,11 +146,15 @@ pub(crate) enum NavRowSpec {
         /// What the trailing action is announced as.
         action_label: Option<String>,
         first: bool,
+        /// The header asks for its menu as a row does.
+        menu: bool,
     },
     /// A destination.
     Item(Box<NavItemSpec>),
     /// The one quiet line an empty section shows ("No drafts").
     Caption,
+    /// A row standing in for an item still being read.
+    Pending,
 }
 
 type SpecFn<M> = Box<dyn Fn(&M, NodeId) -> Option<NavRowSpec>>;
@@ -167,13 +200,14 @@ impl<M> NavPresentation<M> {
     }
 }
 
-impl<T, M: TreeModel> TreeView<T, M> {
+impl<T, M: TreeModel> TreeImpl<T, M> {
     /// Paint this tree as a navigation list. The rows take the navigation
     /// metrics at once, so sections handed over before the first layout
     /// already stand at their own heights.
     pub(crate) fn set_nav_presentation(&mut self, nav: NavPresentation<M>) {
         let theme = nav.theme.clone();
         self.nav = Some(nav);
+        self.changed_nav_presentation();
         self.apply_nav_metrics(&theme);
         // A list stands still when it first appears.
         self.transitions.clear();
@@ -181,8 +215,43 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.paint_dirty = true;
     }
 
+    /// Paint the rows as a rail's tiles (`true`) or as list rows, keeping
+    /// everything else the presentation holds: its callbacks, the theme it
+    /// was laid out with, and the tree's selection, focus and scroll.
+    /// Returns whether the presentation changed.
+    pub(crate) fn set_nav_rail(&mut self, rail: bool) -> bool {
+        let Some(nav) = self.nav.as_mut() else {
+            return false;
+        };
+        if nav.rail == rail {
+            return false;
+        }
+        nav.rail = rail;
+        let theme = nav.theme.clone();
+        self.apply_nav_metrics(&theme);
+        // The rows change shape in place; nothing slides between the two.
+        self.transitions.clear();
+        self.refresh_transition_snapshot();
+        self.paint_dirty = true;
+        true
+    }
+
     pub(crate) fn nav_mut(&mut self) -> Option<&mut NavPresentation<M>> {
+        self.changed_nav_presentation();
         self.nav.as_mut()
+    }
+
+    /// What a navigation row is read from beyond its own inputs (the model,
+    /// the presentation, the checks it shows) may have changed: no row of
+    /// the last accessibility walk is kept ([`Self::access_rows`]).
+    pub(super) fn changed_nav_presentation(&mut self) {
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+    }
+
+    /// The revision of what navigation rows are read from beyond their own
+    /// inputs, while the tree is a navigation list.
+    pub(super) fn nav_revision(&self) -> Option<u64> {
+        self.nav.as_ref().map(|_| self.nav_revision)
     }
 
     pub(crate) fn is_nav(&self) -> bool {
@@ -201,8 +270,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let Some(nav) = self.nav.as_mut() else {
             return;
         };
-        nav.theme = theme.clone();
-        let row = if nav.rail {
+        let rail = nav.rail;
+        // Laid out on every layout pass: the rows' semantics (a section's
+        // action button) are read from the theme only when it changed.
+        if nav.theme != *theme {
+            nav.theme = theme.clone();
+            self.changed_nav_presentation();
+        }
+        let row = if rail {
             nav_rail_row_height(theme)
         } else {
             nav_row_height(theme)
@@ -262,6 +337,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
                             ),
                             NavRowSpec::Caption if rail => f64::from(theme.tokens.spacing.s3),
                             NavRowSpec::Caption => nav_row_height(theme),
+                            NavRowSpec::Pending if rail => nav_rail_row_height(theme),
+                            NavRowSpec::Pending => nav_item_height(theme, false, false),
                         };
                         Some((index, key, height))
                     })
@@ -288,6 +365,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
             self.hovered == Some(key) && !self.reorder.is_tracking(),
             false,
         ));
+        face.check_pose = item.checked.map(|checked| {
+            self.faces.check(
+                id,
+                checked,
+                crate::widget::CheckGlyph::Check,
+                nav.theme.motion(),
+            )
+        });
         face = face.focused(self.is_focused && self.focused == Some(key));
         face.style = nav.style();
         if face.style == NavRowStyle::List && self.model.is_branch(id) {
@@ -320,6 +405,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return None;
         };
         let key = TreeRowKey::Node(id);
+        // The rename field stands where the title was.
+        let title = if self.renaming() == Some(id) {
+            ""
+        } else {
+            title
+        };
         let mut face = NavSectionFace::new(row, title)
             .hovered(self.hovered == Some(key))
             .focused(self.is_focused && self.focused == Some(key));
@@ -361,11 +452,20 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 }
             }
             NavRowSpec::Item(item) => {
-                let label = self.model.label(id).unwrap_or_default();
+                let label = if self.renaming() == Some(id) {
+                    ""
+                } else {
+                    self.model.label(id).unwrap_or_default()
+                };
                 let actions: Vec<Icon> =
                     self.row_actions.iter().map(|action| action.icon).collect();
                 if let Some(face) = self.nav_item_face(id, row, item, label, &actions) {
                     paint_nav_row(scene, transform, text_renderer, theme, &face);
+                }
+            }
+            NavRowSpec::Pending => {
+                if !rail {
+                    paint_nav_pending(scene, transform, text_renderer, theme, row);
                 }
             }
             NavRowSpec::Caption => {
@@ -389,8 +489,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
     pub(crate) fn nav_lift_rect(&self, id: NodeId) -> Option<Rect> {
         let nav = self.nav.as_ref()?;
         let row = self.row_rect(id)?;
-        let NavRowSpec::Item(item) = self.nav_spec(id)? else {
-            return None;
+        let item = match self.nav_spec(id)? {
+            NavRowSpec::Item(item) => item,
+            NavRowSpec::Section { menu: true, .. } => {
+                return Some(nav_section_layout(&nav.theme, &NavSectionFace::new(row, "")).band);
+            }
+            _ => return None,
         };
         let label = self.model.label(id).unwrap_or_default();
         let mut face = item.face(row, label, &nav.theme);
@@ -433,7 +537,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 let face = NavSectionFace::new(row, "");
                 nav_section_layout(&nav.theme, &face).band
             }),
-            NavRowSpec::Caption => None,
+            NavRowSpec::Caption | NavRowSpec::Pending => None,
             NavRowSpec::Item(_) if nav.rail || !self.model.is_branch(id) => None,
             NavRowSpec::Item(_) => {
                 let face = NavRowFace::new(row, "").disclosure(self.expanded.contains(&id));
@@ -449,9 +553,16 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let Some(id) = self.rename.as_ref().map(|field| field.id) else {
             return;
         };
-        let (Some(row), Some(NavRowSpec::Item(item))) = (self.row_rect(id), self.nav_spec(id))
-        else {
+        let Some(row) = self.row_rect(id) else {
             return;
+        };
+        let item = match self.nav_spec(id) {
+            Some(NavRowSpec::Item(item)) => item,
+            Some(spec @ NavRowSpec::Section { .. }) => {
+                self.place_nav_section_rename_field(id, row, &spec);
+                return;
+            }
+            _ => return,
         };
         let label = self.model.label(id).unwrap_or_default().to_owned();
         let Some(face) = self.nav_item_face(id, row, &item, &label, &[]) else {
@@ -468,6 +579,31 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 layout.selection.y0,
                 layout.label_x1.max(layout.label_x0),
                 layout.selection.y1,
+            ));
+        }
+    }
+
+    /// Lay the open rename field over section `id`'s title, in the title's
+    /// role, from its leading edge to its trailing action.
+    fn place_nav_section_rename_field(&mut self, id: NodeId, row: Rect, spec: &NavRowSpec) {
+        let Some(theme) = self.nav.as_ref().map(|nav| nav.theme.clone()) else {
+            return;
+        };
+        let Some(face) = self.nav_section_face(id, row, spec) else {
+            return;
+        };
+        let layout = nav_section_layout(&theme, &face);
+        let x1 = layout
+            .action
+            .map_or(layout.band.x1, |action| action.x0)
+            .max(layout.title_x0);
+        if let Some(field) = self.rename.as_mut() {
+            field.input.set_text_role(TextRole::Subheading);
+            field.input.apply_layout_external(Rect::new(
+                layout.title_x0,
+                layout.band.y0,
+                x1,
+                layout.band.y1,
             ));
         }
     }
@@ -576,7 +712,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let is_caption = |at: usize| {
             matches!(
                 self.index.row_at(&self.model, at),
-                Some((TreeRowKey::Node(id), _)) if matches!(self.nav_spec(id), Some(NavRowSpec::Caption | NavRowSpec::Section { collapsible: false, .. }))
+                Some((TreeRowKey::Node(id), _)) if matches!(self.nav_spec(id), Some(NavRowSpec::Caption | NavRowSpec::Pending | NavRowSpec::Section { collapsible: false, .. }))
             )
         };
         let mut at = index;
@@ -608,6 +744,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if let Some(callback) = self.nav.as_mut().and_then(|nav| nav.on_check.as_mut()) {
             callback(id);
         }
+        // The row shows the new state before the app confirms it.
+        self.changed_nav_presentation();
         self.paint_dirty = true;
         true
     }
@@ -620,7 +758,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Ask the host for item `id`'s menu at `at`, the row marked by its
     /// lift. Returns whether the list reports menus for the row.
     pub(super) fn open_nav_menu(&mut self, id: NodeId, at: Point) -> bool {
-        if !self.nav_offers_menu() || !matches!(self.nav_spec(id), Some(NavRowSpec::Item(_))) {
+        if !self.nav_offers_menu()
+            || !matches!(
+                self.nav_spec(id),
+                Some(NavRowSpec::Item(_) | NavRowSpec::Section { menu: true, .. })
+            )
+        {
             return false;
         }
         let Some(lift) = self.nav_lift_rect(id) else {
@@ -673,11 +816,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// What assistive technology hears about item `id` beyond its label
     /// (the secondary line, the state), and its check.
     pub(super) fn nav_semantics(&self, id: NodeId) -> Option<(Option<String>, Option<bool>)> {
-        let nav = self.nav.as_ref()?;
         let NavRowSpec::Item(item) = self.nav_spec(id)? else {
             return None;
         };
-        let face = item.face(Rect::ZERO, "", &nav.theme);
+        let face = item.plain_face(Rect::ZERO, "");
         Some((crate::chrome::nav_row_description(&face), item.checked))
     }
 
@@ -721,6 +863,49 @@ impl<T, M: TreeModel> TreeView<T, M> {
         true
     }
 }
+
+/// A row standing in for an item still being read: its icon and its label
+/// where a row puts them, in the skeleton tone.
+fn paint_nav_pending(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    row: Rect,
+) {
+    let face = NavRowFace::new(row, "").icon(Icon::HardDrive);
+    let layout = nav_row_layout(theme, text_renderer, &face);
+    // The tone every skeleton in the window takes, so the stand-ins read as
+    // one loading page.
+    let tone = crate::widget::skeleton_tone(theme.tokens.colors.surfaces.content);
+    let radius = f64::from(theme.tokens.radii.detail);
+    let fill = |scene: &mut Scene, rect: Rect| {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tone,
+            None,
+            &rect.to_rounded_rect(radius),
+        );
+    };
+    if let Some(icon) = layout.icon {
+        fill(scene, icon);
+    }
+    // The label's bar is the line box's x-height band, as a skeleton's is.
+    let line = f64::from(theme.text(TextRole::Body).line_height_px());
+    let bar = (line * PENDING_BAR_SHARE).round();
+    let top = layout.label_top + (line - bar) / 2.0;
+    let width = (layout.label_x1 - layout.label_x0) * PENDING_LABEL_SHARE;
+    fill(
+        scene,
+        Rect::new(layout.label_x0, top, layout.label_x0 + width, top + bar),
+    );
+}
+
+/// How much of the label's line box a pending row's bar fills.
+const PENDING_BAR_SHARE: f64 = 0.6;
+/// How far along the label's run a pending row's bar goes.
+const PENDING_LABEL_SHARE: f64 = 0.7;
 
 /// The one quiet line of an empty section, where its first row would be.
 fn paint_nav_caption(

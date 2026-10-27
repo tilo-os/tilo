@@ -80,9 +80,6 @@ pub fn compile(
 
 /// Whether a validated layout has its symbols file in the same fixed public
 /// root used by the compiler. Missing user-defined templates are not installed.
-///
-/// # Errors
-/// Fails on invalid names, inaccessible metadata or unsupported platforms.
 pub fn is_installed(layout: &str) -> Result<bool, Error> {
     if !valid_name(layout, false) {
         return Err(Error::InvalidRequest);

@@ -57,6 +57,8 @@ mod phrase {
             Role::TreeItem => ("sr-role-tree-item", "tree item"),
             Role::Menu => ("sr-role-menu", "menu"),
             Role::MenuItem => ("sr-role-menu-item", "menu item"),
+            Role::ListBox => ("sr-role-list-box", "list box"),
+            Role::ListBoxOption => ("sr-role-option", "option"),
 
             Role::Button => ("sr-role-button", "button"),
             Role::ToggleButton => ("sr-role-toggle-button", "toggle button"),
@@ -140,7 +142,6 @@ mod phrase {
         localized("sr-state-protected", "protected")
     }
 
-    /// "heading level N".
     pub fn heading_word(level: u8) -> String {
         let resolved = crate::i18n::I18nManager::format(
             "sr-heading-level",
@@ -256,9 +257,15 @@ pub fn describe(node: &AccessNode) -> String {
 
 /// Value + state, without name or role — confirms the result of
 /// activating or adjusting a control (e.g. "checked") without
-/// re-reading the whole label.
+/// re-reading the whole label. The item the keyboard is on inside it (its
+/// [`active_descendant`](crate::a11y::AccessState::active_descendant),
+/// such as an open combo box's highlighted option) is read first, so
+/// moving through a list reads each item while focus stays put.
 pub fn describe_state(node: &AccessNode) -> String {
     let mut parts: Vec<String> = Vec::new();
+    if let Some(active) = active_descendant(node) {
+        parts.push(describe(active));
+    }
     if node.state.protected {
         parts.push(phrase::protected());
     } else if let Some(value) = node.value.as_deref()
@@ -268,6 +275,17 @@ pub fn describe_state(node: &AccessNode) -> String {
     }
     push_state_words(node, &mut parts);
     parts.join(", ")
+}
+
+/// The first node below `node` marked as its active descendant.
+fn active_descendant(node: &AccessNode) -> Option<&AccessNode> {
+    node.children.iter().find_map(|child| {
+        if child.state.active_descendant {
+            Some(child)
+        } else {
+            active_descendant(child)
+        }
+    })
 }
 
 /// Switches / toggle buttons read on/off; checkboxes / radios read
@@ -732,67 +750,56 @@ mod tests {
 
     #[test]
     fn describe_speaks_role_name_value_and_content() {
-        // Case `describe_plain_button`.
         {
             let node = n(Role::Button).with_name("Save");
             assert_eq!(describe(&node), "Save, button");
         }
 
-        // Case `describe_unnamed_button_is_just_role`.
         {
             let node = n(Role::Button);
             assert_eq!(describe(&node), "button");
         }
 
-        // Case `describe_slider_with_value`.
         {
             let node = n(Role::Slider).with_name("Volume").with_value("50%");
             assert_eq!(describe(&node), "Volume, slider, 50%");
         }
 
-        // Case `describe_text_input_with_value`.
         {
             let node = n(Role::TextInput).with_name("Name").with_value("Ada");
             assert_eq!(describe(&node), "Name, edit text, Ada");
         }
 
-        // Case `describe_multiline_text_input`.
         {
             let node = n(Role::MultilineTextInput).with_name("Notes");
             assert_eq!(describe(&node), "Notes, multi-line edit text");
         }
 
-        // Case `describe_heading_includes_level`.
         {
             let node = n(Role::Heading { level: 2 }).with_name("Introduction");
             assert_eq!(describe(&node), "Introduction, heading level 2");
         }
 
-        // Case `describe_link`.
         {
             let node = n(Role::Link).with_name("Learn more");
             assert_eq!(describe(&node), "Learn more, link");
         }
 
-        // Case `describe_menu_item`.
         {
             let node = n(Role::MenuItem).with_name("Open");
             assert_eq!(describe(&node), "Open, menu item");
         }
 
-        // Case `describe_static_text_is_content_only`.
         {
             let node = n(Role::StaticText).with_name("Hello world");
             assert_eq!(describe(&node), "Hello world");
         }
 
-        // Case `describe_empty_generic_is_empty_string`.
         {
             let node = n(Role::Generic);
             assert_eq!(describe(&node), "");
         }
 
-        // Case `describe_busy_progress`.
         {
             let node = n(Role::ProgressBar)
                 .with_name("Loading")
@@ -804,7 +811,6 @@ mod tests {
 
     #[test]
     fn describe_speaks_checked_toggled_expanded_and_selected_states() {
-        // Case `describe_checkbox_checked_and_unchecked`.
         {
             let checked = n(Role::Checkbox)
                 .with_name("Accept")
@@ -817,7 +823,6 @@ mod tests {
             assert_eq!(describe(&unchecked), "Accept, checkbox, not checked");
         }
 
-        // Case `describe_checkbox_mixed_is_partially_checked`.
         {
             let mut state = AccessState::new().checked(true);
             state.mixed = true;
@@ -825,7 +830,6 @@ mod tests {
             assert_eq!(describe(&node), "Toppings, checkbox, partially checked");
         }
 
-        // Case `describe_switch_reads_on_off_not_checked`.
         {
             let on = n(Role::Switch)
                 .with_name("Wi-Fi")
@@ -838,7 +842,6 @@ mod tests {
             assert_eq!(describe(&off), "Wi-Fi, switch, off");
         }
 
-        // Case `describe_toggle_button_reads_on_off`.
         {
             let node = n(Role::ToggleButton)
                 .with_name("Bold")
@@ -846,7 +849,6 @@ mod tests {
             assert_eq!(describe(&node), "Bold, toggle button, on");
         }
 
-        // Case `describe_expanded_and_collapsed`.
         {
             let expanded = n(Role::TreeItem)
                 .with_name("Folder")
@@ -859,7 +861,6 @@ mod tests {
             assert_eq!(describe(&collapsed), "Country, combo box, collapsed");
         }
 
-        // Case `describe_selected_list_item_and_tab`.
         {
             let item = n(Role::ListItem)
                 .with_name("Inbox")
@@ -875,7 +876,6 @@ mod tests {
 
     #[test]
     fn describe_orders_qualifiers_and_never_speaks_protected_values() {
-        // Case `describe_protected_field_never_speaks_value`.
         {
             let node = n(Role::TextInput)
                 .with_name("Password")
@@ -889,7 +889,6 @@ mod tests {
             assert_eq!(phrase, "Password, edit text, protected");
         }
 
-        // Case `describe_disabled_checked_checkbox_full_phrase`.
         {
             let node = n(Role::Checkbox)
                 .with_name("Accept")
@@ -897,7 +896,6 @@ mod tests {
             assert_eq!(describe(&node), "Accept, checkbox, checked, dimmed");
         }
 
-        // Case `describe_disabled_is_spoken_last`.
         {
             let node = n(Role::Button)
                 .with_name("Go")
@@ -905,7 +903,6 @@ mod tests {
             assert_eq!(describe(&node), "Go, button, dimmed");
         }
 
-        // Case `describe_required_and_invalid`.
         {
             let mut state = AccessState::new();
             state.required = true;
@@ -914,7 +911,6 @@ mod tests {
             assert_eq!(describe(&node), "Email, edit text, required, invalid entry");
         }
 
-        // Case `describe_read_only_only_for_editable_roles`.
         {
             let mut state = AccessState::new();
             state.read_only = true;
@@ -924,7 +920,6 @@ mod tests {
             assert_eq!(describe(&static_text), "Label");
         }
 
-        // Case `describe_appends_position_in_set`.
         {
             let node = n(Role::Tab)
                 .with_name("Inbox")
@@ -933,7 +928,6 @@ mod tests {
             assert_eq!(describe(&node), "Inbox, tab, selected, 2 of 4");
         }
 
-        // Case `describe_appends_level_for_tree_depth`.
         {
             let node = n(Role::TreeItem)
                 .with_name("Src")
@@ -942,7 +936,6 @@ mod tests {
             assert_eq!(describe(&node), "Src, tree item, 3 of 7, level 2");
         }
 
-        // Case `describe_position_requires_both_pos_and_size`.
         {
             // "N of M" is only spoken when both are present.
             let mut node = n(Role::ListItem).with_name("Item");
@@ -1002,7 +995,6 @@ mod tests {
 
     #[test]
     fn announcements_coalesce_interrupt_and_reach_the_speaker() {
-        // Case `null_reader_constructs_and_is_silent_safe`.
         {
             let mut r = ScreenReader::new();
             r.announce_focus(&n(Role::Button).with_name("Ok"));
@@ -1010,21 +1002,18 @@ mod tests {
             let _ = null_reader();
         }
 
-        // Case `announce_focus_speaks_described_phrase`.
         {
             let (mut r, rec) = recording_reader();
             r.announce_focus(&n(Role::Button).with_name("Save"));
             assert_eq!(rec.0.borrow().spoken(), &["Save, button".to_string()]);
         }
 
-        // Case `announce_focus_skips_empty_phrase`.
         {
             let (mut r, rec) = recording_reader();
             r.announce_focus(&n(Role::Generic)); // describes to ""
             assert!(rec.0.borrow().spoken().is_empty());
         }
 
-        // Case `focus_storm_coalesces_to_latest`.
         {
             // Drains immediately, so every focus is recorded, but each
             // interrupting push first issues a stop().
@@ -1040,7 +1029,6 @@ mod tests {
             );
         }
 
-        // Case `interrupt_replaces_pending_in_queue`.
         {
             let mut q = SpeechQueue::new();
             q.push(Utterance::new("First, button"));
@@ -1049,16 +1037,13 @@ mod tests {
             assert_eq!(q.peek().unwrap().text, "Second, button");
         }
 
-        // Case `announce_value_change_is_spoken`.
         {
             let (mut r, rec) = recording_reader();
             r.announce_value_change("75%");
             assert_eq!(rec.0.borrow().spoken(), &["75%".to_string()]);
         }
 
-        // Case `announce_live_region_important_survives_focus_interrupt`.
         {
-            // Strictly higher priority survives a focus interrupt.
             let mut q = SpeechQueue::new();
             q.push(Utterance::new("Permission denied").with_priority(Priority::Important));
             q.push(Utterance::new("Allow, button")); // Message, interrupt
@@ -1067,7 +1052,6 @@ mod tests {
             assert_eq!(q.pop().unwrap().text, "Allow, button");
         }
 
-        // Case `stop_clears_and_silences`.
         {
             let (mut r, rec) = recording_reader();
             r.announce_focus(&n(Role::Button).with_name("Go"));
@@ -1077,7 +1061,6 @@ mod tests {
             assert!(rec.0.borrow().stop_count() >= 1);
         }
 
-        // Case `set_rate_and_voice_reach_speaker`.
         {
             let (mut r, rec) = recording_reader();
             r.set_rate(1.5);
@@ -1089,25 +1072,21 @@ mod tests {
 
     #[test]
     fn typing_echo_speaks_chars_words_and_deletions() {
-        // Case `echo_char_records_typed_char`.
         {
             let (mut r, rec) = recording_reader();
             r.echo_char('a');
             r.echo_char(' ');
             let recref = rec.0.borrow();
             assert_eq!(recref.spoken(), &["a".to_string(), "space".to_string()]);
-            // Echo is Text priority.
             assert_eq!(recref.utterances()[0].priority, Priority::Text);
         }
 
-        // Case `echo_word_records_word`.
         {
             let (mut r, rec) = recording_reader();
             r.echo_word("hello");
             assert_eq!(rec.0.borrow().spoken(), &["hello".to_string()]);
         }
 
-        // Case `echo_deletion_speaks_char_and_deleted`.
         {
             let (mut r, rec) = recording_reader();
             r.echo_deletion("x");
@@ -1184,7 +1163,6 @@ mod tests {
 
     #[test]
     fn reading_cursor_walks_the_flattened_order() {
-        // Case `flatten_reading_order_is_dfs_with_presentational_collapsed`.
         {
             let root = sample_tree();
             let order = flatten_reading_order(&root);
@@ -1202,7 +1180,6 @@ mod tests {
             );
         }
 
-        // Case `read_next_walks_forward_in_order`.
         {
             let root = sample_tree();
             let (mut r, rec) = recording_reader();
@@ -1223,7 +1200,6 @@ mod tests {
             );
         }
 
-        // Case `read_next_stops_at_end`.
         {
             let root = sample_tree();
             let mut r = recording_reader().0;
@@ -1237,7 +1213,6 @@ mod tests {
             assert_eq!(r.cursor(), Some(4));
         }
 
-        // Case `read_prev_walks_backward`.
         {
             let root = sample_tree();
             let mut r = recording_reader().0;
@@ -1249,7 +1224,6 @@ mod tests {
             assert!(r.read_prev(&root).is_none());
         }
 
-        // Case `read_prev_from_unset_starts_at_last`.
         {
             let root = sample_tree();
             let mut r = recording_reader().0;
@@ -1258,7 +1232,6 @@ mod tests {
             assert_eq!(r.cursor(), Some(4));
         }
 
-        // Case `read_all_speaks_every_node_then_seeds_cursor`.
         {
             let root = sample_tree();
             let (mut r, rec) = recording_reader();
@@ -1281,7 +1254,6 @@ mod tests {
             assert!(!recref.utterances()[1].interrupt);
         }
 
-        // Case `announce_focus_resets_reading_cursor`.
         {
             let root = sample_tree();
             let mut r = recording_reader().0;
@@ -1296,7 +1268,6 @@ mod tests {
             );
         }
 
-        // Case `seed_reading_order_counts_accessible_nodes`.
         {
             let root = sample_tree();
             let mut r = recording_reader().0;
@@ -1328,7 +1299,6 @@ mod tests {
 
     #[test]
     fn quick_nav_jumps_between_headings_and_controls() {
-        // Case `read_next_heading_lands_on_each_heading`.
         {
             let root = quicknav_tree();
             let mut r = recording_reader().0;
@@ -1344,7 +1314,6 @@ mod tests {
             assert!(r.read_next_heading(&root).is_none());
         }
 
-        // Case `read_prev_heading_walks_backward`.
         {
             let root = quicknav_tree();
             let mut r = recording_reader().0;
@@ -1357,7 +1326,6 @@ mod tests {
             assert!(r.read_prev_heading(&root).is_none());
         }
 
-        // Case `read_next_control_skips_non_interactive`.
         {
             let root = quicknav_tree();
             let mut r = recording_reader().0;
@@ -1369,7 +1337,6 @@ mod tests {
             assert!(r.read_next_control(&root).is_none());
         }
 
-        // Case `read_prev_control_from_end_walks_backward`.
         {
             let root = quicknav_tree();
             let mut r = recording_reader().0;
@@ -1380,7 +1347,6 @@ mod tests {
             assert!(r.read_prev_control(&root).is_none());
         }
 
-        // Case `quick_nav_speaks_a_no_more_cue_when_nothing_matches`.
         {
             let root =
                 TW::new(None).child(Box::new(TW::new(Some(n(Role::Button).with_name("Solo")))));
@@ -1389,7 +1355,6 @@ mod tests {
             assert_eq!(rec.0.borrow().last(), Some(phrase::no_next().as_str()));
         }
 
-        // Case `is_heading_and_is_form_field_predicates`.
         {
             assert!(is_heading(&n(Role::Heading { level: 1 })));
             assert!(!is_heading(&n(Role::Button)));

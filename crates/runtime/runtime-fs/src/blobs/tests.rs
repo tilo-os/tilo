@@ -1,4 +1,7 @@
+use capnp_rpc::rpc_twoparty_capnp;
 use std::collections::{HashMap, HashSet};
+use std::os::fd::IntoRawFd;
+use std::os::unix::net::UnixStream as StdUnixStream;
 use std::sync::Mutex;
 
 use super::*;
@@ -128,6 +131,25 @@ impl BlobBackend for MemoryBackend {
     }
 }
 
+#[test]
+fn mit_app_blob_client_cannot_mint_another_scope() {
+    let harness = Harness::start();
+    let app: tilo_fs_client::blobs::BlobClient = harness.app("room-1", "so.tilo.photos");
+    assert_eq!(
+        app.scope("room-2", "so.tilo.photos").unwrap_err(),
+        BlobError::InvalidScope
+    );
+    assert_eq!(app.refresh_public(), Err(BlobError::InvalidScope));
+    let stored = app.put(b"scoped bytes", "").unwrap();
+    assert_eq!(
+        app.read_all(&stored.hash).unwrap(),
+        ReadOutcome::Ready {
+            bytes: b"scoped bytes".to_vec(),
+            total_len: 12,
+        }
+    );
+}
+
 struct Harness {
     socket: std::path::PathBuf,
     backend: Arc<MemoryBackend>,
@@ -210,7 +232,6 @@ fn blob_reads_are_confined_to_one_principal_and_scope() {
             .app("room-1", "so.tilo.photos")
             .put(b"private", "")
             .unwrap();
-        // Apps in one room hand content to each other by hash.
         let neighbour = harness.app("room-1", "so.tilo.chat");
         assert!(neighbour.has(&stored.hash).unwrap());
         let stranger = harness.app("room-2", "so.tilo.photos");
@@ -272,7 +293,6 @@ fn blob_reads_are_confined_to_one_principal_and_scope() {
             frame.extend_from_slice(json.as_bytes());
             runtime.block_on(read_handoff(&mut frame.as_slice()))
         };
-        // The launcher's own spelling of the frame.
         assert_eq!(
             raw(r#"{"protocol":1,"principal":"app","room":"room-1","app_id":"so.tilo.notes"}"#)
                 .unwrap(),
@@ -552,7 +572,6 @@ fn recording_client() -> Recorded {
         tokio::task::LocalSet::new().block_on(&runtime, async move {
             let server_end = tokio::net::UnixStream::from_std(server_end).unwrap();
             let bootstrap: document_blobs::Client = capnp_rpc::new_client(recording);
-            // Ends when the app side closes.
             let _ = runtime_portal::serve_connected_io(server_end, bootstrap.client).await;
         });
     });
@@ -754,9 +773,7 @@ async fn write_upload(upload: &blob_upload::Client, bytes: &[u8]) -> Result<(), 
 
 /// Waits until the backend has seen `count` uploads end without finishing.
 fn await_abandoned(backend: &MemoryBackend, count: usize) {
-    let deadline = std::time::Instant::now()
-        .checked_add(Duration::from_secs(10))
-        .unwrap();
+    let deadline = tilo_test_env::hang_deadline();
     while backend.abandoned.load(std::sync::atomic::Ordering::SeqCst) < count {
         assert!(
             std::time::Instant::now() < deadline,

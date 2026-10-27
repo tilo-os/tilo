@@ -178,7 +178,7 @@ impl Widget for Spinner {
             (elapsed_ms / ROTATION_PERIOD_MS).fract()
         };
 
-        let accent = theme.tokens.colors.intent.neutral_fill;
+        let accent = theme.tokens.colors.intent.value_fill;
 
         // Evenly spaced offsets so the chain covers a quarter of the orbit.
         for (i, &alpha) in DOT_ALPHAS.iter().enumerate() {
@@ -284,7 +284,6 @@ mod tests {
                 .compute_layout(root, taffy::Size::MAX_CONTENT)
                 .unwrap();
             s.apply_layout(&taffy, node, Point::ZERO);
-            // Layout snaps to whole pixels.
             assert!((s.get_rect().height() - f64::from(line)).abs() <= 0.5);
             assert!(
                 text_scale > 1.0 || line < DEFAULT_SIZE_PX,
@@ -292,7 +291,6 @@ mod tests {
             );
         }
 
-        // Case `accessibility_reports_spinner_role_and_busy`.
         {
             use crate::a11y::Role;
             let s = Spinner::new();
@@ -414,7 +412,6 @@ mod tests {
             );
         }
 
-        // Case `reduced_motion_stops_animation_wakeups_after_the_static_frame`.
         {
             let mut spinner = Spinner::new();
             let _ = draw_path_data(&mut spinner, true);

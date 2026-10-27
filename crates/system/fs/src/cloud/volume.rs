@@ -399,6 +399,8 @@ pub struct CloudVolume {
     /// Background sync and uploads wait until resumed. Reads still fetch
     /// on demand and local edits still queue.
     paused: AtomicBool,
+    /// Idle waits that local activity cut short to the poll interval.
+    idle_waits_cut: AtomicU64,
     /// Provider requests (revisions, restores, share links) running now.
     requests: AtomicU64,
     stop: AtomicBool,
@@ -476,6 +478,7 @@ impl CloudVolume {
             idling: AtomicBool::new(false),
             sync_requested: AtomicBool::new(false),
             paused: AtomicBool::new(false),
+            idle_waits_cut: AtomicU64::new(0),
             requests: AtomicU64::new(0),
             stop: AtomicBool::new(false),
         }))
@@ -558,8 +561,6 @@ impl CloudVolume {
         self.staging.join(name)
     }
 
-    // ---- persistence -------------------------------------------------
-
     /// Write `tree.json` if the tree or cursor changed since the last
     /// write. Items and cursor go out together in one atomic write, so a
     /// crash never leaves a cursor newer than the items it covers.
@@ -628,8 +629,6 @@ impl CloudVolume {
     fn persist_local(&self) -> Result<(), Errno> {
         self.save_local().map_err(|e| io_errno(&e))
     }
-
-    // ---- attributes and names ----------------------------------------
 
     fn attr_of(&self, inner: &mut Inner, id: &ItemId) -> Result<Attr, Errno> {
         let ino = inner.ino(id);
@@ -790,8 +789,6 @@ impl CloudVolume {
         Ok(ino)
     }
 
-    // ---- provider operations on one file ---------------------------------
-
     /// The provider id of the item at `path`, which the server must already
     /// know: an item created here and not yet uploaded has no provider
     /// history or link.
@@ -865,7 +862,6 @@ impl CloudVolume {
         Ok(())
     }
 
-    /// A share link for the file at `path`.
     pub fn share_link_at(&self, path: &str) -> Result<String, Error> {
         let _mutation = self.mutation().map_err(|_| Error::Forbidden)?;
         if !self.source.capabilities().share_links {
@@ -919,8 +915,6 @@ impl CloudVolume {
                 Some(running.saturating_sub(1))
             });
     }
-
-    // ---- reads ---------------------------------------------------------
 
     fn flight(&self, key: &RevKey) -> Arc<Mutex<()>> {
         let mut flights = self.flights.lock_recover();
@@ -1121,8 +1115,6 @@ impl CloudVolume {
         let id = self.inner().id(ino)?;
         self.read_id(&id, offset, len, 0)
     }
-
-    // ---- writes --------------------------------------------------------
 
     /// Give `id` a staged copy of its current content (or an empty one).
     fn ensure_staged(&self, id: &ItemId, truncate: bool) -> Result<(), Errno> {
@@ -1555,8 +1547,6 @@ impl CloudVolume {
         Ok(())
     }
 
-    // ---- write-back ----------------------------------------------------
-
     /// Queued local changes not yet on the server.
     pub fn pending(&self) -> usize {
         self.inner().outbox.len()
@@ -1565,6 +1555,17 @@ impl CloudVolume {
     /// Send queued changes until the queue is empty or the server is
     /// unreachable. Returns how many were completed.
     pub fn upload_pending(&self) -> Result<usize, Error> {
+        self.upload_queued(false)
+    }
+
+    /// [`Self::upload_pending`] as background write-back does it: a paused
+    /// volume sends nothing, not even a change queued while a pass that
+    /// began before the pause is running.
+    pub fn upload_pending_unless_paused(&self) -> Result<usize, Error> {
+        self.upload_queued(true)
+    }
+
+    fn upload_queued(&self, unless_paused: bool) -> Result<usize, Error> {
         let _serial = self.uploading.lock_recover();
         drop(self.mutation().map_err(|_| Error::Forbidden)?);
         let mut done = 0_usize;
@@ -1572,14 +1573,45 @@ impl CloudVolume {
             let Some(op) = self.inner().outbox.front().cloned() else {
                 return Ok(done);
             };
+            // Looked at after the change: one queued after a pause is never
+            // sent before the resume.
+            if unless_paused && self.is_paused() {
+                return Ok(done);
+            }
+            let (ino, generation) = {
+                let inner = self.inner();
+                (
+                    inner.ino_by_id.get(op.id()).copied(),
+                    inner.local.get(op.id()).map(|local| local.generation),
+                )
+            };
             if let Err(error) = self.execute(&op) {
                 self.report(health_of(&error));
                 return Err(error);
             }
             {
                 let mut inner = self.inner();
-                if let Some(position) = inner.outbox.iter().position(|o| *o == op) {
+                // A created file or folder takes its server id while the
+                // change runs, and the queued entry is renamed with it: look
+                // for it under the id its inode has now. Left behind, it
+                // would hold a paused volume "not synced" forever.
+                let mut sent = op;
+                if let Some(current) = ino.and_then(|ino| inner.id_by_ino.get(&ino)).cloned() {
+                    *sent.id_mut() = current;
+                }
+                // A write that closed during the upload queued its own upload
+                // onto this entry: it still has to go.
+                let resend = match &sent {
+                    Op::Upload(id) => inner.local.get(id).is_some_and(|local| {
+                        local.dirty && local.writers == 0 && Some(local.generation) != generation
+                    }),
+                    _ => false,
+                };
+                if let Some(position) = inner.outbox.iter().position(|o| *o == sent) {
                     inner.outbox.remove(position);
+                }
+                if resend {
+                    inner.queue(sent);
                 }
             }
             self.save_local()?;
@@ -2068,8 +2100,6 @@ impl CloudVolume {
         Ok(changed)
     }
 
-    // ---- background work -------------------------------------------------
-
     /// Wake the uploader (a change was queued).
     pub fn kick(&self) {
         self.activity.fetch_add(1, Ordering::SeqCst);
@@ -2114,6 +2144,9 @@ impl CloudVolume {
                 .checked_sub(start.elapsed())
                 .filter(|left| !left.is_zero())
             else {
+                if limit < wait {
+                    self.idle_waits_cut.fetch_add(1, Ordering::SeqCst);
+                }
                 break active;
             };
             queued = self
@@ -2186,6 +2219,12 @@ impl CloudVolume {
 
     pub fn is_paused(&self) -> bool {
         self.paused.load(Ordering::SeqCst)
+    }
+
+    /// How many idle waits local activity has cut short to the poll
+    /// interval.
+    pub fn idle_waits_cut(&self) -> u64 {
+        self.idle_waits_cut.load(Ordering::SeqCst)
     }
 
     /// Run sync and write-back on background threads until
@@ -2268,7 +2307,7 @@ impl CloudVolume {
                 self.wait_resumed();
                 continue;
             }
-            match self.upload_pending() {
+            match self.upload_pending_unless_paused() {
                 Ok(_) => {
                     backoff = Duration::from_secs(2);
                     self.wait_queued(&mut seen, Duration::from_secs(3600));
@@ -2336,7 +2375,6 @@ mod tests {
         // Never faster than configured, never past the cap.
         assert_eq!(idle_wait(0, BASE, MAX, -100), BASE);
         assert_eq!(idle_wait(9, BASE, MAX, 100), MAX);
-        // A cap below the poll interval leaves the poll interval in force.
         assert_eq!(idle_wait(3, BASE, Duration::from_secs(5), 0), BASE);
         for _ in 0..1000 {
             let jitter = idle_jitter();

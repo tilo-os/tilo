@@ -211,11 +211,6 @@ impl LogSweep {
     ///
     /// `capture` starts at local time `capture_start_ns`; the sweep was
     /// scheduled to leave the speaker at local time `play_at_ns`.
-    ///
-    /// # Errors
-    ///
-    /// When the recording does not cover the sweep, or no arrival stands out
-    /// of its noise.
     pub fn measure(
         &self,
         capture: &[f32],
@@ -407,7 +402,6 @@ pub struct BiquadCoefficients {
 }
 
 impl BiquadCoefficients {
-    /// Gain in dB at `hz`.
     pub fn magnitude_db(&self, hz: f64, sample_rate: u32) -> f64 {
         let w = 2.0 * PI * hz / f64::from(sample_rate);
         let (sin1, cos1) = w.sin_cos();
@@ -468,7 +462,6 @@ pub fn room_eq(response: &MagnitudeResponse, level_db: f64, sample_rate: u32) ->
     fit_room_eq(response, level_db, sample_rate)
 }
 
-/// The same fit as [`room_eq`].
 pub fn fit_room_eq(response: &MagnitudeResponse, target_db: f64, sample_rate: u32) -> Vec<EqBand> {
     let lowest = response.points.first().map_or(0.0, |p| p.hz);
     let points: Vec<ResponsePoint> = response

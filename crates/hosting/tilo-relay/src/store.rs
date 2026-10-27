@@ -30,7 +30,7 @@ pub(crate) mod resume;
 pub(crate) mod retained;
 /// The seam this store drives native shell replay selection through. The
 /// selection itself, and the retention authority behind a
-/// [`ShellBinding`](shell_selection::ShellBinding), belong to the embedder's
+/// [`shell_selection::ShellBinding`], belong to the embedder's
 /// adapter (`tilo-relay-shell` for the desktop).
 pub use tilo_relay_store::shell as shell_selection;
 #[cfg(test)]
@@ -351,7 +351,6 @@ impl WorkspaceStore {
         &self.root
     }
 
-    /// Workspace id.
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id
     }
@@ -387,10 +386,6 @@ impl WorkspaceStore {
 
     /// The bound shell retention authority, for a selection that must have
     /// one.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StoreError` while no authority is bound.
     pub(crate) fn bound_shell(&self) -> Result<&Arc<dyn ShellBinding>, StoreError> {
         self.shell_binding.as_ref().ok_or_else(|| {
             StoreError::Io(io::Error::new(
@@ -457,10 +452,6 @@ impl WorkspaceStore {
     }
 
     /// Atomically write a new snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the atomic write fails.
     pub fn save_snapshot(&self, bytes: &[u8]) -> Result<(), StoreError> {
         if !self.pinned {
             return Ok(());
@@ -528,11 +519,6 @@ impl WorkspaceStore {
     /// Load the atomic native-governance projection. Absence is an empty
     /// handshake-root projection; device-only membership remains readable through
     /// [`Self::load_membership`] but can never admit another user root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for unreadable, malformed, wrong-version, or invalid
-    /// key data. Callers fail closed rather than partially applying it.
     pub(crate) fn load_governed_access(&self) -> Result<Option<GovernedAccessRecord>, StoreError> {
         let path = self.root.join(GOVERNED_ACCESS_FILE);
         let bytes = match fs::read(path) {
@@ -556,10 +542,6 @@ impl WorkspaceStore {
 
     /// Atomically replace exact room devices and global-handshake roots in one
     /// crash-safe record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if encoding or atomic replacement fails.
     pub(crate) fn save_governed_access(
         &self,
         access: &GovernedAccessRecord,
@@ -792,9 +774,6 @@ impl WorkspaceStore {
         Ok(path)
     }
 
-    /// Complete the barrier for a file `atomic_write` just published in the
-    /// queue `directory`: it synced `directory` after the rename (Apple
-    /// repeats that with `F_FULLFSYNC`, as `retained::durable_write` does).
     /// The queue's two ancestors change only when a queue is first created,
     /// so they are synced whenever their entries changed since this process
     /// last synced them.
@@ -897,9 +876,6 @@ impl WorkspaceStore {
     /// Raw Automerge causal containment permits atomic replacement of covered
     /// history. Opaque checkpoints are shared in receipt order without inferring
     /// supersedence. `bytes` is a full relay frame.
-    ///
-    /// # Errors
-    /// Returns an error on invalid metadata or failed durable storage.
     pub fn retain_checkpoint(&self, channel: &[u8; 32], bytes: &[u8]) -> Result<(), StoreError> {
         #[cfg(test)]
         test_barrier::pause(&self.root, "state-persist");
@@ -907,9 +883,6 @@ impl WorkspaceStore {
     }
 
     /// Durably append a tail to the envelope's authenticated author/channel.
-    ///
-    /// # Errors
-    /// Returns an error on invalid metadata or failed durable storage.
     pub fn retain_delta(
         &self,
         channel: &[u8; 32],
@@ -979,10 +952,6 @@ impl WorkspaceStore {
     }
 
     /// Atomically replace the ledger with `records`, dropping evicted ones.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the atomic write fails.
     pub fn rewrite_commits(&self, records: &[CommitRecord]) -> Result<(), StoreError> {
         let mut bytes = Vec::with_capacity(records.len().saturating_mul(COMMIT_RECORD_BYTES));
         for record in records {
@@ -1102,14 +1071,12 @@ mod tests {
 
     #[test]
     fn store_persists_layout_snapshots_logs_and_per_peer_pending_queues() {
-        // Phase `open_creates_layout`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
             assert!(store.root().is_dir());
             assert!(store.root().join("pending").is_dir());
         }
-        // Phase `snapshot_round_trip`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
@@ -1117,14 +1084,12 @@ mod tests {
             store.save_snapshot(b"HELLO").unwrap();
             assert_eq!(store.load_snapshot().unwrap().unwrap(), b"HELLO");
         }
-        // Phase `snapshot_ignored_when_unpinned`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
             store.save_snapshot(b"HELLO").unwrap();
             assert!(store.load_snapshot().unwrap().is_none());
         }
-        // Phase `open_reclaims_the_legacy_delta_log`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let root = tmp.path().join("workspaces").join("7");
@@ -1133,7 +1098,6 @@ mod tests {
             let store = WorkspaceStore::open(tmp.path(), 7, true).unwrap();
             assert!(!store.root().join(LEGACY_DELTA_LOG).exists());
         }
-        // Phase `pending_queue_orderly_drain`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
@@ -1150,7 +1114,6 @@ mod tests {
             // Empty after drain.
             assert_eq!(store.count_pending(&peer).unwrap(), 0);
         }
-        // Phase `loading_pending_does_not_acknowledge_before_wire_delivery`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let store = WorkspaceStore::open(tmp.path(), 8, false).unwrap();
@@ -1165,7 +1128,6 @@ mod tests {
             std::fs::remove_file(&loaded[0].path).unwrap();
             assert_eq!(store.count_pending(&peer).unwrap(), 0);
         }
-        // Phase `pending_isolated_per_peer`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
@@ -1180,7 +1142,6 @@ mod tests {
 
     #[test]
     fn iroh_secret_is_minted_once_and_never_replaced() {
-        // Phase `iroh_secret_stable_across_calls`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let a = load_or_create_iroh_secret(tmp.path()).unwrap();
@@ -1188,7 +1149,6 @@ mod tests {
             assert_eq!(a, b);
             assert_ne!(a, [0u8; 32]);
         }
-        // Phase `iroh_secret_is_never_replaced`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let path = tmp.path().join("iroh-secret.bin");
@@ -1199,7 +1159,6 @@ mod tests {
             assert!(load_or_create_iroh_secret(tmp.path()).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), b"short");
         }
-        // Phase `unreadable_iroh_secret_is_never_replaced`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let path = tmp.path().join("iroh-secret.bin");
@@ -1212,7 +1171,6 @@ mod tests {
             assert_eq!(std::fs::read(path.join("marker")).unwrap(), b"kept");
             assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 1);
         }
-        // Phase `simultaneous_starts_share_one_iroh_secret`.
         {
             for _ in 0..8 {
                 let tmp = tempfile::tempdir().unwrap();

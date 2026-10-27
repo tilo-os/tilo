@@ -4,8 +4,8 @@
 //! `App::surface_frame_with_damage` into a scene the host compares part by
 //! part (`ui::scene_parts`), exactly as the shell does.
 //!
-//! A keystroke repaints the line it edits, its caret and what else changed
-//! (the save status bubble), not the app; naming a note repaints its title,
+//! A keystroke repaints the line it edits, its caret and what else changed,
+//! not the app; naming a note repaints its title,
 //! not the page; a pointer resting on a toolbar button repaints the button.
 //! Every frame is presented sparsely over the frame before it and the result
 //! compared with a full render of the same scene, in dark, light and high
@@ -121,6 +121,7 @@ impl Host {
                 .map(|rect| placement.transform_rect_bbox(*rect).inflate(1.0, 1.0))
                 .collect(),
             copies: Vec::new(),
+            earlier: Vec::new(),
         });
         let mut scene = Scene::new();
         let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
@@ -428,6 +429,9 @@ fn open_a_new_note(app: &mut App, host: &mut Host, theme: Theme) {
     host.frames(app, 5);
     let first = bounds_of(app, "New note");
     host.click(app, first.center());
+    // The new note opens to be named; Enter keeps its name and goes to
+    // its body.
+    host.key(app, &Key::Named(NamedKey::Enter));
     // The pointer rests in the empty page below the note, so no button's
     // tooltip comes and goes while a test measures the note.
     host.input(app, cursor_moved(640.0, 700.0));
@@ -608,7 +612,6 @@ fn a_keystroke_in_a_note_damages_its_line_not_the_app() {
             let mut worst: f64 = 0.0;
             let mut times = Vec::new();
             for letter in ["T", "h", "e", " ", "f", "o", "x"] {
-                // The save of the previous key lands between keys.
                 let label = format!("{name}: the save landing before {letter:?}");
                 let (landed, _) = measure(app, &mut host, &theme, &label, let_the_save_land);
                 let label = format!("{name}: typing {letter:?}");
@@ -646,7 +649,6 @@ fn a_keystroke_in_a_note_damages_its_line_not_the_app() {
                 "notes-typing-damage {name} minute_turnover frame_px={:.0}",
                 typed.largest
             );
-            // The line, the bubble and the header's line.
             assert!(
                 typed.largest < app_area() * 0.1,
                 "{label}: repainted {:.0} px, over 10 % of the app",
@@ -766,7 +768,6 @@ fn a_keystroke_in_a_code_block_damages_its_run_not_the_editor() {
                 mentions(app, "let") && mentions(app, "x+1"),
                 "{name}: the keys reached the code block"
             );
-            // A note that holds a code block types its prose as any note.
             host.click(app, bounds_of_value(app, "Intro").center());
             host.frames(app, 3);
             let case = format!("{name} paragraph-beside-code");
@@ -860,7 +861,6 @@ fn tagging_a_note_damages_its_header_not_the_app() {
             let work = item_id(app, "tags", "work");
             let label = format!("{name}: removing a tag");
             let (removed, _) = measure(app, &mut host, &theme, &label, |app, host| {
-                // Taking a tag off a note is an edit of the note's tags.
                 let untag = ui::tilo_resource::Invoke::from(
                     notes::notebook::Notebook::paths()
                         .pages
@@ -982,7 +982,6 @@ fn enter_that_adds_a_block_damages_the_blocks_below_not_the_window() {
                 (&theme, &label),
                 &Key::Named(NamedKey::Enter),
             );
-            // The caret went with "line" to the start of its new paragraph.
             type_text(app, &mut host, "a ");
             host.frames(app, 3);
             assert!(
@@ -1056,7 +1055,6 @@ fn backspace_that_removes_a_block_damages_the_blocks_below_not_the_window() {
                 "{label}: the paragraphs joined: {:?}",
                 values_of(app, "Block text")
             );
-            // Removing an empty paragraph between two.
             caret_in(app, &mut host, "Alpha line", 0);
             host.key(app, &Key::Named(NamedKey::Enter));
             host.frames(app, 3);
@@ -1126,7 +1124,6 @@ fn the_caret_entering_an_empty_paragraph_damages_the_caret_not_the_line() {
                     app_area_at(scale),
                     entered.whole,
                 );
-                // The caret landed in the empty paragraph.
                 type_text(app, &mut host, "b");
                 host.frames(app, 3);
                 assert_eq!(
@@ -1170,7 +1167,6 @@ fn renaming_a_note_damages_its_row_not_the_page_tree() {
             // whether the bubble changes within Enter's frames depends on how
             // fast the save lands.
             let_the_save_land(app, &mut host);
-            // Naming the note in its title renames its row in the page tree.
             let label = format!("{name}: naming the note in its title");
             let (named, _) = measure(app, &mut host, &theme, &label, |app, host| {
                 host.key(app, &Key::Named(NamedKey::Enter));

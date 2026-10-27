@@ -33,6 +33,19 @@ executable stand-alone; the higher-level flow is described below.
   KMS presentation, through `tilo-vm`); see
   [reference hardware](../../docs/benchmarks/reference-hardware.md).
 
+- `drm_hardware_checks.py --device yoga --slot device --commit C
+  --image-digest D --out DIR` — the DRM presentation checks that need a real
+  GPU: an output scanned out through atomic page flips and never demoted, no
+  lost-flip line, frames paced to the vblank and presented within one
+  interval, and a scanned-out client's buffers released within one interval.
+  Each reads the compositor's own session log and fails when the line is
+  missing, never skips; what needs a person at the panel (tearing, a flash on
+  the frame an overlay appears, a VT switch) is printed as such and never
+  reported as passed. Writes one `drm.presentation-checks` record per run and
+  the log it read; see
+  [compositor](../../docs/architecture/compositor.md), "Verifying on
+  hardware".
+
 - `browser_qualification.mjs BUNDLE_DIR --out REPORT --renderer R` — the
   browser runtime's qualification: a release desktop bundle in headless Chrome
   at FHD, fresh-context rounds of load, first opens, window activation, the
@@ -40,7 +53,7 @@ executable stand-alone; the higher-level flow is described below.
   runtime's CPU per frame) and an idle desktop, judged against the 30 fps
   minimum, 120 fps and 50 ms activation goals. It refuses to report when the
   bundle's bytes, revision or profile, the WebGPU adapter or a quiet host
-  (`--max-load`) cannot be proven. **Perf / scheduled** runs it nightly as the
+  (`--max-load`) cannot be proven. t's performance run runs it as the
   `browser` group (`tools/perf/adapters.py browser-qualification`);
   `docs/measurements/performance.md` has the hardware invocation.
 
@@ -52,7 +65,7 @@ executable stand-alone; the higher-level flow is described below.
   picture drawn is read back: startup to the first picture, capture-to-picture
   latency, frame rate, frames never drawn and click-to-session input latency,
   and a failure for any corrupt, misnamed or older picture, decoder error,
-  wrong last frame or lost press. **Perf / scheduled** runs it nightly as the
+  wrong last frame or lost press. t's performance run runs it as the
   `stream` group (`tools/perf/adapters.py native-stream`).
 
 - `binary-sizes.sh [target-dir]` — walk `target/release/` (or the
@@ -83,19 +96,45 @@ executable stand-alone; the higher-level flow is described below.
   server. Each is timed from the client's side of the control socket, after
   100 warm-up calls, with 1,000 samples. `--app PROVIDER:ID` adds an app
   action. With `--env-json` it writes `tools/perf/record.py` records.
-  **Perf / scheduled** runs it nightly as the `agent` group.
+  t's performance run runs it as the `agent` group.
 
-- `agent_task.py (--socket PATH | --spawn SHELL [--seeder EXAMPLE])` — a
-  whole agent task: a scripted model, streamed like the Messages API from a
-  loopback fake, creates a note in Notes, writes its body, finds it by
-  search and opens it, one tool call per turn over the control socket.
-  Records the task's wall time, the time in Tilo, in the (fake) model and in
-  the agent loop, the turns and each step; `--split-repetitions` also times
-  each invoke's accept and apply apart. `--think-ms` and `--tokens-per-s`
-  model a real provider; both default to 0. `--spawn` seeds a
-  signed-in Notes desktop with the `agent_task_desktop` example of `shell`.
-  It joins the `agent` group once a whole task settles: today a listing
-  stops settling after the first new note in a hosted Notes tab.
+- `agent_task.py (--socket PATH | --spawn SHELL [--seeder EXAMPLE] [--mcp CLIENT])` —
+  a whole agent task the way an agent in a terminal of a Tilo login runs it:
+  a scripted model, streamed like the Messages API from a loopback fake,
+  drives `tilo-runtime-mcp --connect`, which relays to the session's agent
+  door. The person admits the agent (the `permission-prompts` decision on
+  the control socket) and grants it Notes; then, one tool call per turn,
+  the agent finds Notes' new-note, creates a note, finds the note by its
+  title, appends its body and reads it back. Records the task's wall time,
+  the time in Tilo, in the (fake) model and in the agent loop, the turns,
+  the calls asked again because the note was not there yet, and each step.
+  `--think-ms` and `--tokens-per-s` model a real provider; both default to
+  0. `--spawn` seeds a signed-in Notes desktop with the `agent_task_desktop`
+  example of `shell` and serves its agent door in the profile; `--socket`
+  takes a device's admin-control.sock (its agent.sock beside it) and works
+  in a workspace of its own. t's performance run runs it in the `agent`
+  group.
+
+### Windowed desktop input
+
+`desktop_chrome_bench.py` starts a private windowed compositor inside headless
+Cage, opens search, then measures pointer bursts and visible query edits. It
+checks that each edit was consumed and keeps the existing frame trace alongside
+its JSON report. It never drives or captures the user's desktop.
+
+```bash
+cp --reflink=auto target/debug/shell target/shell-before
+# Make the change and rebuild shell, then compare on the same GPU and dimensions:
+python3 scripts/perf/desktop_chrome_bench.py --shell-bin target/shell-before --label before
+python3 scripts/perf/desktop_chrome_bench.py --shell-bin target/debug/shell --label after
+```
+
+The reported round trips include control-socket and compositor-loop work, not
+physical keyboard-to-panel latency. Use repeated runs; inspect the frame trace
+rather than attributing every tail sample to rendering. `--trace-search` also
+records provider revision/query costs, without query or resource contents, to
+identify work before rendering. Results refuse an already-used label. Cage and
+a debug or `dev-overrides` shell build are required.
 
 ## Optimise (three-step PGO + optional BOLT)
 
@@ -115,11 +154,11 @@ executable stand-alone; the higher-level flow is described below.
 ## Physical device Notes latency
 
 Use the ordinary `tilo-vm` device and slot after applying a qualified release
-component with `tilo-vm swap shell --slot device --builder remote`. Update Notes
+component with `tilo device swap shell --slot device --builder remote`. Update Notes
 through its signed release channel:
 
 ```sh
-TILO_VM=yoga tilo-vm slot exec --slot device --timeout 180 -- app update so.tilo.notes
+TILO_VM=yoga tilo device slot exec --slot device --timeout 180 -- app update so.tilo.notes
 python3 scripts/perf/device_notes_latency.py --device yoga --slot device \
   --samples 100 --out target/yoga-notes-after-update
 ```
@@ -173,9 +212,8 @@ certify performance.
 
 - Rebuilding the bootc qcow2 to measure the boot-time delta against
   the baseline requires pulling the digest-pinned frozen RPM repo
-  (`registry.tilo.so/tilo/rpms`, anonymously readable). In CI the
-  `.forgejo/workflows/build-image.yml` job rebuilds it; the rebuilt
-  image + qcow2 flow through the release channel.
+  (`registry.tilo.so/tilo/rpms`, anonymously readable). In CI t's
+  `os-image-{arch}` check rebuilds the image.
 
 Measurements are workload- and host-dependent. Record the image revision,
 CPU/memory/KVM settings, adapter, and `TILO_DISTROBOX` value with each result;

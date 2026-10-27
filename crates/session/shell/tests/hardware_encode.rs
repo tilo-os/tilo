@@ -95,7 +95,6 @@ fn every_listed_hardware_encoder_round_trips_through_the_shell() {
         );
         let mut dec = VideoDecoder::new(codec, false);
         dec.set_display_size(Some((W, H)));
-        // What the receiver learns from `SurfaceStreamStart`.
         dec.set_stream_colorimetry(Some(shell::collab::colorimetry::Colorimetry::sdr_bt709()));
         let mut last = None;
         for n in 0..10 {
@@ -174,7 +173,6 @@ fn hdr_ten_bit_hardware_encode_survives_decode() {
 
         let mut dec = VideoDecoder::new(codec, true);
         dec.set_display_size(Some((W, H)));
-        // What the receiver learns from `SurfaceStreamStart`.
         dec.set_stream_colorimetry(Some(hdr.colorimetry()));
         let frame = dec.decode(&unit).expect("decode");
         let DecodedPixels::P010 { y, y_stride, .. } = &frame.pixels else {

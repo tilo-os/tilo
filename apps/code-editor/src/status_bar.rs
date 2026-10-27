@@ -18,8 +18,7 @@ pub struct StatusState {
     pub selection: usize,
     pub caret_count: usize,
     pub problems: usize,
-    /// What the language server is doing — "rust-analyzer: indexing 42%".
-    /// Empty when there is no server.
+    /// The project still being read ("Loading project 42%"), else empty.
     pub lsp: String,
     /// True while the server is starting or busy — the readout surfaces the
     /// server's state only then, so a resting "ready" doesn't clutter it.
@@ -28,6 +27,10 @@ pub struct StatusState {
     pub notice: String,
     /// True when the active buffer has unsaved edits.
     pub dirty: bool,
+    /// What the status bar says while the language server can't run, so
+    /// suggestions, problems and go to definition are missing ("Rust: code
+    /// help unavailable"), else empty.
+    pub code_help: String,
 }
 
 /// Holds the latest [`StatusState`] and composes it into the status bar's
@@ -65,6 +68,14 @@ impl StatusModel {
         parts.join(", ")
     }
 
+    /// The readout that leads the status bar while code help is missing
+    /// ("Rust: code help unavailable"). A click on it says why; a fresh
+    /// notice takes its place while it lingers.
+    pub fn trouble(&self) -> Option<String> {
+        let s = &self.state;
+        (!s.code_help.is_empty() && s.notice.is_empty()).then(|| s.code_help.clone())
+    }
+
     /// The readout at the leading edge. A fresh file-operation notice leads (so
     /// a save is visibly a save and a failed one a failure); otherwise the
     /// language, then only the signals worth acting on: unsaved edits,
@@ -75,7 +86,8 @@ impl StatusModel {
             return s.notice.clone();
         }
         let mut parts: Vec<String> = Vec::new();
-        if !s.language.is_empty() {
+        // A missing code help names the language itself, in [`Self::trouble`].
+        if !s.language.is_empty() && self.trouble().is_none() {
             parts.push(s.language.clone());
         }
         if s.dirty {
@@ -131,7 +143,7 @@ mod tests {
                     line: 3,
                     col: 9,
                     caret_count: 1,
-                    lsp: "rust-analyzer: ready".into(),
+                    lsp: String::new(),
                     ..Default::default()
                 },
                 "Rust",
@@ -147,11 +159,11 @@ mod tests {
                     selection: 20,
                     caret_count: 3,
                     problems: 4,
-                    lsp: "rust-analyzer: indexing 42%".into(),
+                    lsp: "Loading project 42%".into(),
                     lsp_working: true,
                     ..Default::default()
                 },
-                "Rust, Unsaved changes, 4 problems, rust-analyzer: indexing 42%",
+                "Rust, Unsaved changes, 4 problems, Loading project 42%",
                 "Ln 8, Col 2, 20 selected, 3 cursors",
             ),
             (
@@ -172,6 +184,16 @@ mod tests {
                 "Rust, 1 problem",
                 "Ln 1, Col 1",
             ),
+            (
+                "missing code help names the language in its own readout",
+                StatusState {
+                    code_help: "Rust: code help unavailable".into(),
+                    dirty: true,
+                    ..caret(4, 1, "Rust")
+                },
+                "Unsaved changes",
+                "Ln 4, Col 1",
+            ),
         ];
         for (name, state, left, right) in cases {
             let mut m = StatusModel::new();
@@ -179,5 +201,18 @@ mod tests {
             assert_eq!(m.left(), left, "left of {name}");
             assert_eq!(m.right(), right, "right of {name}");
         }
+        let mut m = StatusModel::new();
+        m.set_state(StatusState {
+            code_help: "Rust: code help unavailable".into(),
+            ..caret(4, 1, "Rust")
+        });
+        assert_eq!(m.trouble().as_deref(), Some("Rust: code help unavailable"));
+        m.set_state(StatusState {
+            code_help: "Rust: code help unavailable".into(),
+            notice: "Saved main.rs".into(),
+            ..caret(4, 1, "Rust")
+        });
+        assert_eq!(m.trouble(), None, "a fresh notice takes its place");
+        assert_eq!(m.left(), "Saved main.rs");
     }
 }

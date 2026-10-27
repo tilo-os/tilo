@@ -29,7 +29,6 @@ pub struct SurfaceLadder {
     pub base: f32,
     /// The window ground every app paints on.
     pub content: f32,
-    /// The navigation region of a window.
     pub sidebar: f32,
     /// The detail / inspector region of a window.
     pub inspector: f32,

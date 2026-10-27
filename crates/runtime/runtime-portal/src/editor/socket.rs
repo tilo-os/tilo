@@ -20,8 +20,6 @@ impl AsFd for Socket {
 }
 impl Socket {
     /// Create private, close-on-exec endpoints without an ambient listener.
-    /// # Errors
-    /// Returns the kernel socket creation or validation error.
     pub fn pair() -> io::Result<(Self, Self)> {
         let mut fds = [-1; 2];
         // SAFETY: initialized outputs; a successful pair is owned exactly once.
@@ -74,8 +72,6 @@ impl Socket {
     }
 
     /// Bound reads on a startup or transport worker, never on the UI thread.
-    /// # Errors
-    /// Returns the kernel timeout configuration error.
     pub fn read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.0.set_read_timeout(timeout)
     }
@@ -108,8 +104,6 @@ impl Socket {
 
     /// Receive one exact bounded packet, refusing and closing ancillary rights.
     /// This checks framing custody only, not kernel sender identity.
-    /// # Errors
-    /// Refuses truncated packets, ancillary rights, EOF and transport errors.
     pub fn receive(&self, bytes: &mut [u8]) -> io::Result<usize> {
         if bytes.len() > super::FRAME_BYTES {
             return Err(io::Error::other("editor packet exceeds its bound"));

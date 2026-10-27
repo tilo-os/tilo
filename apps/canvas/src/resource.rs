@@ -3,7 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{
-    self, ActionCx, ActionRef, Doc, Invoke, JsonSchema, ModelError, Refusal, SearchEntry, resource,
+    self, ActionCx, ActionRef, Doc, Invoke, JsonSchema, ModelError, Place, Refusal, SearchEntry,
+    resource,
 };
 
 // The verbs' argument structs, named apart from the verbs' own generated
@@ -202,16 +203,22 @@ pub struct Inspect {
     /// Only marks on this layer.
     pub layer: Option<String>,
     /// How many of the newest matching marks to list, 0 to 400 (default
-    /// 100; none with measure).
+    /// 100).
     pub limit: Option<u32>,
     /// A past version: a change id from history or a checkpoint name.
     pub version: Option<String>,
     /// Also each mark's shape, style and transform, to edit exactly.
     pub full: Option<bool>,
-    /// Marks or groups to measure as the eye sees them: ink box, ink area,
-    /// centre of mass and its offset from the box's middle (for balancing
-    /// icons optically), and a text's letter boxes.
-    pub measure: Option<Vec<String>>,
+}
+
+/// Measure marks' ink as the eye sees it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Measure {
+    /// Marks or groups to measure.
+    pub ids: Vec<String>,
+    /// A past version: a change id from history or a checkpoint name.
+    pub version: Option<String>,
 }
 
 /// Render the artwork beside, over or against the reference picture, with
@@ -246,7 +253,8 @@ pub struct Export {
     pub path: Option<String>,
 }
 
-/// Find an image's subject or fit the selected edge to the image.
+/// Find an area in the picture of the artwork: like colour touching a
+/// point, a colour everywhere, the subject, or the selected edge fitted.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindArea {
@@ -254,28 +262,19 @@ pub struct FindArea {
     pub subject: Option<bool>,
     /// Edge reach in artwork units; subject defaults to 6 image pixels.
     pub refine: Option<f64>,
-    /// Subject point `[x, y]` in artwork units.
+    /// `[x, y]` in artwork units: alone, the magic wand (like colour
+    /// touching it); with subject, the object there.
     pub at: Option<[f64; 2]>,
+    /// `#rrggbb`: that colour everywhere.
+    pub colour: Option<String>,
+    /// How far a colour may stray for at or colour, 0..1 (default 0.15).
+    pub tolerance: Option<f64>,
     /// Find on this layer alone; otherwise use all visible layers.
     pub layer: Option<String>,
     /// `replace` (default), `add`, `subtract` or `intersect`.
     pub mode: Option<String>,
     /// Feather in artwork units.
     pub feather: Option<f64>,
-}
-
-impl From<FindArea> for crate::selection::Select {
-    fn from(area: FindArea) -> Self {
-        Self {
-            subject: area.subject,
-            refine: area.refine,
-            at: area.at,
-            layer: area.layer,
-            mode: area.mode,
-            feather: area.feather,
-            ..Self::default()
-        }
-    }
 }
 
 /// Export the artwork, or some of its marks, as SVG.
@@ -329,6 +328,17 @@ pub enum ViewOp {
         #[param(flatten)]
         inspect: Inspect,
     },
+    /// Measure ink.
+    ///
+    /// Weigh how marks or groups put down ink, as the eye sees it: each
+    /// one's ink box, ink area, centre of mass and its offset from the box's
+    /// middle (two icons balance when areas and offsets match), and a
+    /// text's letter boxes. Answers once their pictures are rendered.
+    #[effect(job, returns, idempotent, kind = "read")]
+    Measure {
+        #[param(flatten)]
+        measure: Measure,
+    },
     /// List media.
     ///
     /// List the media layers can use (oil, watercolour presets and those
@@ -340,7 +350,7 @@ pub enum ViewOp {
     ///
     /// Render the artwork at full size (or scaled) as a PNG, JPEG or WebP,
     /// written to path or kept as content.
-    #[effect(job, returns)]
+    #[effect(job, returns, kind = "read", outside_with = "path")]
     Export {
         #[param(flatten)]
         export: Export,
@@ -350,7 +360,7 @@ pub enum ViewOp {
     /// Compare two versions: marks and layers added, removed or changed by id
     /// (with what changed: stacking, shape, fill, …), the changed region, and
     /// with look a before|after picture of it.
-    #[effect(view, returns, idempotent)]
+    #[effect(job, returns, idempotent, kind = "read")]
     CompareVersions {
         #[param(flatten)]
         diff: Diff,
@@ -360,7 +370,7 @@ pub enum ViewOp {
     /// Export the artwork as SVG (plain layers as exact vectors, painted ones
     /// as pictures), written to path or kept as content (small ones
     /// answered).
-    #[effect(returns)]
+    #[effect(job, returns, kind = "read", outside_with = "path")]
     ExportSvg {
         #[param(flatten)]
         svg: ExportSvg,
@@ -371,7 +381,7 @@ pub enum ViewOp {
     /// a difference score (mean colour distance 0..1 in the reference's
     /// frame; lower is closer) and the regions that differ most, to iterate
     /// toward it.
-    #[effect(view, returns, idempotent)]
+    #[effect(job, returns, idempotent, kind = "read")]
     Compare {
         #[param(flatten)]
         compare: Compare,
@@ -380,16 +390,17 @@ pub enum ViewOp {
     ///
     /// Save the artwork as a .artwork file open-artwork reads: to a path, or
     /// kept as content.
-    #[effect(returns)]
+    #[effect(returns, kind = "read", outside_with = "path")]
     SaveArtwork {
         #[param(flatten)]
         save: SaveArtwork,
     },
     /// Find image area.
     ///
-    /// Find a photo's subject (subject: true) or refine the selected edge
-    /// (refine: units) in the background, with progress and one undo step.
-    /// Then use-selection mask or fill. Accepts select's
+    /// Select what a picture of the artwork shows: the magic wand (at:
+    /// colour touching it), a colour everywhere (colour), a photo's subject
+    /// (subject: true) or the selected edge refined (refine: units), as one
+    /// undo step. Then use-selection fill, mask or clear. Accepts select's
     /// add/subtract/intersect, layer and feather options. The artwork must
     /// remain unchanged while the area is found.
     #[effect(job, returns, kind = "undoable")]
@@ -642,11 +653,6 @@ mod prepare {
         Ok(())
     }
 
-    /// A colour or magic-wand area as the geometry the window finds.
-    pub(super) fn select(params: &mut artwork::Select) -> Result<(), String> {
-        crate::author::resolve(&mut params.select)
-    }
-
     /// The matte's pictures defringed and kept as content.
     pub(super) fn use_selection(params: &mut artwork::UseSelection) -> Result<(), String> {
         crate::subject::clean(&mut params.using)
@@ -662,6 +668,7 @@ mod prepare {
     label = "Artwork",
     initialize = Artwork::genesis,
     load = Artwork::loaded,
+    lands = Artwork::lands,
     search = Artwork::entries,
     answer = crate::answer::answer,
     effects = ViewOp
@@ -676,8 +683,8 @@ impl Artwork {
     /// the paper), marker for flat see-through tone, airbrush for soft glows,
     /// calligraphy for lettering. brush eraser (no colour) clears paint under
     /// it on its layer; remove-marks along takes whole strokes. Each stroke:
-    /// points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or
-    /// pigment:<name>). Answers the new ids. One stroke can be many: forks
+    /// points `[[x,y] or [x,y,pressure]]`, size, colour (#rrggbb or
+    /// `pigment:<name>`). Answers the new ids. One stroke can be many: forks
     /// grows a branch or bare tree; dabs scatters foliage, flowers or (with
     /// `dab_length`, angle -90) grass; hatch shades the area its points
     /// enclose. Work like a painter, looking close after each passage: big
@@ -704,9 +711,19 @@ impl Artwork {
         shapes.apply(self, &art)
     }
 
+    /// Draw chart.
+    ///
+    /// Bar chart from numbers; use it, not hand-computed rects. Equal bars,
+    /// one baseline, lengths exactly value/max of box.
+    #[action(answers)]
+    pub fn chart(&mut self, #[param(flatten)] chart: crate::chart::Chart) -> Result<(), Refusal> {
+        let art = self.as_read();
+        chart.apply(self, &art)
+    }
+
     /// Edit marks.
     ///
-    /// Change marks by id: colours, opacity, name, `move_by` [dx,dy], scale,
+    /// Change marks by id: colours, opacity, name, `move_by` `[dx,dy]`, scale,
     /// rotate and flip about their centre, or move them to another layer.
     /// Strokes: re-brush (brush, size, params), smooth, simplify, extend,
     /// split at a point, merge. Pictures: crop, straighten, adjust (exposure,
@@ -899,13 +916,13 @@ impl Artwork {
 
     /// Select area.
     ///
-    /// Select an area: shapes, marks, magic wand (at) or colour; add,
-    /// subtract, intersect, grow, feather, invert. For subject or edge
-    /// refinement invoke find-area (a background job). Then use-selection, or
-    /// clip: "selection" in paint or draw. Bucket fill: select at,
-    /// use-selection fill. Cut-out: subject, use-selection mask. look
-    /// outlines it
-    #[action(answers, prepare = prepare::select)]
+    /// Select an area: shapes or marks; add, subtract, intersect, grow,
+    /// feather, invert. For the magic wand, a colour, the subject or edge
+    /// refinement invoke find-area (a job, as it reads a picture). Then
+    /// use-selection, or clip: "selection" in paint or draw. Bucket fill:
+    /// find-area at, use-selection fill. Cut-out: find-area subject,
+    /// use-selection mask. look outlines it
+    #[action(answers)]
     pub fn select(&mut self, #[param(flatten)] select: Selecting) -> Result<(), Refusal> {
         let art = self.as_read();
         select.apply(self, &art)
@@ -933,6 +950,34 @@ impl Artwork {
 }
 
 impl Artwork {
+    /// Where selecting leaves the participant who asked for it: the marks
+    /// `select` names, as a range over the artwork's marks, in the order
+    /// every collaborator holds them — so a peer draws the selection on
+    /// their own screen, and a participant with no pointer of its own shows
+    /// what it picked.
+    fn lands(
+        state: &Self,
+        action: &<Self as ui::tilo_resource::Resource>::Action,
+    ) -> Option<Place> {
+        let ArtworkAction::Select(select) = &action.operation else {
+            return None;
+        };
+        let named = select.select.marks.as_ref()?;
+        let picked: Vec<usize> = state
+            .marks
+            .iter()
+            .enumerate()
+            .filter(|(_, mark)| named.iter().any(|id| *id == mark.id || *id == mark.group))
+            .map(|(index, _)| index)
+            .collect();
+        let (first, last) = (*picked.first()?, picked.last()?);
+        Some(Place::Range {
+            item: crate::surface::peers::SELECTION_ITEM.to_owned(),
+            start: first,
+            end: last.saturating_add(1),
+        })
+    }
+
     /// A new artwork is an empty sheet of paper with one plain layer, so the
     /// first stroke has somewhere to go.
     fn genesis() -> Self {
@@ -1017,5 +1062,42 @@ impl Artwork {
     fn as_read(&mut self) -> Self {
         self.settle();
         self.clone()
+    }
+}
+
+#[cfg(test)]
+mod export_reads {
+    use ui::tilo_actions::ActionKind;
+    use ui::tilo_resource::Effect as _;
+
+    /// Looking at the artwork and keeping a picture, an SVG or the artwork
+    /// file of it as content only read it, so whoever may read the artwork,
+    /// an agent among them, may run them; told a path to write, an export
+    /// reaches outside and asks first.
+    #[test]
+    fn looks_and_exports_kept_as_content_are_reads_and_a_path_reaches_outside() {
+        let specs = super::ViewOp::specs();
+        let spec = |id: &str| {
+            specs
+                .iter()
+                .find(|spec| spec.id == id)
+                .unwrap_or_else(|| panic!("`{id}` is published"))
+        };
+        assert_eq!(spec("look").contract.kind, ActionKind::Read);
+        for id in ["export", "export-svg", "save-artwork"] {
+            let export = spec(id);
+            assert_eq!(export.contract.kind, ActionKind::Read, "{id}");
+            let need = |arguments: serde_json::Value| {
+                export
+                    .need_for(Some(arguments.as_object().expect("an object")), None)
+                    .kind
+            };
+            assert_eq!(need(serde_json::json!({})), ActionKind::Read, "{id}");
+            assert_eq!(
+                need(serde_json::json!({ "path": "/tmp/artwork.out" })),
+                ActionKind::Outside,
+                "{id}"
+            );
+        }
     }
 }

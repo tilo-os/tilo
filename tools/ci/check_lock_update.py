@@ -188,9 +188,12 @@ def relock_violations(old_text: str, new_text: str) -> list[str]:
         before = sorted(key[1] for key in removed if key[0] == name)
         after = sorted(key[1] for key in added if key[0] == name)
         problems.append(f"{name} moved {', '.join(before)} -> {', '.join(after)}")
-    problems += _kept_entry_problems(
-        old, new, removed_names | added_names, "beyond the entries that came and went"
-    )
+    # A relock may point a kept entry at another package already in the lock,
+    # as when a committed manifest swapped one dependency for another: its
+    # references may change, nothing else of it. `cargo metadata --locked`
+    # holds the references to the manifests.
+    every_name = {key[0] for key in set(old) | set(new)}
+    problems += _kept_entry_problems(old, new, every_name, "")
     return problems
 
 

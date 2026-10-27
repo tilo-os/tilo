@@ -6,11 +6,6 @@ use ui::lock::MutexRecover as _;
 use ui::{Widget, headless::FrameHarness};
 use vello::{Scene, kurbo::Rect, peniko::Color};
 
-/// Bounds a wait that ends as soon as the window settles; only a hang
-/// reaches it. Settling is a fixed amount of work, but how long it takes on
-/// a builder running every other test beside it is not.
-const HANG_BOUND: ui::time::Duration = ui::time::Duration::from_secs(30);
-
 struct DamageWitness {
     inner: Box<dyn Widget>,
     damage: Rc<RefCell<Vec<Rect>>>,
@@ -89,17 +84,12 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // Autosave shows nothing, so no bubble keeps the window busy until the
     // write lands: wait for it (debounce, then saved) before the baseline,
     // or its completion would land in the typing measured below.
-    let written = std::time::Instant::now();
-    while written.elapsed() < std::time::Duration::from_secs(5)
-        && (written.elapsed() < std::time::Duration::from_millis(900)
-            || f.records.save_status(&checkout.id).ok()
-                != Some(ui::record::RecordSaveStatus::Saved))
-    {
-        std::thread::sleep(std::time::Duration::from_millis(100));
+    tilo_test_env::wait_until("the edit's write lands", || {
         driver.settle_for_capture(ui::time::Duration::from_millis(100));
-    }
+        f.records.save_status(&checkout.id).ok() == Some(ui::record::RecordSaveStatus::Saved)
+    });
     let started = ui::time::now();
-    let settled = driver.settle_for_capture(HANG_BOUND);
+    let settled = driver.settle_for_capture(tilo_test_env::hang_bound());
     if !settled {
         eprintln!(
             "paragraph-settle-demand key={key:?} reduce_motion={reduce_motion} timestamp={advance_timestamp} elapsed={:?}",

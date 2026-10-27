@@ -79,17 +79,16 @@ pub enum ProbeStep {
     Wait,
     /// It was, and another round is due: send a ping.
     Ping,
-    /// [`ROUNDS`] quiet rounds in a row were answered.
+    /// `ROUNDS` quiet rounds in a row were answered.
     Done,
 }
 
-/// Ping round trips to one client until [`ROUNDS`] in a row pass without
+/// Ping round trips to one client until `ROUNDS` in a row pass without
 /// the client drawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rounds {
     /// Quiet answers still needed.
     left: u8,
-    /// The client's pong count when the ping in flight went out.
     sent_at: u64,
     /// The client drew since the ping in flight went out, so its answer
     /// does not count.

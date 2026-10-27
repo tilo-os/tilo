@@ -1,11 +1,10 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
-//! Where a Sheets launch keeps its workbook.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn launch(host: &Path, env: &[(&str, &str)]) {
     std::fs::create_dir_all(host).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sheets"));
+    let mut command = Command::new(tilo_test_env::package_binary!("sheets"));
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("TILO_") || key.to_string_lossy().starts_with("QUICK_")
         {

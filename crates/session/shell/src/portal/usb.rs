@@ -202,13 +202,11 @@ mod tests {
 
     #[test]
     fn usb_approval_is_an_exact_subset_of_valid_requests() {
-        // Phase `malformed_and_duplicate_identifiers_fail_closed`.
         {
             let device = |id: &str| (id.to_string(), HashMap::new(), HashMap::new());
             assert!(validate_devices(vec![device("a"), device("a")]).is_none());
             assert!(validate_devices(vec![device("bad\nidentifier")]).is_none());
         }
-        // Phase `approval_returns_only_id_and_requested_write_bit`.
         {
             let devices = vec![RequestedDevice {
                 id: "device-1".into(),
@@ -220,7 +218,6 @@ mod tests {
             assert_eq!(response, 0);
             assert!(result.contains_key("devices"));
         }
-        // Phase `approval_is_an_exact_subset_and_cannot_upgrade_write_access`.
         {
             let devices = vec![
                 RequestedDevice {

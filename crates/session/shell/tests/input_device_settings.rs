@@ -6,7 +6,6 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use settings_store::live::{LiveSettings, SectionFollower};
 use shell::compositor::backend::drm::input_config::{
@@ -132,10 +131,10 @@ fn changing_a_touchpad_setting_reconfigures_the_attached_device() {
     let off = devices[0].applied[2];
     assert_eq!(off.tap, Some(false));
     assert_eq!(off.tap_drag_lock, Some(false));
-    // Long enough for every notification of the write and one stamp poll.
-    std::thread::sleep(
-        settings_store::live::POLL_INTERVAL.saturating_add(Duration::from_millis(300)),
-    );
+    // Re-reading the unchanged document, as each further notification of the
+    // write does, publishes nothing.
+    let settled = live.generation();
+    assert_eq!(live.refresh_now().generation, settled);
     assert!(
         follower.changed_sections(&live).is_empty(),
         "no further change, no further reconfiguration"

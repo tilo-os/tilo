@@ -487,6 +487,10 @@ pub struct MapModel {
     pub selected: Option<String>,
     /// Active road route, if any.
     pub route: Option<Route>,
+    /// The routes the service offered for this trip, the active one first:
+    /// a single route when it offered no other, and what "another route"
+    /// steps through.
+    pub route_alternatives: Vec<Route>,
     /// Public-transport itinerary options.
     pub transit: Vec<TransitJourney>,
     /// Index of the highlighted transit option.
@@ -537,6 +541,7 @@ impl Default for MapModel {
             recents: Vec::new(),
             selected: None,
             route: None,
+            route_alternatives: Vec::new(),
             transit: Vec::new(),
             transit_choice: 0,
             panel: Panel::Explore,
@@ -611,7 +616,6 @@ mod tests {
 
     #[test]
     fn recents_and_saved_places_dedupe_cap_and_keep_flags() {
-        // Phase `recents_dedupe_and_cap`.
         {
             let mut m = MapModel::default();
             for i in 0..12 {
@@ -631,7 +635,6 @@ mod tests {
             );
         }
 
-        // Phase `toggle_saved_flips`.
         {
             let mut m = MapModel::default();
             m.places.push(Place::new(
@@ -646,7 +649,6 @@ mod tests {
             assert!(!m.toggle_saved("missing"));
         }
 
-        // Phase `upsert_preserves_saved_flag`.
         {
             let mut m = MapModel::default();
             let mut p = Place::new("x", "X", Category::Shop, "addr", LatLon::new(1.0, 2.0));

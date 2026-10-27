@@ -9,6 +9,11 @@
 #   IDENTITY      publisher identity file ({"secret_key_hex": ...}); a
 #                 throwaway key when absent
 #
+# With TILO_ENV_TOOLS_PUBLISHER=<hex public key> instead of IDENTITY, each
+# tool is sealed for that publisher without its key, with a placeholder
+# signature that `tilo-env-tools sign-catalog` replaces (CI's release
+# signing step, tools/ci/publish/env-tools.sh).
+#
 # Each tool is built by `tilo-env-tools build` in its bwrap build sandbox:
 # the runtime as an overlay lower, dnf as uid 0 of its own user namespace.
 # The state directory (dnf metadata, overlay uppers) must be on a filesystem
@@ -36,6 +41,10 @@ mkdir -p "$out" "$state"
 
 identity_args=()
 [ -z "$identity" ] || identity_args=(--identity "$identity")
+if [ -n "${TILO_ENV_TOOLS_PUBLISHER:-}" ]; then
+  [ -z "$identity" ] || die "IDENTITY and TILO_ENV_TOOLS_PUBLISHER are exclusive"
+  identity_args=(--publisher "$TILO_ENV_TOOLS_PUBLISHER")
+fi
 
 results="$out/results.jsonl"
 : > "$results"

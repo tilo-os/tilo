@@ -17,6 +17,7 @@
 //! A redo removes completed markers through the same selective inversion.
 
 use std::collections::HashSet;
+use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, Patch, PatchAction, Prop, ReadDoc, ScalarValue};
@@ -42,8 +43,10 @@ pub const AGENT_RUN: &str = "agent-run";
 /// native task stamps its steps with the task, so that is the run undo names.
 pub const TASK_RUN: &str = "task";
 
-/// Whether a group of this kind is a run that undo can name.
-fn names_a_run(kind: &str) -> bool {
+/// Whether a group of this kind is a run that undo can name: an agent's
+/// connection, or its run of a task.
+#[must_use]
+pub fn names_a_run(kind: &str) -> bool {
     kind == AGENT_RUN || kind == TASK_RUN
 }
 
@@ -64,7 +67,7 @@ impl Scope {
     pub fn of(context: Option<&ActionContext>, actor_hex: &str) -> Self {
         if let Some(group) = context
             .and_then(|context| context.group.as_ref())
-            .filter(|group| group.kind == AGENT_RUN)
+            .filter(|group| names_a_run(&group.kind))
         {
             return Self::Run(group.id.clone());
         }
@@ -87,10 +90,9 @@ impl Scope {
         let context = version.context.as_ref();
         let run = context
             .and_then(|context| context.group.as_ref())
-            .filter(|group| group.kind == AGENT_RUN);
+            .filter(|group| names_a_run(&group.kind));
         match self {
-            // A named run may be a task as well as an agent connection; the
-            // person's own scopes below still leave only agent runs out.
+            // The person's own scopes below leave every agent run out.
             Self::Run(id) => context
                 .and_then(|context| context.group.as_ref())
                 .is_some_and(|group| names_a_run(&group.kind) && &group.id == id),
@@ -206,7 +208,6 @@ pub(crate) enum Kind {
     Undo(Vec<String>),
     /// A redo: the changes whose undo it reverted.
     Redo(Vec<String>),
-    /// An edit of the content.
     Edit,
     /// Nothing a person did to the content: a checkpoint, a schema genesis,
     /// housekeeping, content from outside.
@@ -231,6 +232,13 @@ pub fn is_bookkeeping(patch: &Patch) -> bool {
 
 fn kind_of(doc: &AutoCommit, version: &Version) -> Kind {
     kind_in(doc.committed_document(), version)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Operations [`kind_in`] has read and objects whose root key it has
+    /// looked up, on this thread.
+    static KIND_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 /// What `version` was, read from the change's own operations: its writes to
@@ -276,6 +284,8 @@ fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
     let mut roots: std::collections::HashMap<ObjectId, Option<String>> =
         std::collections::HashMap::new();
     for (counter, op) in (start..).zip(&change.operations) {
+        #[cfg(test)]
+        KIND_WORK.with(|work| work.set((work.get().0.saturating_add(1), work.get().1)));
         let visible = match op.action {
             // A delete shows only where it removes what was there before.
             OpType::Delete => op.pred.iter().any(|pred| !own(pred)),
@@ -323,8 +333,8 @@ fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
     }
     // In the order the document keeps its root keys, as a reading of the
     // document lists them.
-    undone.sort_unstable();
-    redone.sort_unstable();
+    undone.compact_sort();
+    redone.compact_sort();
     if !undone.is_empty() {
         Kind::Undo(undone)
     } else if !redone.is_empty() {
@@ -338,6 +348,8 @@ fn kind_in(doc: &automerge::Automerge, version: &Version) -> Kind {
 
 /// The root key the object `obj` sits under, if it is still in `doc`.
 fn root_key_of(doc: &automerge::Automerge, obj: &automerge::legacy::ObjectId) -> Option<String> {
+    #[cfg(test)]
+    KIND_WORK.with(|work| work.set((work.get().0, work.get().1.saturating_add(1))));
     let id = doc.import_obj(&obj.to_string()).ok()?;
     match doc.parents(&id).ok()?.last()?.prop {
         Prop::Map(key) => Some(key),
@@ -453,7 +465,6 @@ struct Step {
     shared: Option<std::rc::Rc<Shared>>,
     kind: Option<tilo_actions::ActionKind>,
     change: tilo_actions::ChangeKind,
-    /// Whether the change has an entry.
     entry: bool,
 }
 
@@ -1164,7 +1175,7 @@ pub fn checkpoints(doc: &AutoCommit) -> Vec<Checkpoint> {
             Some(Checkpoint { name, heads })
         })
         .collect();
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.compact_sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
 
@@ -1207,13 +1218,13 @@ pub fn resolve(doc: &AutoCommit, version: &str) -> Result<Vec<ChangeHash>, Strin
             }
             heads.push(hash);
         }
-        heads.sort_unstable();
+        heads.compact_sort();
         let frozen = doc
             .clone()
             .fork_at(&heads)
             .map_err(|error| error.to_string())?;
         let mut canonical = frozen.base_heads();
-        canonical.sort_unstable();
+        canonical.compact_sort();
         if canonical != heads {
             return Err("A causal frontier must not include an ancestor of another head.".into());
         }

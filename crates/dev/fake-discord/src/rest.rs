@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 
 use crate::{BOT_USER, GUILD, Scripted, Shared, State, Webhook, time};
 
+mod oauth;
+
 /// One REST request the fake received.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Recorded {
@@ -21,6 +23,11 @@ pub struct Recorded {
     pub query: Vec<(String, String)>,
     /// Whether it carried `Authorization: Bot <the current token>`.
     pub bot_auth: bool,
+    /// The OAuth 2 access token it carried (`Authorization: Bearer ...`).
+    pub bearer: Option<String>,
+    /// The client credentials it carried (`Authorization: Basic ...`),
+    /// still encoded.
+    pub basic: Option<String>,
     /// `X-Audit-Log-Reason`, decoded.
     pub audit_reason: Option<String>,
     /// The JSON body, or a multipart request's `payload_json`.
@@ -150,6 +157,10 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
         let mut state = shared.lock();
         let bot_auth = authorization.as_deref() == Some(format!("Bot {}", state.token).as_str());
         let route_path = path.strip_prefix("/api/v10").map(str::to_owned);
+        let (bearer, basic) = (
+            scheme(authorization.as_deref(), "Bearer "),
+            scheme(authorization.as_deref(), "Basic "),
+        );
         let recorded = Recorded {
             method: method.clone(),
             path: route_path.as_deref().map_or_else(
@@ -158,6 +169,8 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
             ),
             query,
             bot_auth,
+            bearer,
+            basic,
             audit_reason,
             json,
             files,
@@ -173,6 +186,8 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
                 },
                 None => Answer::error(404, 0, "Not Found"),
             }
+        } else if let Some(answer) = oauth::page(&mut state, &path, &recorded.query) {
+            answer
         } else if route_path.is_none() {
             Answer::error(404, 0, "404: Not Found")
         } else if let Some(scripted) = take_script(&mut state, &method, &recorded.path) {
@@ -206,6 +221,11 @@ async fn handle(shared: &Shared, request: Request<Incoming>) -> Response<Full<By
     response
         .body(Full::new(Bytes::from(answer.body)))
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+}
+
+/// The credentials of an `Authorization` header under `prefix`.
+fn scheme(authorization: Option<&str>, prefix: &str) -> Option<String> {
+    authorization?.strip_prefix(prefix).map(str::to_owned)
 }
 
 fn windowed(state: &mut State, index: usize, recorded: &Recorded) -> Answer {
@@ -265,6 +285,94 @@ fn take_script(state: &mut State, method: &str, path: &str) -> Option<Scripted> 
     Some(answer)
 }
 
+/// Discord's rule for a custom emoji's name.
+fn emoji_name(name: &str) -> bool {
+    (2..=32).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+fn missing_permissions() -> Answer {
+    Answer::error(403, 50_013, "Missing Permissions")
+}
+
+/// `POST /guilds/{id}/emojis`: an upload, with Discord's checks of the
+/// bot's permission, the guild's slots, the name and the picture (a data
+/// URI of at most 256 KiB).
+fn create_emoji(state: &mut State, body: &Value) -> Answer {
+    use base64::Engine as _;
+    if !state.expressions.create && !state.expressions.manage {
+        return missing_permissions();
+    }
+    if state.emojis.len() >= state.expressions.slots {
+        return Answer::error(
+            400,
+            30_008,
+            &format!(
+                "Maximum number of emojis reached ({})",
+                state.expressions.slots
+            ),
+        );
+    }
+    let name = body["name"].as_str().unwrap_or_default();
+    let picture = body["image"]
+        .as_str()
+        .and_then(|uri| uri.strip_prefix("data:image/"))
+        .and_then(|rest| rest.split_once(";base64,"))
+        .filter(|(kind, _)| matches!(*kind, "png" | "jpeg" | "gif" | "webp"))
+        .and_then(|(_, data)| base64::engine::general_purpose::STANDARD.decode(data).ok());
+    let Some(picture) = picture.filter(|p| !p.is_empty() && p.len() <= 256 * 1024) else {
+        return Answer::error(400, 50_035, "Invalid Form Body (image)");
+    };
+    if !emoji_name(name) {
+        return Answer::error(400, 50_035, "Invalid Form Body (name)");
+    }
+    let id = state.snowflake();
+    let emoji = json!({
+        "id": id, "name": name, "animated": false, "available": true, "require_colons": true,
+        "managed": false, "roles": [], "user": {"id": BOT_USER, "username": "tilo-bridge", "bot": true},
+    });
+    state
+        .cdn
+        .insert(format!("emojis/{id}"), ("image/png".into(), picture));
+    state.emojis.push(emoji.clone());
+    let update = json!({"guild_id": GUILD, "emojis": state.emojis});
+    state.dispatch("GUILD_EMOJIS_UPDATE", update);
+    Answer::json(201, &emoji)
+}
+
+/// `GET`, `PATCH` (rename) or `DELETE /guilds/{id}/emojis/{emoji}`. An
+/// emoji the bot uploaded takes Create Expressions to change, any other
+/// Manage Expressions.
+fn change_emoji(state: &mut State, method: &str, emoji: &str, body: &Value) -> Answer {
+    let Some(index) = state.emojis.iter().position(|e| e["id"] == emoji) else {
+        return Answer::error(404, 10_014, "Unknown Emoji");
+    };
+    if method == "GET" {
+        return Answer::json(200, &state.emojis[index]);
+    }
+    let own = state.emojis[index]["user"]["id"] == BOT_USER;
+    let allowed = state.expressions.manage || (own && state.expressions.create);
+    if !allowed {
+        return missing_permissions();
+    }
+    if method == "DELETE" {
+        state.emojis.remove(index);
+        state.cdn.remove(&format!("emojis/{emoji}"));
+    } else {
+        let name = body["name"].as_str().unwrap_or_default();
+        if !emoji_name(name) {
+            return Answer::error(400, 50_035, "Invalid Form Body (name)");
+        }
+        state.emojis[index]["name"] = json!(name);
+    }
+    let changed = state.emojis.get(index).cloned();
+    let update = json!({"guild_id": GUILD, "emojis": state.emojis});
+    state.dispatch("GUILD_EMOJIS_UPDATE", update);
+    match changed {
+        Some(emoji) if method == "PATCH" => Answer::json(200, &emoji),
+        _ => Answer::json(204, &Value::Null),
+    }
+}
+
 fn decode(text: &str) -> String {
     percent_encoding::percent_decode_str(text)
         .decode_utf8_lossy()
@@ -275,6 +383,9 @@ fn decode(text: &str) -> String {
 fn route(state: &mut State, request: &Recorded) -> Answer {
     let segments: Vec<&str> = request.path.trim_start_matches('/').split('/').collect();
     let body = &request.json;
+    if let Some(answer) = oauth::route(state, request, &segments) {
+        return answer;
+    }
     let public = matches!(segments.first(), Some(&"webhooks" | &"interactions"));
     if !public && !request.bot_auth {
         return Answer::unauthorized();
@@ -292,6 +403,22 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             &json!({"id": BOT_USER, "username": "tilo-bridge", "bot": true}),
         ),
         ("POST", ["webhooks", id, token]) => execute_webhook(state, id, token, request),
+        ("PATCH", ["webhooks", BOT_USER, token, "messages", "@original"]) => {
+            let Some(interaction) = token.strip_prefix("itoken-") else {
+                return Answer::error(401, 50027, "Invalid Webhook Token");
+            };
+            let answered = state
+                .interaction_replies
+                .iter()
+                .any(|reply| reply["interaction"] == interaction);
+            if !answered {
+                return Answer::error(404, 10008, "Unknown Message");
+            }
+            state
+                .interaction_edits
+                .push(json!({"interaction": interaction, "edit": body}));
+            Answer::json(200, body)
+        }
         ("PATCH", ["webhooks", id, token, "messages", message]) => {
             if let Err(answer) = check_webhook(state, id, token) {
                 return answer;
@@ -347,12 +474,23 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             if !state.messages.iter().any(|m| m["id"] == *message) {
                 return Answer::error(404, 10008, "Unknown Message");
             }
+            // A custom emoji is named `name:id`, and must be one the bot can
+            // use: here, one of the guild's.
+            if let Some((name, id)) = emoji.split_once(':')
+                && !state
+                    .emojis
+                    .iter()
+                    .any(|e| e["name"] == name && e["id"] == id)
+            {
+                return Answer::error(400, 10014, "Unknown Emoji");
+            }
             let entry = ((*message).to_owned(), (*emoji).to_owned());
             if !state.bot_reactions.contains(&entry) {
                 state.bot_reactions.push(entry);
+                let emoji = state.emoji_json(emoji);
                 state.dispatch(
                     "MESSAGE_REACTION_ADD",
-                    json!({"user_id": BOT_USER, "channel_id": channel, "message_id": message, "guild_id": GUILD, "emoji": {"id": null, "name": emoji}}),
+                    json!({"user_id": BOT_USER, "channel_id": channel, "message_id": message, "guild_id": GUILD, "emoji": emoji}),
                 );
             }
             Answer::json(204, &Value::Null)
@@ -372,9 +510,10 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             let entry = ((*message).to_owned(), (*emoji).to_owned());
             if state.bot_reactions.contains(&entry) {
                 state.bot_reactions.retain(|r| *r != entry);
+                let emoji = state.emoji_json(emoji);
                 state.dispatch(
                     "MESSAGE_REACTION_REMOVE",
-                    json!({"user_id": BOT_USER, "channel_id": channel, "message_id": message, "guild_id": GUILD, "emoji": {"id": null, "name": emoji}}),
+                    json!({"user_id": BOT_USER, "channel_id": channel, "message_id": message, "guild_id": GUILD, "emoji": emoji}),
                 );
             }
             Answer::json(204, &Value::Null)
@@ -418,6 +557,22 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             let answer = webhook_json(&webhook);
             state.webhooks.push(webhook);
             Answer::json(200, &answer)
+        }
+        ("PUT", ["channels", channel, "voice-status"]) => {
+            // Discord wants the bot in the channel (or Manage Channels).
+            if state.voice.bot_channel.as_deref() != Some(*channel) {
+                return Answer::error(403, 50013, "Missing Permissions");
+            }
+            let status = body["status"].as_str().map(str::to_owned);
+            state.voice.statuses.insert((*channel).to_owned(), status);
+            Answer::json(204, &Value::Null)
+        }
+        ("PATCH", ["guilds", GUILD, "members", "@me"]) => {
+            state.voice.nick = body["nick"].as_str().map(str::to_owned);
+            Answer::json(
+                200,
+                &json!({"nick": state.voice.nick, "roles": state.voice.bot_roles}),
+            )
         }
         ("PATCH", ["channels", channel]) => {
             let Some(stored) = state.channel_mut(channel) else {
@@ -468,6 +623,10 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             state.channels.push(channel.clone());
             state.dispatch("CHANNEL_CREATE", channel.clone());
             Answer::json(201, &channel)
+        }
+        ("POST", ["guilds", GUILD, "emojis"]) => create_emoji(state, body),
+        ("GET" | "PATCH" | "DELETE", ["guilds", GUILD, "emojis", emoji]) => {
+            change_emoji(state, &request.method, emoji, body)
         }
         ("GET", ["guilds", GUILD, "roles"]) => Answer::json(200, &json!(state.roles)),
         ("POST", ["guilds", GUILD, "roles"]) => {
@@ -722,6 +881,19 @@ fn list_messages(state: &State, channel: &str, request: &Recorded) -> Answer {
 }
 
 fn parse_body(content_type: &str, body: &[u8]) -> (Value, Vec<(String, Vec<u8>)>) {
+    if content_type.starts_with("application/x-www-form-urlencoded") {
+        let form: serde_json::Map<String, Value> = String::from_utf8_lossy(body)
+            .split('&')
+            .filter_map(|pair| pair.split_once('='))
+            .map(|(k, v)| {
+                (
+                    decode(&k.replace('+', " ")),
+                    json!(decode(&v.replace('+', " "))),
+                )
+            })
+            .collect();
+        return (Value::Object(form), Vec::new());
+    }
     if let Some(boundary) = content_type
         .strip_prefix("multipart/form-data")
         .and_then(|rest| rest.split("boundary=").nth(1))

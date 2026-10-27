@@ -140,6 +140,7 @@ const SCENARIOS: &[&str] = &[
 impl ResourceApp for WindowsShell {
     type Resource = Windows;
     const ID: &'static str = "so.tilo.windows";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Processes];
     const TITLE: &'static str = "Windows Apps";
     const ICON: Option<&'static str> = Some("windows");
     /// An installer to add (`windows setup.exe`).
@@ -251,10 +252,14 @@ impl ResourceSurface<Windows, WindowsEffect> for WindowsApp {
             .map(|app| {
                 ui::tilo_resource::SearchEntry::new(
                     app.name.clone(),
-                    format!("{} {}", app.publisher, app.route.label()),
+                    format!(
+                        "{} {}",
+                        app.publisher,
+                        crate::strings::t(app.route.button_key())
+                    ),
                 )
                 .subtitled(app.publisher.clone())
-                .grouped("Windows apps")
+                .grouped(&crate::strings::t("windows-search-group"))
                 .anchored(crate::search::app_resource_id(&app.id))
             })
             .collect()
@@ -506,6 +511,29 @@ mod capture_tests {
                     .unwrap();
             app.harness()
                 .render_png(&dir.path().join(format!("{scenario}.png")));
+        }
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::WindowsShell::scenarios() {
+            let mut app = TestApp::<super::WindowsShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
         }
     }
 }

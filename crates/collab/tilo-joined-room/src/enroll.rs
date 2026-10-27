@@ -81,7 +81,8 @@ pub async fn prepare_and_complete(
             );
         }
         let intent = VerifiedNativeEnrollmentIntent::restore(pending.intent_bytes())?;
-        if intent.local_device() != &device
+        if (intent.local_device() != &device
+            && !crate::renewal::renews(&device, intent.local_device()))
             || join::encode_invitation_text(intent.verified_join().signed_invitation())
                 != invitation
         {
@@ -196,13 +197,56 @@ pub async fn prepare_and_complete(
         return Err("retained Complete changed encoding".into());
     }
     let response = client
-        .request(host.endpoint_addr, complete)
+        .request(host.endpoint_addr.clone(), complete)
         .await
         .map_err(|e| e.to_string())?;
     current(&identity, identity_topic, &device)?;
     active(&owner, &intent, &id)?;
     match response {
+        // Admitted with the certificate the proof was made with, which
+        // custody has renewed since: the room takes the renewal through the
+        // membership exchange before the device takes the room in, so the
+        // host holds the certificate this device presents from now on.
+        JoinTransportResponse::Complete(bootstrap) if bootstrap.device_cert != device => {
+            let grant = intent.verified_join().grant();
+            let bootstrap = prove_membership(
+                &client,
+                &host.endpoint_addr,
+                (grant.room.clone(), grant.workspace_id),
+                &device,
+                &identity,
+            )
+            .await?;
+            current(&identity, identity_topic, &device)?;
+            active(&owner, &intent, &id)?;
+            VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
+        }
         JoinTransportResponse::Complete(bootstrap) => {
+            VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
+        }
+        // The host admitted this proof before, and the room has moved on
+        // since, so it no longer replays its answer: this device is a
+        // member, and takes the room's current state through the membership
+        // exchange. Resending the proof would be refused forever, keeping
+        // the slot from the room it joined. A host from before it said so
+        // for a certificate that ran out since refuses that certificate
+        // instead; custody has renewed it, and the exchange presents the
+        // renewal.
+        JoinTransportResponse::Error { code, message }
+            if completed(code, &message)
+                || (expired(code, &message) && intent.local_device() != &device) =>
+        {
+            let grant = intent.verified_join().grant();
+            let bootstrap = prove_membership(
+                &client,
+                &host.endpoint_addr,
+                (grant.room.clone(), grant.workspace_id),
+                &device,
+                &identity,
+            )
+            .await?;
+            current(&identity, identity_topic, &device)?;
+            active(&owner, &intent, &id)?;
             VerifiedNativeEnrollment::finalize(intent, id, bootstrap)
         }
         // The host holds neither the challenge this proof answers nor a
@@ -212,6 +256,19 @@ pub async fn prepare_and_complete(
         // at all, through a new challenge.
         JoinTransportResponse::Error { code, message } if lapsed(code, &message) => {
             owner.drop_lapsed_enrollment(intent.room(), &id)?;
+            // The proof carried the certificate custody has renewed since:
+            // the invitation is asked for again at once, with the renewal.
+            if intent.local_device() != &device {
+                return Box::pin(prepare_and_complete(
+                    client,
+                    identity,
+                    identity_topic,
+                    local,
+                    invitation,
+                    owner,
+                ))
+                .await;
+            }
             Err(format!(
                 "{}; the host never admitted this join, so it is asked for again",
                 refused(&message)
@@ -234,6 +291,116 @@ pub async fn prepare_and_complete(
 fn lapsed(code: u16, message: &str) -> bool {
     code == join::JOIN_PROOF_LAPSED
         || (code == 403 && message == "join challenge was not issued by this host")
+}
+
+/// Whether a host's refusal of a Complete says it admitted the proof before
+/// and the room has moved on ([`join::JOIN_COMPLETED_REFRESH`]). A host from
+/// before that code says the same in words, as a 403.
+fn completed(code: u16, message: &str) -> bool {
+    code == join::JOIN_COMPLETED_REFRESH
+        || (code == 403
+            && message
+                == "join request ID already completed; refresh membership for the current workspace")
+}
+
+/// Whether a host refused a Complete for the certificate its proof carries
+/// having run out. A host that admitted the proof before answers so where a
+/// newer one answers [`join::JOIN_COMPLETED_REFRESH`]; one that never did
+/// lets the proof's challenge lapse, and answers
+/// [`join::JOIN_PROOF_LAPSED`] once it has.
+fn expired(code: u16, message: &str) -> bool {
+    code == 403 && message == tilo_user_identity::DeviceCertError::Expired.to_string()
+}
+
+/// The room's current state for a device that is a member: the membership
+/// exchange for `room` (its id and workspace), challenged and proven with
+/// the device's key and presenting `device`, the certificate it is a member
+/// with or the renewal of it. The answer is checked by whoever takes it in
+/// ([`VerifiedNativeEnrollment::finalize`],
+/// [`NativeWorkspaceOwner::renew_membership`]).
+async fn prove_membership(
+    client: &WorkspaceJoinClient,
+    host: &iroh::EndpointAddr,
+    room: (String, u64),
+    device: &DeviceCert,
+    identity: &HostIdentity,
+) -> Result<join::JoinBootstrap, String> {
+    let (room, workspace_id) = room;
+    let mut request_id = [0; 32];
+    rand_core::Rng::fill_bytes(
+        &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
+        &mut request_id,
+    );
+    let challenge = match client
+        .request(
+            host.clone(),
+            JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
+                room,
+                workspace_id,
+                device_cert: device.clone(),
+                request_id,
+            }),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        JoinTransportResponse::MembershipChallenge(value) => value.challenge,
+        JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
+        _ => return Err("the host answered no membership challenge".into()),
+    };
+    let proof = join::sign_membership_proof(challenge, &identity.device_signing_key)?;
+    match client
+        .request(
+            host.clone(),
+            JoinTransportRequest::MembershipComplete(join::MembershipCompleteRequest { proof }),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        JoinTransportResponse::MembershipComplete(bootstrap) => Ok(bootstrap),
+        JoinTransportResponse::Error { message, .. } => Err(refused(&message)),
+        _ => Err("the host answered no membership".into()),
+    }
+}
+
+/// Prove this device's membership of `room`, a room it joined, with the
+/// renewal of the certificate the room's record holds, when its custody
+/// holds one, and take the governor's answer in
+/// ([`NativeWorkspaceOwner::renew_membership`]). Answers whether it renewed.
+///
+/// # Errors
+/// The room is not joined here, custody is unreadable or changes during
+/// the exchange, or the host refuses.
+pub async fn renew_membership(
+    client: WorkspaceJoinClient,
+    identity: HostIdentity,
+    owner: NativeWorkspaceOwner,
+    room: crate::RoomId,
+) -> Result<bool, String> {
+    let (topic, hint, held) = owner.with_current(room, |view| {
+        Ok((
+            view.workspace(),
+            view.transport_hint()?.clone(),
+            view.device().clone(),
+        ))
+    })?;
+    let (renewed, _) = identity.current_native_material(topic)?;
+    if !crate::renewal::renews(&renewed, &held) {
+        return Ok(false);
+    }
+    let (host, _) =
+        IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
+    let bootstrap = prove_membership(
+        &client,
+        &host.endpoint_addr,
+        (room.to_string(), topic),
+        &renewed,
+        &identity,
+    )
+    .await?;
+    current(&identity, topic, &renewed)?;
+    owner.renew_membership(room, &renewed, &bootstrap, SystemTime::now())?;
+    Ok(true)
 }
 
 /// The host's refusal, in its own words: what the person is shown.
@@ -263,5 +430,36 @@ mod tests {
             "join proof does not match authenticated transport endpoint"
         ));
         assert!(!lapsed(503, "join challenge was not issued by this host"));
+    }
+
+    /// A device that the host admitted, but whose answer never reached it
+    /// (the laptop restarted mid-join), takes the room through the
+    /// membership exchange once the room moved on, rather than resending
+    /// its proof forever (the Lounge, 2026-10-20).
+    #[test]
+    fn a_host_that_admitted_the_proof_before_sends_the_device_to_its_membership() {
+        assert!(completed(join::JOIN_COMPLETED_REFRESH, "anything"));
+        assert!(
+            completed(
+                403,
+                "join request ID already completed; refresh membership for the current workspace"
+            ),
+            "a host from before the code says the same in words"
+        );
+        assert!(!completed(403, "invitation was cancelled"));
+        assert!(!lapsed(join::JOIN_COMPLETED_REFRESH, "anything"));
+    }
+
+    /// A host from before it answered a lapsed certificate with
+    /// [`join::JOIN_COMPLETED_REFRESH`] refuses it in words; the retained
+    /// proof then goes through the membership exchange with the renewal
+    /// instead of being resent every retry (the Lounge, 2026-10-23).
+    #[test]
+    fn a_host_that_refuses_the_proofs_expired_certificate_is_told_apart() {
+        assert!(expired(403, "device cert has expired"));
+        assert!(!expired(503, "device cert has expired"));
+        assert!(!expired(403, "device cert is not yet valid"));
+        assert!(!lapsed(403, "device cert has expired"));
+        assert!(!completed(403, "device cert has expired"));
     }
 }

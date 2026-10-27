@@ -145,6 +145,31 @@ fn sample_media() -> Option<PathBuf> {
     SAMPLE_MEDIA.lock().ok().and_then(|s| s.clone())
 }
 
+/// Where a source imported from content (`tilo.content:<hash>`) is read
+/// from: a directory holding each by its hash. The render helper points it
+/// at its job directory, where the host laid out the sources a render
+/// places; a path naming content resolves nowhere else.
+static CONTENT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Read content-addressed sources from `dir` (see `CONTENT_ROOT`); `None`
+/// stops it.
+pub fn set_content_root(dir: Option<PathBuf>) {
+    if let Ok(mut slot) = CONTENT_ROOT.lock() {
+        *slot = dir;
+    }
+}
+
+/// The file a content-addressed `path` names under the content root, when
+/// one is set.
+fn content_file(path: &str) -> Option<PathBuf> {
+    let hash = tilo_actions::content_hash(path)?;
+    if !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let root = CONTENT_ROOT.lock().ok()?.clone()?;
+    Some(root.join(hash.to_ascii_lowercase()))
+}
+
 /// Resolve a media `path` to an absolute [`MediaSource`], reporting whether its
 /// bytes are hydrated.
 ///
@@ -183,6 +208,18 @@ pub fn resolve(path: &str) -> MediaSource {
         };
         return MediaSource {
             abs_path: raw.to_path_buf(),
+            hydration,
+        };
+    }
+    // A source imported from content, where a render laid its bytes out.
+    if let Some(abs_path) = content_file(path) {
+        let hydration = if abs_path.is_file() {
+            Hydration::Local
+        } else {
+            Hydration::Projected
+        };
+        return MediaSource {
+            abs_path,
             hydration,
         };
     }
@@ -257,7 +294,6 @@ mod tests {
     #[test]
     #[serial_test::serial(video_editor_media_env)]
     fn media_paths_resolve_and_report_hydration() {
-        // Case `workspace_path_is_prefixed`.
         {
             assert_eq!(workspace_path("Drone.mov"), "media/Drone.mov");
         }
@@ -324,15 +360,12 @@ mod tests {
             set_project_anchor(None);
             std::fs::remove_dir_all(&root).ok();
         }
-        // Case `hydration_round_trips_through_strings`.
         {
             for h in [Hydration::Projected, Hydration::Local] {
                 assert_eq!(Hydration::from_name(h.as_str()), h);
             }
         }
-        // Case `absolute_import_path_resolves_verbatim_and_reports_hydration`.
         {
-            // A real imported local file resolves to itself and reports Local.
             let dir = std::env::temp_dir();
             let name = format!("tilo-ve-import-{}.mp4", std::process::id());
             let f = dir.join(&name);
@@ -342,12 +375,10 @@ mod tests {
             assert_eq!(src.hydration, Hydration::Local);
             assert!(src.is_decodable());
             std::fs::remove_file(&f).ok();
-            // A non-existent absolute path stays a valid, projected reference.
             let missing = resolve("/definitely/not/here-xyz.mov");
             assert_eq!(missing.abs_path, Path::new("/definitely/not/here-xyz.mov"));
             assert_eq!(missing.hydration, Hydration::Projected);
         }
-        // Case `engine_source_splits_workspace_from_local`.
         {
             let root = std::env::temp_dir().join(format!("tilo-ve-eng-{}", std::process::id()));
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -363,7 +394,6 @@ mod tests {
                 "outside the mount → LocalFile"
             );
         }
-        // Case `stored_path_is_relative_under_mount_absolute_otherwise`.
         {
             let root = std::env::temp_dir().join(format!("tilo-ve-store-{}", std::process::id()));
             let mut env = tilo_test_env::ScopedEnv::new();

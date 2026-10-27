@@ -76,7 +76,7 @@ impl Driveable for Agent<'_> {
                 .agent
                 .invoke(&self.route, address, arguments)
                 .map(|_| ()),
-            StepAction::Open | StepAction::Continue(_) => Ok(()),
+            StepAction::Open | StepAction::Continue(_) | StepAction::Wait(_) => Ok(()),
         }
     }
 }
@@ -98,7 +98,7 @@ async fn ask(
             RemoteActionFrame::new(message).encode().unwrap(),
         )
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         assert!(Instant::now() < deadline, "the agent did not answer");
         agent.pump();
@@ -131,6 +131,13 @@ fn body(app: &impl common::Body) -> String {
 
 /// The browser's copy of `route`: its own mount, seeded from every change
 /// it received.
+/// Record a coverage failure, and say it at once: a run the harness ends
+/// for time still names every app that failed before it.
+fn note(failures: &mut Vec<String>, failure: String) {
+    eprintln!("session coverage: {failure}");
+    failures.push(failure);
+}
+
 fn page(
     catalogue: &tilo_agent_participant::AppCatalogue,
     route: &DocumentRoute,
@@ -180,7 +187,7 @@ async fn every_web_app_over_the_session() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let user = root.verifying_key().to_bytes();
     let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let host = start_host(
         &root,
         &host_device,
@@ -223,6 +230,7 @@ async fn every_web_app_over_the_session() {
             host: host.iroh(),
             host_cert: host_device.cert.clone(),
             room: ROOM.into(),
+            content: tilo_content::ContentStore::memory(),
         },
         AgentIdentity {
             key: agent_device.key.clone(),
@@ -274,7 +282,7 @@ async fn every_web_app_over_the_session() {
         .unwrap();
     let agent_namespace =
         tilo_moq::live::namespace_path(&grant.room, &hex::encode(agent_key)).unwrap();
-    let mut track = None;
+    let mut agent_presence = tilo_moq::live::peer::MemberPresence::follow(&live, &agent_namespace);
 
     let mut received: BTreeMap<DocumentRoute, Vec<Vec<u8>>> = BTreeMap::new();
     let mut table = String::from(
@@ -293,13 +301,13 @@ async fn every_web_app_over_the_session() {
         );
         let local = common::LOCAL_STATE.iter().any(|(id, _)| *id == app_id);
         if edit.is_none() && !local {
-            failures.push(format!("{app_id}: no edit: {refused:#?}"));
+            note(&mut failures, format!("{app_id}: no edit: {refused:#?}"));
         }
         let expected = body(agent.app(&route).unwrap());
 
         // The browser receives the agent's changes in host order and its
         // own mount of the app merges them into the agent's state.
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = tilo_test_env::hang_deadline();
         let merged = loop {
             agent.pump();
             for event in browser_events.drain() {
@@ -328,50 +336,35 @@ async fn every_web_app_over_the_session() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
         if !merged {
-            failures.push(format!(
-                "{app_id}: the browser never converged on the agent's record"
-            ));
+            let seen = received
+                .get(&route)
+                .map(|changes| page(&catalogue, &route, changes));
+            note(
+                &mut failures,
+                format!(
+                    "{app_id}: the browser never converged on the agent's record\n  agent: {expected}\n  browser: {seen:?}"
+                ),
+            );
         }
 
-        // The browser sees the agent on this record: the latest frame after
-        // the first that focuses it (presence repeats every second).
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let mut latest: Option<(Instant, PresenceFrame)> = None;
+        // The browser sees the agent on this record: the first presence
+        // frame that focuses it. Every frame names the participant, so there
+        // is nothing to wait for once one has arrived.
+        let deadline = tilo_test_env::hang_deadline();
         let presence: Option<PresenceFrame> = loop {
-            if let Some((seen, frame)) = &latest
-                && seen.elapsed() > Duration::from_millis(1_500)
-            {
-                break Some(frame.clone());
-            }
             if Instant::now() > deadline {
-                break latest.map(|(_, frame)| frame);
+                break None;
             }
             agent.pump();
-            let Some(subscribed) = track.as_mut() else {
-                if let Ok(Some(broadcast)) =
-                    tokio::time::timeout(Duration::from_millis(200), live.member(&agent_namespace))
-                        .await
-                {
-                    track = broadcast
-                        .track(tilo_moq::live::PRESENCE_TRACK)
-                        .unwrap()
-                        .subscribe(None)
-                        .await
-                        .ok();
-                }
-                continue;
-            };
-            if let Ok(Ok(Some(datagram))) =
-                tokio::time::timeout(Duration::from_millis(200), subscribed.recv_datagram()).await
+            if let Some(datagram) = agent_presence.next(Duration::from_millis(200)).await
                 && let Some(LiveFrame::Presence(presence)) =
-                    open_live(&browser, datagram.payload.to_vec()).await
+                    open_live(&browser, datagram.to_vec()).await
                 && presence
                     .focus
                     .as_ref()
                     .is_some_and(|focus| focus.app == app_id && focus.record == route.record)
             {
-                let seen = latest.as_ref().map_or_else(Instant::now, |(seen, _)| *seen);
-                latest = Some((seen, presence));
+                break Some(presence);
             }
         };
         let cursor = match &presence {
@@ -382,9 +375,10 @@ async fn every_web_app_over_the_session() {
                 "yes".to_owned()
             }
             None => {
-                failures.push(format!(
-                    "{app_id}: the browser never saw the agent on the record"
-                ));
+                note(
+                    &mut failures,
+                    format!("{app_id}: the browser never saw the agent on the record"),
+                );
                 "no".to_owned()
             }
         };
@@ -415,7 +409,7 @@ async fn every_web_app_over_the_session() {
     control
         .message(r#"In the notes, add a new note titled "Said in plain words""#)
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         assert!(
             Instant::now() < deadline,
@@ -516,7 +510,7 @@ async fn every_web_app_over_the_session() {
         matches!(receipt.status, ReceiptStatus::Completed { .. }),
         "{receipt:?}"
     );
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         assert!(
             Instant::now() < deadline,
@@ -670,3 +664,2166 @@ async fn every_web_app_over_the_session() {
     assert_eq!(readable, 0, "nothing reaches the host in the clear");
     host.relay.shutdown().await;
 }
+
+const CANVAS: &str = "so.tilo.canvas";
+const SHEETS: &str = "so.tilo.sheets";
+const VIDEO: &str = "so.tilo.video-editor";
+
+/// An agent granted `apps`, planning with `planner`, admitted to the room
+/// on `host`, its records lent `store`.
+async fn planning_agent(
+    root: &ed25519_dalek::SigningKey,
+    host: (&support::TestHost, &support::Device),
+    apps: &[&str],
+    planner: Box<dyn tilo_agent_participant::Planner>,
+    store: tilo_content::ContentStore,
+) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
+    planning_agent_as("planner", root, host, apps, (planner, store)).await
+}
+
+/// [`planning_agent`], its delegation naming it `id`.
+async fn planning_agent_as(
+    id: &str,
+    root: &ed25519_dalek::SigningKey,
+    host: (&support::TestHost, &support::Device),
+    apps: &[&str],
+    planning: (
+        Box<dyn tilo_agent_participant::Planner>,
+        tilo_content::ContentStore,
+    ),
+) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
+    planning_agent_labelled((id, id), root, host, apps, planning).await
+}
+
+/// [`planning_agent`], its delegation naming it `id` and labelling it
+/// `label`, the name its person gave it.
+async fn planning_agent_labelled(
+    (id, label): (&str, &str),
+    root: &ed25519_dalek::SigningKey,
+    (host, host_device): (&support::TestHost, &support::Device),
+    apps: &[&str],
+    (planner, store): (
+        Box<dyn tilo_agent_participant::Planner>,
+        tilo_content::ContentStore,
+    ),
+) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
+    let agent_device = enrol(
+        root,
+        &format!("Agent: {id}"),
+        CertificationPolicy::agent().ceiling,
+    );
+    let now = tilo_clock::unix_now_ns();
+    let delegation = Delegation::sign(
+        root,
+        agent_device.cert.device_public_key,
+        tilo_relay_protocol::delegation::Delegate::Agent {
+            agent_id: id.into(),
+        },
+        label,
+        [0x0f, 0x4c, 0x5c],
+        DelegateScope {
+            rooms: vec![ROOM.into()],
+            apps: apps.iter().map(|app| (*app).to_owned()).collect(),
+        },
+        now,
+        now + 3_600_000_000_000,
+    )
+    .unwrap();
+    host.relay.register_agent(delegation.clone()).unwrap();
+    let control = AgentControl::new(delegation.clone());
+    let mut agent = AgentParticipant::start(
+        ParticipantConfig {
+            host: host.iroh(),
+            host_cert: host_device.cert.clone(),
+            room: ROOM.into(),
+            content: store,
+        },
+        AgentIdentity {
+            key: agent_device.key.clone(),
+            cert: agent_device.cert.clone(),
+            delegation,
+        },
+        control.clone(),
+        catalogue(),
+        planner,
+    )
+    .unwrap();
+    wait_for("the agent to be admitted", || {
+        agent.pump();
+        let waiting = control.status() == AgentStatus::Waiting;
+        async move { waiting.then_some(()) }
+    })
+    .await;
+    (agent, control)
+}
+
+/// A planner at `url`, an OpenAI-compatible endpoint answering canned turns.
+fn endpoint_planner(url: &str) -> Box<dyn tilo_agent_participant::Planner> {
+    Box::new(ModelPlanner::new(Box::new(
+        tilo_agent_participant::OpenAiModel::new(
+            url,
+            "canned",
+            tilo_agent_participant::ApiKey::None,
+            tilo_test_env::hang_bound(),
+            tilo_model_gateway::openai::Target::Standard,
+        ),
+    )))
+}
+
+/// An endpoint answering `answers` in order, one connection each, and
+/// reporting every request's body.
+fn model_endpoint(answers: Vec<serde_json::Value>) -> (String, std::sync::mpsc::Receiver<String>) {
+    gated_model_endpoint(answers.into_iter().map(|answer| (answer, None)).collect())
+}
+
+/// [`model_endpoint`], an answer with a gate held back until the gate is
+/// opened (or dropped): a request in flight while the room changes.
+fn gated_model_endpoint(
+    answers: Vec<(serde_json::Value, Option<std::sync::mpsc::Receiver<()>>)>,
+) -> (String, std::sync::mpsc::Receiver<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for (answer, gate) in answers {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            sent.send(read_request(&mut reader)).unwrap();
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
+            write_answer(reader, &answer);
+        }
+    });
+    (url, received)
+}
+
+/// An endpoint the test answers turn by turn: each request's body comes
+/// out of the receiver, and the answer the test sends next is its reply.
+fn answered_model_endpoint() -> (
+    String,
+    std::sync::mpsc::Receiver<String>,
+    std::sync::mpsc::Sender<serde_json::Value>,
+) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (sent, received) = std::sync::mpsc::channel();
+    let (answer, answers) = std::sync::mpsc::channel::<serde_json::Value>();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let mut reader = std::io::BufReader::new(stream);
+            if sent.send(read_request(&mut reader)).is_err() {
+                return;
+            }
+            let Ok(answer) = answers.recv() else { return };
+            write_answer(reader, &answer);
+        }
+    });
+    (url, received, answer)
+}
+
+/// The body of the HTTP request `reader` carries.
+fn read_request(reader: &mut std::io::BufReader<std::net::TcpStream>) -> String {
+    use std::io::{BufRead as _, Read as _};
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap();
+        }
+        if line == "\r\n" {
+            break;
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    String::from_utf8(body).unwrap()
+}
+
+/// Reply `answer` as JSON and close the connection.
+fn write_answer(reader: std::io::BufReader<std::net::TcpStream>, answer: &serde_json::Value) {
+    use std::io::Write as _;
+    let answer = answer.to_string();
+    let reply = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{answer}",
+        answer.len()
+    );
+    reader.into_inner().write_all(reply.as_bytes()).unwrap();
+}
+
+/// A chat-completions turn calling `name` with `input`.
+fn tool_call(id: &str, name: &str, input: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"choices": [{"message": {"role": "assistant", "content": null,
+        "tool_calls": [{"id": id, "type": "function", "function": {"name": name,
+            "arguments": input.to_string()}}]}, "finish_reason": "tool_calls"}]})
+}
+
+/// The text of a chat-completions message, written as a string or as text
+/// parts.
+fn message_text(message: &serde_json::Value) -> String {
+    match &message["content"] {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect(),
+        _ => String::new(),
+    }
+}
+
+/// Run `text` as a task of `agent` to its end.
+fn run_task(
+    agent: &mut AgentParticipant,
+    control: &AgentControl,
+    text: &str,
+) -> tilo_relay_protocol::agents::AgentTask {
+    let task = control.message(text).unwrap();
+    let ended = || {
+        control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|info| info.id == task)
+            .filter(|info| !matches!(info.state, TaskState::Queued | TaskState::Running))
+    };
+    agent.run_until(Some(Instant::now() + Duration::from_secs(60)), |_| {
+        ended().is_some()
+    });
+    ended().expect("the task ended")
+}
+
+/// The offline measure of model calls per task: a one-app task over an app
+/// the room has no record of is planned in ONE model request — the record
+/// is made before the plan, and the first turn shows what it publishes with
+/// its parameters in full.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_one_app_task_is_planned_in_one_model_request() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let set_cells = "sheets.workbook#set-cells";
+    let (url, sent) = model_endpoint(vec![tool_call(
+        "p1",
+        "plan",
+        &serde_json::json!({"steps": [{"operation": set_cells,
+            "arguments": {"sheet": "00000000-0000-4000-8000-000000000001", "start": "A1",
+                "rows": [["Visits", "Signups"], [240, 18]]}}],
+            "then": ""}),
+    )]);
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        endpoint_planner(&url),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+
+    let info = run_task(
+        &mut agent,
+        &control,
+        "In Sheets, enter Visits and Signups in the first row and 240 and 18 under them",
+    );
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    let actions: Vec<&str> = info.steps.iter().map(|step| step.action.as_str()).collect();
+    assert_eq!(actions, ["set-cells"], "no open, no re-plan: {info:?}");
+    let requests: Vec<String> = sent.try_iter().collect();
+    assert_eq!(requests.len(), 1, "one model request for the task");
+    let first: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
+    let turn = message_text(&first["messages"][1]);
+    // The task names Sheets, which the room has no record of: one is made
+    // before the plan, so its operations are listed and nothing is opened.
+    assert!(turn.contains(set_cells), "{turn}");
+    assert!(!turn.contains("app.so.tilo.sheets#open"), "{turn}");
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// An agent reads an open record in the planning conversation: the first
+/// turn shows what the artwork holds (read before planning) and `draw` in
+/// full; the model asks `read_view` for `inspect` and is answered in the
+/// same conversation, then plans the band — two model requests and no
+/// re-plan — and the read is no step of the task.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_view_is_read_in_the_planning_conversation() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (url, sent) = model_endpoint(vec![
+        tool_call(
+            "r1",
+            tilo_agent_participant::READ_VIEW,
+            &serde_json::json!({"operation": "canvas.artwork#inspect", "arguments": {}}),
+        ),
+        tool_call(
+            "p1",
+            "plan",
+            &serde_json::json!({"steps": [{"operation": "canvas.artwork#draw",
+                "arguments": {"marks": [{"id": "band", "fill": "#0F4C5C",
+                    "shape": {"kind": "rect", "x": 62, "y": 0, "width": 38, "height": 50}}]}}],
+                "then": ""}),
+        ),
+    ]);
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[CANVAS],
+        endpoint_planner(&url),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let canvas = agent.open(CANVAS, None).unwrap();
+
+    let info = run_task(
+        &mut agent,
+        &control,
+        "In Canvas, add a filled rectangle over the right 38% of the picture",
+    );
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    let actions: Vec<&str> = info.steps.iter().map(|step| step.action.as_str()).collect();
+    assert_eq!(
+        actions,
+        ["draw"],
+        "the read is no step of its own: {info:?}"
+    );
+    let requests: Vec<serde_json::Value> = sent
+        .try_iter()
+        .map(|body| serde_json::from_str(&body).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 2, "a read and a plan, no re-plan");
+    let turn = message_text(&requests[0]["messages"][1]);
+    assert!(
+        turn.contains("canvas.artwork#draw")
+            && turn.contains(&format!("(document {})", canvas.record))
+            && turn.contains("canvas.artwork#inspect answered"),
+        "the first turn shows draw in full and what the artwork holds: {turn}"
+    );
+    let read = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .map(message_text)
+        .collect::<String>();
+    assert!(
+        read.contains("canvas.artwork#inspect answered") && read.contains("width"),
+        "the read answered in the conversation: {read}"
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// Steps written out run as written: a look renders the artwork as content
+/// the room keeps, and the task's reply names it. A step that takes what
+/// the step before it produced, after one that produced nothing, is refused
+/// before it runs, saying why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_reports_the_content_its_steps_produced() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let store = tilo_content::ContentStore::memory();
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[CANVAS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        store.clone(),
+    )
+    .await;
+    let canvas = agent.open(CANVAS, None).unwrap();
+    let operations = agent.survey(&canvas);
+    let address = |action: &str| {
+        operations
+            .iter()
+            .find(|descriptor| descriptor.address.action == action)
+            .unwrap_or_else(|| panic!("the artwork publishes {action}"))
+            .address
+            .clone()
+    };
+    let step = |action: &str, arguments: serde_json::Value| {
+        let address = address(action);
+        serde_json::json!({
+            "app": CANVAS,
+            "record": canvas.record,
+            "resource": address.resource,
+            "action": address.action,
+            "arguments": arguments,
+        })
+    };
+    let draw = step(
+        "draw",
+        serde_json::json!({"marks": [{"shape": {"kind": "rect", "x": 0, "y": 0,
+            "width": 10, "height": 10}, "fill": "#0F4C5C"}]}),
+    );
+
+    let looked = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            draw,
+            step("look", serde_json::json!({"format": "png", "size": 64})),
+        ])
+        .to_string(),
+    );
+    assert_eq!(looked.state, TaskState::Completed, "{looked:?}");
+    let reply = control.info().conversation.last().unwrap().text.clone();
+    let produced = reply
+        .strip_prefix("Done: 2 actions. Produced ")
+        .and_then(|rest| rest.strip_suffix('.'))
+        .unwrap_or_else(|| panic!("the reply names what was produced: {reply}"));
+    let hash = tilo_actions::content_hash(produced).expect("a content address");
+    let png = store.read(hash).expect("the room keeps the look");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    // Each step's record names the content it produced: the look's
+    // picture, and nothing for the draw.
+    assert_eq!(looked.steps.len(), 2, "{looked:?}");
+    assert!(looked.steps[0].content.is_empty(), "{looked:?}");
+    assert_eq!(looked.steps[1].content, vec![produced.to_owned()]);
+
+    // An export the room keeps (no `path`) is a read: the agent runs it
+    // without asking its person, and its step names the picture.
+    let exported = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([step("export", serde_json::json!({"format": "png"}))]).to_string(),
+    );
+    assert_eq!(exported.state, TaskState::Completed, "{exported:?}");
+    let [address] = exported.steps[0].content.as_slice() else {
+        panic!("the export's step names one piece of content: {exported:?}");
+    };
+    let picture = store
+        .read(tilo_actions::content_hash(address).unwrap())
+        .expect("the room keeps the export");
+    assert_eq!(&picture[..8], b"\x89PNG\r\n\x1a\n");
+
+    let mut carried = step("draw", serde_json::json!({"marks": []}));
+    carried["carries"] = true.into();
+    let another = step(
+        "draw",
+        serde_json::json!({"marks": [{"shape": {"kind": "rect", "x": 20, "y": 20,
+            "width": 5, "height": 5}, "fill": "#E9C46A"}]}),
+    );
+    let refused = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([another, carried]).to_string(),
+    );
+    assert_eq!(refused.state, TaskState::Failed, "{refused:?}");
+    let error = refused.error.unwrap_or_default();
+    assert!(
+        error.contains("draw takes what the step before it produced")
+            && error.contains("no preceding action result"),
+        "{error}"
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// A video still an agent asks for in a task is drawn by its host's render
+/// service, not the record's worker, and kept as room content its step
+/// names. Needs the render helper (`cargo build -p tilo-video-render --bin
+/// tilo-video-render`); without it the test says so and returns, unless
+/// `TILO_REQUIRE_MEDIA=1`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
+    if !tilo_agent_participant::render::available() {
+        assert!(
+            std::env::var_os("TILO_REQUIRE_MEDIA").is_none(),
+            "the render helper is required"
+        );
+        eprintln!("skipped: no tilo-video-render beside the test or at $TILO_VIDEO_RENDER");
+        return;
+    }
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let store = tilo_content::ContentStore::memory();
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[VIDEO],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        store.clone(),
+    )
+    .await;
+    let video = agent.open(VIDEO, None).unwrap();
+    let operations = agent.survey(&video);
+    let step = |action: &str, arguments: serde_json::Value| {
+        let address = operations
+            .iter()
+            .find(|descriptor| descriptor.address.action == action)
+            .unwrap_or_else(|| panic!("the project publishes {action}"))
+            .address
+            .clone();
+        serde_json::json!({
+            "app": VIDEO,
+            "record": video.record,
+            "resource": address.resource,
+            "action": address.action,
+            "arguments": arguments,
+        })
+    };
+    // A one-second title on one track.
+    let mut project = video_editor::Project::new("Agent cut");
+    project.set_frame_size(320, 180);
+    let track = video_editor::model::Track {
+        name: "V1".into(),
+        kind: video_editor::model::TrackKind::Video,
+        index: 1,
+        ..video_editor::model::Track::default()
+    };
+    let title = video_editor::model::MediaItem {
+        name: "Title".into(),
+        kind: video_editor::model::MediaKind::Text,
+        duration: 1.0,
+        text: Some(video_editor::model::TextSource::new("Agent")),
+        ..video_editor::model::MediaItem::default()
+    };
+    let (track_id, title_id) = (track.id, title.id);
+    project.tracks.push(track);
+    project.media.push(title);
+    let clip = project.add_clip(track_id, title_id, 0.0).unwrap();
+    project.clip_mut(clip).unwrap().out_point = 1.0;
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            step(
+                "field-edit",
+                serde_json::json!({"edit": video_editor::resource::load_project(&project)})
+            ),
+            step(
+                "view-frame-content",
+                serde_json::json!({"at": 0.5, "width": 160})
+            ),
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    let [address] = task.steps[1].content.as_slice() else {
+        panic!("the still's step names one piece of content: {task:?}");
+    };
+    let png = store
+        .read(tilo_actions::content_hash(address).unwrap())
+        .expect("the room keeps the still");
+    assert_eq!(png.get(..4), Some(&b"\x89PNG"[..]));
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// Steps written as a scenario writes them: the document's body named as a
+/// field of the record (`word-processor.document/body`), which the record
+/// does not publish as a resource of its own, and a picture carried from
+/// the step before into an operation of a record that was not open when
+/// the steps were read. Both run, unasked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn written_steps_name_a_records_field_and_carry_content_into_it() {
+    const WRITER: &str = "so.tilo.word-processor";
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let store = tilo_content::ContentStore::memory();
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[CANVAS, WRITER],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        store.clone(),
+    )
+    .await;
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            {"app": WRITER, "resource": "word-processor.document/body", "action": "replace-body",
+             "arguments": {"markdown": "# Summary\n\nSee below.\n\n# Results\n\nNumbers by region"}},
+            {"app": CANVAS, "resource": "canvas.artwork", "action": "draw",
+             "arguments": {"marks": [{"shape": {"kind": "rect", "x": 0, "y": 0,
+                 "width": 10, "height": 10}, "fill": "#0F4C5C"}]}},
+            {"app": CANVAS, "resource": "canvas.artwork", "action": "export",
+             "arguments": {"format": "png"}},
+            {"app": WRITER, "resource": "word-processor.document", "action": "place-image",
+             "arguments": {"after": "Results"}, "carries": true},
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert_eq!(task.steps.len(), 4, "{task:?}");
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// The id of a new workbook's first sheet, `Sheet1`.
+const FIRST_SHEET: &str = "00000000-0000-4000-8000-000000000001";
+
+/// What the cells `range` of the first sheet of the workbook at `route`
+/// show, row by row.
+fn sheet_rows(
+    agent: &mut AgentParticipant,
+    route: &DocumentRoute,
+    range: &str,
+) -> serde_json::Value {
+    let read = tilo_actions::door::ActionAddress::new("sheets.workbook", "read-cells");
+    let arguments = serde_json::json!({"sheet": "Sheet1", "range": range});
+    agent
+        .invoke(route, &read, arguments.as_object().unwrap())
+        .unwrap()
+        .and_then(|output| output.value)
+        .map(|value| value["rows"].clone())
+        .unwrap_or_default()
+}
+
+/// A step quotes a value a formula computed and computes with it
+/// (`{{Sheet1!B4|$}}`, `{{= Sheet1!B4 / 3 }}`): the host fills both in
+/// from the workbook as the step runs, so the model never adds the figures
+/// up itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_takes_the_value_a_formula_computed() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+    let set_cells = |start: &str, rows: serde_json::Value| {
+        serde_json::json!({"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+            "action": "set-cells", "arguments": {"sheet": FIRST_SHEET, "start": start, "rows": rows}})
+    };
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            set_cells(
+                "A1",
+                serde_json::json!([
+                    ["Item", "Cost"],
+                    ["Venue", 100],
+                    ["Food", 200],
+                    ["Total", "=SUM(B2:B3)"]
+                ])
+            ),
+            set_cells(
+                "C1",
+                serde_json::json!([["Total {{Sheet1!B4|$}}", "{{= Sheet1!B4 / 3 }}"]])
+            ),
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert_eq!(
+        sheet_rows(&mut agent, &sheets, "C1:D1"),
+        serde_json::json!([["Total $300.00", 100.0]])
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// A step writes a number its parameter types as arithmetic in words
+/// (`289 - 50` rows down), and a date as business days counted in words
+/// inside an expression (`{{= 10 business days after 2026-10-14 }}`): the
+/// host computes both before the workbook takes them, so the model neither
+/// subtracts nor counts business days.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_takes_arithmetic_written_in_words() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+    let step = |action: &str, arguments: serde_json::Value| {
+        serde_json::json!({"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+            "action": action, "arguments": arguments})
+    };
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            step(
+                "set-cells",
+                serde_json::json!({"sheet": FIRST_SHEET, "start": "A1",
+                    "rows": [["Pay by", "{{= 10 business days after 2026-10-14 }}"]]})
+            ),
+            step(
+                "set-cells",
+                serde_json::json!({"sheet": FIRST_SHEET, "start": "A239", "rows": [["here"]]})
+            ),
+            step(
+                "insert-rows",
+                serde_json::json!({"sheet": FIRST_SHEET, "at": "289 - 50"})
+            ),
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert_eq!(
+        sheet_rows(&mut agent, &sheets, "B1:B1"),
+        serde_json::json!([["2026-10-28"]])
+    );
+    assert_eq!(
+        sheet_rows(&mut agent, &sheets, "A239:A240"),
+        serde_json::json!([[null], ["here"]]),
+        "a row went in above row 239"
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// A row's cells written by header are values nothing types: one that is
+/// only arithmetic (`10 business days after 2026-10-14`, `289 - 50`) is
+/// computed before the workbook takes it, so the sheet holds a real date
+/// and a number rather than the words; text around the arithmetic keeps
+/// it text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_untyped_value_that_is_only_arithmetic_is_computed() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+    let step = |action: &str, arguments: serde_json::Value| {
+        serde_json::json!({"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+            "action": action, "arguments": arguments})
+    };
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            step(
+                "set-cells",
+                serde_json::json!({"sheet": FIRST_SHEET, "start": "A1",
+                    "rows": [["Claim", "Pay by", "Payout", "Note"], ["C-1"]]})
+            ),
+            step(
+                "upsert-item",
+                serde_json::json!({"sheet": FIRST_SHEET, "match": {"Claim": "C-1"},
+                    "value": {"Pay by": "10 business days after 2026-10-14",
+                        "Payout": "289 - 50", "Note": "Call 319 - 75 today"}})
+            ),
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    let read = tilo_actions::door::ActionAddress::new("sheets.workbook", "read-cells");
+    let cells = agent
+        .invoke(
+            &sheets,
+            &read,
+            serde_json::json!({"sheet": FIRST_SHEET, "range": "B2:D2"})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap()
+        .and_then(|output| output.value)
+        .unwrap();
+    assert_eq!(
+        cells["rows"],
+        serde_json::json!([["2026-10-28", 239.0, "Call 319 - 75 today"]]),
+        "{cells}"
+    );
+    assert_eq!(
+        cells["formats"]["B2"], "date",
+        "the sheet holds a date, not text: {cells}"
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+const MESSAGES: &str = "so.tilo.messages";
+
+/// A step quotes one message among several alike by a rule (the newest from
+/// a sender after a time) and a part of it by a pattern: the host picks the
+/// message and takes the code out, so the model copies neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_takes_a_field_of_the_message_a_rule_picks() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS, MESSAGES],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+    let messages = agent.open(MESSAGES, None).unwrap();
+    let deliver = |from: &str, body: &str, date: &str| {
+        serde_json::json!({"app": MESSAGES, "record": messages.record, "resource": "tilo.messages",
+            "action": "deliver-message", "arguments": {"from": from, "body": body, "date": date}})
+    };
+    let quoted = "messages/search-messages?query=code#/messages\
+                  [from=parcelly, after 2026-10-14T09:15Z, newest]";
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            deliver("Parcelly", "Parcelly login code: 330817.", "2026-10-13T17:42:10Z"),
+            deliver("Parcelly", "Parcelly login code: 552398.", "2026-10-14T09:15:41Z"),
+            deliver("Northwind Bank", "Your sign-in code is 615204.", "2026-10-14T09:16:00Z"),
+            deliver("Parcelly", "Parcelly: your new login code: 771046.", "2026-10-14T09:16:20Z"),
+            {"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+             "action": "set-cells", "arguments": {"sheet": FIRST_SHEET, "start": "A1", "rows": [[
+                format!("{{{{{quoted}/body|match:(\\d{{6}})}}}}"),
+                format!("Received {{{{{quoted}/date|long}}}}"),
+             ]]}},
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert_eq!(
+        sheet_rows(&mut agent, &sheets, "A1:B1"),
+        serde_json::json!([[771_046.0, "Received October 14, 2026"]])
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// A value that is not there fails its step with the reference named, and
+/// the task's repair plans around it with that reason.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_missing_value_goes_to_repair_naming_its_reference() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let set_cells = |rows: serde_json::Value| {
+        tool_call(
+            "p1",
+            "plan",
+            &serde_json::json!({"steps": [{"operation": "sheets.workbook#set-cells",
+                "arguments": {"sheet": FIRST_SHEET, "start": "A1", "rows": rows}}], "then": ""}),
+        )
+    };
+    let (url, sent) = model_endpoint(vec![
+        set_cells(serde_json::json!([["{{Sheet1!Z99}}"]])),
+        set_cells(serde_json::json!([["No figure yet"]])),
+    ]);
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        endpoint_planner(&url),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+
+    let info = run_task(
+        &mut agent,
+        &control,
+        "In Sheets, put the figure from Z99 in A1",
+    );
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    let failed = info
+        .steps
+        .iter()
+        .find(|step| step.state == TaskState::Failed)
+        .and_then(|step| step.error.clone())
+        .unwrap_or_default();
+    assert!(
+        failed.contains("{{Sheet1!Z99}}") && failed.contains("empty"),
+        "the failed step names its reference: {info:?}"
+    );
+    let requests: Vec<serde_json::Value> = sent
+        .try_iter()
+        .map(|body| serde_json::from_str(&body).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 2, "a plan and its repair");
+    let repair = message_text(&requests[1]["messages"][1]);
+    assert!(
+        repair.contains("{{Sheet1!Z99}}") && repair.contains("failed"),
+        "the repair is told which reference: {repair}"
+    );
+    assert_eq!(
+        sheet_rows(&mut agent, &sheets, "A1"),
+        serde_json::json!([["No figure yet"]])
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
+/// A model's `plan` turn: a `sheets.workbook#set-cells` of each
+/// `(sheet, start, value)`, listing `obligations` when there are any.
+fn set_cells_plan(obligations: &[&str], cells: &[(&str, &str, &str)]) -> serde_json::Value {
+    let steps: Vec<serde_json::Value> = cells
+        .iter()
+        .map(|(sheet, start, value)| {
+            serde_json::json!({"operation": "sheets.workbook#set-cells",
+                "arguments": {"sheet": sheet, "start": start, "rows": [[value]]}})
+        })
+        .collect();
+    let mut plan = serde_json::json!({"steps": steps, "then": ""});
+    if !obligations.is_empty() {
+        plan["obligations"] = serde_json::json!(obligations);
+    }
+    tool_call("p1", "plan", &plan)
+}
+
+/// Run `task` on an agent granted `app`, its model answering `answers` in
+/// order: the task as it ended, the requests its model was sent, and the
+/// first sheet's `A1:C4` when `app` is Sheets.
+async fn task_with_model(
+    app: &str,
+    answers: Vec<serde_json::Value>,
+    task: &str,
+) -> (
+    tilo_relay_protocol::agents::AgentTask,
+    Vec<serde_json::Value>,
+    serde_json::Value,
+) {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (url, sent) = model_endpoint(answers);
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[app],
+        endpoint_planner(&url),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let route = agent.open(app, None).unwrap();
+    let info = run_task(&mut agent, &control, task);
+    let requests = sent
+        .try_iter()
+        .map(|body| serde_json::from_str(&body).unwrap())
+        .collect();
+    let cells = if app == SHEETS {
+        sheet_rows(&mut agent, &route, "A1:C4")
+    } else {
+        serde_json::Value::Null
+    };
+    agent.close();
+    host.relay.shutdown().await;
+    (info, requests, cells)
+}
+
+/// Two different slips in one task (a value that is not there, then a
+/// sheet that is not there) are each planned around, and the task
+/// finishes; the second repair is told the first one's step ran and is
+/// kept, and a step of it that ran already is not run again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_different_failures_in_one_task_are_both_repaired() {
+    let (info, requests, cells) = Box::pin(task_with_model(
+        SHEETS,
+        vec![
+            set_cells_plan(
+                &[],
+                &[("Sheet1", "A1", "Name"), ("Sheet1", "B1", "{{Sheet1!Z99}}")],
+            ),
+            set_cells_plan(&[], &[("Sheet1", "A1", "Name"), ("Budget", "B1", "none")]),
+            set_cells_plan(&[], &[("Sheet1", "B1", "none")]),
+        ],
+        "In Sheets, put Name in A1 and the figure from Z99 in B1",
+    ))
+    .await;
+    assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    assert_eq!(requests.len(), 3, "a plan and two repairs");
+    let second = message_text(&requests[2]["messages"][1]);
+    assert!(
+        second.contains("no sheet `Budget`") && second.contains("Already done, and kept"),
+        "the second repair is told why and what ran: {second}"
+    );
+    let failed = info
+        .steps
+        .iter()
+        .filter(|step| step.state == TaskState::Failed)
+        .count();
+    let ran = info
+        .steps
+        .iter()
+        .filter(|step| step.state == TaskState::Completed)
+        .count();
+    assert_eq!((failed, ran), (2, 2), "A1 ran once: {info:?}");
+    assert_eq!(
+        (&cells[0][0], &cells[0][1]),
+        (&serde_json::json!("Name"), &serde_json::json!("none")),
+        "{cells}"
+    );
+}
+
+/// A repair that fails exactly as the step it repairs did (same
+/// arguments, same error) ends the task: a third plan would be the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_same_failure_twice_ends_the_task() {
+    let missing = || set_cells_plan(&[], &[("Sheet1", "A1", "{{Sheet1!Z99}}")]);
+    let (info, requests, _) = Box::pin(task_with_model(
+        SHEETS,
+        vec![missing(), missing(), missing()],
+        "In Sheets, put the figure from Z99 in A1",
+    ))
+    .await;
+    assert_eq!(info.state, TaskState::Failed, "{info:?}");
+    assert_eq!(requests.len(), 2, "a plan and one repair");
+}
+
+/// Past its repairs a task ends failed, and its failure names the
+/// obligations it left undone, as a finished task's result does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_task_past_its_repairs_fails_naming_what_is_left_undone() {
+    let obligations = ["figure in A1", "label in B1"];
+    let attempt = |listed: &[&str], note: &str, reference: &str| {
+        set_cells_plan(
+            listed,
+            &[
+                ("Sheet1", "C1", note),
+                ("Sheet1", "A1", &format!("{{{{Sheet1!{reference}}}}}")),
+            ],
+        )
+    };
+    let (info, requests, _) = Box::pin(task_with_model(
+        SHEETS,
+        vec![
+            attempt(&obligations, "first try", "Z99"),
+            attempt(&[], "second try", "Z98"),
+            attempt(&[], "third try", "Z97"),
+            attempt(&[], "fourth try", "Z96"),
+            attempt(&[], "fifth try", "Z95"),
+        ],
+        "In Sheets, put the figure from Z99 in A1 and a label in B1",
+    ))
+    .await;
+    assert_eq!(info.state, TaskState::Failed, "{info:?}");
+    assert_eq!(requests.len(), 4, "a plan and three repairs");
+    let error = info.error.unwrap_or_default();
+    assert!(
+        error.contains("Z96") && error.contains("Left undone: 1. figure in A1; 2. label in B1."),
+        "{error}"
+    );
+}
+
+/// A step nobody may confirm is not planned around: the task ends on the
+/// refusal after its one plan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refusal_no_plan_changes_is_not_repaired() {
+    const EBOOK: &str = "so.tilo.ebook";
+    let plan = tool_call(
+        "p1",
+        "plan",
+        &serde_json::json!({"steps": [
+            {"operation": "ebook.library#shelve", "arguments": {"book": "book:dusk",
+                "title": "Dusk", "author": "Ada", "subject": "", "shared": false}},
+            {"operation": "ebook.library#remove-from-library", "arguments": {"book": "book:dusk"}},
+        ], "then": ""}),
+    );
+    let (info, requests, _) = Box::pin(task_with_model(
+        EBOOK,
+        vec![plan.clone(), plan],
+        "In Ebook, shelve Dusk by Ada, then remove it",
+    ))
+    .await;
+    assert_eq!(info.state, TaskState::Failed, "{info:?}");
+    assert!(
+        info.error
+            .as_deref()
+            .is_some_and(|error| error.contains("confirmation_required")),
+        "{info:?}"
+    );
+    assert_eq!(requests.len(), 1, "no repair");
+}
+
+/// Two agents adding a row by its key at once each keep their row: an
+/// upsert names the row by what it holds, and a new one is its own row,
+/// never the next one by position, which the other agent is writing too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn upserts_by_key_from_two_agents_overwrite_nothing() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut first, _) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let (mut second, _) = planning_agent_as(
+        "second",
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        (
+            Box::new(tilo_agent_participant::DirectPlanner),
+            tilo_content::ContentStore::memory(),
+        ),
+    )
+    .await;
+    let sheets = first.open(SHEETS, None).unwrap();
+    let address = |action: &str| tilo_actions::door::ActionAddress::new("sheets.workbook", action);
+    let headers = serde_json::json!({"sheet": FIRST_SHEET, "start": "A1",
+        "rows": [["Name", "Seats"], ["Ana", 1]]});
+    first
+        .invoke(&sheets, &address("set-cells"), headers.as_object().unwrap())
+        .unwrap();
+    let theirs = wait_for("the second agent to open the workbook", || {
+        first.pump();
+        second.pump();
+        let opened = second
+            .open(SHEETS, Some(&sheets.record))
+            .ok()
+            .filter(|route| sheet_rows(&mut second, route, "A2") == serde_json::json!([["Ana"]]));
+        async move { opened }
+    })
+    .await;
+
+    // Neither has seen the other's upsert when it makes its own.
+    let upsert = |name: &str, seats: i64| serde_json::json!({"sheet": FIRST_SHEET, "match": {"Name": name}, "value": {"Seats": seats}});
+    first
+        .invoke(
+            &sheets,
+            &address("upsert-item"),
+            upsert("Ben", 2).as_object().unwrap(),
+        )
+        .unwrap();
+    second
+        .invoke(
+            &theirs,
+            &address("upsert-item"),
+            upsert("Cy", 3).as_object().unwrap(),
+        )
+        .unwrap();
+    second
+        .invoke(
+            &theirs,
+            &address("upsert-item"),
+            upsert("ana", 4).as_object().unwrap(),
+        )
+        .unwrap();
+    let rows = wait_for("both agents to hold both rows", || {
+        first.pump();
+        second.pump();
+        let ours = sheet_rows(&mut first, &sheets, "A2:B4");
+        let same = ours == sheet_rows(&mut second, &theirs, "A2:B4");
+        let full = ours
+            .as_array()
+            .is_some_and(|rows| rows.iter().all(|row| !row[0].is_null()));
+        async move { (same && full).then_some(ours) }
+    })
+    .await;
+    let mut rows: Vec<String> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| format!("{} {}", row[0].as_str().unwrap(), row[1]))
+        .collect();
+    rows.sort();
+    assert_eq!(rows, ["Ana 4.0", "Ben 2.0", "Cy 3.0"]);
+
+    first.close();
+    second.close();
+    host.relay.shutdown().await;
+}
+
+const CHAT: &str = "so.tilo.chat";
+
+/// The last message of a chat-completions request's body: the turn it
+/// asks the model to answer.
+fn last_turn(body: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(body).unwrap();
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .map(message_text)
+        .unwrap_or_default()
+}
+
+/// The plain text of the chat's message parts `agent` holds beside its
+/// chat record at `route`.
+fn chat_parts_text(agent: &AgentParticipant, route: &DocumentRoute) -> String {
+    let Some(chat) = agent.app(route) else {
+        return String::new();
+    };
+    chat.records_beside()
+        .iter()
+        .filter_map(|part| chat.read_record(part, tilo_agent_participant::search::plain_text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// An agent planning a task hears of a chat post another agent made
+/// meanwhile with the post itself and its author's name, and an agent
+/// waiting in the chat for a post naming its author wakes when that
+/// author posts it. The chat keeps its messages in parts beside its
+/// record: what the waiter compares is what the chat shows as a message,
+/// its author and its text, not the record's roster alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
+    let (gate, held) = std::sync::mpsc::channel();
+    let (url, sent) = gated_model_endpoint(vec![
+        (
+            plan(
+                "p1",
+                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
+                "contains": "Rae LR-2041 code entered", "seconds": 60}}),
+            ),
+            Some(held),
+        ),
+        (
+            plan(
+                "p2",
+                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
+                "contains": "Rae LR-2042 code entered", "seconds": 60}}),
+            ),
+            None,
+        ),
+        (
+            plan(
+                "p3",
+                serde_json::json!({"steps": [], "reply": "Both codes were entered."}),
+            ),
+            None,
+        ),
+        (
+            plan(
+                "p4",
+                serde_json::json!({"steps": [], "reply": "Both codes were entered."}),
+            ),
+            None,
+        ),
+    ]);
+    let (mut waiter, control) = planning_agent_labelled(
+        ("waiter-1c", "Ana"),
+        &root,
+        (&host, &host_device),
+        &[CHAT],
+        (endpoint_planner(&url), tilo_content::ContentStore::memory()),
+    )
+    .await;
+    let (mut poster, poster_control) = planning_agent_labelled(
+        ("relay-9e", "Rae"),
+        &root,
+        (&host, &host_device),
+        &[CHAT],
+        (
+            Box::new(tilo_agent_participant::DirectPlanner),
+            tilo_content::ContentStore::memory(),
+        ),
+    )
+    .await;
+    let theirs = poster.open(CHAT, None).unwrap();
+    let begin = serde_json::json!({"name": "Rae", "initials": "RA", "color": 2});
+    poster
+        .invoke(
+            &theirs,
+            &tilo_actions::door::ActionAddress::new("chat.workspace", "begin-chat"),
+            begin.as_object().unwrap(),
+        )
+        .unwrap();
+    // Posted as a written task, as a step of a plan is.
+    let post = |poster: &mut AgentParticipant, text: &str| {
+        let step = serde_json::json!([{"app": CHAT, "resource": "chat.messages",
+            "action": "post", "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}}]);
+        let task = poster_control.message(&step.to_string()).unwrap();
+        poster.run_until(Some(Instant::now() + Duration::from_secs(60)), |_| {
+            !poster_control.is_running(&task)
+                && !poster_control
+                    .info()
+                    .tasks
+                    .iter()
+                    .any(|info| info.id == task && info.state == TaskState::Queued)
+        });
+        let info = poster_control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|info| info.id == task)
+            .unwrap();
+        assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    };
+    post(&mut poster, "LR-2041 code requested");
+    let ours = waiter.open(CHAT, None).unwrap();
+    wait_for("the waiter to hold the first post", || {
+        waiter.pump();
+        poster.pump();
+        let held = chat_parts_text(&waiter, &ours).contains("LR-2041 code requested");
+        async move { held.then_some(()) }
+    })
+    .await;
+
+    let task = control
+        .message("Wait in Chat until Rae posts the codes for LR-2041 and LR-2042, then say so")
+        .unwrap();
+    wait_for("the first plan to be asked for", || {
+        waiter.pump();
+        poster.pump();
+        let request = sent.try_recv().ok();
+        async move { request }
+    })
+    .await;
+    // While the plan is being made, Rae posts what it will wait for.
+    post(&mut poster, "LR-2041 code entered");
+    wait_for("the waiter to hold the post", || {
+        waiter.pump();
+        poster.pump();
+        let held = chat_parts_text(&waiter, &ours).contains("LR-2041 code entered");
+        async move { held.then_some(()) }
+    })
+    .await;
+    gate.send(()).unwrap();
+    let told = last_turn(
+        &wait_for("the plan again for the news", || {
+            waiter.pump();
+            poster.pump();
+            let request = sent.try_recv().ok();
+            async move { request }
+        })
+        .await,
+    );
+    let news = told
+        .split_once("While you worked, new messages arrived (chat).")
+        .and_then(|(_, rest)| rest.split_once("Read them first."))
+        .map_or_else(
+            || panic!("the re-plan is told of the news: {told}"),
+            |(news, _)| news,
+        );
+    assert!(news.contains("changed by Rae"), "{news}");
+    assert!(news.contains("LR-2041 code entered"), "{news}");
+    assert!(
+        !news.contains("LR-2041 code requested"),
+        "what the room held before the plan is not news: {news}"
+    );
+
+    // The re-plan waits for the second code; Rae posts it meanwhile.
+    wait_for("the waiter to wait", || {
+        waiter.pump();
+        poster.pump();
+        let waiting = control.is_running(&task)
+            && control
+                .activity()
+                .is_some_and(|activity| activity.starts_with("Waiting for a message"));
+        async move { waiting.then_some(()) }
+    })
+    .await;
+    post(&mut poster, "LR-2042 code entered");
+    let told = last_turn(
+        &wait_for("the waiter to wake", || {
+            waiter.pump();
+            poster.pump();
+            let request = sent.try_recv().ok();
+            async move { request }
+        })
+        .await,
+    );
+    assert!(
+        told.contains("What you waited for arrived in chat"),
+        "{told}"
+    );
+    assert!(told.contains("LR-2042 code entered"), "{told}");
+    assert!(!told.contains("nothing arrived"), "{told}");
+
+    waiter.close();
+    poster.close();
+    host.relay.shutdown().await;
+}
+
+/// Post `text` in the chat's `#chat` channel as `poster`, as a written
+/// task runs a plan's step.
+fn post_in_chat(poster: &mut AgentParticipant, control: &AgentControl, text: &str) {
+    let step = serde_json::json!([{"app": CHAT, "resource": "chat.messages",
+        "action": "post", "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}}]);
+    assert_eq!(
+        run_task(poster, control, &step.to_string()).state,
+        TaskState::Completed
+    );
+}
+
+/// The plain text of the chat record `agent` holds at `route` (its roster,
+/// its channels), without its messages.
+fn chat_record_text(agent: &AgentParticipant, route: &DocumentRoute) -> String {
+    agent
+        .app(route)
+        .and_then(|chat| chat.read(tilo_agent_participant::search::plain_text))
+        .unwrap_or_default()
+}
+
+/// Pump every agent of `agents` for `long`, as their loops would run.
+async fn pump_for(agents: &mut [&mut AgentParticipant], long: Duration) {
+    let until = Instant::now() + long;
+    while Instant::now() < until {
+        for agent in agents.iter_mut() {
+            agent.pump();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Three agents in one chat, as a sign-in relay runs: Ana (planned by the
+/// model at `url`) waits for Rae's post; Rae made the chat; Ben is a third
+/// agent who has not opened it yet.
+struct RelayRoom {
+    host: support::TestHost,
+    _steward: steward::Steward,
+    ana: (AgentParticipant, std::sync::Arc<AgentControl>),
+    rae: (AgentParticipant, std::sync::Arc<AgentControl>),
+    ben: (AgentParticipant, std::sync::Arc<AgentControl>),
+    _state: tempfile::TempDir,
+}
+
+impl RelayRoom {
+    async fn start(url: &str) -> Self {
+        Box::pin(Self::granting(url, &[CHAT])).await
+    }
+
+    /// [`Self::start`], Ana granted `apps`.
+    async fn granting(url: &str, apps: &[&str]) -> Self {
+        Box::pin(Self::granting_with(
+            url,
+            apps,
+            tilo_content::ContentStore::memory(),
+        ))
+        .await
+    }
+
+    /// [`Self::granting`], Ana keeping the room's content in `content`.
+    async fn granting_with(url: &str, apps: &[&str], content: tilo_content::ContentStore) -> Self {
+        let (ada, _) = UserIdentity::generate("Ada", 1);
+        let host_device = enrol(&ada, "home-server", DeviceCapabilities::host());
+        let state = tempfile::tempdir().unwrap();
+        let host = start_host(
+            &ada,
+            &host_device,
+            state.path(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await;
+        let steward = steward::Steward::start(&host.relay, &ada).await;
+        let direct = || {
+            (
+                Box::new(tilo_agent_participant::DirectPlanner)
+                    as Box<dyn tilo_agent_participant::Planner>,
+                tilo_content::ContentStore::memory(),
+            )
+        };
+        let ana = planning_agent_labelled(
+            ("ana-121641", "Ana"),
+            &ada,
+            (&host, &host_device),
+            apps,
+            (endpoint_planner(url), content),
+        )
+        .await;
+        let mut rae = planning_agent_labelled(
+            ("rae-cf1531", "Rae"),
+            &ada,
+            (&host, &host_device),
+            &[CHAT],
+            direct(),
+        )
+        .await;
+        let ben = planning_agent_labelled(
+            ("ben-5920f2", "Ben"),
+            &ada,
+            (&host, &host_device),
+            &[CHAT],
+            direct(),
+        )
+        .await;
+        let chat = rae.0.open(CHAT, None).unwrap();
+        let begin = serde_json::json!({"name": "Rae", "initials": "RA", "color": 2});
+        rae.0
+            .invoke(
+                &chat,
+                &tilo_actions::door::ActionAddress::new("chat.workspace", "begin-chat"),
+                begin.as_object().unwrap(),
+            )
+            .unwrap();
+        post_in_chat(&mut rae.0, &rae.1, "LR-2041 code requested");
+        let mut room = Self {
+            host,
+            _steward: steward,
+            ana,
+            rae,
+            ben,
+            _state: state,
+        };
+        wait_for("Ana to see the chat", || {
+            room.ana.0.pump();
+            room.rae.0.pump();
+            let seen = room
+                .ana
+                .0
+                .known_records()
+                .iter()
+                .any(|route| route.app_id == CHAT);
+            async move { seen.then_some(()) }
+        })
+        .await;
+        let ours = room.ana.0.open(CHAT, None).unwrap();
+        wait_for("Ana to hold the first post", || {
+            room.ana.0.pump();
+            room.rae.0.pump();
+            let held = chat_parts_text(&room.ana.0, &ours).contains("LR-2041 code requested");
+            async move { held.then_some(()) }
+        })
+        .await;
+        room
+    }
+
+    /// Ben opens the chat, introducing himself in its roster, and Ana
+    /// holds his introduction.
+    async fn ben_joins(&mut self) {
+        let ours = self.ana.0.open(CHAT, None).unwrap();
+        wait_for("Ben to see the chat", || {
+            self.ben.0.pump();
+            self.rae.0.pump();
+            let seen = self.ben.0.known_records().contains(&ours);
+            async move { seen.then_some(()) }
+        })
+        .await;
+        let theirs = self.ben.0.open(CHAT, None).unwrap();
+        assert_eq!(theirs, ours);
+        wait_for("Ben to hold the first post", || {
+            self.ben.0.pump();
+            self.rae.0.pump();
+            let held = chat_parts_text(&self.ben.0, &theirs).contains("LR-2041 code requested");
+            async move { held.then_some(()) }
+        })
+        .await;
+        wait_for("Ana to hold Ben's introduction", || {
+            self.ana.0.pump();
+            self.ben.0.pump();
+            self.rae.0.pump();
+            let held = chat_record_text(&self.ana.0, &ours).contains("Ben");
+            async move { held.then_some(()) }
+        })
+        .await;
+    }
+
+    async fn pump_for(&mut self, long: Duration) {
+        pump_for(
+            &mut [&mut self.ana.0, &mut self.rae.0, &mut self.ben.0],
+            long,
+        )
+        .await;
+    }
+
+    async fn next_request(
+        &mut self,
+        sent: &std::sync::mpsc::Receiver<String>,
+        what: &str,
+    ) -> String {
+        wait_for(what, || {
+            self.ana.0.pump();
+            self.rae.0.pump();
+            self.ben.0.pump();
+            let request = sent.try_recv().ok();
+            async move { request }
+        })
+        .await
+    }
+
+    async fn ana_waits(&mut self, task: &str) {
+        wait_for("Ana to wait", || {
+            self.ana.0.pump();
+            self.rae.0.pump();
+            self.ben.0.pump();
+            let waiting = self.ana.1.is_running(task)
+                && self
+                    .ana
+                    .1
+                    .activity()
+                    .is_some_and(|activity| activity.starts_with("Waiting for a message"));
+            async move { waiting.then_some(()) }
+        })
+        .await;
+    }
+
+    async fn ana_ends(&mut self, task: &str) -> TaskState {
+        wait_for("Ana's task to end", || {
+            self.ana.0.pump();
+            self.rae.0.pump();
+            self.ben.0.pump();
+            let ended = self
+                .ana
+                .1
+                .info()
+                .tasks
+                .into_iter()
+                .find(|info| info.id == task)
+                .map(|info| info.state)
+                .filter(|state| !matches!(state, TaskState::Queued | TaskState::Running));
+            async move { ended }
+        })
+        .await
+    }
+
+    async fn close(self) {
+        self.ana.0.close();
+        self.rae.0.close();
+        self.ben.0.close();
+        self.host.relay.shutdown().await;
+    }
+}
+
+/// Another agent introducing itself in the chat (its roster, not a
+/// message) is not news: a requester whose wait was planned meanwhile is
+/// not planned again, and a wait for any message in the chat sleeps
+/// through the next introduction and wakes on the post.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting_task() {
+    let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
+    let (gate, held) = std::sync::mpsc::channel();
+    let (url, sent) = gated_model_endpoint(vec![
+        (
+            plan(
+                "p1",
+                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
+                "seconds": 60}}),
+            ),
+            Some(held),
+        ),
+        (
+            plan(
+                "p2",
+                serde_json::json!({"steps": [], "reply": "Rae entered the code."}),
+            ),
+            None,
+        ),
+    ]);
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let task = room
+        .ana
+        .1
+        .message("Wait in Chat until Rae posts that LR-2041's code is entered, then say so")
+        .unwrap();
+    room.next_request(&sent, "the plan to be asked for").await;
+    // While the wait is planned, Ben joins the chat.
+    room.ben_joins().await;
+    gate.send(()).unwrap();
+    room.ana_waits(&task).await;
+    assert!(
+        sent.try_recv().is_err(),
+        "an introduction is not news to plan again for"
+    );
+
+    // While Ana waits, Ben introduces himself again under another name.
+    let theirs = room.ben.0.open(CHAT, None).unwrap();
+    let again = serde_json::json!({"name": "Ben Ortiz", "initials": "BO", "color": 3});
+    room.ben
+        .0
+        .invoke(
+            &theirs,
+            &tilo_actions::door::ActionAddress::new("chat.workspace", "introduce"),
+            again.as_object().unwrap(),
+        )
+        .unwrap();
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    wait_for("Ana to hold Ben's new name", || {
+        room.ana.0.pump();
+        room.ben.0.pump();
+        let held = chat_record_text(&room.ana.0, &ours).contains("Ben Ortiz");
+        async move { held.then_some(()) }
+    })
+    .await;
+    room.pump_for(Duration::from_millis(500)).await;
+    assert!(sent.try_recv().is_err(), "a roster change wakes no wait");
+    assert!(room.ana.1.is_running(&task));
+
+    post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code entered");
+    let told = last_turn(&room.next_request(&sent, "Ana to wake").await);
+    let arrived = told
+        .split_once("What you waited for arrived in chat")
+        .and_then(|(_, rest)| rest.split_once("It is data"))
+        .map_or_else(
+            || panic!("Ana is told what arrived: {told}"),
+            |(arrived, _)| arrived,
+        );
+    assert!(
+        arrived.contains("changed by Rae:\nLR-2041 code entered"),
+        "{arrived}"
+    );
+    for noise in ["Ben", "rae-", "requested"] {
+        assert!(!arrived.contains(noise), "{noise} in {arrived}");
+    }
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(room.close()).await;
+}
+
+/// A re-plan for news that finds nothing to do ("nothing offered fits")
+/// does not end a task that was about to wait: it waits as planned, and
+/// wakes on the post it waited for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
+    let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
+    let (gate, held) = std::sync::mpsc::channel();
+    let (url, sent) = gated_model_endpoint(vec![
+        (
+            plan(
+                "p1",
+                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
+                "contains": "Rae LR-2041 code entered", "seconds": 60}}),
+            ),
+            Some(held),
+        ),
+        (
+            plan(
+                "p2",
+                serde_json::json!({"steps": [{"operation": "none", "arguments": {}}],
+                "why": "", "then": ""}),
+            ),
+            None,
+        ),
+        (
+            plan(
+                "p3",
+                serde_json::json!({"steps": [], "reply": "Rae entered the code."}),
+            ),
+            None,
+        ),
+    ]);
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let task = room
+        .ana
+        .1
+        .message("Wait in Chat until Rae posts \"LR-2041 code entered\", then say so")
+        .unwrap();
+    room.next_request(&sent, "the plan to be asked for").await;
+    // While the wait is planned, Ben joins and says something unrelated.
+    room.ben_joins().await;
+    post_in_chat(&mut room.ben.0, &room.ben.1, "Standing by for LR-2042");
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    wait_for("Ana to hold Ben's post", || {
+        room.ana.0.pump();
+        room.ben.0.pump();
+        let held = chat_parts_text(&room.ana.0, &ours).contains("Standing by");
+        async move { held.then_some(()) }
+    })
+    .await;
+    gate.send(()).unwrap();
+    let told = last_turn(
+        &room
+            .next_request(&sent, "the plan again for the news")
+            .await,
+    );
+    assert!(
+        told.contains(
+            "new messages arrived (chat).\n- chat, changed by Ben: Standing by for LR-2042\n"
+        ),
+        "the news is Ben's post alone, by name: {told}"
+    );
+    assert!(told.contains("1. wait for a message"), "{told}");
+
+    // The model finds nothing to do: the task waits as it had planned.
+    room.ana_waits(&task).await;
+    room.pump_for(Duration::from_millis(300)).await;
+    assert!(room.ana.1.is_running(&task));
+    post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code entered");
+    let told = last_turn(&room.next_request(&sent, "Ana to wake").await);
+    assert!(
+        told.contains("What you waited for arrived in chat")
+            && told.contains("LR-2041 code entered"),
+        "{told}"
+    );
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(room.close()).await;
+}
+
+/// The id under which the planning request `body` offers `action`
+/// (`<resource>#<action>`).
+fn offered(body: &str, action: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(body).unwrap();
+    let text: String = request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(message_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let marker = format!("#{action}");
+    let in_id = |c: char| c.is_alphanumeric() || ".:@-_/%".contains(c);
+    text.match_indices(&marker)
+        .find_map(|(at, _)| {
+            let end = at + marker.len();
+            let after = text.get(end..)?.chars().next();
+            if after.is_some_and(|c| c.is_alphanumeric() || c == '-') {
+                return None;
+            }
+            let start = text
+                .get(..at)?
+                .char_indices()
+                .rev()
+                .find(|(_, c)| !in_id(*c))
+                .map_or(0, |(i, c)| i + c.len_utf8());
+            text.get(start..end).map(str::to_owned)
+        })
+        .unwrap_or_else(|| panic!("{action} is offered: {text}"))
+}
+
+/// Plan steps posting each of `posts` in the chat with `post`, each with
+/// the obligation it fulfils.
+fn posts(post: &str, posts: &[(&str, Option<usize>)]) -> serde_json::Value {
+    posts
+        .iter()
+        .map(|(text, serves)| {
+            let mut step = serde_json::json!({"operation": post,
+                "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}});
+            if let Some(number) = serves {
+                step["for"] = (*number).into();
+            }
+            step
+        })
+        .collect()
+}
+
+fn plan_call(id: &str, input: &serde_json::Value) -> serde_json::Value {
+    tool_call(id, "plan", input)
+}
+
+const REMINDED: &str = "You planned nothing more, but obligations of the request are still open";
+
+/// What Ana's agent last said: a finished task's result.
+fn ana_said(room: &RelayRoom) -> String {
+    room.ana
+        .1
+        .info()
+        .conversation
+        .last()
+        .map(|message| message.text.clone())
+        .unwrap_or_default()
+}
+
+/// A re-plan for news that drops two of four planned posts does not drop
+/// what they were for: their obligations stay open, every re-plan is shown
+/// them, and before the task finishes it is planned for them again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes() {
+    let (url, sent, answer) = answered_model_endpoint();
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let task = room
+        .ana
+        .1
+        .message("In Chat, post Alpha ready, Bravo ready, Charlie ready and Delta ready")
+        .unwrap();
+    let first = room.next_request(&sent, "the plan to be asked for").await;
+    let post = offered(&first, "post");
+    // While it is planned, Ben joins and posts.
+    room.ben_joins().await;
+    post_in_chat(&mut room.ben.0, &room.ben.1, "Standing by for LR-2042");
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    wait_for("Ana to hold Ben's post", || {
+        room.ana.0.pump();
+        room.ben.0.pump();
+        let held = chat_parts_text(&room.ana.0, &ours).contains("Standing by");
+        async move { held.then_some(()) }
+    })
+    .await;
+    let all = [
+        ("Alpha ready", Some(1)),
+        ("Bravo ready", Some(2)),
+        ("Charlie ready", Some(3)),
+        ("Delta ready", Some(4)),
+    ];
+    let obligations: Vec<String> = all.iter().map(|(text, _)| format!("post {text}")).collect();
+    answer
+        .send(plan_call(
+            "p1",
+            &serde_json::json!({"obligations": obligations, "steps": posts(&post, &all)}),
+        ))
+        .unwrap();
+
+    let told = last_turn(
+        &room
+            .next_request(&sent, "the plan again for the news")
+            .await,
+    );
+    assert!(told.contains("Standing by for LR-2042"), "{told}");
+    assert!(
+        told.contains(
+            "Still to do: 1. post Alpha ready; 2. post Bravo ready; 3. post Charlie ready; 4. \
+             post Delta ready."
+        ),
+        "{told}"
+    );
+    // The re-plan keeps only the first two posts.
+    answer
+        .send(plan_call(
+            "p2",
+            &serde_json::json!({"steps": posts(&post, &all[..2])}),
+        ))
+        .unwrap();
+
+    let told = last_turn(&room.next_request(&sent, "the reminder").await);
+    assert!(told.contains(REMINDED), "{told}");
+    assert!(
+        told.contains("1. post Alpha ready (done); 2. post Bravo ready (done); 3. post Charlie")
+            && told.contains("Still to do: 3. post Charlie ready; 4. post Delta ready."),
+        "{told}"
+    );
+    answer
+        .send(plan_call(
+            "p3",
+            &serde_json::json!({"steps": posts(&post, &all[2..])}),
+        ))
+        .unwrap();
+
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    let said = ana_said(&room);
+    assert!(
+        said.starts_with("Done: 4 actions.") && !said.contains("Left undone"),
+        "{said}"
+    );
+    let held = chat_parts_text(&room.ana.0, &ours);
+    for (text, _) in all {
+        assert!(held.contains(text), "{text}: {held}");
+    }
+    assert!(sent.try_recv().is_err(), "no plan after the last");
+    Box::pin(room.close()).await;
+}
+
+/// A task about to finish with an obligation open is planned for it, and
+/// finishes once it is done; one set aside with a reason lets the task
+/// finish, its result saying why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obligations_left_open_are_reminded_done_or_set_aside() {
+    let (url, sent, answer) = answered_model_endpoint();
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    let three = serde_json::json!(["post Alpha ready", "post Bravo ready", "post Charlie ready"]);
+
+    let task = room
+        .ana
+        .1
+        .message("In Chat, post Alpha ready, Bravo ready and Charlie ready")
+        .unwrap();
+    let post = offered(&room.next_request(&sent, "the plan").await, "post");
+    answer
+        .send(plan_call(
+            "p1",
+            &serde_json::json!({"obligations": three,
+                "steps": posts(&post, &[("Alpha ready", Some(1))])}),
+        ))
+        .unwrap();
+    let told = last_turn(&room.next_request(&sent, "the reminder").await);
+    assert!(
+        told.contains(REMINDED) && told.contains("Still to do: 2. post Bravo ready; 3. post"),
+        "{told}"
+    );
+    answer
+        .send(plan_call(
+            "p2",
+            &serde_json::json!({"steps": posts(&post, &[("Bravo ready", Some(2))]),
+                "set_aside": [{"item": 3, "reason": "not possible: Charlie is not ours to post"}]}),
+        ))
+        .unwrap();
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    let said = ana_said(&room);
+    assert!(
+        said.starts_with("Done: 2 actions.")
+            && said.ends_with(
+                "Set aside: 3. post Charlie ready (not possible: Charlie is not ours to post)."
+            ),
+        "{said}"
+    );
+    assert!(!chat_parts_text(&room.ana.0, &ours).contains("Charlie ready"));
+
+    // Set aside without another step: a plan of nothing is an answer.
+    let task = room
+        .ana
+        .1
+        .message("In Chat, post Delta ready and Echo ready")
+        .unwrap();
+    room.next_request(&sent, "the second plan").await;
+    answer
+        .send(plan_call(
+            "p3",
+            &serde_json::json!({"obligations": ["post Delta ready", "post Echo ready"],
+                "steps": posts(&post, &[("Delta ready", Some(1))])}),
+        ))
+        .unwrap();
+    room.next_request(&sent, "the second reminder").await;
+    answer
+        .send(plan_call(
+            "p4",
+            &serde_json::json!({"steps": [], "reply": "Echo set aside.",
+                "set_aside": [{"item": 2, "reason": "already done by Rae"}]}),
+        ))
+        .unwrap();
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    assert!(
+        ana_said(&room).ends_with("Set aside: 2. post Echo ready (already done by Rae)."),
+        "{}",
+        ana_said(&room)
+    );
+    assert!(sent.try_recv().is_err(), "no plan after the last");
+    Box::pin(room.close()).await;
+}
+
+/// A plan that lists no obligations finishes as it always did: one model
+/// request, no reminder, its result as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plan_without_obligations_finishes_without_a_reminder() {
+    let (url, sent, answer) = answered_model_endpoint();
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let task = room.ana.1.message("In Chat, post Alpha ready").unwrap();
+    let first = room.next_request(&sent, "the plan").await;
+    let request: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert!(
+        request["tools"].to_string().contains("`obligations`"),
+        "the plan tool says how to list them"
+    );
+    let post = offered(&first, "post");
+    answer
+        .send(plan_call(
+            "p1",
+            &serde_json::json!({"steps": posts(&post, &[("Alpha ready", None)])}),
+        ))
+        .unwrap();
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    assert_eq!(ana_said(&room), "Done: 1 action.");
+    room.pump_for(Duration::from_millis(300)).await;
+    assert!(sent.try_recv().is_err(), "one model request");
+    Box::pin(room.close()).await;
+}
+
+/// Coordinated tasks: an agent per item of the checklist.
+#[path = "session_coverage/decompose.rs"]
+mod decompose;
+
+/// The room's pictures, read as content.
+#[path = "session_coverage/pictures.rs"]
+mod pictures;

@@ -412,7 +412,6 @@ mod tests {
 
     #[test]
     fn open_options_decode_selection_mode_independently() {
-        // Phase `open_options_default_to_file_selection`.
         {
             let opts = decode_open_options(
                 PortalCaller::new(WorkspaceId(30), "org.example"),
@@ -422,7 +421,6 @@ mod tests {
             assert!(!opts.directory);
             assert!(!opts.multiple);
         }
-        // Phase `open_options_decode_directory_independently_of_multiple_and_label`.
         {
             let mut options = HashMap::new();
             options.insert(
@@ -475,7 +473,6 @@ mod tests {
 
     #[test]
     fn chooser_paths_map_to_portal_responses_and_encoded_uris() {
-        // Phase `paths_allow_returns_response_zero_and_uri`.
         {
             let (code, results) = crate::portal::reply::reply(paths_to_open_response(
                 Some(vec![PathBuf::from("/tmp/x.txt")]),
@@ -488,7 +485,6 @@ mod tests {
                 Some(false)
             );
         }
-        // Phase `paths_save_returns_writable_true`.
         {
             let (code, results) = crate::portal::reply::reply(paths_to_open_response(
                 Some(vec![PathBuf::from("/tmp/out.bin")]),
@@ -498,14 +494,12 @@ mod tests {
             assert!(results.contains_key("uris"));
             assert!(results.contains_key("writable"));
         }
-        // Phase `paths_none_returns_response_one_no_results`.
         {
             let (code, results) =
                 crate::portal::reply::reply(paths_to_open_response(None, /*save=*/ false));
             assert_eq!(code, 1);
             assert!(results.is_empty());
         }
-        // Phase `paths_empty_returns_response_one`.
         {
             // Empty list ≡ cancel — keeps the contract symmetric with `None` (the spawner uses an empty Vec ≡ cancel internally).
             let (code, results) = crate::portal::reply::reply(paths_to_open_response(
@@ -515,7 +509,6 @@ mod tests {
             assert_eq!(code, 1);
             assert!(results.is_empty());
         }
-        // Phase `paths_serialise_to_file_uri`.
         {
             let (_code, results) = crate::portal::reply::reply(paths_to_open_response(
                 Some(vec![PathBuf::from("/tmp/a.txt")]),
@@ -593,7 +586,6 @@ mod tests {
             assert_eq!(code, 1);
             assert!(results.is_empty());
         }
-        // Phase `save_responses_are_writable_and_open_responses_are_not`.
         for (save, mode, expect_write) in [
             (false, FsMode::Read, false),
             (true, FsMode::ReadWrite, true),

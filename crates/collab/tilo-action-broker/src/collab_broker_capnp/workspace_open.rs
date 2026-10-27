@@ -162,9 +162,10 @@ impl CapnpBrokerState {
         self.local_turn.notify_one();
     }
 
-    /// `peer` published what it offers; the `open` that started it is done.
+    /// `peer` published what it offers; the `open` that started its
+    /// connection is done, opened at the route that published.
     pub(super) fn launch_published(&self, peer: u64) {
-        if let Some(opening) = self.workspace_opens.take_peer(peer) {
+        if let Some(opening) = self.workspace_opens.take_peer(self.connection_of(peer)) {
             self.complete_open(opening.opened(Some(peer)));
         }
     }
@@ -239,6 +240,7 @@ mod tests {
     impl crate::services::LauncherServices for Ticketed {
         fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
             vec![crate::services::LaunchableApplication {
+                capabilities: Vec::new(),
                 package_id: APP.into(),
                 display_name: "Writer".into(),
                 unconfined: false,
@@ -284,7 +286,7 @@ mod tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId(9), "Opens");
         workspace.set_owner(owner);
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(
@@ -326,7 +328,7 @@ mod tests {
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         state
             .action_invoke(caller, None, None, request)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("host admission answers immediately")?;
@@ -418,7 +420,7 @@ mod tests {
         )
         .unwrap();
         let mut workspace = Workspace::new(WorkspaceId(9), "Signed opens");
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let (_, certificate) = tilo_identity_host::broker::trusted_current_device(&room).unwrap();
         let person = hex::encode(certificate.user_public_key);
         workspace.set_owner(person.clone());
@@ -471,7 +473,7 @@ mod tests {
             // turn. Drive the same eager dispatch as the live accept loop,
             // rather than waiting for a worker this fixture never started.
             let super::super::ActionDirectoryBridgeRequest::InvokeEager(invoke) = bridge
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("native invoke reaches the broker turn")
             else {
                 panic!("native open must enqueue eager admission");
@@ -479,19 +481,22 @@ mod tests {
             std::thread::scope(|scope| {
                 scope
                     .spawn(|| {
-                        invoke.reply.complete(state.invoke_eager(
-                            &invoke.caller,
-                            invoke.own_peer,
-                            invoke.launch.as_ref(),
-                            Some(&invoke.origin),
-                            &invoke.request,
-                        ));
+                        super::super::action_host::answer_with(
+                            state.invoke_eager(
+                                &invoke.caller,
+                                invoke.own_peer,
+                                invoke.launch.as_ref(),
+                                Some(&invoke.origin),
+                                &invoke.request,
+                            ),
+                            invoke.reply,
+                        );
                     })
                     .join()
                     .unwrap();
             });
             pending
-                .wait_timeout(std::time::Duration::from_secs(5))
+                .wait_timeout(tilo_test_env::hang_bound())
                 .ok()
                 .flatten()
                 .expect("serviced native admission answers")

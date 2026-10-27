@@ -28,14 +28,31 @@ const FOLLOW: Duration = Duration::from_secs(30);
 /// What following the room's requests changes now.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Plan {
-    /// Requests no bot runs for yet, or for another version than runs.
+    /// Requests no bot runs for yet.
     pub start: Vec<RequestedBot>,
-    /// Entries whose bot runs without a request standing for it, or for
-    /// another version than is asked for now.
+    /// Requests for another release than runs: the bot stays installed and
+    /// runs the new program from now on.
+    pub replace: Vec<RequestedBot>,
+    /// Entries whose bot runs without a request standing for it.
     pub stop: Vec<String>,
 }
 
-/// Compare the room's `requests` with the versions `running` by entry.
+/// The release a request asks for: its version, and the hash of the
+/// developer's program it carries, if any, so pushing a changed program at
+/// the same version still replaces the running one.
+#[must_use]
+pub fn release(request: &tilo_peer_state::workspace_membership::BotRequest) -> String {
+    match &request.program {
+        Some(program) => format!(
+            "{}#{}",
+            request.version,
+            tilo_automation::program::program_hash(program.as_bytes())
+        ),
+        None => request.version.clone(),
+    }
+}
+
+/// Compare the room's `requests` with the releases `running` by entry.
 /// Entries in `operator` are the operator's bots: never started or stopped
 /// here.
 #[must_use]
@@ -51,11 +68,8 @@ pub fn plan(
             continue;
         }
         match running.get(entry) {
-            Some(version) if version == &request.request.version => {}
-            Some(_) => {
-                plan.stop.push(entry.clone());
-                plan.start.push(request.clone());
-            }
+            Some(runs) if runs == &release(&request.request) => {}
+            Some(_) => plan.replace.push(request.clone()),
             None => plan.start.push(request.clone()),
         }
     }
@@ -84,7 +98,6 @@ pub struct Follower {
     /// The host's state directory; each requested bot keeps its
     /// installation under `requested-bots/<entry>`.
     pub state: PathBuf,
-    /// The operator's bots, by entry.
     pub operator: BTreeSet<String>,
     /// The connectors this host can run for a requested bot (the Discord
     /// bridge); `None` where it runs none.
@@ -93,44 +106,116 @@ pub struct Follower {
 
 /// A requested bot running here.
 struct Running {
-    version: String,
+    release: String,
     installation: String,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
+impl Running {
+    fn halt(self) {
+        for task in self.tasks {
+            task.abort();
+        }
+    }
+}
+
+/// The requested bots running here, by entry.
+#[derive(Default)]
+pub struct Followed(BTreeMap<String, Running>);
+
+impl Followed {
+    /// The installation running for `entry`, and the release it runs.
+    #[must_use]
+    pub fn running(&self, entry: &str) -> Option<(&str, &str)> {
+        self.0
+            .get(entry)
+            .map(|bot| (bot.installation.as_str(), bot.release.as_str()))
+    }
+}
+
+impl Drop for Followed {
+    fn drop(&mut self) {
+        for (_, bot) in std::mem::take(&mut self.0) {
+            bot.halt();
+        }
+    }
+}
+
 impl Follower {
-    /// Follow the room's requests for as long as the host runs.
+    /// Follow the room's requests for as long as the host runs: at once
+    /// when the room's governance changes (a request asked for, replaced or
+    /// taken back), and every so often besides.
     pub async fn run(self) {
-        let mut running: BTreeMap<String, Running> = BTreeMap::new();
+        let mut followed = Followed::default();
+        let mut changes = self.rooms.governance_changes();
         loop {
-            match self.rooms.bot_requests(&self.room).await {
-                Ok(requests) => self.follow(&requests, &mut running).await,
-                Err(error) => tracing::warn!(%error, "could not read the room's bot requests"),
+            self.follow_requests(&mut followed).await;
+            let wait = tokio::time::sleep(FOLLOW);
+            tokio::pin!(wait);
+            loop {
+                tokio::select! {
+                    () = &mut wait => break,
+                    change = changes.recv() => match change {
+                        Ok(room) if room == self.room => break,
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            wait.as_mut().await;
+                            break;
+                        }
+                    },
+                }
             }
-            tokio::time::sleep(FOLLOW).await;
+        }
+    }
+
+    /// Read the room's requests and start, replace and stop bots to match.
+    pub async fn follow_requests(&self, followed: &mut Followed) {
+        match self.rooms.bot_requests(&self.room).await {
+            Ok(requests) => self.follow(&requests, &mut followed.0).await,
+            Err(error) => tracing::warn!(%error, "could not read the room's bot requests"),
         }
     }
 
     async fn follow(&self, requests: &[RequestedBot], running: &mut BTreeMap<String, Running>) {
-        let versions = running
+        let releases = running
             .iter()
-            .map(|(entry, bot)| (entry.clone(), bot.version.clone()))
+            .map(|(entry, bot)| (entry.clone(), bot.release.clone()))
             .collect();
-        let plan = plan(requests, &versions, &self.operator);
+        let plan = plan(requests, &releases, &self.operator);
         for entry in plan.stop {
             if let Some(bot) = running.remove(&entry) {
                 self.stop(&entry, bot).await;
             }
         }
-        for request in plan.start {
-            let entry = request.request.entry.clone();
-            match self.start(&request).await {
-                Ok(bot) => {
-                    tracing::info!(%entry, installation = %bot.installation, "requested bot runs");
-                    running.insert(entry, bot);
-                }
-                Err(error) => tracing::warn!(%entry, %error, "requested bot does not run"),
+        for request in plan.replace {
+            // The same bot runs the new release: its runs stop, the room's
+            // row takes the new program and grants, and it carries on from
+            // where its runs had read up to.
+            if let Some(bot) = running.remove(&request.request.entry) {
+                bot.halt();
             }
+            self.begin(&request, running, "requested bot runs a new release")
+                .await;
+        }
+        for request in plan.start {
+            self.begin(&request, running, "requested bot runs").await;
+        }
+    }
+
+    async fn begin(
+        &self,
+        request: &RequestedBot,
+        running: &mut BTreeMap<String, Running>,
+        what: &str,
+    ) {
+        let entry = request.request.entry.clone();
+        match self.start(request).await {
+            Ok(bot) => {
+                tracing::info!(%entry, installation = %bot.installation, release = %bot.release, "{what}");
+                running.insert(entry, bot);
+            }
+            Err(error) => tracing::warn!(%entry, %error, "requested bot does not run"),
         }
     }
 
@@ -149,21 +234,30 @@ impl Follower {
             "version".into(),
             Value::String(request.request.version.clone()),
         );
-        let mut bot: InstalledBot = installed::install(&dir, entry, inputs).await?;
+        let mut bot: InstalledBot =
+            installed::install_release(&dir, entry, inputs, request.request.program.as_deref())
+                .await?;
         let shortcut = bot.shortcut()?;
         let connectors = self
             .connectors_for(&shortcut, &request.request.inputs, &mut bot)
             .await?;
         let certifier = HostRootCertifier::new(self.root.clone());
-        let runner = BotRunner::new(
-            self.rooms.clone(),
-            self.room.clone(),
-            self.host.clone(),
-            certifier.device_key(&bot.installation),
-            bot.clone(),
-            connectors,
-            dir.join("progress.json"),
-        )?;
+        // The room's row names this program and its grants before the bot
+        // runs it, so its first changes are judged by them.
+        super::membership::keep_member(&self.rooms, &self.room, &self.host, &certifier, &bot)
+            .await?;
+        let running = tokio::spawn(
+            BotRunner::new(
+                self.rooms.clone(),
+                self.room.clone(),
+                self.host.clone(),
+                certifier.device_key(&bot.installation),
+                bot.clone(),
+                connectors,
+                dir.join("progress.json"),
+            )?
+            .run(),
+        );
         let installation = bot.installation.clone();
         let tasks = vec![
             tokio::spawn(keep_renewed(
@@ -173,10 +267,10 @@ impl Follower {
                 certifier,
                 bot,
             )),
-            tokio::spawn(runner.run()),
+            running,
         ];
         Ok(Running {
-            version: request.request.version.clone(),
+            release: release(&request.request),
             installation,
             tasks,
         })
@@ -220,7 +314,7 @@ impl Follower {
                 &self.host,
                 inputs,
                 bot,
-                host.avatars_url.as_deref(),
+                &host.public,
             )
             .await?;
             settings.insert(app.clone(), env);
@@ -230,10 +324,9 @@ impl Follower {
     }
 
     async fn stop(&self, entry: &str, bot: Running) {
-        for task in bot.tasks {
-            task.abort();
-        }
-        let installation = match tilo_peer_state::InstallationId::parse(&bot.installation) {
+        let installation = bot.installation.clone();
+        bot.halt();
+        let installation = match tilo_peer_state::InstallationId::parse(&installation) {
             Ok(installation) => installation,
             Err(error) => {
                 tracing::warn!(%entry, %error, "requested bot's installation id is unreadable");
@@ -290,6 +383,7 @@ mod tests {
                 entry: entry.into(),
                 version: version.into(),
                 inputs: BTreeMap::new(),
+                program: None,
             },
             requested_by: "ada".into(),
             requested_at_ns: 1,
@@ -326,8 +420,17 @@ mod tests {
             &running,
             &BTreeSet::new(),
         );
-        assert_eq!(newer.stop, vec!["so.tilo.bots.standup".to_owned()]);
-        assert_eq!(newer.start, vec![asked("so.tilo.bots.standup", "1.3.0")]);
+        assert!(newer.stop.is_empty(), "the same bot carries on");
+        assert!(newer.start.is_empty());
+        assert_eq!(newer.replace, vec![asked("so.tilo.bots.standup", "1.3.0")]);
+        // A developer's program pushed again at the same version is
+        // another release all the same.
+        let mut pushed = asked("so.tilo.bots.standup", "1.2.0");
+        pushed.request.program = Some("{}".into());
+        assert_eq!(
+            plan(&[pushed.clone()], &running, &BTreeSet::new()).replace,
+            vec![pushed]
+        );
     }
 
     #[test]

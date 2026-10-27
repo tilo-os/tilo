@@ -1,0 +1,87 @@
+[package]
+name = "tilo-auth"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "One secret per person: user keys and their TPM, passphrase and recovery wrappers, the sign-in daemon and the boot sign-in tool"
+
+[lib]
+name = "tilo_auth"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-authd"
+path = "src/bin/tilo-authd.rs"
+required-features = ["service"]
+
+[[bin]]
+name = "tilo-auth"
+path = "src/bin/tilo-auth.rs"
+required-features = ["service"]
+
+[[test]]
+name = "mechanism"
+path = "tests/mechanism.rs"
+required-features = ["service"]
+
+[[test]]
+name = "daemon"
+path = "tests/daemon.rs"
+required-features = ["service"]
+
+[features]
+default = ["service"]
+# Everything but the wire protocol and its client. The PAM module, which is
+# loaded into every process that authenticates, builds without it.
+service = [
+    "dep:anyhow",
+    "dep:base64",
+    "dep:clap",
+    "dep:getrandom",
+    "dep:hex",
+    "dep:hmac",
+    "dep:libc",
+    "dep:rustix",
+    "dep:sha2",
+    "dep:tempfile",
+    "dep:tilo-files",
+    "dep:tilo-rollback",
+    "dep:tilo-seal",
+    "dep:tilo-unlock-protocol",
+    "dep:unicode-normalization",
+]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+zeroize = { workspace = true, features = ["serde"] }
+
+anyhow = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+hmac = { workspace = true, optional = true }
+# The kernel keyring calls of the boot handoff, which no safe wrapper covers.
+libc = { workspace = true, optional = true }
+# The socket peer's credentials, which decide what it may ask.
+rustix = { workspace = true, optional = true, features = ["net", "process"] }
+sha2 = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+tilo-files = { path = "../../platform/tilo-files", optional = true }
+# The TPM and cryptsetup are driven through tilo-rollback's runner, sealing
+# parent and keyslot helpers, so there is one way this OS talks to them.
+tilo-rollback = { path = "../tilo-rollback", optional = true }
+tilo-seal = { path = "../tilo-seal", optional = true }
+# The strength rule for a secret no TPM throttles, shared with the installer.
+tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol", optional = true }
+unicode-normalization = { version = "0.1.25", optional = true }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

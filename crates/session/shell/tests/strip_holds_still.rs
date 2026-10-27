@@ -306,7 +306,6 @@ impl Harness {
             .unwrap_or_default()
     }
 
-    /// The group holding window `n`.
     fn group_of(&self, n: usize) -> GroupId {
         let id = self.windows[n].id;
         let chrome = self.fb.chrome();

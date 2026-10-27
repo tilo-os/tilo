@@ -246,6 +246,8 @@ fn capture_with(
         operation_id: operation.into(),
         categories,
         home_policy: HomePolicy::Copy,
+        home_exclusions: Vec::new(),
+        deferred_handoff: None,
         home: Home {
             volume,
             relative: NativePath::encode(&relative),
@@ -274,6 +276,12 @@ impl ResolvedSource {
             mount.service.bind_facts(&mut facts)?;
         }
         Ok(facts)
+    }
+
+    /// The resolved Home inside this authenticated read-only source mount.
+    /// Callers use it only after this resolver has revalidated the plan.
+    pub fn path(&self) -> &Path {
+        &self.home
     }
 
     pub fn qualification_owned_root(&self) -> io::Result<()> {

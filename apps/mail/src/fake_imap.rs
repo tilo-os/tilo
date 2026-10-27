@@ -171,7 +171,6 @@ impl FakeImap {
         self.idling.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// The messages in `folder`.
     pub(crate) fn messages(&self, folder: &str) -> Vec<Stored> {
         self.state
             .lock()

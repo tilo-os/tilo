@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1.7
 # The Linux legacy VM guest: minimal Fedora bootc, Flatpak with Flathub, the
 # Wayland forwarder (waypipe), Xwayland for X11 apps, Mesa, and Tilo's guest
-# agent on vsock. .forgejo/workflows/build-legacy-guest.yml installs it to a
-# qcow2, wraps that in an OCI image, signs and pins it
+# agent on vsock. tools/ci/publish/legacy-guest.sh installs it to a qcow2,
+# wraps that in an OCI image, and t's legacy-guest checks sign and pin it
 # (os/legacy-guest-snapshot.env). The agent binary is built by the same
-# workflow and placed at os/legacy-guest/agent/tilo-legacy-agent first.
+# script and placed at os/legacy-guest/agent/tilo-legacy-agent first.
 ARG BASE_REF
 # The pinned builder os/Containerfile builds bootc in.
 ARG SATELLITE_BUILD_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9

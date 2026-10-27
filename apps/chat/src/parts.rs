@@ -75,7 +75,11 @@ pub const fn post_part(head: u64, head_messages: usize, head_text_bytes: usize) 
 /// replies in their threads, which stay with the message they answer).
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct ChatPart {
-    /// The messages, oldest first.
+    /// The messages, oldest first: made, ordered and removed only by the
+    /// part's actions. A post takes its author from whoever signed it; a
+    /// generic insert could name anyone as a message's author, and a
+    /// replica replaying it would reproduce the forgery.
+    #[model(readonly)]
     pub messages: Collection<Message>,
 }
 
@@ -100,7 +104,6 @@ mod tests {
         assert_eq!(part_index(&part(41)), Some(41));
         assert_eq!(part_index(&chain()), None);
         assert_eq!(part_index(&RecordId::room_default().part(3)), None);
-        // The host reads the same chain and number from the wire id.
         assert_eq!(
             neighbour_wire::record_sync(first.as_str()),
             neighbour_wire::RecordSync::Part {

@@ -86,11 +86,16 @@ use serde_json::{Map, Value};
 pub mod accessibility;
 pub mod app_scope;
 pub mod appearance;
+pub mod clock;
 pub mod continuity;
 pub mod continuity_privacy;
+pub mod control_hints;
 pub mod day_schedule;
 pub mod desk_widgets;
+pub mod desktop_control;
+pub mod device_class;
 pub mod device_displays;
+pub mod device_vpn;
 pub mod dictation;
 pub mod display_control;
 pub mod display_identify;
@@ -123,14 +128,15 @@ pub mod system_sounds;
 pub mod watch;
 
 pub use accessibility::Labelled;
+pub use device_class::DeviceClass;
 pub use key::{Key, SectionWrite};
 pub use section_digest::SectionDigest;
 pub use session::{SessionPaths, SessionSettings};
 pub use source::{
     ChangeOrigin, ChangeSignal, ConditionalUpdate, DeferredFailure, DisplayUpdate, HostDocument,
-    Listener, SectionChange, SettingsSource, defer_writes_on_this_thread, deferred_failure_pending,
-    flush_pending_writes, install_source, installed_source, merge_section, take_deferred_failures,
-    writes_deferred_on_this_thread,
+    InvokingAction, Listener, SectionChange, SettingsSource, defer_writes_on_this_thread,
+    deferred_failure_pending, flush_pending_writes, install_source, installed_source,
+    merge_section, note_deferred_failure, take_deferred_failures, writes_deferred_on_this_thread,
 };
 
 /// The directory under the Tilo config root that holds the settings document
@@ -167,7 +173,7 @@ pub const SESSION_SETTINGS_ENV: &str = "TILO_SESSION_SETTINGS";
 ///
 /// The document used to live at `<config root>/settings.json`. Resolving the
 /// path moves a document still there into place, once
-/// ([`adopt_legacy_document`]), so neither the session nor a reader started
+/// (`adopt_legacy_document`), so neither the session nor a reader started
 /// before the session loses the person's settings.
 pub fn settings_path() -> Option<PathBuf> {
     match std::env::var_os(SESSION_SETTINGS_ENV) {
@@ -224,18 +230,47 @@ fn move_legacy_document(root: &Path) -> Result<bool, tilo_files::FsError> {
         Err(error) => return Err(error),
     };
     let current = VPath::new(&format!("{SESSION_DIR}/{FILE}")).map_err(invalid)?;
+    let legacy = VPath::new(FILE).map_err(invalid)?;
+    let legacy_is_file = matches!(
+        blocking::metadata(&dir, &legacy),
+        Ok(meta) if meta.kind == Kind::File && !meta.symlink
+    );
     if blocking::metadata(&dir, &current).is_ok() {
+        if legacy_is_file {
+            // Both exist: something wrote the old path after the move (a
+            // process from before it). One document stays: what only the
+            // old one holds joins the current one, which keeps every value
+            // it has, and the old one goes.
+            let leftover = parse(&String::from_utf8_lossy(&blocking::read(&dir, &legacy)?));
+            update_document_at(&root.join(SESSION_DIR).join(FILE), |document| {
+                merge_missing(document, leftover);
+            })
+            .map_err(FsError::from)?;
+            blocking::remove(&dir, &legacy)?;
+        }
         return Ok(true);
     }
-    let legacy = VPath::new(FILE).map_err(invalid)?;
-    match blocking::metadata(&dir, &legacy) {
-        Ok(meta) if meta.kind == Kind::File && !meta.symlink => {}
-        _ => return Ok(false),
+    if !legacy_is_file {
+        return Ok(false);
     }
     blocking::create_dir_all(&dir, &VPath::new(SESSION_DIR).map_err(invalid)?)?;
     match blocking::rename_noreplace(&dir, &legacy, &current) {
         Ok(()) | Err(FsError::AlreadyExists | FsError::NotFound) => Ok(true),
         Err(error) => Err(error),
+    }
+}
+
+/// Add to `document` every leaf of `other` it does not have, section by
+/// section and key by key; a value `document` has is never replaced.
+fn merge_missing(document: &mut Map<String, Value>, other: Map<String, Value>) {
+    for (key, value) in other {
+        match (document.get_mut(&key), value) {
+            (None, value) => {
+                document.insert(key, value);
+            }
+            (Some(Value::Object(mine)), Value::Object(theirs)) => merge_missing(mine, theirs),
+            (Some(_), _) => {}
+        }
     }
 }
 
@@ -348,12 +383,6 @@ fn object_section(mut doc: Map<String, Value>, name: &str) -> Map<String, Value>
 /// whole: the framework's `ui::storage` scopes and app settings channel, the device
 /// fabric's roamed write-back, the Settings app's multi-section document writers and
 /// schema owners that name their section through their own constant.
-///
-/// # Errors
-///
-/// Returns an error if no config directory is available (see
-/// [`config_root`]), or [`update_section_at`] fails. With a host-installed
-/// [`SettingsSource`], the source's error.
 pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result<()> {
     if let Some(source) = installed_source() {
         return source.update_section(name, values);
@@ -419,9 +448,6 @@ pub fn update_section_with_at(
 }
 
 /// The canonical file path, with the same test isolation guard as writes.
-///
-/// # Errors
-/// No configuration directory exists, or this is an unisolated test process.
 pub fn file_write_path() -> std::io::Result<PathBuf> {
     let Some(path) = settings_path() else {
         return Err(std::io::Error::other("no config directory available"));
@@ -577,18 +603,36 @@ pub fn f64_in(
         .unwrap_or(default)
 }
 
-/// Read a `&str` at `section.key`.
 pub fn str_at<'a>(doc: &'a Map<String, Value>, section: &str, key: &str) -> Option<&'a str> {
     doc.get(section)
         .and_then(|s| s.get(key))
         .and_then(|v| v.as_str())
 }
 
-/// Read a `bool` at `section.key`.
 pub fn bool_at(doc: &Map<String, Value>, section: &str, key: &str) -> Option<bool> {
     doc.get(section)
         .and_then(|s| s.get(key))
         .and_then(serde_json::Value::as_bool)
+}
+
+/// A test's scratch directory, removed with it. It is in memory where the
+/// system has one ([`tilo_paths::memory_temp_dir`], `/dev/shm` on Linux), as
+/// `tilo-app`'s test profiles are: these tests prove locking, merging and
+/// recovery, and every write still syncs as it does for a person, but a sync
+/// in memory costs nothing where on a shared disk it waits for every other
+/// writer's data. Two writers flipping one key 100 times each took over 80 s
+/// on a busy build node's disk. The parent-directory durability tests keep the
+/// real disk ([`tempfile::tempdir`]).
+#[cfg(test)]
+pub(crate) fn test_dir() -> tempfile::TempDir {
+    if let Some(memory) = tilo_paths::memory_temp_dir()
+        && let Ok(directory) = tempfile::Builder::new()
+            .prefix("settings-store-")
+            .tempdir_in(memory)
+    {
+        return directory;
+    }
+    tempfile::tempdir().expect("a temporary directory")
 }
 
 #[cfg(test)]
@@ -631,7 +675,6 @@ mod tests {
         assert!(!home.join(".config/tilo/session/settings.json").exists());
         assert!(!home.join(".config/tilo/settings.json").exists());
 
-        // A test that names its own config directory still writes there.
         let config = home.join("own-config");
         env.set("XDG_CONFIG_HOME", &config);
         update_section("notifications", values).expect("an explicit config directory");
@@ -652,6 +695,35 @@ mod tests {
         assert_eq!(unisolated_test_write(harness, true, false), None);
     }
 
+    /// How often the thread blocked, and whether it is blocked now.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn blocked(tid: &str) -> (u64, bool) {
+        let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
+        let field = |name: &str| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        (
+            field("voluntary_ctxt_switches:").parse().unwrap(),
+            field("State:").starts_with('S'),
+        )
+    }
+
+    /// Waits until the thread is blocked and returns how often it blocked.
+    /// A woken thread is runnable until it has run and blocked again, which
+    /// counts a switch, so the count returned is final for what came before.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn blocked_count(tid: &str) -> u64 {
+        tilo_test_env::wait_for(format_args!("thread {tid} to block"), || {
+            let (switches, blocked) = blocked(tid);
+            blocked.then_some(switches)
+        })
+    }
+
     pub(super) fn tmpdir() -> PathBuf {
         let p = std::env::temp_dir().join(format!(
             "tilo-settings-store-{}-{:?}-{}",
@@ -665,7 +737,7 @@ mod tests {
 
     #[test]
     fn first_document_write_holds_the_lock_before_running_the_edit() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("new-config/tilo/settings.json");
         assert!(!path.parent().unwrap().exists());
         update_document_at(&path, |doc| {
@@ -692,7 +764,7 @@ mod tests {
 
     #[test]
     fn conditional_write_to_a_missing_directory_is_superseded() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("new-config/tilo/settings.json");
         let result =
             compare_update_section_at(&path, "display_transaction", &Map::new(), Map::new())
@@ -766,7 +838,6 @@ mod tests {
 
     #[test]
     fn the_document_lives_in_its_own_directory_and_an_old_one_moves_there() {
-        // Phase `a_fresh_root_names_the_session_directory`.
         {
             let xdg = tmpdir();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -790,7 +861,6 @@ mod tests {
             drop(env);
             std::fs::remove_dir_all(&xdg).unwrap();
         }
-        // Phase `a_document_at_the_old_path_moves_once_and_keeps_every_section`.
         {
             let xdg = tmpdir();
             let root = xdg.join("tilo");
@@ -817,7 +887,40 @@ mod tests {
             drop(env);
             std::fs::remove_dir_all(&xdg).unwrap();
         }
-        // Phase `the_session_records_stay_under_the_root`.
+        // Phase `two_diverged_documents_become_one_that_keeps_every_value`:
+        // a process from before the move wrote the old path after it, so
+        // both exist. One document stays, holding what each held; where both
+        // hold a key, the current one's value stays.
+        {
+            let xdg = tmpdir();
+            let root = xdg.join("tilo");
+            std::fs::create_dir_all(root.join("session")).unwrap();
+            std::fs::write(
+                root.join("session/settings.json"),
+                r#"{"appearance":{"high_contrast":true},"input":{"keyboard_layout":"de"}}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("settings.json"),
+                r#"{"appearance":{"mode":"dark","high_contrast":false},"power":{"auto_suspend":false},"input":{"keyboard_layout":"us"}}"#,
+            )
+            .unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_CONFIG_HOME", &xdg)
+                .remove(SESSION_SETTINGS_ENV);
+            let document = load();
+            assert_eq!(document["appearance"]["high_contrast"], true);
+            assert_eq!(document["appearance"]["mode"], "dark");
+            assert_eq!(document["power"]["auto_suspend"], false);
+            assert_eq!(document["input"]["keyboard_layout"], "de");
+            assert!(
+                !root.join("settings.json").exists(),
+                "no second settings document is left"
+            );
+            assert_eq!(load_at(&root.join("session/settings.json")), document);
+            drop(env);
+            std::fs::remove_dir_all(&xdg).unwrap();
+        }
         {
             let xdg = tmpdir();
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -836,20 +939,17 @@ mod tests {
 
     #[test]
     fn reads_forgive_broken_missing_and_mistyped_documents() {
-        // Phase `broken_documents_read_as_no_settings`.
         {
             for text in ["", "not json {", "[1,2,3]", "null", "\"a string\""] {
                 assert!(parse(text).is_empty(), "{text:?} must read as no settings");
                 assert!(section(text, "display").is_empty());
             }
         }
-        // Phase `a_missing_file_reads_as_no_settings`.
         {
             let dir = tmpdir();
             assert!(load_at(&dir.join("absent.json")).is_empty());
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `a_section_of_the_wrong_type_reads_as_absent`.
         {
             let text = r#"{"display": 3, "region": ["x"], "power": {"idle": 5}}"#;
             assert!(
@@ -862,7 +962,6 @@ mod tests {
             );
             assert_eq!(section(text, "power").get("idle"), Some(&json!(5)));
         }
-        // Phase `typed_readers_clamp_and_fall_back`.
         {
             let doc = parse(r#"{"display":{"scale":1.5,"mode":"dark","hidpi":true,"bad":"x"}}"#);
             assert_eq!(f64_in(&doc, "display", "scale", 0.5..=3.0, 1.0), 1.5);
@@ -889,7 +988,7 @@ mod tests {
     fn a_merge_refuses_unreadable_input_without_replacing_it() {
         use std::os::unix::fs::symlink;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("settings.json");
         // A symlink loop fails even for privileged test runners, unlike mode bits.
         symlink("settings.json", &path).unwrap();
@@ -904,7 +1003,7 @@ mod tests {
 
     #[test]
     fn a_merge_does_not_replace_non_utf8_input() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join("settings.json");
         let bytes = b"{\"region\":\"\xff\"}";
         std::fs::write(&path, bytes).unwrap();
@@ -921,7 +1020,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn section_writes_merge_preserve_and_repair_atomically() {
-        // Phase `writing_one_section_preserves_every_other`.
         {
             // The reason writes merge: the panes are separate binaries, and one that serialised its
             // own view would drop the sections it predates.
@@ -947,7 +1045,6 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `writing_a_section_merges_into_it_rather_than_replacing_it`.
         {
             let dir = tmpdir();
             let path = dir.join("settings.json");
@@ -970,7 +1067,6 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `writing_creates_the_directory_and_the_file`.
         {
             let dir = tmpdir();
             let path = dir.join("nested").join("deeper").join("settings.json");
@@ -983,7 +1079,6 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `writing_over_a_corrupt_file_does_not_propagate_the_corruption`.
         {
             let dir = tmpdir();
             let path = dir.join("settings.json");
@@ -997,7 +1092,6 @@ mod tests {
             assert_eq!(f64_in(&doc, "display", "scale", 0.0..=9.0, 0.0), 1.25);
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `a_section_stored_as_the_wrong_type_is_replaced_on_write`.
         {
             let dir = tmpdir();
             let path = dir.join("settings.json");
@@ -1016,7 +1110,6 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `no_temp_file_is_left_behind`.
         {
             let dir = tmpdir();
             let path = dir.join("settings.json");

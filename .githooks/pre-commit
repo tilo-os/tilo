@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 # Compilation runs in CI to keep the pre-commit hook fast.
 set -euo pipefail
+# The policy scripts need Python 3.11 or newer (tomllib). On macOS the python3 first on PATH is
+# often the system's 3.9, which fails every commit; put a newer interpreter's directory first.
+if ! python3 -I -c 'import tomllib' 2>/dev/null; then
+  for py in python3.14 python3.13 python3.12 python3.11 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    found=$(command -v "$py" 2>/dev/null) || continue
+    dir=$(dirname "$found")
+    if [ -x "$dir/python3" ] && "$dir/python3" -I -c 'import tomllib' 2>/dev/null; then
+      PATH="$dir:$PATH"; export PATH; break
+    fi
+  done
+  if ! python3 -I -c 'import tomllib' 2>/dev/null; then
+    echo "git hook: these checks need Python 3.11 or newer as python3; install it and put it first on PATH" >&2
+    exit 1
+  fi
+fi
 root="$(git rev-parse --show-toplevel)"
 full_index="$(git rev-parse --git-path index)"
 fail=0
@@ -57,6 +72,7 @@ python3 "$root/tools/policy/check_formats.py" || fail=1
 python3 "$root/tools/policy/check_settings_writes.py" || fail=1
 python3 "$root/tools/policy/check_integration_test_modules.py" || fail=1
 GIT_INDEX_FILE="$full_index" python3 "$root/tools/policy/check_too_many_arguments.py" || fail=1
+python3 "$root/tools/policy/check_source_file_size.py" --staged || fail=1
 
 # The staged names and diffs, read once. Every check below matches against
 # these variables, never against a pipe from git: under pipefail, a `grep -q`

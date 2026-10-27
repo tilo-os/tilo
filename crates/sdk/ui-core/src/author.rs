@@ -1,8 +1,10 @@
 //! The one way every app draws who did something, so no app can forget to
 //! say that a bot is a bot. A person gets their round avatar; an agent its
-//! identity mark; a bot a rounded-square tile and a `BOT` chip that is never
-//! elided. A bot may show another name (an appearance): it is shown, the chip
-//! stays, and a name that looks like a room member's carries its service.
+//! identity mark; a bot a rounded-square tile and a chip that is never
+//! elided: `Bot`, or for a person a bridge speaks for the mark of the service
+//! they write from (Discord's), saying where when hovered. A bot
+//! may show another name (an appearance): it is shown, the chip stays, and a
+//! name that looks like a room member's carries its service.
 
 use unicode_normalization::UnicodeNormalization;
 use vello::kurbo::{Point, Rect};
@@ -16,7 +18,6 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{AvatarFace, ChipFace, ChipLead};
 
-/// Who an item is by.
 #[derive(Clone, Copy, Debug)]
 pub enum Author<'a> {
     /// A person, by name and identity (which picks their colour), with the
@@ -41,6 +42,10 @@ pub enum Author<'a> {
         installed_by: &'a str,
         appearance: Option<&'a tilo_actions::Appearance>,
         linked: Option<&'a str>,
+        /// The linked person's own colour, which the tile wears when it
+        /// shows no picture: one person has one colour on every surface,
+        /// whether they write in the room or through a bridge.
+        linked_color: Option<Color>,
         image: Option<&'a ImageData>,
     },
 }
@@ -55,6 +60,9 @@ pub struct AuthorLine {
     /// The `BOT` chip, for a bot; the host opens the installation's page when
     /// it is clicked.
     pub chip: Option<Rect>,
+    /// The mark of the service a bridged person writes from (Discord's), in
+    /// place of a chip; hovering it says where they are ([`Author::service_tip`]).
+    pub badge: Option<Rect>,
 }
 
 /// Whether `a` and `b` would read as the same name: equal once reduced to a
@@ -145,15 +153,36 @@ const CONFUSABLE: &[(char, char)] = &[
 ];
 
 /// A service id shown as a word: `discord` → `Discord`.
-fn service_label(service: &str) -> String {
+#[must_use]
+pub fn service_label(service: &str) -> String {
     let mut chars = service.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
     })
 }
 
+/// What a service mark says when hovered or read out: where the person is
+/// (`From Discord`), with their handle there when `account` is one rather
+/// than a bare numeric account id.
+#[must_use]
+pub fn service_tip(service: &str, account: &str) -> String {
+    let service = service_label(service);
+    let account = account.trim().trim_start_matches('@');
+    let numeric = account.bytes().all(|b| b.is_ascii_digit());
+    if account.is_empty() || numeric {
+        widget_format("author-from-service", &[("service", service.into())])
+    } else {
+        widget_format(
+            "author-from-service-as",
+            &[
+                ("service", service.into()),
+                ("handle", format!("@{account}").into()),
+            ],
+        )
+    }
+}
+
 impl<'a> Author<'a> {
-    /// The name the author is shown under.
     #[must_use]
     pub fn shown_name(&self) -> &'a str {
         match *self {
@@ -179,14 +208,18 @@ impl<'a> Author<'a> {
         let Self::Bot {
             bot_name,
             appearance: Some(appearance),
+            linked,
             ..
         } = *self
         else {
             return self.shown_name().to_owned();
         };
+        // A persona linked to a member shows that member's own name: the
+        // one it looks like is the one it is.
         if !members
             .iter()
             .any(|member| looks_alike(member, &appearance.name))
+            || linked.is_some_and(|person| looks_alike(person, &appearance.name))
         {
             return appearance.name.clone();
         }
@@ -200,6 +233,54 @@ impl<'a> Author<'a> {
                 ("name", appearance.name.as_str().into()),
                 ("service", service.into()),
             ],
+        )
+    }
+
+    /// The persona a bot speaks as, where its appearance is a person on a
+    /// service.
+    fn persona(&self) -> Option<&'a tilo_actions::Persona> {
+        let Self::Bot { appearance, .. } = *self else {
+            return None;
+        };
+        appearance?.persona.as_ref()
+    }
+
+    /// The mark of the service a bridged person writes from, where the
+    /// toolkit has one: shown in place of the `via Discord` chip.
+    #[must_use]
+    pub fn service_mark(&self) -> Option<crate::icons::ServiceMark> {
+        crate::icons::service_mark(&self.persona()?.service)
+    }
+
+    /// What the service mark says when hovered or read out: where the
+    /// person is (`From Discord`), with their handle there when the persona
+    /// names one rather than a bare numeric account id.
+    #[must_use]
+    pub fn service_tip(&self) -> Option<String> {
+        let persona = self.persona()?;
+        Some(service_tip(&persona.service, &persona.account))
+    }
+
+    /// What a bot's chip reads: where a person it speaks for is from
+    /// (`via Discord`) when its appearance is a persona on a service the
+    /// toolkit has no mark for, else that it is a bot. `None` for anyone
+    /// else, and for a persona whose service shows its mark instead.
+    #[must_use]
+    pub fn chip_label(&self) -> Option<String> {
+        let Self::Bot { appearance, .. } = *self else {
+            return None;
+        };
+        if self.service_mark().is_some() {
+            return None;
+        }
+        Some(
+            match appearance.and_then(|appearance| appearance.persona.as_ref()) {
+                Some(persona) => widget_format(
+                    "author-via-chip",
+                    &[("service", service_label(&persona.service).into())],
+                ),
+                None => widget_format("author-bot-chip", &[]),
+            },
         )
     }
 
@@ -267,16 +348,16 @@ impl<'a> Author<'a> {
         let side = ChipFace::height(theme);
         let gap = f64::from(theme.tokens.spacing.s2);
         let mark = Rect::from_origin_size(origin, (side, side));
-        let chip_width = self.is_bot().then(|| {
-            ChipFace::intrinsic_width(
-                &widget_format("author-bot-chip", &[]),
-                ChipLead::None,
-                false,
-                text,
-                theme,
-            )
-        });
-        let reserved = side + gap + chip_width.map_or(0.0, |width| width + gap);
+        let chip_width = self
+            .chip_label()
+            .map(|label| ChipFace::intrinsic_width(&label, ChipLead::None, false, text, theme));
+        let badge_width = self
+            .service_mark()
+            .map(|_| f64::from(theme.tokens.metrics.icon_sm));
+        let reserved = side
+            + gap
+            + chip_width.map_or(0.0, |width| width + gap)
+            + badge_width.map_or(0.0, |width| width + gap);
         let room = (max_width - reserved).max(0.0);
         let shown = text.elide_to_width_style(&self.label(members), room as f32, &style);
         let (width, _) = text.measure_style(&shown, None, &style);
@@ -286,11 +367,17 @@ impl<'a> Author<'a> {
             let x = name.x1 + gap;
             Rect::new(x, origin.y, x + width, origin.y + side)
         });
+        let badge = badge_width.map(|width| {
+            let x = name.x1 + gap;
+            let y = origin.y + (side - width) / 2.0;
+            Rect::new(x, y, x + width, y + width)
+        });
         AuthorLine {
             mark,
             name,
             shown,
             chip,
+            badge,
         }
     }
 
@@ -319,11 +406,20 @@ impl<'a> Author<'a> {
                 AgentIdentityStyle::Solid,
             ),
             Self::Bot {
-                bot_name, image, ..
-            } => AvatarFace::new(self.shown_name(), bot_name)
-                .square()
-                .image(image)
-                .paint(ctx, line.mark),
+                bot_name,
+                image,
+                linked_color,
+                ..
+            } => {
+                let face = AvatarFace::new(self.shown_name(), bot_name)
+                    .square()
+                    .image(image);
+                let face = match linked_color {
+                    Some(color) => face.presence(color),
+                    None => face,
+                };
+                face.paint(ctx, line.mark);
+            }
         }
         let style = ctx.theme.text(TextRole::Body).strong();
         let ink = ctx.theme.tokens.colors.text_primary;
@@ -334,9 +430,17 @@ impl<'a> Author<'a> {
             Point::new(line.name.x0, line.name.y0),
             None,
         );
-        if let Some(chip) = line.chip {
-            let label = widget_format("author-bot-chip", &[]);
+        if let Some(chip) = line.chip
+            && let Some(label) = self.chip_label()
+        {
             ChipFace::new(chip, &label).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
+        }
+        if let Some(badge) = line.badge
+            && let Some(mark) = self.service_mark()
+        {
+            // Monochrome, in the line's quiet ink: it says where the person
+            // is without competing with their name.
+            mark.draw(ctx.scene, ctx.transform, badge, ctx.theme.text_dim);
         }
     }
 }
@@ -353,6 +457,7 @@ mod tests {
             Some(Persona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
+                linked: None,
             }),
         )
         .unwrap()
@@ -364,8 +469,45 @@ mod tests {
             installed_by: "Ada",
             appearance,
             linked: None,
+            linked_color: None,
             image: None,
         }
+    }
+
+    #[test]
+    fn a_bridged_person_reads_via_their_service_and_a_bot_as_a_bot() {
+        let alice = alice();
+        // Discord shows its mark, which says where they are when hovered.
+        assert_eq!(bridge(Some(&alice)).chip_label(), None);
+        assert!(bridge(Some(&alice)).service_mark().is_some());
+        assert_eq!(bridge(Some(&alice)).service_tip().unwrap(), "From Discord");
+        let mut handled = alice.clone();
+        if let Some(persona) = handled.persona.as_mut() {
+            persona.account = "dana_k".into();
+        }
+        assert_eq!(
+            bridge(Some(&handled)).service_tip().unwrap(),
+            "From Discord as @dana_k"
+        );
+        let elsewhere = Appearance::new(
+            "alice",
+            None,
+            Some(Persona {
+                service: "matrix".into(),
+                account: "@alice:example.org".into(),
+                linked: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(bridge(Some(&elsewhere)).chip_label().unwrap(), "via Matrix");
+        assert_eq!(bridge(None).chip_label().unwrap(), "Bot");
+        let person = Author::Person {
+            name: "Ada",
+            identity: "ada",
+            avatar: None,
+            color: None,
+        };
+        assert_eq!(person.chip_label(), None);
     }
 
     #[test]
@@ -401,17 +543,30 @@ mod tests {
         let alice = alice();
         assert_eq!(bridge(Some(&alice)).label(&["Bo"]), "alice");
         assert_eq!(bridge(Some(&alice)).label(&["Alice"]), "alice · Discord");
-        // Cyrillic "а" is a confusable of Latin "a".
         let cyrillic = Appearance::new("\u{430}lice", None, alice.persona.clone()).unwrap();
         assert_eq!(
             bridge(Some(&cyrillic)).label(&["alice"]),
             "\u{430}lice · Discord"
         );
-        // Without a persona, the bot's own name is the suffix.
         let bare = Appearance::new("alice", None, None).unwrap();
         assert_eq!(
             bridge(Some(&bare)).label(&["Alice"]),
             "alice · Discord Bridge"
+        );
+        // Linked to the member it looks like, it is that member.
+        let linked = |person| Author::Bot {
+            bot_name: "Discord Bridge",
+            installed_by: "Ada",
+            appearance: Some(&alice),
+            linked: Some(person),
+            linked_color: None,
+            image: None,
+        };
+        assert_eq!(linked("Alice").label(&["Alice"]), "alice");
+        assert_eq!(
+            linked("Bo").label(&["Alice", "Bo"]),
+            "alice · Discord",
+            "a persona linked to one member still may not look like another"
         );
         assert!(looks_alike("paypal", "pаypаl"));
         assert!(!looks_alike("alice", "bob"));
@@ -462,6 +617,7 @@ mod tests {
             installed_by: "Ada",
             appearance: Some(&alice),
             linked: Some("Alice Smith"),
+            linked_color: None,
             image: None,
         };
         assert_eq!(

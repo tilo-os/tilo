@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The `tilo` command: what a person types to ask this machine about the image it booted, and to change it."
+description = "The `tilo` command: apps, the desktop's actions, and this device."
 
 [[bin]]
 name = "tilo"
@@ -28,10 +28,17 @@ tilo-advisory-lock = { path = "../advisory-lock" }
 rustix = { workspace = true, features = ["fs", "std"] }
 workspace-hack = { version = "0.1" }
 tilo-paths.workspace = true
+# The desktop's apps and actions (`tilo open`, `tilo action`, `tilo do`): the
+# control protocol's one client, shared with tilo-control.
+tilo-control = { path = "../../session/control-cli" }
 
 [dev-dependencies]
 tempfile.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

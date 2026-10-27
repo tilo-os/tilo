@@ -112,6 +112,11 @@ canvas-artwork = Artwork
 canvas-untitled = Untitled
 canvas-label-artwork-title = Artwork title
 canvas-zoom-in = Zoom in
+canvas-zoom-at = Zoom: { $percent }
+canvas-zoom-actual = Actual size
+canvas-rename = Rename
+canvas-hide-tools = Hide tools
+canvas-show-tools = Show tools
 canvas-zoom-out = Zoom out
 canvas-zoom-fit = Fit to window
 canvas-well = Brush loaded with { $paint }, { $size } wide
@@ -290,14 +295,11 @@ canvas-start-dark = Dark sheet
 canvas-new-tab-hint = A new tab (Super+T) starts another artwork beside this one.
 canvas-new-replaces = This replaces “{ $title }”: Undo brings it back. A new tab (Super+T) starts one beside it instead.
 canvas-welcome-title = A blank sheet
-canvas-welcome-paint = Pick up the brush (B) and paint: oil and watercolour layers paint like the real thing.
-canvas-welcome-draw = Draw shapes (R, E, L), paths (P) and lettering (T) as crisp vector art.
-canvas-welcome-agent = An agent can paint here too: ask one to paint a landscape, and follow along in History.
-canvas-welcome-keys = Press ? for every keyboard shortcut.
 canvas-welcome-new = New artwork…
 canvas-welcome-open = Open…
 canvas-welcome-close = Put the welcome away
 canvas-recent = Recent artworks
+canvas-recent-workspace = In this workspace
 canvas-keys-title = Keyboard shortcuts
 canvas-keys-artwork = Artwork
 canvas-keys-view = View
@@ -450,6 +452,7 @@ canvas-mark-clip = Clipped { $item }
 canvas-mark-area = Changed what { $item } fills
 canvas-paint = Painted
 canvas-draw = Drew
+canvas-chart = Drew a chart
 canvas-edit-marks = Edited marks
 canvas-remove-marks = Removed marks
 canvas-arrange = Restacked marks
@@ -468,3 +471,8 @@ canvas-open-artwork = Opened an artwork
 canvas-select = Selected an area
 canvas-use-selection = Used the selection
 canvas-combine = Combined shapes
+
+# Said when something needs a picture of the artwork and none can be made:
+# no GPU, or (in a browser page) a request answered at once, such as an
+# agent's diff, compare or measure, which the page cannot render in time.
+canvas-pictures-unavailable = This needs a picture of the artwork, which can’t be made here yet.

@@ -88,9 +88,6 @@ impl<S: RichTextSource + 'static> RichTextComposer<S> {
     }
 
     /// The same typed editor source, retained when the viewport changes.
-    ///
-    /// # Panics
-    /// Panics if the private viewport no longer retains its constructor-installed surface.
     #[expect(
         clippy::expect_used,
         reason = "the private viewport has exactly the typed surface installed by this constructor"
@@ -107,9 +104,6 @@ impl<S: RichTextSource + 'static> RichTextComposer<S> {
     }
 
     /// Configure the source, rich-text marks, focus or submission semantics.
-    ///
-    /// # Panics
-    /// Panics if the private viewport no longer retains its constructor-installed surface.
     #[expect(
         clippy::expect_used,
         reason = "the private viewport has exactly the typed surface installed by this constructor"

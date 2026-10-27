@@ -2311,7 +2311,12 @@ impl Window {
             match error {
                 None => {
                     if let Some(shell) = self.shell() {
-                        shell.toast_with_action(notice, ToastKind::Info, t("tilolang-undo"));
+                        shell.toast_with_action(
+                            notice,
+                            ToastKind::Info,
+                            "undo-2",
+                            t("tilolang-undo"),
+                        );
                     }
                 }
                 Some(error) => self.notice(&error),

@@ -93,7 +93,11 @@ impl ChangeTrackedDoc {
         self.doc.diff_obj(obj, before, after, recursive)
     }
 
-    /// Whether the document holds the change `hash`.
+    /// The changes this document holds beyond `heads`.
+    pub(super) fn get_changes(&mut self, heads: &[ChangeHash]) -> Vec<automerge::Change> {
+        self.doc.get_changes(heads)
+    }
+
     pub(super) fn has_change(&mut self, hash: &ChangeHash) -> bool {
         self.doc.get_change_meta_by_hash(hash).is_some()
     }

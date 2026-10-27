@@ -94,10 +94,8 @@ mod tests {
         assert!(!facts.offers_full_os());
     }
 
-    /// Remedies, hard blockers and space blockers.
     #[test]
     fn staging_offer_blockers_and_remedies_follow_planner_bounds() {
-        // Phase `remedies_do_not_hide_the_offer_but_hard_blockers_do`.
         {
             let basis = super::super::plan::tests::linux_basis(512, 256 << 30, Vec::new());
             let mut facts = HostFacts {
@@ -113,7 +111,6 @@ mod tests {
             assert!(!HostFacts::unsupported(Blocker::NotUefi).offers_full_os());
         }
 
-        // Phase `space_blocker_uses_the_planner_bounds`.
         {
             let small = super::super::plan::tests::linux_basis(512, 60 << 30, Vec::new());
             let facts = HostFacts {

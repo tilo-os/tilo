@@ -10,11 +10,11 @@
 //! document plus an input router.
 //!
 //! ## Layout
-//! Two toolkit drawers (`ui::widget::SidebarDrawer`) frame a conversation
-//! column: the navigation drawer (the room's channel list) and the
-//! detail drawer (people, or the open thread). Each docks beside the
-//! conversation on a wide window and floats over it behind a scrim on a
-//! narrow one.
+//! The window's shell (`ui::widget::NavShell`) keeps the room's channels in
+//! its sidebar (`sidebar.rs`) beside the conversation; a toolkit drawer
+//! (`ui::widget::SidebarDrawer`) holds the detail (people, or the open
+//! thread). Each docks beside the conversation on a wide window and floats
+//! over it on a narrow one.
 //!
 //! ## Calls
 //! Voice controls send typed local commands to the privileged native media
@@ -48,8 +48,8 @@
 
 mod agent_conversation_surface;
 pub mod agent_stream;
-mod agent_tasks;
 pub mod app;
+mod attachment_view;
 pub mod body;
 pub mod call;
 mod channel_sheet;
@@ -65,11 +65,13 @@ pub mod geometry;
 mod host_model;
 pub mod i18n;
 pub mod identity;
+mod image_arrival;
 pub mod images;
 mod live_context;
+mod live_share;
+mod live_share_panel;
 mod local_voice;
 pub mod mention;
-mod mention_alerts;
 pub mod messages;
 pub mod model;
 mod moderation;
@@ -87,8 +89,12 @@ pub mod record;
 pub mod render_call;
 pub mod render_chat;
 pub mod resource;
-pub mod semantic_read;
+mod share_grants;
 mod shared_resources;
+mod sidebar;
+mod timeline;
+pub mod transcript;
+mod window_bar;
 
 pub use app::ChatApp;
 
@@ -103,6 +109,8 @@ impl ChatApp {
 
 #[cfg(test)]
 mod component_tests;
+#[cfg(test)]
+mod live_share_tests;
 #[cfg(all(test, unix))]
 mod native_models_tests;
 #[cfg(test)]

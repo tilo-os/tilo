@@ -8,7 +8,7 @@
 //!   [`CollabEvent::Document`]. The publication barrier completes when the
 //!   host has made every earlier change durable.
 //! - Presence rides the live plane: pointers, carets and selections become
-//!   [`PresenceFrame`]s whose selection anchors carry the editor's
+//!   [`PresenceFrame`](tilo_relay_protocol::live::PresenceFrame)s whose selection anchors carry the editor's
 //!   [`PresenceKey`] (`[1, uvarint(start), postcard(key)]` / `[2,
 //!   uvarint(end)]`, as in PR 541's `live_view`), and remote frames come back
 //!   as `RemoteCursorMoved` / `RemotePresenceUpdate`.
@@ -21,7 +21,7 @@
 //!   and the assembled bytes reach the app (`CollabEvent::RecordContent`)
 //!   only when they hash to what was asked for.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use tilo_relay_protocol::live::{
@@ -113,39 +113,6 @@ pub fn read_presence_anchors(
     ))
 }
 
-/// Largest content one reference names, as the room's hosts keep it.
-const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
-/// Most bytes one piece carries.
-const PIECE_BYTES: usize = 192 * 1024;
-/// How long an unanswered request keeps collecting pieces, and how long
-/// before the same content is asked of the room again.
-const WANT_TTL_MS: u64 = 60_000;
-/// Requests open at once; past it, the oldest goes.
-const MAX_OPEN_WANTS: usize = 256;
-
-/// Content this page asked a room for, and the pieces of it that came.
-struct Want {
-    route: RouteSpec,
-    asked_ms: u64,
-    total: Option<u64>,
-    pieces: BTreeMap<u64, Vec<u8>>,
-}
-
-impl Want {
-    /// The whole content once its pieces cover it, end to end.
-    fn assembled(&self) -> Option<Vec<u8>> {
-        let total = self.total?;
-        let mut bytes = Vec::with_capacity(usize::try_from(total).ok()?);
-        for (offset, piece) in &self.pieces {
-            if *offset != u64::try_from(bytes.len()).ok()? {
-                return None;
-            }
-            bytes.extend_from_slice(piece);
-        }
-        (u64::try_from(bytes.len()).ok()? == total).then_some(bytes)
-    }
-}
-
 /// The certified relay session as a [`CollabTransport`].
 pub struct RelayCollabTransport {
     peer: PeerHandle,
@@ -157,7 +124,7 @@ pub struct RelayCollabTransport {
     routes: BTreeSet<DocumentRoute>,
     ready: BTreeSet<u64>,
     events: VecDeque<CollabEvent>,
-    wants: BTreeMap<String, Want>,
+    wants: crate::content::ContentWants<RouteSpec>,
 }
 
 impl RelayCollabTransport {
@@ -173,7 +140,7 @@ impl RelayCollabTransport {
             routes: BTreeSet::new(),
             ready: BTreeSet::new(),
             events: VecDeque::new(),
-            wants: BTreeMap::new(),
+            wants: crate::content::ContentWants::default(),
         }
     }
 
@@ -204,111 +171,40 @@ impl RelayCollabTransport {
             }
             CollabRequest::Presence { key, payload } => self.presence(route, &key, &payload),
             CollabRequest::RequestDocumentSnapshot => Ok(()),
-            CollabRequest::WantContent { hash } => self.want_content(route, hash),
+            CollabRequest::WantContent { hash } => self.want_content(route, &hash),
             _ => Err(TransportError::Unsupported),
         }
     }
 
-    /// This page's handle in content requests and answers.
-    fn own_handle(&self) -> neighbour_wire::PeerId {
-        neighbour_wire::peer_handle(&self.peer.status().device)
-    }
-
     /// Ask the room for content `route`'s record references, unless it was
-    /// asked for within [`WANT_TTL_MS`].
-    fn want_content(&mut self, route: &RouteSpec, hash: String) -> Result<(), TransportError> {
+    /// asked for lately ([`crate::content::ContentWants::ask`]).
+    fn want_content(&mut self, route: &RouteSpec, hash: &str) -> Result<(), TransportError> {
         let workspace = workspace(route).ok_or(TransportError::Unsupported)?;
-        let hash = hash.to_ascii_lowercase();
-        let now = tilo_clock::unix_now_ms();
-        if self
-            .wants
-            .get(&hash)
-            .is_some_and(|want| now.saturating_sub(want.asked_ms) < WANT_TTL_MS)
-        {
-            return Ok(());
-        }
-        if self.wants.len() >= MAX_OPEN_WANTS
-            && !self.wants.contains_key(&hash)
-            && let Some(oldest) = self
-                .wants
-                .iter()
-                .min_by_key(|(_, want)| want.asked_ms)
-                .map(|(hash, _)| hash.clone())
-        {
-            self.wants.remove(&oldest);
-        }
-        let request = neighbour_wire::NeighbourMsg::RecordContentWant {
-            requester: self.own_handle(),
-            app_id: route.app_id.clone(),
-            cluster_id: route.cluster_id.to_string(),
-            hash: hash.clone(),
-        };
-        let request = postcard::to_allocvec(&request).map_err(|_| TransportError::Unsupported)?;
-        self.wants.insert(
+        let device = self.peer.status().device;
+        let cluster_id = route.cluster_id.to_string();
+        let Some(request) = self.wants.ask(
+            &device,
+            route.clone(),
+            (&route.app_id, &cluster_id),
             hash,
-            Want {
-                route: route.clone(),
-                asked_ms: now,
-                total: None,
-                pieces: BTreeMap::new(),
-            },
-        );
+            tilo_clock::unix_now_ms(),
+        ) else {
+            return Ok(());
+        };
         self.peer
             .want_content(workspace, request)
             .map_err(|_| TransportError::Closed)
     }
 
-    /// One piece of content a member sent this page: kept when it belongs to
-    /// content this page asked for, and the content handed on once whole and
-    /// verified.
+    /// One piece of content a member sent this page; the content reaches
+    /// the app once whole and verified.
     fn content_piece(&mut self, frame: &[u8]) {
-        let Ok(neighbour_wire::NeighbourMsg::RecordContentPiece {
-            requester,
-            app_id,
-            cluster_id,
-            hash,
-            total,
-            offset,
-            bytes,
-            ..
-        }) = postcard::from_bytes(frame)
-        else {
-            return;
-        };
-        let hash = hash.to_ascii_lowercase();
-        if requester != self.own_handle() || total > MAX_CONTENT_BYTES || bytes.len() > PIECE_BYTES
-        {
-            return;
-        }
-        let Some(want) = self.wants.get_mut(&hash) else {
-            return;
-        };
-        if want.route.app_id != app_id || want.route.cluster_id.to_string() != cluster_id {
-            return;
-        }
-        if want.total.is_some_and(|known| known != total) {
-            return;
-        }
-        let fits = u64::try_from(bytes.len())
-            .ok()
-            .and_then(|len| offset.checked_add(len))
-            .is_some_and(|end| end <= total);
-        if !fits {
-            return;
-        }
-        want.total = Some(total);
-        want.pieces.entry(offset).or_insert(bytes);
-        let Some(assembled) = want.assembled() else {
-            return;
-        };
-        let Some(want) = self.wants.remove(&hash) else {
-            return;
-        };
-        if blake3::hash(&assembled).to_hex().as_str() == hash {
+        let device = self.peer.status().device;
+        if let Some(arrived) = self.wants.piece(&device, frame) {
             self.events.push_back(CollabEvent::RecordContent {
-                route: want.route,
-                hash,
-                bytes: assembled,
+                route: arrived.tag,
+                hash: arrived.hash,
+                bytes: arrived.bytes,
             });
         }
     }
@@ -332,7 +228,17 @@ impl RelayCollabTransport {
             .publish_presence(tilo_clock::unix_now_ms(), |presence| {
                 presence.focus.clone_from(&focus);
                 match payload {
-                    PresencePayload::Pointer { x, y } => presence.pointer = Some([*x, *y]),
+                    // An app's pointer is in its window: said over the
+                    // window of its record, which every member places in
+                    // their own layout.
+                    PresencePayload::Pointer { x, y } => {
+                        presence.pointer = focus.clone().map(|record| {
+                            tilo_relay_protocol::live::LivePointer::Window {
+                                record,
+                                at: [*x, *y],
+                            }
+                        });
+                    }
                     PresencePayload::Caret { pos } => {
                         presence.selection = presence_anchors(key, *pos, *pos);
                     }
@@ -387,7 +293,8 @@ impl RelayCollabTransport {
                 // `actionsV1`, `voice-peer.mjs`), consumed from their own queues. The toolkit keeps its
                 // documents in the collaboration manager, so another
                 // volunteer answers compaction requests. A refused commit is
-                // the record owner's to withdraw; this transport holds none.
+                // the record owner's to withdraw; this transport holds none,
+                // nor content to answer a member's request with.
                 PeerEvent::DocumentRejected(_)
                 | PeerEvent::Committed { .. }
                 | PeerEvent::CommitRefused { .. }
@@ -395,7 +302,9 @@ impl RelayCollabTransport {
                 | PeerEvent::RemoteActionUndeliverable { .. }
                 | PeerEvent::CompactionRequested { .. }
                 | PeerEvent::RecordOpened { .. }
-                | PeerEvent::Voice(_) => {}
+                | PeerEvent::ContentWanted { .. }
+                | PeerEvent::Voice(_)
+                | PeerEvent::RoomLayout { .. } => {}
             }
         }
         if self.confirm_pending
@@ -419,7 +328,16 @@ impl RelayCollabTransport {
             return;
         }
         let user_id = hex::encode(from);
-        if let Some([x, y]) = presence.pointer {
+        // A pointer over the window of one of this transport's records is in
+        // that app's own coordinates; anything else is not its to draw.
+        if let Some(tilo_relay_protocol::live::LivePointer::Window { record, at: [x, y] }) =
+            &presence.pointer
+            && self
+                .routes
+                .iter()
+                .any(|route| (&route.app_id, &route.record) == (&record.app, &record.record))
+        {
+            let (x, y) = (*x, *y);
             self.events.push_back(CollabEvent::RemoteCursorMoved {
                 user_id: user_id.clone(),
                 x,
@@ -532,49 +450,5 @@ impl CollabTransport for RelayCollabTransport {
     fn set_wake(&mut self, wake: Box<dyn Fn() + Send + Sync>) {
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(wake);
         self.peer.on_change(wake);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn want(total: u64, pieces: &[(u64, &[u8])]) -> Want {
-        Want {
-            route: RouteSpec {
-                app_id: "so.tilo.chat".into(),
-                cluster_id: Default::default(),
-                record: None,
-            },
-            asked_ms: 0,
-            total: Some(total),
-            pieces: pieces
-                .iter()
-                .map(|(at, bytes)| (*at, bytes.to_vec()))
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn content_is_whole_once_its_pieces_cover_it_in_any_order() {
-        assert_eq!(
-            want(6, &[(3, b"def"), (0, b"abc")]).assembled().as_deref(),
-            Some(&b"abcdef"[..])
-        );
-        assert_eq!(want(0, &[(0, b"")]).assembled().as_deref(), Some(&b""[..]));
-    }
-
-    #[test]
-    fn content_with_a_gap_or_short_of_its_total_is_not_whole() {
-        assert!(want(9, &[(0, b"abc"), (6, b"ghi")]).assembled().is_none());
-        assert!(want(9, &[(0, b"abc"), (3, b"def")]).assembled().is_none());
-        assert!(
-            Want {
-                total: None,
-                ..want(3, &[(0, b"abc")])
-            }
-            .assembled()
-            .is_none()
-        );
     }
 }

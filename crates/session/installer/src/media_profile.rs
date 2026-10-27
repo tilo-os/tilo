@@ -44,6 +44,9 @@ pub struct MediaProfile {
     pub purpose: String,
     pub device_label: String,
     pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
+    /// Public, TPM-sealed sidecar carried from the Imager's same-computer
+    /// preparation. Its only secret is a TPM private blob.
+    pub tpm_handoff: Option<String>,
     pub windows_preparation: Option<account_custody::hints::media::Expectation>,
     pub hostname: Option<String>,
     pub username: Option<String>,
@@ -91,6 +94,8 @@ struct RawMediaProfile {
     device_label: String,
     #[serde(default, deserialize_with = "present_expectation")]
     prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
+    #[serde(default)]
+    tpm_handoff: Option<String>,
     #[serde(default)]
     windows_preparation: Option<account_custody::hints::media::Expectation>,
     #[serde(default)]
@@ -140,6 +145,16 @@ impl RawMediaProfile {
     fn validate(self, zoneinfo_root: &Path) -> Result<MediaProfile, String> {
         if self.prepared_setup.is_some() && self.windows_preparation.is_some() {
             return Err("Windows suggestions cannot claim a prepared Linux identity".into());
+        }
+        if self
+            .tpm_handoff
+            .as_ref()
+            .is_some_and(|handoff| handoff.len() > 64 * 1024)
+        {
+            return Err("The prepared TPM handoff exceeds its bound".into());
+        }
+        if self.tpm_handoff.is_some() && self.prepared_setup.is_none() {
+            return Err("A prepared TPM handoff needs its prepared package".into());
         }
         if self.schema != 1 {
             return Err("unsupported installation profile version".into());
@@ -210,6 +225,7 @@ impl RawMediaProfile {
             purpose: self.purpose,
             device_label: self.device_label,
             prepared_setup: self.prepared_setup,
+            tpm_handoff: self.tpm_handoff,
             windows_preparation: self.windows_preparation,
             hostname,
             username,
@@ -256,11 +272,6 @@ fn load_from_with_zoneinfo(
 /// Validate the secret-free profile object carried by a staged (USB-free)
 /// installation handoff. It is the same object Tilo Imager writes to media;
 /// `schema` may be omitted there because the handoff has its own schema.
-///
-/// # Errors
-///
-/// Returns an error for an unsupported schema or fields outside the media
-/// profile. Individual invalid values become repairs, exactly as for media.
 pub fn validate_object(
     object: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<MediaProfile, String> {
@@ -324,7 +335,6 @@ mod tests {
 
     #[test]
     fn media_profile_accepts_the_contract_and_repairs_only_bad_values() {
-        // Phase `accepts_the_imager_contract_and_rejects_destructive_fields`.
         {
             let file = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(file.path(), serde_json::to_vec(&good()).unwrap()).unwrap();
@@ -337,7 +347,6 @@ mod tests {
             std::fs::write(file.path(), serde_json::to_vec(&bad).unwrap()).unwrap();
             assert!(load_from(file.path()).is_err());
         }
-        // Phase `retains_each_sound_field_while_requesting_one_repair`.
         {
             let zones = tempfile::tempdir().unwrap();
             std::fs::create_dir_all(zones.path().join("Europe")).unwrap();
@@ -400,7 +409,6 @@ mod tests {
                 );
             }
         }
-        // Phase `missing_values_are_repairs_but_schema_and_shape_still_fail_closed`.
         {
             let file = tempfile::NamedTempFile::new().unwrap();
             let mut missing = good();

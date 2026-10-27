@@ -73,6 +73,9 @@ pub enum RowLeading<'a> {
     Checkbox { checked: bool },
     /// A colour that is the row's content (a calendar's colour, a label).
     Swatch(Color),
+    /// How strong a radio signal is (a Wi-Fi network): the
+    /// [`SignalMeterFace`](crate::widget::SignalMeterFace) at icon size.
+    Signal(crate::widget::SignalLevel),
     /// A painter for a leading mark no other kind covers (a font sample, a
     /// waveform), given the leading slot.
     Paint(&'a dyn Fn(&mut PaintCtx<'_>, Rect)),
@@ -95,6 +98,7 @@ impl std::fmt::Debug for RowLeading<'_> {
                 .field("checked", checked)
                 .finish(),
             Self::Swatch(colour) => f.debug_tuple("Swatch").field(colour).finish(),
+            Self::Signal(level) => f.debug_tuple("Signal").field(level).finish(),
             Self::Paint(_) => f.write_str("Paint"),
             Self::AvatarSpace => f.write_str("AvatarSpace"),
         }
@@ -283,7 +287,6 @@ struct RowGeometry {
     leading: Rect,
     /// Where the title starts (the separator starts here too).
     text_x: f64,
-    /// Where every text line ends.
     text_right: f64,
     /// Where the title's line ends: the meta narrows only that line.
     title_right: f64,
@@ -295,7 +298,6 @@ struct RowGeometry {
     value_right: f64,
     /// The status dot's centre x.
     dot_x: Option<f64>,
-    /// The check's slot.
     check: Option<Rect>,
     /// The disclosure chevron's slot.
     disclosure: Option<Rect>,
@@ -324,6 +326,8 @@ pub struct ListRowFace<'a> {
     title: &'a str,
     title_lines: u8,
     title_family: Option<&'a FontChoice>,
+    /// The words a search found the row by, marked where the title has them.
+    found: &'a [&'a str],
     subtitle: Option<&'a str>,
     secondary: Option<&'a str>,
     secondary_lines: u8,
@@ -351,11 +355,65 @@ pub struct ListRowFace<'a> {
     reveal_actions: bool,
     swipe: Option<(SwipeAction<'a>, f64)>,
     trailing_width: Option<f64>,
+    /// The room the list keeps after every row's trailing control, at
+    /// least: its rows' controls stand in one column.
+    trailing_after: f64,
     interaction: Interaction,
     /// The rect the lift, separator and focus ring take when it differs from
     /// the rect the text is laid out in (a retained row whose trailing
     /// control wrapped under its text).
     frame: Option<Rect>,
+}
+
+/// Where `line` has one of `words`: at the start of a word of it, compared
+/// letter by letter whatever their case. Byte ranges into `line`, in order.
+fn found_spans(line: &str, words: &[&str]) -> Vec<std::ops::Range<usize>> {
+    let mut spans = Vec::new();
+    let mut previous: Option<char> = None;
+    for (at, c) in line.char_indices() {
+        let starts_word = c.is_alphanumeric() && !previous.is_some_and(char::is_alphanumeric);
+        previous = Some(c);
+        if !starts_word {
+            continue;
+        }
+        let Some(rest) = line.get(at..) else {
+            continue;
+        };
+        let longest = words
+            .iter()
+            .filter_map(|word| matched_len(rest, word))
+            .max();
+        if let Some(len) = longest
+            && spans
+                .last()
+                .is_none_or(|last: &std::ops::Range<usize>| last.end <= at)
+        {
+            spans.push(at..at + len);
+        }
+    }
+    spans
+}
+
+/// How many bytes of the start of `text` are `word`, letter for letter
+/// whatever their case; `None` when it does not start with it.
+fn matched_len(text: &str, word: &str) -> Option<usize> {
+    if word.is_empty() {
+        return None;
+    }
+    let mut wanted = word.chars().flat_map(char::to_lowercase).peekable();
+    let mut len = 0;
+    for c in text.chars() {
+        if wanted.peek().is_none() {
+            break;
+        }
+        for lower in c.to_lowercase() {
+            if wanted.next() != Some(lower) {
+                return None;
+            }
+        }
+        len += c.len_utf8();
+    }
+    wanted.peek().is_none().then_some(len)
 }
 
 impl<'a> ListRowFace<'a> {
@@ -365,6 +423,7 @@ impl<'a> ListRowFace<'a> {
             title,
             title_lines: 1,
             title_family: None,
+            found: &[],
             subtitle: None,
             secondary: None,
             secondary_lines: 1,
@@ -390,9 +449,19 @@ impl<'a> ListRowFace<'a> {
             reveal_actions: false,
             swipe: None,
             trailing_width: None,
+            trailing_after: 0.0,
             interaction: Interaction::default(),
             frame: None,
         }
+    }
+
+    /// Mark `words`, what a search found the row by, where the title has
+    /// them: each at the start of a word, whatever its case, under the find
+    /// bar's match wash ([`paint_find_match`](crate::widget::paint_find_match)).
+    #[must_use]
+    pub fn found(mut self, words: &'a [&'a str]) -> Self {
+        self.found = words;
+        self
     }
 
     /// Let the title wrap to two lines before it is elided (a long name in a
@@ -630,6 +699,15 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
+    /// Keep at least `width` after the trailing slot, where a row of the
+    /// same list holds a mark this one does not: the list's controls stand
+    /// in one column.
+    #[must_use]
+    pub(crate) fn trailing_after(mut self, width: f64) -> Self {
+        self.trailing_after = width.max(0.0);
+        self
+    }
+
     #[must_use]
     pub fn interaction(mut self, interaction: Interaction) -> Self {
         self.interaction = interaction;
@@ -725,9 +803,12 @@ impl<'a> ListRowFace<'a> {
         let avatar = RowMetrics::avatar(theme, extra);
         let own = match self.leading {
             None => (0.0, 0.0),
-            Some(RowLeading::Icon(_) | RowLeading::Checkbox { .. } | RowLeading::Swatch(_)) => {
-                (m.icon, m.icon)
-            }
+            Some(
+                RowLeading::Icon(_)
+                | RowLeading::Checkbox { .. }
+                | RowLeading::Swatch(_)
+                | RowLeading::Signal(_),
+            ) => (m.icon, m.icon),
             Some(
                 RowLeading::Avatar(_)
                 | RowLeading::Thumbnail(_)
@@ -792,6 +873,29 @@ impl<'a> ListRowFace<'a> {
         self.count.map(|count| count.to_string())
     }
 
+    /// How far inside the row's edge its trailing slot ends: its own marks
+    /// after it, or the room its list keeps there if that is wider.
+    fn after_trailing(&self, m: &RowMetrics) -> f64 {
+        self.marks_after_trailing(m).max(self.trailing_after)
+    }
+
+    /// The width of the columns [`Self::geometry`] lays out after the
+    /// trailing slot (a disclosure chevron, a check, a status dot), each
+    /// with its gap.
+    fn marks_after_trailing(&self, m: &RowMetrics) -> f64 {
+        let mut width = 0.0;
+        if self.disclosure {
+            width += m.icon + m.column_gap;
+        }
+        if self.checked.is_some() {
+            width += m.icon + m.column_gap;
+        }
+        if self.status.is_some() {
+            width += m.dot + m.column_gap;
+        }
+        width
+    }
+
     /// Lay the columns out in `rect`, the row's outer rect.
     fn geometry(
         &self,
@@ -836,6 +940,7 @@ impl<'a> ListRowFace<'a> {
         if let Some(width) = self.trailing_width
             && width > 0.0
         {
+            right = right.min(rect.x1 - m.bleed - self.after_trailing(m));
             geo.trailing = Some(Rect::new(right - width, rect.y0, right, rect.y1));
             right -= width + m.column_gap;
         }
@@ -960,7 +1065,6 @@ impl<'a> ListRowFace<'a> {
         self.geometry(rect, m, text, theme).text_x
     }
 
-    /// Paint the row into `rect`, its outer rect.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -1040,10 +1144,22 @@ impl<'a> ListRowFace<'a> {
 
         let geo = self.geometry(row, &m, ctx.text, theme);
         let extra = self.extra_lines() > 0;
-        let block = self.text_block(ctx.text, &m);
-        let text_top = row.center().y - block / 2.0;
         let title_style = self.title_style(&m);
         let title_line = RowMetrics::line(ctx.text, &title_style);
+        let room = self.title_room(&geo, ctx.text, theme, &m);
+        let lines = ctx.text.clamp_to_lines(
+            self.title,
+            &title_style,
+            room,
+            usize::from(self.title_lines),
+        );
+        // The row keeps the height of every title line it allows, so rows
+        // do not jump as titles change; the text it draws is centred in it,
+        // beside the leading icon, however many lines the title takes.
+        let title_drawn = lines.len().clamp(1, usize::from(self.title_lines));
+        let unused = usize::from(self.title_lines).saturating_sub(title_drawn);
+        let block = self.text_block(ctx.text, &m) - title_line * crate::num::f64_of_usize(unused);
+        let text_top = row.center().y - block / 2.0;
         let title_cy = text_top + title_line / 2.0;
 
         self.paint_leading(ctx, &m, geo.leading, under);
@@ -1126,7 +1242,7 @@ impl<'a> ListRowFace<'a> {
                     } else {
                         RowMetrics::line(ctx.text, &m.secondary)
                     };
-                    text_top + title_line * f64::from(self.title_lines) + second / 2.0
+                    text_top + title_line * crate::num::f64_of_usize(title_drawn) + second / 2.0
                 } else {
                     row.center().y
                 };
@@ -1146,15 +1262,19 @@ impl<'a> ListRowFace<'a> {
         // Title (with its mark and tags), subtitle and secondary text.
         let text_x = geo.text_x;
         let mut y = text_top;
-        let room = self.title_room(&geo, ctx.text, theme, &m);
-        let lines = ctx.text.clamp_to_lines(
-            self.title,
-            &title_style,
-            room,
-            usize::from(self.title_lines),
-        );
         let mut last_end = text_x;
         for line in &lines {
+            for span in found_spans(line, self.found) {
+                let (Some(before), Some(word)) = (line.get(..span.start), line.get(span.clone()))
+                else {
+                    continue;
+                };
+                let start =
+                    text_x + f64::from(ctx.text.measure_style(before, None, &title_style).0);
+                let (width, height) = ctx.text.measure_style(word, None, &title_style);
+                let mark = Rect::new(start, y, start + f64::from(width), y + f64::from(height));
+                crate::widget::paint_find_match(ctx.scene, ctx.transform, mark, false, theme);
+            }
             ctx.text(
                 line,
                 &title_style,
@@ -1166,7 +1286,7 @@ impl<'a> ListRowFace<'a> {
             y += title_line;
         }
         if lines.is_empty() {
-            y += title_line * f64::from(self.title_lines);
+            y += title_line;
         }
         let line_cy = y - title_line / 2.0;
         let mut x = last_end + m.tag_gap;
@@ -1449,6 +1569,15 @@ impl<'a> ListRowFace<'a> {
                     &Circle::new(r.center(), r.width() / 2.0 - 0.5),
                 );
             }
+            RowLeading::Signal(level) => {
+                let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
+                crate::widget::SignalMeterFace::new(level).paint(
+                    ctx.scene,
+                    ctx.transform,
+                    theme,
+                    r,
+                );
+            }
             RowLeading::Paint(painter) => painter(ctx, slot),
             RowLeading::AvatarSpace => {}
         }
@@ -1629,6 +1758,7 @@ enum Leading {
     },
     Swatch(Color),
     AvatarSpace,
+    Signal(crate::widget::SignalLevel),
 }
 
 /// What a retained hover action runs.
@@ -1677,6 +1807,20 @@ const SWIPE_COMMIT: f64 = 0.4;
 /// its trailing control wraps under it.
 const MIN_TEXT_LINES: u8 = 8;
 
+/// Whether `control` draws a face of one size whatever room it gets (a
+/// switch, a checkbox), so stretching it under the text would only move it
+/// off the text's edge. Looks through wrappers that announce nothing
+/// themselves to the control they hold.
+fn keeps_its_face_size(control: &dyn Widget) -> bool {
+    match control.accessibility() {
+        Some(node) => matches!(node.role, Role::Switch | Role::Checkbox | Role::RadioButton),
+        None => match control.children().as_slice() {
+            [only] => keeps_its_face_size(*only),
+            _ => false,
+        },
+    }
+}
+
 /// The persistent control a retained row holds at its trailing edge.
 struct Trailing {
     /// Stands for the text band among the row's children: the row's node
@@ -1685,13 +1829,22 @@ struct Trailing {
     /// accessibility tree) must meet the control at the control's node.
     band_slot: crate::widget::Absent,
     element: Element,
-    /// The text band's node, then the control's.
     band: Option<NodeId>,
     node: Option<NodeId>,
     /// The text band's height, settled from measured line boxes.
     band_height: f32,
     /// The control wrapped under the text.
     wrapped: bool,
+    /// The control's own width, while it is not filling the row.
+    natural: f32,
+    /// The width the control fills under the text, from the text's edge to
+    /// the row's, where a control beside the text ends.
+    fill: Option<f32>,
+    /// The control's own minimum width, restored when it stops filling.
+    own_min: taffy::Dimension,
+    /// Centred on the column a disclosure chevron stands in
+    /// ([`ListRow::trailing_disclosure`]).
+    on_disclosure_column: bool,
 }
 
 /// One of a row's own pressable controls.
@@ -1744,6 +1897,9 @@ pub struct ListRow {
     /// layout.
     column_badges: Option<std::rc::Rc<[String]>>,
     pub(crate) shared_leading: Option<f64>,
+    /// Set by the list: the room every row of it keeps after its trailing
+    /// control.
+    pub(crate) shared_after_trailing: Option<f64>,
     leading_tooltip: Option<String>,
     tooltip: Option<String>,
     status: Option<(StatusKind, String)>,
@@ -1783,8 +1939,14 @@ enum StatusKind {
 
 impl ListRow {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), title.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, title: String) -> Self {
         Self {
-            title: title.into(),
+            title,
             laid_out: false,
             title_elided: false,
             two_line_title: false,
@@ -1802,6 +1964,7 @@ impl ListRow {
             leading_column: None,
             column_badges: None,
             shared_leading: None,
+            shared_after_trailing: None,
             leading_tooltip: None,
             tooltip: None,
             status: None,
@@ -2057,6 +2220,18 @@ impl ListRow {
         self
     }
 
+    /// See [`RowLeading::Signal`]: the row leads with how strong its
+    /// signal is, and is described by the meter's name ("Strong signal")
+    /// unless a tooltip already says more.
+    #[must_use]
+    pub fn signal(mut self, level: crate::widget::SignalLevel) -> Self {
+        self.leading = Some(Leading::Signal(level));
+        if self.leading_tooltip.is_none() {
+            self.leading_tooltip = Some(level.name());
+        }
+        self
+    }
+
     /// See [`ListRowFace::leading_column`]. A [`crate::widget::Section`]
     /// equalises the badge column of consecutive rows on its own.
     #[must_use]
@@ -2181,8 +2356,27 @@ impl ListRow {
             node: None,
             band_height: 0.0,
             wrapped: false,
+            natural: 0.0,
+            fill: None,
+            own_min: taffy::Dimension::auto(),
+            on_disclosure_column: false,
         });
         self
+    }
+
+    /// [`Self::trailing`] for an icon button that opens what the row is
+    /// about while the row itself does something else (a network row that
+    /// connects, its chevron opening the network's page). The button is
+    /// centred on the column a [`Self::disclosure`] chevron stands in, so it
+    /// lines up with the chevrons of the rows around it; its target keeps
+    /// its own size, reaching into the row's bleed.
+    #[must_use]
+    pub fn trailing_disclosure(self, button: Element) -> Self {
+        let mut row = self.trailing(button);
+        if let Some(trailing) = &mut row.trailing {
+            trailing.on_disclosure_column = true;
+        }
+        row
     }
 
     /// The row's marks after its title (a status, a role), in order.
@@ -2233,7 +2427,25 @@ impl ListRow {
         }
     }
 
-    /// The row's leading badge, if it has one.
+    /// Set by the list: the room its consecutive rows keep after their
+    /// trailing controls, so the controls stand in one column.
+    pub(crate) fn set_shared_after_trailing(&mut self, width: Option<f64>) {
+        if self.shared_after_trailing != width {
+            self.shared_after_trailing = width;
+            self.dirty = true;
+        }
+    }
+
+    /// The room this row's own marks take after its trailing control, for
+    /// the list to share across its rows; none without a control.
+    pub(crate) fn marks_after_trailing(&self, theme: &Theme) -> f64 {
+        if self.trailing.is_none() {
+            return 0.0;
+        }
+        let m = RowMetrics::new(theme);
+        self.with_face(|face| face.marks_after_trailing(&m))
+    }
+
     pub(crate) fn badge_label(&self) -> Option<&str> {
         match &self.leading {
             Some(Leading::Badge(badge)) => Some(badge),
@@ -2345,6 +2557,75 @@ impl ListRow {
     }
 
     /// The rect the row paints in: its layout box grown by the bleed.
+    /// Wrapped under the text, the control fills the row from the text's
+    /// edge to the row's own, where every control beside its text ends,
+    /// instead of keeping its own width. It keeps filling while its own
+    /// width still would not fit beside the text's narrowest. True when the
+    /// control's style changed.
+    fn fill_under_text(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let (Some(theme), Some(metrics)) = (self.theme.clone(), self.metrics.as_ref()) else {
+            return false;
+        };
+        let column_gap = metrics.column_gap;
+        let min_text = f64::from(MIN_TEXT_LINES) * f64::from(metrics.title.line_height_px());
+        let bleed = metrics.bleed;
+        let Some(trailing) = &self.trailing else {
+            return false;
+        };
+        let (Some(band), Some(child)) = (trailing.band, trailing.node) else {
+            return false;
+        };
+        let (Ok(row), Ok(band_layout), Ok(child_layout)) =
+            (taffy.layout(node), taffy.layout(band), taffy.layout(child))
+        else {
+            return false;
+        };
+        let row_width = f64::from(row.size.width);
+        let band_height = f64::from(trailing.band_height);
+        let (natural, wrapped) = if trailing.fill.is_some() {
+            let natural = f64::from(trailing.natural);
+            (natural, min_text + column_gap + natural > row_width + 0.5)
+        } else {
+            (
+                f64::from(child_layout.size.width),
+                child_layout.location.y >= band_layout.location.y + trailing.band_height - 0.5,
+            )
+        };
+        let fill = (wrapped && !keeps_its_face_size(trailing.element.as_ref())).then(|| {
+            let band_rect = Rect::new(-bleed, 0.0, row_width + bleed, band_height);
+            let m = RowMetrics::new(&theme);
+            let text_edge = self.with_face(|face| face.text_x(band_rect, &m, text, &theme));
+            crate::num::f32_of_f64((row_width - text_edge.max(0.0)).max(0.0))
+        });
+        let Some(trailing) = &mut self.trailing else {
+            return false;
+        };
+        if trailing.fill.is_none() {
+            trailing.natural = crate::num::f32_of_f64(natural);
+        }
+        let same = match (trailing.fill, fill) {
+            (Some(a), Some(b)) => (a - b).abs() < 0.5,
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return false;
+        }
+        trailing.fill = fill;
+        let own_min = trailing.own_min;
+        let Ok(style) = taffy.style(child) else {
+            return false;
+        };
+        let mut style = style.clone();
+        style.min_size.width = fill.map_or(own_min, length);
+        taffy.set_style(child, style).is_ok()
+    }
+
     fn outer(&self) -> Rect {
         let bleed = self.metrics.as_ref().map_or(0.0, |m| m.bleed);
         self.rect.inflate(bleed, 0.0)
@@ -2436,6 +2717,9 @@ impl ListRow {
         if let Some(checked) = self.checked {
             face = face.checked(checked);
         }
+        if let Some(width) = self.shared_after_trailing {
+            face = face.trailing_after(width);
+        }
         if let Some(width) = self.leading_column.or(self.shared_leading) {
             face = face.leading_column(width);
         }
@@ -2476,6 +2760,7 @@ impl ListRow {
                 Leading::Checkbox { checked, .. } => RowLeading::Checkbox { checked: *checked },
                 Leading::Swatch(colour) => RowLeading::Swatch(*colour),
                 Leading::AvatarSpace => RowLeading::AvatarSpace,
+                Leading::Signal(level) => RowLeading::Signal(*level),
             });
         }
         if let Some((kind, id)) = &self.status {
@@ -2546,7 +2831,12 @@ impl ListRow {
         let theme = self.theme.as_ref()?;
         if !matches!(
             self.leading,
-            Some(Leading::Checkbox { .. } | Leading::Badge(_) | Leading::Icon(_))
+            Some(
+                Leading::Checkbox { .. }
+                    | Leading::Badge(_)
+                    | Leading::Icon(_)
+                    | Leading::Signal(_)
+            )
         ) {
             return None;
         }
@@ -2672,10 +2962,18 @@ impl ListRow {
     }
 }
 
+impl crate::widget::ReservedShape for ListRow {
+    fn reserved_shape(&self) -> crate::widget::SkeletonShape {
+        crate::widget::SkeletonShape::Row(self.shape())
+    }
+}
+
 impl Widget for ListRow {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations,
+        dyn crate::widget::ReservedShape
     );
 
     fn set_interaction_environment(
@@ -2725,6 +3023,9 @@ impl Widget for ListRow {
         let column_gap = metrics.column_gap;
         let pad_y = metrics.pad_y;
         let min_text = f64::from(MIN_TEXT_LINES) * f64::from(metrics.title.line_height_px());
+        // The control stands in the slot the face reserves for it, inside
+        // the columns that follow it, not over them.
+        let after_trailing = self.with_face(|face| face.after_trailing(&metrics));
         self.metrics = Some(metrics);
         // Geometry outside a draw (hit-testing actions, measuring) reads the
         // theme the row was last laid out in.
@@ -2790,8 +3091,11 @@ impl Widget for ListRow {
             style.flex_shrink = 0.0;
             style.align_self = Some(taffy::AlignSelf::Center);
             style.margin.left = length(crate::num::f32_of_f64(column_gap));
+            style.margin.right = length(crate::num::f32_of_f64(after_trailing));
             style.margin.top = length(crate::num::f32_of_f64(pad_y));
             style.margin.bottom = length(crate::num::f32_of_f64(pad_y));
+            trailing.own_min = style.min_size.width;
+            trailing.fill = None;
             let _ = taffy.set_style(child, style);
         }
         trailing.band = Some(band);
@@ -2809,33 +3113,34 @@ impl Widget for ListRow {
     fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _node: NodeId,
+        node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
         if self.trailing.is_none() {
             return false;
         }
+        let filled = self.fill_under_text(taffy, node, text);
         let Some(theme) = &self.theme else {
-            return false;
+            return filled;
         };
         let height = self.with_face(|face| face.height(text, theme));
         let Some(trailing) = &mut self.trailing else {
-            return false;
+            return filled;
         };
         let height = crate::num::f32_of_f64(height);
         if (height - trailing.band_height).abs() < 0.5 {
-            return false;
+            return filled;
         }
         trailing.band_height = height;
         let Some(band) = trailing.band else {
-            return false;
+            return filled;
         };
         let Ok(style) = taffy.style(band) else {
-            return false;
+            return filled;
         };
         let mut style = style.clone();
         style.size.height = length(height);
-        taffy.set_style(band, style).is_ok()
+        taffy.set_style(band, style).is_ok() || filled
     }
 
     fn measure(
@@ -2896,6 +3201,13 @@ impl Widget for ListRow {
                 - f64::from(child_layout.location.x)
                 - f64::from(child_layout.size.width);
             child_origin.x += shift.min(room);
+        } else if trailing.on_disclosure_column
+            && let Some(metrics) = &self.metrics
+        {
+            // The chevron's column ends on the layout box's edge; the
+            // button's centre moves onto it, never past the bleed.
+            let width = f64::from(child_layout.size.width);
+            child_origin.x += ((width - metrics.icon) / 2.0).clamp(0.0, metrics.bleed);
         }
         if let Some(trailing) = &mut self.trailing {
             trailing.element.apply_layout(taffy, child, child_origin);
@@ -3123,26 +3435,6 @@ impl Widget for ListRow {
         }
     }
 
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        let mut handlers = self.activation.native_handlers();
-        if let Some(trailing) = &self.trailing {
-            handlers.extend(trailing.element.resource_operation_handlers());
-        }
-        handlers
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if let Some(started) = self.activation.start_native(op)? {
-            return Ok(Some(started));
-        }
-        crate::widget::start_in_children(self, op, doc, path)
-    }
-
     fn needs_redraw(&self) -> bool {
         self.dirty
             || self
@@ -3166,6 +3458,21 @@ impl Widget for ListRow {
                 .trailing
                 .as_ref()
                 .is_some_and(|t| t.element.is_layout_dirty())
+    }
+
+    // The control (child 1, after the band's stand-in) is described by the
+    // row's subtitle and secondary line, which a reader would otherwise only
+    // meet on the row.
+    fn accessibility_child_description(&self, child_index: usize) -> Option<String> {
+        if child_index != 1 || self.trailing.is_none() {
+            return None;
+        }
+        let words: Vec<&str> = [self.subtitle.as_deref(), self.secondary.as_deref()]
+            .into_iter()
+            .flatten()
+            .filter(|words| !words.is_empty())
+            .collect();
+        (!words.is_empty()).then(|| words.join(", "))
     }
 
     // In the order of the row's layout nodes: the text band's stand-in,
@@ -3261,6 +3568,30 @@ impl Widget for ListRow {
             }
             _ => false,
         }
+    }
+}
+
+impl crate::widget::ResourceOperations for ListRow {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        let mut handlers = self.activation.native_handlers();
+        if let Some(trailing) = &self.trailing {
+            handlers.extend(crate::widget::resource_operation_handlers(
+                &*trailing.element,
+            ));
+        }
+        handlers
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(started) = self.activation.start_native(op)? {
+            return Ok(Some(started));
+        }
+        crate::widget::start_in_children(self, op, doc, path)
     }
 }
 
@@ -3575,6 +3906,10 @@ impl crate::widget::Decorator for ControlRow {
         }
     }
 }
+
+#[path = "list_row_shape.rs"]
+mod shape;
+pub use shape::{RowLeadingShape, RowShape};
 
 #[cfg(test)]
 #[path = "list_row_tests.rs"]

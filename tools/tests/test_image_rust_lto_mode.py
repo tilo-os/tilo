@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Published OS images keep thin LTO; every other build links without it.
 
-os/Containerfile takes TILO_RUST_LTO (default thin). CI and os/dev/build-image.sh
-choose it from whether the build publishes, and a publication refuses an image
+os/Containerfile takes TILO_RUST_LTO (default thin). os/dev/build-image.sh chooses
+it from whether the build publishes, and a publication refuses an image
 whose org.tilo.rust-lto label says otherwise.
 """
 
@@ -16,41 +16,22 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-WORKFLOW = REPO / ".forgejo/workflows/build-image.yml"
 CONTAINERFILE = REPO / "os/Containerfile"
+# The compile, outside any image build, which takes the mode as the image does.
+COMPILE = REPO / "os/image/compile.sh"
 BUILD_IMAGE = REPO / "os/dev/build-image.sh"
 COMMON = REPO / "os/dev/_common.sh"
 
 
-def build_arg_blocks(text: str) -> list[str]:
-    return re.findall(r"^ {10}build-args: \|\n((?: {12}.*\n)+)", text, re.M)
-
-
 class RustLtoModeTests(unittest.TestCase):
-    def test_every_image_build_passes_the_mode(self) -> None:
-        blocks = build_arg_blocks(WORKFLOW.read_text())
-        self.assertGreaterEqual(len(blocks), 5)
-        for block in blocks:
-            if "file: os/Containerfile" not in block and "BASE_REF" not in block:
-                continue
-            self.assertIn("TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}", block)
-
-    def test_the_release_mode_step_chooses_thin_only_for_a_publication(self) -> None:
-        text = WORKFLOW.read_text()
-        step = text[text.index("id: release-mode"):]
-        step = step[:step.index("\n      - name:")]
-        block = step[step.index('          if [[ "$publish" == true ]]'):]
-        publish, other = block.split("\n          else\n", 1)
-        self.assertIn("echo 'TILO_RUST_LTO=thin' >> \"$GITHUB_ENV\"", publish)
-        self.assertNotIn("TILO_RUST_LTO=off", publish)
-        self.assertIn("echo 'TILO_RUST_LTO=off' >> \"$GITHUB_ENV\"", other.split("          fi\n", 1)[0])
-
     def test_the_containerfile_defaults_to_thin_and_labels_the_image(self) -> None:
         text = CONTAINERFILE.read_text()
         self.assertEqual(re.findall(r"^ARG TILO_RUST_LTO=(\S+)$", text, re.M), ["thin", "thin"])
         self.assertIn('LABEL org.tilo.rust-lto="${TILO_RUST_LTO}"', text)
-        self.assertIn('CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO"', text)
-        self.assertNotIn("CARGO_PROFILE_RELEASE_LTO=thin", text)
+        compile_sh = COMPILE.read_text()
+        self.assertIn(': "${TILO_RUST_LTO:=thin}"', compile_sh)
+        self.assertIn('CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO"', compile_sh)
+        self.assertNotIn("CARGO_PROFILE_RELEASE_LTO=thin", compile_sh)
 
     def mode(self, **env: str) -> str:
         """The mode build-image.sh resolves, from its own resolution block."""

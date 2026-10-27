@@ -13,6 +13,7 @@
 //! re-paint.  This keeps scrolling smooth and lets a host preserve an item
 //! anchor while changing thumbnail density.
 
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -223,7 +224,7 @@ impl DateIndexedScrollbar {
             .iter()
             .filter(|marker| marker.position.is_finite() && !marker.label.trim().is_empty())
             .collect();
-        ordered.sort_by(|left, right| {
+        ordered.compact_sort_by(|left, right| {
             left.clamped_position()
                 .total_cmp(&right.clamped_position())
                 .then_with(|| left.id.cmp(&right.id))

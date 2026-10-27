@@ -1,5 +1,6 @@
 //! Owner governance admission consumes an exact existing confirmation, not a
 //! replacement approval, and never turns that approval into delegated custody.
+use super::super::ActionDirectoryRoot;
 use super::*;
 use crate::services::{HostServices, WorkspaceGovernanceRequest, WorkspaceGovernanceServices};
 use crate::test_support::{Grants as _, KindSet, Workspace, WorkspaceId, WorkspaceTree};
@@ -77,7 +78,7 @@ fn broker_with_tree(
     let mut workspace = Workspace::new(WorkspaceId(95), "Owner import");
     workspace.set_owner("owner");
     workspace.admit_agent("limited", KindSet::ALL);
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
     let tree = tree.shared();

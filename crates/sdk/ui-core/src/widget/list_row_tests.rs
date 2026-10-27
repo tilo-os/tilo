@@ -415,6 +415,7 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
         RowLeading::Media(MediaArt::Placeholder, MediaAspect::Wide),
         RowLeading::Checkbox { checked: true },
         RowLeading::Swatch(theme.tokens.colors.semantic.info),
+        RowLeading::Signal(crate::widget::SignalLevel::Good),
         RowLeading::Paint(&painter),
     ];
     for kind in kinds {
@@ -575,7 +576,7 @@ fn on_view_publishes_the_row_as_an_action_instead_of_a_callback() {
     assert_eq!(resources.len(), 1);
     assert_eq!(resources[0].label, "Ada Lovelace");
     assert!(
-        Widget::resource_operation_handlers(&row)
+        crate::widget::resource_operation_handlers(&row)
             .contains(crate::widget::activation::NATIVE_INVOKE)
     );
     let mut doc = automerge::AutoCommit::new();
@@ -595,6 +596,98 @@ fn on_view_publishes_the_row_as_an_action_instead_of_a_callback() {
     .unwrap();
     assert!(started.is_some());
     assert_eq!(opened.get(), 1);
+}
+
+/// A row's own chevron button lines up with the disclosure chevrons of
+/// the rows around it.
+#[test]
+fn a_trailing_disclosure_button_stands_on_the_chevron_column() {
+    let rows = Column::new()
+        .with_no_padding()
+        .push(Box::new(
+            ListRow::new("all", "Show all")
+                .disclosure()
+                .on_activate(|| {}),
+        ))
+        .push(Box::new(
+            ListRow::new("home", "Home")
+                .on_activate(|| {})
+                .trailing_disclosure(Box::new(crate::widget::Button::icon_only(
+                    "home.open",
+                    crate::icons::Icon::ChevronRight,
+                    "Open Home",
+                ))),
+        ));
+    let harness = FrameHarness::new(crate::State::new(), Box::new(rows), (600, 300));
+    let root = harness.inspection().root;
+    let row = rect_of(find(&root, "ListRow").unwrap());
+    let button = rect_of(find(&root, "Button").unwrap());
+    let theme = Theme::dark();
+    let m = RowMetrics::new(&theme);
+    let chevron = row.x1 - m.icon / 2.0;
+    assert!(
+        (button.center().x - chevron).abs() < 0.5,
+        "centred on the chevron column: {button:?} vs {chevron}"
+    );
+    assert!(
+        button.x1 <= row.x1 + m.bleed + 0.5,
+        "inside the row's bleed: {button:?} in {row:?}"
+    );
+}
+
+#[test]
+fn a_trailing_control_stands_beside_the_status_dot_not_over_it() {
+    let theme = Theme::light();
+    let row = ListRow::new("failed", "Couldn't load this")
+        .secondary("Lounge did not answer")
+        .error()
+        .trailing(Box::new(
+            crate::widget::Button::new("retry", "Try again")
+                .control_size(crate::widget::ControlSize::Small),
+        ));
+    let h = FrameHarness::for_root(crate::State::new(), row, (720, 120), theme.clone());
+    let row = h.root::<ListRow>();
+    let button = row.trailing.as_ref().unwrap().element.get_rect();
+    let band = row.text_band();
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let dot = row
+        .with_face(|face| face.dot_centre(band, &mut text, &theme))
+        .unwrap();
+    let m = RowMetrics::new(&theme);
+    assert!(
+        button.x1 + m.column_gap <= dot.x - m.dot / 2.0 + 0.5,
+        "the control ends a column gap before the dot: {button:?}, dot at {dot:?}"
+    );
+    assert!(
+        dot.x + m.dot / 2.0 <= row.get_rect().x1 + 0.5,
+        "the dot keeps the row's edge: {dot:?} in {:?}",
+        row.get_rect()
+    );
+}
+
+#[test]
+fn a_trailing_control_stands_before_the_disclosure_chevron_not_over_it() {
+    let theme = Theme::light();
+    let row = ListRow::new("vpn", "Office")
+        .secondary("Connected")
+        .trailing(Box::new(crate::widget::Toggle::new("vpn-toggle", "vpn")))
+        .disclosure();
+    let h = FrameHarness::for_root(crate::State::new(), row, (720, 120), theme.clone());
+    let row = h.root::<ListRow>();
+    let toggle = row.trailing.as_ref().unwrap().element.get_rect();
+    let band = row.text_band();
+    let m = RowMetrics::new(&theme);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let chevron = row
+        .with_face(|face| face.geometry(band, &m, &mut text, &theme))
+        .disclosure
+        .unwrap();
+    assert!(
+        toggle.x1 + m.column_gap <= chevron.x0 + 0.5,
+        "the control ends a column gap before the chevron: {toggle:?}, chevron {chevron:?}"
+    );
 }
 
 #[test]
@@ -624,6 +717,10 @@ fn a_trailing_control_reserves_its_width_and_wraps_under_narrow_text() {
     assert!(
         wrapped.y0 > narrow.y0 + row.height() / 2.0,
         "under the text"
+    );
+    assert!(
+        (wrapped.width() - toggle.width()).abs() < 0.5 && (wrapped.x0 - narrow.x0).abs() < 0.5,
+        "a switch keeps its own size under the text, on the text's edge: {wrapped:?} in {narrow:?}"
     );
 }
 
@@ -700,4 +797,135 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
     let [x, y, w, h] = find(&driver.inspection().root, "ListRow").unwrap().rect;
     driver.click_at(x + w / 2.0, y + h / 2.0);
     assert_eq!(calls.get(), 2, "a click runs the same action");
+}
+
+#[test]
+fn the_words_a_search_found_are_marked_at_word_starts_whatever_their_case() {
+    let line = "The glass rattled; Glassworks and fibreglass.";
+    let spans = found_spans(line, &["glass"]);
+    let marked: Vec<&str> = spans
+        .iter()
+        .filter_map(|span| line.get(span.clone()))
+        .collect();
+    // "fibreglass" has it inside a word, which is not a match.
+    assert_eq!(marked, ["glass", "Glass"]);
+    assert!(found_spans(line, &[]).is_empty());
+    assert!(found_spans(line, &[""]).is_empty());
+    // The longer of two words found at one place is marked whole.
+    let spans = found_spans("Tideglass letters", &["tide", "tideglass"]);
+    assert_eq!(spans, [std::ops::Range { start: 0, end: 9 }]);
+    // Letters whose lower case is longer still line up with the text.
+    assert_eq!(
+        found_spans("İstanbul", &["i̇stan"]),
+        [std::ops::Range { start: 0, end: 6 }]
+    );
+}
+
+#[test]
+fn a_control_wrapped_under_its_text_fills_the_row_to_its_trailing_edge() {
+    let rows = || -> Element {
+        let segmented = ListRow::new("density", "Density")
+            .secondary("How much room controls and rows leave around them")
+            .trailing(Box::new(crate::widget::ToggleGroup::new(
+                vec![
+                    crate::widget::Segment::new("Compact"),
+                    crate::widget::Segment::new("Regular"),
+                    crate::widget::Segment::new("Roomy"),
+                ],
+                1,
+            )));
+        let chooser =
+            ListRow::new("scale", "Appearance").trailing(Box::new(crate::widget::Dropdown::new(
+                vec![
+                    "Follow the day and night schedule".into(),
+                    "Always light".into(),
+                ],
+                "scale",
+            )));
+        Box::new(
+            Column::new()
+                .with_horizontal_padding(24.0, 24.0)
+                .push(Box::new(segmented))
+                .push(Box::new(chooser)),
+        )
+    };
+    let controls = |harness: &FrameHarness| {
+        let root = harness.inspection().root;
+        let column = rect_of(&root);
+        let mut rows = Vec::new();
+        collect(&root, "ListRow", &mut rows);
+        let segmented = rect_of(find(rows[0], "ToggleGroup").unwrap());
+        let chooser = rect_of(find(rows[1], "Dropdown").unwrap());
+        (
+            column,
+            rect_of(rows[0]),
+            rect_of(rows[1]),
+            segmented,
+            chooser,
+        )
+    };
+    let mut harness = FrameHarness::new(crate::State::new(), rows(), (900, 400));
+    let (_, row, _, segmented, chooser) = controls(&harness);
+    assert!(
+        segmented.y1 <= row.y1 && (segmented.x1 - row.x1).abs() < 0.5,
+        "beside its text the control ends on the row's edge: {segmented:?} in {row:?}"
+    );
+    assert!(
+        segmented.width() < row.width() / 2.0,
+        "beside its text the control keeps its own width: {segmented:?}"
+    );
+    let wide_chooser = chooser.width();
+    for width in [360, 420] {
+        harness
+            .resize((width, 600))
+            .expect("the narrow layout settles");
+        let (_, segmented_row, chooser_row, segmented, chooser) = controls(&harness);
+        for (kind, control, row) in [
+            ("segmented control", segmented, segmented_row),
+            ("chooser", chooser, chooser_row),
+        ] {
+            assert!(
+                control.y0 > row.y0 + row.height() / 3.0,
+                "at {width}: the {kind} wraps under its text: {control:?} in {row:?}"
+            );
+            assert!(
+                (control.x1 - row.x1).abs() < 0.5,
+                "at {width}: the wrapped {kind} ends on the row's edge: {control:?} in {row:?}"
+            );
+            assert!(
+                (control.x0 - row.x0).abs() < 0.5,
+                "at {width}: the wrapped {kind} starts on the text's edge: {control:?} in {row:?}"
+            );
+        }
+    }
+    harness.resize((900, 400)).expect("the wide layout settles");
+    let (_, row, _, segmented, chooser) = controls(&harness);
+    assert!(
+        segmented.y1 <= row.y1 && segmented.width() < row.width() / 2.0,
+        "widened again, the control goes back beside its text at its own width: {segmented:?}"
+    );
+    assert!((chooser.width() - wide_chooser).abs() < 0.5);
+}
+
+fn collect<'a>(node: &'a InspectionNode, widget: &str, out: &mut Vec<&'a InspectionNode>) {
+    if node.widget == widget {
+        out.push(node);
+    }
+    for child in &node.children {
+        collect(child, widget, out);
+    }
+}
+
+#[test]
+fn a_rows_skeleton_paints_where_the_row_does() {
+    let theme = crate::theme::Theme::dark();
+    let row = ListRow::new("task", "Water the plants").secondary("Today");
+    let h = FrameHarness::for_root(crate::State::new(), row, (480, 80), theme.clone());
+    let row = h.root::<ListRow>();
+    let skeleton = crate::widget::SkeletonFace::new(crate::widget::SkeletonShape::Row(row.shape()));
+    assert_eq!(
+        skeleton.painted_rect(row.get_rect(), &theme),
+        row.outer(),
+        "the skeleton's bars start where the row's text does"
+    );
 }

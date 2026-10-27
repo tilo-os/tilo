@@ -150,7 +150,7 @@ fn waiting_services_edits_arriving_after_the_initial_idle_pass() {
     let records = fixture.host.records.clone();
     let id = fixture.checkout.id.clone();
     let mut edited = false;
-    assert!(fixture.frame.wait_until(crate::HANG_BOUND, |_| {
+    assert!(fixture.frame.wait_until(tilo_test_env::hang_bound(), |_| {
         if !edited {
             edited = true;
             records

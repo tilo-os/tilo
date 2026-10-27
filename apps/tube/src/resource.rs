@@ -136,7 +136,8 @@ impl Library {
 
 /// The screenshot scenarios, each over the bundled sample catalogue: Home,
 /// its empty and loading states, device sync, a playing watch
-/// page, the narrow window with its rail summoned, and every screen.
+/// page, the narrow window with its rail summoned, the sidebar widened
+/// into a list, and every screen.
 pub(crate) const SCENARIOS: &[&str] = &[
     "home",
     "empty",
@@ -144,6 +145,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "device-sync",
     "play-demo",
     "narrow",
+    "sidebar-list",
     "trending",
     "subscriptions",
     "queue",
@@ -153,7 +155,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "watch",
 ];
 
-/// Framework app: the Tube widget is the surface over [`Tube`].
+/// Framework app: the Tube widget is the surface over [`Library`].
 pub struct TubeShell;
 
 /// What the binary runs instead of opening a window.
@@ -199,7 +201,7 @@ impl ResourceApp for TubeShell {
     /// which the navigation rail docks.
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         if scenario == Some("narrow") {
-            (560, 800)
+            (340, 800)
         } else {
             (1280, 800)
         }
@@ -294,7 +296,7 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
     }
 
     fn effects(&self) -> Vec<EffectStatus> {
-        crate::rows::effect_statuses(self.device_sync_view())
+        crate::rows::effect_statuses(self.model_ref(), self.device_sync_view())
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
@@ -305,7 +307,19 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
         crate::rows::live_row(self.model_ref(), self.device_sync_view(), id)
     }
 
-    /// The videos, creators, playlists and watch history shown here.
+    /// What the platform search is looking for: the catalogue holds only
+    /// what has loaded, so the results offer to search `YouTube` for it.
+    fn search_query(&mut self, query: &ui::search::SearchQuery) {
+        self.follow_palette_query(query.text());
+    }
+
+    /// `YouTube` is still answering what the platform search asked.
+    fn search_pending(&self) -> bool {
+        self.suggestions_pending()
+    }
+
+    /// The videos, creators, playlists and watch history shown here, and a
+    /// `YouTube` search for what was typed.
     fn search_entries(&self) -> Vec<SearchEntry> {
         self.search_entries_of_model()
     }
@@ -348,7 +362,6 @@ mod tests {
 
     #[test]
     fn the_watch_page_controls_change_the_shared_library() {
-        // Tall enough that the creator row sits on screen.
         let mut app = TestApp::<TubeShell>::capture_at(Some("watch"), (1280, 1200)).unwrap();
         let liked = |app: &TestApp<TubeShell>| app.state().likes.contains(&"vid_donut".to_owned());
         click(&mut app, "watch_like");
@@ -376,7 +389,6 @@ mod tests {
             "the subscribe pill flips the subscription"
         );
 
-        // Each click is one step the person can take back.
         assert!(app.undo());
         assert_eq!(subscribed(&app), before);
     }
@@ -424,7 +436,6 @@ mod tests {
             "collaborators on the library never see them"
         );
 
-        // Agents reach the same preferences through effects.
         app.effect(&TubeEffect::SetPreferredQuality {
             quality: "720p".into(),
         })
@@ -573,7 +584,6 @@ mod tests {
             "a blank reply is refused"
         );
 
-        // The reply is published as its own item, and can be retracted there.
         let item = item_resource_id::<Library>("replies", replies[0].0);
         let resources = app.harness().resources();
         let retract = ui::tilo_actions::flatten(&resources)
@@ -778,5 +788,28 @@ mod tests {
             spec("open-video").contract.kind,
             ui::tilo_actions::ActionKind::Read
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::TubeShell::scenarios() {
+            let mut app = TestApp::<super::TubeShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

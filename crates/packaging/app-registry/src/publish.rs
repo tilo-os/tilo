@@ -204,7 +204,6 @@ mod tests {
 
     #[test]
     fn publishing_accepts_only_valid_signed_bounded_bundles() {
-        // Phase `build_entry_accepts_a_cryptographically_valid_bundle`.
         {
             let publisher = SigningIdentity::generate();
             let (bytes, id) = signed_tapp(&publisher);
@@ -212,7 +211,6 @@ mod tests {
             assert_eq!(actual, id);
             assert_eq!(entry.package_id, id.to_string());
         }
-        // Phase `build_entry_rejects_a_manifest_that_names_publisher_but_has_bad_signature`.
         {
             let publisher = SigningIdentity::generate();
             let packed = signed_package(&publisher);
@@ -235,7 +233,6 @@ mod tests {
                 "unexpected rejection: {error:#}"
             );
         }
-        // Phase `build_entry_rejects_signed_deduplication_amplification`.
         {
             let publisher = SigningIdentity::generate();
             let packed = signed_package(&publisher);

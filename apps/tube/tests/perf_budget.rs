@@ -161,15 +161,12 @@ fn visible_card(app: &mut ui::framework::testing::TestApp<tube::TubeShell>, skip
 }
 
 fn click_back(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) {
-    let centre = app
-        .harness()
-        .controls()
-        .into_iter()
-        .find(|control| control.name.as_deref() == Some("Back"))
-        .and_then(|control| control.bounds)
-        .expect("the watch page exposes Back")
-        .center();
-    app.harness().click_at(centre.x, centre.y);
+    assert!(
+        ui::window_toolbar::declared().is_some_and(|bar| !bar.leading.is_empty()),
+        "the watch page offers Back in the window bar"
+    );
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
     app.settle();
 }
 
@@ -270,6 +267,7 @@ fn hosted_frames_while_results_land() {
             .send(tube::api::Update::Dislikes {
                 video: id.clone(),
                 count: round as u64,
+                likes: None,
             })
             .unwrap();
         let t = Instant::now();
@@ -293,4 +291,40 @@ fn hosted_frames_while_results_land() {
     budget("tube frame folding a result Home does not show", p50, 2_000);
     let p50 = stat("tube frame folding a result Home shows (hosted)", &mut seen);
     budget("tube frame folding a result Home shows", p50, 6_000);
+}
+
+/// A playing video on its watch page: each new frame is a picture, the same
+/// size as the last, so it repaints and lays nothing out.
+#[test]
+fn hosted_playing_video_frames_lay_nothing_out() {
+    let mut app = hosted();
+    let card = visible_card(&mut app, 0);
+    app.harness().click_named(&card).unwrap();
+    app.settle();
+    app.with_surface::<TubeApp, _>(TubeApp::play_synthesized_for_test)
+        .expect("the window shows Tube");
+    // Let the first frames land and the page settle around the player.
+    for _ in 0..10 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        app.harness().poll_frame().unwrap();
+    }
+    let rebuilt = app.harness().rebuilt_frames();
+    let (mut polled, mut measured, mut leaves) = (0, 0, 0);
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        if app.harness().poll_frame().unwrap() {
+            polled += 1;
+            let stats = app.harness().last_relayout();
+            measured += usize::from(stats.measured);
+            leaves += stats.marked_leaves;
+        }
+    }
+    assert!(polled > 0, "a playing video asks for frames");
+    assert_eq!(
+        app.harness().rebuilt_frames(),
+        rebuilt,
+        "no frame recomposed the layout"
+    );
+    assert_eq!(measured, 0, "no video frame re-measured the layout");
+    assert_eq!(leaves, 0, "no leaf was marked to measure");
 }

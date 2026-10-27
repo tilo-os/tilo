@@ -70,7 +70,6 @@ pub fn to_blocks(text: &str) -> Vec<ContentBlock> {
 mod tests {
     use super::*;
 
-    /// Gemtext renders headings, links, lists and preformatted blocks.
     #[test]
     fn gemtext_renders_headings_links_lists_and_preformatted() {
         // --- phase: headings_links_and_lists ---
@@ -84,7 +83,6 @@ mod tests {
             let link = blocks.iter().find(|b| b.kind == BlockKind::Link).unwrap();
             assert_eq!(link.text, "Capsule");
             assert_eq!(link.href.as_deref(), Some("gemini://example.org"));
-            // Bare link uses the URL as its label.
             let bare = blocks.last().unwrap();
             assert_eq!(bare.text, "gemini://bare.org");
         }

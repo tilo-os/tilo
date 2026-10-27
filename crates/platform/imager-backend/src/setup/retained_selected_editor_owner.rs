@@ -840,7 +840,7 @@ mod tests {
                 "b".repeat(64),
                 "33333333-3333-4333-8333-333333333333",
                 request.resource_record(),
-                "/usr/bin/tilo-launcher",
+                "/usr/libexec/tilo/tilo-launcher",
                 vec!["--open", "/run/tilo/retained-selected/notes.txt"],
                 Vec::<(String, String)>::new(),
             ))
@@ -885,6 +885,16 @@ mod tests {
         assert!(review_declaration(&request, &launch, &bytes).is_err());
         assert!(review_declaration(&request, &launch, &vec![0; 64 * 1024 + 1]).is_err());
     }
+    /// Run `stalled`, which only the fence can end, off this thread; fail as
+    /// hung if the fence never ends it.
+    fn fenced<T: Send + 'static>(what: &str, stalled: impl FnOnce() -> T + Send + 'static) -> T {
+        let (ended, end) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = ended.send(stalled());
+        });
+        tilo_test_env::recv(what, &end)
+    }
+
     #[test]
     fn fresh_editor_proof_fence_stops_real_stalled_initial_qpe() {
         let (mut proof, mut peer) = UnixStream::pair().unwrap();
@@ -902,12 +912,12 @@ mod tests {
         .unwrap();
         peer.write_all(&runtime_portal::process_binding::MAGIC[..3])
             .unwrap();
-        let started = Instant::now();
-        assert!(runtime_portal::process_binding::complete(&mut proof).is_err());
+        assert!(fenced("the fence to end the stalled header", move || {
+            runtime_portal::process_binding::complete(&mut proof).is_err()
+        }));
         assert!(fence.check().is_err());
         assert!(cancel.load(Ordering::Acquire));
         assert!(control.is_cancelled());
-        assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(launcher.read(&mut [0]).unwrap(), 0);
     }
     #[test]

@@ -35,7 +35,6 @@ pub enum ThresholdError {
     /// `threshold > total`, or `threshold == 0`).
     #[error("invalid threshold parameters: {threshold} of {total}")]
     InvalidThresholdParameters {
-        /// The supplied threshold.
         threshold: u16,
         /// The supplied total.
         total: u16,

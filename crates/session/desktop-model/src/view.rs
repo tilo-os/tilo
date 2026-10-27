@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::ids::{RoomId, WorkspaceId};
 use crate::tree::DesktopTree;
+use crate::workspace::Workspace;
 
 impl DesktopTree {
     /// The salt replication treats as this tree's own — the id range this
@@ -21,7 +22,7 @@ impl DesktopTree {
         let mut seen = HashSet::new();
         self.workspaces
             .iter()
-            .map(|w| w.room)
+            .map(Workspace::room)
             .filter(|r| !r.is_nil() && seen.insert(*r))
             .collect()
     }
@@ -32,7 +33,7 @@ impl DesktopTree {
         self.workspaces
             .iter()
             .find(|w| w.id == workspace_id)
-            .map(|w| w.room)
+            .map(Workspace::room)
     }
 
     /// Tell the tree which records `room`'s index holds. Returns whether
@@ -53,7 +54,6 @@ impl DesktopTree {
         std::mem::take(&mut self.room_records_inbound)
     }
 
-    /// Show workspace `id`, if the tree has it.
     pub fn set_active(&mut self, id: WorkspaceId) {
         if self.workspaces.iter().any(|w| w.id == id) {
             self.active = id;
@@ -111,7 +111,10 @@ mod tests {
         tree.set_active(WorkspaceId(9));
         assert_eq!(tree.active, WorkspaceId(2));
         assert_eq!(tree.rooms().len(), 2);
-        assert_eq!(tree.room_of(WorkspaceId(1)), Some(tree.workspaces[0].room));
+        assert_eq!(
+            tree.room_of(WorkspaceId(1)),
+            Some(tree.workspaces[0].room())
+        );
     }
 
     #[test]

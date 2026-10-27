@@ -1,4 +1,5 @@
-//! BIP39 mnemonics of the English wordlist, for the paper recovery share.
+//! BIP39 mnemonics of the English wordlist, for the paper recovery share
+//! and the 24-word recovery key of a single-device identity.
 //!
 //! The wordlist is one string of 2048 words separated by single spaces, not
 //! a table of 2048 `&str`: a table is 2048 pointers the loader relocates in
@@ -8,6 +9,7 @@
 //! BIP39 tool reads back here.
 
 use sha2::{Digest as _, Sha256};
+use zeroize::{Zeroize as _, Zeroizing};
 
 /// The BIP39 English wordlist, in order, separated by single spaces.
 const WORDS: &str = "\
@@ -173,9 +175,10 @@ const BITS_PER_WORD: usize = 11;
 /// [`BITS_PER_WORD`], as a shift.
 const WORD_SHIFTS: u32 = 11;
 
-/// Why a phrase did not decode.
+/// Why a phrase did not decode. Carries positions only, never a word, so
+/// it can be shown or logged without revealing any part of the phrase.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum MnemonicError {
+pub enum MnemonicError {
     /// Not 12, 15, 18, 21 or 24 words.
     WordCount(usize),
     /// The word at this position (from 1) is not on the list.
@@ -204,6 +207,58 @@ fn word(index: usize) -> Option<&'static str> {
     WORDS.split(' ').nth(index)
 }
 
+/// Whether `word` is on the BIP39 English list, as written there (lowercase).
+#[must_use]
+pub fn is_word(word: &str) -> bool {
+    index_of(word).is_some()
+}
+
+/// The listed word a mistyped lowercase `typed` most likely meant: the only
+/// one a single slip away (a letter wrong, missing, added or two swapped),
+/// or else the only one starting with its first four letters, which the
+/// list keeps unique. `None` when that is not one word.
+#[must_use]
+pub fn closest_word(typed: &str) -> Option<&'static str> {
+    let typed: Vec<char> = typed.chars().collect();
+    only(
+        WORDS
+            .split(' ')
+            .filter(|listed| one_slip_apart(&typed, &listed.chars().collect::<Vec<_>>())),
+    )
+    .or_else(|| {
+        let prefix: String = typed.get(..4)?.iter().collect();
+        only(
+            WORDS
+                .split(' ')
+                .filter(|listed| listed.starts_with(&prefix)),
+        )
+    })
+}
+
+/// The single item of `items`; `None` when there are none or several.
+fn only<T>(mut items: impl Iterator<Item = T>) -> Option<T> {
+    let first = items.next()?;
+    items.next().is_none().then_some(first)
+}
+
+/// Whether `typed` and `listed` differ by exactly one substitution,
+/// insertion, deletion or swap of neighbours.
+fn one_slip_apart(typed: &[char], listed: &[char]) -> bool {
+    let common = typed.iter().zip(listed).take_while(|(x, y)| x == y).count();
+    let typed = typed.get(common..).unwrap_or_default();
+    let listed = listed.get(common..).unwrap_or_default();
+    let tail = |chars: &[char], from: usize| chars.get(from..).map(<[char]>::to_vec);
+    let substituted = !typed.is_empty() && tail(typed, 1) == tail(listed, 1);
+    let added = tail(typed, 1).as_deref() == Some(listed);
+    let dropped = tail(listed, 1).as_deref() == Some(typed);
+    let swapped = matches!(
+        (typed, listed),
+        ([first, second, ..], [other_first, other_second, ..])
+            if first == other_second && second == other_first
+    ) && tail(typed, 2) == tail(listed, 2);
+    substituted || added || dropped || swapped
+}
+
 /// The index of `word` on the list. The list is sorted, but a phrase is a
 /// few dozen lookups in a device's life: a scan is enough.
 fn index_of(word: &str) -> Option<usize> {
@@ -227,32 +282,52 @@ fn number_of(bits: &[bool]) -> usize {
 }
 
 /// The phrase for `entropy` (16 to 32 bytes, a multiple of 4): its bits and
-/// then the first `len / 4` bits of its SHA-256, 11 bits a word.
-pub(crate) fn encode(entropy: &[u8]) -> Option<String> {
+/// then the first `len / 4` bits of its SHA-256, 11 bits a word. The phrase
+/// is the secret it encodes, so it and the scratch bits are wiped on drop.
+#[must_use]
+pub fn encode(entropy: &[u8]) -> Option<Zeroizing<String>> {
     let len = entropy.len();
     if !(16..=32).contains(&len) || len.checked_rem(4)? != 0 {
         return None;
     }
     let checksum = Sha256::digest(entropy);
     let total = len.checked_mul(8)?.checked_add(len.checked_div(4)?)?;
-    let bits: Vec<bool> = bits_of(entropy.iter().chain(checksum.first()))
-        .take(total)
-        .collect();
+    let bits: Zeroizing<Vec<bool>> = Zeroizing::new(
+        bits_of(entropy.iter().chain(checksum.first()))
+            .take(total)
+            .collect(),
+    );
     let words: Option<Vec<&str>> = bits
         .chunks(BITS_PER_WORD)
         .map(|chunk| word(number_of(chunk)))
         .collect();
-    Some(words?.join(" "))
+    // Sized up front so building the phrase never reallocates, which would
+    // leave an unwiped copy of its first words behind.
+    let mut phrase = Zeroizing::new(String::with_capacity(len.checked_mul(12)?));
+    for (at, word) in words?.into_iter().enumerate() {
+        if at > 0 {
+            phrase.push(' ');
+        }
+        phrase.push_str(word);
+    }
+    Some(phrase)
 }
 
 /// The entropy `phrase` carries, its checksum verified. Words are separated
 /// by any whitespace and must be lowercase, as BIP39 writes them.
-pub(crate) fn decode(phrase: &str) -> Result<Vec<u8>, MnemonicError> {
+///
+/// # Errors
+///
+/// [`MnemonicError`] names the first problem: the word count, the position
+/// of a word not on the list, or a checksum that does not match.
+pub fn decode(phrase: &str) -> Result<Zeroizing<Vec<u8>>, MnemonicError> {
     let words: Vec<&str> = phrase.split_whitespace().collect();
     if !matches!(words.len(), 12 | 15 | 18 | 21 | 24) {
         return Err(MnemonicError::WordCount(words.len()));
     }
-    let mut bits = Vec::with_capacity(words.len().saturating_mul(BITS_PER_WORD));
+    let mut bits = Zeroizing::new(Vec::with_capacity(
+        words.len().saturating_mul(BITS_PER_WORD),
+    ));
     for (at, word) in words.iter().enumerate() {
         let index =
             index_of(word).ok_or_else(|| MnemonicError::UnknownWord(at.saturating_add(1)))?;
@@ -265,15 +340,18 @@ pub(crate) fn decode(phrase: &str) -> Result<Vec<u8>, MnemonicError> {
     // Each 32 bits of entropy carry one bit of checksum: 33 bits in 3 words.
     let checksum_bits = bits.len().checked_div(33).unwrap_or(0);
     let (entropy_bits, carried) = bits.split_at(bits.len().saturating_sub(checksum_bits));
-    let entropy: Vec<u8> = entropy_bits
-        .chunks(8)
-        .map(|byte| u8::try_from(number_of(byte)).unwrap_or(0))
-        .collect();
-    let expected = Sha256::digest(&entropy);
-    if bits_of(expected.first())
+    let entropy: Zeroizing<Vec<u8>> = Zeroizing::new(
+        entropy_bits
+            .chunks(8)
+            .map(|byte| u8::try_from(number_of(byte)).unwrap_or(0))
+            .collect(),
+    );
+    let mut expected = Sha256::digest(entropy.as_slice());
+    let matches = bits_of(expected.first())
         .take(checksum_bits)
-        .eq(carried.iter().copied())
-    {
+        .eq(carried.iter().copied());
+    expected.as_mut_slice().zeroize();
+    if matches {
         Ok(entropy)
     } else {
         Err(MnemonicError::Checksum)
@@ -283,6 +361,22 @@ pub(crate) fn decode(phrase: &str) -> Result<Vec<u8>, MnemonicError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_slip_or_a_unique_start_names_the_word_meant() {
+        assert_eq!(closest_word("abilty"), Some("ability"));
+        assert_eq!(
+            closest_word("abiltiy"),
+            Some("ability"),
+            "two letters swapped"
+        );
+        assert_eq!(closest_word("zzzz"), None);
+        assert_eq!(closest_word("abliity"), Some("ability"));
+        assert_eq!(closest_word("zeebra"), Some("zebra"));
+        assert_eq!(closest_word("sapcex"), None);
+        assert_eq!(closest_word("satoshix"), Some("satoshi"));
+        assert_eq!(closest_word("abstrakt"), Some("abstract"));
+    }
 
     #[test]
     fn the_wordlist_is_bip39s_and_phrases_round_trip_with_their_checksum() {
@@ -297,19 +391,19 @@ mod tests {
 
         // BIP39's published vectors (English, no passphrase).
         assert_eq!(
-            encode(&[0u8; 16]).as_deref(),
+            encode(&[0u8; 16]).as_deref().map(String::as_str),
             Some(
                 "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
             )
         );
         assert_eq!(
-            encode(&[0xffu8; 32]).as_deref(),
+            encode(&[0xffu8; 32]).as_deref().map(String::as_str),
             Some(
                 "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote"
             )
         );
         assert_eq!(
-            encode(&[0x7fu8; 32]).as_deref(),
+            encode(&[0x7fu8; 32]).as_deref().map(String::as_str),
             Some(
                 "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title"
             )
@@ -321,13 +415,12 @@ mod tests {
             .collect();
         let phrase = encode(&entropy).expect("32 bytes encode");
         assert_eq!(phrase.split(' ').count(), 24);
-        assert_eq!(decode(&phrase), Ok(entropy));
+        assert_eq!(decode(&phrase), Ok(Zeroizing::new(entropy)));
         assert_eq!(
             decode(&format!("  {}\n", phrase.replace(' ', "\t"))).map(|e| e.len()),
             Ok(32)
         );
 
-        // Wrong count, unknown word, broken checksum.
         assert_eq!(decode("abandon abandon"), Err(MnemonicError::WordCount(2)));
         let mut words: Vec<&str> = phrase.split(' ').collect();
         words[3] = "tilo";

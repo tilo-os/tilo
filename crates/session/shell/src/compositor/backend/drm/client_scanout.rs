@@ -745,12 +745,6 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — a display dimmed in software keeps
-    // scanning a fullscreen client out directly wherever its CRTC has a
-    // gamma LUT to dim it.
     #[test]
     fn software_dimming_in_the_crtc_keeps_direct_scanout() {
         use crate::shell::software_dim::final_pass_dim;
@@ -816,7 +810,6 @@ mod tests {
                 plane_choice(DrmFourcc::Argb8888, false, flips),
                 Err("the fullscreen client's buffer has an alpha channel")
             );
-            // Phase `xrgb_unchanged`.
             assert_eq!(
                 plane_choice(DrmFourcc::Xrgb8888, true, flips),
                 Ok(DrmFourcc::Xrgb8888)
@@ -850,7 +843,6 @@ mod tests {
             plane_choice(DrmFourcc::Xbgr8888, true, Flips::Atomic),
             Ok(DrmFourcc::Xbgr8888)
         );
-        // Phase `only_alpha_formats_change`.
         assert_eq!(
             scanout_fourcc(DrmFourcc::Argb8888, false),
             DrmFourcc::Argb8888
@@ -962,7 +954,6 @@ mod tests {
             code,
             modifier: DrmModifier::from(modifier),
         };
-        // The plane takes XRGB linear and tiled, ARGB linear, and XBGR.
         let plane = PlaneFormats::Modifiers(vec![
             (XRGB, MODIFIER_LINEAR),
             (XRGB, TILED),
@@ -992,7 +983,6 @@ mod tests {
         ];
         assert_eq!(client_formats(&plane, legacy(DrmFourcc::Xrgb8888)), xrgb);
 
-        // Phase `xbgr_targets`.
         let xbgr = vec![
             format(DrmFourcc::Xbgr8888, MODIFIER_LINEAR),
             format(DrmFourcc::Abgr8888, MODIFIER_LINEAR),
@@ -1058,7 +1048,6 @@ mod tests {
             "published already"
         );
 
-        // A refusing output withdraws it.
         plane.offered = None;
         assert!(plane.publish_offer(OutputId(3), &planes), "withdrawn");
         assert_eq!(planes.get(OutputId(3)), None);

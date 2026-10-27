@@ -1,8 +1,8 @@
 //! Inject a writer's initial refusal without replacing the production outbox.
 
 use durable_store::{
-    Durability, DurableStore, Lease, MemoryStore, Revision, SharedLease, StorageKey, StoreError,
-    Stored, WriteOp,
+    Durability, DurableStore, Lease, MemoryStore, ReadyWake, Revision, SettleWatch, SharedLease,
+    StorageKey, StoreError, Stored, WriteOp,
 };
 use std::cell::Cell;
 
@@ -46,6 +46,9 @@ impl DurableStore for RejectOnceStore {
     }
     fn flush(&self, key: Option<&StorageKey>) -> Result<(), StoreError> {
         self.inner.flush(key)
+    }
+    fn wake_when_settled(&self, key: &StorageKey, wake: ReadyWake) -> SettleWatch {
+        self.inner.wake_when_settled(key, wake)
     }
     fn lease(&self, key: &StorageKey) -> Result<Lease, StoreError> {
         self.inner.lease(key)

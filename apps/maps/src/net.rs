@@ -47,7 +47,9 @@ pub enum NetMsg {
     /// Reverse-geocoded label for a coordinate (used to name a device-location
     /// origin with a human place instead of raw lat/lon).
     ReverseGeocode(Result<String, String>),
-    Route(Result<Route, String>),
+    /// Every route the service offered for the trip, the best first: a
+    /// person who does not like the one shown has another to look at.
+    Route(Result<Vec<Route>, String>),
     Transit(Result<Vec<TransitJourney>, String>),
     /// Point-of-interest markers for the current viewport (Overpass). Carries
     /// the query generation so a stale in-flight reply for an old viewport can
@@ -111,10 +113,6 @@ async fn fetch_json(url: &str) -> Result<Value, String> {
 }
 
 /// Geocode a free-text query via Nominatim.
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or the response isn't the expected shape.
 pub async fn geocode(query: &str) -> Result<Vec<Place>, String> {
     let q = ui::uri::encode_component(query);
     let url = format!(
@@ -129,10 +127,6 @@ pub async fn geocode(query: &str) -> Result<Vec<Place>, String> {
 /// Geocode `query` for the download-by-place flow: like [`geocode`], but each
 /// result carries the Nominatim `boundingbox` so the caller downloads the
 /// place's real area rather than the screen rectangle.
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or the response isn't the expected shape.
 pub async fn geocode_regions(query: &str) -> Result<Vec<RegionHit>, String> {
     let q = ui::uri::encode_component(query);
     let url = format!(
@@ -261,10 +255,6 @@ nwr[\"public_transport\"=\"station\"]({bbox});\
 }
 
 /// Fetch categorised POIs for a viewport bbox from the Overpass API.
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or the response isn't valid JSON.
 pub async fn overpass(south: f64, west: f64, north: f64, east: f64) -> Result<Vec<Poi>, String> {
     let url = overpass_url(south, west, north, east);
     let v = fetch_json(&url).await?;
@@ -374,14 +364,11 @@ fn tag_string(tags: &Value, key: &str) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-/// Route between two coordinates with the OSRM public demo server.
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or OSRM reports a non-`Ok` routing status.
-pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String> {
+/// Routes between two coordinates with the OSRM public demo server, the
+/// service's best first and its alternatives after it.
+pub async fn routes(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Vec<Route>, String> {
     let url = format!(
-        "https://router.project-osrm.org/route/v1/{}/{:.6},{:.6};{:.6},{:.6}?overview=full&geometries=geojson&steps=true",
+        "https://router.project-osrm.org/route/v1/{}/{:.6},{:.6};{:.6},{:.6}?overview=full&geometries=geojson&steps=true&alternatives=true",
         mode.osrm_profile(),
         from.lon,
         from.lat,
@@ -396,13 +383,24 @@ pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, 
             .unwrap_or("routing failed")
             .to_string());
     }
-    let r0 = v
-        .get("routes")
-        .and_then(|r| r.get(0))
-        .unwrap_or(&Value::Null);
-    let distance_m = r0["distance"].as_f64().unwrap_or(0.0);
-    let duration_s = r0["duration"].as_f64().unwrap_or(0.0);
-    let raw_geometry = r0
+    let offered = v.get("routes").and_then(Value::as_array);
+    let routes = offered
+        .into_iter()
+        .flatten()
+        .filter_map(|r| route_from_json(r, mode, from, to))
+        .collect::<Vec<_>>();
+    if routes.is_empty() {
+        return Err("the service offered no route".to_string());
+    }
+    Ok(routes)
+}
+
+/// One route of the service's answer, or `None` when it carries nothing a
+/// person could follow.
+fn route_from_json(value: &Value, mode: TravelMode, from: LatLon, to: LatLon) -> Option<Route> {
+    let distance_m = value["distance"].as_f64().unwrap_or(0.0);
+    let duration_s = value["duration"].as_f64().unwrap_or(0.0);
+    let raw_geometry = value
         .get("geometry")
         .and_then(|g| g.get("coordinates"))
         .and_then(Value::as_array)
@@ -416,11 +414,14 @@ pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, 
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    if raw_geometry.len() < 2 {
+        return None;
+    }
     // Simplify on the worker so the render thread projects fewer points.
     let geometry = crate::geo::simplify_polyline(&raw_geometry, GEOMETRY_SIMPLIFY_M);
 
     let mut steps = Vec::new();
-    if let Some(legs) = r0["legs"].as_array() {
+    if let Some(legs) = value["legs"].as_array() {
         for leg in legs {
             if let Some(s) = leg["steps"].as_array() {
                 for step in s {
@@ -448,7 +449,7 @@ pub async fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, 
         }
     }
 
-    Ok(Route {
+    Some(Route {
         mode,
         distance_m,
         duration_s,
@@ -494,10 +495,6 @@ fn step_instruction(m: Maneuver, name: &str) -> String {
 
 /// Reverse-geocode a coordinate to a human place label via Nominatim. Used to
 /// name a device-location origin ("Current location" → a real street/place).
-///
-/// # Errors
-///
-/// Returns `Err` if the request fails or no usable address is found.
 pub async fn reverse_geocode(lat: f64, lon: f64) -> Result<String, String> {
     let url = format!(
         "https://nominatim.openstreetmap.org/reverse?lat={lat:.6}&lon={lon:.6}&format=jsonv2&zoom=16&addressdetails=1"
@@ -559,10 +556,6 @@ pub async fn transit(
 /// Parse a MOTIS `plan` response body into itineraries. Split out (and pure) so
 /// the leg-geometry decoding and field mapping are unit-testable without a
 /// network round-trip.
-///
-/// # Errors
-///
-/// Returns `Err` if the response has no `itineraries` array.
 pub fn parse_transit(v: &Value) -> Result<Vec<TransitJourney>, String> {
     let its = v["itineraries"].as_array().ok_or("no itineraries")?;
     let mut out = Vec::new();
@@ -708,7 +701,6 @@ mod tests {
 
     #[test]
     fn text_parsers_extract_clocks_regions_steps_and_place_labels() {
-        // Phase `hhmm_extracts_clock`.
         {
             assert_eq!(hhmm("2026-06-30T09:17:00+02:00"), "09:17");
             assert_eq!(hhmm("garbage"), "garbage");
@@ -771,7 +763,6 @@ mod tests {
             );
         }
 
-        // Phase `step_instruction_formats`.
         {
             assert_eq!(
                 step_instruction(Maneuver::Left, "Main St"),
@@ -783,9 +774,7 @@ mod tests {
             );
         }
 
-        // Phase `place_label_prefers_name_then_road_not_house_number`.
         {
-            // A POI with an explicit name keeps it.
             let poi = serde_json::json!({
                 "lat": "48.137", "lon": "11.575",
                 "name": "Marienplatz",
@@ -827,7 +816,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn transit_urls_polylines_and_legs_decode_robustly() {
-        // Phase `transit_url_depart_now_omits_time`.
         {
             let from = LatLon::new(48.10, 11.55);
             let to = LatLon::new(48.14, 11.58);
@@ -844,7 +832,6 @@ mod tests {
             );
         }
 
-        // Phase `transit_url_arrive_by_carries_time_and_flag`.
         {
             let from = LatLon::new(48.10, 11.55);
             let to = LatLon::new(48.14, 11.58);
@@ -861,7 +848,6 @@ mod tests {
             assert!(url.contains("&arriveBy=true"), "{url}");
         }
 
-        // Phase `decode_polyline_matches_google_reference`.
         {
             // The canonical example from Google's polyline algorithm docs:
             // `_p~iF~ps|U_ulLnnqC_mqNvxq`@` at precision 5 decodes to three points.
@@ -875,14 +861,12 @@ mod tests {
             assert!((pts[2].lon - -126.453).abs() < 1e-5, "{:?}", pts[2]);
         }
 
-        // Phase `decode_polyline_empty_and_malformed_dont_panic`.
         {
             assert!(decode_polyline("", 5).is_empty());
             // A lone continuation byte with no pair is dropped, not panicked on.
             assert!(decode_polyline("_", 6).is_empty());
         }
 
-        // Phase `parse_transit_decodes_leg_geometry`.
         {
             // A minimal MOTIS-shaped plan response with one itinerary whose transit
             // leg carries an encoded `legGeometry`. Proves the real parse path
@@ -941,7 +925,6 @@ mod tests {
             );
         }
 
-        // Phase `parse_transit_tolerates_missing_geometry`.
         {
             // A leg with no `legGeometry` (some walk legs) must parse with an empty
             // polyline, not error.
@@ -958,7 +941,6 @@ mod tests {
 
     #[test]
     fn overpass_query_encodes_bbox_and_results_map_to_categories() {
-        // Phase `overpass_url_encodes_bbox_and_filters`.
         {
             let url = overpass_url(48.10, 11.55, 48.15, 11.60);
             assert!(url.starts_with("https://overpass-api.de/api/interpreter?data="));
@@ -975,7 +957,6 @@ mod tests {
             );
         }
 
-        // Phase `parse_overpass_maps_tags_to_categories_and_details`.
         {
             let body = serde_json::json!({
                 "elements": [

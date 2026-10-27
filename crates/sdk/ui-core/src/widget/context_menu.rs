@@ -6,6 +6,8 @@
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
+use std::cell::Cell;
+
 use crate::widget::{AppModel, ModelPath};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -48,9 +50,16 @@ pub enum MenuItem {
         /// The keyboard shortcut that runs the same command, shown at the
         /// row's trailing edge in the platform's spelling.
         shortcut: Option<Shortcut>,
+        /// A short fact at the row's trailing edge in place of a shortcut:
+        /// how many results share a filter's value.
+        detail: Option<String>,
         /// `Some` makes the row open a nested menu (with a chevron) instead
         /// of running `action`.
         submenu: Option<Vec<MenuItem>>,
+        /// The row's choice is confirmed before it runs, except that Shift
+        /// skips the question for what Undo takes back
+        /// ([`MenuItem::asking_first`]).
+        asks_first: bool,
     },
     Separator,
     /// A line of secondary text about the rows around it ("Hosted by
@@ -83,7 +92,9 @@ impl MenuItem {
             destructive: false,
             enabled: true,
             shortcut: None,
+            detail: None,
             submenu: None,
+            asks_first: false,
         }
     }
 
@@ -155,6 +166,57 @@ impl MenuItem {
             *item_shortcut = Some(shortcut.into());
         }
         self
+    }
+
+    /// Show `text` at the row's trailing edge, where a shortcut would stand:
+    /// a short fact about the choice, such as how many results share it.
+    #[must_use]
+    pub fn with_detail(mut self, text: impl Into<String>) -> Self {
+        if let MenuItem::Action { detail, .. } = &mut self {
+            *detail = Some(text.into());
+        }
+        self
+    }
+
+    /// Say that choosing this row asks before it goes ahead (Delete in a
+    /// message's menu), which Shift skips for what Undo takes back. The row
+    /// says so the way menus do: "Delete message…" while it will ask, and
+    /// "Delete message" while Shift is held and it will not.
+    #[must_use]
+    pub fn asking_first(mut self) -> Self {
+        if let MenuItem::Action { asks_first, .. } = &mut self {
+            *asks_first = true;
+        }
+        self
+    }
+
+    /// The row's label as it reads now: with the ellipsis of a choice that
+    /// asks first, unless Shift is held ([`shift_held`]).
+    pub fn shown_label(&self) -> Option<std::borrow::Cow<'_, str>> {
+        match self {
+            MenuItem::Action {
+                label,
+                asks_first: true,
+                ..
+            } if !shift_held() => Some(std::borrow::Cow::Owned(format!("{label}\u{2026}"))),
+            _ => self.label().map(std::borrow::Cow::Borrowed),
+        }
+    }
+
+    /// What the row shows at its trailing edge: its shortcut, else its
+    /// detail.
+    fn trailing_text(&self, platform: PlatformConventions) -> Option<String> {
+        match self {
+            MenuItem::Action {
+                shortcut: Some(shortcut),
+                ..
+            } => Some(shortcut.label(platform)),
+            MenuItem::Action {
+                detail: Some(detail),
+                ..
+            } => Some(detail.clone()),
+            _ => None,
+        }
     }
 
     /// Set whether this command can currently be invoked.
@@ -243,6 +305,64 @@ impl MenuItem {
     }
 }
 
+thread_local! {
+    static CONTEXT_GESTURE: Cell<bool> = const { Cell::new(false) };
+    static SHIFT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether the person holds Shift right now, as the window's last
+/// modifier change said. Shift is how a person skips a confirmation that
+/// Undo makes unnecessary: a menu row that asks first runs at once, and
+/// the host's question is not asked (see `action_palette`).
+#[must_use]
+pub fn shift_held() -> bool {
+    SHIFT.with(Cell::get)
+}
+
+/// The one rule of every confirmation a person is asked: Shift skips it,
+/// if and only if Undo takes the action back (`can_be_undone`, from the
+/// action's contract). What Undo cannot take back is asked, Shift or not.
+#[must_use]
+pub fn shift_skips_confirmation(can_be_undone: bool) -> bool {
+    can_be_undone && shift_held()
+}
+
+/// Say the person holds Shift, or not, as a window's modifier change does:
+/// for a host that learns it otherwise, and for tests.
+pub fn note_shift(held: bool) {
+    SHIFT.with(|shift| shift.set(held));
+}
+
+/// Observe `event` before its window dispatches it, so a menu it opens
+/// knows whether it is a context menu: one opened by a secondary click, the
+/// Menu key or Shift+F10, rather than by a button. For window hosts.
+pub fn note_input(event: &WindowEvent) {
+    match event {
+        WindowEvent::ModifiersChanged(modifiers) => {
+            SHIFT.with(|shift| shift.set(modifiers.state().shift_key()));
+        }
+        WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button,
+            ..
+        } => CONTEXT_GESTURE.with(|gesture| gesture.set(*button == MouseButton::Right)),
+        WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } => {
+            let opens = matches!(logical_key, Key::Named(NamedKey::ContextMenu))
+                || (matches!(logical_key, Key::Named(NamedKey::F10)) && SHIFT.with(Cell::get));
+            CONTEXT_GESTURE.with(|gesture| gesture.set(opens));
+        }
+        _ => {}
+    }
+}
+
 pub struct ContextMenu {
     items: Vec<MenuItem>,
     open: bool,
@@ -295,6 +415,12 @@ pub struct ContextMenu {
     /// The pose it was last drawn in: rows are hit where they are drawn
     /// while it moves.
     drawn: crate::motion::Pose,
+    /// What the menu acts on, which its "Tell an agent…" entry attaches.
+    about: Option<crate::shared_selection::SharedSelection>,
+    /// Where the rows this menu adds itself ("Tell an agent…") begin; its
+    /// owner's rows end there, and a choice among them is never reported
+    /// through [`ContextMenu::take_selection`].
+    own_rows: Option<usize>,
 }
 
 impl Default for ContextMenu {
@@ -331,10 +457,11 @@ impl ContextMenu {
             trailing_width: 0.0,
             appear: crate::motion::Appearing::closed(),
             drawn: crate::motion::Pose::REST,
+            about: None,
+            own_rows: None,
         }
     }
 
-    /// A menu of `items`, closed.
     pub fn with_items(items: Vec<MenuItem>) -> Self {
         let mut menu = Self::new();
         menu.items = items;
@@ -344,6 +471,7 @@ impl ContextMenu {
     /// Replace every row (closes an open nested menu).
     pub fn set_items(&mut self, items: Vec<MenuItem>) {
         self.items = items;
+        self.own_rows = None;
         self.submenu = None;
         if self.hovered.is_some_and(|i| i >= self.items.len()) {
             self.hovered = None;
@@ -367,6 +495,13 @@ impl ContextMenu {
 
     pub fn push(&mut self, item: MenuItem) {
         self.items.push(item);
+    }
+
+    /// Say what the menu acts on (a selection, the item it was opened on,
+    /// drawn where it is), so "Tell an agent…" attaches that. Without it
+    /// the app attaches what is under the pointer, else its window.
+    pub fn set_about(&mut self, about: Option<crate::shared_selection::SharedSelection>) {
+        self.about = about;
     }
 
     pub fn items(&self) -> &[MenuItem] {
@@ -394,7 +529,14 @@ impl ContextMenu {
     /// without first running a `draw`/`apply_layout` pass — needed by
     /// consumers (like `TextInput`) that route a click to a row in the same
     /// input batch the menu opened in.
+    ///
+    /// A menu opened by the context-menu gesture (a secondary click, the
+    /// Menu key, Shift+F10: [`note_input`]) while a desktop agent can be
+    /// asked ends with "Tell an agent…", about [`Self::set_about`]'s
+    /// subject at `position`. Every app's context menus offer it with no
+    /// code of their own.
     pub fn open_at(&mut self, position: [f32; 2]) {
+        self.offer_agent(Point::new(f64::from(position[0]), f64::from(position[1])));
         self.bounds = None;
         self.scroll_offset = 0.0;
         self.open = true;
@@ -453,7 +595,17 @@ impl ContextMenu {
 
     /// Open a shared menu inside a host viewport. Geometry is immediately usable;
     /// call `layout_within` with the renderer before painting to settle text metrics.
+    ///
+    /// Opened by the context-menu gesture, it ends with "Tell an agent…" as
+    /// [`Self::open_at`] does, pointed at the anchor.
     pub fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
+        self.offer_agent(anchor.center());
+        self.show_anchored(anchor, viewport);
+    }
+
+    /// Open at `anchor` with the rows it has: a nested menu, whose parent
+    /// already offers what the menu adds itself.
+    fn show_anchored(&mut self, anchor: Rect, viewport: Rect) {
         self.open = true;
         self.appear.show(true);
         self.opened_under = None;
@@ -500,6 +652,20 @@ impl ContextMenu {
         let mut trailing: f64 = 0.0;
         for item in &self.items {
             if let Some(label) = item.label() {
+                // Measured as it asks, the wider of its two forms.
+                let asking;
+                let label = if matches!(
+                    item,
+                    MenuItem::Action {
+                        asks_first: true,
+                        ..
+                    }
+                ) {
+                    asking = format!("{label}\u{2026}");
+                    asking.as_str()
+                } else {
+                    label
+                };
                 let (w, h) = text.measure_style(label, None, &style);
                 let check_width = if has_leading_gutter {
                     f64::from(theme.tokens.metrics.icon_sm + theme.tokens.spacing.s2)
@@ -507,15 +673,14 @@ impl ContextMenu {
                     0.0
                 };
                 // A shortcut sits at the row's end, a gap after the label.
-                let keys = item.shortcut().map_or(0.0, |keys| {
-                    let (k, _) = text.measure_style(&keys.label(self.platform), None, &style);
+                let keys = item.trailing_text(self.platform).map_or(0.0, |keys| {
+                    let (k, _) = text.measure_style(&keys, None, &style);
                     f64::from(k) + f64::from(theme.tokens.spacing.s6)
                 });
                 width = width.max(f64::from(w) + check_width + keys);
                 height = height.max(f64::from(h));
             }
-            if let Some(shortcut) = item.shortcut() {
-                let label = shortcut.label(self.platform);
+            if let Some(label) = item.trailing_text(self.platform) {
                 let (w, _) = text.measure_style(&label, None, &style);
                 trailing = trailing.max(f64::from(w));
             }
@@ -743,6 +908,19 @@ impl ContextMenu {
         self.submenu_focused = false;
     }
 
+    /// Close with no fade, for a choice that opens something over where the
+    /// menu was (a sheet under its scrim): a menu fading out there shows
+    /// through it. Safe to call when already closed.
+    pub fn close_at_once(&mut self) {
+        self.close();
+        self.appear.snap(false);
+    }
+
+    /// Whether the menu still paints anything: open, or fading out.
+    pub fn is_drawn(&self) -> bool {
+        self.appear.is_drawn()
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -820,7 +998,9 @@ impl ContextMenu {
             } => {
                 let cb = action.clone();
                 cb();
-                self.selection = Some(idx);
+                if self.own_rows.is_none_or(|own| idx < own) {
+                    self.selection = Some(idx);
+                }
                 self.close();
             }
             MenuItem::Action { .. } | MenuItem::Separator | MenuItem::Caption(_) => {}
@@ -858,7 +1038,7 @@ impl ContextMenu {
         menu.platform = self.platform;
         menu.text_scale = self.text_scale;
         menu.row_height = self.row_height;
-        menu.open_anchored(
+        menu.show_anchored(
             Rect::new(self.rect.x0, row.y0, self.rect.x1, row.y1),
             viewport,
         );
@@ -884,13 +1064,13 @@ impl ContextMenu {
         self.submenu_focused = false;
     }
 
-    /// Whether a nested menu is open.
     pub fn is_submenu_open(&self) -> bool {
         self.submenu.is_some()
     }
 
     /// A pick in a nested menu as `(row, nested row)`, exactly once. The
-    /// nested row's action has already run.
+    /// nested row's action has already run. For a pick in a menu nested
+    /// deeper still, the nested row is the one whose menu held it.
     pub fn take_submenu_selection(&mut self) -> Option<(usize, usize)> {
         self.submenu_selection.take()
     }
@@ -913,7 +1093,7 @@ impl ContextMenu {
         let over = self
             .submenu
             .as_ref()
-            .is_some_and(|(_, menu)| menu.contains([p.x, p.y]));
+            .is_some_and(|(_, menu)| menu.contains_nested([p.x, p.y]));
         let key = match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -956,7 +1136,8 @@ impl ContextMenu {
         true
     }
 
-    /// Drain a pick the nested menu just made: the whole menu closes.
+    /// Drain a pick the nested menu just made, or one in a menu nested in
+    /// it: the whole menu closes.
     fn drain_submenu(&mut self) {
         let Some((row, menu)) = self.submenu.as_mut() else {
             return;
@@ -965,9 +1146,21 @@ impl ContextMenu {
         if let Some(pick) = menu.take_selection() {
             self.submenu_selection = Some((row, pick));
             self.close();
+        } else if let Some((deeper, _)) = menu.take_submenu_selection() {
+            self.submenu_selection = Some((row, deeper));
+            self.close();
         } else if !menu.is_open() {
             self.close_submenu();
         }
+    }
+
+    /// Whether `point` is over this menu or a menu nested in it.
+    fn contains_nested(&self, point: [f64; 2]) -> bool {
+        self.contains(point)
+            || self
+                .submenu
+                .as_ref()
+                .is_some_and(|(_, menu)| menu.contains_nested(point))
     }
 
     /// Returns `Some(idx)` exactly once per selection, then `None`. The
@@ -975,6 +1168,34 @@ impl ContextMenu {
     /// perform a `&mut self` mutation the `Arc<dyn Fn()>` model can't express.
     pub fn take_selection(&mut self) -> Option<usize> {
         self.selection.take()
+    }
+
+    /// End a menu the context-menu gesture opened with "Tell an agent…",
+    /// replacing what an earlier opening added.
+    fn offer_agent(&mut self, at: Point) {
+        if let Some(own) = self.own_rows.take() {
+            self.items.truncate(own);
+        }
+        if !CONTEXT_GESTURE.with(Cell::get) || !crate::shared_selection::agent_host_available() {
+            return;
+        }
+        let own = self.items.len();
+        if self
+            .items
+            .last()
+            .is_some_and(|item| !matches!(item, MenuItem::Separator))
+        {
+            self.items.push(MenuItem::separator());
+        }
+        let about = self.about.clone();
+        self.items.push(
+            MenuItem::action(
+                crate::i18n::I18nManager::lookup_plain("tell-agent"),
+                move || crate::shared_selection::tell_agent_at(about.clone(), at),
+            )
+            .with_icon(Icon::Sparkles),
+        );
+        self.own_rows = Some(own);
     }
 
     pub fn hovered(&self) -> Option<usize> {
@@ -1173,12 +1394,10 @@ impl ContextMenu {
             let row_height = self.item_height(idx);
             match item {
                 MenuItem::Action {
-                    label,
                     icon,
                     checked,
                     destructive,
                     enabled,
-                    shortcut,
                     submenu,
                     ..
                 } => {
@@ -1250,8 +1469,9 @@ impl ContextMenu {
                     } else {
                         label_x
                     };
+                    let shown = item.shown_label().unwrap_or_default();
                     let label = text_renderer.elide_to_width_style(
-                        label,
+                        &shown,
                         (self.rect.x1 - label_x - label_inset(theme) - self.trailing_width).max(1.0)
                             as f32,
                         &style,
@@ -1282,8 +1502,7 @@ impl ContextMenu {
                             ink,
                             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                         );
-                    } else if let Some(shortcut) = shortcut {
-                        let text = shortcut.label(self.platform);
+                    } else if let Some(text) = item.trailing_text(self.platform) {
                         let (w, _) = text_renderer.measure_style(&text, None, &style);
                         let dim = if armed {
                             ink
@@ -1685,6 +1904,10 @@ impl Widget for ContextMenu {
         self.rect
     }
 
+    fn accessibility_hidden(&self) -> bool {
+        !self.open
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Menu items are painted rows rather than child widgets, so publish
@@ -1717,7 +1940,6 @@ impl Widget for ContextMenu {
                     label,
                     checked,
                     enabled,
-                    shortcut,
                     submenu,
                     ..
                 } = item
@@ -1740,8 +1962,20 @@ impl Widget for ContextMenu {
                         expanded: submenu.as_ref().map(|_| open_here.is_some()),
                         ..Default::default()
                     });
-                if let Some(shortcut) = shortcut {
-                    node.description = Some(shortcut.label(self.platform));
+                if let Some(trailing) = item.trailing_text(self.platform) {
+                    node.description = Some(trailing);
+                } else if matches!(
+                    item,
+                    MenuItem::Action {
+                        asks_first: true,
+                        ..
+                    }
+                ) {
+                    node.description = Some(if shift_held() {
+                        "Goes ahead at once; Undo takes it back".to_owned()
+                    } else {
+                        "Asks first; hold Shift to go ahead at once".to_owned()
+                    });
                 }
                 if let Some((_, menu)) = open_here
                     && let Some(nested) = Widget::accessibility(menu.as_ref())
@@ -1755,7 +1989,7 @@ impl Widget for ContextMenu {
             AccessNode::new(Role::Menu)
                 .with_state(AccessState {
                     expanded: Some(self.open),
-                    hidden: !self.open,
+                    hidden: self.accessibility_hidden(),
                     ..Default::default()
                 })
                 .with_children(children),
@@ -1808,7 +2042,8 @@ pub struct MenuButton {
 impl crate::widget::Button {
     /// Make this button open `items` as a menu anchored to its own rect.
     #[must_use]
-    pub fn with_menu(self, items: Vec<MenuItem>) -> MenuButton {
+    pub fn with_menu(mut self, items: Vec<MenuItem>) -> MenuButton {
+        self.opens_menu = true;
         let request = std::rc::Rc::new(std::cell::Cell::new(false));
         let flag = std::rc::Rc::clone(&request);
         MenuButton {
@@ -2209,7 +2444,6 @@ mod tests {
             let _ = paint(&mut menu, &mut text);
             assert!(!menu.needs_animation_frame(), "it rests");
             assert!(menu.drawn.is_rest());
-            // A nested menu is there at once.
             menu.open_submenu(1, false);
             let _ = paint(&mut menu, &mut text);
             assert!(
@@ -2537,7 +2771,6 @@ mod tests {
             // Down again → must skip the separator (idx 1) and land on idx 2.
             dispatch(&mut m, &named_key(NamedKey::ArrowDown));
             assert_eq!(m.hovered(), Some(2), "ArrowDown skips the separator");
-            // Enter selects the hovered row.
             dispatch(&mut m, &named_key(NamedKey::Enter));
             assert_eq!(
                 fired.load(Ordering::SeqCst),
@@ -2981,7 +3214,6 @@ mod nested_and_anchored_tests {
         let mut m = file_menu(&fired);
         m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
         paint(&mut m);
-        // Hovering the row opens it beside the row, level with it.
         let row = m.item_rect(1).expect("the submenu row is shown");
         dispatch(&mut m, &cursor_at(row.center()));
         assert!(m.is_submenu_open(), "hover opens the nested menu");
@@ -2991,7 +3223,6 @@ mod nested_and_anchored_tests {
             nested.x0 >= m.get_rect().x1 - 0.5,
             "beside the menu: {nested:?}"
         );
-        // A pick in it runs the action, reports the nested pick and closes all.
         let nested_row = m
             .submenu
             .as_ref()
@@ -3022,12 +3253,91 @@ mod nested_and_anchored_tests {
         assert_eq!(node.children[0].description.as_deref(), Some("Ctrl+O"));
     }
 
+    /// A menu nested in a nested menu (a password manager's logins under
+    /// Autofill under its own item) follows the pointer and takes a pick.
+    #[test]
+    fn a_pick_two_menus_deep_runs_and_closes_the_whole_menu() {
+        let _settled = crate::motion::testing::settled();
+        let fired = Arc::new(AtomicU32::new(0));
+        let login = Arc::clone(&fired);
+        let mut m = ContextMenu::with_items(vec![
+            MenuItem::action("Reload", || {}),
+            MenuItem::submenu(
+                "Passwords",
+                vec![
+                    MenuItem::action("Generate", || {}),
+                    MenuItem::submenu(
+                        "Fill in",
+                        vec![MenuItem::action("Personal", move || {
+                            login.fetch_add(1, Ordering::SeqCst);
+                        })],
+                    ),
+                ],
+            ),
+        ]);
+        m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+        paint(&mut m);
+        let row = m.item_rect(1).unwrap();
+        dispatch(&mut m, &cursor_at(row.center()));
+        paint(&mut m);
+        let row = m
+            .submenu
+            .as_ref()
+            .and_then(|(_, menu)| menu.item_rect(1))
+            .unwrap();
+        dispatch(&mut m, &cursor_at(row.center()));
+        paint(&mut m);
+        let deepest = m
+            .submenu
+            .as_ref()
+            .and_then(|(_, menu)| menu.submenu.as_ref())
+            .map(|(_, menu)| menu)
+            .expect("hover opens the menu nested in the nested one");
+        let target = deepest.item_rect(0).unwrap();
+        assert!(
+            !m.submenu
+                .as_ref()
+                .unwrap()
+                .1
+                .contains([target.center().x, target.center().y]),
+            "fixture: the row is outside the first nested menu"
+        );
+        dispatch(&mut m, &cursor_at(target.center()));
+        dispatch(&mut m, &mouse_press());
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        assert_eq!(m.take_submenu_selection(), Some((1, 1)));
+        assert!(!m.is_open(), "the whole menu closes");
+    }
+
+    /// A filter's value lists how many results share it at the row's end,
+    /// where a shortcut would stand, and says so to assistive technology.
+    #[test]
+    fn a_detail_stands_at_the_rows_end_and_is_announced() {
+        let _settled = crate::motion::testing::settled();
+        let label = "Aurora Skies, the whole discography";
+        let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
+        let mut counted = ContextMenu::with_items(vec![
+            MenuItem::action(label, || {})
+                .with_checked(true)
+                .with_detail("12"),
+        ]);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        for menu in [&mut plain, &mut counted] {
+            menu.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+            menu.layout_within(&mut tr, &theme);
+        }
+        assert!(counted.get_rect().width() > plain.get_rect().width());
+        let node = Widget::accessibility(&counted).expect("an open menu is announced");
+        assert_eq!(node.children[0].description.as_deref(), Some("12"));
+        assert_eq!(node.children[0].state.checked, Some(true));
+    }
+
     #[test]
     fn shortcuts_widen_the_menu_and_a_bare_key_has_no_modifier() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
         let fired = Arc::new(AtomicU32::new(0));
-        // Labels long enough that the menu is past its minimum width.
         let label = "Open the most recent document";
         let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
         let mut shortcut = ContextMenu::with_items(vec![
@@ -3071,7 +3381,6 @@ mod nested_and_anchored_tests {
             "{:?}",
             m.get_rect()
         );
-        // Near the window's edge the menu keeps the panel margin.
         let mut edge = ContextMenu::with_items(vec![MenuItem::action("Rename", || {})]);
         edge.open_anchored(Rect::new(790.0, 10.0, 800.0, 42.0), WINDOW);
         paint(&mut edge);

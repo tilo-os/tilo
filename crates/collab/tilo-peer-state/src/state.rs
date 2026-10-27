@@ -1,7 +1,7 @@
 //! Certified room and document replica. Transport identity is always an input.
 use crate::admission::{
-    AdmissionError, AdmissionReport, DocumentAdmission, ExactAdmissions, InputDisposition,
-    MissingPrerequisite,
+    AdmissionError, AdmissionReport, DocumentAdmission, DroppedInput, ExactAdmissions,
+    InputDisposition, MissingPrerequisite,
 };
 use crate::cached_document::CachedDocument;
 use crate::verified_certificate::VerifiedCertificate;
@@ -37,29 +37,40 @@ mod facades;
 mod governance;
 pub use facades::{
     PeerGovernance, PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox,
-    PeerOutboxMut, PeerWorkspace, PeerWorkspaceMut,
+    PeerOutboxMut, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
 };
+mod app_versions;
+pub use app_versions::InstalledApp;
 mod bot_members;
+pub(crate) mod certificate_renewal;
 mod delegates;
 pub(crate) use bot_members::requests_in as bot_requests_in;
 pub use bot_members::{InstalledBot, RequestedBot};
 pub use delegates::{GovernedAgent, GovernedDelegateRow};
+mod agent_runs;
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
 mod topology_namespace;
 mod workspace_effects;
 mod workspace_membership;
-mod workspace_tasks;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
+mod held;
 mod media_governance;
 mod native_publication;
+mod room_layout;
 mod room_name;
+mod succession;
+use held::Held;
+pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
+pub use succession::succeeded_authority;
 mod resources;
 mod sealed_compaction;
 mod sealed_history;
-pub use sealed_compaction::{SealCheckpoint, SealDelta};
+pub use sealed_compaction::{
+    OpenedRecord, SealCheckpoint, SealDelta, UnmergedReason, UnmergedWrite,
+};
 
 #[expect(
     clippy::needless_pass_by_value,
@@ -198,6 +209,14 @@ pub struct ReceiveOutcome {
     pub rejected: usize,
     pub metadata_changed: bool,
     pub incomplete: Option<String>,
+    /// Held app messages let go unapplied, each with why
+    /// ([`StatePeer`]'s prerequisite queue): never a refusal of the input
+    /// being admitted.
+    pub dropped: Vec<DroppedInput>,
+    /// Something a message let go earlier waited for has landed: ask the
+    /// room's host to replay what it retains, so that message is decided
+    /// again.
+    pub replay_wanted: bool,
 }
 /// Authenticated carrier inputs. A native publication requires the embedding
 /// adapter's actual pinned owner/session/cursor proof, not an inert event tag.
@@ -330,7 +349,7 @@ pub(crate) enum LocalWrite<'a> {
 
 /// Most sealed writes, and their bytes, one record keeps for a key holder.
 /// Past them a key holder compacts the history
-/// ([`StatePeer::compact_sealed_history`]).
+/// ([`PeerPublicationMut::compact_sealed_history`]).
 const MAX_SEALED_OPS: usize = 4096;
 const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 
@@ -344,6 +363,8 @@ pub struct StatePeer {
     /// The app surface each app's changes this peer signs are decided
     /// against, by app id: what the host launched the app with.
     app_surfaces: AppSurfaces,
+    /// What app messages let go unapplied waited for. Never persisted.
+    missed: held::Missed,
 }
 
 fn defaults() -> &'static std::sync::Mutex<(collab_types::Surfaces, AppSurfaces)> {
@@ -357,6 +378,30 @@ fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
         .lock()
         .map(|defaults| defaults.clone())
         .unwrap_or_default()
+}
+
+/// Why a received change was neither admitted nor refused: the app surface
+/// it is decided against is not here yet. The same change is decided again
+/// once one is ([`collab_types::Surfaces`]).
+pub const HELD_FOR_SURFACE: &str = "document change held: its app surface is not here yet";
+
+/// The record `message` writes and its sequence, if it is a document write.
+fn written_route(message: &NeighbourMsg) -> Option<(Route, u64)> {
+    match message {
+        NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
+        } => Some((
+            Route {
+                app: app_id.clone(),
+                record: record_id.clone(),
+            },
+            envelope.seq,
+        )),
+        _ => None,
+    }
 }
 
 /// The app surfaces this process decides received changes against
@@ -386,11 +431,25 @@ struct AppSurfaces(Option<std::sync::Arc<SurfaceOf>>);
 
 type SurfaceOf = dyn Fn(&str) -> Option<[u8; 32]> + Send + Sync;
 
-/// The kind a record document's identity names (`tilo:record.kind`).
 /// The record as this peer holds it, when it has units beside itself to
-/// tell a change's writes apart by.
-fn held_units(doc: &crate::cached_document::CachedDocument) -> Option<AutoCommit> {
-    collab_types::units::has_units(&**doc).then(|| AutoCommit::clone(doc))
+/// tell `envelope`'s changes' writes apart by, or the changes bring it its
+/// first unit index (its app gained a unit after the record was made): the
+/// writes of those after it are told apart by that index. A record without
+/// units is not copied for every change it receives: an empty record stands
+/// in, by which each change writes the record itself, its only unit.
+fn held_units(doc: &crate::cached_document::CachedDocument, envelope: &SignedOp) -> AutoCommit {
+    let brings_index = || {
+        envelope.encryption.is_none()
+            && collab_types::DocumentMutation::decode(&envelope.payload)
+                .ok()
+                .and_then(|mutation| collab_types::parse_changes(mutation.data()).ok())
+                .is_some_and(|changes| collab_types::units::brings_index(&changes))
+    };
+    if collab_types::units::has_units(&**doc) || brings_index() {
+        AutoCommit::clone(doc)
+    } else {
+        AutoCommit::new()
+    }
 }
 
 /// The surface a record document's identity names (`tilo:record.surface`).
@@ -402,6 +461,7 @@ fn record_surface(doc: &impl automerge::ReadDoc) -> Option<[u8; 32]> {
     }
 }
 
+/// The kind a record document's identity names (`tilo:record.kind`).
 fn record_kind(doc: &impl automerge::ReadDoc) -> Option<String> {
     let (_, meta) = doc.get(automerge::ROOT, "tilo:record").ok()??;
     match doc.get(&meta, "kind").ok()?? {
@@ -438,11 +498,6 @@ fn check_governed_snapshot(
 
 impl StatePeer {
     /// Build a replica for `room` pinned to `authority` and its certified roster.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `room` is not a UUID, a certificate fails verification at `now`,
-    /// or a certificate is revoked.
     pub fn new(
         room: &str,
         authority: DeviceCert,
@@ -466,12 +521,6 @@ impl StatePeer {
     /// on the host, and its expiry is checked whenever it is used. Building
     /// the replica at `now` refused the whole room over one expired guest,
     /// so no device could join a room anyone had watched.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `room` is not a UUID, `authority` fails
-    /// verification at `now`, a roster certificate's signature fails, or a
-    /// certificate is revoked.
     pub fn joined(
         room: &str,
         authority: DeviceCert,
@@ -525,6 +574,7 @@ impl StatePeer {
             },
             surfaces: process_default().0,
             app_surfaces: process_default().1,
+            missed: held::Missed::default(),
         })
     }
     /// Add a root-certified viewer to existing governed history. Only the pinned
@@ -807,13 +857,19 @@ impl StatePeer {
     pub fn room(&self) -> &str {
         &self.core.room
     }
+    /// Whether the certificate the room holds for `source` has run out:
+    /// the device is certified here, by a certificate past its expiry.
+    #[must_use]
+    pub fn certificate_expired(&self, source: &[u8; 32], now: SystemTime) -> bool {
+        matches!(
+            self.core.certificate_typed(source, now),
+            Err(backend::CertificateLookupError::Validity(
+                tilo_user_identity::DeviceCertError::Expired
+            ))
+        )
+    }
     /// The current authority of the device `source`: its person, role, the
     /// room's policy and whether it is held to the foreign-device bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `source` has no current certified identity, is not a
-    /// current member, or governance is missing.
     pub fn permissions(
         &self,
         source: [u8; 32],
@@ -837,17 +893,41 @@ impl StatePeer {
             delegate: agent,
         })
     }
+    /// The app surface this peer names in the changes it signs for `app`'s
+    /// records, if it names one.
+    #[must_use]
+    pub fn signed_surface(&self, app: &str) -> Option<[u8; 32]> {
+        self.app_surfaces.0.as_ref().and_then(|of| of(app))
+    }
     /// Committed, admitted room only. Callers cannot mutate the admission owner.
     pub fn admitted_room(&self) -> Option<&AutoCommit> {
         self.core.room_doc.as_deref()
     }
 
-    /// Read permission for an exact canonical record using the same governed
-    /// actor/resource vocabulary as document mutation admission.
+    /// Start the room's document over from a base ([`room::base`]), as its
+    /// authority does when the room admits someone new. Returns whether it
+    /// did: a document holding nothing past its base stays as it is.
     ///
     /// # Errors
     ///
-    /// Returns an error if `device` may not read the record under current governance.
+    /// The document does not copy.
+    pub fn rebase_room(&mut self) -> Result<bool, String> {
+        let Some(held) = self.core.room_doc.as_deref() else {
+            return Ok(false);
+        };
+        let mut doc = held.clone();
+        let heads = doc.get_heads();
+        if heads.is_empty() || room::base::root(&mut doc).is_some_and(|root| heads == [root]) {
+            return Ok(false);
+        }
+        let actor = doc.get_actor().clone();
+        let base = room::base::rebase(&doc, actor).map_err(err)?;
+        self.core.room_doc = Some(base.into());
+        Ok(true)
+    }
+
+    /// Read permission for an exact canonical record using the same governed
+    /// actor/resource vocabulary as document mutation admission.
     pub fn check_document_read(
         &self,
         device: [u8; 32],
@@ -889,10 +969,6 @@ impl StatePeer {
     /// Validated data from this exact snapshot, not an authorization credential.
     /// Missing exact Chat prerequisites and unpromoted local revocations fail
     /// closed. Current device permissions/time still require separate checks.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the room media policy fails validation against this snapshot.
     pub fn validated_media_policy(&self) -> Result<Option<room::media::RoomMediaV1>, String> {
         let policy = self.validate_present_media_policy()?;
         if let Some(policy) = &policy {
@@ -1168,6 +1244,25 @@ impl StatePeer {
             .map(|(route, _)| (route.app.clone(), route.record.clone()))
             .collect()
     }
+    /// Encrypt `record` of `app`, held in the clear, from now on: its
+    /// channel's key holder decided that its writes are sealed, so a write
+    /// in the clear is refused as a downgrade and no checkpoint of it is
+    /// published in the clear. Whether the record is held.
+    pub fn seal_record(&mut self, app: &str, record: &str) -> bool {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(document) = self.core.documents.get(&route) else {
+            return false;
+        };
+        if !document.encryption_required {
+            let mut sealed = document.clone();
+            sealed.encryption_required = true;
+            self.core.documents.insert(route, sealed);
+        }
+        true
+    }
     pub fn document(&self, app: &str, record: &str) -> Option<Vec<u8>> {
         self.core
             .documents
@@ -1217,6 +1312,15 @@ impl StatePeer {
         authorization_time: SystemTime,
     ) -> Result<Option<MemberAuthority>, String> {
         let member = self.permissions(*source, authorization_time)?;
+        // A change made with another version of the app than the room runs
+        // is held: its author's desktop switches to the room's version, and
+        // the same changes then name that version's surface.
+        if envelope.kind == collab_types::OpKind::Change
+            && let Some(running) = self.room_surface(app_id)
+            && envelope.surface != Some(running)
+        {
+            return Ok(None);
+        }
         let route = Route {
             app: app_id.into(),
             record: record.into(),
@@ -1224,14 +1328,16 @@ impl StatePeer {
         // The record as this peer holds it, read only when changes are
         // decided against app surfaces: which of the app's resources it is,
         // and which units a change writes.
-        let document = self
-            .surfaces
-            .enforced()
-            .then(|| self.core.documents.get(&route))
-            .flatten();
+        let enforced = self.surfaces.enforced();
+        let document = enforced.then(|| self.core.documents.get(&route)).flatten();
         let kind = document.and_then(|document| record_kind(&*document.doc));
         let pinned = document.and_then(|document| record_surface(&*document.doc));
-        let held = document.and_then(|document| held_units(&document.doc));
+        // A record this peer does not hold yet is read from its first
+        // changes: they carry its unit index from the start.
+        let held = match document {
+            Some(document) => Some(held_units(&document.doc, envelope)),
+            None => enforced.then(AutoCommit::new),
+        };
         let decided = collab_types::decide_op_pinned(
             envelope,
             &collab_types::Record {
@@ -1268,10 +1374,6 @@ impl StatePeer {
     }
 
     /// Exact observations from the real admission path, not a durability receipt.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] when the message is refused.
     pub fn receive_from_report(
         &mut self,
         origin: TransportOrigin,
@@ -1290,17 +1392,19 @@ impl StatePeer {
             return Ok(report);
         }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
+        let written = written_route(&message);
         let mut candidate = self.clone();
-        let report = candidate.receive_with_context(source, message, now, retained_replay, true)?;
+        let mut report = candidate
+            .receive_with_context(source, message, now, retained_replay, true)
+            .inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
+        let landed = report.summary.changed || report.summary.metadata_changed;
+        report.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
         Ok(report)
     }
 
     /// Authenticate an already recorded document without copying mutable state.
     /// The report observes the existing admission, never a new commit barrier.
-    ///
-    /// # Errors
-    /// Current publisher authority, transport, route or signature is invalid.
     pub fn lookup_exact_document_report(
         &self,
         origin: TransportOrigin,
@@ -1333,11 +1437,6 @@ impl StatePeer {
 
     /// A read-only exact retry lookup. Current authority and signature/route still
     /// apply; only a recorded envelope bypasses new-write timestamp freshness.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] if the message is not a valid document envelope for
-    /// this room or its author is not currently authorized.
     pub fn lookup_exact_document(
         &self,
         origin: TransportOrigin,
@@ -1376,7 +1475,7 @@ impl StatePeer {
             .authorize_document(&source, app, record, op, now)?
             .is_none()
         {
-            return Err("document change held: its app surface is not here yet".into());
+            return Err(HELD_FOR_SURFACE.into());
         }
         collab_types::validate_whole_document_payload_route(app, room, record, op).map_err(err)?;
         collab_types::verify_op(op).map_err(err)?;
@@ -1392,11 +1491,6 @@ impl StatePeer {
 
     /// Exact new candidate admissions for local multi-record owner commits.
     /// Also refuses replacement that discards prior exact evidence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`AdmissionError`] if this candidate discards exact evidence that
-    /// `before` recorded.
     pub fn admissions_since(
         &self,
         before: &StatePeer,
@@ -1459,10 +1553,6 @@ impl StatePeer {
     }
 
     /// Admit a message from `origin`, queuing it while prerequisites are missing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the message is refused.
     pub fn receive_from(
         &mut self,
         origin: TransportOrigin,
@@ -1476,10 +1566,16 @@ impl StatePeer {
                 .map_err(err);
         }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now).map_err(err)?;
+        let written = written_route(&message);
         let mut candidate = self.clone();
-        let outcome = candidate
+        let mut outcome = candidate
             .receive_with_context(source, message, now, retained_replay, false)
-            .map_err(err)?;
+            .map_err(|error| {
+                self.forget_refused(source, written.as_ref());
+                err(error)
+            })?;
+        let landed = outcome.summary.changed || outcome.summary.metadata_changed;
+        outcome.summary.replay_wanted |= candidate.missed_landed(landed);
         *self = candidate;
         Ok(outcome.summary)
     }
@@ -1509,6 +1605,7 @@ impl StatePeer {
                 protocol,
                 cert,
                 revocations,
+                ..
             } => {
                 // A device at another peer protocol version is admitted to
                 // nothing: what it says is not read at this one.
@@ -1531,7 +1628,15 @@ impl StatePeer {
                     } else {
                         MissingPrerequisite::Certificate
                     };
-                    return self.defer(source, message, retained_replay, prerequisite);
+                    return self.defer(
+                        source,
+                        message,
+                        Held {
+                            retained_replay,
+                            prerequisite,
+                            now,
+                        },
+                    );
                 }
                 self.receive_document(source, message, now, retained_replay, strict_report)
             }
@@ -1605,15 +1710,21 @@ impl StatePeer {
         let cert = self.certificate(&source, now)?;
         let person = cert.user_public_key;
         let foreign = backend::member::foreign(cert, &self.core.authority);
-        // Bootstrap: the invite's authority device supplies the first
-        // governance before any roster exists to resolve it against.
-        if self.core.room_doc.is_some() || source != self.core.authority.device_public_key {
+        // The pinned authority writes governance on its certificate alone:
+        // the invite's authority supplies the first governance before any
+        // roster exists, and a successor its root named in a revoked
+        // governor's place is on no roster until it writes itself there.
+        if source != self.core.authority.device_public_key {
             self.role(&source, now)?;
         }
         let pinned = hex::encode(self.core.authority.device_public_key);
         let from = hex::encode(source);
         // The one room admission the shell's workspace tree runs too.
-        let room::AdmittedRoom { candidate, media } = room::admit_room_changes(
+        let room::AdmittedRoom {
+            candidate,
+            media,
+            rebased,
+        } = room::admit_room_changes(
             room::RoomAdmission {
                 before: self.core.room_doc.as_deref(),
                 room: &self.core.room,
@@ -1632,11 +1743,12 @@ impl StatePeer {
         // the room document omits them.
         let mut receipts = self.core.receipts.clone();
         room::admit_receipts(&mut receipts, &candidate).map_err(err)?;
-        let changed = self
-            .core
-            .room_doc
-            .as_deref()
-            .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
+        let changed = rebased
+            || self
+                .core
+                .room_doc
+                .as_deref()
+                .is_none_or(|doc| doc.base_heads() != candidate.base_heads());
         if let Some(policy) = &media {
             self.validate_media_bindings(policy, false)?;
         }
@@ -1648,6 +1760,7 @@ impl StatePeer {
         let mut applied = changed;
         let mut rejected = 0usize;
         let mut settled = Vec::new();
+        let mut dropped = Vec::new();
         for (author, message, replayed) in pending {
             match self.receive_with_context(author, message, now, replayed, strict_report) {
                 Ok(outcome) => {
@@ -1655,6 +1768,7 @@ impl StatePeer {
                     metadata_changed |= outcome.metadata_changed;
                     rejected = rejected.saturating_add(outcome.rejected);
                     settled.extend(outcome.settled);
+                    dropped.extend(outcome.summary.dropped);
                 }
                 Err(error) => {
                     if self.core.native_cut_publisher.is_some() {
@@ -1670,6 +1784,7 @@ impl StatePeer {
             incomplete: self.incomplete_reason(),
             deferred: !self.core.pending.is_empty(),
             rejected,
+            dropped,
             ..Default::default()
         });
         report.settled = settled;
@@ -1709,45 +1824,6 @@ impl StatePeer {
             },
         )
     }
-    fn defer(
-        &mut self,
-        source: [u8; 32],
-        message: NeighbourMsg,
-        retained_replay: bool,
-        prerequisite: MissingPrerequisite,
-    ) -> Result<AdmissionReport, AdmissionError> {
-        let bytes = postcard::to_allocvec(&message).map_err(err)?;
-        if self.core.pending.iter().any(|(key, prior, replayed)| {
-            key == &source && *prior == message && *replayed == retained_replay
-        }) {
-            return Ok(AdmissionReport::new(
-                InputDisposition::RetryLater(prerequisite),
-                ReceiveOutcome {
-                    deferred: true,
-                    ..Default::default()
-                },
-            ));
-        }
-        let pending_bytes = self
-            .core
-            .pending_bytes
-            .checked_add(bytes.len())
-            .filter(|total| *total <= 4 * 1024 * 1024);
-        let Some(pending_bytes) = pending_bytes.filter(|_| self.core.pending.len() < 64) else {
-            return Err("app prerequisite queue full; fresh checkpoint required".into());
-        };
-        self.core.pending_bytes = pending_bytes;
-        self.core
-            .pending
-            .push_back((source, message, retained_replay));
-        Ok(AdmissionReport::new(
-            InputDisposition::RetryLater(prerequisite),
-            ReceiveOutcome {
-                deferred: true,
-                ..Default::default()
-            },
-        ))
-    }
     fn receive_document(
         &mut self,
         source: [u8; 32],
@@ -1756,8 +1832,10 @@ impl StatePeer {
         retained_replay: bool,
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
-        let mut outcome =
-            self.admit_document(source, message, now, None, retained_replay, strict_report)?;
+        let written = written_route(&message);
+        let mut outcome = self
+            .admit_document(source, message, now, None, retained_replay, strict_report)
+            .inspect_err(|_| self.forget_refused(source, written.as_ref()))?;
         if outcome.deferred || self.core.pending.is_empty() {
             return Ok(outcome);
         }
@@ -1770,6 +1848,7 @@ impl StatePeer {
                     outcome.metadata_changed |= applied.metadata_changed;
                     outcome.rejected = outcome.rejected.saturating_add(applied.rejected);
                     outcome.settled.extend(applied.settled);
+                    outcome.dropped.extend(applied.summary.dropped);
                 }
                 Err(error) => {
                     if self.core.native_cut_publisher.is_some() {
@@ -1786,11 +1865,6 @@ impl StatePeer {
     /// No wire message can select this door. Unlike a retained checkpoint, an
     /// SDK snapshot is an authored mutation of an already-owned exact record.
     /// Certificate, current policy, signature, replay and route checks are shared.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the envelope fails certificate, policy, signature, replay or
-    /// route checks.
     pub fn admit_local_app_document(
         &mut self,
         app: &str,
@@ -1799,6 +1873,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<ReceiveOutcome, String> {
         self.admit_local(app, record, envelope, LocalWrite::Plain, now)
+            .map(|report| report.summary)
     }
 
     fn admit_local(
@@ -1808,7 +1883,7 @@ impl StatePeer {
         envelope: collab_types::SignedOp,
         write: LocalWrite<'_>,
         now: SystemTime,
-    ) -> Result<ReceiveOutcome, String> {
+    ) -> Result<AdmissionReport, String> {
         if self.document(app, record).is_none() {
             return Err("local app publication cannot create a record owner".into());
         }
@@ -1827,7 +1902,6 @@ impl StatePeer {
             false,
             false,
         )
-        .map(|report| report.summary)
         .map_err(err)
     }
 
@@ -1879,9 +1953,35 @@ impl StatePeer {
                 },
             ));
         }
-        // Only legacy retained replay may validate a first admission historically.
-        // Strict exact retries returned above; an index miss is a live new write,
-        // including when this call drains a retained pending entry.
+        let route = Route {
+            app: app_id.clone(),
+            record: record_id.clone(),
+        };
+        if !local_app
+            && self
+                .overtakes_let_go(&route, source, envelope.seq)
+                .is_some()
+        {
+            // Let go too: the room's host retains it and replays it after
+            // the earlier write, in the order its author wrote them.
+            let waiting = MissingPrerequisite::EarlierWrite;
+            let input = DroppedInput {
+                author: source,
+                app: app_id,
+                record: record_id,
+                sequence: envelope.seq,
+                waiting_for: Some(waiting.clone()),
+                reason: crate::admission::DropReason::Superseded,
+            };
+            self.remember_missed(&input);
+            return Ok(AdmissionReport::new(
+                InputDisposition::RetryLater(waiting),
+                ReceiveOutcome {
+                    dropped: vec![input],
+                    ..Default::default()
+                },
+            ));
+        }
         let historical_validation = retained_replay && !strict_report;
         let authorization_time = if historical_validation {
             envelope.timestamp
@@ -1900,8 +2000,11 @@ impl StatePeer {
                     record_id,
                     envelope,
                 },
-                retained_replay,
-                MissingPrerequisite::AppSurface,
+                Held {
+                    retained_replay,
+                    prerequisite: MissingPrerequisite::AppSurface,
+                    now,
+                },
             );
         };
         let payload = collab_types::validate_whole_document_payload_route(
@@ -2035,8 +2138,11 @@ impl StatePeer {
                             record_id: route.record,
                             envelope,
                         },
-                        retained_replay,
-                        MissingPrerequisite::RecordCheckpoint,
+                        Held {
+                            retained_replay,
+                            prerequisite: MissingPrerequisite::RecordCheckpoint,
+                            now,
+                        },
                     );
                 }
                 return self.admit_sealed(route, candidate, validated_channel, *envelope);
@@ -2067,8 +2173,11 @@ impl StatePeer {
                         record_id: route.record,
                         envelope,
                     },
-                    retained_replay,
-                    MissingPrerequisite::CheckpointCoverage,
+                    Held {
+                        retained_replay,
+                        prerequisite: MissingPrerequisite::CheckpointCoverage,
+                        now,
+                    },
                 );
             };
             if coverage.sequence < envelope.seq {
@@ -2081,8 +2190,11 @@ impl StatePeer {
                         record_id: route.record,
                         envelope,
                     },
-                    retained_replay,
-                    MissingPrerequisite::CheckpointCoverage,
+                    Held {
+                        retained_replay,
+                        prerequisite: MissingPrerequisite::CheckpointCoverage,
+                        now,
+                    },
                 );
             }
             if coverage.sequence > envelope.seq
@@ -2148,8 +2260,11 @@ impl StatePeer {
                     record_id: route.record,
                     envelope,
                 },
-                retained_replay,
-                MissingPrerequisite::RecordCheckpoint,
+                Held {
+                    retained_replay,
+                    prerequisite: MissingPrerequisite::RecordCheckpoint,
+                    now,
+                },
             );
         }
         let changed = match document::merge_committed_with_status(&mut candidate.doc, &mutation)
@@ -2166,8 +2281,11 @@ impl StatePeer {
                         record_id: route.record,
                         envelope,
                     },
-                    retained_replay,
-                    MissingPrerequisite::CausalDependencies,
+                    Held {
+                        retained_replay,
+                        prerequisite: MissingPrerequisite::CausalDependencies,
+                        now,
+                    },
                 );
             }
             document::MergeOutcome::MissingDependencies => {
@@ -2309,10 +2427,6 @@ impl StatePeer {
         }
     }
     /// Install the governed seed room and documents as the authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the room authority or the seed is invalid.
     pub fn install_seed(
         &mut self,
         seed: SeedState,
@@ -2331,7 +2445,7 @@ impl StatePeer {
             now,
         )?;
         for document in seed.documents {
-            self.publish_document(
+            self.publication_mut().publish_document(
                 &document.app_id,
                 &document.record_id,
                 document.bytes,
@@ -2340,54 +2454,6 @@ impl StatePeer {
             )?;
         }
         Ok(())
-    }
-    /// Sign and admit a snapshot of `record`, returning the message to publish.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the local device may not write the record or admission fails.
-    pub fn publish_document(
-        &mut self,
-        app: &str,
-        record: &str,
-        bytes: Vec<u8>,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        self.signed_mutation(app, record, DocumentMutation::Snapshot(bytes), key, now)
-    }
-    /// Sign and admit incremental changes to `record`, returning the message to publish.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the local device may not write the record or admission fails.
-    pub fn publish_incremental(
-        &mut self,
-        app: &str,
-        record: &str,
-        bytes: Vec<u8>,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        self.signed_mutation(app, record, DocumentMutation::Incremental(bytes), key, now)
-    }
-    /// Sign and admit `mutation` of `record`, returning the message to publish.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the local device may not write the record or admission fails.
-    pub fn signed_mutation(
-        &mut self,
-        app: &str,
-        record: &str,
-        mutation: DocumentMutation,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        let mut candidate = self.clone();
-        let message = candidate.signed_mutation_in_place(app, record, mutation, key, now)?;
-        *self = candidate;
-        Ok(message)
     }
     fn signed_mutation_in_place(
         &mut self,
@@ -2455,7 +2521,7 @@ impl StatePeer {
             now,
             seq,
         )
-        .with_surface(self.app_surfaces.0.as_ref().and_then(|of| of(app)));
+        .with_surface(self.signed_surface(app));
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),
@@ -2624,65 +2690,6 @@ impl StatePeer {
         }
         Ok(messages)
     }
-    /// Signed snapshots of every admitted document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a snapshot cannot be signed or encoded.
-    pub fn signed_snapshots(
-        &mut self,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        let mut candidate = self.clone();
-        let messages = candidate.signed_snapshots_in_place(key, now)?;
-        *self = candidate;
-        Ok(messages)
-    }
-    /// The governor publishes one consistent room coverage/checkpoint pair.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
-    pub fn bootstrap_messages(
-        &mut self,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        let mut candidate = self.clone();
-        let snapshots = candidate.signed_snapshots_in_place(key, now)?;
-        let mut messages = vec![candidate.room_message()];
-        messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(None));
-        *self = candidate;
-        Ok(messages)
-    }
-    /// Prepare, but do not publish, a candidate bound to the next native commit.
-    /// The caller must commit this entire state and outgoing batch before exposing it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
-    pub fn durable_bootstrap_messages(
-        &mut self,
-        key: &SigningKey,
-        now: SystemTime,
-        generation: u64,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        let mut candidate = self.clone();
-        let snapshots = candidate.signed_snapshots_with_receipts(key, now, Some(generation))?;
-        let room = candidate
-            .core
-            .room_doc
-            .as_deref_mut()
-            .ok_or("missing room governance")?;
-        crate::durability::monotonic(self.core.room_doc.as_deref(), room)?;
-        let mut messages = vec![candidate.room_message()];
-        messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(None));
-        *self = candidate;
-        Ok(messages)
-    }
     /// Publish exact checkpoints of the `dirty` routes and, in the same room
     /// change, their coverage plus the complete durable receipt set
     /// (`receipts` updated for each dirty route at `generation`). Equivalent
@@ -2771,148 +2778,7 @@ impl StatePeer {
         }
         Ok(messages)
     }
-    /// Prepare route-selective publication against the last committed peer.
-    /// `SyncResp` here contains only room changes since `before` and MUST be retained
-    /// as a delta. Application messages remain exact covered snapshots. The caller
-    /// must durably commit the candidate and its baseline plus this tail before send.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if this candidate discards evidence `before` recorded, the
-    /// local device lacks the pinned authority or permission, or encryption state is
-    /// incomplete.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one candidate publication built against a single committed baseline"
-    )]
-    pub fn durable_mutation_messages(
-        &mut self,
-        before: &StatePeer,
-        key: &SigningKey,
-        now: SystemTime,
-        generation: u64,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        self.admissions_since(before).map_err(err)?;
-        if self.core.room != before.core.room || self.core.authority != before.core.authority {
-            return Err("publication cannot replace the session namespace".into());
-        }
-        if key.verifying_key().to_bytes() != self.core.authority.device_public_key {
-            return Err("publication requires pinned authority".into());
-        }
-        self.permissions(key.verifying_key().to_bytes(), now)?;
-        if self.incomplete_reason().is_some() {
-            return Err("cannot publish incomplete encryption state".into());
-        }
-        let before_room = before
-            .core
-            .room_doc
-            .as_ref()
-            .ok_or("missing prior governance")?;
-        let mut candidate = self.clone();
-        for (route, prior) in &before.core.documents {
-            let document = candidate
-                .core
-                .documents
-                .get(route)
-                .ok_or("publication discards a record")?;
-            // A record still shared with `before` discards nothing.
-            if backend::StoredDocument::ptr_eq(prior, document) {
-                continue;
-            }
-            if prior
-                .doc
-                .base_heads()
-                .iter()
-                .any(|head| document.doc.get_change_by_hash(head).is_none())
-                || prior
-                    .channel
-                    .last_seq_per_author
-                    .iter()
-                    .any(|(author, seq)| {
-                        document
-                            .channel
-                            .last_seq_per_author
-                            .get(author)
-                            .copied()
-                            .unwrap_or(0)
-                            < *seq
-                    })
-            {
-                return Err("publication discards document history or replay floors".into());
-            }
-        }
-        let room = candidate
-            .core
-            .room_doc
-            .as_mut()
-            .ok_or("missing room governance")?;
-        let before_heads = before_room.base_heads();
-        if before_heads
-            .iter()
-            .any(|head| room.get_change_by_hash(head).is_none())
-        {
-            return Err("publication discards room history".into());
-        }
-        crate::coverage::monotonic(Some(before_room), room)?;
-        crate::durability::monotonic(Some(before_room), room)?;
-        let old_coverage = crate::coverage::entries(before_room)?;
-        let coverage = crate::coverage::entries(room)?;
-        let old_receipts = crate::durability::entries(before_room)?;
-        let receipts = crate::durability::entries(room)?;
-        let mut dirty = Vec::new();
-        for (route, document) in &candidate.core.documents {
-            let route_key = crate::coverage::route_key(&route.app, &route.record);
-            let changed = before.core.documents.get(route).is_none_or(|prior| {
-                // A record this change did not touch is still shared.
-                let same = backend::StoredDocument::ptr_eq(prior, document);
-                (!same
-                    && (prior.doc.base_heads() != document.doc.base_heads()
-                        || prior.channel.last_seq_per_author
-                            != document.channel.last_seq_per_author
-                        || prior.encryption_required != document.encryption_required
-                        || prior.covered != document.covered
-                        || prior.covered_snapshot != document.covered_snapshot))
-                    || old_coverage.get(&route_key) != coverage.get(&route_key)
-                    || old_receipts.get(&route_key) != receipts.get(&route_key)
-            });
-            if changed {
-                dirty.push((route.clone(), document.doc.saved()));
-            }
-        }
-        let snapshots = if dirty.is_empty() {
-            Vec::new()
-        } else {
-            candidate.publish_snapshots_with_receipts(&dirty, receipts, generation, key, now)?
-        };
-        let room = candidate
-            .core
-            .room_doc
-            .as_mut()
-            .ok_or("missing room governance")?;
-        crate::coverage::monotonic(Some(before_room), room)?;
-        crate::durability::monotonic(Some(before_room), room)?;
-        let changes = room
-            .get_changes(&before_heads)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect::<Vec<_>>();
-        let mut messages = Vec::new();
-        if !changes.is_empty() {
-            messages.push(NeighbourMsg::SyncResp {
-                changes,
-                room: self.core.room.clone(),
-            });
-        }
-        messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(Some(before)));
-        *self = candidate;
-        Ok(messages)
-    }
     /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the governed coverage does not match the accepted checkpoint.
     pub fn durable_coverage(
         &self,
         app: &str,
@@ -2996,10 +2862,6 @@ impl StatePeer {
     }
     /// Validate the receipt and current-head coverage against one decoded checkpoint.
     /// All authority, route, payload and watermark checks remain fresh per query.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the receipt or checkpoint fails validation.
     #[cfg(test)]
     pub fn durable_coverage_with_current(
         &self,
@@ -3025,10 +2887,6 @@ impl StatePeer {
         Ok(Some((receipt, current)))
     }
     /// Whether the durable receipt for the record covers its current heads.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the receipt or checkpoint fails validation.
     #[cfg(test)]
     pub fn durable_covers_current(&self, app: &str, record: &str) -> Result<bool, String> {
         Ok(self
@@ -3248,11 +3106,6 @@ impl StatePeer {
     }
 
     /// Restore a peer from durable state produced by [`StatePeer::durable`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the bytes are malformed, the room or authority does not match,
-    /// or restored state fails admission.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "public API: callers hand over the pinned revocation list"
@@ -3340,6 +3193,7 @@ impl StatePeer {
             },
             surfaces: process_default().0,
             app_surfaces: process_default().1,
+            missed: held::Missed::default(),
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(
@@ -3439,6 +3293,243 @@ impl StatePeer {
             }
         }
         Ok(peer)
+    }
+}
+
+impl PeerPublicationMut<'_> {
+    /// Sign and admit a snapshot of `record`, returning the message to publish.
+    pub fn publish_document(
+        self,
+        app: &str,
+        record: &str,
+        bytes: Vec<u8>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        self.signed_mutation(app, record, DocumentMutation::Snapshot(bytes), key, now)
+    }
+
+    /// Sign and admit incremental changes to `record`, returning the message to publish.
+    pub fn publish_incremental(
+        self,
+        app: &str,
+        record: &str,
+        bytes: Vec<u8>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        self.signed_mutation(app, record, DocumentMutation::Incremental(bytes), key, now)
+    }
+
+    /// Sign and admit `mutation` of `record`, returning the message to publish.
+    pub fn signed_mutation(
+        self,
+        app: &str,
+        record: &str,
+        mutation: DocumentMutation,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        let mut candidate = self.peer.clone();
+        let message = candidate.signed_mutation_in_place(app, record, mutation, key, now)?;
+        *self.peer = candidate;
+        Ok(message)
+    }
+
+    /// Signed snapshots of every admitted document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a snapshot cannot be signed or encoded.
+    pub fn signed_snapshots(
+        self,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut candidate = self.peer.clone();
+        let messages = candidate.signed_snapshots_in_place(key, now)?;
+        *self.peer = candidate;
+        Ok(messages)
+    }
+
+    /// The governor publishes one consistent room coverage/checkpoint pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
+    pub fn bootstrap_messages(
+        self,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut candidate = self.peer.clone();
+        let snapshots = candidate.signed_snapshots_in_place(key, now)?;
+        let mut messages = vec![candidate.room_message()];
+        messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(None));
+        *self.peer = candidate;
+        Ok(messages)
+    }
+
+    /// Prepare, but do not publish, a candidate bound to the next native commit.
+    /// The caller must commit this entire state and outgoing batch before exposing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
+    pub fn durable_bootstrap_messages(
+        self,
+        key: &SigningKey,
+        now: SystemTime,
+        generation: u64,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut candidate = self.peer.clone();
+        let snapshots = candidate.signed_snapshots_with_receipts(key, now, Some(generation))?;
+        let room = candidate
+            .core
+            .room_doc
+            .as_deref_mut()
+            .ok_or("missing room governance")?;
+        crate::durability::monotonic(self.peer.core.room_doc.as_deref(), room)?;
+        let mut messages = vec![candidate.room_message()];
+        messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(None));
+        *self.peer = candidate;
+        Ok(messages)
+    }
+
+    /// Prepare route-selective publication against the last committed peer.
+    /// `SyncResp` here contains only room changes since `before` and MUST be retained
+    /// as a delta. Application messages remain exact covered snapshots. The caller
+    /// must durably commit the candidate and its baseline plus this tail before send.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one candidate publication built against a single committed baseline"
+    )]
+    pub fn durable_mutation_messages(
+        self,
+        before: &StatePeer,
+        key: &SigningKey,
+        now: SystemTime,
+        generation: u64,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        self.peer.admissions_since(before).map_err(err)?;
+        if self.peer.core.room != before.core.room
+            || self.peer.core.authority != before.core.authority
+        {
+            return Err("publication cannot replace the session namespace".into());
+        }
+        if key.verifying_key().to_bytes() != self.peer.core.authority.device_public_key {
+            return Err("publication requires pinned authority".into());
+        }
+        self.peer.permissions(key.verifying_key().to_bytes(), now)?;
+        if self.peer.incomplete_reason().is_some() {
+            return Err("cannot publish incomplete encryption state".into());
+        }
+        let before_room = before
+            .core
+            .room_doc
+            .as_ref()
+            .ok_or("missing prior governance")?;
+        let mut candidate = self.peer.clone();
+        for (route, prior) in &before.core.documents {
+            let document = candidate
+                .core
+                .documents
+                .get(route)
+                .ok_or("publication discards a record")?;
+            // A record still shared with `before` discards nothing.
+            if backend::StoredDocument::ptr_eq(prior, document) {
+                continue;
+            }
+            if prior
+                .doc
+                .base_heads()
+                .iter()
+                .any(|head| document.doc.get_change_by_hash(head).is_none())
+                || prior
+                    .channel
+                    .last_seq_per_author
+                    .iter()
+                    .any(|(author, seq)| {
+                        document
+                            .channel
+                            .last_seq_per_author
+                            .get(author)
+                            .copied()
+                            .unwrap_or(0)
+                            < *seq
+                    })
+            {
+                return Err("publication discards document history or replay floors".into());
+            }
+        }
+        let room = candidate
+            .core
+            .room_doc
+            .as_mut()
+            .ok_or("missing room governance")?;
+        let before_heads = before_room.base_heads();
+        if before_heads
+            .iter()
+            .any(|head| room.get_change_by_hash(head).is_none())
+        {
+            return Err("publication discards room history".into());
+        }
+        crate::coverage::monotonic(Some(before_room), room)?;
+        crate::durability::monotonic(Some(before_room), room)?;
+        let old_coverage = crate::coverage::entries(before_room)?;
+        let coverage = crate::coverage::entries(room)?;
+        let old_receipts = crate::durability::entries(before_room)?;
+        let receipts = crate::durability::entries(room)?;
+        let mut dirty = Vec::new();
+        for (route, document) in &candidate.core.documents {
+            let route_key = crate::coverage::route_key(&route.app, &route.record);
+            let changed = before.core.documents.get(route).is_none_or(|prior| {
+                // A record this change did not touch is still shared.
+                let same = backend::StoredDocument::ptr_eq(prior, document);
+                (!same
+                    && (prior.doc.base_heads() != document.doc.base_heads()
+                        || prior.channel.last_seq_per_author
+                            != document.channel.last_seq_per_author
+                        || prior.encryption_required != document.encryption_required
+                        || prior.covered != document.covered
+                        || prior.covered_snapshot != document.covered_snapshot))
+                    || old_coverage.get(&route_key) != coverage.get(&route_key)
+                    || old_receipts.get(&route_key) != receipts.get(&route_key)
+            });
+            if changed {
+                dirty.push((route.clone(), document.doc.saved()));
+            }
+        }
+        let snapshots = if dirty.is_empty() {
+            Vec::new()
+        } else {
+            candidate.publish_snapshots_with_receipts(&dirty, receipts, generation, key, now)?
+        };
+        let room = candidate
+            .core
+            .room_doc
+            .as_mut()
+            .ok_or("missing room governance")?;
+        crate::coverage::monotonic(Some(before_room), room)?;
+        crate::durability::monotonic(Some(before_room), room)?;
+        let changes = room
+            .get_changes(&before_heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect::<Vec<_>>();
+        let mut messages = Vec::new();
+        if !changes.is_empty() {
+            messages.push(NeighbourMsg::SyncResp {
+                changes,
+                room: self.peer.core.room.clone(),
+            });
+        }
+        messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(Some(before)));
+        *self.peer = candidate;
+        Ok(messages)
     }
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -3556,6 +3647,59 @@ pub(crate) fn delete_member_joined(doc: &mut AutoCommit, person: &str) -> Result
     Ok(())
 }
 
+/// A new workspace governed by `authority`: its governance
+/// ([`seed_room`]), named `name`, with a desktop whose topology namespace
+/// `salt` (a device's id salt, never 0) the governing device owns, and no
+/// app records.
+///
+/// # Errors
+///
+/// Returns an error if `room` is not a UUID, `salt` is 0 or the document
+/// cannot be built.
+pub fn workspace_seed(
+    room: &str,
+    authority: &DeviceCert,
+    roster: &[DeviceCert],
+    name: &str,
+    salt: u16,
+) -> Result<SeedState, String> {
+    use tilo_automerge::ApplyIncoming as _;
+    if salt == 0 {
+        return Err("salt 0 names no topology namespace".into());
+    }
+    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
+        authority.device_public_key.to_vec(),
+    ));
+    let changes = seed_room(room, authority, roster)?
+        .into_iter()
+        .map(automerge::Change::from_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(err)?;
+    doc.apply_incoming(changes).map_err(err)?;
+    doc.put(ROOT, "name", name).map_err(err)?;
+    doc.put_object(ROOT, "contents", ObjType::Map)
+        .map_err(err)?;
+    let owners = doc
+        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
+        .map_err(err)?;
+    doc.put(
+        owners,
+        format!("{salt:04x}"),
+        hex::encode(authority.device_public_key),
+    )
+    .map_err(err)?;
+    doc.put(ROOT, "desktop_counter_v1", 1_u64).map_err(err)?;
+    doc.commit();
+    Ok(SeedState {
+        room_changes: doc
+            .get_changes(&[])
+            .iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+        documents: Vec::new(),
+    })
+}
+
 /// The same native room CRDT keys projected by `WorkspaceTree::sync_room_doc`.
 ///
 /// # Errors
@@ -3642,7 +3786,8 @@ mod delivery_admission_resource_tests {
         let before = peer.durable().unwrap();
         let document = peer.document("test.app", "tab:1").unwrap();
         assert!(
-            peer.publish_document("test.app", "tab:1", document, &key, now)
+            peer.publication_mut()
+                .publish_document("test.app", "tab:1", document, &key, now)
                 .is_err()
         );
         assert!(
@@ -3655,14 +3800,10 @@ mod delivery_admission_resource_tests {
         let (mut receiver, key, _, _, now) = crate::admission_tests::seeded();
         let mut author = receiver.clone();
         let later = now + Duration::from_secs(301);
+        let current_document = author.document("test.app", "tab:1").unwrap();
         let snapshot = author
-            .publish_document(
-                "test.app",
-                "tab:1",
-                author.document("test.app", "tab:1").unwrap(),
-                &key,
-                later,
-            )
+            .publication_mut()
+            .publish_document("test.app", "tab:1", current_document, &key, later)
             .unwrap();
         let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
         receiver.select_admission_v5().unwrap();
@@ -3783,6 +3924,9 @@ mod administrators_tests;
 #[cfg(test)]
 #[path = "state/governance_cache_tests.rs"]
 mod governance_cache_tests;
+#[cfg(test)]
+#[path = "state/held_queue_tests.rs"]
+mod held_queue_tests;
 #[cfg(test)]
 #[path = "state/joined_tests.rs"]
 mod joined_tests;

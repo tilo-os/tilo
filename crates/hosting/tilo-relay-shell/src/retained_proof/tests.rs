@@ -114,10 +114,16 @@ fn signed(
 #[test]
 fn same_heads_new_receipt_is_exact_pair_and_old_signature_is_unpaired() {
     let (key, authority, mut peer, now) = fixture();
-    let first = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let first = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let old_room = room_proof(&authority, &first[0], RoomInput::Checkpoint, None);
     let old = snapshot(&old_room, &first[1]);
-    let second = peer.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let second = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 2)
+        .unwrap();
     let room = room_proof(
         &authority,
         &second[0],
@@ -164,7 +170,10 @@ fn authority_rejects_invalid_cert_and_noncanonical_room() {
 #[test]
 fn mixed_receipt_generations_pair_route_by_route_and_delta_needs_prior() {
     let (key, authority, mut peer, now) = fixture();
-    let first = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let first = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let old_room = room_proof(&authority, &first[0], RoomInput::Checkpoint, None);
     let before = peer.clone();
     let mut doc = AutoCommit::load(&peer.document(APP, "one").unwrap()).unwrap();
@@ -181,6 +190,7 @@ fn mixed_receipt_generations_pair_route_by_route_and_delta_needs_prior() {
     peer.admit_local_app_document(APP, "one", *envelope, now)
         .unwrap();
     let tail = peer
+        .publication_mut()
         .durable_mutation_messages(&before, &key, now, 2)
         .unwrap();
     assert_eq!(tail.len(), 2);
@@ -207,7 +217,10 @@ fn mixed_receipt_generations_pair_route_by_route_and_delta_needs_prior() {
 #[test]
 fn signed_route_crypto_and_strict_body_fail_closed() {
     let (key, authority, mut peer, now) = fixture();
-    let batch = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let batch = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let room = room_proof(&authority, &batch[0], RoomInput::Checkpoint, None);
     let source = authority.governor().device_public_key;
     let (channel, body) = encoded(&batch[1]);
@@ -267,13 +280,21 @@ fn signed_route_crypto_and_strict_body_fail_closed() {
 #[test]
 fn higher_sequence_and_generation_do_not_cover_an_independent_snapshot() {
     let (key, authority, mut peer, now) = fixture();
-    let first = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let first = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let room = room_proof(&authority, &first[0], RoomInput::Checkpoint, None);
     let prior = snapshot(&room, &first[1]);
     // Same room/key/visible value, independent Automerge history.
     let (_, _, mut fork, _) = fixture();
-    fork.durable_bootstrap_messages(&key, now, 1).unwrap();
-    let later = fork.durable_bootstrap_messages(&key, now, 2).unwrap();
+    fork.publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
+    let later = fork
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 2)
+        .unwrap();
     let room = room_proof(&authority, &later[0], RoomInput::Checkpoint, None);
     let candidate = snapshot(&room, &later[1]);
     assert!(candidate.coverage().sequence > prior.coverage().sequence);
@@ -301,7 +322,10 @@ fn room_message(doc: &mut AutoCommit) -> NeighbourMsg {
 #[test]
 fn room_checksum_corruption_is_unknown_for_checkpoint_delta_and_coverage() {
     let (key, authority, mut peer, now) = fixture();
-    let baseline = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let baseline = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let prior = room_proof(&authority, &baseline[0], RoomInput::Checkpoint, None);
     let mut doc = room_document(&baseline[0]);
     doc.put(ROOT, "checksum_probe", "compressible".repeat(1024))
@@ -398,9 +422,15 @@ fn room_checksum_corruption_is_unknown_for_checkpoint_delta_and_coverage() {
 #[test]
 fn room_proof_rejects_foreign_missing_dependencies_suffix_and_regressing_metadata() {
     let (key, authority, mut peer, now) = fixture();
-    let first = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let first = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let old = room_proof(&authority, &first[0], RoomInput::Checkpoint, None);
-    let second = peer.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let second = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 2)
+        .unwrap();
     let current = room_proof(&authority, &second[0], RoomInput::Checkpoint, Some(&old));
     let (channel, body) = encoded(&first[0]);
     let source = authority.governor().device_public_key;
@@ -483,7 +513,10 @@ fn room_proof_rejects_foreign_missing_dependencies_suffix_and_regressing_metadat
 #[test]
 fn exact_coverage_receipt_hash_heads_watermarks_required() {
     let (key, authority, mut peer, now) = fixture();
-    let batch = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let batch = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let (app_channel, app_body) = encoded(&batch[1]);
     for case in 0..9 {
         let mut doc = room_document(&batch[0]);
@@ -525,7 +558,6 @@ fn exact_coverage_receipt_hash_heads_watermarks_required() {
         }
         tilo_peer_state::durability::put(&mut doc, receipts).unwrap();
         if case >= 7 {
-            // A trailing byte on one stored route value.
             let field = if case == 7 {
                 tilo_peer_state::coverage::FIELD_V2
             } else {
@@ -576,7 +608,10 @@ fn exact_coverage_receipt_hash_heads_watermarks_required() {
 #[test]
 fn causal_tail_coverage_is_distinct_from_floor_safety_and_foreign_retirement() {
     let (key, authority, mut peer, now) = fixture();
-    let batch = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let batch = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let room = room_proof(&authority, &batch[0], RoomInput::Checkpoint, None);
     let proof = snapshot(&room, &batch[1]);
     let mut branch = AutoCommit::load(&peer.document(APP, "one").unwrap()).unwrap();
@@ -649,7 +684,10 @@ fn causal_tail_coverage_is_distinct_from_floor_safety_and_foreign_retirement() {
 #[test]
 fn historical_room_proof_preserves_effect_receipts_and_exact_governor_roster() {
     let (key, authority, mut peer, now) = fixture();
-    let batch = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let batch = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let source = authority.governor().device_public_key;
     let mut doc = room_document(&batch[0]);
     let receipts = doc
@@ -726,8 +764,14 @@ fn historical_room_proof_preserves_effect_receipts_and_exact_governor_roster() {
 #[test]
 fn incoming_snapshot_obsolescence_needs_exact_signed_route_integrity_and_selected_floor() {
     let (key, authority, mut peer, now) = fixture();
-    let first = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
-    let second = peer.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let first = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
+    let second = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 2)
+        .unwrap();
     let room = room_proof(&authority, &second[0], RoomInput::Checkpoint, None);
     let selected = snapshot(&room, &second[1]);
     let (channel, body) = encoded(&first[1]);
@@ -755,7 +799,10 @@ fn incoming_snapshot_obsolescence_needs_exact_signed_route_integrity_and_selecte
 #[test]
 fn hostile_tail_is_rejected_without_in_process_decode() {
     let (key, authority, mut peer, now) = fixture();
-    let batch = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let batch = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let room = room_proof(&authority, &batch[0], RoomInput::Checkpoint, None);
     let proof = snapshot(&room, &batch[1]);
     let source = authority.governor().device_public_key;
@@ -805,7 +852,6 @@ fn hostile_tail_is_rejected_without_in_process_decode() {
         );
         let mut cursor = proof.ordered_tail_readiness();
         assert!(!cursor.append(source, channel, &hostile), "{case}");
-        // A refused increment leaves the cursor where it was.
         assert!(cursor.append(source, channel, &accepted), "{case}");
     }
 }

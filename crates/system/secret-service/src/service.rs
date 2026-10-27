@@ -452,8 +452,6 @@ async fn publish_item(server: &ObjectServer, core: &Arc<Core>, item: &ItemRef) -
     Ok(())
 }
 
-// ---- org.freedesktop.Secret.Service ------------------------------------
-
 struct ServiceIface {
     core: Arc<Core>,
 }
@@ -688,8 +686,6 @@ impl ServiceIface {
     ) -> zbus::Result<()>;
 }
 
-// ---- org.freedesktop.Secret.Session ------------------------------------
-
 struct SessionIface {
     core: Arc<Core>,
     path: String,
@@ -720,8 +716,6 @@ impl SessionIface {
         Ok(())
     }
 }
-
-// ---- org.freedesktop.Secret.Collection ---------------------------------
 
 struct CollectionIface {
     core: Arc<Core>,
@@ -891,8 +885,6 @@ impl CollectionIface {
     async fn item_changed(emitter: &SignalEmitter<'_>, item: ObjectPath<'_>) -> zbus::Result<()>;
 }
 
-// ---- org.freedesktop.Secret.Item ---------------------------------------
-
 struct ItemIface {
     core: Arc<Core>,
     item: ItemRef,
@@ -1008,8 +1000,6 @@ impl ItemIface {
         Ok(self.info(header.as_ref()).await?.modified)
     }
 }
-
-// ---- so.tilo.Secrets1 -----------------------------------------------------
 
 /// One application as the management interface lists it:
 /// `(identity, name, access, first seen, last used, uses, items)`.

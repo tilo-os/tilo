@@ -122,7 +122,6 @@ pub(crate) struct RowFrame {
 }
 
 impl RowFrame {
-    /// The frame of rows `row_h` tall in `list`.
     pub(crate) fn new(list: Rect, row_h: f64, scrolls: bool, theme: &Theme) -> Self {
         let spacing = &theme.tokens.spacing;
         let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
@@ -145,13 +144,11 @@ impl RowFrame {
         self.pitch * rows as f64 + 2.0 * f64::from(theme.tokens.spacing.s2)
     }
 
-    /// Row `index`'s band, scrolled by `scroll`.
     pub(crate) fn band(&self, index: usize, scroll: f64) -> Rect {
         let y0 = self.top + index as f64 * self.pitch - scroll;
         Rect::new(self.x0, y0, self.x1, y0 + self.pitch)
     }
 
-    /// Row `index` as painted, scrolled by `scroll`.
     pub(crate) fn row(&self, index: usize, scroll: f64) -> Rect {
         self.band(index, scroll).inset((0.0, -self.gap))
     }
@@ -166,7 +163,6 @@ struct Press {
     offset: f64,
 }
 
-/// The text of one row.
 struct RowText<'a> {
     sender: String,
     email: &'a str,
@@ -227,6 +223,8 @@ pub struct MessageList {
     /// on screen did: its lift and actions follow the pointer, not the rows.
     hovered_drawing: Option<Rect>,
     hovered_presented: Option<Rect>,
+    /// The first fetch's placeholder step the last frame painted.
+    arriving_step: Option<ui::arriving::Step>,
 }
 
 impl MessageList {
@@ -245,7 +243,21 @@ impl MessageList {
             scrolled: false,
             hovered_drawing: None,
             hovered_presented: None,
+            arriving_step: None,
         }
+    }
+
+    /// Whether the first fetch's placeholder moved on a step since the last
+    /// frame painted it.
+    fn arriving_step_moved(&self) -> bool {
+        let Some(painted) = self.arriving_step else {
+            return false;
+        };
+        self.shared
+            .borrow()
+            .first_fetch
+            .as_ref()
+            .is_some_and(|clock| clock.step(ui::motion::frame_now()) != painted)
     }
 
     fn slot_at(&self, point: Point) -> Option<&Slot> {
@@ -401,7 +413,6 @@ fn action_rects(starred: bool, rect: Rect, theme: &Theme) -> Vec<Rect> {
 #[derive(Clone, Copy, Debug)]
 struct RowState {
     selected: bool,
-    /// Whether the row above is selected.
     previous_selected: bool,
     /// Whether the row below is selected; `None` for the last row.
     next_selected: Option<bool>,
@@ -475,25 +486,32 @@ fn selected_rows(state: &MailState, rows: &[(MessageId, usize)]) -> Vec<bool> {
         .collect()
 }
 
-/// The first fetch is on its way: the rows it brings, in outline, filling
-/// `list`.
-fn paint_arriving_rows(ctx: &mut PaintCtx<'_>, list: Rect) {
+/// The first fetch is on its way: the framework's placeholder for each row
+/// it brings, filling `list`. Returns the step painted.
+fn paint_arriving_rows(
+    ctx: &mut PaintCtx<'_>,
+    list: Rect,
+    clock: &ui::arriving::ArrivalClock,
+    now: ui::time::Instant,
+) -> ui::arriving::Step {
     let theme = ctx.theme;
-    let row_h = ListRowFace::new("Ag")
-        .subtitle("Ag")
-        .secondary("Ag")
-        .height(ctx.text, theme);
+    let kind = ListRowFace::new("Ag").subtitle("Ag").secondary("Ag");
+    let row_h = kind.height(ctx.text, theme);
     let frame = RowFrame::new(list, row_h, false, theme);
-    let skeleton = ui::widget::SkeletonFace::new(ui::widget::SkeletonShape::Row);
+    let face =
+        ui::widget::ArrivalFace::new(ui::widget::SkeletonShape::Row(kind.shape()), clock, now);
+    // The list is one region: its first row says where the mail comes from.
+    let mut named = ui::widget::NamedOnce::default();
     let mut index = 0;
     loop {
         let row = frame.row(index, 0.0);
         if row.y0 >= list.y1 {
             break;
         }
-        skeleton.paint(ctx, row);
+        face.clone().named_once(&mut named).paint(ctx, row);
         index += 1;
     }
+    face.step()
 }
 
 /// An unread conversation's dot: the toolkit's "something new" mark in the
@@ -540,12 +558,16 @@ impl Widget for MessageList {
         self.theme = theme.clone();
         self.region.set_viewport(r, theme);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
-        if rows.is_empty() && state.fetching_first {
+        if rows.is_empty()
+            && let Some(clock) = &state.first_fetch
+        {
             self.slots.clear();
             self.region.set_content_size(r.width(), 0.0);
-            paint_arriving_rows(&mut ctx, r);
+            let now = ui::motion::frame_now();
+            self.arriving_step = Some(paint_arriving_rows(&mut ctx, r, clock, now));
             return;
         }
+        self.arriving_step = None;
         if rows.is_empty() {
             self.slots.clear();
             self.region.set_content_size(r.width(), 0.0);
@@ -754,7 +776,7 @@ impl Widget for MessageList {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.scrolled || self.shared.borrow().dirty
+        self.dirty || self.scrolled || self.shared.borrow().dirty || self.arriving_step_moved()
     }
 
     /// A scroll that changed nothing else offers the host a copy of the
@@ -785,8 +807,23 @@ impl Widget for MessageList {
         self.region.needs_animation_frame(&self.theme)
     }
 
+    /// A glide after a flick scrolls as the wheel does: a copy.
+    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        self.scrolled |= self.region.advance();
+        false
+    }
+
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        self.region.next_wake_deadline(&self.theme)
+        // The first fetch's placeholder steps on at its deadlines.
+        let arriving = self
+            .arriving_step
+            .and_then(|_| self.shared.borrow().first_fetch.clone())
+            .and_then(|clock| clock.next_step_at(ui::time::now()));
+        self.region
+            .next_wake_deadline(&self.theme)
+            .into_iter()
+            .chain(arriving)
+            .min()
     }
 
     fn mark_drawn(&mut self) {
@@ -831,7 +868,6 @@ mod tests {
             "rows stack without overlap"
         );
 
-        // A press on the second row opens it.
         let (second, rect) = rows[1];
         let mut doc = crate::resource::TestMail::doc();
         assert!(list.press(&mut ui::widget::Edits::lend(&mut doc), rect.center()));

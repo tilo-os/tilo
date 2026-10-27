@@ -82,6 +82,10 @@ fn log_gpu_pin(gpu_pin: Option<&compositor::render_node::ProcessPin>) {
 enum ExistingIdentityFailureAction {
     /// The native compositor can present the owner-only restore/unlock flow.
     EnterTrustedRecovery,
+    /// The identity is intact and its certificate verifies; the clock reads
+    /// a time outside the certificate's validity. The session starts and
+    /// waits for the clock, and offers neither recovery nor replacement.
+    AwaitClock,
     /// There is no trusted recovery surface in this process shape.
     FailClosed,
 }
@@ -91,8 +95,10 @@ enum ExistingIdentityFailureAction {
 /// An unavailable keyring and malformed or mismatched persisted identity
 /// artifacts both require an explicit owner recovery ceremony in the compositor.
 /// They must never be interpreted as permission to create a replacement
-/// identity. Errors which do not prove an invalid stored identity (such as
-/// permission or storage failures) remain fail-closed.
+/// identity. A certificate refused only for the clock's reading proves the
+/// identity intact: the session waits for the clock instead. Errors which do
+/// not prove an invalid stored identity (such as permission or storage
+/// failures) remain fail-closed.
 fn existing_identity_failure_action(
     provision_requested: bool,
     error: &std::io::Error,
@@ -101,7 +107,9 @@ fn existing_identity_failure_action(
         return ExistingIdentityFailureAction::FailClosed;
     }
 
-    if error.kind() == std::io::ErrorKind::InvalidData {
+    if tilo_user_identity::CertificateClockError::in_io(error).is_some() {
+        ExistingIdentityFailureAction::AwaitClock
+    } else if error.kind() == std::io::ErrorKind::InvalidData {
         ExistingIdentityFailureAction::EnterTrustedRecovery
     } else {
         ExistingIdentityFailureAction::FailClosed
@@ -162,7 +170,7 @@ fn verify_existing_identity(
 ) -> Option<std::process::ExitCode> {
     let paths = firstboot::collaboration_identity_paths();
     if let Err(error) = verify_existing_identity_with_retry(|| {
-        firstboot::ensure_collaboration_identity(identity_dir, &paths)
+        firstboot::verify_existing_collaboration_identity(identity_dir, &paths)
     }) {
         match existing_identity_failure_action(provision_requested, &error) {
             ExistingIdentityFailureAction::EnterTrustedRecovery => {
@@ -171,11 +179,24 @@ fn verify_existing_identity(
                 // collaboration chain cannot verify. Never replace it
                 // or mint a second identity; native trusted chrome
                 // offers keyring recovery or encrypted restore.
+                let problem = shell::onboarding::IdentityProblem::of(&error);
                 tracing::warn!(
                     %error,
+                    problem = problem.map_or("unclassified", |problem| problem.as_str()),
                     "existing Tilo identity needs recovery; opening trusted recovery"
                 );
-                mark_identity_recovery();
+                mark_identity_recovery(problem);
+            }
+            ExistingIdentityFailureAction::AwaitClock => {
+                if let Some(refusal) = tilo_user_identity::CertificateClockError::in_io(&error) {
+                    tracing::warn!(
+                        %error,
+                        valid_from_ns = refusal.valid_from_ns,
+                        clock_ns = refusal.clock_ns,
+                        "this device's certificate is outside its validity at the clock's reading; waiting for the clock"
+                    );
+                    identity_provisioning::await_clock_for_identity(refusal.clone());
+                }
             }
             ExistingIdentityFailureAction::FailClosed => {
                 if provision_requested {
@@ -243,6 +264,15 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
             if let Some(exit) = verify_existing_identity(identity_dir, provision_requested) {
                 return Some(exit);
             }
+            if identity_provisioning::identity_clock_refusal().is_some() {
+                // The compositor re-verifies when the clock changes and
+                // starts what a verified identity starts from there.
+                tracing::info!(
+                    "loaded Tilo identity from {}; its certificate waits for the clock",
+                    store.path().display()
+                );
+                return None;
+            }
             if !provision_requested
                 && let Some(exit) = reconcile_verified_onboarding_progress(identity_dir)
             {
@@ -253,6 +283,7 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
                 return Some(std::process::ExitCode::SUCCESS);
             }
             tracing::info!("loaded Tilo identity from {}", store.path().display());
+            firstboot::keep_device_certificates_renewed(identity_dir);
         }
         Err(error) => {
             tracing::error!("could not initialise identity store: {error}");
@@ -268,10 +299,19 @@ fn prepare_identity(provision_requested: bool) -> Option<std::process::ExitCode>
     clippy::disallowed_methods,
     reason = "set before compositor startup; the only thread running then (font warm-up) never reads it"
 )]
-fn mark_identity_recovery() {
-    // SAFETY: only the font warm-up thread may run yet; it never reads this
-    // variable, and the marker only selects a stricter recovery surface.
-    unsafe { std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1") };
+fn mark_identity_recovery(problem: Option<shell::onboarding::IdentityProblem>) {
+    // SAFETY: only the font warm-up thread may run yet; it never reads these
+    // variables, and the markers only select a stricter recovery surface and
+    // the step it offers first.
+    unsafe {
+        std::env::set_var(identity_provisioning::IDENTITY_RECOVERY_ENV, "1");
+        if let Some(problem) = problem {
+            std::env::set_var(
+                shell::onboarding::IdentityProblem::RECOVERY_ENV,
+                problem.as_str(),
+            );
+        }
+    }
 }
 
 fn verify_collaboration_identity_entrypoint(provision_requested: bool) -> std::process::ExitCode {
@@ -438,6 +478,11 @@ pub fn run() -> std::process::ExitCode {
     if let Some(refusal) = removed_run_mode_refusal(&early_args) {
         eprintln!("error: {refusal}");
         return std::process::ExitCode::from(2);
+    }
+    // While no other thread exists: a table grown later stalls every thread
+    // that opens a file, the main loop among them.
+    if shell::compositor::descriptor_table::reserve().is_none() {
+        eprintln!("descriptor table left at its default size");
     }
     shell::shell::decide_receipt_against_surfaces();
     if let Err(error) = shell::shell::install_approved_checks_from_args(std::env::args_os().skip(1))
@@ -639,6 +684,9 @@ pub fn run() -> std::process::ExitCode {
         tracing::error!(%error, "cannot safely open session settings; repair the settings copy or its lock before starting the session");
         return std::process::ExitCode::FAILURE;
     }
+    // Who sits here is read now, before the loop runs, and kept current by
+    // workers: the loop asks on every frame and must never wait on the disk.
+    shell::watched_identity::install();
 
     if firstboot_requested
         && compositor::parse_install_mode(&arg_refs) == compositor::InstallMode::HostDesktop
@@ -698,7 +746,6 @@ mod tests {
 
     #[test]
     fn native_recovery_defers_only_an_invalid_existing_chain() {
-        // Phase `only_native_desktop_startup_can_defer_an_invalid_existing_chain_to_recovery`.
         {
             let invalid_cert = io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -720,7 +767,25 @@ mod tests {
                 ExistingIdentityFailureAction::FailClosed,
             );
         }
-        // Phase `native_recovery_does_not_mask_unrelated_startup_failures`.
+        {
+            // A certificate refused because the clock reads a time before its
+            // issuance says nothing about the identity: no recovery, no restore.
+            let behind = tilo_user_identity::CertificateClockError {
+                reason: tilo_user_identity::DeviceCertError::NotYetValid,
+                valid_from_ns: 2_000,
+                valid_until_ns: None,
+                clock_ns: 1_000,
+            }
+            .into_io();
+            assert_eq!(
+                existing_identity_failure_action(false, &behind),
+                ExistingIdentityFailureAction::AwaitClock,
+            );
+            assert_eq!(
+                existing_identity_failure_action(true, &behind),
+                ExistingIdentityFailureAction::FailClosed,
+            );
+        }
         {
             let permission_denied = io::Error::new(
                 io::ErrorKind::PermissionDenied,

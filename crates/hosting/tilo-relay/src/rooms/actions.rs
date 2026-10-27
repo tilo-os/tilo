@@ -98,6 +98,15 @@ pub(crate) const REQUEST_BOT: &str = "request-bot";
 /// Taking back the room's request for a bot: its host stops and
 /// uninstalls it.
 pub(crate) const WITHDRAW_BOT_REQUEST: &str = "withdraw-bot-request";
+/// No longer choosing which version of an app the room runs
+/// (`install-app`, the governance action of that name, chooses one).
+pub(crate) const UNINSTALL_APP: &str = "uninstall-app";
+/// Hand the room's host a piece of an app version's package file.
+pub(crate) const UPLOAD_APP_FILE: &str = "upload-app-file";
+/// Adding an agent to the room, with its preset's grants.
+pub(crate) const ADD_AGENT: &str = "add-agent";
+/// Removing an agent from the room, and every grant it held there.
+pub(crate) const REMOVE_AGENT: &str = "remove-agent";
 /// Giving the host a secret a requested bot's connector needs (a Discord
 /// bot token): kept in the host's secret store for that connector, never in
 /// the room's governance, a record or a log.
@@ -123,6 +132,8 @@ const MINUTE_MS: u64 = 60 * 1_000;
 const REQUEST_ID_CONTEXT: &str = "tilo-relay room governance action request v1";
 
 const ROLES: [&str; 4] = ["viewer", "commenter", "editor", "moderator"];
+/// The presets an agent added to a room holds.
+const AGENT_PRESETS: [&str; 4] = ["observer", "contributor", "operator", "custom"];
 const CALL_OPERATIONS: [&str; 4] = ["start", "restart", "set-directions", "set-denial"];
 /// The call operation that is destructive, and so not served yet.
 const END_CALL: &str = "end";
@@ -139,7 +150,7 @@ struct Verb {
 }
 
 /// What the rooms serve, in catalogue order.
-const VERBS: [Verb; 17] = [
+const VERBS: [Verb; 24] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -188,6 +199,34 @@ const VERBS: [Verb; 17] = [
         gate: governance::SET_ROLE,
         kind: roles::GOVERNANCE_KIND,
         params: set_role_params,
+    },
+    Verb {
+        id: ADD_AGENT,
+        label: "Add agent",
+        gate: governance::GRANT,
+        kind: roles::GOVERNANCE_KIND,
+        params: add_agent_params,
+    },
+    Verb {
+        id: REMOVE_AGENT,
+        label: "Remove agent",
+        gate: governance::REVOKE,
+        kind: roles::GOVERNANCE_KIND,
+        params: agent_params,
+    },
+    Verb {
+        id: governance::GRANT,
+        label: "Give a grant",
+        gate: governance::GRANT,
+        kind: roles::GOVERNANCE_KIND,
+        params: grant_params,
+    },
+    Verb {
+        id: governance::REVOKE,
+        label: "Take back a grant",
+        gate: governance::REVOKE,
+        kind: roles::GOVERNANCE_KIND,
+        params: revoke_params,
     },
     Verb {
         id: governance::RESTRICT,
@@ -258,6 +297,27 @@ const VERBS: [Verb; 17] = [
         gate: governance::INSTALL_BOT,
         kind: ActionKind::Outside,
         params: connector_secret_params,
+    },
+    Verb {
+        id: governance::INSTALL_APP,
+        label: "Run a version of an app",
+        gate: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: app_release_params,
+    },
+    Verb {
+        id: UPLOAD_APP_FILE,
+        label: "Hand the room an app version's package",
+        gate: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: app_file_params,
+    },
+    Verb {
+        id: UNINSTALL_APP,
+        label: "Let everyone run their own version of an app",
+        gate: governance::INSTALL_APP,
+        kind: roles::GOVERNANCE_KIND,
+        params: app_params,
     },
 ];
 
@@ -333,6 +393,42 @@ fn set_role_params() -> Vec<ActionParam> {
     vec![person_param(), role_param()]
 }
 
+fn add_agent_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "agent",
+            ParamType::Text,
+            "The agent's stable id, as the room's agents name it.",
+        ),
+        ActionParam::required("preset", ParamType::Text, "What the agent may do here.")
+            .with_choices(AGENT_PRESETS),
+    ]
+}
+
+fn agent_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "agent",
+        ParamType::Text,
+        "The agent's stable id, as the room's agents name it.",
+    )]
+}
+
+fn grant_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "grant",
+        ParamType::Object,
+        "The grant: its id, subject, node, kinds, answer and lifetime.",
+    )]
+}
+
+fn revoke_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "grant",
+        ParamType::Text,
+        "The grant's id, as the room's grants report it.",
+    )]
+}
+
 fn person_params() -> Vec<ActionParam> {
     vec![person_param()]
 }
@@ -369,7 +465,69 @@ fn bot_request_params() -> Vec<ActionParam> {
             ParamType::Object,
             "The bot's settings, by name, such as a bridge's guild and server; never a secret.",
         ),
+        ActionParam::optional(
+            "program",
+            ParamType::Text,
+            "A developer's own program for the entry, run instead of the listed one; `version` names the build.",
+        ),
     ]
+}
+
+fn app_param() -> ActionParam {
+    ActionParam::required("app", ParamType::Text, "The app, such as so.tilo.notes.")
+}
+
+fn app_release_params() -> Vec<ActionParam> {
+    vec![
+        app_param(),
+        ActionParam::required("version", ParamType::Text, "The version its package names."),
+        ActionParam::required(
+            "surface",
+            ParamType::Text,
+            "The BLAKE3 hash of the package's surface.toml, 64 hex characters.",
+        ),
+        ActionParam::required(
+            "package",
+            ParamType::Text,
+            "The package's tapp: hash, 64 hex characters.",
+        ),
+        ActionParam::required(
+            "publisher",
+            ParamType::Text,
+            "The publisher key that signed the package, 64 hex characters.",
+        ),
+        ActionParam::optional(
+            "dev",
+            ParamType::Boolean,
+            "A developer's own build, never reviewed by a registry.",
+        ),
+        ActionParam::optional(
+            "file",
+            ParamType::Text,
+            "The BLAKE3 hash of the .tapp file the host keeps (`upload-app-file`), 64 hex characters: members fetch it from the room.",
+        ),
+    ]
+}
+
+fn app_file_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "file",
+            ParamType::Text,
+            "The BLAKE3 hash of the whole .tapp file, 64 hex characters.",
+        ),
+        ActionParam::required("offset", ParamType::Integer, "Where this piece starts."),
+        ActionParam::required("total", ParamType::Integer, "The file's size in bytes."),
+        ActionParam::required(
+            "data",
+            ParamType::Text,
+            "The piece, as hex: at most 256 KiB of the file.",
+        ),
+    ]
+}
+
+fn app_params() -> Vec<ActionParam> {
+    vec![app_param()]
 }
 
 fn connector_secret_params() -> Vec<ActionParam> {
@@ -959,6 +1117,8 @@ impl Rooms {
             | DECLINE => self.governance_invitations(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
+            governance::INSTALL_APP | UNINSTALL_APP => self.governance_apps(action, call).await,
+            UPLOAD_APP_FILE => self.upload_app_piece(call),
             SET_CONNECTOR_SECRET => connector_secret(call.args),
             _ => self.governance_members(action, call).await,
         }
@@ -1032,6 +1192,7 @@ impl Rooms {
                 entry,
                 version: args.required_text("version")?.to_owned(),
                 inputs: args.text_map("inputs")?,
+                program: args.text("program")?.map(str::to_owned),
             })
         } else {
             WorkspaceMembershipCommand::WithdrawBotRequest { entry }
@@ -1042,6 +1203,83 @@ impl Rooms {
             .await
             .map_err(|error| refused(&error))?;
         Ok(json!({ "generation": done.generation }))
+    }
+
+    /// The version of an app the room runs: choosing one, and taking the
+    /// choice back. Answers what the room runs now.
+    async fn governance_apps(
+        &self,
+        action: &str,
+        call: GovernanceCall<'_>,
+    ) -> Result<Value, ActionHostError> {
+        use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
+        let GovernanceCall {
+            room,
+            device,
+            request_id,
+            args,
+        } = call;
+        let app = args.required_text("app")?.to_owned();
+        let command = if action == governance::INSTALL_APP {
+            let file = args.text("file")?.map(str::to_owned);
+            // Members fetch the file from this host: it must be here first.
+            if let Some(file) = &file
+                && !self.keeps_app_file(room, file)
+            {
+                return Err(refused(
+                    &"the room's host does not have this package file: hand it over with `upload-app-file` first",
+                ));
+            }
+            WorkspaceMembershipCommand::InstallApp(AppRelease {
+                app: app.clone(),
+                version: args.required_text("version")?.to_owned(),
+                surface: args.required_text("surface")?.to_owned(),
+                package: args.required_text("package")?.to_owned(),
+                publisher: args.required_text("publisher")?.to_owned(),
+                file,
+                dev: args.flag("dev")?,
+            })
+        } else {
+            WorkspaceMembershipCommand::UninstallApp { app: app.clone() }
+        };
+        command.validate().map_err(invalid)?;
+        let done = self
+            .govern_app(room, device, request_id, command)
+            .await
+            .map_err(|error| refused(&error))?;
+        let running = self
+            .app_versions(room)
+            .await
+            .map_err(|error| refused(&error))?
+            .into_iter()
+            .find(|installed| installed.release.app == app);
+        Ok(json!({ "generation": done.generation, "running": running }))
+    }
+
+    /// A piece of an app version's package file, for this host to keep and
+    /// answer members with. Answers how many bytes are in, or that the
+    /// whole file is.
+    fn upload_app_piece(&self, call: GovernanceCall<'_>) -> Result<Value, ActionHostError> {
+        let args = call.args;
+        let file = args.required_text("file")?;
+        let offset = args
+            .integer("offset")?
+            .ok_or_else(|| invalid("`offset` is required"))?;
+        let total = args
+            .integer("total")?
+            .ok_or_else(|| invalid("`total` is required"))?;
+        let data =
+            hex::decode(args.required_text("data")?).map_err(|_| invalid("`data` must be hex"))?;
+        if data.len() > super::app_files::APP_FILE_PIECE_BYTES {
+            return Err(invalid("a piece is at most 256 KiB"));
+        }
+        match self
+            .upload_app_file(call.room, file, offset, total, &data)
+            .map_err(|error| refused(&error))?
+        {
+            super::app_files::Uploaded::Partial(received) => Ok(json!({ "received": received })),
+            super::app_files::Uploaded::Complete => Ok(json!({ "received": total, "kept": true })),
+        }
     }
 
     /// Inviting, and what inviting covers: the invitations and join
@@ -1159,6 +1397,13 @@ impl Rooms {
                 };
                 generation(self.set_member_role(room, device, request).await)
             }
+            ADD_AGENT | REMOVE_AGENT | governance::GRANT | governance::REVOKE => {
+                let command = membership_command(action, args)?;
+                generation(
+                    self.govern_room_membership(room, device, request_id, command)
+                        .await,
+                )
+            }
             governance::RESTRICT => {
                 let minutes = args
                     .integer("minutes")?
@@ -1192,6 +1437,37 @@ impl Rooms {
             _ => Err(ActionHostError::UnknownAction),
         }
     }
+}
+
+/// The membership command governance `action` carries with `args`.
+fn membership_command(
+    action: &str,
+    args: &Args,
+) -> Result<tilo_peer_state::workspace_membership::WorkspaceMembershipCommand, ActionHostError> {
+    use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand as Command;
+    Ok(match action {
+        ADD_AGENT => Command::AddAgent {
+            agent: args.required_text("agent")?.trim().to_lowercase(),
+            preset: tilo_action_policy::roles::AgentPreset::parse(args.required_text("preset")?)
+                .ok_or_else(|| invalid("no such agent preset"))?,
+        },
+        REMOVE_AGENT => Command::RemoveAgent {
+            agent: args.required_text("agent")?.trim().to_lowercase(),
+        },
+        governance::GRANT => Command::Grant {
+            grant: serde_json::from_value(
+                args.0
+                    .get("grant")
+                    .cloned()
+                    .ok_or_else(|| invalid("`grant` is required"))?,
+            )
+            .map_err(|error| invalid(format!("`grant` is not a grant: {error}")))?,
+        },
+        governance::REVOKE => Command::Revoke {
+            grant: tilo_action_policy::GrantId::new(args.required_text("grant")?),
+        },
+        other => return Err(invalid(format!("`{other}` is no membership command"))),
+    })
 }
 
 /// One governance invocation, as its room method takes it.
@@ -1384,12 +1660,17 @@ impl ActionHost for InWorkspace {
         self.host.ledger().get(caller, id).cloned()
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        if !self.host.admitted(caller, id) {
-            return Err(ActionHostError::UnknownInvocation);
-        }
-        Err(ActionHostError::NotCancellable {
-            reason: "room governance completes at once".into(),
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(if self.host.admitted(caller, id) {
+            Err(ActionHostError::NotCancellable {
+                reason: "room governance completes at once".into(),
+            })
+        } else {
+            Err(ActionHostError::UnknownInvocation)
         })
     }
 }
@@ -1407,7 +1688,6 @@ const PROVIDERS: [&str; 3] = [
 /// own operations ([`HOST_ACTIONS_PROVIDER`]), and the app-serving plane its
 /// embedder supplied for everything else.
 pub(crate) struct GovernedPlane {
-    /// Answers the rooms' governance.
     pub(crate) governance: HostRoomActions,
     /// Answers everything else, when the embedder serves apps.
     pub(crate) apps: Option<Arc<dyn AppServingPlane>>,

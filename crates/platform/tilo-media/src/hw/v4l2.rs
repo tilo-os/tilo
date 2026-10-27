@@ -512,7 +512,6 @@ mod tests {
             classify_node(&[(S264, true), (VP8F, true)], &[(NV12, false)]),
             Some(V4l2Role::Decoder { stateless: true })
         );
-        // A stateful decoder takes the raw bitstream.
         assert_eq!(
             classify_node(&[(H264, true)], &[(NV12, false)]),
             Some(V4l2Role::Decoder { stateless: false })

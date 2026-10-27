@@ -20,7 +20,6 @@ use std::io;
 /// The kind of native lease to acquire.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LeaseMode {
-    /// Coexists with other shared leases and excludes exclusive leases.
     Shared,
     /// Excludes both shared and exclusive leases.
     Exclusive,

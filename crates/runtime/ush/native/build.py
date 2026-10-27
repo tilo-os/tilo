@@ -20,7 +20,6 @@ def build(output: Path, headers: Path) -> None:
         check=True,
         capture_output=True,
         text=True,
-        timeout=5,
     ).stdout
     match = re.match(r"GNU bash, version (\d+\.\d+)\.(\d+)\(", version)
     if match is None:
@@ -56,7 +55,6 @@ def build(output: Path, headers: Path) -> None:
             str(output),
         ],
         check=True,
-        timeout=30,
     )
     output.chmod(0o755)
 

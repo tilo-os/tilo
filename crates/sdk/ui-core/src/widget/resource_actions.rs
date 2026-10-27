@@ -20,11 +20,6 @@ use crate::widget::{ResourceOperation, ResourceOperationStart, TaffyTreeExt, Wid
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
 
 /// Build one resource with a unit operation.
-///
-/// # Panics
-///
-/// Panics only if serializing Rust's unit value fails, which the JSON encoder
-/// represents unconditionally as `null`.
 #[expect(
     clippy::expect_used,
     reason = "serializing the unit operation payload is infallible"
@@ -85,10 +80,6 @@ pub trait ActionValue: Clone + Send + Sync + 'static {
     fn into_json(self) -> serde_json::Value;
 
     /// Decode a validated action argument.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `value` does not have this action value's type.
     fn from_json(value: &serde_json::Value) -> Result<Self, String>;
 }
 
@@ -230,11 +221,6 @@ impl ActionForm {
 
     /// Bind one control's typed output while filling every other argument
     /// from its current live state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the field is absent, has another action type, or
-    /// the generated binding does not match the exported action.
     pub fn binding<T: ActionValue>(&self, name: &str) -> Result<ActionBinding<T>, String> {
         let field = self
             .fields
@@ -269,11 +255,6 @@ impl ActionForm {
 
     /// A button binding that restores the values captured when the form was
     /// declared.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only if the generated initial values violate the
-    /// generated action contract.
     pub fn reset_binding(&self) -> Result<ActionBinding<()>, String> {
         ActionBinding::static_json_for(
             &self.resource(),
@@ -339,7 +320,10 @@ pub fn immediate(
 }
 
 impl Widget for ResourceActionHost {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
+    );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.root.update(state, path)
@@ -405,6 +389,10 @@ impl Widget for ResourceActionHost {
         self.root.accessibility()
     }
 
+    fn accessibility_hidden(&self) -> bool {
+        self.root.accessibility_hidden()
+    }
+
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         self.root.synthetic_accessibility_rect(path)
     }
@@ -428,31 +416,6 @@ impl Widget for ResourceActionHost {
     ) -> bool {
         self.root
             .perform_semantic_action(target, action, state, path)
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op
-            .unscoped()
-            .filter(|request| request.kind != OperationKind::Document)
-            .filter(|request| request.type_id == OPERATION_TYPE)
-        else {
-            return Ok(None);
-        };
-        (self.run)(request.payload)
-            .map(ResourceOperationStart::Completed)
-            .map(Some)
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -492,6 +455,33 @@ impl Widget for ResourceActionHost {
     }
 }
 
+impl crate::widget::ResourceOperations for ResourceActionHost {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[OPERATION_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(started) = crate::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op
+            .unscoped()
+            .filter(|request| request.kind != OperationKind::Document)
+            .filter(|request| request.type_id == OPERATION_TYPE)
+        else {
+            return Ok(None);
+        };
+        (self.run)(request.payload)
+            .map(ResourceOperationStart::Completed)
+            .map(Some)
+    }
+}
+
 impl crate::resources::PublishesResources for ResourceActionHost {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         vec![self.resource.clone()]
@@ -504,7 +494,6 @@ mod tests {
 
     #[test]
     fn action_form_validates_controls_and_connects_invocation() {
-        // Case `action_form_connects_controls_discovery_and_external_invocation`.
         {
             let name = crate::LocalState::new(String::from("Ada"));
             let enabled = crate::LocalState::new(true);
@@ -535,7 +524,6 @@ mod tests {
             assert_eq!(reset.arguments["enabled"], true);
         }
 
-        // Case `action_form_rejects_wrong_control_types_before_mounting`.
         {
             let value = crate::LocalState::new(String::new());
             let form = ActionForm::new("profile", "Profile", "save", "Save").field(

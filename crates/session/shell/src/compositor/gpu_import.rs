@@ -479,7 +479,6 @@ mod tests {
 
     #[test]
     fn fourcc_opacity_and_error_stages_are_exact() {
-        // Phase `opaque_fourccs_are_exactly_the_x_variants`.
         assert!(is_opaque_fourcc(Fourcc::Xrgb8888));
         assert!(is_opaque_fourcc(Fourcc::Xbgr8888));
         assert!(
@@ -487,7 +486,6 @@ mod tests {
             "ARGB carries real alpha; forcing it opaque would break client transparency"
         );
         assert!(!is_opaque_fourcc(Fourcc::Abgr8888));
-        // Phase `errors_name_the_failing_stage`.
         assert!(
             GpuImportError::Unavailable("eglCreateContext: nope".into())
                 .to_string()

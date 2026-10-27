@@ -16,7 +16,7 @@ use collab_types::ArtifactId;
 use collab_types::{
     DocumentMutation, OpKind, ValidationError, document_artifact_id, document_attestation_id,
 };
-use ui::collaboration::CollabEvent;
+use runtime_collab::event::CollabEvent;
 
 pub use crate::shell::collab_core::{
     AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
@@ -30,12 +30,11 @@ use crate::shell::network::{
 use tilo_action_broker::collab_inbound::validate_route as validate_document_route;
 
 mod personal_session;
-pub(crate) use personal_session::{NativePersonalSession, NativePersonalSource};
+pub(crate) use personal_session::{
+    NativePersonalSession, NativePersonalSource, RetainedProofRecipient,
+};
 
-/// What a room calls the peers in it, keyed by the handle presence
-/// frames identify their sender by. Same shape as
-/// [`crate::shell::peer_presence::PeerLabels`].
-pub type PeerLabels = std::collections::BTreeMap<u64, String>;
+pub use crate::shell::peer_presence::PeerLabels;
 
 /// How long a room's answer is cached before re-asking. Reading it
 /// takes the replica's lock and parses every peer id in the room
@@ -136,7 +135,7 @@ pub struct BrokerHandle {
     local_session: crate::shell::collab_broker_capnp::LocalSessionAuthority,
     _personal_source: Option<Arc<NativePersonalSource>>,
     native_media: Option<super::native_media::NativeMediaService>,
-    task_review: Option<super::task_review::NativeTaskReview>,
+    tracker: Option<Arc<super::broker_services::NativeTrackerRuns>>,
     realtime_fabric: Option<crate::shell::collab_broker_capnp::RealtimeFabricAppBridge>,
     /// Spawned only when there's a `ShellNetwork` to pump.
     drain_thread: Option<JoinHandle<()>>,
@@ -155,8 +154,9 @@ impl std::ops::Deref for BrokerHandle {
 }
 
 impl BrokerHandle {
-    pub(crate) fn task_review(&self) -> Option<super::task_review::NativeTaskReview> {
-        self.task_review.clone()
+    /// The rooms' trackers, for following an issue's run in the shell.
+    pub(crate) fn tracker(&self) -> Option<Arc<super::broker_services::NativeTrackerRuns>> {
+        self.tracker.clone()
     }
 
     pub(crate) fn native_media_service(&self) -> Option<super::native_media::NativeMediaService> {
@@ -249,8 +249,6 @@ pub fn spawn_native_offloading(
             crate::shell::record_hydration::NetworkSource(Arc::clone(network)),
         ));
     }
-    let task_review =
-        super::task_review::NativeTaskReview::new(membership.clone(), peer_sync.clone()).ok();
     let publisher = PeerPublisher::with_optional_owner_commit(
         peer_sync
             .clone()
@@ -260,7 +258,7 @@ pub fn spawn_native_offloading(
             peer_sync.clone(),
         )),
     );
-    let mut handle = spawn_inner(
+    spawn_inner(
         capnp_socket_path,
         peer_sync.as_ref(),
         &publisher,
@@ -268,9 +266,7 @@ pub fn spawn_native_offloading(
         CertificateProvisioning::Production,
         None,
         action_offload,
-    )?;
-    handle.task_review = task_review;
-    Ok(handle)
+    )
 }
 
 /// Spawn the production broker pipeline with an explicit enrolled-device set.
@@ -485,7 +481,7 @@ impl DrainQueues {
                 format!("continuation:{}", view.instance),
             );
             let event = CollabEvent::Handoff {
-                request: ui::collaboration::handoff::HandoffRequest::OwnerView { view },
+                request: collab_types::handoff::HandoffRequest::OwnerView { view },
             };
             if let Some(source) = source_route {
                 let _ = self.net.with_current_personal_route(&source, || {
@@ -587,12 +583,12 @@ impl DrainQueues {
             );
             // Who acted is what the sender's certified identity supports.
             let (user_id, payload) = match payload {
-                ui::collaboration::PresencePayload::Interaction(update) => {
+                collab_types::presence::PresencePayload::Interaction(update) => {
                     let actor = update.actor.from_peer(&user_id, entry.person.as_deref());
                     let sequence = update.sequence;
                     (
                         actor.id.clone(),
-                        ui::collaboration::PresencePayload::Interaction(Box::new(
+                        collab_types::presence::PresencePayload::Interaction(Box::new(
                             update.normalized_by_broker(actor, sequence),
                         )),
                     )
@@ -625,6 +621,11 @@ impl DrainQueues {
         };
         for entry in drained_signed {
             let peer = entry.peer;
+            let (app_id, cluster_id, record_id) = (
+                entry.app_id.clone(),
+                entry.cluster_id.clone(),
+                entry.record_id.clone(),
+            );
             let document = tilo_action_broker::collab_inbound::RemoteDocument {
                 app_id: entry.app_id,
                 cluster_id: entry.cluster_id,
@@ -654,8 +655,40 @@ impl DrainQueues {
             if !delivered {
                 return false;
             }
+            // After it is admitted: a window that subscribes from now on is
+            // told it with the records its room holds
+            // (`BrokerChannels::tree_records_held`), and one that subscribed
+            // before is told here, so none misses it.
+            self.announce_tree_record(&app_id, &cluster_id, &record_id);
         }
         true
+    }
+
+    /// A peer wrote a record of an app's tree (a chain's next part, a
+    /// container's child) that no window here holds: tell the app's windows
+    /// in that room, which then hold it like their own and sync it on its
+    /// route, receiving what was admitted for it before
+    /// (`CapnpBrokerState::subscribe_ops`). A window that opens after this
+    /// learns the record from what the broker holds
+    /// (`BrokerChannels::tree_records_held`).
+    fn announce_tree_record(&self, app_id: &str, cluster_id: &str, record_id: &str) {
+        if ui::record::RecordId::parse(record_id)
+            .and_then(|id| id.tree())
+            .is_none()
+        {
+            return;
+        }
+        let record = CrdtRoute::record(app_id, cluster_id, record_id);
+        if self.table.holds_route(&record) {
+            return;
+        }
+        self.table.fanout_to_route(
+            &CollabEvent::RecordsArrived {
+                records: vec![record_id.to_owned()],
+            },
+            u64::MAX,
+            &CrdtRoute::app(app_id, cluster_id),
+        );
     }
 
     /// When another of this person's devices came back, ask the local apps
@@ -832,6 +865,9 @@ fn spawn_inner(
     let record_content = peer_sync
         .filter(|_| config.is_none())
         .map(crate::shell::record_content::session_record_content);
+    if let Some(content) = &record_content {
+        crate::shell::room_app_versions::fetch_through(content);
+    }
     let drain_thread = peer_sync.and_then(|net| {
         let queues = DrainQueues {
             presence_inbound: net.inbound_app_presence_handle(),
@@ -908,6 +944,17 @@ fn spawn_inner(
     } else {
         tilo_action_broker::services::HostServices::default()
     };
+    // The broker's runs and the shell's composer read one tracker.
+    let tracker = membership
+        .as_ref()
+        .filter(|_| config.is_none())
+        .map(|tree| {
+            super::broker_services::native_tracker(tree, peer_sync.cloned(), channel_keys.clone())
+        });
+    if let Some(tracker) = &tracker {
+        services.tracker_runs =
+            Some(tracker.clone() as Arc<dyn tilo_action_broker::services::TrackerRuns>);
+    }
     #[cfg(any(test, feature = "test-support"))]
     if let CertificateProvisioning::HarnessDevices(_, Some(wrap)) = &certificate_provisioning {
         services.committed_documents = services.committed_documents.map(|reads| wrap(reads));
@@ -990,7 +1037,7 @@ fn spawn_inner(
             .desktop
             .workspaces
             .iter()
-            .filter_map(|w| uuid::Uuid::parse_str(&w.room.to_string()).ok())
+            .filter_map(|w| uuid::Uuid::parse_str(&w.room().to_string()).ok())
             .collect();
         network
             .cmd_tx
@@ -1004,7 +1051,7 @@ fn spawn_inner(
             NativePersonalSource::install(personal_socket, broker, local_session.lifecycle(), host)
         });
     Ok(BrokerHandle {
-        task_review: None,
+        tracker,
         inner,
         local_session,
         _personal_source: personal_source,
@@ -1232,7 +1279,7 @@ pub(crate) fn answer_remote_actions(
 
 /// What has been announced per (room, peer): the name, the colour, and the
 /// connection generation it was said in front of.
-type Announced = HashMap<(String, u64), (String, Option<ui::tokens::PresenceHue>, u64)>;
+type Announced = HashMap<(String, u64), (String, Option<collab_types::presence::PresenceHue>, u64)>;
 
 /// The id a remote peer's traffic is attributed under, announcing the
 /// room's name for it and the colour its own machine says it wears
@@ -1246,14 +1293,11 @@ fn remote_participant_id(
     cluster_id: &str,
     peer: u64,
     labels_of: &dyn Fn(&str) -> PeerLabels,
-    colour_of: &dyn Fn(u64) -> Option<ui::tokens::PresenceHue>,
+    colour_of: &dyn Fn(u64) -> Option<collab_types::presence::PresenceHue>,
     table: &FanoutState,
     labels: &mut HashMap<String, (Instant, PeerLabels)>,
     announced: &mut Announced,
 ) -> String {
-    // Attributed to the publishing host, not a local peer slot: this is
-    // what colours the caret, so two peers must never collapse to one id.
-    let user_id = format!("peer@{peer}");
     let now = Instant::now();
     let fresh = labels
         .get(cluster_id)
@@ -1261,13 +1305,16 @@ fn remote_participant_id(
     if !fresh {
         labels.insert(cluster_id.to_string(), (now, labels_of(cluster_id)));
     }
-    // What the room (i.e. whoever invited them) calls this peer. An
-    // unnamed peer has no entry and stays labelled with the id above.
+    // Attributed to the publishing session, not a local peer slot: this is
+    // what colours the caret, so two peers must never collapse to one id.
+    // What the room (i.e. whoever invited them) calls this peer; an
+    // unnamed peer has no name and stays labelled with its id.
+    let unnamed = PeerLabels::new();
+    let room = labels.get(cluster_id).map_or(&unnamed, |(_, room)| room);
+    let crate::shell::peer_presence::PresencePrincipal { id: user_id, name } =
+        crate::shell::peer_presence::resolve_presence_principal(room, peer);
     let slot = (cluster_id.to_string(), peer);
-    let known = labels
-        .get(cluster_id)
-        .and_then(|(_, m)| m.get(&peer))
-        .map(String::as_str);
+    let known = name.as_deref();
     let prior = announced.get(&slot);
     let generation = table.connections_seen();
     let colour = colour_of(peer);
@@ -1285,7 +1332,7 @@ fn remote_participant_id(
     if let Some(name) = say {
         announced.insert(slot, (name.clone(), colour, generation));
         let roster = CollabEvent::Context {
-            collaborators: vec![ui::collaboration::Collaborator {
+            collaborators: vec![collab_types::presence::Collaborator {
                 id: user_id.clone(),
                 name,
                 colour,
@@ -1724,7 +1771,7 @@ mod tests {
         fn the_colour_a_peer_wears_reaches_every_app_once() {
             const HANDLE: u64 = 77;
 
-            type Heard = Arc<Mutex<Vec<(String, Option<ui::tokens::PresenceHue>)>>>;
+            type Heard = Arc<Mutex<Vec<(String, Option<collab_types::presence::PresenceHue>)>>>;
             let table = Arc::new(super::FanoutState::new());
             let heard: Heard = Arc::new(Mutex::new(Vec::new()));
             let sink = Arc::clone(&heard);
@@ -1762,20 +1809,23 @@ mod tests {
                 heard.lock().unwrap().is_empty(),
                 "an unnamed peer that said no colour is not announced"
             );
-            *colour.lock().unwrap() = Some(ui::tokens::PresenceHue::Violet);
+            *colour.lock().unwrap() = Some(collab_types::presence::PresenceHue::Violet);
             say();
             say();
             let id = format!("peer@{HANDLE}");
             assert_eq!(
                 heard.lock().unwrap().clone(),
-                vec![(id.clone(), Some(ui::tokens::PresenceHue::Violet))],
+                vec![(
+                    id.clone(),
+                    Some(collab_types::presence::PresenceHue::Violet)
+                )],
                 "the colour is said once, under the id"
             );
-            *colour.lock().unwrap() = Some(ui::tokens::PresenceHue::Teal);
+            *colour.lock().unwrap() = Some(collab_types::presence::PresenceHue::Teal);
             say();
             assert_eq!(
                 heard.lock().unwrap().last().cloned(),
-                Some((id, Some(ui::tokens::PresenceHue::Teal))),
+                Some((id, Some(collab_types::presence::PresenceHue::Teal))),
                 "a new choice is said again"
             );
         }

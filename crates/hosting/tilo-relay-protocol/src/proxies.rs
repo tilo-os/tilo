@@ -64,7 +64,6 @@ fn prefix_bits(ip: IpAddr) -> u128 {
 }
 
 impl TrustedProxies {
-    /// Whether `ip` is in one of the ranges.
     #[must_use]
     pub fn contains(&self, ip: IpAddr) -> bool {
         self.0.iter().any(|(range, bits)| {

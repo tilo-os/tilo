@@ -4,7 +4,7 @@
 //! launcher, an app's own search) indexes its records in a
 //! [`SearchIndex`] and asks it for ranked pages:
 //!
-//! - text is folded ([`fold`]) so case, diacritics and compatibility forms
+//! - text is folded ([`fold()`]) so case, diacritics and compatibility forms
 //!   never hide a match;
 //! - fields are found by substring and prefix as the person types, through
 //!   gram phrases ([`GramTokenizer`]);
@@ -59,7 +59,7 @@ pub use fold::{fold, fold_char};
 pub use highlight::locate;
 pub use index::{BodyPiece, BodySource, Document, Hit, Hits, Page, SearchIndex, Signals};
 pub use list::ListIndex;
-pub use query::{MIN_INFIX_SCALARS, Matching, matches_inside_words};
+pub use query::{MIN_ALIAS_SCALARS, MIN_INFIX_SCALARS, Matching, matches_inside_words};
 /// The engine's error, for callers opening a [`DiskIndex`].
 pub use tantivy::TantivyError;
 pub use tokenizer::{GRAM_WIDTH, GramTokenizer, WordTokenizer};

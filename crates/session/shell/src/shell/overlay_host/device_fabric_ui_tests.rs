@@ -55,6 +55,7 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
             tethering: Vec::new(),
             remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView::default(),
             device_unlocks: Vec::new(),
+            device_vpn: None,
         },
         remote,
     )
@@ -244,9 +245,8 @@ fn continuity_catalog_registers_providers_and_reaches_every_device_and_session()
         let total = device_fabric_pane_rows(&view, &RealtimeContinuityUiView::default()).len();
         assert_eq!(
             total,
-            // One extra row offers speaker setup once two devices can play.
-            view.local_media.len() + view.local_outputs.len() + view.devices.len() + 1,
-            "the pane model must not truncate media, outputs, or devices"
+            view.local_media.len() + view.devices.len() + 1,
+            "the pane model must not truncate media or devices"
         );
         let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
@@ -297,22 +297,15 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
         );
         host.open_devices_for_tests();
 
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
-        let device_row = host.qs_devices_row_rect(2);
+        // The media first, then the device: the media plays there.
+        let device_row = host.qs_devices_row_rect(1);
         host.handle_qs_device_fabric_click(Point::new(device_row.x0 + 44.0, device_row.center().y));
-        let (placements, control) =
-            ShellOverlayHost::qs_device_row_actions(host.qs_devices_row_rect(2));
-        host.handle_qs_device_fabric_click(placements[1].center());
+        let control = ShellOverlayHost::qs_device_control_rect(host.qs_devices_row_rect(1));
         host.handle_qs_device_fabric_click(control.center());
         let actions = actions.borrow();
-        assert!(actions.contains(&DeviceFabricUiAction::RouteLocalAudio { node_id: 41 }));
         assert!(actions.contains(&DeviceFabricUiAction::HandoffMedia {
             session_id: "so.tilo.video:7".into(),
             target: remote,
-        }));
-        assert!(actions.contains(&DeviceFabricUiAction::Place {
-            device: DeviceId::new("certified-laptop").unwrap(),
-            edge: crate::shell::device_fabric::DisplayEdge::Right,
         }));
         assert!(actions.contains(&DeviceFabricUiAction::GrantControl {
             controller: DeviceId::new("certified-laptop").unwrap(),
@@ -416,7 +409,7 @@ fn device_pane_media_rows_route_exact_requests_and_retry_or_refuse() {
             Ok(host_view.clone())
         }));
         host.open_devices_for_tests();
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(2).center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
         assert!(
             !actions
                 .borrow()
@@ -763,7 +756,6 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
         let (_, decline) =
             ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
         host.handle_qs_device_fabric_click(decline.center());
-        // Enter on the request allows it.
         host.press_qs_device_row(0, None);
 
         let actions = actions.borrow();
@@ -904,19 +896,34 @@ fn device_pane_tethering_and_capture_require_explicit_consent() {
             Ok(view.clone())
         }));
         host.open_devices_for_tests();
+        // The request waiting to use this device's camera is not a row of
+        // the section: the consent sheet asks it.
+        let rows = host
+            .chrome
+            .as_ref()
+            .expect("chrome")
+            .borrow()
+            .quick_settings
+            .device_rows
+            .clone();
+        assert!(
+            rows.iter().all(|row| !matches!(
+                row.actions,
+                crate::shell::quick_settings::hosted::HostedActions::Pair { .. }
+            )),
+            "no allow and decline buttons in Quick Settings: {rows:?}"
+        );
 
-        let (_, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
-        host.handle_qs_device_fabric_click(decline.center());
+        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
         host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
-        host.handle_qs_device_fabric_click(host.qs_devices_row_rect(2).center());
 
         let actions = actions.borrow();
         assert!(
-            actions.contains(&DeviceFabricUiAction::AuthorizeRemoteCapture {
-                request_id: [12; 16],
-                approved: false,
-            })
+            !actions.iter().any(|action| matches!(
+                action,
+                DeviceFabricUiAction::AuthorizeRemoteCapture { .. }
+            )),
+            "nothing is answered from Quick Settings"
         );
         assert!(
             actions.contains(&DeviceFabricUiAction::RequestRemoteCapture {
@@ -982,19 +989,28 @@ fn device_pane_lists_microphones_and_switches_and_levels_them() {
         Ok(view.clone())
     }));
     host.open_devices_for_tests();
-    let (lower, raise) = ShellOverlayHost::qs_realtime_consent_actions(host.qs_devices_row_rect(0));
-    host.handle_qs_device_fabric_click(raise.center());
-    host.handle_qs_device_fabric_click(lower.center());
+    let rows = host
+        .chrome
+        .as_ref()
+        .expect("chrome")
+        .borrow()
+        .quick_settings
+        .device_rows
+        .clone();
+    assert_eq!(
+        rows[0].actions,
+        crate::shell::quick_settings::hosted::HostedActions::None,
+        "the microphone in use has no arrow buttons"
+    );
+    host.handle_qs_device_fabric_click(host.qs_devices_row_rect(0).center());
     host.handle_qs_device_fabric_click(host.qs_devices_row_rect(1).center());
     let actions = actions.borrow();
-    assert!(actions.contains(&DeviceFabricUiAction::StepInputLevel {
-        node_id: 70,
-        raise: true
-    }));
-    assert!(actions.contains(&DeviceFabricUiAction::StepInputLevel {
-        node_id: 70,
-        raise: false
-    }));
+    assert!(
+        !actions
+            .iter()
+            .any(|action| matches!(action, DeviceFabricUiAction::StepInputLevel { .. })),
+        "Quick Settings does not step the level with arrows"
+    );
     assert!(actions.contains(&DeviceFabricUiAction::SelectLocalInput { node_id: 71 }));
     assert!(
         !actions.contains(&DeviceFabricUiAction::SelectLocalInput { node_id: 70 }),
@@ -1055,5 +1071,72 @@ fn display_move_requires_settings_owner_and_an_unlocked_session() {
     assert_eq!(
         calls.borrow().as_slice(),
         &[DeviceFabricUiAction::MoveDisplay(request)]
+    );
+}
+
+#[test]
+fn speakers_are_chosen_under_volume_and_devices_does_not_list_them() {
+    let (view, _) = fixture();
+    assert!(!view.local_outputs.is_empty(), "the machine has an output");
+    let rows = device_fabric_pane_rows(&view, &RealtimeContinuityUiView::default());
+    assert_eq!(
+        rows.len(),
+        view.local_media.len() + view.devices.len(),
+        "Devices lists the media and the devices, no sound output"
+    );
+    let outputs = super::qs_state::sound_outputs_of(&view);
+    assert_eq!(
+        outputs
+            .iter()
+            .map(|output| output.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Bluetooth headphones"],
+        "the output is offered under the volume slider"
+    );
+}
+
+#[test]
+fn a_device_row_has_no_placement_arrows_and_opens_its_settings_pane() {
+    let (mut view, _) = fixture();
+    view.local_media.clear();
+    let actions = Rc::new(RefCell::new(Vec::new()));
+    let recorded = Rc::clone(&actions);
+    let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+    let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
+        .with_chrome(chrome.clone());
+    host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    let device = view.devices[0].clone();
+    host.set_device_fabric_bridge(Rc::new(move |action| {
+        recorded.borrow_mut().push(action);
+        Ok(view.clone())
+    }));
+    host.open_devices_for_tests();
+    let rows = chrome.borrow().quick_settings.device_rows.clone();
+    assert_eq!(rows.len(), 1, "the one other device");
+    assert!(
+        matches!(
+            rows[0].actions,
+            crate::shell::quick_settings::hosted::HostedActions::Control { .. }
+        ),
+        "only the control button, no arrows: {:?}",
+        rows[0].actions
+    );
+    assert_eq!(
+        super::qs_device_input::device_settings_pane(&device),
+        "settings://displays"
+    );
+
+    let row = host.qs_devices_row_rect(0);
+    host.handle_qs_device_fabric_click(Point::new(row.x0 + 44.0, row.center().y));
+    assert!(
+        !chrome.borrow().overlays.quick_settings,
+        "the press takes the person to Settings"
+    );
+    assert!(
+        !actions.borrow().iter().any(|action| matches!(
+            action,
+            DeviceFabricUiAction::Place { .. } | DeviceFabricUiAction::GrantControl { .. }
+        )),
+        "and places nothing from Quick Settings"
     );
 }

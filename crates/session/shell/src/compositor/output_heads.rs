@@ -139,7 +139,6 @@ pub fn heads_from_capabilities(
 /// A mode a client asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModeRequest {
-    /// One of the modes the head advertised.
     Advertised(OutputMode),
     /// `set_custom_mode`: honoured only when it names an advertised mode;
     /// Tilo does not synthesise timings. A zero refresh matches any rate.
@@ -185,10 +184,6 @@ pub enum ArrangementError {
 /// `base` is the effective intent: entries for connectors the client did
 /// not touch (unplugged docks, mirrors, colour profiles) survive unchanged,
 /// so an external tool cannot silently erase what Settings stored.
-///
-/// # Errors
-///
-/// Returns the first [`ArrangementError`] the request hits.
 pub fn plan_arrangement(
     base: &DisplayConfig,
     heads: &[OutputHead],
@@ -550,6 +545,7 @@ mod tests {
             MonitorHistory {
                 modes: vec![mode(2560, 1440, 59_951)],
                 scales: vec![1.5],
+                last: None,
             },
         )]);
         assert_eq!(risk_of(&new_mode, &["DP-1"], &shown), ChangeRisk::Safe);

@@ -2,7 +2,7 @@ use super::*;
 use std::sync::atomic::Ordering;
 
 use taffy::prelude::{NodeId, Size, Style, TaffyTree};
-use ui::a11y::{Action as AccessAction, Politeness};
+use ui::a11y::{Action as AccessAction, Politeness, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::DateIndexIntent;
@@ -10,6 +10,11 @@ use vello::Scene;
 use vello::kurbo::Affine;
 
 use super::jobs::thumbnail_request;
+
+/// Collections: naming and saving albums, the controls a view offers, and
+/// what collection views show and act on.
+#[path = "tests/collections.rs"]
+mod collections;
 use crate::timeline_projection::{TimelineGeometry, TimelinePhoto};
 
 /// Present `doc`'s library to `app` as the framework does after a change,
@@ -104,41 +109,164 @@ fn has_resource_id(resource: &tilo_actions::Resource, id: &str) -> bool {
             .any(|child| has_resource_id(child, id))
 }
 
-/// Lay the header row out at `width`, as a frame would.
+/// Lay the chrome out at `width`, as a frame would, which declares the
+/// window bar's slots.
 fn lay_out_header(app: &mut PhotosApp, width: f64) {
     let theme = Theme::dark();
-    let mut text = TextRenderer::new();
     app.rect = Rect::new(0.0, 0.0, width, 800.0);
-    app.chrome.drawer.scale_for(&theme);
-    let content = app.chrome.drawer.resolve(app.rect);
-    app.chrome.header = Rect::new(content.x0, 0.0, width, chrome::header_height(&theme));
-    app.place_chrome(&mut text, &theme);
+    app.chrome.inspector.scale_for(&theme);
+    app.place_chrome();
 }
 
-/// The names of the commands the header toolbar shows.
+/// The window's shell laid out at `width`, and the link the window bar
+/// reaches its own buttons through. The harness keeps the shell alive.
+fn laid_out_shell(width: f64) -> (ui::headless::FrameHarness, ui::widget::WindowBarLink) {
+    use ui::widget::{ContentKind, NavList, NavShell};
+    let shell = NavShell::new()
+        .with_window_toolbar()
+        .content_kind(ContentKind::Grid);
+    let link = shell.window_bar_link();
+    let shell = shell
+        .sidebar(Box::new(NavList::new(Vec::new())))
+        .content(Box::new(ui::widget::Spacer::new()));
+    let size = (width as u32, 800);
+    let mut harness =
+        ui::headless::FrameHarness::for_root(ui::State::new(), shell, size, Theme::dark());
+    harness.relayout_at(size).expect("the shell lays out");
+    (harness, link)
+}
+
+/// The names of the commands the window bar offers.
 fn toolbar_names(app: &PhotosApp) -> Vec<String> {
-    app.chrome
-        .toolbar
-        .accessibility()
-        .map(|toolbar| {
-            toolbar
-                .children
-                .into_iter()
-                .filter_map(|node| node.name)
-                .collect()
-        })
-        .unwrap_or_default()
+    app.window_bar()
+        .actions
+        .into_iter()
+        .map(|action| action.name)
+        .collect()
 }
 
-/// The semantic route of the header command named `name`.
-fn toolbar_target(app: &PhotosApp, name: &str) -> Option<String> {
-    app.chrome.toolbar.accessibility().and_then(|toolbar| {
-        toolbar
-            .children
-            .into_iter()
-            .find(|node| node.name.as_deref() == Some(name))
-            .and_then(|node| node.action_target)
-    })
+fn bar_command(app: &PhotosApp, name: &str) -> Option<ui::window_toolbar::ToolbarAction> {
+    app.window_bar()
+        .actions
+        .into_iter()
+        .find(|action| action.name == name)
+}
+
+/// Press the window bar's command named `name`, as the desktop hands the
+/// press to the app. Returns whether the bar offered it.
+fn press_bar(app: &mut PhotosApp, name: &str) -> bool {
+    let Some(action) = bar_command(app, name) else {
+        return false;
+    };
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: action.id });
+    app.apply_window_toolbar();
+    true
+}
+
+#[test]
+fn the_open_photograph_can_be_presented_slid_and_zoomed() {
+    eprintln!("phase presenting_is_the_window_and_the_slide_show_advances_the_set");
+    {
+        let mut app = test_app();
+        let mut doc = crate::test_doc::new_doc();
+        stage(&mut app, &mut doc, "opened");
+        sync(&mut app, &mut doc);
+        assert!(!app.library_mode, "a photograph is open");
+        assert!(app.viewer.is_some(), "the photograph has a viewer");
+
+        // Full screen is the window's, and the app asks for it.
+        assert_eq!(
+            ui::widget::FullscreenProvider::fullscreen_intent(&app),
+            Some(false)
+        );
+        app.toggle_presentation();
+        assert_eq!(
+            ui::widget::FullscreenProvider::fullscreen_intent(&app),
+            Some(true),
+            "presenting asks the window for the screen"
+        );
+        // Leaving full screen any other way ends the presentation.
+        ui::widget::FullscreenProvider::on_fullscreen_changed(&mut app, false);
+        assert!(!app.presenting);
+        assert_eq!(
+            ui::widget::FullscreenProvider::fullscreen_intent(&app),
+            Some(false)
+        );
+    }
+
+    eprintln!("phase the_slide_show_advances_wraps_and_sets_a_wake");
+    {
+        let mut app = test_app();
+        let mut doc = crate::test_doc::new_doc();
+        stage(&mut app, &mut doc, "library");
+        sync(&mut app, &mut doc);
+        let order = app.photo_order();
+        assert!(
+            order.len() >= 2,
+            "the sample library has several photographs"
+        );
+        let first = order[0].clone();
+        app.show_photo(&first);
+        sync(&mut app, &mut doc);
+
+        app.toggle_slide_show();
+        assert!(app.slide_show_running(), "the slide show runs");
+        assert!(app.presenting, "a slide show is a presentation");
+        assert!(
+            Widget::next_wake_deadline(&app).is_some(),
+            "the window sleeps until the next photograph is due"
+        );
+
+        // Stepping goes to the next photograph in the chronology, and wraps.
+        assert!(app.step_photo(true));
+        assert_eq!(app.open_photo_id(), Some(order[1].as_str()));
+        app.show_photo(&order[order.len() - 1]);
+        assert!(
+            app.step_photo(true),
+            "the last photograph wraps to the first"
+        );
+        assert_eq!(app.open_photo_id(), Some(order[0].as_str()));
+        assert!(app.step_photo(false));
+        assert_eq!(
+            app.open_photo_id(),
+            Some(order[order.len() - 1].as_str()),
+            "and the first wraps back to the last"
+        );
+        app.toggle_slide_show();
+        assert!(!app.slide_show_running(), "the same control stops it");
+        assert!(
+            Widget::next_wake_deadline(&app).is_none() || app.notice_said.deadline().is_some(),
+            "a stopped slide show asks for no wake of its own"
+        );
+    }
+
+    eprintln!("phase the_picture_zooms_rather_than_the_window_and_never_in_the_library");
+    {
+        use ui::content_zoom::{ContentZoom, ZoomStep};
+        let mut app = test_app();
+        let mut doc = crate::test_doc::new_doc();
+        stage(&mut app, &mut doc, "opened");
+        sync(&mut app, &mut doc);
+        let before = app.viewer.as_ref().expect("a viewer").zoom();
+        let factor = app
+            .zoom_content(ZoomStep::In)
+            .expect("the photograph takes the gesture");
+        assert!(factor > before, "the picture grew");
+        assert_eq!(
+            app.viewer.as_ref().expect("a viewer").zoom(),
+            factor,
+            "the surface shows the factor it answered"
+        );
+        let reset = app
+            .zoom_content(ZoomStep::Reset)
+            .expect("reset is the picture's own size");
+        assert!((reset - 1.0).abs() < 1e-6);
+        assert_eq!(app.viewer.as_ref().expect("a viewer").zoom(), 1.0);
+
+        // In the library the gesture belongs to the window, not the grid.
+        app.show_library();
+        assert_eq!(app.zoom_content(ZoomStep::In), None);
+    }
 }
 
 #[test]
@@ -445,18 +573,8 @@ fn people_review_commits_only_explicit_canonical_actions() {
 }
 
 #[test]
-fn header_controls_never_paint_through_each_other() {
-    fn overlaps(left: Rect, right: Rect) -> bool {
-        left.x0 < right.x1 && left.x1 > right.x0 && left.y0 < right.y1 && left.y1 > right.y0
-    }
-
-    for (width, scale, library) in [
-        (1_280.0, 1.0, true),
-        (1_280.0, 1.0, false),
-        (800.0, 1.0, true),
-        (560.0, 1.0, false),
-        (1_280.0, 2.0, true),
-    ] {
+fn the_commands_are_the_window_bars_and_no_header_row_is_drawn() {
+    for (width, library) in [(1_280.0, true), (1_280.0, false), (560.0, false)] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("header.png");
         std::fs::write(&path, pixels::encode_png(&shots_pattern(40, 20)).unwrap()).unwrap();
@@ -468,34 +586,27 @@ fn header_controls_never_paint_through_each_other() {
             app.show_library();
         }
         sync(&mut app, &mut doc);
-        let theme = Theme::dark().with_text_scale(scale);
-        let mut text = TextRenderer::new();
-        text.set_text_scale(scale);
-        app.rect = Rect::new(0.0, 0.0, width, 800.0);
-        app.chrome.drawer.scale_for(&theme);
-        let content = app.chrome.drawer.resolve(app.rect);
-        app.chrome.header = Rect::new(content.x0, 0.0, width, chrome::header_height(&theme));
-        app.place_chrome(&mut text, &theme);
-
-        let mut controls = vec![("toggle".to_owned(), app.chrome.toggle)];
-        controls.extend(app.toolbar_item_rects());
-        controls.retain(|(_, rect)| rect.width() > 0.0);
+        let (_shell, link) = laid_out_shell(width);
+        app.chrome.bar = Some(link);
+        lay_out_header(&mut app, width);
+        let toolbar = app.window_bar();
         assert!(
-            controls.len() >= 4,
-            "{width}px at {scale}x: the header lost its controls: {controls:?}"
+            toolbar.sidebar.is_some(),
+            "{width}px: the sidebar's toggle is a slot"
         );
-        for (index, (name, rect)) in controls.iter().enumerate() {
-            assert!(
-                rect.x0 >= -0.5 && rect.x1 <= width + 0.5,
-                "{width}px at {scale}x: `{name}` is outside the window: {rect:?}"
-            );
-            for (other_name, other) in controls.iter().skip(index + 1) {
-                assert!(
-                    !overlaps(*rect, *other),
-                    "{width}px at {scale}x: `{name}` {rect:?} overlaps `{other_name}` {other:?}"
-                );
-            }
-        }
+        assert!(
+            !toolbar.actions.is_empty(),
+            "{width}px: the window bar offers the commands"
+        );
+        assert_eq!(
+            toolbar.leading.is_empty(),
+            library,
+            "{width}px: an open photograph leads with Back"
+        );
+        assert!(
+            app.children().is_empty() || app.empty_state.is_some(),
+            "no header controls of the window's own"
+        );
     }
 }
 
@@ -989,255 +1100,6 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
     }
 }
 
-#[test]
-fn collection_actions_leave_unrelated_library_destinations() {
-    let mut photo = LibraryPhoto::from_image(OpenImage::fixture("trip.png", 20, 10));
-    photo.favorite = true;
-    photo.tags = crate::model::labels(["Trip".to_owned()]);
-    let library = PhotoLibrary::of(
-        vec![photo.clone()],
-        vec![Album {
-            id: "photos.album:trip".into(),
-            name: "Trip".into(),
-            photo_ids: crate::model::labels([photo.id]),
-        }],
-    );
-    for destination in [
-        LibraryDestination::People,
-        LibraryDestination::Albums,
-        LibraryDestination::Places,
-        LibraryDestination::Analysis,
-    ] {
-        for effect in [
-            PhotosEffect::ViewAlbum {
-                album_id: "photos.album:trip".into(),
-            },
-            PhotosEffect::ViewFavorites,
-            PhotosEffect::ViewTag { tag: "Trip".into() },
-        ] {
-            let mut app = test_app();
-            app.library_destination = destination;
-            app.people_mode = destination == LibraryDestination::People;
-            app.selection_mode = true;
-            app.answer_effect(effect, tilo_actions::InvocationId::new(), &library)
-                .unwrap();
-            assert!(app.library_mode);
-            assert_eq!(app.library_destination, LibraryDestination::Timeline);
-            assert!(
-                !app.people_mode,
-                "the requested photo collection replaces People"
-            );
-            assert!(
-                !app.selection_mode,
-                "old collection selection is not carried over"
-            );
-            assert!(app.active_album.is_some() || app.active_favorites || app.active_tag.is_some());
-        }
-    }
-}
-
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-#[test]
-fn collection_views_are_local_complete_and_refuse_stale_ids() {
-    eprintln!(
-        "phase opening_an_album_operation_only_changes_the_local_filter_and_refuses_stale_ids"
-    );
-    {
-        let mut app = test_app();
-        let mut doc = crate::test_doc::new_doc();
-        let photo = LibraryPhoto::from_image(OpenImage::fixture("/photos/one.png", 20, 10));
-        let mut library = crate::model::PhotoLibrary::default();
-        library.add_photo(photo.clone());
-        library.add_album(Album {
-            id: "photos.album:trip".into(),
-            name: "Trip".into(),
-            photo_ids: crate::model::labels([photo.id]),
-        });
-        crate::test_doc::set_library(&mut doc, &library);
-        let before = crate::test_doc::library(&doc);
-        let payload = PhotosEffect::ViewAlbum {
-            album_id: "photos.album:trip".into(),
-        };
-        assert!(
-            app.answer_effect(
-                payload,
-                ui::tilo_actions::InvocationId::new(),
-                &crate::test_doc::library(&doc)
-            )
-            .unwrap()
-            .is_some()
-        );
-        assert!(app.library_mode);
-        assert_eq!(app.active_album.as_deref(), Some("photos.album:trip"));
-        assert_eq!(
-            crate::test_doc::library(&doc),
-            before,
-            "navigation must not alter membership"
-        );
-
-        let stale = PhotosEffect::ViewAlbum {
-            album_id: "photos.album:gone".into(),
-        };
-        assert!(
-            app.answer_effect(
-                stale,
-                ui::tilo_actions::InvocationId::new(),
-                &crate::test_doc::library(&doc)
-            )
-            .is_err()
-        );
-        assert_eq!(crate::test_doc::library(&doc), before);
-    }
-
-    eprintln!("phase opening_favorites_uses_a_local_view_and_refuses_an_empty_stale_collection");
-    {
-        let mut app = test_app();
-        let mut doc = crate::test_doc::new_doc();
-        let mut favorite =
-            LibraryPhoto::from_image(OpenImage::fixture("/photos/favorite.png", 20, 10));
-        favorite.favorite = true;
-        crate::test_doc::set_library(
-            &mut doc,
-            &crate::model::PhotoLibrary::of(vec![favorite], Vec::new()),
-        );
-        let before = crate::test_doc::library(&doc);
-        let payload = PhotosEffect::ViewFavorites;
-        assert!(
-            app.answer_effect(
-                payload.clone(),
-                ui::tilo_actions::InvocationId::new(),
-                &crate::test_doc::library(&doc)
-            )
-            .expect("favorite collection is present")
-            .is_some()
-        );
-        assert!(app.library_mode);
-        assert!(app.active_favorites);
-        assert_eq!(
-            crate::test_doc::library(&doc),
-            before,
-            "opening a view is not a write"
-        );
-
-        crate::test_doc::set_library(&mut doc, &crate::model::PhotoLibrary::default());
-        assert!(
-            app.answer_effect(
-                payload,
-                ui::tilo_actions::InvocationId::new(),
-                &crate::test_doc::library(&doc)
-            )
-            .is_err()
-        );
-    }
-
-    eprintln!("phase metadata_views_are_local_filters_with_honest_stale_results");
-    {
-        let mut app = test_app();
-        let mut doc = crate::test_doc::new_doc();
-        let mut in_folder = LibraryPhoto::from_image(OpenImage::fixture("/photos/one.png", 20, 10));
-        in_folder.folder = Some("Travel".into());
-        in_folder.people = crate::model::labels(["Élodie".to_owned()]);
-        in_folder.tags = crate::model::labels(["golden-hour".to_owned()]);
-        let other = LibraryPhoto::from_image(OpenImage::fixture("/photos/two.png", 20, 10));
-        let library = crate::model::PhotoLibrary::of(vec![in_folder, other], Vec::new());
-        crate::test_doc::set_library(&mut doc, &library);
-
-        app.view_metadata_filter(
-            &crate::test_doc::library(&doc),
-            Some("Travel".into()),
-            None,
-            None,
-        )
-        .expect("existing folder enters a view");
-        sync(&mut app, &mut doc);
-        assert!(app.library_mode);
-        assert_eq!(app.library_total, 1);
-        assert_eq!(app.active_folder.as_deref(), Some("Travel"));
-        assert!(app.active_person.is_none());
-
-        app.view_metadata_filter(
-            &crate::test_doc::library(&doc),
-            None,
-            Some("Élodie".into()),
-            None,
-        )
-        .expect("existing person enters a view");
-        sync(&mut app, &mut doc);
-        assert_eq!(app.library_total, 1);
-        assert_eq!(app.active_person.as_deref(), Some("Élodie"));
-        assert!(app.active_folder.is_none());
-        app.view_metadata_filter(
-            &crate::test_doc::library(&doc),
-            None,
-            None,
-            Some("golden-hour".into()),
-        )
-        .expect("existing tag enters a view");
-        sync(&mut app, &mut doc);
-        assert_eq!(app.library_total, 1);
-        assert_eq!(app.active_tag.as_deref(), Some("golden-hour"));
-        assert!(app.active_folder.is_none());
-        assert!(app.active_person.is_none());
-        assert!(
-            app.view_metadata_filter(
-                &crate::test_doc::library(&doc),
-                Some("Missing".into()),
-                None,
-                None
-            )
-            .is_err()
-        );
-    }
-
-    eprintln!("phase people_and_places_keep_complete_paged_collections");
-    {
-        let mut app = test_app();
-        let mut doc = crate::test_doc::new_doc();
-        let mut library = crate::model::PhotoLibrary::default();
-        for index in 0..29 {
-            let mut photo = LibraryPhoto::from_image(OpenImage::fixture(
-                &format!("/photos/{index}.png"),
-                40,
-                20,
-            ));
-            photo.people = crate::model::labels([format!("Person {index:02}")]);
-            photo.location = Some(crate::model::PhotoLocation {
-                latitude: 10.0 + f64::from(index) / 100.0,
-                longitude: 20.0,
-                label: Some(format!("Place {index:02}")),
-                provenance: crate::model::LocationProvenance::default(),
-            });
-            library.add_photo(photo);
-            library.add_album(crate::model::Album {
-                id: format!("photos.album:album-{index:02}"),
-                name: format!("Album {index:02}"),
-                photo_ids: ui::tilo_resource::Set::new(),
-            });
-        }
-        crate::test_doc::set_library(&mut doc, &library);
-        sync(&mut app, &mut doc);
-
-        assert_eq!(app.library_people.len(), 29);
-        assert_eq!(app.places_items.len(), 29);
-        assert_eq!(app.library_albums.len(), 29);
-        assert!(app.page_collection(CollectionPageHit::PeopleNext));
-        assert!(app.page_collection(CollectionPageHit::PlacesNext));
-        assert_eq!((app.people_page, app.places_page), (1, 1));
-        assert!(app.perform_library_semantic_action(
-            "photos:collection-page:people-next",
-            &AccessAction::Activate,
-            &doc,
-        ));
-        assert_eq!(app.people_page, 2);
-        assert!(app.perform_library_semantic_action(
-            "photos:collection-page:people-previous",
-            &AccessAction::Activate,
-            &doc,
-        ));
-        assert_eq!(app.people_page, 1);
-    }
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "the end-to-end parity test deliberately compares favorite and membership envelopes across UI, AT, and resource routes"
@@ -1430,9 +1292,20 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         crate::test_doc::set_library(&mut doc, &library);
         app.show_library();
         sync(&mut app, &mut doc);
+        let new_album = bar_command(&app, &tr("photos-new-album")).expect("New album is offered");
+        if let Some(open) = bar_command(&app, &tr("photos-open")) {
+            assert_ne!(
+                open.icon, new_album.icon,
+                "Open and New album look different"
+            );
+        }
         app.begin_new_album();
         sync(&mut app, &mut doc);
         assert!(app.album_editor);
+        assert!(
+            bar_command(&app, &tr("photos-new-album")).is_none(),
+            "while an album is being made, its editor stands for New album"
+        );
         app.sync_inspector();
         assert!(
             app.chrome.inspector.is_open(),
@@ -1450,16 +1323,11 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         assert!(!app.can_page_library(false));
         assert!(app.can_page_library(true));
         lay_out_header(&mut app, 1280.0);
-        let semantics = app
-            .chrome
-            .toolbar
-            .accessibility()
-            .expect("paging uses shared toolbar controls");
-        let pager = &semantics.children;
-        assert!(pager.iter().any(|node| node.state.disabled
-            && node.name.as_deref() == Some(tr("photos-a11y-previous-photos").as_str())));
-        assert!(pager.iter().any(|node| !node.state.disabled
-            && node.name.as_deref() == Some(tr("photos-a11y-next-photos").as_str())));
+        let previous = bar_command(&app, &tr("photos-a11y-previous-photos"))
+            .expect("paging is the window bar's");
+        let next =
+            bar_command(&app, &tr("photos-a11y-next-photos")).expect("paging is the window bar's");
+        assert!(!previous.enabled && next.enabled);
 
         assert!(app.perform_library_semantic_action(
             "photos:album-editor:next-page",
@@ -1603,7 +1471,8 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 
         let empty = app.accessibility_tree();
         assert_eq!(empty.role, Role::Group);
-        assert_eq!(empty.children[0].role, Role::Image);
+        // Photos opens on the library, not on an empty viewer.
+        assert_eq!(empty.children[0].role, Role::List);
         let commands = toolbar_names(&app);
         assert!(
             !commands.contains(&tr("photos-open")),
@@ -1628,15 +1497,10 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         app.refresh();
         sync(&mut app, &mut doc);
         lay_out_header(&mut app, 1280.0);
-        let target = toolbar_target(&app, &tr("photos-command-rotate-right"))
-            .expect("a photograph offers rotate right");
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            &target,
-            &AccessAction::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
+        assert!(
+            press_bar(&mut app, &tr("photos-command-rotate-right")),
+            "a photograph offers rotate right"
+        );
         settle(&mut app, &mut doc);
         assert_eq!(
             crate::test_doc::photo_edits(&doc, app.open_photo_id().unwrap()).rotate_quarters,
@@ -1658,7 +1522,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         );
     }
 
-    eprintln!("phase narrow_header_keeps_every_command_reachable_through_more");
+    eprintln!("phase narrow_window_keeps_every_command_in_the_window_bar");
     {
         let mut hosted =
             ui::framework::testing::TestApp::<crate::resource::PhotosShell>::capture_at(
@@ -1666,33 +1530,22 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                 (520, 800),
             )
             .unwrap();
+        hosted.settle();
         assert!(
-            hosted
+            !hosted
                 .harness()
                 .controls()
                 .iter()
-                .any(|control| { control.name.as_deref() == Some("More commands") }),
-            "a narrow header moves commands into More"
+                .any(|control| control.name.as_deref() == Some("More commands")),
+            "a narrow window draws no header row of its own with a More button"
         );
-        hosted
-            .harness()
-            .perform_named("toolbar.overflow", &AccessAction::Activate)
-            .expect("the actual host admits the overflow view action");
-        hosted.settle();
+        let toolbar = ui::window_toolbar::declared().expect("the window declares its slots");
         assert!(
-            hosted
-                .harness()
-                .a11y_nodes()
+            toolbar
+                .actions
                 .iter()
-                .any(|(_, node)| { node.role() == ui::accesskit::Role::Menu }),
-            "the admitted overflow opens a real menu"
-        );
-        assert!(
-            hosted.harness().controls().iter().any(|control| {
-                control.role == ui::accesskit::Role::MenuItem
-                    && control.name.as_deref() == Some(tr("photos-save").as_str())
-            }),
-            "Save stays reachable from the menu"
+                .any(|action| action.name == tr("photos-save")),
+            "Save stays reachable from the window's bar, which folds what does not fit into its menu: {toolbar:?}"
         );
     }
 
@@ -1731,6 +1584,9 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 
     eprintln!("phase metadata_sheet_footer_never_covers_a_focused_field");
     {
+        // Laid out frame by frame with no clock between: the panel at rest,
+        // not caught mid-rise from the foot of a narrow window.
+        let _settled = ui::motion::testing::settled();
         for (scale, (w, h)) in [(1.0_f32, (1200.0_f32, 800.0_f32)), (2.0, (800.0, 900.0))] {
             let mut app = test_app();
             let mut doc = crate::test_doc::new_doc();
@@ -2120,31 +1976,6 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
-    eprintln!("phase header_row_contains_its_controls_at_any_text_scale");
-    {
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut app = PhotosApp::new();
-            let mut doc = crate::test_doc::new_doc();
-            stage(&mut app, &mut doc, "opened");
-            sync(&mut app, &mut doc);
-            let mut text = TextRenderer::new();
-            text.set_text_scale(scale);
-            app.rect = Rect::new(0.0, 0.0, 1_280.0, 800.0);
-            app.chrome.drawer.scale_for(&theme);
-            let content = app.chrome.drawer.resolve(app.rect);
-            app.chrome.header = Rect::new(content.x0, 0.0, 1_280.0, chrome::header_height(&theme));
-            app.place_chrome(&mut text, &theme);
-            let header = app.chrome.header;
-            for (name, rect) in app.toolbar_item_rects() {
-                assert!(
-                    rect.y0 >= header.y0 - 0.5 && rect.y1 <= header.y1 + 0.5,
-                    "{scale}x: `{name}` {rect:?} escapes the header row {header:?}"
-                );
-            }
-        }
-    }
-
     eprintln!("phase library_card_actions_share_one_edge_inset");
     {
         let mut app = test_app();
@@ -2719,200 +2550,5 @@ fn sync_never_frees_a_laid_out_child() {
     );
 }
 
-/// The room's host behind the door, announcing a web entry for links.
-struct LinkHost;
-
-impl tilo_actions::remote::ActionHost for LinkHost {
-    fn query(
-        &self,
-        _: &tilo_actions::remote::Caller,
-        query: tilo_actions::remote::CatalogueQuery,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
-    > {
-        tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::CataloguePage {
-            locator: Some(tilo_actions::remote::ResourceViewLocator {
-                origin: "https://host.example".into(),
-                room: "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90".into(),
-                host_device: "ab".repeat(32),
-                provider: query.provider.unwrap_or_default(),
-                web_entry: Some("https://tilo.so/".into()),
-            }),
-            exhausted: true,
-            ..tilo_actions::remote::CataloguePage::default()
-        }))
-    }
-
-    fn invoke(
-        &self,
-        _: &tilo_actions::remote::Caller,
-        _: tilo_actions::remote::InvokeRequest,
-    ) -> tilo_actions::remote::Pending<
-        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
-    > {
-        tilo_actions::remote::Pending::ready(Err(
-            tilo_actions::remote::ActionHostError::NotPermitted,
-        ))
-    }
-
-    fn observe(
-        &self,
-        _: &tilo_actions::remote::Caller,
-        _: &tilo_actions::InvocationId,
-    ) -> Option<tilo_actions::remote::InvocationState> {
-        None
-    }
-
-    fn cancel(
-        &self,
-        _: &tilo_actions::remote::Caller,
-        _: &tilo_actions::InvocationId,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
-        Ok(())
-    }
-}
-
-#[derive(Default)]
-struct LinkClipboard(std::sync::Mutex<Option<String>>);
-
-impl ui::clipboard::ClipboardBackend for LinkClipboard {
-    fn set_text(&self, _: ui::clipboard::ClipboardTarget, text: &str) -> bool {
-        *self.0.lock().unwrap() = Some(text.into());
-        true
-    }
-
-    fn text(&self, _: ui::clipboard::ClipboardTarget) -> Option<String> {
-        self.0.lock().unwrap().clone()
-    }
-
-    fn name(&self) -> &'static str {
-        "photos-share-test-clipboard"
-    }
-}
-
-#[test]
-fn share_copies_the_open_photographs_link() {
-    use ui::framework::testing::TestApp;
-    let _served = ui::RemoteActions::enter(
-        std::sync::Arc::new(LinkHost),
-        tilo_actions::remote::Caller::local_person("owner"),
-    );
-    let services = ui::host::HostServices::null()
-        .with_clipboard(std::sync::Arc::new(LinkClipboard::default()));
-    let _scope = ui::host::enter(&services);
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("lake.png");
-    std::fs::write(
-        &path,
-        crate::pixels::encode_png(&crate::shots_pattern(30, 20)).unwrap(),
-    )
-    .unwrap();
-    let mut app =
-        TestApp::<crate::resource::PhotosShell>::launched(&[path.to_str().unwrap()]).unwrap();
-    let lake = app.state().all_photos().next().unwrap().id.clone();
-    let item = crate::resource::photo_resource_id(&lake);
-    app.call_on(&item, PhotosEffect::VIEW.id, serde_json::json!({}))
-        .unwrap();
-    app.settle();
-
-    app.surface_mut::<PhotosApp>().share_open_photo();
-    app.settle();
-    let copied = ui::clipboard_paste().expect("the link is copied");
-    assert!(copied.starts_with("https://tilo.so/app/#/"), "{copied}");
-    assert_eq!(
-        app.surface_mut::<PhotosApp>().notice.as_deref(),
-        Some(tr("photos-share-copied").as_str())
-    );
-}
-
-/// Making thumbnails is published as an offloadable transform of the
-/// thumbnails package, and its local run makes exactly what that package's
-/// entrypoint makes on another device: content named twice is one input,
-/// and an input that is not an image fails the whole batch.
-#[test]
-fn make_thumbnails_runs_the_offloadable_batch_and_matches_the_package_entrypoint() {
-    let spec = <PhotosEffect as ui::tilo_resource::Effect>::specs()
-        .into_iter()
-        .find(|spec| spec.id == "make-thumbnails")
-        .expect("the library makes thumbnails");
-    let offload = spec
-        .contract
-        .offload
-        .clone()
-        .expect("making thumbnails declares its offload");
-    assert_eq!(offload.app, thumbnail::batch::PACKAGE);
-    assert_eq!(offload.entrypoint, thumbnail::batch::ENTRYPOINT);
-    assert!(
-        spec.contract.validate_declaration().is_empty(),
-        "{:?}",
-        spec.contract.validate_declaration()
-    );
-    assert!(spec.params()[0].is_content_list());
-
-    let store = tilo_content::ContentStore::memory();
-    let photographs: Vec<Vec<u8>> = [(3, 2), (40, 17)]
-        .into_iter()
-        .map(|(width, height)| {
-            let rgba = (0..width * height * 4)
-                .map(|index| u8::try_from(index % 251).expect("a byte"))
-                .collect();
-            pixels::encode_png(&pixels::Rgba::new(width, height, rgba).expect("an image"))
-                .expect("a PNG")
-        })
-        .collect();
-    let hashes: Vec<String> = photographs
-        .iter()
-        .map(|bytes| store.put(bytes).expect("stage a photograph"))
-        .collect();
-    let mut app = PhotosApp::with_content(store.clone());
-    let doc = crate::test_doc::new_doc();
-    let library = crate::test_doc::library(&doc);
-    let output = app
-        .answer_effect(
-            PhotosEffect::MakeThumbnails {
-                photos: vec![
-                    hashes[0].clone(),
-                    tilo_actions::content_resource(&hashes[1]).expect("an address"),
-                    hashes[0].clone(),
-                ],
-            },
-            tilo_actions::InvocationId::new(),
-            &library,
-        )
-        .expect("thumbnails are made")
-        .expect("the batch answers at once");
-    let expected = thumbnail::batch::thumbnail_batch(&photographs).expect("the package's batch");
-    let made: Vec<Vec<u8>> = output
-        .resources
-        .iter()
-        .map(|resource| {
-            store
-                .read(tilo_actions::content_hash(resource).expect("content"))
-                .expect("a stored thumbnail")
-        })
-        .collect();
-    assert_eq!(made, expected, "byte for byte the entrypoint's thumbnails");
-
-    let broken = store.put(b"not a photograph").expect("stage bytes");
-    assert_eq!(
-        app.answer_effect(
-            PhotosEffect::MakeThumbnails {
-                photos: vec![hashes[0].clone(), broken],
-            },
-            tilo_actions::InvocationId::new(),
-            &library,
-        ),
-        Err(thumbnail::batch::BatchError::Undecodable { index: 1 }.to_string())
-    );
-    assert!(
-        app.answer_effect(
-            PhotosEffect::MakeThumbnails {
-                photos: vec!["/home/someone/photo.png".into()],
-            },
-            tilo_actions::InvocationId::new(),
-            &library,
-        )
-        .is_err(),
-        "a path is never content"
-    );
-}
+#[path = "tests/link_host.rs"]
+mod link_host;

@@ -135,6 +135,7 @@ pub(super) fn block_runs(block: &BlockView, show_markup: bool) -> BlockRuns {
             background,
             baseline,
             kind: None,
+            workspace_emoji: false,
         });
     }
     if runs.is_empty() {
@@ -264,6 +265,7 @@ fn running_head_runs_with(block: &BlockView, display: FieldDisplay) -> Vec<RichS
             background: None,
             baseline: BaselineShift::None,
             kind: None,
+            workspace_emoji: false,
         });
         start = end;
     }

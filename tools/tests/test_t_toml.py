@@ -1,14 +1,15 @@
 """t.toml carries what tools/ci/suites.toml and the goldens' image record define."""
 from __future__ import annotations
 
+import fnmatch
 import importlib.util
 from pathlib import Path
 import sys
-import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/ci"))
+import t_matrix  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("ci_t_toml", ROOT / "tools/ci/t_toml.py")
 assert SPEC and SPEC.loader
 t_toml = importlib.util.module_from_spec(SPEC)
@@ -21,13 +22,55 @@ class TTomlTests(unittest.TestCase):
         expected = t_toml.render(text, t_toml.generated(t_toml.suites.load(ROOT)))
         self.assertEqual(text, expected, "run python3 tools/ci/t_toml.py write")
 
-    def test_policy_has_git_and_private_writable_sources(self):
-        config = tomllib.loads((ROOT / "t.toml").read_text(encoding="utf-8"))
-        policy = next(check for check in config["check"] if check["name"] == "policy")
-        self.assertTrue(policy["git"])
-        self.assertTrue(policy["writable_sources"])
-        self.assertEqual(policy["run"], "bash tools/policy/run.sh")
-        self.assertEqual(policy["inputs"], ["**"])
+    def test_each_policy_step_is_a_check_keyed_by_what_it_reads(self):
+        config = t_matrix.load(ROOT)
+        checks = {check["name"]: check for check in config["check"]}
+        self.assertNotIn("policy", checks, "the policy suite runs as one check per step")
+        for step in t_toml.policy_steps.load(ROOT):
+            with self.subTest(step=step.name):
+                if step.covered_by:
+                    self.assertIn(step.run, " ".join(checks[step.covered_by]["run"].split()))
+                    continue
+                check = checks[step.check]
+                self.assertEqual(check["run"], step.t_command)
+                self.assertTrue(set(step.inputs) <= set(check["inputs"]))
+                self.assertTrue(set(t_toml.policy_steps.own_files(step, ROOT)) <= set(check["inputs"]))
+                self.assertNotIn("default", check)
+                # The tests write fixtures beside the sources, and those that read the commit's
+                # history get t's .git; the checks of the tree read the files as they are,
+                # through an index of them where they use Git.
+                self.assertEqual(check.get("git", False), step.history)
+                self.assertEqual(check.get("writable_sources", False), step.tests)
+                self.assertEqual(step.check.startswith("policy/tests/"), step.tests)
+
+    def test_security_reads_the_paths_its_invariants_name_and_no_others(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path in ("crates/system/fs/Cargo.toml", "crates/system/fs/src/daemon.rs",
+                         "crates/session/shell/Cargo.toml", "crates/session/shell/src/projection.rs",
+                         "crates/session/unread/Cargo.toml", "apps/settings/src/x.rs",
+                         "os/tests/fs_invariants.sh", "os/tests/test_shell.py",
+                         "tools/run-security-boundary-invariants.sh"):
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_text("", encoding="utf-8")
+            (root / "os/tests/fs_invariants.sh").write_text(
+                'grep -q x "$repo/crates/system/fs/src/daemon.rs"\nrg y "$repo/apps/settings/src"\n'
+                'ls "$repo/crates/system/gone/src"\n', encoding="utf-8")
+            (root / "os/tests/test_shell.py").write_text(
+                'SOURCE = ROOT / "crates" / "session" / "shell" / "src/projection.rs"\n', encoding="utf-8")
+            (root / t_toml.suites.SECURITY_MANIFEST).write_text(
+                "# invariants\nos/tests/fs_invariants.sh\nos/tests/test_shell.py\n", encoding="utf-8")
+            block = t_toml.security_reads(root)
+        inputs = __import__("tomllib").loads(block)["inputs"]
+        self.assertEqual(inputs[:len(t_toml.SECURITY_AREAS)], list(t_toml.SECURITY_AREAS))
+        # A file as itself and a directory whole, as far as they exist, never the rest of their
+        # package, nothing the scripts don't name, and the scripts and the manifest only where no
+        # area covers them already.
+        self.assertEqual(inputs[len(t_toml.SECURITY_AREAS):],
+                         ["apps/settings/src/**", "crates/session/shell/src/projection.rs",
+                          "crates/system/fs/src/daemon.rs", "tools/run-security-boundary-invariants.sh",
+                          "tools/security-boundary-invariants.txt"])
 
     def test_rendering_replaces_marked_blocks_and_requires_each(self):
         blocks = {"a": "x = 1\n"}
@@ -50,8 +93,48 @@ class TTomlTests(unittest.TestCase):
         self.assertEqual(t_toml.local_closure(packages, {"top"}, dev=False), {"top", "lib", "base"})
         self.assertEqual(t_toml.local_closure(packages, {"top"}, dev=True), {"top", "lib", "base", "helper"})
 
+    def test_dependencies_of_adds_the_directories_its_packages_reach(self):
+        def package(path, *deps):
+            return {"name": path.rpartition("/")[2], "manifest_path": f"/w/{path}/Cargo.toml",
+                    "dependencies": [{"name": dep.rpartition("/")[2], "kind": kind, "path": f"/w/{dep}"}
+                                     for dep, kind in deps]}
+        packages = {p["name"]: p for p in (
+            package("apps/notes", ("crates/doc/model", None), ("crates/sdk/kit", None), ("crates/dev/fixture", "dev")),
+            package("apps/new", ("crates/media/codec", None)),
+            package("crates/doc/model", ("crates/doc/model/core", None), ("crates/text/shape", "build")),
+            package("crates/doc/model/core"), package("crates/text/shape"), package("crates/media/codec"),
+            package("crates/sdk/kit"), package("crates/dev/fixture"), package("crates/unrelated"))}
+        manifest = t_toml.suites.parse(
+            '[[cargo]]\npackage = "cli"\ninputs = ["apps/", "crates/sdk/"]\n'
+            'readers = ["crates/cli/src/lib.rs"]\ndependencies_of = ["apps/"]\n'
+            '[[cargo]]\npackage = "other"\ninputs = ["os/x"]\nreaders = ["crates/other/src/lib.rs"]\n')
+        expanded = t_toml.with_dependency_inputs(manifest, packages, Path("/w"))
+        # A new app's dependencies come in with it; dev-dependencies, packages no app reaches and
+        # directories an input already covers don't.
+        self.assertEqual(expanded.cargo[0].inputs, ("apps/", "crates/sdk/", "crates/doc/model/",
+                                                    "crates/media/codec/", "crates/text/shape/"))
+        self.assertEqual(expanded.cargo[1], manifest.cargo[1])
+
+    def test_the_app_cli_is_keyed_by_every_app_and_what_the_apps_depend_on(self):
+        config = t_matrix.load(ROOT)
+        families = {family["name"]: family for family in config["cargo"]}
+        packages = {p["name"]: p for p in t_toml.workspace_graph.cargo_metadata(ROOT)["packages"]}
+        dirs = {name: Path(p["manifest_path"]).resolve().parent.relative_to(ROOT).as_posix()
+                for name, p in packages.items()}
+        apps = {name for name, directory in dirs.items() if directory.startswith("apps/")}
+        reached = t_toml.local_closure(packages, apps, False)
+        for family in ("test", "clippy", "check"):
+            inputs = families[family]["package_inputs"]["tilo-app-cli"]
+            with self.subTest(family=family):
+                for manifest in sorted(ROOT.glob("apps/*/tilo-app.toml")):
+                    path = manifest.relative_to(ROOT).as_posix()
+                    self.assertTrue(any(matches(path, glob) for glob in inputs), path)
+                for name in sorted(reached):
+                    path = f"{dirs[name]}/src/lib.rs"
+                    self.assertTrue(any(matches(path, glob) for glob in inputs), path)
+
     def test_each_default_app_has_a_size_check_keyed_by_its_own_build(self):
-        config = tomllib.loads((ROOT / "t.toml").read_text(encoding="utf-8"))
+        config = t_matrix.load(ROOT)
         checks = {check["name"]: check for check in config["check"]}
         module = t_toml.app_release_module()
         catalog = module.app_catalog(ROOT)
@@ -63,32 +146,239 @@ class TTomlTests(unittest.TestCase):
                 self.assertEqual(check["run"], f"bash tools/apps/t-release.sh app-size {arch} {app}")
                 self.assertFalse(check["default"])
                 self.assertFalse(check["cargo_dev_dependencies"])
-                self.assertIn(catalog[app]["package"], check["cargo_packages"])
-                self.assertIn("runtime-dylib", check["cargo_packages"])
-                self.assertEqual(set(check["cargo_packages"]) & packages, {catalog[app]["package"]})
+                self.assertEqual(check["cargo_packages"], [catalog[app]["package"]])
+                # The runtime, its engines and the packing tools come from the shared build, whose
+                # key t folds into this one.
+                self.assertEqual(check["needs"], [f"thin-runtime-{arch}"])
                 self.assertIn(f"apps/{app}/**", check["inputs"])
                 self.assertNotIn("apps/**", check["inputs"])
                 self.assertNotIn("crates/**", check["inputs"])
+                # Named, or run by the push gate for an app a commit changes; never after a push.
+                self.assertNotIn("on", check)
         for arch, _ in t_toml.SIZE_ARCHES:
-            self.assertFalse(checks[f"runtime-size-{arch}"]["default"])
+            shared = checks[f"thin-runtime-{arch}"]
+            self.assertEqual(shared["run"], f"bash tools/apps/t-release.sh thin-runtime {arch}")
+            self.assertFalse(shared["default"])
+            self.assertFalse(shared["cargo_dev_dependencies"])
+            self.assertIn("runtime-dylib", shared["cargo_packages"])
+            self.assertIn("tilo-app-package-cli", shared["cargo_packages"])
+            self.assertIn("runtime-bundle", shared["cargo_packages"])
+            self.assertEqual(set(shared["cargo_packages"]) & packages, set())
+            self.assertIn("/target/thin-runtime/thin-app/**", shared["outputs"])
+            self.assertIn("/target/thin-runtime/shared-files", shared["outputs"])
+            self.assertNotIn("apps/**", shared["inputs"])
+            self.assertFalse(any(path.startswith("apps/") and path.endswith("/**") for path in shared["inputs"]),
+                             "an app's sources don't change the shared build")
+            runtime = checks[f"runtime-size-{arch}"]
+            self.assertFalse(runtime["default"])
+            self.assertEqual(runtime["needs"], [f"thin-runtime-{arch}"])
             whole = checks[f"app-sizes-{arch}"]
             self.assertFalse(whole["default"])
-            self.assertEqual(whole["on"], ["stable", "dispatch"])
+            # On the board for main's newest head, bisected when it fails.
+            self.assertEqual(whole["on"], ["stable", "dispatch", "idle"])
+            # The push gate's is kept built there, so its size check of an app compiles only the
+            # app; the other waits for room.
+            self.assertEqual(shared["on"], ["main", "idle"] if arch == t_toml.PUSH_GATE_SIZE_ARCH else ["idle"])
+        import pre_push
+        self.assertEqual(t_toml.PUSH_GATE_SIZE_ARCH, pre_push.SIZE_ARCH)
+
+    def test_all_but_matches_every_file_of_a_package_except_under_the_entries_left_out(self):
+        globs = t_toml.all_but("crates/rt", ["web"])
+        # t's globs, like fnmatch's, let `*` cross directories.
+        for path, expected in (("crates/rt/src/lib.rs", True), ("crates/rt/Cargo.toml", True),
+                               ("crates/rt/w", True), ("crates/rt/wasm/x.rs", True),
+                               ("crates/rt/webs/x", True), ("crates/rt/we.rs", True),
+                               ("crates/rt/web/page.mjs", False), ("crates/rt/web/app/index.html", False),
+                               ("crates/other/x.rs", False)):
+            with self.subTest(path=path):
+                self.assertEqual(any(fnmatch.fnmatchcase(path, glob) for glob in globs), expected)
 
     def test_a_read_inside_a_reached_package_is_already_counted(self):
         root = Path("/w")
         packages = {name: {"manifest_path": f"/w/{path}/Cargo.toml"} for name, path in
                     (("ui", "crates/ui"), ("ui-fuzz", "crates/ui/fuzz"), ("other", "crates/other"))}
-        self.assertTrue(t_toml.covered("crates/ui/assets/fonts/**", packages, {"ui"}, root))
-        self.assertTrue(t_toml.covered("crates/ui/src/a_tests.rs", packages, {"ui"}, root))
-        self.assertFalse(t_toml.covered("crates/ui/fuzz/x.rs", packages, {"ui"}, root))
-        self.assertFalse(t_toml.covered("crates/ui/**", packages, {"ui"}, root))
-        self.assertFalse(t_toml.covered("crates/other/x.rs", packages, {"ui"}, root))
-        self.assertFalse(t_toml.covered("tools/x.py", packages, {"ui"}, root))
+        dirs = {Path(package["manifest_path"]).resolve().parent: name
+                for name, package in packages.items()}
+        for path, expected in (("crates/ui/assets/fonts/**", True),
+                               ("crates/ui/src/a_tests.rs", True),
+                               ("crates/ui/fuzz/x.rs", False),
+                               ("crates/ui/**", False),
+                               ("crates/other/x.rs", False),
+                               ("tools/x.py", False)):
+            with self.subTest(path=path):
+                self.assertEqual(t_toml.covered(path, packages, {"ui"}, root), expected)
+                self.assertEqual(t_toml.covered(path, packages, {"ui"}, root, dirs), expected)
+
+    def test_cargo_families_require_the_fewest_cores_they_pass_with(self):
+        # t never gives a job fewer cores than its requirement and widens it from its profile
+        # when more cores help (t's README, "requirement"), so the requirement is the floor the
+        # checks pass at, not the peak they use: as t's default for cargo jobs, 4 cores.
+        config = t_matrix.load(ROOT)
+        families = {family["name"]: family for family in config["cargo"]}
+        for name in ("test", "test-x86_64", "clippy"):
+            with self.subTest(family=name):
+                self.assertEqual(families[name]["requirement"]["cores"], 4)
 
     def test_suite_inputs_cover_directories(self):
         self.assertEqual(t_toml.glob("os/"), "os/**")
         self.assertEqual(t_toml.glob("apps/*.rs"), "apps/*.rs")
+
+
+def matches(path: str, pattern: str) -> bool:
+    """A t glob (globset's defaults: `*` also matches `/`, and `**/x` matches `x` at the top)."""
+    return fnmatch.fnmatchcase(path, pattern) or (pattern.startswith("**/") and fnmatch.fnmatchcase(path, pattern[3:]))
+
+
+class PlanTests(unittest.TestCase):
+    """What a commit plans on main, as t plans it from t.toml: the default command checks whose
+    inputs (or the packages they build) it touches, with what they need, and the default family
+    checks of the packages whose files it changes (t's README, "What cargo checks read"). These
+    pin the narrowed inputs: a change that can't affect a check doesn't run it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.config = t_matrix.load(ROOT)
+        cls.checks = {check["name"]: check for check in cls.config["check"]}
+        packages = {p["name"]: p for p in t_toml.workspace_graph.cargo_metadata(ROOT)["packages"]}
+        cls.packages = packages
+        cls.dirs = {name: Path(p["manifest_path"]).resolve().parent.relative_to(ROOT).as_posix()
+                    for name, p in packages.items()}
+
+    def owner(self, path: str) -> str | None:
+        owners = [name for name, directory in self.dirs.items() if path.startswith(directory + "/")]
+        return max(owners, key=lambda name: len(self.dirs[name]), default=None)
+
+    def planned(self, paths: list[str]) -> set[str]:
+        top = self.config.get("inputs", [])
+        touched = {self.owner(path) for path in paths} - {None}
+        found: set[str] = set()
+        for family in self.config.get("cargo", []):
+            if family.get("default") is False:
+                continue
+            members = set(family.get("packages") or self.dirs) - set(family.get("exclude", []))
+            for package in members:
+                extra = family.get("package_inputs", {}).get(package, [])
+                if package in touched or any(matches(path, glob) for path in paths for glob in [*extra, *top]):
+                    found.add(f"{family['name']}/{package}")
+        for name, check in self.checks.items():
+            if check.get("default") is False:
+                continue
+            globs = [*check.get("inputs", ["**"] if not check.get("cargo_packages") else []), *top]
+            built = t_toml.local_closure(self.packages, set(check.get("cargo_packages", [])),
+                                         check.get("cargo_dev_dependencies", True))
+            if any(matches(path, glob) for path in paths for glob in globs) or touched & built:
+                found.add(name)
+        stack = list(found)
+        while stack:
+            for need in self.checks.get(stack.pop(), {}).get("needs", []):
+                if need not in found:
+                    found.add(need)
+                    stack.append(need)
+        return found
+
+    def planned_on_main(self, paths: list[str]) -> set[str]:
+        """What main runs for a commit of these paths: what they plan, and every default check
+        with `git = true`, whose result t keeps per commit (t's README: "The commits are part of
+        the check's key, so its result is kept per commit")."""
+        found = self.planned(paths) | {name for name, check in self.checks.items()
+                                       if check.get("git") and check.get("default") is not False}
+        stack = list(found)
+        while stack:
+            for need in self.checks.get(stack.pop(), {}).get("needs", []):
+                if need not in found:
+                    found.add(need)
+                    stack.append(need)
+        return found
+
+    def test_suites_rerun_only_for_commits_touching_their_files(self):
+        # These read no commit identity: their fixtures make the repositories they need, and the
+        # web budgets compare with the base inside `changes`, which is per commit by design.
+        suites = ["suite-os", "suite-dist", "suite-mount-source-cache-keys", "suite-browser-compute-web"]
+        for name in suites:
+            with self.subTest(check=name):
+                self.assertFalse(self.checks[name].get("git", False))
+        self.assertNotIn("sdk-web-budget", self.checks)
+        self.assertIn("python3 tools/web/wasm_size_ratchet.py check-budget --base \"$base\"",
+                      self.checks["changes"]["run"])
+        for paths in (["docs/t.md"], ["crates/session/shell/src/lib.rs"], ["apps/notes/src/lib.rs"],
+                      ["tools/ci/t_toml.py"]):
+            with self.subTest(paths=paths):
+                planned = self.planned_on_main(paths)
+                self.assertEqual(sorted(name for name in suites if name in planned), [])
+                # suite-os runs on main's newest head when t has room (`idle`), which keeps its
+                # key: no file of these commits is among its inputs.
+                self.assertFalse(any(matches(path, glob) for path in paths
+                                     for glob in self.checks["suite-os"]["inputs"]))
+        self.assertIn("suite-dist", self.planned_on_main(["dist/rpm/host-update.sh"]))
+        self.assertIn("suite-mount-source-cache-keys", self.planned_on_main(["os/Containerfile"]))
+
+    def keys(self, name: str, path: str) -> bool:
+        return any(matches(path, glob) for glob in self.checks[name]["inputs"])
+
+    def test_the_mac_checks_are_keyed_by_what_cargo_builds_on_macos(self):
+        # tilo-relay's agents (which link every app) are a feature tilo-runtime doesn't turn on,
+        # and ush is a Linux-only dependency: t's own derivation would count both.
+        for path in ("crates/runtime/tilo-runtime/src/lib.rs", "crates/sdk/ui-core/src/lib.rs",
+                     "crates/hosting/tilo-relay/src/lib.rs", "Cargo.lock", "Cargo.toml"):
+            with self.subTest(path=path):
+                self.assertTrue(self.keys("runtime-macos", path))
+        for path in ("apps/notes/src/lib.rs", "crates/agent/agent-participant/src/lib.rs",
+                     "crates/runtime/ush/src/lib.rs", "docs/t.md"):
+            with self.subTest(path=path):
+                self.assertFalse(self.keys("runtime-macos", path))
+        self.assertNotIn("cargo_packages", self.checks["runtime-macos"])
+        for path in ("apps/notes/src/lib.rs", "apps/notes/tilo-app.toml", "crates/sdk/ui-core/src/lib.rs"):
+            with self.subTest(path=path):
+                self.assertTrue(self.keys("apps-macos", path))
+        for path in ("crates/runtime/ush/src/lib.rs", "crates/session/shell/src/lib.rs"):
+            with self.subTest(path=path):
+                self.assertFalse(self.keys("apps-macos", path))
+        # Its template build commits the tree itself: keyed by its files, not per commit.
+        self.assertFalse(self.checks["sdk-macos"].get("git", False))
+
+    def vm(self, name: str) -> bool:
+        check = self.checks.get(name, {})
+        return check.get("isolation") == "vm" or bool(check.get("vm") or check.get("privileged"))
+
+    def test_a_docs_only_commit_plans_no_vm_check(self):
+        paths = ["docs/t.md", "docs/developers/getting-started.md", "docs/architecture/security.md"]
+        planned = self.planned(paths)
+        self.assertEqual(sorted(name for name in planned if self.vm(name)), [])
+        self.assertNotIn("security", planned)
+        security = self.checks["security"]["inputs"]
+        self.assertFalse(any(matches(path, glob) for path in paths for glob in security))
+
+    def test_a_shell_only_commit_does_not_plan_security(self):
+        paths = ["crates/session/shell/src/shell/search/relevance.rs", "crates/session/shell/src/compositor/mod.rs"]
+        self.assertNotIn("security", self.planned(paths))
+        # Nor would it run it on main's newest head or suggest it: its key holds only the shell
+        # files its invariants name.
+        self.assertFalse(any(matches(path, glob) for path in paths for glob in self.checks["security"]["inputs"]))
+        self.assertIn("clippy/shell", self.planned(paths))
+
+    # t keys a package's family checks by every file of the package's directory, and t.toml can't
+    # yet say that clippy doesn't read a package's .ftl files (they reach it only as include_str!
+    # data, which no lint looks at): that needs t to let a cargo family leave files of its
+    # packages out of their keys. Until then an .ftl-only commit plans its packages' clippy, and
+    # this fails; when t can, t.toml says so and this passes, which expectedFailure turns into a
+    # failure until it is removed.
+    @unittest.expectedFailure
+    def test_an_ftl_only_commit_plans_no_clippy(self):
+        paths = ["apps/notes/locales/en-US.ftl", "apps/notes/locales/de.ftl", "apps/settings-core/locales/de-DE.ftl"]
+        self.assertEqual(sorted(name for name in self.planned(paths) if name.startswith("clippy/")), [])
+
+    def test_default_pre_push_plans_no_test_check(self):
+        sys.path.insert(0, str(ROOT / "tools/ci"))
+        import pre_push
+        for paths in (["docs/t.md"], ["apps/notes/locales/en-US.ftl"], ["apps/notes/src/lib.rs"],
+                      ["crates/session/shell/src/lib.rs"], ["crates/sdk/ui-core/src/lib.rs", "crates/sdk/ui-core/Cargo.toml"],
+                      ["tools/ci/t_toml.py"], ["os/Containerfile"], ["Cargo.lock"]):
+            with self.subTest(paths=paths):
+                planned = self.planned(paths)
+                run = pre_push.select({"base": "b" * 40, "checks": sorted(planned)}, paths)["run"]
+                self.assertEqual([name for name in run if name.startswith(("test/", "test-x86_64/", "goldens/",
+                                                                            "suite-", "policy/tests/"))], [])
+                self.assertEqual([name for name in run if self.vm(name)], [])
 
 
 if __name__ == "__main__":

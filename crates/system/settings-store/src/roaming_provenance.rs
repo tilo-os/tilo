@@ -302,7 +302,7 @@ mod tests {
     fn load_preserves_json_syntax_and_field_errors() {
         use std::error::Error as _;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join(FILE_NAME);
         for (bytes, category, detail) in [
             (
@@ -333,7 +333,7 @@ mod tests {
     fn load_preserves_io_error_kind() {
         use std::error::Error as _;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let error = RoamingProvenance::load_at(&dir.path().join(FILE_NAME)).unwrap_err();
         let cause = error
             .source()
@@ -350,7 +350,7 @@ mod tests {
         use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
         use tilo_files::native::atomic::{PublicationState, publication_state};
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let path = dir.path().join(FILE_NAME);
         for (checkpoint, expected) in [
             (Checkpoint::BeforePublish, PublicationState::NotPublished),
@@ -388,16 +388,14 @@ mod tests {
             assert!(decoded.settings[0].alternatives.is_empty());
             assert!(decoded.wifi.is_empty());
         }
-        // Phase `future_schema_fails_closed`.
         {
             assert!(matches!(
                 RoamingProvenance::from_slice(br#"{"schema_version":99}"#),
                 Err(ProvenanceError::UnsupportedSchema(99))
             ));
         }
-        // Phase `round_trip_is_deterministic_bounded_and_secret_free`.
         {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = crate::test_dir();
             let path = dir.path().join(FILE_NAME);
             let mut projection = RoamingProvenance {
                 schema_version: SCHEMA_VERSION,
@@ -424,7 +422,6 @@ mod tests {
             assert_eq!(loaded.settings[0].alternatives[0].device_id, "a");
             assert_eq!(loaded, projection);
         }
-        // Phase `unknown_setting_cannot_enter_projection`.
         {
             let mut projection = RoamingProvenance {
                 settings: vec![SettingResolution {
@@ -434,7 +431,7 @@ mod tests {
                 }],
                 ..RoamingProvenance::default()
             };
-            let path = tempfile::tempdir().unwrap().path().join(FILE_NAME);
+            let path = crate::test_dir().path().join(FILE_NAME);
             assert!(matches!(
                 projection.save_at(&path),
                 Err(ProvenanceError::Invalid)

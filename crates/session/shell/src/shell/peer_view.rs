@@ -33,7 +33,6 @@ use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
 use crate::shell::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
-use ui::TextRole;
 
 /// Ceiling on the receive-side decode queue depth; once undrawn frames
 /// exceed this, further pushes drop the oldest. Two is the minimum
@@ -232,6 +231,9 @@ pub struct PeerView {
     keyframe_sink: Option<Arc<dyn Fn(u64) + Send + Sync>>,
     /// When the view last asked for a keyframe.
     keyframe_requested: Option<ui::time::Instant>,
+    /// Who the window comes from, named while its first picture is on its
+    /// way ([`ui::arriving`]).
+    from: ui::arriving::Source,
 }
 
 impl PeerView {
@@ -281,6 +283,7 @@ impl PeerView {
             chain: neighbour_wire::unit_chain::UnitChain::default(),
             keyframe_sink: None,
             keyframe_requested: None,
+            from: ui::arriving::Source::peer(""),
         }
     }
 
@@ -351,6 +354,7 @@ impl PeerView {
             chain: neighbour_wire::unit_chain::UnitChain::default(),
             keyframe_sink: None,
             keyframe_requested: None,
+            from: ui::arriving::Source::peer(""),
         }
     }
 
@@ -385,7 +389,14 @@ impl PeerView {
         self.decoder.set_display_size(display_size);
     }
 
-    /// The codec the view is decoding.
+    /// The window comes from the device `name`: its place says so while
+    /// its first picture is on its way.
+    #[must_use]
+    pub fn from_peer(mut self, name: &str) -> Self {
+        self.from = ui::arriving::Source::peer(name);
+        self
+    }
+
     pub fn codec(&self) -> media::StreamCodec {
         self.decoder.codec()
     }
@@ -504,7 +515,7 @@ impl PeerView {
     /// Run `wake` on a media thread each time a pushed picture finishes
     /// decoding, so the compositor loop wakes to collect it with
     /// [`Self::collect_late_picture`] the moment it is ready, instead of
-    /// polling every [`LATE_PICTURE_POLL`] while one is outstanding.
+    /// polling every `LATE_PICTURE_POLL` while one is outstanding.
     pub fn set_picture_wake(&mut self, wake: Option<media::realtime::PictureWake>) {
         self.decoder.set_picture_wake(wake.clone());
         self.picture_wake = wake;
@@ -707,65 +718,54 @@ impl Widget for PeerView {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        text_renderer: &mut TextRenderer,
+        _text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        // Fall through to the raised surface so a pre-first-frame view
-        // still looks intentional rather than a hole in the chrome.
+        let image = self.ensure_image().cloned();
+        // A window streamed from another device is shown at its own shape,
+        // centred on the letterbox every theme gives media that does not
+        // fill its frame; it is never resized to fit this tile. Before its
+        // first picture the view draws nothing: its tile shows the window's
+        // arrival in its place.
+        let Some(image) = image else {
+            return;
+        };
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            tokens.colors.media.letterbox,
             None,
             &self.rect,
         );
 
         let rect = self.content_rect();
-
-        let image = self.ensure_image().cloned();
-        let hdr_plane = self.cached_hdr.clone();
-        if let Some(image) = &image {
-            // Scale + translate so the natural-size image fills `rect`.
-            let img_w = f64::from(image.width);
-            let img_h = f64::from(image.height);
-            if img_w > 0.0 && img_h > 0.0 {
-                let sx = rect.width() / img_w;
-                let sy = rect.height() / img_h;
-                // `transform.pre_translate(t).pre_scale_non_uniform(sx, sy)`
-                // is kurbo's non-operator equivalent of
-                // `transform * Affine::translate(t) * Affine::scale_non_uniform(sx, sy)`
-                // (composition is associative, so chaining the two `pre_*`
-                // combinators onto `transform` gives the same matrix).
-                let placement = transform
-                    .pre_translate((rect.x0, rect.y0).into())
-                    .pre_scale_non_uniform(sx, sy);
-                if let Some(plane) = &hdr_plane {
-                    crate::shell::hdr_surface::record(
-                        plane,
-                        image,
-                        placement,
-                        transform.transform_rect_bbox(rect),
-                    );
-                }
-                scene.draw_image(image, placement);
-            }
-        } else {
-            let label = crate::shell::i18n::t("peer-view-awaiting");
-            let style = tokens.typography.style(TextRole::Body);
-            let (lw, lh) = text_renderer.measure_style(&label, None, &style);
-            let cx = rect.center().x - f64::from(lw) / 2.0;
-            let cy = rect.center().y - f64::from(lh) / 2.0;
-            text_renderer.draw_style(
-                scene,
-                &label,
-                tokens.colors.text_dim,
-                transform.pre_translate((cx, cy).into()),
-                None,
-                &style,
+        // Scale + translate so the natural-size image fills `rect`.
+        let img_w = f64::from(image.width);
+        let img_h = f64::from(image.height);
+        if img_w <= 0.0 || img_h <= 0.0 {
+            return;
+        }
+        let sx = rect.width() / img_w;
+        let sy = rect.height() / img_h;
+        // `transform.pre_translate(t).pre_scale_non_uniform(sx, sy)`
+        // is kurbo's non-operator equivalent of
+        // `transform * Affine::translate(t) * Affine::scale_non_uniform(sx, sy)`
+        // (composition is associative, so chaining the two `pre_*`
+        // combinators onto `transform` gives the same matrix).
+        let placement = transform
+            .pre_translate((rect.x0, rect.y0).into())
+            .pre_scale_non_uniform(sx, sy);
+        if let Some(plane) = &self.cached_hdr {
+            crate::shell::hdr_surface::record(
+                plane,
+                &image,
+                placement,
+                transform.transform_rect_bbox(rect),
             );
         }
+        scene.draw_image(&image, placement);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -834,6 +834,16 @@ impl Widget for PeerView {
 
     fn name(&self) -> &'static str {
         "PeerView"
+    }
+
+    /// Once its first picture is decoded; a restarted stream keeps the
+    /// last picture on screen, so this never goes back.
+    fn presented(&self) -> bool {
+        self.latest.is_some()
+    }
+
+    fn arrives_from(&self) -> ui::arriving::Source {
+        self.from.clone()
     }
 
     fn get_rect(&self) -> Rect {
@@ -939,8 +949,6 @@ mod tests {
     /// is out. A rejected unit stays [`PushOutcome::DecodeFailed`], and one
     /// whose picture never comes stays [`PushOutcome::Pending`].
     fn push_settled(view: &mut PeerView, unit: &[u8], latency_ns: Option<u64>) -> PushOutcome {
-        // Every unit these tests push is a keyframe, which decodes at any
-        // sequence number.
         let outcome = view.push_encoded_with_latency(0, unit, latency_ns);
         if outcome != PushOutcome::Pending {
             return outcome;
@@ -991,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn peer_view_paints_fitted_frames_or_a_placeholder() {
+    fn peer_view_paints_fitted_frames_or_nothing_before_its_first() {
         fn aspect_fit_preserves_pixels_and_letterboxes() {
             let viewport = Rect::new(0.0, 0.0, 1000.0, 1000.0);
             let fitted = aspect_fit_rect(viewport, 1920, 1080);
@@ -1017,6 +1025,7 @@ mod tests {
             assert_eq!(latest.width, W);
             assert_eq!(latest.height, H);
             assert!(latest.pixels.is_rgba(), "an SDR stream yields RGBA pixels");
+            assert!(view.presented(), "its first picture presents the window");
 
             view.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
 
@@ -1034,26 +1043,34 @@ mod tests {
             );
         }
 
-        fn empty_view_paints_placeholder_text_not_image() {
-            use vello_encoding::DrawTag;
-            let mut view = PeerView::new(1, 1);
+        fn empty_view_draws_nothing_and_arrives_from_its_peer() {
+            let mut view = PeerView::new(1, 1).from_peer("Laptop");
             view.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
             let theme = Theme::default();
             let presence = PresenceCtx::default();
             view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let enc_ref = scene.encoding();
-            let has_image = enc_ref.draw_tags.contains(&DrawTag::IMAGE);
             assert!(
-                !has_image,
-                "fresh PeerView with no decoded frame leaked an image draw"
+                scene.encoding().is_empty(),
+                "before its first picture the tile's arrival stands in its place"
+            );
+            assert!(!view.presented());
+            assert_eq!(view.arrives_from(), ui::arriving::Source::peer("Laptop"));
+            assert_eq!(
+                PeerView::new(1, 1).arrives_from().name(),
+                None,
+                "an unnamed peer is still not this device"
+            );
+            assert_ne!(
+                PeerView::new(1, 1).arrives_from(),
+                ui::arriving::Source::Local
             );
         }
 
         aspect_fit_preserves_pixels_and_letterboxes();
         decoded_frame_paints_image_into_scene();
-        empty_view_paints_placeholder_text_not_image();
+        empty_view_draws_nothing_and_arrives_from_its_peer();
     }
 
     #[test]
@@ -1317,7 +1334,6 @@ mod tests {
         );
         assert_eq!(view.next_wake_deadline(), None);
 
-        // Without a wake, a picture still decoding is polled for.
         view.set_picture_wake(None);
         view.mark_drawn();
         push_until_pending(&mut view, &nalus, None);

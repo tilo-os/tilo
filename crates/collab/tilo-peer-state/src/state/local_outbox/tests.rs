@@ -25,7 +25,11 @@ fn fixture() -> (
     )
     .unwrap();
     member.select_admission_v5().unwrap();
-    for message in governor.bootstrap_messages(&governor_key, now).unwrap() {
+    for message in governor
+        .publication_mut()
+        .bootstrap_messages(&governor_key, now)
+        .unwrap()
+    {
         member
             .receive_from_report(
                 TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
@@ -52,6 +56,7 @@ fn local_edit(
     doc.commit_edit("fixture", "fixture");
     if !snapshot {
         return peer
+            .publication_mut()
             .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
             .unwrap();
     }
@@ -104,10 +109,14 @@ fn checkpoint(
             .checked_add(1)
             .unwrap();
         governor
+            .publication_mut()
             .durable_bootstrap_messages(key, now, generation)
             .unwrap()
     } else {
-        governor.bootstrap_messages(key, now).unwrap()
+        governor
+            .publication_mut()
+            .bootstrap_messages(key, now)
+            .unwrap()
     };
     for message in messages {
         member
@@ -142,6 +151,7 @@ fn local_outbox_revoked_custody_survives_restore_but_signing_and_current_lookup_
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(governor.authority().clone()),
                 revocations: vec![revocation],
+                successions: Vec::new(),
             },
             later,
         )
@@ -282,6 +292,7 @@ fn local_outbox_watermark_and_half_checkpoint_never_acknowledge_missing_changes(
     unrelated.put(ROOT, "same-value", "same-value").unwrap();
     unrelated.commit_edit("fixture", "same-value");
     let second = member
+        .publication_mut()
         .publish_incremental(
             "test.app",
             "tab:1",
@@ -299,6 +310,7 @@ fn local_outbox_watermark_and_half_checkpoint_never_acknowledge_missing_changes(
         .unwrap();
     let later = now + Duration::from_secs(301);
     let pair = governor
+        .publication_mut()
         .durable_bootstrap_messages(&governor_key, later, 7)
         .unwrap();
     let mut half = member.clone();
@@ -403,7 +415,6 @@ fn local_outbox_builds_each_pending_publication_history_once() {
                 "edit {edit}: the new history extends the previous edit's"
             );
         }
-        // What it remembered is what it computes from nothing.
         super::history::forget();
         assert_eq!(
             member

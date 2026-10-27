@@ -21,10 +21,13 @@ pub use tilo_identity_host::device_fleet;
 pub mod diagnostics;
 pub mod firstboot;
 pub mod identity_broker;
+#[cfg(target_os = "linux")]
+pub mod identity_clock_wait;
 mod idle_wake;
 #[cfg(target_os = "linux")]
 mod retained_files;
 pub mod runtime_host;
+pub mod time_zone_follower;
 
 pub use tilo_identity_host::registry as identity_registry;
 pub mod network;
@@ -36,6 +39,8 @@ mod onboarding_browser;
 #[cfg(target_os = "linux")]
 mod onboarding_migration;
 mod onboarding_nearby;
+#[cfg(target_os = "linux")]
+pub mod onboarding_peer;
 #[cfg(target_os = "linux")]
 mod onboarding_portable_applications;
 #[cfg(target_os = "linux")]
@@ -60,5 +65,6 @@ pub mod shell;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 pub mod tray;
+pub mod watched_identity;
 pub mod wayland;
 pub mod workspace;

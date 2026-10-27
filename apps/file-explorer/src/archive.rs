@@ -1,24 +1,402 @@
-//! Safe, native archive operations used by Files.
+//! Archives as Files shows and changes them.
 //!
-//! Archive entry names are untrusted.  Extraction never joins an absolute path,
-//! follows an archive symlink, or permits `..` to escape the chosen directory.
+//! The formats, the reading and the safety rules are `tilo_archive`'s (zip,
+//! 7z, and tar with gzip, xz, zstd or bzip2). Here they meet Files:
+//! - an archive is browsed as a read-only folder. Its path is the folder,
+//!   and what is inside has ordinary-looking paths below it ([`location`]),
+//!   so Back, Up, the path bar and activation need no second navigation
+//!   model. An archive's entries are read once, off the window's thread, and
+//!   kept while it is browsed ([`cached`], [`index`]);
+//! - extraction writes into a hidden folder beside the destination, and only
+//!   a complete extraction is renamed into place ([`extract`]), so a failed
+//!   or cancelled one leaves nothing behind;
+//! - a new archive is written to a hidden file and renamed into place
+//!   without replacing anything ([`create`]).
 
-use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, Write};
-use std::path::{Component, Path, PathBuf};
+use std::fs::{self, OpenOptions};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
-const MAX_ENTRIES: usize = 100_000;
-const MAX_EXPANDED_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+use ui::lock::MutexRecover as _;
 
-struct StagingDirectory(PathBuf);
+pub use tilo_archive::{Entry, Kind, Observer, Packing};
 
-impl Drop for StagingDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+/// Whether `path` names an archive Files can open.
+pub fn is_supported(path: &Path) -> bool {
+    tilo_archive::Format::of_path(path).is_some()
+}
+
+/// Resolve a Files navigation path to an archive and an in-archive prefix.
+/// The archive itself is the root; descendants use ordinary-looking paths so
+/// Back, Forward, Up, breadcrumbs, keyboard navigation and touch activation do
+/// not need a second navigation model.
+pub fn location(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    for candidate in path.ancestors() {
+        if is_supported(candidate) && candidate.is_file() {
+            let prefix = path.strip_prefix(candidate).ok()?.to_path_buf();
+            return Some((candidate.to_path_buf(), prefix));
+        }
+    }
+    None
+}
+
+/// What identifies one version of an archive file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+fn stamp(archive: &Path) -> io::Result<Stamp> {
+    let meta = fs::metadata(archive)?;
+    Ok(Stamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+    })
+}
+
+/// The entries of the archive last browsed, while the file is unchanged.
+struct Index {
+    archive: PathBuf,
+    stamp: Stamp,
+    entries: Arc<Vec<Entry>>,
+}
+
+static INDEX: Mutex<Option<Index>> = Mutex::new(None);
+
+/// The entries of `archive` when they were read already and the file has
+/// not changed since.
+pub fn cached(archive: &Path) -> Option<Arc<Vec<Entry>>> {
+    let now = stamp(archive).ok()?;
+    let index = INDEX.lock_recover();
+    index
+        .as_ref()
+        .filter(|index| index.archive == archive && index.stamp == now)
+        .map(|index| Arc::clone(&index.entries))
+}
+
+/// Read the entries of `archive` and keep them for browsing it. Decodes the
+/// whole archive when it is a compressed tar: call it off the window's
+/// thread.
+///
+/// # Errors
+///
+/// The archive cannot be read or decoded, or holds an entry that would land
+/// outside it.
+pub fn index(archive: &Path, observer: &dyn Observer) -> io::Result<Arc<Vec<Entry>>> {
+    if let Some(entries) = cached(archive) {
+        return Ok(entries);
+    }
+    let before = stamp(archive)?;
+    let entries = Arc::new(tilo_archive::list(archive, observer)?);
+    *INDEX.lock_recover() = Some(Index {
+        archive: archive.to_path_buf(),
+        stamp: before,
+        entries: Arc::clone(&entries),
+    });
+    Ok(entries)
+}
+
+/// Reading one archive's entries off the window's thread, for browsing it.
+///
+/// One archive is read at a time: starting another, or [`Listing::stop`],
+/// stops the read under way at its next chunk.
+pub struct Listing {
+    wake: Arc<dyn Fn() + Send + Sync>,
+    job: Option<ListingJob>,
+}
+
+struct ListingJob {
+    archive: PathBuf,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    read: Arc<std::sync::atomic::AtomicU64>,
+    size: u64,
+    done: Arc<Mutex<Option<EntriesRead>>>,
+}
+
+type EntriesRead = io::Result<Arc<Vec<Entry>>>;
+
+impl std::fmt::Debug for Listing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listing")
+            .field("archive", &self.job.as_ref().map(|job| &job.archive))
+            .finish_non_exhaustive()
     }
 }
 
+/// Counts what a listing read and stops it when asked.
+struct ListingObserver {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    read: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Observer for ListingObserver {
+    fn advance(&self, bytes: u64) {
+        self.read
+            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn cancelled(&self) -> bool {
+        self.stop.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Listing {
+    /// A listing whose finished reads call `wake` (the window's wake
+    /// handle) from the reading thread.
+    pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self {
+            wake: Arc::new(wake),
+            job: None,
+        }
+    }
+
+    /// Read `archive`'s entries on a thread, unless that read is under way.
+    pub fn start(&mut self, archive: &Path) {
+        if self.job.as_ref().is_some_and(|job| job.archive == archive) {
+            return;
+        }
+        self.stop();
+        let job = ListingJob {
+            archive: archive.to_path_buf(),
+            stop: Arc::default(),
+            read: Arc::default(),
+            size: fs::metadata(archive).map_or(0, |meta| meta.len()),
+            done: Arc::default(),
+        };
+        let observer = ListingObserver {
+            stop: Arc::clone(&job.stop),
+            read: Arc::clone(&job.read),
+        };
+        let done = Arc::clone(&job.done);
+        let wake = Arc::clone(&self.wake);
+        let path = job.archive.clone();
+        let spawned = std::thread::Builder::new()
+            .name("files-archive-list".into())
+            .spawn(move || {
+                let read = index(&path, &observer);
+                if !observer.cancelled() {
+                    *done.lock_recover() = Some(read);
+                    wake();
+                }
+            });
+        if let Err(error) = spawned {
+            *job.done.lock_recover() = Some(Err(error));
+        }
+        self.job = Some(job);
+    }
+
+    /// Stop the read under way, if any.
+    pub fn stop(&mut self) {
+        if let Some(job) = self.job.take() {
+            job.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    pub fn is_reading(&self, archive: &Path) -> bool {
+        self.job.as_ref().is_some_and(|job| job.archive == archive)
+    }
+
+    /// How much of the archive was read, of its size.
+    pub fn progress(&self) -> Option<(u64, u64)> {
+        self.job.as_ref().map(|job| {
+            (
+                job.read.load(std::sync::atomic::Ordering::Relaxed),
+                job.size,
+            )
+        })
+    }
+
+    /// The finished read: the archive and its entries or why they could not
+    /// be read.
+    pub fn take(&mut self) -> Option<(PathBuf, EntriesRead)> {
+        let read = self.job.as_ref()?.done.lock_recover().take()?;
+        let job = self.job.take()?;
+        Some((job.archive, read))
+    }
+}
+
+/// The direct children of `prefix` among an archive's `entries`, as a
+/// folder shows them.
+///
+/// # Errors
+///
+/// An unsafe `prefix`.
+pub fn children_of(entries: &[Entry], prefix: &Path) -> io::Result<Vec<Entry>> {
+    let prefix = if prefix.as_os_str().is_empty() {
+        PathBuf::new()
+    } else {
+        tilo_archive::safe_relative(prefix)?.unwrap_or_default()
+    };
+    Ok(tilo_archive::children(entries, &prefix))
+}
+
+/// The direct children of `prefix` in `archive`, read on this thread.
+///
+/// # Errors
+///
+/// As [`index`] and [`children_of`].
+#[cfg(test)]
+pub fn list_directory(archive: &Path, prefix: &Path) -> io::Result<Vec<Entry>> {
+    children_of(&index(archive, &())?, prefix)
+}
+
+/// Whether `member` of `archive` is a folder, named or implied.
+///
+/// # Errors
+///
+/// As [`index`].
+#[cfg(test)]
+pub fn is_directory(archive: &Path, member: &Path) -> io::Result<bool> {
+    let entries = index(archive, &())?;
+    Ok(tilo_archive::has_directory(&entries, member))
+}
+
+/// Every entry of `archive`, read on this thread.
+///
+/// # Errors
+///
+/// As [`index`].
+#[cfg(test)]
+pub fn list(archive: &Path) -> io::Result<Vec<Entry>> {
+    Ok(index(archive, &())?.as_ref().clone())
+}
+
+/// Write the single file `member` of `archive` to `output` (a new file),
+/// read-only: a member is opened by reading a copy of it, never by editing
+/// inside the archive.
+///
+/// # Errors
+///
+/// Returns an error when the archive cannot be read, holds no such regular
+/// file, or `output` exists.
+pub fn extract_member(archive: &Path, member: &Path, output: &Path) -> io::Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    if let Err(error) = tilo_archive::read_member(archive, member, &mut file, &()) {
+        drop(file);
+        let _ = fs::remove_file(output);
+        return Err(error);
+    }
+    let mut permissions = file.metadata()?.permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(output, permissions)
+}
+
+/// The name a folder extracted from `archive` gets when the archive does
+/// not hold exactly one folder at its top: the archive's name without its
+/// extension.
+pub fn stem(archive: &Path) -> String {
+    let name = archive
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let stem = tilo_archive::stem(&name);
+    if stem.is_empty() {
+        name
+    } else {
+        stem.to_owned()
+    }
+}
+
+/// The name an extraction of `archive` will most likely take, for asking
+/// about a clash before it starts: the one folder a zip or 7z holds at its
+/// top, or the folder a tar's first entry is in; otherwise [`stem`]. Reads
+/// a zip's or 7z's directory or a tar's first entry only.
+pub fn likely_name(archive: &Path) -> String {
+    let mut top: Option<(PathBuf, bool)> = None;
+    let mut single = true;
+    let streamed = matches!(
+        tilo_archive::Format::of_path(archive),
+        Some(tilo_archive::Format::Tar(_)) | None
+    );
+    let walked = tilo_archive::walk(archive, &(), &mut |entry, _| {
+        let mut parts = entry.path.components();
+        let first = parts.next().map(|part| PathBuf::from(part.as_os_str()));
+        let folder = parts.next().is_some() || entry.kind == Kind::Directory;
+        match (&top, first) {
+            (None, Some(first)) => top = Some((first, folder)),
+            (Some((name, _)), Some(first)) if *name != first => single = false,
+            _ => {}
+        }
+        Ok(if streamed || !single {
+            tilo_archive::Flow::Stop
+        } else {
+            tilo_archive::Flow::Continue
+        })
+    });
+    match (walked, top) {
+        (Ok(()), Some((name, true))) if single => name.to_string_lossy().into_owned(),
+        _ => stem(archive),
+    }
+}
+
+/// A folder holding an extraction until it is complete; removed with
+/// everything in it unless kept.
+pub struct Staging {
+    path: PathBuf,
+    kept: bool,
+}
+
+impl Staging {
+    /// What the extraction came to: the one folder the archive holds at its
+    /// top, else the staging folder itself (to be named after the archive).
+    /// `true` with the path when it is the archive's own folder.
+    ///
+    /// # Errors
+    ///
+    /// The staging folder cannot be read.
+    pub fn result(&self) -> io::Result<(PathBuf, bool)> {
+        let mut children = fs::read_dir(&self.path)?;
+        if let (Some(only), None) = (children.next().transpose()?, children.next())
+            && only.file_type()?.is_dir()
+        {
+            return Ok((only.path(), true));
+        }
+        Ok((self.path.clone(), false))
+    }
+
+    /// Keep the staging folder: its contents were moved into place.
+    pub fn keep(mut self) {
+        self.kept = true;
+        if self.path.exists() {
+            // Only an emptied staging folder is left after moving its one
+            // folder out.
+            let _ = fs::remove_dir(&self.path);
+        }
+    }
+}
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        if !self.kept {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+/// Extract `archive` into a new hidden folder in `parent`; the caller moves
+/// the result into place ([`Staging::result`]). Dropping the staging
+/// removes it, so a failed or cancelled extraction leaves nothing.
+///
+/// # Errors
+///
+/// As [`tilo_archive::extract_into`], or the staging folder cannot be made.
+pub fn extract(archive: &Path, parent: &Path, observer: &dyn Observer) -> io::Result<Staging> {
+    let staging = Staging {
+        path: parent.join(format!(".tilo-extract-{}", uuid::Uuid::new_v4())),
+        kept: false,
+    };
+    fs::create_dir(&staging.path)?;
+    tilo_archive::extract_into(archive, &staging.path, observer)?;
+    Ok(staging)
+}
+
+/// A new archive being written, removed unless it was renamed into place.
 struct PartialArchive<'a> {
     path: &'a Path,
     committed: bool,
@@ -32,425 +410,19 @@ impl Drop for PartialArchive<'_> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ArchiveEntry {
-    pub path: PathBuf,
-    pub size: u64,
-    pub is_dir: bool,
-}
-
-/// Resolve a Files navigation path to an archive and an in-archive prefix.
-/// The archive itself is the root; descendants use ordinary-looking paths so
-/// Back, Forward, Up, breadcrumbs, keyboard navigation and touch activation do
-/// not need a second navigation model.
-pub fn location(path: &Path) -> Option<(PathBuf, PathBuf)> {
-    for candidate in path.ancestors() {
-        if candidate.is_file() && is_supported(candidate) {
-            let prefix = path.strip_prefix(candidate).ok()?.to_path_buf();
-            return Some((candidate.to_path_buf(), prefix));
-        }
-    }
-    None
-}
-
-/// List only the direct children at `prefix`, synthesizing directory rows for
-/// archives that omit explicit directory members.
+/// Pack `paths` into the new archive `output`, never replacing a file of
+/// that name.
 ///
 /// # Errors
 ///
-/// Returns an error when the archive cannot be opened or decoded, an entry is
-/// unsafe, or the configured expansion limits are exceeded.
-pub fn list_directory(path: &Path, prefix: &Path) -> io::Result<Vec<ArchiveEntry>> {
-    let prefix = if prefix.as_os_str().is_empty() {
-        PathBuf::new()
-    } else {
-        safe_relative(prefix)?
-    };
-    let mut children: BTreeMap<PathBuf, ArchiveEntry> = BTreeMap::new();
-    for entry in list(path)? {
-        let Ok(relative) = entry.path.strip_prefix(&prefix) else {
-            continue;
-        };
-        let mut parts = relative.components();
-        let Some(Component::Normal(first)) = parts.next() else {
-            continue;
-        };
-        let child_path = prefix.join(first);
-        let has_descendants = parts.next().is_some();
-        let child = ArchiveEntry {
-            path: child_path.clone(),
-            size: if has_descendants { 0 } else { entry.size },
-            is_dir: has_descendants || entry.is_dir,
-        };
-        children
-            .entry(child_path)
-            .and_modify(|existing| {
-                if child.is_dir {
-                    existing.is_dir = true;
-                    existing.size = 0;
-                }
-            })
-            .or_insert(child);
-    }
-    Ok(children.into_values().collect())
-}
-
-fn safe_relative(name: &Path) -> io::Result<PathBuf> {
-    let mut clean = PathBuf::new();
-    for part in name.components() {
-        match part {
-            Component::Normal(value) => clean.push(value),
-            Component::CurDir => {}
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "archive entry escapes its destination",
-                ));
-            }
-        }
-    }
-    if clean.as_os_str().is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "empty archive entry",
-        ));
-    }
-    Ok(clean)
-}
-
-fn account(count: usize, total: u64, size: u64) -> io::Result<u64> {
-    if count >= MAX_ENTRIES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "archive has too many entries",
-        ));
-    }
-    let next = total
-        .checked_add(size)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "archive size overflow"))?;
-    if next > MAX_EXPANDED_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "archive expands beyond the safety limit",
-        ));
-    }
-    Ok(next)
-}
-
-fn zip_mode_is_symlink(mode: Option<u32>) -> bool {
-    mode.is_some_and(|mode| mode & 0o170_000 == 0o120_000)
-}
-
-pub fn is_supported(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|v| v.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let named = Path::new(&name);
-    let extension = named
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default();
-    matches!(extension, "zip" | "tar" | "tgz")
-        || (extension == "gz"
-            && named
-                .file_stem()
-                .and_then(|stem| Path::new(stem).extension())
-                .is_some_and(|inner| inner.eq_ignore_ascii_case("tar")))
-}
-
-/// Decode the entries in a supported archive.
-///
-/// # Errors
-///
-/// Returns an error when the archive cannot be opened or decoded, an entry is
-/// unsafe, or the configured expansion limits are exceeded.
-pub fn list(path: &Path) -> io::Result<Vec<ArchiveEntry>> {
-    if path
-        .extension()
-        .and_then(|v| v.to_str())
-        .is_some_and(|v| v.eq_ignore_ascii_case("zip"))
-    {
-        return list_zip(File::open(path)?);
-    }
-    let file = File::open(path)?;
-    if path.file_name().and_then(|v| v.to_str()).is_some_and(|v| {
-        Path::new(v).extension().is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("gz") || extension.eq_ignore_ascii_case("tgz")
-        })
-    }) {
-        list_tar(flate2::read::GzDecoder::new(file))
-    } else {
-        list_tar(file)
-    }
-}
-
-fn list_zip<R: Read + Seek>(reader: R) -> io::Result<Vec<ArchiveEntry>> {
-    let mut archive = zip::ZipArchive::new(reader).map_err(io::Error::other)?;
-    let mut result = Vec::with_capacity(archive.len().min(4096));
-    let mut total = 0;
-    for index in 0..archive.len() {
-        let entry = archive.by_index(index).map_err(io::Error::other)?;
-        if zip_mode_is_symlink(entry.unix_mode()) {
-            continue;
-        }
-        total = account(result.len(), total, entry.size())?;
-        result.push(ArchiveEntry {
-            path: safe_relative(Path::new(&*entry.name().map_err(io::Error::other)?))?,
-            size: entry.size(),
-            is_dir: entry.is_dir(),
-        });
-    }
-    Ok(result)
-}
-
-fn list_tar<R: Read>(reader: R) -> io::Result<Vec<ArchiveEntry>> {
-    let mut archive = tar::Archive::new(reader);
-    let mut result = Vec::new();
-    let mut total = 0;
-    for item in archive.entries()? {
-        let entry = item?;
-        let kind = entry.header().entry_type();
-        if kind.is_symlink() || kind.is_hard_link() {
-            continue;
-        }
-        let size = entry.header().size()?;
-        total = account(result.len(), total, size)?;
-        result.push(ArchiveEntry {
-            path: safe_relative(&entry.path()?)?,
-            size,
-            is_dir: kind.is_dir(),
-        });
-    }
-    Ok(result)
-}
-
-/// Extract a supported archive atomically into a new destination directory.
-///
-/// # Errors
-///
-/// Returns an error for an existing or invalid destination, unsafe archive
-/// entries, size-limit violations, decode failures, or filesystem failures.
-pub fn extract(path: &Path, destination: &Path) -> io::Result<Vec<PathBuf>> {
-    if destination.exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "the destination already exists",
-        ));
-    }
-    let parent = destination
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let staging = extraction_staging_path(destination)?;
-    fs::create_dir(&staging)?;
-    let cleanup = StagingDirectory(staging.clone());
-    let result = if path
-        .extension()
-        .and_then(|v| v.to_str())
-        .is_some_and(|v| v.eq_ignore_ascii_case("zip"))
-    {
-        extract_zip(File::open(path)?, &staging)
-    } else {
-        let file = File::open(path)?;
-        if path.file_name().and_then(|v| v.to_str()).is_some_and(|v| {
-            Path::new(v).extension().is_some_and(|extension| {
-                extension.eq_ignore_ascii_case("gz") || extension.eq_ignore_ascii_case("tgz")
-            })
-        }) {
-            extract_tar(flate2::read::GzDecoder::new(file), &staging)
-        } else {
-            extract_tar(file, &staging)
-        }
-    }?;
-    fs::rename(&staging, destination)?;
-    std::mem::forget(cleanup);
-    Ok(result)
-}
-
-fn extraction_staging_path(destination: &Path) -> io::Result<PathBuf> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent"))?;
-    let name = destination
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no name"))?
-        .to_string_lossy();
-    for attempt in 0..1_000u16 {
-        let candidate = parent.join(format!(
-            ".{name}.extracting-{}-{attempt}",
-            std::process::id()
-        ));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        "could not reserve a temporary extraction folder",
-    ))
-}
-
-fn extract_zip<R: Read + Seek>(reader: R, destination: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut archive = zip::ZipArchive::new(reader).map_err(io::Error::other)?;
-    let mut written = Vec::new();
-    let mut total = 0;
-    let mut count = 0;
-    for index in 0..archive.len() {
-        let entry = archive.by_index(index).map_err(io::Error::other)?;
-        if zip_mode_is_symlink(entry.unix_mode()) {
-            continue;
-        }
-        let size = entry.size();
-        total = account(count, total, size)?;
-        count = count.saturating_add(1);
-        let relative = safe_relative(Path::new(&*entry.name().map_err(io::Error::other)?))?;
-        let output = destination.join(&relative);
-        if entry.is_dir() {
-            fs::create_dir_all(&output)?;
-            continue;
-        }
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&output)?;
-        let copied = io::copy(&mut entry.take(size), &mut file)?;
-        if copied != size {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "truncated ZIP entry",
-            ));
-        }
-        written.push(relative);
-    }
-    Ok(written)
-}
-
-fn extract_tar<R: Read>(reader: R, destination: &Path) -> io::Result<Vec<PathBuf>> {
-    let mut archive = tar::Archive::new(reader);
-    let mut written = Vec::new();
-    let mut total = 0;
-    let mut count = 0;
-    for item in archive.entries()? {
-        let mut entry = item?;
-        let kind = entry.header().entry_type();
-        if kind.is_symlink() || kind.is_hard_link() {
-            continue;
-        }
-        let size = entry.header().size()?;
-        total = account(count, total, size)?;
-        count = count.saturating_add(1);
-        let relative = safe_relative(&entry.path()?)?;
-        let output = destination.join(&relative);
-        if kind.is_dir() {
-            fs::create_dir_all(&output)?;
-            continue;
-        }
-        if !kind.is_file() {
-            continue;
-        }
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&output)?;
-        let copied = io::copy(&mut entry, &mut file)?;
-        if copied != size {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "truncated TAR entry",
-            ));
-        }
-        written.push(relative);
-    }
-    Ok(written)
-}
-
-/// Write the single file `member` of `archive` to `output` (a new file),
-/// read-only: a member is opened by reading a copy of it, never by editing
-/// inside the archive.
-///
-/// # Errors
-///
-/// Returns an error when the archive cannot be read, holds no such regular
-/// file, the member is past the size limit, or `output` exists.
-pub fn extract_member(archive: &Path, member: &Path, output: &Path) -> io::Result<()> {
-    let missing = || io::Error::new(io::ErrorKind::NotFound, "no such file in the archive");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(output)?;
-    let written = (|| {
-        if archive
-            .extension()
-            .and_then(|v| v.to_str())
-            .is_some_and(|v| v.eq_ignore_ascii_case("zip"))
-        {
-            let mut zip = zip::ZipArchive::new(File::open(archive)?).map_err(io::Error::other)?;
-            for index in 0..zip.len() {
-                let entry = zip.by_index(index).map_err(io::Error::other)?;
-                if entry.is_dir() || zip_mode_is_symlink(entry.unix_mode()) {
-                    continue;
-                }
-                let name = entry.name().map_err(io::Error::other)?.into_owned();
-                if safe_relative(Path::new(name.as_str()))? == member {
-                    let size = entry.size();
-                    account(0, 0, size)?;
-                    return io::copy(&mut entry.take(size), &mut file);
-                }
-            }
-            return Err(missing());
-        }
-        let reader = File::open(archive)?;
-        let gz = archive
-            .file_name()
-            .and_then(|v| v.to_str())
-            .is_some_and(|v| {
-                Path::new(v).extension().is_some_and(|extension| {
-                    extension.eq_ignore_ascii_case("gz") || extension.eq_ignore_ascii_case("tgz")
-                })
-            });
-        let reader: Box<dyn Read> = if gz {
-            Box::new(flate2::read::GzDecoder::new(reader))
-        } else {
-            Box::new(reader)
-        };
-        let mut tar = tar::Archive::new(reader);
-        for item in tar.entries()? {
-            let mut entry = item?;
-            if !entry.header().entry_type().is_file() {
-                continue;
-            }
-            if safe_relative(&entry.path()?)? == member {
-                account(0, 0, entry.header().size()?)?;
-                return io::copy(&mut entry, &mut file);
-            }
-        }
-        Err(missing())
-    })();
-    if let Err(error) = written {
-        drop(file);
-        let _ = fs::remove_file(output);
-        return Err(error);
-    }
-    let mut permissions = fs::metadata(output)?.permissions();
-    permissions.set_readonly(true);
-    fs::set_permissions(output, permissions)
-}
-
-/// Create a ZIP archive atomically from the selected files and directories.
-///
-/// # Errors
-///
-/// Returns an error when an input cannot be read, the output cannot be
-/// created, or ZIP encoding and finalization fail.
-pub fn create_zip(paths: &[PathBuf], output: &Path) -> io::Result<()> {
+/// An input cannot be read, the output exists or cannot be written, or the
+/// observer cancelled ([`tilo_archive::is_cancelled`]).
+pub fn create(
+    paths: &[PathBuf],
+    output: &Path,
+    packing: Packing,
+    observer: &dyn Observer,
+) -> io::Result<()> {
     let parent = output.parent().ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "archive has no parent folder")
     })?;
@@ -465,68 +437,37 @@ pub fn create_zip(paths: &[PathBuf], output: &Path) -> io::Result<()> {
         path: &temporary,
         committed: false,
     };
-    let mut zip = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    for path in paths {
-        let name = path
-            .file_name()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no file name"))?;
-        let archive_path = PathBuf::from(name);
-        let kind = path.symlink_metadata()?.file_type();
-        if kind.is_dir() {
-            add_directory_tree(&mut zip, path, &archive_path, options)?;
-        } else if kind.is_file() {
-            add_zip_file(&mut zip, path, &archive_path, options)?;
-        }
-    }
-    let result = zip.finish().map_err(io::Error::other).and_then(|file| {
-        file.sync_all()?;
-        host_fs::rename_noreplace(&temporary, output)
-    });
-    if result.is_ok() {
-        cleanup.committed = true;
-    }
-    result
-}
-
-fn add_directory_tree<W: Write + Seek>(
-    zip: &mut zip::ZipWriter<W>,
-    source: &Path,
-    archive_path: &Path,
-    options: zip::write::SimpleFileOptions,
-) -> io::Result<()> {
-    zip.add_directory(archive_path.to_string_lossy(), options)
-        .map_err(io::Error::other)?;
-    for item in fs::read_dir(source)? {
-        let item = item?;
-        let kind = item.file_type()?;
-        let child_archive = archive_path.join(item.file_name());
-        if kind.is_dir() {
-            add_directory_tree(zip, &item.path(), &child_archive, options)?;
-        } else if kind.is_file() {
-            add_zip_file(zip, &item.path(), &child_archive, options)?;
-        }
-    }
+    let file = tilo_archive::create(paths, file, packing, observer)?;
+    file.sync_all()?;
+    drop(file);
+    host_fs::rename_noreplace(&temporary, output)?;
+    cleanup.committed = true;
     Ok(())
 }
 
-fn add_zip_file<W: Write + Seek>(
-    zip: &mut zip::ZipWriter<W>,
-    source: &Path,
-    archive_path: &Path,
-    options: zip::write::SimpleFileOptions,
-) -> io::Result<()> {
-    zip.start_file(archive_path.to_string_lossy(), options)
-        .map_err(io::Error::other)?;
-    io::copy(&mut File::open(source)?, zip)?;
-    Ok(())
+/// Create a ZIP archive atomically from the selected files and directories.
+///
+/// # Errors
+///
+/// As [`create`].
+#[cfg(test)]
+pub fn create_zip(paths: &[PathBuf], output: &Path) -> io::Result<()> {
+    create(paths, output, Packing::Zip, &())
+}
+
+/// The packing a new archive called `name` takes: tar with zstd for a name
+/// ending in `.tar.zst`, else zip.
+pub fn packing_of(name: &str) -> Packing {
+    if name.to_ascii_lowercase().ends_with(".tar.zst") {
+        Packing::TarZst
+    } else {
+        Packing::Zip
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     #[cfg(unix)]
     #[test]
@@ -565,159 +506,83 @@ mod tests {
         assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 3);
     }
 
-    /// Archive paths reject traversal and resolve root and nested locations, listings synthesise parents, and zips round-trip.
+    /// Archive paths resolve root and nested locations, listings synthesise
+    /// parents, and the browsed index follows a changed file.
     #[test]
-    fn archive_paths_listings_and_round_trip() {
-        // --- phase: traversal_is_rejected ---
-        {
-            assert!(safe_relative(Path::new("../secret")).is_err());
-            assert!(safe_relative(Path::new("/etc/passwd")).is_err());
-        }
-
-        // --- phase: zip_round_trip ---
-        {
-            let temp = tempfile::tempdir().unwrap();
-            fs::write(temp.path().join("hello.txt"), b"hello").unwrap();
-            let archive = temp.path().join("bundle.zip");
-            create_zip(&[temp.path().join("hello.txt")], &archive).unwrap();
-            assert_eq!(list(&archive).unwrap()[0].path, Path::new("hello.txt"));
-            let out = temp.path().join("out");
-            extract(&archive, &out).unwrap();
-            assert_eq!(fs::read(out.join("hello.txt")).unwrap(), b"hello");
-        }
-
-        // --- phase: archive_paths_resolve_root_and_nested_locations ---
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let archive = temp.path().join("bundle.zip");
-            fs::write(&archive, b"").unwrap();
-            assert_eq!(location(&archive), Some((archive.clone(), PathBuf::new())));
-            assert_eq!(
-                location(&archive.join("Photos/Trips")),
-                Some((archive, PathBuf::from("Photos/Trips")))
-            );
-            assert_eq!(location(&temp.path().join("ordinary")), None);
-        }
-
-        // --- phase: archive_directory_listing_synthesizes_missing_parent_rows ---
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let source = temp.path().join("source");
-            fs::create_dir(&source).unwrap();
-            fs::create_dir(source.join("Photos")).unwrap();
-            fs::write(source.join("Photos/one.jpg"), b"one").unwrap();
-            fs::write(source.join("root.txt"), b"root").unwrap();
-            let archive = temp.path().join("bundle.zip");
-            create_zip(&[source.join("Photos"), source.join("root.txt")], &archive).unwrap();
-
-            let root = list_directory(&archive, Path::new("")).unwrap();
-            assert_eq!(root.len(), 2);
-            assert!(
-                root.iter()
-                    .any(|entry| entry.path == Path::new("Photos") && entry.is_dir)
-            );
-            assert!(
-                root.iter()
-                    .any(|entry| entry.path == Path::new("root.txt") && !entry.is_dir)
-            );
-            let photos = list_directory(&archive, Path::new("Photos")).unwrap();
-            assert_eq!(photos.len(), 1);
-            assert_eq!(photos[0].path, Path::new("Photos/one.jpg"));
-        }
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn folders_are_recursive_and_symlinks_are_not_followed() {
+    fn archive_paths_listings_and_index() {
         let temp = tempfile::tempdir().unwrap();
-        let folder = temp.path().join("Folder");
-        fs::create_dir(&folder).unwrap();
-        fs::write(folder.join("inside.txt"), b"inside").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("/etc/passwd", folder.join("unsafe-link")).unwrap();
-        let archive = temp.path().join("folder.zip");
-        create_zip(&[folder], &archive).unwrap();
-        let names: Vec<_> = list(&archive)
-            .unwrap()
-            .into_iter()
-            .map(|entry| entry.path)
-            .collect();
-        assert!(names.contains(&PathBuf::from("Folder/inside.txt")));
-        assert!(!names.contains(&PathBuf::from("Folder/unsafe-link")));
+        let archive = temp.path().join("bundle.zip");
+        fs::write(&archive, b"").unwrap();
+        assert_eq!(location(&archive), Some((archive.clone(), PathBuf::new())));
+        assert_eq!(
+            location(&archive.join("Photos/Trips")),
+            Some((archive.clone(), PathBuf::from("Photos/Trips")))
+        );
+        assert_eq!(location(&temp.path().join("ordinary")), None);
+        assert!(
+            location(&temp.path().join("game.tar.xz")).is_none(),
+            "missing file"
+        );
+
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("Photos")).unwrap();
+        fs::write(source.join("Photos/one.jpg"), b"one").unwrap();
+        fs::write(source.join("root.txt"), b"root").unwrap();
+        fs::remove_file(&archive).unwrap();
+        create_zip(&[source.join("Photos"), source.join("root.txt")], &archive).unwrap();
+        let root = list_directory(&archive, Path::new("")).unwrap();
+        assert_eq!(root.len(), 2);
+        assert!(
+            root.iter()
+                .any(|entry| entry.path == Path::new("Photos") && entry.kind == Kind::Directory)
+        );
+        assert!(cached(&archive).is_some(), "browsing keeps the entries");
+        let photos = list_directory(&archive, Path::new("Photos")).unwrap();
+        assert_eq!(photos.len(), 1);
+        assert_eq!(photos[0].path, Path::new("Photos/one.jpg"));
+        assert!(is_directory(&archive, Path::new("Photos")).unwrap());
+        assert!(!is_directory(&archive, Path::new("root.txt")).unwrap());
+
+        // Replaced by another archive of the same name: read again.
+        fs::remove_file(&archive).unwrap();
+        create_zip(&[source.join("root.txt")], &archive).unwrap();
+        assert_eq!(list_directory(&archive, Path::new("")).unwrap().len(), 1);
     }
 
-    /// Extraction never escapes, merges or overwrites, leaves no partial destination, and classifies zip links before materialising.
+    /// Extraction names: an archive with one folder at its top extracts as
+    /// that folder; anything else gets the archive's name.
     #[test]
-    fn extraction_is_confined_atomic_and_link_aware() {
-        // --- phase: malicious_zip_never_writes_outside_destination ---
-        {
-            let mut bytes = Cursor::new(Vec::new());
-            {
-                let mut writer = zip::ZipWriter::new(&mut bytes);
-                writer
-                    .start_file("../escape", zip::write::SimpleFileOptions::default())
-                    .unwrap();
-                writer.write_all(b"bad").unwrap();
-                writer.finish().unwrap();
-            }
-            bytes.set_position(0);
-            let temp = tempfile::tempdir().unwrap();
-            assert!(extract_zip(bytes, temp.path()).is_err());
-            assert!(!temp.path().parent().unwrap().join("escape").exists());
-        }
+    fn an_extraction_takes_the_archives_own_folder_or_its_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("Project");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("a.txt"), b"a").unwrap();
+        let loose = temp.path().join("loose.txt");
+        fs::write(&loose, b"l").unwrap();
 
-        // --- phase: extraction_never_merges_with_or_overwrites_an_existing_folder ---
-        {
-            let temp = tempfile::tempdir().unwrap();
-            fs::write(temp.path().join("hello.txt"), b"new").unwrap();
-            let archive = temp.path().join("bundle.zip");
-            create_zip(&[temp.path().join("hello.txt")], &archive).unwrap();
-            let out = temp.path().join("bundle");
-            fs::create_dir(&out).unwrap();
-            fs::write(out.join("hello.txt"), b"keep").unwrap();
+        let one = temp.path().join("one.tar.zst");
+        create(std::slice::from_ref(&folder), &one, Packing::TarZst, &()).unwrap();
+        assert_eq!(likely_name(&one), "Project");
+        let staging = extract(&one, temp.path(), &()).unwrap();
+        let (result, own) = staging.result().unwrap();
+        assert!(own);
+        assert_eq!(result.file_name().unwrap(), "Project");
+        drop(staging);
 
-            let error = extract(&archive, &out).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-            assert_eq!(fs::read(out.join("hello.txt")).unwrap(), b"keep");
-        }
-
-        // --- phase: failed_extraction_leaves_no_partial_destination ---
-        {
-            let mut bytes = Cursor::new(Vec::new());
-            {
-                let mut writer = zip::ZipWriter::new(&mut bytes);
-                writer
-                    .start_file("good.txt", zip::write::SimpleFileOptions::default())
-                    .unwrap();
-                writer.write_all(b"good").unwrap();
-                writer
-                    .start_file("../escape", zip::write::SimpleFileOptions::default())
-                    .unwrap();
-                writer.write_all(b"bad").unwrap();
-                writer.finish().unwrap();
-            }
-            let temp = tempfile::tempdir().unwrap();
-            let archive = temp.path().join("bad.zip");
-            fs::write(&archive, bytes.into_inner()).unwrap();
-            let out = temp.path().join("bad");
-
-            assert!(extract(&archive, &out).is_err());
-            assert!(!out.exists());
-            assert!(fs::read_dir(temp.path()).unwrap().all(|entry| {
-                !entry
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .contains("extracting")
-            }));
-        }
-
-        // --- phase: zip_unix_modes_classify_links_before_materialization ---
-        {
-            assert!(zip_mode_is_symlink(Some(0o120_777)));
-            assert!(!zip_mode_is_symlink(Some(0o100_644)));
-            assert!(!zip_mode_is_symlink(Some(0o040_755)));
-            assert!(!zip_mode_is_symlink(None));
-        }
+        let many = temp.path().join("many.zip");
+        create_zip(&[folder, loose], &many).unwrap();
+        assert_eq!(likely_name(&many), "many");
+        let staging = extract(&many, temp.path(), &()).unwrap();
+        assert!(!staging.result().unwrap().1);
+        drop(staging);
+        assert!(
+            fs::read_dir(temp.path()).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".tilo-extract")),
+            "a dropped staging folder leaves nothing"
+        );
+        assert_eq!(stem(Path::new("/x/game_2.1.tar.xz")), "game_2.1");
     }
 }

@@ -99,15 +99,11 @@ fn playlists_and_annotations_change_through_verbs_and_field_edits() {
     let shown = state.annotations.get(&note).unwrap();
     assert_eq!((shown.text.as_str(), shown.time_ms), ("New", 1_250));
 
-    assert!(
-        library
-            .apply(Library::DELETE_PLAYLIST.with(trip.clone()))
-            .is_err(),
-        "deleting asks first"
-    );
+    // Undo takes a deleted playlist back, videos and all, so deleting asks
+    // nothing (the one undo step is proved in the app's tests).
     library
-        .apply_confirmed(Library::DELETE_PLAYLIST.with(trip))
-        .unwrap();
+        .apply(Library::DELETE_PLAYLIST.with(trip))
+        .expect("an undoable delete asks nothing");
     assert!(library.state().unwrap().playlists.is_empty());
     assert!(
         library.state().unwrap().items.is_empty(),
@@ -115,7 +111,6 @@ fn playlists_and_annotations_change_through_verbs_and_field_edits() {
     );
 }
 
-/// Watch later is one playlist on every replica, and a video is on it once.
 #[test]
 fn watch_later_is_made_once_and_holds_a_video_once() {
     let mut ours = Replica::<Library>::new();

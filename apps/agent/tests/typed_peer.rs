@@ -25,8 +25,6 @@ use ui::collaboration::{CertifiedEndpointIdentity, CollabEvent, CollabRequest};
 
 const TEST_ROOM: uuid::Uuid = uuid::Uuid::from_u128(0x6f2a_5fce_f612_46ac_9228_f6a3_ace4_9a11);
 const ROOT_KEY: [u8; 32] = [91; 32];
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: Duration = Duration::from_secs(30);
 
 pub const fn room() -> uuid::Uuid {
     TEST_ROOM
@@ -135,10 +133,6 @@ impl TypedPeer {
             .ok_or_else(|| anyhow::anyhow!("peer has not announced its route"))?
             .recv(self.timeout)
     }
-
-    pub fn set_read_timeout(&mut self, timeout: Option<Duration>) {
-        self.timeout = timeout.unwrap_or(Duration::from_millis(200));
-    }
 }
 
 /// Spawn the production broker harness with precisely the action grants a
@@ -181,11 +175,11 @@ pub fn spawn_with_agent_grants(
     ) else {
         unreachable!("person key creates a person principal")
     };
-    let mut workspace = shell::shell::state::Workspace::new(
+    let mut workspace = shell::shell::state::Workspace::in_room(
         shell::shell::state::WorkspaceId(1),
+        shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap(),
         "Agent integration room",
     );
-    workspace.set_room(shell::shell::state::RoomId::parse(&TEST_ROOM.to_string()).unwrap());
     workspace.set_owner(principal.clone());
     let owner = tilo_action_policy::Subject::person(principal);
     // Operators answer in the room's documents.

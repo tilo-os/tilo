@@ -1,4 +1,3 @@
-//! Human job rows read the same authorized invocation state as status actions.
 use super::{LiveAppActionsProvider, job_status_id};
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::search::{ResourceKind, SearchBudget, SearchContext, SearchProvider};
@@ -265,6 +264,10 @@ fn job_rows_keep_progress_across_bounded_pages_and_account_for_utf8_bytes() {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn uncertified_job_rows_remain_available_without_a_certified_session() {
     let chrome = chrome();
     let actor = chrome.borrow().active_local_user();
@@ -283,6 +286,10 @@ fn uncertified_job_rows_remain_available_without_a_certified_session() {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn job_rows_remain_unique_with_multiple_workspace_sessions() {
     let chrome = chrome();
     chrome

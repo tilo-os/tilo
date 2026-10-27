@@ -1,11 +1,13 @@
 # Disks — Tilo application manifest.
 #
-# The privileged half runs only in a live window, through the cargo
-# feature `live` (UDisks2 on the SYSTEM bus) or the CLI fallback.
+# Reading is the session's: the system information service (`system-info`)
+# describes the machine's block devices, partitions, filesystems, encryption
+# and each drive's health, so the sandbox never sees /dev, udev or the host's
+# programs. The image grants it to the apps it ships without a prompt.
 #
-# Beyond the system read profile it needs, as consented capabilities:
-# read+exec on the host bin dirs (lsblk/smartctl/udisksctl/mount/mkfs)
-# and the block device nodes it benchmarks.
+# The privileged half (mount, format, eject) runs only in a live window,
+# through the cargo feature `live`: UDisks2 on the SYSTEM bus, behind
+# polkit. The app starts no programs.
 #
 
 
@@ -28,8 +30,8 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-required = ["processes"]
-optional = ["files.paths", "threads"]
+required = ["system-info"]
+optional = ["open-uri", "files.paths", "threads"]
 
 [resources]
 kinds = ["disks.system"]
@@ -62,8 +64,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
+collab = "optional@10"
+tilo-fs = "optional@10"
 
 [entrypoint]
 bin             = "bin/disks"

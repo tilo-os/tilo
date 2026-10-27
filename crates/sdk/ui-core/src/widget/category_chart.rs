@@ -647,7 +647,7 @@ impl Widget for CategoryChart {
                     .value(bar.series, bar.category)
                     .is_some_and(|value| value.total)
             {
-                theme.tokens.colors.intent.neutral_fill
+                theme.tokens.colors.intent.value_fill
             } else {
                 series.color
             };

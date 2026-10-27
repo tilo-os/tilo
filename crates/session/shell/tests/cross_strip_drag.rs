@@ -46,6 +46,7 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
             kind: AppKind::Other("Test".into()),
             label: label.into(),
         },
+        app_title: None,
     };
 
     let strip_a = Strip {
@@ -72,12 +73,10 @@ fn two_strip_two_tab_tree() -> (WorkspaceTree, StripId, StripId, [u64; 2], [u64;
             focus_history: Vec::new(),
         }],
     };
-    let ws = Workspace {
-        strips: vec![strip_a, strip_b],
-        // Everything else, including the workspace's durable collaboration room,
-        // comes from the builder, so a field added to `Workspace` does not break
-        // this fixture.
-        ..Workspace::new(ws_id, "Test")
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "Test");
+        workspace.strips = vec![strip_a, strip_b];
+        workspace
     };
 
     let mut active_strip = HashMap::new();

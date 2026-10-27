@@ -23,6 +23,14 @@
  * - `set-name`: the name others see, in history and presence; once set,
  *   a banner offers to keep the person it names. Asked in a form, or taken
  *   as typed where the desktop already asked (the profile card's field).
+ * - `set-photo` / `reset-photo`: the picture others see beside the name,
+ *   chosen from an image file (`profile-photos.mjs`), or back to initials.
+ *   Kept in the profile with the name, so it follows the person too.
+ * - `set-linked`: the accounts elsewhere a room linked to the person, as
+ *   its host answered (`{accounts, keep: true}`), or as the kept profile
+ *   says (`{photoFrom, linked, keep: false}`). The profile names them, and
+ *   wears an account's picture (Discord's avatar) until the person uploads
+ *   their own; unlinking takes the account's picture away again.
  * - `pair-device`: let another device of the person in. Shows a sheet
  *   with a link, and its QR code, that opens this workspace there as a new
  *   device of this person. Each link names a fresh invite (`pairing.mjs`):
@@ -47,8 +55,15 @@ export const RECOVERY = Object.freeze({id: 'save-recovery-key', title: 'Save a r
   subtitle: 'To your password manager, or as a file', source: 'identity'});
 export const SIGN_IN = Object.freeze({id: 'sign-in-passkey', title: 'Sign in with a passkey',
   subtitle: 'Be the person you kept on another browser', source: 'identity'});
+/** Not offered: the desktop's own card asks it, to keep the person's status. */
+export const STATUS_ID = 'set-status';
+export const LINKED_ID = 'set-linked';
 export const NAME = Object.freeze({id: 'set-name', title: 'Set your name',
   subtitle: 'How others see you in this workspace', source: 'identity'});
+export const PHOTO = Object.freeze({id: 'set-photo', title: 'Change your picture',
+  subtitle: 'The picture people see beside your name', source: 'identity'});
+export const RESET_PHOTO = Object.freeze({id: 'reset-photo', title: 'Use your initials again',
+  subtitle: 'Take your picture away', source: 'identity'});
 export const PAIR = Object.freeze({id: 'pair-device', title: 'Pair a new device',
   subtitle: 'A code or link that opens this workspace there as you', source: 'devices'});
 /**
@@ -66,6 +81,30 @@ const PAUSE_POLL_MS = 1000;
 const ASKED_KEY = 'tilo.identity.asked';
 /** How often, while a pairing link is open, to ask for devices waiting. */
 const PAIR_POLL_MS = 3000;
+
+/**
+ * Whether this browser can make the passkey keeping asks for: a
+ * discoverable credential, on this device or on a phone nearby. A browser
+ * that says it can do neither (no platform authenticator, no hybrid
+ * transport, or no WebAuthn at all) refuses with `NotSupportedError`, so
+ * keeping with a passkey is not offered there.
+ */
+export async function passkeysUsable(window = globalThis) {
+  const api = window.PublicKeyCredential;
+  if (typeof api !== 'function' || typeof window.navigator?.credentials?.create !== 'function') return false;
+  try {
+    if (typeof api.getClientCapabilities === 'function') {
+      const can = await api.getClientCapabilities();
+      if (can && ('passkeyPlatformAuthenticator' in can || 'hybridTransport' in can)) {
+        return Boolean(can.passkeyPlatformAuthenticator || can.hybridTransport);
+      }
+    }
+    if (typeof api.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
+      return Boolean(await api.isUserVerifyingPlatformAuthenticatorAvailable());
+    }
+  } catch { return false; }
+  return false;
+}
 
 /** Hand `recoveryKey` to the browser's password manager, else save a file. */
 export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo', window = globalThis} = {}) {
@@ -101,6 +140,9 @@ export async function saveRecoveryKey(recoveryKey, {userPublicKey, name = 'Tilo'
  * the origins of the hosts this person joined through (they keep the
  * envelope), `lookups()` every host worth asking on sign-in. Attach the
  * desktop with `attach(mount)`; route its `onHostAction` to `perform`.
+ * `photos` is the person's picture: `current()` (its `data:` URL, or
+ * null), `choose()` (asks for one, resolving to its URL or null) and
+ * `show(url)` (wears it here at once).
  * Tell it what the person does with `authored(count)` (their authored
  * changes so far) and `named(name)`; `pause()` says whether they are
  * between things (no input for a moment, nothing held down), so the ask
@@ -119,16 +161,61 @@ export function createIdentityActions({
   publish = publishEnvelope, find = fetchEnvelope, signIn = signInWithPasskey,
   profile = publishProfile,
   save = saveRecoveryKey, reload = () => globalThis.location?.reload(), onError = error => console.warn('identity:', error),
-  naming = null, pairing = null, copy = text => globalThis.navigator?.clipboard?.writeText(text), now = () => Date.now(),
+  naming = null, photos = null, pairing = null, copy = text => globalThis.navigator?.clipboard?.writeText(text), now = () => Date.now(),
   every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
   pause = () => true, later = (run, ms) => setTimeout(run, ms), session = globalThis.sessionStorage,
   searchChord = 'Ctrl+K', showPairLink = () => ({close() {}}), askPairing = () => ({close() {}}),
-  invites = openInvites({now}),
+  invites = openInvites({now}), passkeys = passkeysUsable,
 }) {
   let mount;
   const offered = new Set();
-  const actions = () => [...(naming ? [NAME] : []), ...(identity.kept ? [RECOVERY] : [KEEP, RECOVERY, SIGN_IN]),
-    ...(pairing ? [PAIR] : [])];
+  // Learnt on attach: without passkeys a recovery key is the way to keep.
+  let withPasskeys = false;
+  const unkept = () => (withPasskeys ? [KEEP, RECOVERY, SIGN_IN] : [RECOVERY]);
+  const actions = () => [...(naming ? [NAME] : []),
+    ...(photos ? [PHOTO, ...(photos.current() ? [RESET_PHOTO] : [])] : []),
+    ...(identity.kept ? [RECOVERY] : unkept()), ...(pairing ? [PAIR] : [])];
+  // Keep the profile (name and picture) on every host; a refusal throws,
+  // an unreachable host is only reported.
+  // What the person says they are doing and how they share it, as their
+  // profile keeps it beside their name and picture.
+  let said = {status: '', sharing: ''};
+  // Their linked accounts as the profile names them, and the service whose
+  // account their picture is (`photoFrom`; null for one they uploaded).
+  // `known` once the kept profile said so: before, an uploaded picture
+  // could be taken for none.
+  let links = {photoFrom: null, linked: [], known: false};
+  let waitingAccounts = null;
+  const keepProfile = async (displayName, photo, what) => {
+    const results = await Promise.allSettled(hosts().map(origin => profile({origin, identity, displayName, photo, ...said,
+      photoFrom: photo ? links.photoFrom : null, linked: links.linked})));
+    const refused = results.find(result => result.status === 'rejected' && result.reason?.code === 'publish-refused');
+    for (const result of results) if (result.status === 'rejected' && result !== refused) onError(result.reason);
+    if (refused) throw new IdentityError(`${what}-refused`, `This ${what} was not kept: ${refused.reason.message}`);
+  };
+  // The room's host said which accounts are linked (`[{service, handle,
+  // picture?}]`): the profile names them, and wears an account's picture
+  // unless the person uploaded their own; an unlinked account's goes.
+  const keepLinked = async accounts => {
+    const linked = accounts.filter(a => typeof a?.service === 'string' && typeof a?.handle === 'string')
+      .map(({service, handle}) => ({service, handle}));
+    const current = photos?.current() ?? null;
+    let photo = current;
+    let photoFrom = links.photoFrom;
+    if (!current || photoFrom) {
+      const pictured = accounts.find(a => typeof a?.picture === 'string' && a.picture.startsWith('data:image/'));
+      photo = pictured?.picture ?? null;
+      photoFrom = pictured ? pictured.service : null;
+    }
+    const same = photo === current && photoFrom === links.photoFrom
+      && JSON.stringify(linked) === JSON.stringify(links.linked);
+    links = {photoFrom, linked, known: true};
+    const named = fitDisplayName(name() ?? '');
+    if (same || !named) return;
+    await keepProfile(named, photo, 'picture');
+    if (photo !== current) photos?.show(photo);
+    refresh();
+  };
   const refresh = () => mount?.setHostActions(actions());
   // Each moment offers once per page: `moment` defaults to the action.
   const offer = (action, title, body, moment = action.id) => {
@@ -191,14 +278,21 @@ export function createIdentityActions({
       return;
     }
     try { session?.setItem(ASKED_KEY, '1'); } catch { /* asked once per page then */ }
-    offer({...KEEP, title: 'Keep with passkey'},
-      chosenName ? `Come back as “${chosenName}” next time?` : 'Keep your name and work?',
-      `A passkey on this device brings you back as yourself, on any browser. Any time later: ${searchChord}, “${KEEP.title}”.`);
+    const question = chosenName ? `Come back as “${chosenName}” next time?` : 'Keep your name and work?';
+    if (withPasskeys) {
+      offer({...KEEP, title: 'Keep with passkey'}, question,
+        `A passkey on this device brings you back as yourself, on any browser. Any time later: ${searchChord}, “${KEEP.title}”.`);
+    } else {
+      offer({...RECOVERY, title: 'Save key'}, question,
+        `A recovery key, saved to your password manager or as a file, brings you back as yourself. Any time later: ${searchChord}, “${RECOVERY.title}”.`,
+        KEEP.id);
+    }
   };
   const controller = {
     actions,
     /** Show the actions in `mount`'s desktop. */
     async attach(target) {
+      withPasskeys = await Promise.resolve().then(passkeys).then(Boolean, () => false);
       mount = target;
       refresh();
       if (identity.kept) void publishEverywhere();
@@ -213,6 +307,8 @@ export function createIdentityActions({
       lastChange = now();
       ask();
     },
+    /** The person's picture changed elsewhere: offer what fits it now. */
+    pictured() { refresh(); },
     /** The person chose their name: who they are matters to them now. */
     named(chosen) {
       chosenName = chosen;
@@ -243,11 +339,7 @@ export function createIdentityActions({
           const keep = async typed => {
             const fitted = fitDisplayName(typed);
             if (!fitted) throw new IdentityError('malformed', 'Choose a name');
-            const results = await Promise.allSettled(hosts().map(origin => profile({origin, identity, displayName: fitted})));
-            const refused = results.find(result => result.status === 'rejected' && result.reason?.code === 'publish-refused');
-            // An unreachable host is reported, and does not block the name.
-            for (const result of results) if (result.status === 'rejected' && result !== refused) onError(result.reason);
-            if (refused) throw new IdentityError('name-refused', `This name was not kept: ${refused.reason.message}`);
+            await keepProfile(fitted, photos?.current() ?? null, 'name');
             return fitted;
           };
           const chosen = typeof value === 'string' ? await keep(value) : await naming.ask(name(), keep);
@@ -255,6 +347,35 @@ export function createIdentityActions({
             const set = naming.set(chosen);
             controller.named(typeof set === 'string' && set ? set : chosen);
           }
+        } else if ((id === PHOTO.id || id === RESET_PHOTO.id) && photos) {
+          const url = id === PHOTO.id ? await photos.choose() : null;
+          if (id === PHOTO.id && !url) return;
+          const named = fitDisplayName(name() ?? '');
+          if (!named) throw new IdentityError('malformed', 'Choose a name first');
+          // A picture they chose is theirs: no linked account's replaces it.
+          links = {...links, photoFrom: null};
+          await keepProfile(named, url, 'picture');
+          photos.show(url);
+          refresh();
+        } else if (id === LINKED_ID) {
+          if (!value?.keep) {
+            // What their kept profile says, from any of their devices.
+            links = {photoFrom: typeof value?.photoFrom === 'string' ? value.photoFrom : null,
+              linked: Array.isArray(value?.linked) ? value.linked : [], known: true};
+            if (!waitingAccounts) return;
+          }
+          const accounts = value?.keep ? value.accounts : waitingAccounts;
+          if (!links.known) { waitingAccounts = accounts; return; }
+          waitingAccounts = null;
+          await keepLinked(Array.isArray(accounts) ? accounts : []);
+        } else if (id === STATUS_ID) {
+          // From the desktop: what they said (kept now, for their other
+          // devices), or what their profile already holds (`keep: false`).
+          const next = {status: String(value?.status ?? ''), sharing: String(value?.sharing ?? '')};
+          if (next.status === said.status && next.sharing === said.sharing) return;
+          said = next;
+          const named = fitDisplayName(name() ?? '');
+          if (value?.keep && named) await keepProfile(named, photos?.current() ?? null, 'status');
         } else if (id === PAIR.id && pairing) {
           const invite = invites.open();
           const link = pairing.link(invite.id);
@@ -287,19 +408,25 @@ export function createIdentityActions({
  * it is the newest name any of the person's devices chose, so it is applied
  * here (`apply(name)`). Without one, a device holding the root (`identity`)
  * publishes the name it chose here (`chosen`), if any, to every origin.
- * Resolves to the name applied, or `null`.
+ * `onKept(profile)` hears a kept profile, `onNone()` that the hosts answered
+ * and keep none. Resolves to the name applied, or `null`.
  */
 export async function syncProfile({
   userPublicKey, origins, identity = null, chosen = null, apply, find = fetchProfile, publish = publishProfile,
-  onError = error => console.warn('identity:', error),
+  onKept = () => {}, onNone = () => {}, onError = error => console.warn('identity:', error),
 }) {
   if (!userPublicKey) return null;
   const unique = [...new Set(origins)];
   const kept = await find(userPublicKey, unique);
   if (kept) {
+    // The rest of what is kept (their picture) is the caller's to wear.
+    onKept(kept);
     if (kept.display_name !== chosen) apply(kept.display_name);
     return kept.display_name;
   }
+  // Their hosts answered and keep none: nothing kept to keep apart from
+  // what this device publishes (a linked account's picture, say).
+  if (kept === null) onNone();
   if (chosen && identity?.userPublicKey === userPublicKey && identity.sign && !identity.locked) {
     const results = await Promise.allSettled(unique.map(origin => publish({origin, identity, displayName: chosen})));
     for (const result of results) if (result.status === 'rejected') onError(result.reason);

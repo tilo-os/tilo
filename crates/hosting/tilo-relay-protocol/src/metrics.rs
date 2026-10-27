@@ -45,7 +45,6 @@ pub struct MetricsSnapshot {
     pub deltas_fanned_out: u64,
     /// Workspace subscriptions accepted.
     pub subscribes: u64,
-    /// Retained envelopes replayed to subscribers.
     pub replayed_retained: u64,
     /// Pending (offline-queued) envelopes replayed to reconnecting peers.
     pub replayed_pending: u64,

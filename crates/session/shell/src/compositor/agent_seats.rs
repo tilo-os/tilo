@@ -180,7 +180,6 @@ impl AgentSeats {
         })
     }
 
-    /// The agent holding the shared seat.
     #[must_use]
     pub fn seated(&self) -> Option<&str> {
         self.seated.as_deref()
@@ -268,7 +267,6 @@ impl AgentSeats {
         Some((seat, releases))
     }
 
-    /// Number of agents with a seat.
     #[must_use]
     pub fn len(&self) -> usize {
         self.seats.len()

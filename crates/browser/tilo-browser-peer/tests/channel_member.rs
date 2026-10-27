@@ -90,6 +90,7 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(laptop.cert.clone()),
             revocations: Vec::new(),
+            successions: Vec::new(),
         },
     );
     publish(
@@ -156,7 +157,7 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     )
     .unwrap();
     let (mut hello, mut genesis, mut sealed) = (false, false, false);
-    let retained_by = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let retained_by = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     while !(hello && genesis && sealed) {
         let inbound = tokio::time::timeout_at(retained_by, observer_session.recv())
             .await
@@ -185,6 +186,36 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
         browser.key.clone(),
     );
     let events = peer.events();
+    // A reader of the status (the host's room actions on another thread)
+    // that sees the note no longer awaiting keys finds its documents among
+    // the events already: a record read as open is never read empty.
+    let opened_when_unsealed = {
+        let (peer, route, watched) = (peer.clone(), route.clone(), peer.events());
+        std::thread::spawn(move || {
+            let deadline = tilo_test_env::hang_deadline();
+            let mut held = false;
+            while std::time::Instant::now() < deadline {
+                let awaiting = peer
+                    .status()
+                    .routes
+                    .get(&route)
+                    .map(|status| status.awaiting_keys);
+                match awaiting {
+                    Some(count) if count > 0 => held = true,
+                    Some(0) if held => {
+                        return watched.drain().into_iter().any(|event| {
+                            matches!(&event, PeerEvent::Document(document)
+                                if document.mutation() == Some(DocumentMutation::Incremental(
+                                    b"from the laptop".to_vec())))
+                        });
+                    }
+                    _ => {}
+                }
+                std::thread::yield_now();
+            }
+            panic!("the note was never held for its keys, then opened");
+        })
+    };
     peer.join(workspace()).unwrap();
     peer.open_route(route.clone()).unwrap();
     ready(&[&peer]).await;
@@ -201,7 +232,7 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     let mut requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1> = BTreeMap::new();
     let mut sent_welcome = false;
     let mut browser_edit = None;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     while browser_edit.is_none() {
         let inbound = tokio::time::timeout_at(deadline, session.recv())
             .await
@@ -256,6 +287,10 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
         }
     }
     assert!(sent_welcome);
+    assert!(
+        opened_when_unsealed.join().unwrap(),
+        "the status said the note no longer awaited its keys before its document was out"
+    );
     assert_eq!(
         DocumentFrame::decode(browser_edit.as_ref().unwrap()).unwrap(),
         DocumentFrame::Whole(DocumentMutation::Incremental(b"from the browser".to_vec()))
@@ -348,6 +383,44 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     )
     .await;
     assert_eq!(opened.last().unwrap(), "under the new epoch");
+
+    let mut clear = SignedOp::new_unsigned(
+        DocumentMutation::Incremental(b"in the clear".to_vec())
+            .encode()
+            .unwrap(),
+        artifact,
+        Ed25519PublicKey::from_bytes(laptop_device),
+        document_attestation_id(&route.app_id, &route.cluster_id, &route.record),
+        OpKind::Change,
+        std::time::SystemTime::now(),
+        4,
+    );
+    collab_types::sign_op(&mut clear, &laptop.key).unwrap();
+    publish(
+        &session,
+        &NeighbourMsg::AppDocument {
+            peer: neighbour_wire::peer_handle(&laptop_device),
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            record_id: route.record.clone(),
+            envelope: Box::new(clear),
+        },
+    );
+    let refused = wait_for("cleartext on the sealed channel to be refused", || {
+        let mut refused = None;
+        for event in events.drain() {
+            match event {
+                PeerEvent::DocumentRejected(reason) => refused = Some(reason),
+                PeerEvent::Document(document) => {
+                    panic!("cleartext opened: {:?}", document.mutation());
+                }
+                _ => {}
+            }
+        }
+        async move { refused }
+    })
+    .await;
+    assert_eq!(refused, "cleartext on a channel that requires it sealed");
     peer.close();
     host.relay.shutdown().await;
 }
@@ -399,6 +472,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(laptop.cert.clone()),
             revocations: Vec::new(),
+            successions: Vec::new(),
         },
     );
     publish(
@@ -447,7 +521,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     let browser_device = Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes());
     let allowed = BTreeSet::from([Ed25519PublicKey::from_bytes(laptop_device), browser_device]);
     let mut requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1> = BTreeMap::new();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     let edit = loop {
         let inbound = tokio::time::timeout_at(deadline, session.recv())
             .await
@@ -548,6 +622,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(laptop.cert.clone()),
             revocations: Vec::new(),
+            successions: Vec::new(),
         },
     );
 
@@ -577,7 +652,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     let browser_device = Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes());
     let allowed = BTreeSet::from([Ed25519PublicKey::from_bytes(laptop_device), browser_device]);
     let mut requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1> = BTreeMap::new();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     let edit = loop {
         let inbound = tokio::time::timeout_at(deadline, session.recv())
             .await

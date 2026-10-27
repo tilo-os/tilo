@@ -18,7 +18,8 @@ impl AccountAuthority for Grant {
 }
 fn setup() -> (Arc<SignalLinking>, Arc<Grant>, UnixStream) {
     let (stream, peer) = UnixStream::pair().unwrap();
-    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
     let grant = Arc::new(Grant(AtomicBool::new(true)));
     let owner = Owner {
         principal: "11".repeat(32),
@@ -103,7 +104,8 @@ fn enrollment() -> (SignalEnrollment, Arc<Grant>, UnixStream) {
     let owner = known.owner().clone();
     drop(known);
     let (stream, peer) = UnixStream::pair().unwrap();
-    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
     (
         SignalEnrollment::new(owner, grant.clone(), stream).unwrap(),
         grant,

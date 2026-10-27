@@ -124,7 +124,6 @@ mod tests {
         assert!(middle(&slow) > 0.8, "{}", middle(&slow));
         assert!(middle(&fast) < 0.6, "{}", middle(&fast));
         let points = slow.finish();
-        // It lands and lifts lightly, and ends where the pointer did.
         assert!(points[0][2] < 0.5);
         let last = points.last().unwrap();
         assert!((last[0] - 200.0).abs() < 1e-9 && last[2] < 0.5);

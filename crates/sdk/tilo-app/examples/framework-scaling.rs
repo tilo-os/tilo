@@ -29,7 +29,8 @@
 //! macOS) to see typing alone.
 //!
 //! With `TILO_PROFILE_RESOURCES=1` each move's resource work is printed to
-//! stderr as `input_carry` stages (see `docs/app-performance.md`).
+//! stderr as `input_carry` stages (see `docs/app-performance.md`), and in
+//! the `focus` mode every scope of one more added task as an `add_item` line.
 //!
 //! A second argument `open` measures only the open, for profiling it. Each
 //! size's open also prints a `FRAMEWORK-OPEN` line, which
@@ -66,7 +67,7 @@
 //!
 //! A second argument `focus` measures only the keyboard focus order: what an
 //! agent call adding one task costs end to end through the test harness, what
-//! each focus-order recomputation inside it costs, and what one recomputation
+//! one focus-order walk of the harness costs after it, and what one recomputation
 //! of the live window's order costs ([`tilo_app::App::refresh_focus_order`],
 //! timed as its `ui.focus_order` scope alone). Its rows sit outside a scroll
 //! view, so every row is mounted, and a row is about four widgets: 500 tasks
@@ -1105,14 +1106,34 @@ fn focus_cost(tasks: u32) -> Result<FocusCost, Box<dyn std::error::Error>> {
     let mut recompute_ms = Vec::new();
     for _ in 0..FOCUS_SAMPLES {
         let start = Instant::now();
-        let (called, phases) = observe(|| app.call("seed", add.clone()));
+        let called = app.call("seed", add.clone());
         add_ms.push(millis(start));
         called?;
-        let (calls, ms) = focus_order_phase(&phases);
-        if calls == 0 {
-            return Err("adding a task recomputed no focus order".into());
+        // The harness walks the order again within a call only while
+        // something can trap focus, as the live window does between
+        // rebuilds: the walk Tab takes over the grown window is timed here.
+        let start = Instant::now();
+        let order = app.harness().focus_order();
+        recompute_ms.push(millis(start));
+        if order.is_empty() {
+            return Err("the window has no focus order to time".into());
         }
-        recompute_ms.push(ms / f64::from(u32::try_from(calls)?));
+    }
+    if std::env::var_os("TILO_PROFILE_RESOURCES").is_some() {
+        // One more add, untimed, with every scope it ran: where the call's
+        // time goes, slowest scope first. Scopes nest, so they do not add up.
+        let (called, mut phases) = observe(|| app.call("seed", add.clone()));
+        called?;
+        phases.sort_by_key(|phase| std::cmp::Reverse(phase.elapsed_ns));
+        for phase in phases {
+            let elapsed = u64::try_from(phase.elapsed_ns).unwrap_or(u64::MAX);
+            eprintln!(
+                "add_item tasks={tasks} {} calls={} ms={:.3}",
+                phase.phase,
+                phase.calls,
+                std::time::Duration::from_nanos(elapsed).as_secs_f64() * 1e3,
+            );
+        }
     }
     let native_ms = drive_live_window::<Mounted, _>(|app| {
         app.init_layout();

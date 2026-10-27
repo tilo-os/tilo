@@ -278,7 +278,7 @@ impl Widget for Link {
             &Line::new((x0, uy), (x0 + tw, uy)),
         );
 
-        if self.is_focused {
+        if self.is_focused && crate::focus_visible::shown() {
             let pad = 2.0;
             let ring = RoundedRect::from_rect(
                 Rect::new(x0 - pad, y0 - pad, x0 + tw + pad, y0 + th + pad),

@@ -1,8 +1,6 @@
-//! Causal display refresh through the real pump, private snapshots and signed custody.
-
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -47,7 +45,6 @@ fn a_mode_only_observation_reaches_the_fabric_and_person_view_before_the_periodi
     };
     let owner = network.local_device_fabric_identity().unwrap().0;
     let mut runtime = DeviceFabricRuntime::new(&network, NotificationBridge::new());
-    let first_sample = Instant::now();
     runtime.pump(&network, &selection, local);
     assert_person_refresh(59_940);
     let previous = network
@@ -59,6 +56,9 @@ fn a_mode_only_observation_reaches_the_fabric_and_person_view_before_the_periodi
         .clone()
         .unwrap();
 
+    // From here no periodic sample is ever due: only the observation's
+    // dirty signal can bring the new mode, whatever the wall clock does.
+    runtime.hold_periodic_sample_for_test();
     hardware
         .outputs
         .first_mut()
@@ -66,16 +66,21 @@ fn a_mode_only_observation_reaches_the_fabric_and_person_view_before_the_periodi
         .current_mode
         .refresh_mhz = 60_000;
     hardware.save().unwrap();
-    awakened.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-    assert!(
-        first_sample.elapsed() < Duration::from_secs(1),
-        "fixture must observe the dirty signal before periodic sampling could hide the gap"
-    );
-    runtime.pump(&network, &selection, local);
-    assert!(
-        first_sample.elapsed() < Duration::from_secs(1),
-        "actual refresh must finish before the periodic sample"
-    );
+    let deadline = Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .expect("deadline");
+    // Other news wakes the loop too; each wake is one pump, as on the loop.
+    while network.device_fabric().display_outputs(&owner).unwrap()[0]
+        .output
+        .refresh_mhz
+        != 60_000
+    {
+        awakened
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("the mode-only observation woke the loop");
+        runtime.pump(&network, &selection, local);
+        runtime.hold_periodic_sample_for_test();
+    }
     let fabric = network.device_fabric();
     let current = fabric
         .snapshots()

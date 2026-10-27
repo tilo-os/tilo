@@ -37,11 +37,16 @@ use super::stage::Stages;
 use super::surface::SurfacePublication;
 use super::view::ViewCx;
 
+mod facts;
+mod live_head;
 mod shared_tree;
+mod shown_item;
 mod typed;
 mod widget;
+use live_head::LiveHead;
 use shared_tree::{
-    ItemChildren, NestedViews, PublishedChildren, RecordChildren, RowChildren, SharedTreeCache,
+    DocumentChildren, ItemChildren, NestedViews, PublishedChildren, RecordChildren, RowChildren,
+    SharedTreeCache, mark_document_jobs,
 };
 use typed::TypedRoot;
 pub(crate) use typed::{ResourceType, Typed};
@@ -67,6 +72,9 @@ pub(crate) struct ResourceRoot {
     /// The window's save status over the view: the record's durability and
     /// the app's own saves, silent unless a save stalls or fails.
     save: super::saves::SaveIndicator,
+    /// The reactions to the record, in the window's bar, where the record
+    /// takes them.
+    reactions: super::reactions::ReactionsIndicator,
     /// The participant's permissions, re-checked every sync so a role change
     /// while the app runs takes effect at once. `None` for a read-only view
     /// of a past version.
@@ -85,6 +93,9 @@ pub(crate) struct ResourceRoot {
     unreadable: Option<(String, Element)>,
     /// The view was swapped for the unreadable state or back since layout.
     swapped: bool,
+    /// What keeps the bindings of the app's view alive once it stands in
+    /// the place of the window's arrival ([`Self::settle_arrival`]).
+    arrived: Option<Rc<()>>,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
@@ -113,6 +124,11 @@ pub(crate) struct ResourceRoot {
     /// What bound controls share of the publication at one head: built
     /// once per head, never copied per refresh.
     binding_base: std::cell::RefCell<Option<Rc<BindingBase>>>,
+    /// The head of the live state and what it was published from.
+    live_head: std::cell::RefCell<Option<LiveHead>>,
+    /// The document children of the live state as last published, kept
+    /// while they are unchanged.
+    document_children: std::cell::RefCell<Option<DocumentChildren>>,
     /// The view operation types of the nested resources at one live revision.
     nested_views: std::cell::RefCell<Option<NestedViews>>,
     /// Whether the resource keeps document state History shows.
@@ -131,7 +147,7 @@ impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
 
 /// The operation type of the framework's `open` view: show the item at an
 /// anchor, as picking a search hit does.
-pub(crate) const OPEN_TYPE: &str = "tilo.app.open";
+pub(crate) const OPEN_TYPE: &str = tilo_actions::remote::APPLICATION_OPEN_TYPE;
 
 /// The parameter of `open` naming what to show.
 const OPEN_ANCHOR: &str = "anchor";
@@ -226,7 +242,7 @@ fn offer_item_open(item_of: fn(&str) -> bool, resource: &mut tilo_actions::Resou
 
 /// The ids of the actions the framework publishes on every app's resource
 /// beside the app's own: the generic `apply`, `group` and `field-edit`, the
-/// views `open` and `read`, history, and the presentation operations. An app
+/// views `open`, `read` and `facts`, history, and the presentation operations. An app
 /// verb, effect or view under one of these ids shadows the framework's or is
 /// shadowed by it, so `tilo-app check` refuses it.
 #[must_use]
@@ -241,6 +257,7 @@ pub fn reserved_action_ids() -> Vec<String> {
     .collect();
     ids.push(open_spec().id.clone());
     ids.push(read_spec().id.clone());
+    ids.push(facts::FACTS.to_owned());
     ids.push(tilo_resource::share::SHARE_LINK.to_owned());
     ids.push(tilo_resource::share::SHARE_INVITE_LINK.to_owned());
     ids.extend(super::history::specs().iter().map(|spec| spec.id.clone()));
@@ -362,7 +379,78 @@ fn read(
     })
 }
 
+/// The window's arrival: the app's view, shown once the room's holdings
+/// arrived ([`super::app`]'s `build_root`).
+type RoomArrival = ui_core::widget::ArrivingView;
+
+/// The app's view in `content`, once it shows: `content` itself, or the
+/// view standing in the window's arrival once that arrived. The arrival
+/// answers for nothing of the view (a traversal meets the view as its
+/// descendant, once), so what the root asks of the app's view it asks here.
+fn app_view_in(content: &dyn Widget) -> Option<&dyn Widget> {
+    let Some(arrival) = content
+        .as_any()
+        .and_then(|any| any.downcast_ref::<RoomArrival>())
+    else {
+        return Some(content);
+    };
+    let switch = arrival
+        .answer()?
+        .as_any()?
+        .downcast_ref::<super::switch::Switch>()?;
+    Some(switch.part())
+}
+
+/// `visit` the app's view in `content` ([`app_view_in`]); `content` itself
+/// while the view is on its way, where nothing of it answers.
+fn with_app_view_mut<R>(content: &mut Element, visit: impl FnOnce(&mut dyn Widget) -> R) -> R {
+    let arrived = content
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<RoomArrival>())
+        .and_then(RoomArrival::answer_mut)
+        .and_then(|answer| answer.as_any_mut()?.downcast_mut::<super::switch::Switch>());
+    match arrived {
+        Some(switch) => visit(switch.part_mut()),
+        None => visit(content.as_mut()),
+    }
+}
+
 impl ResourceRoot {
+    /// Once the window's arrival settled (the app's view shows, its
+    /// cross-fade over), the view stands in the arrival's place: the root
+    /// is the app's view plus what the framework adds again, and nothing of
+    /// the arrival stays between them.
+    fn settle_arrival(&mut self) {
+        let Some(arrival) = self
+            .content
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<RoomArrival>())
+        else {
+            return;
+        };
+        let Some(mut answer) = arrival.take_answer(ui_core::motion::frame_now()) else {
+            return;
+        };
+        let empty = || -> Element { Box::new(ui_core::widget::Spacer::fixed(0.0)) };
+        self.content = match answer
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<super::switch::Switch>())
+        {
+            Some(switch) => {
+                let (view, alive) = switch.take_part(empty());
+                self.arrived = Some(alive);
+                view
+            }
+            None => answer,
+        };
+        self.swapped = true;
+    }
+
+    /// The app's view: what the root asks the view for ([`app_view_in`]).
+    fn app_view(&self) -> &dyn Widget {
+        app_view_in(self.content.as_ref()).unwrap_or_else(|| self.content.as_ref())
+    }
+
     /// The window ground is the framework's: an app never fills it, and one
     /// that paints nothing still stands on it.
     fn paint_ground(
@@ -465,6 +553,7 @@ impl ResourceRoot {
             dispatch,
             saved,
             save: super::saves::SaveIndicator::new(saves),
+            reactions: super::reactions::ReactionsIndicator::default(),
             permissions: None,
             write: None,
             stages,
@@ -474,6 +563,7 @@ impl ResourceRoot {
             content,
             unreadable: None,
             swapped: false,
+            arrived: None,
             presentation: Vec::new(),
             search: Rc::default(),
             publication_tree: std::cell::RefCell::new(None),
@@ -483,6 +573,8 @@ impl ResourceRoot {
             row_children: std::cell::RefCell::new(None),
             binding_head: std::cell::RefCell::new(None),
             binding_base: std::cell::RefCell::new(None),
+            live_head: std::cell::RefCell::new(None),
+            document_children: std::cell::RefCell::new(None),
             nested_views: std::cell::RefCell::new(None),
             history: true,
             native_presentation,
@@ -549,12 +641,43 @@ impl ResourceRoot {
         self
     }
 
+    /// Show the record's reactions in the window's bar, and run those
+    /// pressed there ([`super::reactions`]). Nothing while the record does
+    /// not read as the resource: its last state is not what it holds.
+    fn sync_reactions(&mut self) {
+        let state = self.typed.state();
+        let readable = self.unreadable.is_none();
+        self.reactions.sync(&super::reactions::ReactionsInput {
+            table: self.resource.record_table.filter(|_| readable),
+            state: state.as_ref(),
+            dispatch: &self.dispatch,
+            people: &self.run.people,
+            private: self.run.private,
+        });
+    }
+
+    /// Show the item the launch asked for once a view that opens items is
+    /// up. An item the record does not hold yet (it is still arriving) is
+    /// asked for again at the next sync.
+    fn reveal_launched(&self) {
+        let mut reveal = self.run.launched.reveal.borrow_mut();
+        if let Some(anchor) = reveal.as_deref()
+            && self.stages.opens()
+            && self.stages.open(anchor).is_ok()
+        {
+            *reveal = None;
+        }
+    }
+
     /// Apply a permission change made while the app runs: dispatchers stop
     /// (or resume) submitting, bound state and surfaces see the new value.
     fn refresh_access(&self) {
         let _profile = tilo_resource::profiling::Phase::start("framework.access_refresh");
         if let (Some(permissions), Some(write)) = (&self.permissions, &self.write) {
-            self.dispatch.set_read_only(!permissions.check(write));
+            let read_only = !permissions.check(write) && !self.may_change_shown_item(permissions);
+            self.dispatch.set_read_only(read_only);
+            // Its person sees, in the window's bar, that they may only look.
+            ui_core::window_toolbar::show_view_only(read_only);
         }
         self.dispatch.refresh_permission_states();
     }
@@ -660,37 +783,53 @@ impl ResourceRoot {
     fn publication(&self) -> tilo_actions::Resource {
         let _profile = tilo_resource::profiling::Phase::start("framework.publication");
         let state = self.typed.state();
-        let tree = self.shared_document_tree(&*state).to_resource();
+        let mut tree = self.shared_document_tree(&*state).to_resource();
+        if let Some(reason) = self.typed.unreadable() {
+            // Read out of the last state that did read: the record publishes
+            // why its document actions do not apply, never that state as the
+            // one it holds.
+            tilo_resource::withhold_document_actions(&mut tree, &reason);
+        }
         self.decorate_publication(&*state, tree, Decoration::Tree)
     }
 
+    /// What the live state holds: its revision and how much of the document
+    /// it read ([`super::Live::loads`]).
+    fn version(&self) -> (u64, u64) {
+        (self.typed.revision(), self.typed.loads())
+    }
+
     /// The document-owned part of what controls bind to: the live
-    /// resource's identity and own actions, without its children. Taken
-    /// from the cached tree when it holds this change; else published
+    /// resource's identity and own actions, without its children, published
     /// without building a child, so it costs the same however many items
     /// the resource holds.
     #[inline(never)]
     fn binding_head(&self) -> BindingHead {
         let state = self.typed.state();
-        let revision = (
-            self.typed.revision(),
-            ui_core::i18n::I18nManager::revision(),
-        );
+        let version = (self.version(), ui_core::i18n::I18nManager::revision());
         let epoch = self.typed.cache_epoch(&*state);
-        let cached = epoch.as_ref().and_then(|epoch| {
-            self.publication_tree
-                .borrow()
-                .as_ref()
-                .filter(|cached| cached.revision == (revision.0, revision.1, epoch.clone()))
-                .map(|cached| cached.tree.head().clone())
-        });
-        let resource = cached.unwrap_or_else(|| {
+        let resource = if let Some(reason) = &self.typed.unreadable() {
+            // The state is the last that read, not what the document holds,
+            // so even the fields bound controls were bound to are no longer
+            // offered: every document action says why it does not apply.
+            let mut head = self
+                .typed
+                .head(self.dispatch.resource_id(), &self.label, &*state);
+            tilo_resource::withhold_document_actions(&mut head, reason);
+            head.actions
+                .retain(|spec| spec.id != tilo_resource::FIELD_EDIT);
+            Rc::new(head)
+        } else if let Some(epoch) = &epoch {
+            self.live_head(&*state, epoch)
+        } else {
             let _profile = tilo_resource::profiling::Phase::start("framework.resource_head");
-            self.typed
-                .head(self.dispatch.resource_id(), &self.label, &*state)
-        });
+            Rc::new(
+                self.typed
+                    .head(self.dispatch.resource_id(), &self.label, &*state),
+            )
+        };
         BindingHead {
-            revision,
+            version,
             epoch,
             resource,
         }
@@ -730,7 +869,8 @@ impl ResourceRoot {
     /// Built once per head and kept, so a refresh shares it.
     fn binding_base(&self, head: &BindingHead) -> Rc<BindingBase> {
         let key = BaseKey {
-            revision: head.revision,
+            head: Rc::clone(&head.resource),
+            locale: head.version.1,
             epoch: head.epoch.clone(),
             causal: self.typed.has_causal_drains(),
             unreadable: self.typed.unreadable(),
@@ -743,7 +883,7 @@ impl ResourceRoot {
         {
             return Rc::clone(base);
         }
-        let mut resource = head.resource.clone();
+        let mut resource = (*head.resource).clone();
         let head_len = resource.actions.len();
         resource = self.with_presentation_specs(resource);
         let shadow_len = resource.actions.len();
@@ -752,7 +892,7 @@ impl ResourceRoot {
             mark_document_jobs(&mut resource);
         }
         if let Some(unreadable) = &key.unreadable {
-            withhold_document_actions(&mut resource, unreadable);
+            tilo_resource::withhold_document_actions(&mut resource, unreadable);
         }
         let base = Rc::new(BindingBase {
             key,
@@ -832,7 +972,7 @@ impl ResourceRoot {
             mark_document_jobs(&mut overlay);
         }
         if let Some(unreadable) = &base.key.unreadable {
-            withhold_document_actions(&mut overlay, unreadable);
+            tilo_resource::withhold_document_actions(&mut overlay, unreadable);
         }
         overlay.actions
     }
@@ -843,16 +983,23 @@ impl ResourceRoot {
     #[inline(never)]
     fn refresh_bindings(&self, head: Option<BindingHead>) -> BindingHead {
         let _profile = tilo_resource::profiling::Phase::start("framework.action_bindings");
-        let revision = (
-            self.typed.revision(),
-            ui_core::i18n::I18nManager::revision(),
-        );
+        let version = (self.version(), ui_core::i18n::I18nManager::revision());
         let head = match head {
-            Some(head) if head.revision == revision => head,
+            Some(head) if head.version == version => head,
             _ => self.binding_head(),
         };
         let base = self.binding_base(&head);
         let overlay = self.binding_overlay(&base);
+        // Read while the document did not: the fields these edits were bound
+        // to are of the last state that read, not what it holds now.
+        let overlay = if self.typed.unreadable().is_some() {
+            overlay
+                .into_iter()
+                .filter(|spec| spec.id != tilo_resource::FIELD_EDIT)
+                .collect()
+        } else {
+            overlay
+        };
         self.action_bindings
             .update_shared(Rc::clone(&base.resource), overlay);
         head
@@ -871,7 +1018,12 @@ impl ResourceRoot {
             // withdrawing the new resource tree using the previous frame's
             // handler table. The next live revision replaces this cache.
             self.pin_nested_views(&*current);
-            return self.publication_of(&*current);
+            let reason = self.typed.unreadable();
+            let mut tree = self.publication_of(&*current);
+            if let Some(reason) = reason {
+                tilo_resource::withhold_document_actions(&mut tree, &reason);
+            }
+            return tree;
         }
         self.publication()
     }
@@ -952,10 +1104,14 @@ impl ResourceRoot {
             mark_document_jobs(&mut resource);
         }
         if let Some(unreadable) = self.typed.unreadable() {
-            withhold_document_actions(&mut resource, &unreadable);
+            tilo_resource::withhold_document_actions(&mut resource, &unreadable);
         }
         if children {
+            // A record a view asked for and could not open is published
+            // with its declared actions unavailable for why: nothing is
+            // shown of it, so nothing but those is answered.
             resource.children.extend(self.storage.record_resources());
+            resource.children.extend(self.storage.unavailable_records());
         }
         resource
     }
@@ -987,8 +1143,9 @@ impl ResourceRoot {
     fn with_framework_specs(&self, mut resource: tilo_actions::Resource) -> tilo_actions::Resource {
         let specs = framework_specs();
         let read = self.resource.readable.then_some(&specs.read);
+        let facts = self.resource.facts.then_some(&specs.facts);
         let history = specs.history.iter().filter(|_| self.history);
-        for spec in specs.native.iter().chain(read).chain(history) {
+        for spec in specs.native.iter().chain(read).chain(facts).chain(history) {
             if !resource
                 .actions
                 .iter()
@@ -1063,12 +1220,23 @@ fn surface_mut(
 }
 
 /// What [`ResourceRoot::binding_base`] is built from.
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 struct BaseKey {
-    revision: (u64, u64),
+    head: Rc<tilo_actions::Resource>,
+    locale: u64,
     epoch: Option<String>,
     causal: bool,
     unreadable: Option<String>,
+}
+
+impl PartialEq for BaseKey {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.head, &other.head)
+            && self.locale == other.locale
+            && self.epoch == other.epoch
+            && self.causal == other.causal
+            && self.unreadable == other.unreadable
+    }
 }
 
 /// The shared part of what bound controls look up, at one [`BaseKey`].
@@ -1087,6 +1255,7 @@ struct BindingBase {
 struct FrameworkSpecs {
     native: Vec<tilo_actions::ActionSpec>,
     read: tilo_actions::ActionSpec,
+    facts: tilo_actions::ActionSpec,
     history: Vec<tilo_actions::ActionSpec>,
 }
 
@@ -1108,6 +1277,7 @@ fn framework_specs() -> Rc<FrameworkSpecs> {
         let specs = Rc::new(FrameworkSpecs {
             native: with_native_presentations(tilo_actions::Resource::new("", "", "")).actions,
             read: read_spec(),
+            facts: facts::facts_spec(),
             history: super::history::specs(),
         });
         *kept = Some((locale, Rc::clone(&specs)));
@@ -1125,14 +1295,14 @@ enum Decoration {
     Actions,
 }
 
-/// The document-owned head of the publication, at the live and locale
-/// revision it was built at.
+/// The document-owned head of the publication, at the live version and
+/// locale it was taken at.
 #[derive(Clone)]
 struct BindingHead {
-    revision: (u64, u64),
+    version: ((u64, u64), u64),
     /// [`Resource::publication_cache_epoch`] at the time.
     epoch: Option<String>,
-    resource: tilo_actions::Resource,
+    resource: Rc<tilo_actions::Resource>,
 }
 
 /// `resource` without its children, cloning nothing of them.
@@ -1160,22 +1330,6 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
     }
 }
 
-/// Every document action of `resource` and its children, unavailable for
-/// `reason`: the record does not read as the resource.
-fn withhold_document_actions(resource: &mut tilo_actions::Resource, reason: &str) {
-    for spec in &mut resource.actions {
-        if spec.kind == tilo_actions::OperationKind::Document {
-            spec.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
-                code: "unreadable".into(),
-                reason: reason.to_owned(),
-            };
-        }
-    }
-    for child in &mut resource.children {
-        withhold_document_actions(child, reason);
-    }
-}
-
 /// Visit the surface of type `S` the root of a resource app of `R` shows: for
 /// a test, or a host that mounted the app, reaching the surface between
 /// frames (`App::with_component_root` lends the root of a mounted one).
@@ -1192,29 +1346,6 @@ pub fn with_surface<R: Resource, S: 'static, T>(
     }
     let root = root.downcast_mut::<ResourceRoot>()?;
     find::<S>(root.view_mut()).map(visit)
-}
-
-/// The document actions of `resource` and its children that can queue an
-/// outside consequence (a verb taking an outbox, every action of a record
-/// with a `queue`, and undo, redo and restore, which queue the compensation
-/// of one), published as jobs: the invocation answers when what it queued
-/// has settled. Every other document action is deterministic and applies
-/// where it is invoked, at once.
-fn mark_document_jobs(resource: &mut tilo_actions::Resource) {
-    for spec in &mut resource.actions {
-        let queues = spec.contract.kind == tilo_actions::ActionKind::Outside
-            || matches!(spec.id.as_str(), "undo" | "redo" | "restore");
-        if spec.kind == tilo_actions::OperationKind::Document && queues {
-            spec.type_mut().contract.execution =
-                tilo_actions::ExecutionMode::Background { cancellable: true };
-            if matches!(spec.contract.result, tilo_actions::ResultSpec::None) {
-                spec.type_mut().contract.result = tilo_actions::ResultSpec::Job;
-            }
-        }
-    }
-    for child in &mut resource.children {
-        mark_document_jobs(child);
-    }
 }
 
 impl ui_core::widget::document_effects::DocumentEffects for ResourceRoot {
@@ -1235,7 +1366,7 @@ const OFF_THREAD_ENTRIES: usize = 1024;
 /// and the entries its surfaces show.
 #[derive(PartialEq)]
 struct SearchState {
-    revision: u64,
+    revision: (u64, u64),
     shown: Vec<SearchEntry>,
 }
 
@@ -1405,7 +1536,7 @@ impl SearchCache {
 }
 
 /// A [`SearchText`](tilo_resource::SearchText), as the index reads it.
-struct BodyText(Arc<dyn tilo_resource::SearchText>);
+pub(crate) struct BodyText(pub(crate) Arc<dyn tilo_resource::SearchText>);
 
 impl tilo_search::BodySource for BodyText {
     fn segment_count(&self) -> usize {
@@ -1550,7 +1681,7 @@ fn index_entry(entry: &SearchEntry) -> Option<ui_core::search::index_publication
 }
 
 /// The index's weight for a field an entry ranks as `weight`.
-fn field_weight(weight: tilo_resource::SearchWeight) -> FieldWeight {
+pub(crate) fn field_weight(weight: tilo_resource::SearchWeight) -> FieldWeight {
     use tilo_resource::SearchWeight;
     match weight {
         SearchWeight::Title => FieldWeight::TITLE,
@@ -1571,6 +1702,9 @@ pub(crate) struct ResourceSearch {
     /// Where a search that waits on the surfaces' answers finds them: none
     /// for a fixed set of entries.
     live: Option<LiveSearch>,
+    /// The resource's `open`, where a view shows its items: how a host
+    /// searching from outside the app opens a hit at its anchor.
+    opens: Option<tilo_actions::ActionAddress>,
 }
 
 /// The resource's index as it moves on, for a search that waits on its
@@ -1651,6 +1785,7 @@ impl ResourceSearch {
             scopes: Vec::new(),
             queries: Vec::new(),
             live: None,
+            opens: None,
         }
     }
 
@@ -1791,7 +1926,7 @@ impl SearchProvider for ResourceSearch {
         else {
             return PagePoll::Ready(SearchPage::empty());
         };
-        PagePoll::Ready(self.search_page(
+        PagePoll::Answered(self.search_page(
             &query,
             None,
             DEFAULT_SEARCH_CANDIDATE_LIMIT,
@@ -1805,6 +1940,10 @@ impl SearchProvider for ResourceSearch {
 
     fn search_scopes(&self) -> Vec<ScopeDecl> {
         self.scopes.clone()
+    }
+
+    fn open_action(&self) -> Option<tilo_actions::ActionAddress> {
+        self.opens.clone()
     }
 }
 
@@ -1861,9 +2000,15 @@ impl ResourceSearch {
                 {
                     result = result.with_icon(icon);
                 }
-                if !entry.text.is_empty() {
-                    result = result.with_preview(entry.text.clone());
-                }
+                result = match &entry.preview {
+                    Some(preview) => result.with_preview(ui_core::search::SearchPreview {
+                        title: preview.title.clone(),
+                        facts: preview.facts.clone(),
+                        lines: preview.lines.clone(),
+                        body: preview.body.clone(),
+                    }),
+                    None => result.with_preview(entry.text.clone()),
+                };
                 if let Some(within) = &entry.within {
                     result = result.within(within.clone());
                 }
@@ -1929,19 +2074,30 @@ impl RootModel for ResourceRoot {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui_core::doc::document_ref(state, path);
         self.refresh_access();
+        if self.dispatch.take_represent() {
+            self.typed.represent();
+        }
         let head = self.refresh(state);
+        for (action, reason) in self.dispatch.opener.take_refusals() {
+            self.dispatch.refuse(&action, reason);
+        }
         self.follow_readability();
         self.storage.refresh();
         {
             let _profile = tilo_resource::profiling::Phase::start("framework.content_sync");
             self.content.sync(state, path);
         }
+        self.reveal_launched();
+        self.settle_arrival();
         self.follow_search();
         // What the view's sync changed (a surface's bound edits, its
         // availability) reaches the bindings; the document-owned head is
         // rebuilt only when the sync moved the state.
         let head = self.refresh_bindings(Some(head));
         *self.binding_head.borrow_mut() = Some(head);
+        // The save status says itself in the window's bar.
+        self.save.sync(ui_core::time::now());
+        self.sync_reactions();
     }
 
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
@@ -1960,9 +2116,8 @@ impl RootModel for ResourceRoot {
     ) {
         self.paint_ground(scene, transform, theme, presence);
         self.content.draw(scene, transform, text, theme, presence);
-        let area = self.content.get_rect();
-        self.save
-            .paint(scene, transform, text, theme, area, ui_core::time::now());
+        // The window drew: what its bar says of the save is seen.
+        self.save.seen();
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1975,6 +2130,7 @@ impl RootModel for ResourceRoot {
         &self.save
     }
 
+    #[cfg(test)]
     fn save_indicator_mut(&mut self) -> &mut super::saves::SaveIndicator {
         &mut self.save
     }
@@ -1998,7 +2154,7 @@ impl RootModel for ResourceRoot {
     /// operation types must be in the retained handler table or publication
     /// withdraws the whole component surface.
     fn resource_operation_handlers(&self) -> HashSet<String> {
-        let mut handlers = self.view().resource_operation_handlers();
+        let mut handlers = ui_core::host_operation::resource_operation_handlers(self.view());
         handlers.extend(
             crate::runner::operation_types()
                 .iter()
@@ -2018,6 +2174,9 @@ impl RootModel for ResourceRoot {
         handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
         if self.resource.readable {
             handlers.insert(READ_TYPE.to_owned());
+        }
+        if self.resource.facts {
+            handlers.insert(facts::FACTS_TYPE.to_owned());
         }
         handlers.extend(
             self.typed
@@ -2054,8 +2213,15 @@ impl RootModel for ResourceRoot {
         self.typed
             .poll_effect(invocation, cancellation_requested)
             .or_else(|| {
-                self.content
-                    .poll_resource_operation(invocation, cancellation_requested, doc, path)
+                with_app_view_mut(&mut self.content, |view| {
+                    ui_core::host_operation::poll_resource_operation(
+                        view,
+                        invocation,
+                        cancellation_requested,
+                        doc,
+                        path,
+                    )
+                })
             })
     }
 
@@ -2065,10 +2231,9 @@ impl RootModel for ResourceRoot {
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
-        if let Some(output) =
-            self.native_presentation
-                .start_operation(op, doc, self.content.as_mut())?
-        {
+        if let Some(output) = with_app_view_mut(&mut self.content, |view| {
+            self.native_presentation.start_operation(op, doc, view)
+        })? {
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(output),
             ));
@@ -2078,6 +2243,20 @@ impl RootModel for ResourceRoot {
             && request.type_id == READ_TYPE
         {
             let output = read(
+                self.typed.as_ref(),
+                &*self.typed.state(),
+                doc,
+                request.payload,
+            )?;
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
+        if self.resource.facts
+            && let Some(request) = op.unscoped()
+            && request.type_id == facts::FACTS_TYPE
+        {
+            let output = facts::answer(
                 self.typed.as_ref(),
                 &*self.typed.state(),
                 doc,
@@ -2121,7 +2300,9 @@ impl RootModel for ResourceRoot {
         if let Some(started) = self.typed.start_effect(op)? {
             return Ok(Some(started));
         }
-        if let Some(started) = self.view_mut().start_operation(op, doc, path)? {
+        if let Some(started) =
+            ui_core::host_operation::start_operation(self.view_mut(), op, doc, path)?
+        {
             return Ok(Some(started));
         }
         Ok(self.start_catalogue_view(op))
@@ -2135,7 +2316,7 @@ impl ResourceRoot {
     fn start_record_operation(
         &self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
-        doc: &ui_core::widget::Edits<'_>,
+        doc: &mut ui_core::widget::Edits<'_>,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         let Some(request) = op.unscoped() else {
             return Ok(None);
@@ -2147,7 +2328,7 @@ impl ResourceRoot {
                 .record_action(self.dispatch.me(), request.payload)?
         } else if request.type_id == super::chain::CHAIN_ACTION_TYPE {
             self.storage
-                .chain_action(self.dispatch.me(), request.payload)?
+                .chain_action(self.dispatch.me(), request.payload, doc)?
         } else if request.type_id == super::person::HISTORY_TYPE {
             self.storage.person_history(request.payload)?
         } else {
@@ -2167,7 +2348,7 @@ impl ResourceRoot {
             queries.push(surface.search_queries());
         });
         let state = SearchState {
-            revision: self.typed.revision(),
+            revision: self.version(),
             shown,
         };
         (state, queries)
@@ -2309,27 +2490,36 @@ impl ResourceRoot {
     }
 }
 
-// The root's own client for the action door (minting links) shares the
-// app's collaboration connection with whatever the view keeps there.
+// The root's own clients for the action door (minting links, opening
+// references) share the app's collaboration connection with whatever the
+// view keeps there.
 impl ui_core::widget::Collaborative for ResourceRoot {
     fn take_collab_requests(&mut self) -> Vec<ui_core::collaboration::CollabRequest> {
         let mut requests =
             ui_core::widget::Collaborative::take_collab_requests(self.share.remote_mut());
-        if let Some(content) =
-            capability_mut::<dyn ui_core::widget::Collaborative>(self.content.as_mut())
-        {
-            requests.extend(content.take_collab_requests());
+        if let Some(mut door) = self.dispatch.opener.door() {
+            requests.extend(ui_core::widget::Collaborative::take_collab_requests(
+                &mut door,
+            ));
         }
+        with_app_view_mut(&mut self.content, |view| {
+            if let Some(content) = capability_mut::<dyn ui_core::widget::Collaborative>(view) {
+                requests.extend(content.take_collab_requests());
+            }
+        });
         requests
     }
 
     fn handle_collab_event(&mut self, event: &ui_core::collaboration::CollabEvent) {
         ui_core::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
-        if let Some(content) =
-            capability_mut::<dyn ui_core::widget::Collaborative>(self.content.as_mut())
-        {
-            content.handle_collab_event(event);
+        if let Some(mut door) = self.dispatch.opener.door() {
+            ui_core::widget::Collaborative::handle_collab_event(&mut door, event);
         }
+        with_app_view_mut(&mut self.content, |view| {
+            if let Some(content) = capability_mut::<dyn ui_core::widget::Collaborative>(view) {
+                content.handle_collab_event(event);
+            }
+        });
     }
 }
 
@@ -2349,6 +2539,10 @@ impl RootSearch for ResourceRoot {
             cache: Rc::clone(&self.search),
             answered: std::cell::RefCell::new(None),
         });
+        source.opens = self
+            .stages
+            .opens()
+            .then(|| tilo_actions::ActionAddress::new(self.dispatch.resource_id(), "open"));
         vec![Box::new(source)]
     }
 
@@ -2406,12 +2600,9 @@ impl RootSearch for ResourceRoot {
         path: &ModelPath,
     ) {
         if self.stages.open(action_id).is_err() {
-            ui_core::search::capability::activate_search_result(
-                self.content.as_mut(),
-                action_id,
-                doc,
-                path,
-            );
+            with_app_view_mut(&mut self.content, |view| {
+                ui_core::search::capability::activate_search_result(view, action_id, doc, path);
+            });
         }
     }
 }
@@ -2442,12 +2633,11 @@ impl RootPublishes for ResourceRoot {
         // never a document action: those are the resource's own. A hosted
         // surface has already admitted what it adds. One naming the resource
         // joins it rather than publishing it twice.
-        let surface = ui_core::widget::capability::capability::<dyn SurfacePublication>(
-            self.content.as_ref(),
-        )
-        .is_some_and(|surface| surface.resource() == self.resource.id);
+        let surface =
+            ui_core::widget::capability::capability::<dyn SurfacePublication>(self.app_view())
+                .is_some_and(|surface| surface.resource() == self.resource.id);
         let mut extras = Vec::new();
-        for extra in ui_core::resources::resources_for(self.content.as_ref(), participant, doc) {
+        for extra in ui_core::resources::resources_for(self.app_view(), participant, doc) {
             let extra = if surface {
                 extra
             } else {
@@ -2530,7 +2720,7 @@ impl RootPublishes for ResourceRoot {
         // Last, what the content resolves by id beyond what it publishes (a
         // place, a record past the published page), without a document
         // action: those are the resource's own.
-        ui_core::resources::resource_for(self.content.as_ref(), None, doc, id)
+        ui_core::resources::resource_for(self.app_view(), None, doc, id)
             .map(super::rows::resolved_outside_document)
     }
     fn document_action_result(
@@ -2556,7 +2746,7 @@ impl RootPublishes for ResourceRoot {
                 .answer(doc, &address.action, changes)
                 .or_else(|| {
                     ui_core::resources::document_action_result(
-                        self.content.as_ref(),
+                        self.app_view(),
                         doc,
                         address,
                         changes,
@@ -2572,7 +2762,7 @@ impl RootPublishes for ResourceRoot {
                 None => Some(serde_json::json!({ "minted": minted })),
             };
         }
-        ui_core::resources::document_action_result(self.content.as_ref(), doc, address, changes)
+        ui_core::resources::document_action_result(self.app_view(), doc, address, changes)
     }
 }
 
@@ -2630,7 +2820,7 @@ impl RootControls for ResourceRoot {
     }
     fn has_pending_control_invocation(&self) -> bool {
         self.dispatch.has_pending()
-            || ui_core::widget::controls::has_pending_control_invocation(self.content.as_ref())
+            || ui_core::widget::controls::has_pending_control_invocation(self.app_view())
     }
 }
 
@@ -2655,28 +2845,28 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
                 ui_core::history_mode::HistoryRegistration::new(definition, scopes.collect())
                     .map(Some)
             }
-            None => ui_core::history_mode::capability::history_registration(self.content.as_ref()),
+            None => ui_core::history_mode::capability::history_registration(self.app_view()),
         }
     }
 
     fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
         ui_core::widget::capability::capability::<
             dyn ui_core::history_mode::capability::DocumentHistory,
-        >(self.content.as_ref())
+        >(self.app_view())
         .map_or(Ok(()), |content| content.history_restore_readiness(scope))
     }
 
     fn document_history_definition(
         &self,
     ) -> Option<&'static ui_core::history_mode::HistoryDefinition> {
-        ui_core::history_mode::capability::document_history_definition(self.content.as_ref())
+        ui_core::history_mode::capability::document_history_definition(self.app_view())
     }
 
     fn provides_document_history(&self) -> bool {
         !self.history
             || ui_core::widget::capability::capability::<
                 dyn ui_core::history_mode::capability::DocumentHistory,
-            >(self.content.as_ref())
+            >(self.app_view())
             .is_some_and(
                 ui_core::history_mode::capability::DocumentHistory::provides_document_history,
             )
@@ -2702,12 +2892,17 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
         if let Some(participant) = ui_core::invocation_scope::current_participant() {
             self.typed.note_applied(&participant, action);
         }
-        if let Some(content) = ui_core::widget::capability::capability_mut::<
-            dyn ui_core::history_mode::capability::DocumentHistory,
-        >(self.content.as_mut())
-        {
-            content.document_action_applied(action, before, doc, path);
-        }
+        // Whoever applied it here, a surface that carries out what it means
+        // on this device is told once the state holds it.
+        self.typed.note_applied_here(action);
+        with_app_view_mut(&mut self.content, |view| {
+            if let Some(content) = ui_core::widget::capability::capability_mut::<
+                dyn ui_core::history_mode::capability::DocumentHistory,
+            >(view)
+            {
+                content.document_action_applied(action, before, doc, path);
+            }
+        });
     }
 }
 
@@ -2816,10 +3011,18 @@ impl RootApp for ResourceRoot {
         self.typed.represent();
     }
 
+    fn take_notices(&mut self) -> Vec<String> {
+        self.dispatch.take_notices()
+    }
+
+    fn record_said(&mut self, text: &str) {
+        self.dispatch.kept(text);
+    }
+
     // A surface that keeps presentation of its own across restarts (the
     // open item, the caret) saves it as the window's.
     fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
-        capability::<dyn ApplicationViewState>(self.content.as_ref())
+        capability::<dyn ApplicationViewState>(self.app_view())
             .map_or(Ok(None), ApplicationViewState::capture_application_view)
     }
 
@@ -2828,19 +3031,23 @@ impl RootApp for ResourceRoot {
         local: &ApplicationLocalView,
         doc: &AutoCommit,
     ) -> Result<ApplicationFocusRestore, ThawError> {
-        match capability_mut::<dyn ApplicationViewState>(self.content.as_mut()) {
-            Some(view) => view.restore_application_view(local, doc),
-            None => Err(ThawError::State(
-                "application-local restoration unsupported".into(),
-            )),
-        }
+        with_app_view_mut(&mut self.content, |view| {
+            match capability_mut::<dyn ApplicationViewState>(view) {
+                Some(view) => view.restore_application_view(local, doc),
+                None => Err(ThawError::State(
+                    "application-local restoration unsupported".into(),
+                )),
+            }
+        })
     }
 
     fn finish_application_view_restore(&mut self) -> Result<(), ThawError> {
-        capability_mut::<dyn ApplicationViewState>(self.content.as_mut()).map_or(
-            Ok(()),
-            ApplicationViewState::finish_application_view_restore,
-        )
+        with_app_view_mut(&mut self.content, |view| {
+            capability_mut::<dyn ApplicationViewState>(view).map_or(
+                Ok(()),
+                ApplicationViewState::finish_application_view_restore,
+            )
+        })
     }
 }
 
@@ -2931,7 +3138,6 @@ mod search_tests {
                 text: "April".into(),
                 ..Default::default()
             },
-            // A flat id that lies in the inbox, read as a message row.
             SearchEntry {
                 anchor: Some("msg:3".into()),
                 title: "Invoice reminder".into(),
@@ -3136,7 +3342,7 @@ mod search_tests {
         });
         LOOKING.with(|looking| looking.set(false));
         app.settle();
-        let PagePoll::Ready(answered) = search.poll_page(&token) else {
+        let PagePoll::Answered(answered) = search.poll_page(&token) else {
             panic!("the server answered");
         };
         assert!(answered.pending.is_none(), "nothing more is coming");
@@ -3194,7 +3400,6 @@ mod search_tests {
         ));
         assert_eq!(declared, [ScopeDecl::new("folder:inbox", "Inbox")]);
 
-        // Picking a hit opens the app at it.
         app.harness()
             .with_widget_mut(|root: &mut ResourceRoot| {
                 let mut doc = ui_core::automerge::AutoCommit::new();
@@ -3208,7 +3413,6 @@ mod search_tests {
             .unwrap();
         OPENED.with_borrow(|opened| assert_eq!(opened.as_slice(), ["folder:inbox/msg:1"]));
 
-        // An agent opens it through the same door.
         app.call("open", serde_json::json!({ "anchor": "folder:sent/msg:2" }))
             .unwrap();
         OPENED.with_borrow(|opened| {
@@ -3430,7 +3634,7 @@ impl Unopened {
         for decl in declarations {
             resource = resource.with_action(tilo_resource::declaration_spec(decl));
         }
-        withhold_document_actions(&mut resource, reason);
+        tilo_resource::withhold_document_actions(&mut resource, reason);
         Self {
             title,
             icon,
@@ -3568,6 +3772,7 @@ mod tests {
             scopes: Vec::new(),
             queries: Vec::new(),
             live: None,
+            opens: None,
         };
         let groceries = search.search("groceries");
         assert_eq!(groceries.len(), 1);
@@ -3598,6 +3803,7 @@ mod tests {
             scopes: Vec::new(),
             queries: Vec::new(),
             live: None,
+            opens: None,
         };
         let hits = search.search("sunset");
         let marker = hits

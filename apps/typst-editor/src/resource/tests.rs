@@ -6,7 +6,6 @@ use ui::framework::testing::TestApp;
 use ui::tilo_resource::items::item_resource_id;
 use ui::tilo_resource::{Edit, Replica, Resource as _};
 
-/// The id file `id` is published under.
 fn file_resource_id(id: &Id) -> String {
     item_resource_id::<Workspace>("files", id)
 }
@@ -77,7 +76,8 @@ fn verbs_and_field_edits_change_one_file() {
     workspace
         .apply(Workspace::LOAD.with(workspace::Load {
             file: id.clone(),
-            path: "/docs/other.typ".into(),
+            name: "other.typ".into(),
+            path: Some("/docs/other.typ".into()),
             source: "= Other\n".into(),
         }))
         .unwrap();
@@ -86,16 +86,30 @@ fn verbs_and_field_edits_change_one_file() {
         (loaded.name.0.as_str(), loaded.source.as_str()),
         ("other.typ", "= Other\n")
     );
-
-    assert!(
-        workspace
-            .apply(Workspace::CLOSE_FILE.with(id.clone()))
-            .is_err(),
-        "closing asks for confirmation"
-    );
+    // A file chosen where files have no paths (a browser page) takes its
+    // name and lives nowhere until saved.
     workspace
-        .apply_confirmed(Workspace::CLOSE_FILE.with(id.clone()))
+        .apply(Workspace::LOAD.with(workspace::Load {
+            file: id.clone(),
+            name: "picked.typ".into(),
+            path: None,
+            source: "= Picked\n".into(),
+        }))
         .unwrap();
+    let picked = workspace.state().unwrap().file(&id).cloned().unwrap();
+    assert_eq!(
+        (
+            picked.name.0.as_str(),
+            picked.path.as_ref(),
+            picked.source.as_str()
+        ),
+        ("picked.typ", None, "= Picked\n")
+    );
+
+    // Undo takes a closed file back, so closing runs at once.
+    workspace
+        .apply(Workspace::CLOSE_FILE.with(id.clone()))
+        .expect("an undoable close runs at once");
     assert!(workspace.state().unwrap().files.is_empty());
     assert!(
         workspace
@@ -273,18 +287,13 @@ fn an_agent_edits_the_workspace_one_call_each() {
     .unwrap();
     assert_eq!(app.state().files.len(), 2);
 
+    // Undo takes a closed file back, so closing runs at once.
     app.call_on(
         &file_resource_id(&file),
         "close-file",
         serde_json::json!({}),
     )
-    .expect_err("closing asks for confirmation");
-    app.call_confirmed_on(
-        &file_resource_id(&file),
-        "close-file",
-        serde_json::json!({}),
-    )
-    .unwrap();
+    .expect("an undoable close runs at once");
     assert_eq!(only(&app).name.0, "appendix.typ");
 }
 

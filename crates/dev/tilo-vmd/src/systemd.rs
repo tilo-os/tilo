@@ -56,7 +56,7 @@ const SYSEXT_SEARCH_DIRS: &[&str] = &["/etc/extensions", "/run/extensions", SYSE
 const USER_REGISTRY_MAX_BYTES: u64 = 8 * 1024 * 1024;
 const VKMS_CONFIGFS: &str = "/sys/kernel/config/vkms";
 /// Not in production images; the dev image installs it.
-const TILO_CONTROL: &str = "/usr/bin/tilo-control";
+const TILO_CONTROL: &str = "/usr/libexec/tilo/tilo-control";
 /// The groups `tilo-firstboot-user` gives a login, less `wheel`: `tilo-identity`
 /// reads the machine's device key, which provisioning an identity needs, and
 /// `video` opens `/dev/dri`.
@@ -1028,13 +1028,19 @@ impl Apply for SystemdApply {
     fn session_process(&mut self, session: &Session) -> Option<SessionProcess> {
         let main = self.session_pid(session)?;
         // Type=simple returns once forked; wait for the switch to the slot user.
+        // A process still root is systemd setting the session up (PAM can
+        // outlast the wait on a slow board), not yet the session to judge.
+        let switched = || {
+            proc_field(main, "Uid:").is_some_and(|uid| uid.split_whitespace().next() != Some("0"))
+        };
         for _ in 0..20 {
-            if proc_field(main, "Uid:")
-                .is_some_and(|uid| uid.split_whitespace().next() != Some("0"))
-            {
+            if switched() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if !switched() {
+            return None;
         }
         // Prefer the compositor itself, tilo-session's child.
         let children =
@@ -1389,7 +1395,7 @@ fn cohort_account_command(
         "--property=NoNewPrivileges=yes",
         "--property=RuntimeMaxSec=300",
         "--",
-        "/usr/bin/tilo-install",
+        "/usr/libexec/tilo/tilo-install",
     ]);
     command
 }
@@ -1407,7 +1413,7 @@ fn selected_app_install_command(
     preserve_held: bool,
 ) -> Command {
     let mut arguments = vec![
-        "/usr/bin/tilo-install".into(),
+        "/usr/libexec/tilo/tilo-install".into(),
         "install".into(),
         "--allow-self-signed".into(),
         "--force".into(),
@@ -1761,7 +1767,7 @@ mod tests {
         assert_eq!(
             &args[args.len() - 5..],
             [
-                "/usr/bin/tilo-install",
+                "/usr/libexec/tilo/tilo-install",
                 "install",
                 "--allow-self-signed",
                 "--force",
@@ -1789,7 +1795,7 @@ mod tests {
         assert_eq!(
             &selected[selected.len() - 6..],
             [
-                "/usr/bin/tilo-install",
+                "/usr/libexec/tilo/tilo-install",
                 "install",
                 "--allow-self-signed",
                 "--force",
@@ -1989,7 +1995,6 @@ mod tests {
     fn the_device_session_is_the_board_layers_session() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let read = |path: &str| fs::read_to_string(repo.join(path)).unwrap();
-        // Phase `the_names_match_the_board_layer`.
         {
             let layer = read("os/dev/install-board-layer.sh");
             assert!(
@@ -2013,7 +2018,6 @@ mod tests {
                 Path::new("/run/user/1000/tilo-session/test-control.sock")
             );
         }
-        // Phase `the_active_instance_is_the_session`.
         {
             let listing = "tilo-board-headless-session@old.service loaded inactive dead Tilo board session for old\n\
                            tilo-board-headless-session@quickuser.service loaded active running Tilo board session for quickuser\n";
@@ -2038,7 +2042,6 @@ mod tests {
     /// greetd's worker leads on seat0, never the greeter's or a slot's.
     #[test]
     fn the_device_session_of_a_laptop_is_the_owners_greetd_login() {
-        // Phase `a_login_is_found_by_its_greetd_worker`.
         {
             let shown = |id: &str, text: &str| parse_logind_session(id, text);
             let greeter = shown(
@@ -2072,7 +2075,6 @@ mod tests {
             assert_eq!(greetd_login(&sessions[..3], 500, parent), None);
             assert_eq!(greetd_login(&sessions, 0, parent), None);
         }
-        // Phase `the_names_match_tilo_session`.
         {
             let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
             let wrapper = repo.join("os/usr/libexec").join(LOGIN_WRAPPER);
@@ -2101,14 +2103,12 @@ mod tests {
         let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
         png.extend_from_slice(b"\0\0\0\x0dIHDR-and-pixels");
         png.extend_from_slice(b"\0\0\0\0IEND\xae\x42\x60\x82");
-        // Phase `only_a_whole_png_counts`.
         {
             assert!(png_complete(&png));
             assert!(!png_complete(&png[..png.len() - 1]));
             assert!(!png_complete(&png[..20]));
             assert!(!png_complete(b""));
         }
-        // Phase `the_read_waits_for_the_frame_that_writes_the_file`.
         {
             let writer = {
                 let (path, png) = (path.clone(), png.clone());
@@ -2119,11 +2119,10 @@ mod tests {
                     fs::write(&path, &png).unwrap();
                 })
             };
-            let read = await_png(&path, std::time::Duration::from_secs(10)).unwrap();
+            let read = await_png(&path, tilo_test_env::hang_bound()).unwrap();
             writer.join().unwrap();
             assert_eq!(read, png);
         }
-        // Phase `a_snapshot_that_never_lands_is_an_error_not_a_hang`.
         {
             fs::write(&path, &png[..20]).unwrap();
             let error = await_png(&path, std::time::Duration::from_millis(200)).unwrap_err();
@@ -2204,7 +2203,7 @@ mod userspace_tests {
             "--property=BindReadOnlyPaths=/verified/view/usr:/usr /verified/view/opt:/opt",
             "--property=NoNewPrivileges=yes",
             "--preserve-held",
-            "/usr/bin/tilo-install",
+            "/usr/libexec/tilo/tilo-install",
             "/staged/app.tapp",
         ] {
             assert!(args.iter().any(|arg| arg == required), "{args:?}");

@@ -227,7 +227,7 @@ fn books_join_and_leave_the_shelf_under_their_content_ids() {
     let remove = Ebook::REMOVE_FROM_LIBRARY.with(books::RemoveFromLibrary { book: BOOK.into() });
     assert!(
         library.apply(remove.clone()).is_err(),
-        "removing a book asks for confirmation"
+        "removing a book asks first: Undo cannot give back this device's access to its file"
     );
     library.apply_confirmed(remove).unwrap();
     let after = state(&library);
@@ -260,7 +260,11 @@ fn settings_fonts_and_schemes_are_edited_at_their_paths() {
     let mut library = Replica::<Ebook>::new();
     let fresh = state(&library);
     assert_eq!(fresh.settings.mode, ReadMode::Paged, "readers open paged");
-    assert_eq!(fresh.settings.composition, CompositionStyle::Book);
+    assert_eq!(
+        fresh.settings.composition,
+        CompositionStyle::Ragged,
+        "ragged until a reader asks for justified"
+    );
     assert!(
         fresh
             .fonts
@@ -946,7 +950,7 @@ fn launching_on_an_epub_keeps_it_in_the_content_store_shelves_and_opens_it() {
     let book = crate::component::book_resource(&id);
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(10), |harness| harness
+            .wait_until(tilo_test_env::hang_bound(), |harness| harness
                 .bound_resources(Some(&book))
                 .is_ok_and(|resources| !resources.is_empty())),
         "the handed-off book joins the library"
@@ -972,7 +976,7 @@ fn launching_on_an_epub_keeps_it_in_the_content_store_shelves_and_opens_it() {
     assert!(
         again
             .harness()
-            .wait_until(ui::time::Duration::from_secs(10), |harness| harness
+            .wait_until(tilo_test_env::hang_bound(), |harness| harness
                 .bound_resources(Some(&book))
                 .is_ok_and(|resources| !resources.is_empty())),
         "the reopened library reads the book from the content store"
@@ -983,7 +987,7 @@ fn launching_on_an_epub_keeps_it_in_the_content_store_shelves_and_opens_it() {
 /// named after the open chapter.
 fn reads_chapter(app: &mut ui::framework::testing::TestApp<EbookShell>, title: &str) -> bool {
     app.harness()
-        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
             harness.a11y_node_named(title).is_some()
         })
 }
@@ -998,6 +1002,10 @@ fn every_scenario_stages_the_sample_shelf_through_the_librarys_edits() {
         let shelf = app.state().entries.len();
         if scenario == Some("onboarding") {
             assert_eq!(shelf, 0, "the first start is an empty shelf");
+        } else if scenario.is_some_and(|scenario| scenario.starts_with("fresh-device")) {
+            assert_eq!(shelf, 8, "a library synced from other devices");
+        } else if scenario == Some("search-elsewhere") {
+            assert_eq!(shelf, 4, "the sample shelf and a book elsewhere");
         } else {
             assert_eq!(shelf, 3, "{scenario:?} shows the sample shelf");
         }
@@ -1132,5 +1140,32 @@ fn a_page_turn_while_the_library_is_held_copies_one_chunk_of_progress() {
     assert!(
         kept >= 500 - 64,
         "{kept} of 500 books' progress still shared"
+    );
+}
+
+/// Whether this device keeps the book catalogues is a setting of the
+/// device's that search, the palette and agents reach as the section's field
+/// edit, and the reader's toggle reads.
+#[test]
+fn keeping_book_catalogues_is_a_device_setting_search_reaches() {
+    use crate::catalogue::CatalogueCopies;
+    let mut app = ui::framework::testing::TestApp::<EbookShell>::new().unwrap();
+    assert!(
+        app.settings::<CatalogueCopies>().get().keep_catalogues,
+        "kept on a computer unless the person turns it off"
+    );
+    app.call_on(
+        "settings:settings.books-catalogues",
+        "field-edit",
+        serde_json::json!({
+            "edit": { "path": [{ "field": "keep_catalogues" }], "op": "set", "value": false }
+        }),
+    )
+    .unwrap();
+    assert!(!app.settings::<CatalogueCopies>().get().keep_catalogues);
+    assert_eq!(
+        <CatalogueCopies as ui::storage::SettingsSchema>::SCOPE,
+        ui::storage::Scope::DeviceLocal,
+        "it never leaves this device"
     );
 }

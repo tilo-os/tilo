@@ -75,7 +75,6 @@ pub struct RemoteRelay {
 /// One event from a remote session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PtyEvent {
-    /// Guest output.
     Output(Vec<u8>),
     /// The guest ended; the session is gone.
     Exited(Option<i32>),
@@ -84,9 +83,7 @@ pub enum PtyEvent {
     /// A tool was built for the environment on the relay; the device
     /// records it with the record's `add-tool` action.
     ToolBuilt {
-        /// The environment.
         record: EnvironmentRecordRef,
-        /// The tool image.
         tool: ToolImage,
     },
 }
@@ -260,28 +257,16 @@ impl PtyStream {
     }
 
     /// Type `bytes` into the session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream is gone.
     pub async fn write(&mut self, bytes: &[u8]) -> Result<(), EnvironmentClientError> {
         self.writer.write(bytes).await
     }
 
     /// Resize the session's terminal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream is gone.
     pub async fn resize(&mut self, size: PtySize) -> Result<(), EnvironmentClientError> {
         self.writer.resize(size).await
     }
 
     /// The next event; `None` once the relay closed the stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream fails or a frame is malformed.
     pub async fn next(&mut self) -> Result<Option<PtyEvent>, EnvironmentClientError> {
         self.reader.next().await
     }
@@ -292,10 +277,6 @@ impl PtyStream {
     }
 
     /// End the session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream is gone.
     pub async fn terminate(&mut self) -> Result<(), EnvironmentClientError> {
         self.writer.terminate().await
     }
@@ -309,10 +290,6 @@ impl PtyStream {
 
 impl PtyWriter {
     /// Type `bytes` into the session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream is gone.
     pub async fn write(&mut self, bytes: &[u8]) -> Result<(), EnvironmentClientError> {
         for chunk in bytes.chunks(MAX_PTY_CHUNK_BYTES) {
             write_message(&mut self.send, &ClientFrame::Input(chunk.to_vec())).await?;
@@ -321,19 +298,11 @@ impl PtyWriter {
     }
 
     /// Resize the session's terminal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream is gone.
     pub async fn resize(&mut self, size: PtySize) -> Result<(), EnvironmentClientError> {
         write_message(&mut self.send, &ClientFrame::Resize(size)).await
     }
 
     /// End the session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream is gone.
     pub async fn terminate(&mut self) -> Result<(), EnvironmentClientError> {
         write_message(&mut self.send, &ClientFrame::Terminate).await
     }
@@ -347,10 +316,6 @@ impl PtyWriter {
 
 impl PtyReader {
     /// The next event; `None` once the relay closed the stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream fails or a frame is malformed.
     pub async fn next(&mut self) -> Result<Option<PtyEvent>, EnvironmentClientError> {
         let Some(frame) = read_message::<ServerFrame>(&mut self.receive).await? else {
             return Ok(None);
@@ -426,11 +391,6 @@ pub async fn open_legacy_windows(
 
 impl LegacyWindowStream {
     /// The next window frame; `None` once the relay closed the stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream fails, a frame is malformed, or the
-    /// relay refused the stream.
     pub async fn next(&mut self) -> Result<Option<WindowFrame>, EnvironmentClientError> {
         let Some(bytes) = read_frame_or_eof(&mut self.receive, MAX_ENVIRONMENT_FRAME_BYTES)
             .await
@@ -445,10 +405,6 @@ impl LegacyWindowStream {
     }
 
     /// Send input to one of the windows.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream is gone.
     pub async fn send_input(&mut self, input: &WindowInput) -> Result<(), EnvironmentClientError> {
         write_message(&mut self.send, input).await
     }

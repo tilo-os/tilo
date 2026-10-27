@@ -642,6 +642,11 @@ impl Window {
 
         let data = XdgActivationTokenData::Obtain((self.window_id, serial));
         let xdg_activation_token = xdg_activation.get_activation_token(&self.queue_handle, data);
+        // The last press in the window is what lets a compositor hand the
+        // token out: without a serial it can't tell the person asked.
+        if let Some((seat, press)) = self.window_state.lock().unwrap().last_press() {
+            xdg_activation_token.set_serial(*press, seat);
+        }
         xdg_activation_token.set_surface(self.surface());
         xdg_activation_token.commit();
 
@@ -671,7 +676,7 @@ impl Window {
     }
 
     #[inline]
-    pub fn start_drag(&self, offers: Vec<(String, Vec<u8>)>) -> bool {
+    pub fn start_drag(&self, offers: Vec<(String, crate::platform_impl::wayland::DragData)>) -> bool {
         self.window_state.lock().unwrap().start_drag(offers)
     }
 

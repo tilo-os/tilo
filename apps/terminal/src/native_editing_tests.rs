@@ -2,13 +2,14 @@
 mod native_editing_tests {
     use super::*;
     use runtime_portal::editor::{self, Lease, Request};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    use tilo_test_env::{hang_bound, wait_until};
 
     fn fixture() -> std::io::Result<(TerminalWidget, editor::Socket)> {
         let (mut widget, _, _) = crate::tests::build_test_widget_io();
         widget.set_focus(true);
         let (socket, producer) = editor::Socket::pair()?;
-        producer.read_timeout(Some(Duration::from_secs(2)))?;
+        producer.read_timeout(Some(hang_bound()))?;
         widget.native_editor = Some(crate::native_editor::Client::new(
             socket,
             Arc::new(Mutex::new(ui::WakeHandle::default())),
@@ -37,16 +38,9 @@ mod native_editing_tests {
             .ok_or_else(|| std::io::Error::other("missing editor request header"))?
             .fill(0);
         producer.send(&frame)?;
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while widget.ime_content() != Some(ui::ime::InputContent::TEXT) {
-            if Instant::now() >= deadline {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "native announcement was not observed",
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        wait_until("the native announcement", || {
+            widget.ime_requires_deferred_ack()
+        });
         Ok((widget, producer))
     }
 
@@ -63,11 +57,76 @@ mod native_editing_tests {
         );
         assert!(widget.start_deferred_text().is_some());
         widget.try_write_input(b"typed").unwrap();
+        assert!(
+            !widget.ime_requires_deferred_ack(),
+            "typing revoked the editor's offer"
+        );
         assert_eq!(widget.ime_content(), Some(ui::ime::InputContent::TERMINAL));
         let mut packet = [0; editor::FRAME_BYTES];
         let size = producer.receive(&mut packet).unwrap();
         assert_eq!(size, editor::HEADER_BYTES);
         assert_eq!(packet[5], 6, "physical input did not revoke original lease");
+    }
+
+    /// At a native editor prompt, dictation still needs the editor's
+    /// acknowledgement, but an ordinary commit (the on-screen keyboard's
+    /// letters) becomes the editor's own acknowledged edit, so hosts serve the
+    /// prompt to standard text input and the on-screen keyboard opens. The
+    /// field stays a terminal input, so the keyboard keeps its terminal keys.
+    #[test]
+    fn a_native_editor_prompt_takes_ordinary_commits() {
+        let (widget, _producer) = fixture().expect("qualified native editor fixture");
+        assert_eq!(
+            widget.ime_content(),
+            Some(ui::ime::InputContent::TERMINAL),
+            "the prompt is still terminal input"
+        );
+        assert!(
+            widget.ime_requires_deferred_ack(),
+            "dictation stays acknowledged"
+        );
+        assert!(
+            !widget.ime_refuses_ordinary_commits(),
+            "the on-screen keyboard's commits reach the prompt"
+        );
+        assert!(ui::ime::ImeWindowState::from_widget(&widget).is_some());
+    }
+
+    /// The on-screen keyboard's terminal keys work at a native editor
+    /// prompt: each is a real key the editor reads from the PTY, so Up walks
+    /// its history and Ctrl+C interrupts.
+    #[test]
+    fn the_terminal_keys_reach_a_native_editor_prompt_as_keys() {
+        use winit::keyboard::{Key, NamedKey};
+        let (mut widget, _producer) = fixture().expect("qualified native editor fixture");
+        let writes = widget.attach_input_probe();
+        let mut doc = automerge::AutoCommit::new();
+        for (key, ctrl, alt, bytes) in [
+            (Key::Named(NamedKey::ArrowUp), false, false, &b"\x1b[A"[..]),
+            (
+                Key::Named(NamedKey::ArrowDown),
+                false,
+                false,
+                &b"\x1b[B"[..],
+            ),
+            (Key::Named(NamedKey::Escape), false, false, &b"\x1b"[..]),
+            (Key::Named(NamedKey::Tab), false, false, &b"\t"[..]),
+            (Key::Character("c".into()), true, false, &b"\x03"[..]),
+            (
+                Key::Named(NamedKey::ArrowLeft),
+                false,
+                true,
+                &b"\x1b[1;3D"[..],
+            ),
+        ] {
+            crate::tests::send_key_mods(&mut widget, &mut doc, key.clone(), ctrl, false, alt);
+            assert_eq!(
+                crate::tests::drain_writes(&writes),
+                bytes,
+                "{key:?} ctrl={ctrl} alt={alt}"
+            );
+            assert_eq!(widget.ime_content(), Some(ui::ime::InputContent::TERMINAL));
+        }
     }
 
     #[test]
@@ -96,17 +155,11 @@ mod native_editing_tests {
         receipt[7] = 0;
         receipt[16..64].fill(0);
         receipt[72..80].fill(0);
-        // A matching request id with a different transaction is still uncertain.
         receipt[64..72].fill(0);
         producer.send(&receipt).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while !widget.poll_native_ime() {
-            assert!(
-                Instant::now() < deadline,
-                "wrong transaction did not retire original edit"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        wait_until("the wrong transaction to retire the original edit", || {
+            widget.poll_native_ime()
+        });
         assert_eq!(
             widget.native_ime_error,
             Some(ui::text_input::Failure::Unknown)
@@ -160,18 +213,16 @@ mod native_editing_tests {
         let original = widget.start_deferred_text().unwrap();
         original.cancel();
         let receipt = widget.commit_deferred_text("private words").unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while receipt.poll().is_none() {
-            assert!(
-                Instant::now() < deadline,
-                "canceled original capture did not complete"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        wait_until("the canceled original capture to complete", || {
+            receipt.poll().is_some()
+        });
         assert!(matches!(
             receipt.poll(),
             Some(Err(ui::text_input::Failure::Rejected))
         ));
+        // The receipt resolves only after the client decided not to send, so
+        // a packet it had sent would already be queued: this read waits for
+        // nothing that could still arrive.
         producer
             .read_timeout(Some(Duration::from_millis(100)))
             .unwrap();

@@ -27,7 +27,7 @@ test-support = ["tilo-relay-store/test-support"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
-agents = ["web", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:notes", "dep:canvas", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
+agents = ["web", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
 web = ["tilo-relay-shell/web", "dep:tilo-moq","dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:bytes"]
 # The legacy_stream_source example: a session streaming a window through the
 # production encoder (H.264, VP9 or AV1; needs the GStreamer stack). No binary uses it.
@@ -189,7 +189,7 @@ rustls = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 # Who-is-here lines may be summarised by a model provider the operator
 # configures, in the dialects shared with the model gateway.
-tilo-net = { path = "../../platform/tilo-net", features = ["http"], optional = true }
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"], optional = true }
 agent-provider-config = { path = "../../agent/provider-config", optional = true }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
 # Who may close, move or rename what is on a room's shared desktop, and the
@@ -200,17 +200,16 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 # The persistent room's moderation agent and its model provider.
 tilo-moderation = { path = "../../collab/moderation", features = ["host"], optional = true }
-# A persistent public room starts with a welcome note and a canvas, written
-# through those apps' own models (the agent participant links them anyway).
-notes = { path = "../../../apps/notes", optional = true }
+# A persistent public room's chat opens with the operator's channels.
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
 discord = { path = "../../../apps/discord", optional = true }
 tilo-connector = { path = "../../agent/connector", optional = true }
 tilo-automation = { path = "../../collab/automation", optional = true }
 tilo-bot-directory = { path = "../../packaging/bot-directory", optional = true }
 app-cli = { path = "../../packaging/app-cli", optional = true }
-canvas = { path = "../../../apps/canvas", optional = true }
 tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
+# The workspace's emoji, which a bot's program may be told of.
+tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional = true }
 # The room's default record id, the one members' first windows open.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 # Read existing signed document envelopes through the shared, read-only cipher.
@@ -245,6 +244,8 @@ tilo-fs = { path = "../../system/fs" }
 # The scope of a room's document media, which an offloaded action's inputs
 # and outputs are.
 runtime-fs = { path = "../../runtime/runtime-fs" }
+# The workspace-join exchange every governor answers, over this relay's rooms.
+tilo-governor = { path = "../../collab/tilo-governor" }
 collab-types = { path = "../../collab/collab-types" }
 # A node stewards the encrypted channels of the rooms it governs.
 channel-crypto = { path = "../../collab/channel-crypto" }
@@ -306,6 +307,8 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # The persistent room test's page fetches over the room's plain listener.
 hyper = { version = "1", features = ["client", "http1"] }
+# The fetch proxy test's target.
+test-http = { path = "../../dev/test-http" }
 
 [[test]]
 name = "it"
@@ -323,7 +326,7 @@ name = "inspect-peer-archive"
 test = true
 
 # What an active collaborator costs a relay in CPU, memory and egress:
-# the scheduled lane's `hosting` group (.forgejo/workflows/perf-scheduled.yml).
+# the scheduled lane's `hosting` group (tools/ci/perf-scheduled.sh).
 # An example, not a binary, so relay images that build `--bins` leave it out.
 [[example]]
 name = "relay_load"

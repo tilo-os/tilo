@@ -189,7 +189,8 @@ fn write(
     let heads = doc.get_heads();
     doc.put(ROOT, key, value).unwrap();
     doc.commit_edit("fixture", key);
-    peer.publish_incremental(APP, "", doc.save_after(&heads), key_pair, SystemTime::now())
+    peer.publication_mut()
+        .publish_incremental(APP, "", doc.save_after(&heads), key_pair, SystemTime::now())
         .unwrap()
 }
 
@@ -307,6 +308,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     doc.put(ROOT, "topic", "from Alice").unwrap();
     doc.commit_edit("fixture", "topic");
     let message = alice_peer
+        .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
         .unwrap();
     publish(&alice_session, &message);
@@ -325,6 +327,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     doc.put(ROOT, "reply", "from Bob").unwrap();
     doc.commit_edit("fixture", "reply");
     let message = bob_peer
+        .publication_mut()
         .publish_incremental(
             APP,
             "",
@@ -794,6 +797,7 @@ type = "String"
     let mut unchecked = alice_peer.clone();
     unchecked.set_surfaces(collab_types::Surfaces::default());
     let smuggled = unchecked
+        .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
         .unwrap();
     publish(&alice_session, &smuggled);
@@ -802,6 +806,7 @@ type = "String"
     doc.put(ROOT, "topic", "from Alice").unwrap();
     doc.commit_edit("fixture", "topic");
     let message = alice_peer
+        .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
         .unwrap();
     publish(&alice_session, &message);
@@ -959,6 +964,7 @@ params = []
     doc.put(ROOT, "topic", "from Alice").unwrap();
     doc.commit_edit("fixture", "topic");
     let created = alice_peer
+        .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
         .unwrap();
     publish(&alice_session, &created);
@@ -1121,6 +1127,9 @@ mod spectators;
 #[path = "governed_rooms/app_authorship.rs"]
 mod app_authorship;
 
+#[path = "governed_rooms/membership_governance.rs"]
+mod membership_governance;
+
 #[path = "governed_rooms/app_records.rs"]
 mod app_records;
 
@@ -1132,3 +1141,13 @@ mod shared_desktop;
 
 #[path = "governed_rooms/revocations.rs"]
 mod revocations;
+
+#[path = "governed_rooms/hard_stops.rs"]
+mod hard_stops;
+
+#[path = "governed_rooms/app_push.rs"]
+mod app_push;
+
+#[cfg(feature = "agents")]
+#[path = "governed_rooms/member_files.rs"]
+mod member_files;

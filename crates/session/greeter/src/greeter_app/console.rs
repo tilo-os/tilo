@@ -10,7 +10,7 @@
 //! Keyboard input readiness remains separately observable.
 //!
 //! Every door ends in that one function: this console, the toolkit host's
-//! action surface (`Widget::start_operation`) and the keyboard/pointer
+//! action surface (`ResourceOperations::start_operation`) and the keyboard/pointer
 //! handlers, which call the same `attempt_login` and choosers.
 
 use automerge::AutoCommit;
@@ -24,6 +24,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::{AuthPhase, GreeterApp};
 use tilo_lock::MutexRecover as _;
+use ui::a11y::AccessibilityRequest;
 
 /// `provider` in `tilo-control` terms.
 pub const PROVIDER: &str = "greeter";
@@ -218,6 +219,37 @@ impl GreeterApp {
                 self.session_choice.set(name.to_owned());
                 self.dirty_structure = true;
             }
+            _ => return self.run_screen_action(action, args),
+        }
+        Ok(self.accepted())
+    }
+
+    /// The footer's power menu and accessibility toggles.
+    fn run_screen_action(
+        &mut self,
+        action: &str,
+        args: &serde_json::Map<String, Value>,
+    ) -> Result<Value, Refused> {
+        match action {
+            "suspend" => self.request_power(super::PowerAction::Suspend),
+            "reboot" => self.request_power(super::PowerAction::Reboot),
+            "power-off" => self.request_power(super::PowerAction::PowerOff),
+            "larger-text" | "high-contrast" | "screen-reader" => {
+                let Some(enabled) = args.get("enabled").and_then(Value::as_bool) else {
+                    return Err(refused("invalid_arguments", "Choose on or off"));
+                };
+                // The same one-shot request the footer's toggle raises; the
+                // host applies it on the next frame.
+                self.requests.accessibility.set(Some(match action {
+                    "larger-text" => AccessibilityRequest::TextScale(if enabled {
+                        super::LARGER_TEXT_SCALE
+                    } else {
+                        1.0
+                    }),
+                    "high-contrast" => AccessibilityRequest::HighContrast(enabled),
+                    _ => AccessibilityRequest::ScreenReader(enabled),
+                }));
+            }
             _ => return Err(refused("unknown_action", "This action is not published")),
         }
         Ok(self.accepted())
@@ -319,6 +351,7 @@ impl GreeterApp {
                 super::Notice::Error(key) => json!({ "kind": "error", "key": key }),
             },
             "accepts_input": self.phase == AuthPhase::Idle && self.keyboard_focus,
+            "screen_reader": self.screen_reader,
             "image": { "composefs": console_control::booted_composefs() },
         })
     }
@@ -463,8 +496,46 @@ impl ui::resources::PublishesResources for GreeterApp {
             }
             resource = resource.with_action(spec);
         }
+        // The footer's controls stay usable while an attempt runs, so their
+        // actions are never gated on the authentication phase.
+        for spec in screen_actions() {
+            resource = resource.with_action(spec);
+        }
         vec![resource]
     }
+}
+
+/// The footer's power menu and accessibility toggles: what a person can do
+/// from the sign-in screen before anyone is signed in.
+fn screen_actions() -> Vec<ActionSpec> {
+    let mut specs: Vec<ActionSpec> = [
+        ("suspend", "greeter-suspend"),
+        ("reboot", "greeter-restart"),
+        ("power-off", "greeter-shut-down"),
+    ]
+    .into_iter()
+    .map(|(id, label)| console_action(id, label, Vec::new()))
+    .collect();
+    specs.extend(
+        [
+            ("larger-text", "greeter-larger-text"),
+            ("high-contrast", "greeter-high-contrast"),
+            ("screen-reader", "greeter-screen-reader"),
+        ]
+        .into_iter()
+        .map(|(id, label)| {
+            console_action(
+                id,
+                label,
+                vec![ActionParam::required(
+                    "enabled",
+                    ParamType::Boolean,
+                    "Turn this on or off",
+                )],
+            )
+        }),
+    );
+    specs
 }
 
 fn console_action(id: &'static str, label: &'static str, params: Vec<ActionParam>) -> ActionSpec {
@@ -535,7 +606,7 @@ mod tests {
             let violations = ui::tilo_actions::validate_surface(
                 &resources,
                 &ui::tilo_actions::ActionRegistry::new(),
-                &ui::widget::Widget::resource_operation_handlers(&app),
+                &ui::widget::resource_operation_handlers(&app),
             );
             assert!(violations.is_empty(), "{phase:?}: {violations:?}");
             for action in [
@@ -556,7 +627,6 @@ mod tests {
             }
         }
 
-        // The surface runs the same handler as the console.
         app.phase = AuthPhase::Idle;
         let resources = ui::resources::resources(&app, &AutoCommit::new());
         let encoded = ui::tilo_actions::door::resolve(
@@ -567,7 +637,7 @@ mod tests {
         .build_json(json!({"session":"GNOME"}).as_object().unwrap())
         .unwrap();
         let mut doc = AutoCommit::new();
-        let started = ui::widget::Widget::start_operation(
+        let started = ui::host_operation::start_operation(
             &mut app,
             &ui::host_operation::ResourceOperation::local(
                 ui::tilo_actions::InvocationId::new(),
@@ -581,6 +651,86 @@ mod tests {
         .unwrap();
         assert!(started.is_some());
         assert_eq!(app.sessions[app.selected_session].name, "GNOME");
+    }
+
+    #[test]
+    fn power_and_accessibility_are_actions_even_while_signing_in() {
+        // The footer's power menu and accessibility toggles stay usable while
+        // an attempt runs; an agent or a screen-reader user reaches the same
+        // controls without a pointer.
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
+        app.phase = AuthPhase::Authenticating;
+        let catalogue = ask(&mut app, r#"{"op":"actions_enumerate"}"#);
+        let actions = catalogue["answer"]["actions"].as_array().unwrap();
+        for id in [
+            "suspend@greeter",
+            "reboot@greeter",
+            "power-off@greeter",
+            "larger-text@greeter",
+            "high-contrast@greeter",
+            "screen-reader@greeter",
+        ] {
+            let action = actions
+                .iter()
+                .find(|action| action["id"] == id)
+                .unwrap_or_else(|| panic!("{id} is not published"));
+            assert_eq!(action["available"], true, "{id}");
+        }
+
+        for (id, expected) in [
+            ("suspend@greeter", super::super::PowerAction::Suspend),
+            ("reboot@greeter", super::super::PowerAction::Reboot),
+            ("power-off@greeter", super::super::PowerAction::PowerOff),
+        ] {
+            app.last_power_action = None;
+            let reply = ask(
+                &mut app,
+                &json!({"op":"actions_invoke","provider":PROVIDER,"id":id}).to_string(),
+            );
+            assert_eq!(reply["answer"]["status"], "accepted", "{id}: {reply}");
+            assert_eq!(app.last_power_action, Some(expected), "{id}");
+        }
+
+        for (id, enabled, expected) in [
+            (
+                "high-contrast@greeter",
+                true,
+                AccessibilityRequest::HighContrast(true),
+            ),
+            (
+                "larger-text@greeter",
+                true,
+                AccessibilityRequest::TextScale(super::super::LARGER_TEXT_SCALE),
+            ),
+            (
+                "larger-text@greeter",
+                false,
+                AccessibilityRequest::TextScale(1.0),
+            ),
+            (
+                "screen-reader@greeter",
+                true,
+                AccessibilityRequest::ScreenReader(true),
+            ),
+        ] {
+            let reply = ask(
+                &mut app,
+                &json!({"op":"actions_invoke","provider":PROVIDER,"id":id,"args":{"enabled":enabled}})
+                    .to_string(),
+            );
+            assert_eq!(reply["answer"]["status"], "accepted", "{id}: {reply}");
+            assert_eq!(
+                ui::widget::Widget::take_accessibility_request(&mut app),
+                Some(expected),
+                "{id}"
+            );
+        }
+        assert_eq!(app.console_state()["screen_reader"], true);
+        let refused = ask(
+            &mut app,
+            r#"{"op":"actions_invoke","provider":"greeter","id":"high-contrast@greeter"}"#,
+        );
+        assert_eq!(refused["err"]["code"], "invalid_arguments");
     }
 
     #[test]
@@ -635,7 +785,7 @@ mod authentication_tests {
 
     fn password_exchange(stream: &mut UnixStream) {
         stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         assert_eq!(
             read_request(stream),
@@ -1001,7 +1151,7 @@ mod authentication_tests {
             );
             let mut stream = accepted.unwrap();
             stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             assert_eq!(
                 read_request(&mut stream),
@@ -1072,7 +1222,7 @@ mod authentication_tests {
             .unwrap()
             .build_json(&args)
             .unwrap();
-            let started = ui::widget::Widget::start_operation(
+            let started = ui::host_operation::start_operation(
                 &mut app,
                 &ui::host_operation::ResourceOperation::local(
                     ui::tilo_actions::InvocationId::new(),

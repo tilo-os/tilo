@@ -1,14 +1,16 @@
 //! The host's last durably accepted settings, independent of storage locks.
 //!
 //! Core `SessionSettings` reads retain their synchronous external-copy contract.
-//! The native event loop installs this view instead: a read whose `stat` of
-//! the copy finds it changed (or too recent to tell) enqueues bounded refresh
-//! work, while the existing file watcher also incorporates writes.
+//! The native event loop installs this view instead, and a read of it
+//! touches no file: the compositor's frame loop reads settings, and it never
+//! waits on the disk. Another process's write to the copy reaches the view
+//! through the host's watch of the copy calling [`SessionSettings::refresh`],
+//! or, for a host whose watch could not start, through the worker looking at
+//! the copy on a timer.
 //!
-//! The worker sleeps with no timeout, and reads of an unchanged copy do not
-//! wake it: an idle desktop reads settings at each clock-minute repaint, and
-//! each of those reads used to. Only a host whose copy watch could not start
-//! asks it to look at the copy on a timer as well.
+//! The worker sleeps with no timeout otherwise, and reads never wake it: an
+//! idle desktop reads settings at each clock-minute repaint, and each of
+//! those reads used to.
 
 use std::sync::{Arc, mpsc};
 use std::thread::JoinHandle;
@@ -74,13 +76,6 @@ impl HostView {
     }
 
     fn snapshot(&self) -> Arc<Committed> {
-        if let Some(sender) = &self.refresh
-            && self.session.copy_may_have_changed()
-        {
-            // A queued refresh covers every reader; a busy storage worker
-            // never grows the queue or blocks the event loop.
-            let _ = sender.try_send(());
-        }
         Arc::clone(&self.session.committed.lock_recover())
     }
 }

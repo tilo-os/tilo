@@ -285,6 +285,14 @@ fn every_mutable_entry_point_invalidates_local_state() {
     const JUDGE_THEMSELVES: &[(&str, &str)] = &[
         ("poll_frame", "the frame itself"),
         (
+            "take_skip_report",
+            "hands over a log line; nothing a frame reads",
+        ),
+        (
+            "render_window_png",
+            "rasterises the last frame under the window bar; lays out only the bar's own row",
+        ),
+        (
             "send_host_event",
             "a wheel coalesced into the next frame counts once dispatched",
         ),
@@ -303,6 +311,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
         (
             "set_pan_replay",
             "chooses how later frames draw; reaches nothing a frame reads",
+        ),
+        (
+            "track_scene_parts",
+            "chooses whether later draws record their damage parts; reaches nothing a frame reads, and a host with no parts repaints whole",
         ),
         (
             "settle_replayed_draws",
@@ -325,7 +337,15 @@ fn every_mutable_entry_point_invalidates_local_state() {
             "idle",
             "invalidates when its control tick or save offer moved the document",
         ),
+        (
+            "drawn_placed_pointers",
+            "reads the last frame's pointers; measures name tags through the text renderer's shaping cache",
+        ),
         ("take_profile_samples", "drains the profiler"),
+        (
+            "take_collaboration_requests",
+            "drains what the widgets asked of the transport, which no frame reads",
+        ),
         ("clear_profile_samples", "drains the profiler"),
     ];
     let sources = [

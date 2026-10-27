@@ -12,7 +12,6 @@ use super::{
     APPLE_ID, DEVICE_CODE, PHONE_ID, SMS_CODE, SignInState, State, has_web_session, json_reply,
 };
 
-/// The SRP verifier `g^x` for `password`.
 pub fn verifier(password: &str, salt: &[u8], iterations: u32, protocol: &str) -> [u8; ELEMENT_LEN] {
     server::verifier(password, salt, iterations, protocol).expect("protocol")
 }

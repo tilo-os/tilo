@@ -268,6 +268,8 @@ enum IdentityKind {
     Enrolled,
     CurrentDevice,
 }
+/// Mirror of the journey's private restart choices. Unknown fields are refused,
+/// so this read model must accept every field that record writes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PublicChoices {
@@ -281,6 +283,31 @@ struct PublicChoices {
     device_label: String,
     #[serde(default = "install_profile_model::default_purpose")]
     purpose: String,
+    #[serde(default)]
+    deferred: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<TargetDraft>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TargetDraft {
+    manufacturer: String,
+    model: String,
+    variant: String,
+    board: String,
+    sku: String,
+    architecture: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    report_omitted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    report: Option<crate::support_report::SupportReport>,
+}
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if requires a reference"
+)]
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 fn default_browser_domains() -> [bool; 2] {
     [true; 2]

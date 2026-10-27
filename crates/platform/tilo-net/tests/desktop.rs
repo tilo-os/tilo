@@ -1,4 +1,3 @@
-//! The desktop backends against loopback servers.
 #![cfg(not(target_family = "wasm"))]
 #![allow(
     clippy::unwrap_used,

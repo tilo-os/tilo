@@ -386,6 +386,10 @@ impl Widget for Gate {
             vec![]
         }
     }
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.content);
+        true
+    }
     fn name(&self) -> &'static str {
         "gate"
     }
@@ -736,8 +740,22 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
         "the editor's focused line owns keyboard focus"
     );
 
-    frame.type_text("x");
+    // The press edits the line; its release changes nothing measured.
+    let x = keys::parse_key("x");
+    frame.send_host_event(&crate::synthetic_input::key_input(
+        &x,
+        ElementState::Pressed,
+    ));
     let typed = frame.last_relayout();
+    frame.send_host_event(&crate::synthetic_input::key_input(
+        &x,
+        ElementState::Released,
+    ));
+    assert!(
+        !frame.last_relayout().measured,
+        "the key's release measures nothing: {:?}",
+        frame.last_relayout()
+    );
     assert!(
         !typed.rebuilt,
         "a character edit keeps the composed tree: {typed:?}"
@@ -767,16 +785,24 @@ fn typing_into_a_block_editor_re_measures_only_the_edited_line() {
     // the composed tree (its node ids, focus) survives. The retained
     // geometry check compares the result with a fresh composition.
     let rebuilt_before = frame.rebuilt_frames();
-    frame.key("Enter");
+    let enter = keys::parse_key("Enter");
+    frame.send_host_event(&crate::synthetic_input::key_input(
+        &enter,
+        ElementState::Pressed,
+    ));
+    let split = frame.last_relayout();
+    frame.send_host_event(&crate::synthetic_input::key_input(
+        &enter,
+        ElementState::Released,
+    ));
     assert_eq!(
         frame.rebuilt_frames(),
         rebuilt_before,
         "inserting a block keeps the composition"
     );
     assert!(
-        frame.last_relayout().measured,
-        "inserting a block re-solves sizes: {:?}",
-        frame.last_relayout()
+        split.measured,
+        "inserting a block re-solves sizes: {split:?}"
     );
     assert_eq!(
         frame.layout_node_ids(),
@@ -947,4 +973,74 @@ fn history_composition_keeps_app_modal_typing_and_focus_inside_the_dialog() {
         .with_widget_mut::<ModalDialog<Column>, _>(|dialog| dialog.set_open(false))
         .unwrap();
     assert!(focused(&frame, "background"));
+}
+
+/// A layout that does not settle skips its frame and nothing else, as the
+/// browser host and the native one run it: the failure is reported once
+/// rather than on every frame that fails again, input still reaches the
+/// controls, and the next frame whose layout settles paints.
+#[test]
+fn a_frame_whose_layout_does_not_settle_is_skipped_and_the_next_paints() {
+    let looping = Rc::new(Cell::new(false));
+    let policy = {
+        let looping = looping.clone();
+        move |ctx: &mut crate::widget::ManualContext<'_>| {
+            // While looping, a size that flips with the space offered.
+            let short = looping.get() && ctx.available().height > 75.0;
+            Ok(taffy::Size {
+                width: ctx.available().width,
+                height: if short { 50.0 } else { 100.0 },
+            })
+        }
+    };
+    let mut frame = frame(Box::new(
+        Column::new()
+            .push(Box::new(Button::new("target", "Target")))
+            .push(Box::new(crate::widget::Manual::new(policy))),
+    ));
+    frame.relayout_at((400, 240)).expect("a settled frame");
+
+    looping.set(true);
+    let error = frame
+        .recompose()
+        .expect_err("the flipping size never settles");
+    assert!(
+        matches!(error, crate::widget::WidgetLayoutError::DidNotSettle { .. }),
+        "{error}"
+    );
+    // The next frame the harness runs itself, as input's, fails too: it is
+    // skipped, and its report kept for a host whose log is not `tracing`'s.
+    frame.relayout();
+    let report = frame
+        .take_skip_report()
+        .expect("the first failure is reported");
+    assert!(report.contains("did not settle"), "{report}");
+    assert_eq!(frame.take_skip_report(), None, "it is handed over once");
+    // The host skipping its own frame at once after is not reported again.
+    assert_eq!(
+        frame.skip_frame(&error),
+        None,
+        "a failure right after is not reported again"
+    );
+
+    frame
+        .click_named("target")
+        .expect("the button is still there");
+    assert!(
+        focused(&frame, "target"),
+        "a press still lands while frames are skipped"
+    );
+
+    looping.set(false);
+    frame.recompose().expect("the layout settles again");
+    assert!(
+        !frame
+            .frame_render_input()
+            .scene
+            .encoding()
+            .draw_tags
+            .is_empty(),
+        "the frame after paints"
+    );
+    assert!(focused(&frame, "target"));
 }

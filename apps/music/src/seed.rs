@@ -494,7 +494,6 @@ pub fn sample_actions() -> Vec<Invoke<Library>> {
     actions
 }
 
-/// A document holding the sample library.
 #[cfg(test)]
 pub(crate) fn sample_document() -> automerge::AutoCommit {
     let mut doc = automerge::AutoCommit::new();
@@ -505,13 +504,11 @@ pub(crate) fn sample_document() -> automerge::AutoCommit {
     doc
 }
 
-/// The library `doc` holds.
 #[cfg(test)]
 pub(crate) fn library_of(doc: &automerge::AutoCommit) -> Library {
     <Library as ui::tilo_resource::Resource>::read(doc).expect("a music library")
 }
 
-/// A document holding a new, empty library.
 #[cfg(test)]
 pub(crate) fn empty_document() -> automerge::AutoCommit {
     let mut doc = automerge::AutoCommit::new();

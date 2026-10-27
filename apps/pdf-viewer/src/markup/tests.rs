@@ -615,6 +615,37 @@ fn page_plan_converges_imports_atomically_and_carries_markup() {
     assert_eq!(markup(&replica).page_plan().len(), 3);
 }
 
+/// The page rail reorders as `Vec::remove(from)` then `Vec::insert(to, _)`:
+/// a drag down or the menu's Move down lands the page exactly where the
+/// rail showed it, as a drag up does, for every page and position.
+#[test]
+fn a_rail_reorder_lands_the_page_where_the_rail_put_it() {
+    let pages = 4;
+    let ids: Vec<String> = (1..=pages).map(|page| format!("source-{page}")).collect();
+    for from in 0..pages {
+        for to in 0..pages {
+            let mut replica = planned_replica(pages);
+            let mut expected = ids.clone();
+            let moved = expected.remove(from);
+            expected.insert(to, moved);
+            match crate::actions::reorder_page_plan_action(&ids, from, to) {
+                Some(action) => {
+                    replica.apply(action).unwrap();
+                }
+                None => assert_eq!(from, to, "only staying put moves nothing"),
+            }
+            let plan: Vec<String> = markup(&replica)
+                .page_plan()
+                .into_iter()
+                .map(|entry| entry.id)
+                .collect();
+            assert_eq!(plan, expected, "page {from} to position {to}");
+        }
+    }
+    assert!(crate::actions::reorder_page_plan_action(&ids, 4, 0).is_none());
+    assert!(crate::actions::reorder_page_plan_action(&ids, 0, 4).is_none());
+}
+
 fn resource_ctx(
     title: &str,
     page_ids: Vec<String>,
@@ -664,7 +695,7 @@ fn document_resources_publish_items_and_bounded_stable_rows() {
         .find(|action| action.id == "duplicate-page")
         .expect("duplicate page action");
     assert_eq!(duplicate.kind, OperationKind::Document);
-    assert!(duplicate.contract.reversible);
+    assert!(duplicate.contract.can_be_undone());
     assert!(action_ids(page).contains(&"delete-page"));
 
     let anno =

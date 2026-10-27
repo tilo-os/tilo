@@ -1,6 +1,3 @@
-//! Shared signed-in headless desktop fixture for idle and workspace measurements.
-//! The scheduled timing benchmark lives in `examples/idle-wakeups.rs`.
-
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -32,6 +29,12 @@ pub(crate) struct Desktop {
     control: PathBuf,
     runtime_dir: PathBuf,
     log: Log,
+}
+
+/// The shell Cargo built beside an integration test, where the run put it.
+fn built_shell() -> Option<std::ffi::OsString> {
+    option_env!("CARGO_BIN_EXE_shell")
+        .map(|built| tilo_test_env::package_binary_at("shell", built).into_os_string())
 }
 
 impl Desktop {
@@ -82,9 +85,11 @@ impl Desktop {
         let control = runtime_dir.join("ctl");
 
         // Cargo supplies this at compile time for integration tests, not
-        // examples. Scheduled and A/B runs explicitly select the shell they built.
+        // examples, so it is read with `option_env!`: the idle-wakeups example
+        // includes this file and must build without it. Scheduled and A/B runs
+        // explicitly select the shell they built.
         let shell = std::env::var_os("TILO_IDLE_SHELL_BIN")
-            .or_else(|| option_env!("CARGO_BIN_EXE_shell").map(std::ffi::OsString::from))
+            .or_else(built_shell)
             .expect("set TILO_IDLE_SHELL_BIN to the explicitly built shell binary");
         let mut command = Command::new(shell);
         // A person's session keeps GStreamer's plugin registry in its cache.

@@ -68,9 +68,6 @@ pub struct Peers<'a, P: Progress> {
 }
 
 /// Where to dial a sibling.
-///
-/// # Errors
-/// When neither the recorded address nor the key names an endpoint.
 pub fn address(sibling: &Sibling) -> Result<EndpointAddr> {
     if !sibling.endpoint.trim().is_empty() {
         return serde_json::from_str(&sibling.endpoint)
@@ -117,7 +114,6 @@ async fn dial(endpoint: &Endpoint, sibling: &Sibling) -> Result<Connection> {
     }
 }
 
-/// One exchange with one sibling.
 async fn ask(
     endpoint: &Endpoint,
     sibling: &Sibling,

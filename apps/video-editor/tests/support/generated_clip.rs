@@ -15,7 +15,7 @@ pub const FPS: u32 = 30;
 const FRAMES: u32 = 4 * FPS;
 /// Part of the cached file's name: change it whenever the pictures or the
 /// sound the generator produces change, so no build reuses a stale clip.
-const GENERATION: u32 = 1;
+const GENERATION: u32 = 2;
 
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -113,11 +113,13 @@ fn encode_to(path: &std::path::Path, with_audio: bool) {
     } else {
         String::new()
     };
+    let encoder = h264_encoder_with_keyframes_every(FPS)
+        .expect("the export test stack must provide an H.264 encoder");
     let description = format!(
         "mp4mux name=mux ! filesink location={} \
              appsrc name=fixture is-live=false block=true max-bytes=4194304 format=time \
              caps=video/x-raw,format=RGBA,width={WIDTH},height={HEIGHT},framerate={FPS}/1 ! \
-             videoconvert ! openh264enc gop-size={FPS} ! h264parse ! queue ! mux. \
+             videoconvert ! {encoder} ! h264parse ! queue ! mux. \
              {audio_branch}",
         path.display(),
     );

@@ -6,7 +6,6 @@ use std::path::Path;
 use tilo_actions::Action as _;
 use tilo_joined_room::{ApplicationInitialization, ApplicationRecord, DocumentRead};
 
-/// The kind of the record a Code Editor project is.
 pub(super) const PROJECT_KIND: &str = <code_editor::Project as tilo_resource::Resource>::KIND;
 
 pub(super) const APP: &str = "so.tilo.code-editor";
@@ -26,7 +25,8 @@ pub(super) fn governor(directory: &Path) -> TestGovernor {
     let certificate = tilo_joined_room::testing::certificate(&identity_key, &key, "Code source");
     let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-    assert!(tree.set_room(tree.desktop.active, room));
+    let active = tree.desktop.active;
+    assert!(tree.stand_in_room(active, room));
     tree.persist_path = Some(directory.join("source-state.json"));
     let owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     let mut governor =
@@ -62,6 +62,7 @@ pub(super) fn governor(directory: &Path) -> TestGovernor {
             assert_eq!(view.device(), &certificate);
             view.peer()
                 .clone()
+                .publication_mut()
                 .durable_bootstrap_messages(&key, now, view.generation())
         })
         .unwrap();

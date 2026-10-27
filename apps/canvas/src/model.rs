@@ -182,7 +182,9 @@ pub enum Shape {
         weight: Option<u16>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         italic: bool,
-        /// `start`, `center` or `end` at `x`.
+        // With a width, every renderer aligns within the box `x` to
+        // `x + width`; the surface budget leaves room only for "in `width`".
+        /// `start`, `center` or `end` at `x`, or in `width`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         align: Option<String>,
         /// Times size (1.2).
@@ -1600,7 +1602,15 @@ impl Mark {
             Shape::Stroke { size, .. } => size * 0.5,
             _ => self.style.stroke_width * 0.5,
         };
-        path.bounding_box().inflate(reach, reach)
+        // A path with no segments (a one-point stroke: a click with a
+        // brush) has an empty box at the origin; its extent is its point.
+        let extent = match path.elements().first() {
+            Some(&ui::vello::kurbo::PathEl::MoveTo(point)) if path.segments().next().is_none() => {
+                Rect::from_points(point, point)
+            }
+            _ => path.bounding_box(),
+        };
+        extent.inflate(reach, reach)
     }
 
     /// Whether `point` lands on the mark: inside a filled shape, or near a

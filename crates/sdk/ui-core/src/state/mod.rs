@@ -4,6 +4,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use std::collections::HashMap;
 use tilo_automerge::ApplyIncoming;
+use tilo_sort::CompactSort as _;
 
 mod built_on;
 pub(crate) mod owned_restore;
@@ -138,11 +139,6 @@ impl DocumentReplica {
     }
 
     /// Apply incremental Automerge bytes and retain them in the outbound frontier.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `data` is not a valid incremental Automerge payload
-    /// for this document.
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let before = self.doc.get_heads();
         let loaded = self.doc.load_incoming(data)?;
@@ -538,11 +534,6 @@ impl State {
     }
 
     /// Restores an application state from a serialized byte vector.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `data` is not a valid Automerge document (corrupt
-    /// bytes, or bytes produced by an incompatible format).
     pub fn load(data: &[u8]) -> Result<Self, automerge::AutomergeError> {
         let mut doc = AutoCommit::load(data)?;
         let root = automerge::ROOT;
@@ -565,11 +556,6 @@ impl State {
     /// This is how an incremental `CollabEvent::Document` is merged on the
     /// receiver side — without it, incremental deltas broadcast by one peer
     /// would never reach another peer's CRDT.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `data` is not a valid incremental Automerge patch
-    /// (corrupt bytes, or bytes that don't apply to this document's history).
     pub fn load_incremental(&mut self, data: &[u8]) -> Result<usize, automerge::AutomergeError> {
         let before = self.doc.get_heads();
         let n = self.doc.load_incoming(data)?;
@@ -856,7 +842,7 @@ pub(crate) fn write_selected_patches(
                         })
                         .map(|mark| mark.name.to_string())
                         .collect::<Vec<_>>();
-                    inherited.sort();
+                    inherited.compact_sort();
                     inherited.dedup();
                     for name in inherited {
                         let _ = doc.unmark(
@@ -1102,7 +1088,6 @@ mod tests {
             insert(&mut peer, &list, 2, "peer-child");
             peer.commit();
             let peer_row = rows(&peer, &list)[2].clone();
-            // The same delete/reinsert operations emitted by a Notes subtree move.
             state.doc.delete(&list, 3).unwrap();
             insert(&mut state.doc, &list, 0, "parent-b");
             state.doc.delete(&list, 4).unwrap();
@@ -1150,7 +1135,6 @@ mod tests {
             let bytes = state.save();
             assert_eq!(state.document_identity(), identity);
 
-            // Reopening the same exact record bytes still creates a new lifetime.
             assert!(state.adopt_doc(AutoCommit::load(&bytes).unwrap()));
             assert_ne!(state.document_identity(), identity);
             assert_eq!(
@@ -1517,7 +1501,6 @@ mod tests {
             let rtext = remote.get(&ROOT, "body").unwrap().unwrap().1;
             remote.splice_text(&rtext, 0, 0, "X").unwrap();
             remote.commit();
-            // Merge the remote delta into the live doc the way collab sync does.
             let delta = remote.save_after(&before_local);
             state.load_incremental(&delta).unwrap();
             assert_eq!(
@@ -1526,7 +1509,6 @@ mod tests {
                 "precondition merge"
             );
 
-            // UNDO the local action.
             state.undo(None, None).expect("undo pops the local action");
 
             // Local " World" reverted; remote "X" survives.
@@ -1578,7 +1560,6 @@ mod tests {
             state.doc.splice_text(&text, 5, 6, "").unwrap();
             state.commit_action(None, None);
 
-            // Concurrent remote prepend "X".
             let mut remote = state.doc.fork_at(&before_local).unwrap();
             let rtext = remote.get(&ROOT, "body").unwrap().unwrap().1;
             remote.splice_text(&rtext, 0, 0, "X").unwrap();
@@ -1644,7 +1625,6 @@ mod tests {
             // `bob` is never referenced again, so this is its last use.
             state.commit_action_authored(None, None, Some(bob));
 
-            // Alice hits Ctrl+Z. The newest entry is Bob's.
             let popped = state
                 .undo_as(Some(&alice), None, None, None)
                 .expect("alice has an action to undo");
@@ -1691,7 +1671,6 @@ mod tests {
             state.doc.put(&ROOT, "b", 1).unwrap();
             state.commit_action_authored(None, None, Some(bob.clone()));
 
-            // Bob undoes his own action, putting it on the redo stack.
             state.undo_as(Some(&bob), None, None, None).unwrap();
             assert!(state.doc.get(&ROOT, "b").unwrap().is_none());
 
@@ -1706,7 +1685,6 @@ mod tests {
                 "alice's redo must not resurrect bob's undone action"
             );
 
-            // Bob's own redo works.
             state
                 .redo_as(Some(&bob), None, None, None)
                 .expect("bob redoes his own");
@@ -2065,8 +2043,6 @@ mod tests {
         state.doc.splice_text(&text, 8, 1, "").unwrap();
         state.doc.splice_text(&text, 14, 5, "").unwrap();
         state.commit_action(None, None);
-        // A collaborator, concurrently, prepends to the paragraph and appends
-        // to it.
         let mut peer = state.doc.fork_at(&before_local).unwrap();
         peer.splice_text(&text, 0, 0, "New: ").unwrap();
         peer.splice_text(&text, 27, 0, " today").unwrap();
@@ -2105,7 +2081,6 @@ mod tests {
             let width = |s: &str| match encoding {
                 TextEncoding::Utf8CodeUnit => s.len(),
                 TextEncoding::Utf16CodeUnit => s.encode_utf16().count(),
-                // Every character here is its own grapheme.
                 TextEncoding::UnicodeCodePoint | TextEncoding::GraphemeCluster => s.chars().count(),
             };
             let mut doc = AutoCommit::new_with_encoding(encoding);
@@ -2158,7 +2133,6 @@ mod tests {
         state.commit_action(None, None);
         paragraph(&mut state, &blocks, "b");
         state.commit_action(None, None);
-        // A collaborator types into the new paragraph.
         let seen = state.doc.get_heads();
         let mut peer = state.doc.fork_at(&seen).unwrap();
         let block = peer.get(&blocks, "b").unwrap().unwrap().1;

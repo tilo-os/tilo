@@ -10,12 +10,13 @@
 //   SHOTS_DIR   where a screenshot of a failed step goes, when set
 // Exits non-zero on the first failed expectation.
 import assert from 'node:assert/strict';
-import {existsSync, readFileSync, writeFileSync} from 'node:fs';
+import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
 
 const bundle = process.argv[2];
 if (!bundle) throw Error('usage: node navigation.mjs BUNDLE_DIR');
+if (process.env.SHOTS_DIR) mkdirSync(process.env.SHOTS_DIR, {recursive: true});
 // A page that stops answering fails the run rather than holding the runner.
 const watchdog = setTimeout(() => {
   console.error(`navigation: no result within ten minutes; last step: ${progress}`);
@@ -25,15 +26,20 @@ let progress = 'loading';
 const server = await serve(resolve(bundle));
 // Software Vulkan, as the CI mount test runs Chrome.
 const browser = await launch({args: ['--no-sandbox', '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']});
-const tab = await browser.tab();
-const {evaluate} = tab;
-await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false});
-await tab.navigate(`${server.url}/`);
-for (let i = 0; ; i++) {
-  await sleep(1000);
-  if (await evaluate('Boolean(globalThis.tiloMount?.navigation)').catch(() => false)) break;
-  assert.ok(i < 90, `the desktop never presented: ${await evaluate("document.getElementById('status')?.textContent")}`);
+// A tab showing the desktop at `deviceScaleFactor`, once it has presented.
+async function desktop(deviceScaleFactor, options) {
+  const tab = await browser.tab(options);
+  await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor, mobile: false});
+  await tab.navigate(`${server.url}/`);
+  for (let i = 0; ; i++) {
+    await sleep(1000);
+    if (await tab.evaluate('Boolean(globalThis.tiloMount?.navigation)').catch(() => false)) break;
+    assert.ok(i < 90, `the desktop never presented: ${await tab.evaluate("document.getElementById('status')?.textContent")}`);
+  }
+  return tab;
 }
+const tab = await desktop(1);
+const {evaluate} = tab;
 
 // A panic stops the runtime without an exception; say so in the page's log.
 await evaluate(`(() => {
@@ -181,6 +187,51 @@ for (const app of ['so.tilo.clocks', 'so.tilo.calculator', 'so.tilo.notes']) {
   await settles(`${app} opens`, s => s.entries.length, before + 1);
   await sleep(1000);
 }
+// The accessibility mirror lies over the canvas: each uniquely named button
+// the frame lays out has its DOM element at the rect it is drawn at, in the
+// page's CSS pixels, where magnifiers, touch exploration and element
+// geometry look for it. Layout units are CSS pixels whatever the device
+// pixel ratio, so it holds at 2 as at 1.
+async function mirrorLiesOverDrawnButtons(evaluate, deviceScaleFactor) {
+  progress = `the accessibility mirror lies over the drawn buttons at device scale ${deviceScaleFactor}`;
+  let placed;
+  for (let i = 0; i < 50; i++) {
+    if (i) await sleep(200);
+    // The host lays out semantics when asked (or when the mirror takes
+    // focus); ask, so a page no step has looked at yet has a tree.
+    placed = await evaluate(`(async()=>{
+      tiloMount.requestSemantics();
+      await new Promise(done => setTimeout(done, 0));
+      const state=tiloMount.state(),canvas=tiloMount.canvas,size=state.logicalSize,r=canvas.getBoundingClientRect();
+      if(state.phase!=='presented'||!size||!(size[0]>0)||!(size[1]>0))return null;
+      if(devicePixelRatio!==${deviceScaleFactor})throw Error('the page draws at device scale '+devicePixelRatio);
+      const drawn=new Map();
+      const walk=n=>{
+        const s=n?.semantics;if(s?.state?.hidden)return;
+        if(s?.role==='Button'&&s.name){
+          const b=s.bounds?[s.bounds.x0,s.bounds.y0,s.bounds.x1-s.bounds.x0,s.bounds.y1-s.bounds.y0]:n.rect;
+          if(b&&b[2]>0&&b[3]>0)drawn.set(s.name,drawn.has(s.name)?null:b);
+        }
+        for(const child of n?.children??[])walk(child);
+      };
+      walk(state.semantics?.root);
+      const sx=r.width/size[0],sy=r.height/size[1],out=[];
+      for(const [name,b] of drawn){
+        const mirrored=[...tiloMount.semantics.querySelectorAll('[role=button]')].filter(e=>e.getAttribute('aria-label')===name);
+        if(!b||mirrored.length!==1)continue;
+        const d=mirrored[0].getBoundingClientRect();
+        out.push({name,drawn:[r.left+b[0]*sx,r.top+b[1]*sy,b[2]*sx,b[3]*sy],mirror:[d.left,d.top,d.width,d.height]});
+      }
+      return out;
+    })()`);
+    if (placed?.length && placed.every(p => p.drawn.every((v, k) => Math.abs(v - p.mirror[k]) <= 1))) break;
+  }
+  assert.ok(placed?.length, `the desktop mirrors at least one drawn button at device scale ${deviceScaleFactor}`);
+  for (const p of placed) assert.ok(p.drawn.every((v, k) => Math.abs(v - p.mirror[k]) <= 1),
+    `at device scale ${deviceScaleFactor}, "${p.name}" is mirrored at ${JSON.stringify(p.mirror)}, drawn at ${JSON.stringify(p.drawn)}`);
+  console.log(JSON.stringify({settled: progress, buttons: placed.length}));
+}
+await mirrorLiesOverDrawnButtons(evaluate, 1);
 const order = (await snapshot()).entries.map(e => e.label);
 const {width, height} = await evaluate('(({width,height})=>({width,height}))(tiloMount.canvas.getBoundingClientRect())');
 const [cx, cy] = [Math.round(width / 2), Math.round(height * 0.6)];
@@ -245,6 +296,8 @@ async function travels(what, from, {sent, before}) {
     if (got.notches === sent && moved.lines * Math.sign(sent) >= 1) break;
     if (Date.now() > deadline) {
       if (process.env.SHOTS_DIR) writeFileSync(join(process.env.SHOTS_DIR, 'navigation-failed.png'), await tab.screenshot());
+      // What the page said last: a frame it skipped, a panic.
+      console.error(tab.log.slice(-30).join('\n'));
       assert.fail(`${what}: ${JSON.stringify({moved, got})} from ${from}; [ms, offset, notches, group]: ${JSON.stringify(await evaluate('wheelTrace'))}; windows: ${JSON.stringify((await snapshot()).entries.map(e => [e.label, e.route.group]))}`);
     }
     await sleep(250);
@@ -269,11 +322,11 @@ await settles('and focus follows to the last window', label, order[2]);
 console.log(JSON.stringify({step: 'wheel', ok: true}));
 
 // The workspace's name in the top bar opens its menu: the workspaces to go
-// to, the overview and a new desk.
+// to, the overview and a new strip.
 async function openWorkspaceMenu() {
   const s = await snapshot();
   const shown = s.workspaces.find(w => w.id === s.activeWorkspace).label;
-  await click(...await named(`${shown}: workspaces, overview and desks`));
+  await click(...await named(`${shown}: workspaces, overview and strips`));
   await sleep(500);
 }
 // Goes to the workspace at `index` through that menu.
@@ -305,7 +358,7 @@ await command({kind: 'select', route: (await snapshot()).entries.find(e => e.lab
 await settles('Notes is active', label, 'Notes');
 await sleep(1000);
 // The empty notebook's own button, which opens the note in its editor.
-await click(...await named('New note', 'Create the first note'));
+await click(...await named('New note', 'Creates the first note'));
 await typing('');
 await polls('one pointer activation creates exactly one note', () => evaluate(`(()=>{
   const walk=n=>{if(!n)return null;if(n.test_id==='page_tree')return n;
@@ -326,34 +379,163 @@ await chord('ArrowRight');
 await settles('Alt+Shift+Right steps back', label, 'Notes');
 console.log(JSON.stringify({step: 'shortcuts from a text field', ok: true}));
 
-// Workspace Activity over the windows opened above. The pane is its own
-// module (src/activity.rs), fetched the first time it opens; the request
-// stays open until the pane draws it, on the frame after the module
-// arrived. That is one frame more than a view already in the start module
-// takes, and a frame of this software-rendered debug bundle can take over
-// ten seconds in CI.
+// Workspace Activity: the Activity app opens as a window over the history
+// this desktop keeps. The history model it reads is its own module
+// (src/activity.rs), fetched the first time the app reads it, and the app
+// is a module of its own too; a frame of this software-rendered debug
+// bundle can take over ten seconds in CI.
 const active = (await snapshot()).activeWorkspace;
+const activityWindows = s => s.entries.filter(e => e.app === 'so.tilo.activity').length;
 await command({kind: 'workspace-activity', workspace: active, view: 'explore'});
-await settles('Explore opens in the desktop once the pane has loaded',
-  s => s.workspaceActivity && [s.workspaceActivity.view, s.workspaceActivity.inSurface], ['explore', true], 600);
-// A split bundle fetched it now; a bundle left whole (`build.sh --no-split`)
-// has it in place.
+await settles('History opens the Activity app', activityWindows, 1, 600);
+// A split bundle fetches the model once the app reads it; a bundle left
+// whole (`build.sh --no-split`) has it in place.
 const split = join(resolve(bundle), 'pkg', 'split.json');
-if (existsSync(split) && JSON.parse(readFileSync(split, 'utf8')).modules.some(m => m.module === 'activity')) {
-  assert.ok(
-    (await evaluate("performance.getEntriesByType('resource').map(e => e.name)")).some(name => name.endsWith('.activity.wasm')),
-    'the pane came from its own module');
+if (existsSync(split) && JSON.parse(readFileSync(split, 'utf8')).modules.some(m => m.module === 'workspace_activity')) {
+  await polls('the app reads the history, whose model came from its own module',
+    async () => (await evaluate("performance.getEntriesByType('resource').map(e => e.name)"))
+      .some(name => name.endsWith('.workspace_activity.wasm')), true, 600);
 }
 await command({kind: 'workspace-activity', workspace: active, view: 'catch-up'});
-await settles('the open pane switches to Catch up',
-  s => s.workspaceActivity && [s.workspaceActivity.view, s.workspaceActivity.inSurface], ['catch-up', true]);
+await settles('asked again, its window comes forward rather than a second', activityWindows, 1);
 await command({kind: 'close-workspace-activity', workspace: active});
-await settles('and closes', s => s.workspaceActivity, null);
+await settles('and closes', activityWindows, 0);
 console.log(JSON.stringify({step: 'workspace activity', ok: true}));
 
 const errors = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
 assert.deepEqual(errors, [], 'no page exception');
 assert.equal(await evaluate('tiloMount.state().error ?? null'), null, 'the desktop kept drawing');
+
+// The same at device scale 2, in a profile of its own so the two desktops do
+// not share storage: the canvas's backing store doubles while the mirror
+// stays in CSS pixels. There every control of a window with a spread of
+// them is checked, whatever its role, and a text field's editable element,
+// the one the caret and input methods use, is checked again once it holds
+// the keyboard.
+//
+// Where the mirror of each drawn semantics node is placed, against where the
+// node is drawn, both in page CSS pixels. A node without bounds of its own
+// stands for the area it is drawn in, as in the mirror. A node is matched to
+// its element by its semantic key or action target (the last part of the
+// element's data-tilo-semantic key) when that is unique, else by an
+// accessible name unique among nodes of its role (a page's heading may share
+// its name with the place it heads); a node neither identifies is not checked.
+const MIRROR_PLACEMENT = `(async()=>{
+  tiloMount.requestSemantics();
+  await new Promise(done => setTimeout(done, 0));
+  const state=tiloMount.state(),canvas=tiloMount.canvas,size=state.logicalSize,r=canvas.getBoundingClientRect();
+  if(state.phase!=='presented'||!size||!(size[0]>0)||!(size[1]>0))return null;
+  const sx=r.width/size[0],sy=r.height/size[1],nodes=[],roles={};
+  const role=s=>s.role&&typeof s.role==='object'?Object.keys(s.role)[0]:s.role;
+  const visit=(s,enclosing)=>{
+    if(!s||s.state?.hidden)return;
+    const b=s.bounds?[s.bounds.x0,s.bounds.y0,s.bounds.x1-s.bounds.x0,s.bounds.y1-s.bounds.y0]:enclosing;
+    if(role(s)){
+      roles[role(s)]=(roles[role(s)]??0)+1;
+      if(b&&b[2]>0&&b[3]>0)nodes.push({role:role(s),name:s.name,id:s.semantic_key??s.action_target,b,focused:Boolean(s.state?.focused)});
+    }
+    for(const child of s.children??[])visit(child,b);
+  };
+  const walk=n=>{
+    if(!n)return;
+    if(n.semantics){if(n.semantics.state?.hidden)return;visit(n.semantics,n.rect);}
+    for(const child of n.children??[])walk(child);
+  };
+  walk(state.semantics?.root);
+  const named=n=>n.name?n.role+'|'+n.name:undefined;
+  const tally=key=>{const m=new Map();for(const n of nodes){const k=key(n);if(k)m.set(k,(m.get(k)??0)+1);}return m;};
+  const ids=tally(n=>n.id),names=tally(named);
+  const mirrors=[...tiloMount.semantics.querySelectorAll('[data-tilo-semantic]')].map(e=>{
+    let id;try{id=JSON.parse(e.dataset.tiloSemantic).at(-1);}catch{}
+    return {e,id,named:named({role:e.tiloRole&&role({role:e.tiloRole}),name:e.getAttribute('aria-label')})};
+  });
+  const controls=[];
+  for(const n of nodes){
+    let mirrored=[];
+    if(typeof n.id==='string'&&ids.get(n.id)===1)mirrored=mirrors.filter(m=>m.id===n.id);
+    if(mirrored.length!==1&&named(n)&&names.get(named(n))===1)mirrored=mirrors.filter(m=>m.named===named(n));
+    if(mirrored.length!==1)continue;
+    const e=mirrored[0].e,d=e.getBoundingClientRect(),b=n.b;
+    controls.push({name:n.name??n.id,role:n.role,editable:e.localName==='textarea',focused:n.focused,active:document.activeElement===e,
+      drawn:[r.left+b[0]*sx,r.top+b[1]*sy,b[2]*sx,b[3]*sy],mirror:[d.left,d.top,d.width,d.height]});
+  }
+  return {controls,roles};
+})()`;
+const lies = c => c.drawn.every((v, k) => Math.abs(v - c.mirror[k]) <= 1);
+const describe = c => `${c.role} "${c.name}" is mirrored at ${JSON.stringify(c.mirror.map(Math.round))}, drawn at ${JSON.stringify(c.drawn.map(Math.round))}`;
+const tally = controls => {
+  const counts = {};
+  for (const c of controls) counts[c.role] = (counts[c.role] ?? 0) + 1;
+  return counts;
+};
+const enough = (counts, minimum) => Object.entries(minimum).every(([role, least]) => (counts[role] ?? 0) >= least);
+// Waits until the window has drawn its controls and every checked control's
+// mirror lies over it (an app's module arrives after its window opens, and
+// frames of this software-drawn bundle come seconds apart), then requires
+// both: every mirror within a pixel, and at least `minimum[role]` controls
+// of each role checked, so the check cannot pass over a window that lost
+// its controls.
+async function mirrorLiesOverEveryControl(page, what, minimum, accept = () => true) {
+  progress = what;
+  let placed;
+  for (const deadline = Date.now() + 60_000; ;) {
+    placed = await page.evaluate(MIRROR_PLACEMENT);
+    if (placed && placed.controls.every(lies) && enough(tally(placed.controls), minimum) && accept(placed)) break;
+    if (Date.now() > deadline) break;
+    await sleep(250);
+  }
+  assert.ok(placed, `${what}: the desktop presents a semantics tree`);
+  const counts = tally(placed.controls);
+  console.log(JSON.stringify({checking: what, checked: counts, present: placed.roles}));
+  assert.deepEqual(placed.controls.filter(c => !lies(c)).map(describe), [],
+    `${what}: every control's mirror lies within a pixel of where it is drawn`);
+  for (const [role, least] of Object.entries(minimum))
+    assert.ok((counts[role] ?? 0) >= least,
+      `${what}: at least ${least} ${role} checked, got ${counts[role] ?? 0} (checked ${JSON.stringify(counts)}, present ${JSON.stringify(placed.roles)})`);
+  return placed.controls;
+}
+// The windows, one at a time, and the controls each must have mirrored: the
+// whole desktop is checked each time, so these count its top bar and window
+// frame too. Calendar's month has a button a day, tabs (its five views and
+// the window's tab), a combo box and a navigation tree; Tasks has a text
+// field, its places tree and the page's heading.
+const HIDPI_WINDOWS = [
+  ['so.tilo.calendar', {Button: 45, ToggleButton: 2, ComboBox: 1, Tree: 1, TreeItem: 4, Tab: 6, Separator: 1},
+    [['Tree', 'Calendar navigation']]],
+  ['so.tilo.tasks', {Button: 10, ToggleButton: 2, TextInput: 1, Tree: 1, TreeItem: 2, Heading: 1, Separator: 1},
+    [['Tree', 'Task views'], ['Heading', 'Issues']]],
+];
+{
+  const hidpi = await desktop(2, {context: await browser.context()});
+  assert.equal(await hidpi.evaluate('devicePixelRatio'), 2, 'the second desktop draws at device scale 2');
+  const navigate = body => hidpi.evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();
+    await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});})()`);
+  const entries = async () => (await hidpi.evaluate('tiloMount.navigation.getSnapshot()')).entries;
+  for (const [app, minimum, named] of HIDPI_WINDOWS) {
+    for (const entry of await entries()) await navigate({kind: 'close', route: entry.route});
+    await polls(`no window is open before ${app} at device scale 2`, async () => (await entries()).length, 0);
+    await navigate({kind: 'launch', app});
+    await polls(`${app} opens at device scale 2`, async () => (await entries()).length, 1);
+    const controls = await mirrorLiesOverEveryControl(hidpi, `${app}'s controls are mirrored where they are drawn at device scale 2`, minimum);
+    for (const [role, name] of named)
+      assert.ok(controls.some(c => c.role === role && c.name === name), `${app}'s ${role} "${name}" is mirrored where it is drawn at device scale 2`);
+    if (!minimum.TextInput) continue;
+    const field = controls.find(c => c.role === 'TextInput' && c.editable);
+    assert.ok(field, `${app}'s text field is mirrored by an editable element: ${JSON.stringify(controls.filter(c => c.role === 'TextInput'))}`);
+    // Focus it as assistive technology or a tap does: through its mirror.
+    await hidpi.evaluate(`[...tiloMount.semantics.querySelectorAll('textarea')].find(e=>e.getAttribute('aria-label')===${JSON.stringify(field.name)}).focus()`);
+    const focused = await mirrorLiesOverEveryControl(hidpi, `${app}'s focused text field "${field.name}" keeps its editable mirror over it at device scale 2`,
+      minimum, p => p.controls.some(c => c.name === field.name && c.focused && c.active));
+    const now = focused.find(c => c.name === field.name);
+    assert.ok(now?.editable && now.focused && now.active,
+      `${app}'s text field "${field.name}" holds the keyboard in the app and in the page: ${JSON.stringify(now)}`);
+  }
+  const backing = await hidpi.evaluate('(c=>c.width/c.getBoundingClientRect().width)(tiloMount.canvas)');
+  assert.ok(Math.abs(backing - 2) < 0.01, `at device scale 2 the canvas draws ${backing} device pixels a CSS pixel`);
+  const errors = hidpi.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
+  assert.deepEqual(errors, [], 'no page exception at device scale 2');
+  await hidpi.close();
+}
 await browser.close();
 await server.close();
 clearTimeout(watchdog);

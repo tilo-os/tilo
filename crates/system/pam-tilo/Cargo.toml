@@ -1,0 +1,30 @@
+[package]
+name = "pam-tilo"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "pam_tilo: the PAM module that asks tilo-authd to check a person's secret"
+
+[lib]
+name = "pam_tilo"
+path = "src/lib.rs"
+# Loaded by libpam into every process that authenticates, so it carries only
+# the wire protocol: the daemon does every unwrap.
+crate-type = ["cdylib"]
+
+[dependencies]
+libc.workspace = true
+tilo-auth = { path = "../tilo-auth", default-features = false }
+zeroize.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+libc.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tilo-auth = { path = "../tilo-auth", default-features = false }
+zeroize.workspace = true
+
+[lints]
+workspace = true

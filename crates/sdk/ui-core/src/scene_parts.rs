@@ -127,7 +127,6 @@ enum Boundary {
 pub struct DamageHint {
     /// Who painted the content. A hint follows on only within one source.
     pub source: u64,
-    /// The generation the damage is measured from.
     pub from: u64,
     /// The generation painted.
     pub to: u64,
@@ -142,6 +141,11 @@ pub struct DamageHint {
     /// pixels it presented may move them instead of repainting where they
     /// land ([`damage_with_copies`]). Any other host repaints there.
     pub copies: Vec<crate::scroll_copy::MovedRegion>,
+    /// What differs between each earlier generation still known and `to`,
+    /// as `rects` does for `from`: a host that presented an older
+    /// generation (the content was drawn more than once between two of its
+    /// frames) repaints these instead of the whole part.
+    pub earlier: Vec<(u64, Vec<Rect>)>,
 }
 
 impl DamageHint {
@@ -155,6 +159,18 @@ impl DamageHint {
             && self.source == previous.source
             && self.placement == previous.placement
             && !(self.rects.is_empty() && self.copies.is_empty())
+    }
+
+    /// `self`'s damage since `previous` when that painted an earlier
+    /// generation of the same source in the same place.
+    fn reaches(&self, previous: &Self) -> Option<&[Rect]> {
+        if self.source != previous.source || self.placement != previous.placement {
+            return None;
+        }
+        self.earlier
+            .iter()
+            .find(|(from, rects)| *from == previous.to && !rects.is_empty())
+            .map(|(_, rects)| rects.as_slice())
     }
 
     /// What changed for a host that makes no copy: the rects, and where
@@ -184,10 +200,22 @@ impl DamageHint {
                 None => rects.push(transform.transform_rect_bbox(copy.destination()).expand()),
             }
         }
+        let earlier = self
+            .earlier
+            .iter()
+            .map(|(from, rects)| {
+                let rects = rects
+                    .iter()
+                    .map(|rect| transform.transform_rect_bbox(*rect))
+                    .collect();
+                (*from, rects)
+            })
+            .collect();
         Self {
             placement: transform * self.placement,
             rects,
             copies,
+            earlier,
             ..self.clone()
         }
     }
@@ -500,6 +528,13 @@ pub fn hinted<R>(
     result
 }
 
+/// Close the part [`begin`] opened as a [`hinted`] part: for a draw that
+/// knows what changed only once it has drawn (a widget notes its damage
+/// while drawing).
+pub fn end_hinted(scene: &mut Scene, hint: Option<DamageHint>) {
+    boundary(scene, Boundary::EndHinted(hint));
+}
+
 /// Record the parts of a scene drawn on its own (a retained scene a widget
 /// re-records only when it changes): the parts `draw` marks in `scene`, or
 /// `None` when they are not well nested. Any recording around this one is
@@ -597,8 +632,10 @@ pub enum Unproven {
 /// the section is unchanged.
 ///
 /// When the parts nested inside some part differ between the frames (a menu
-/// that opened inside an overlay drew a part of its own), the outermost
-/// parts are compared instead, each as a whole.
+/// that opened inside an overlay drew a part of its own), the parts down to
+/// the deepest nesting both frames still have alike are compared instead,
+/// each part at that depth as a whole: a window's menu damages its window,
+/// a window a lane draws again damages that lane.
 pub fn damage(
     previous: &Scene,
     previous_parts: &SectionParts,
@@ -606,17 +643,19 @@ pub fn damage(
     current_parts: &SectionParts,
 ) -> Result<Vec<Rect>, Unproven> {
     let (old_events, new_events) = (&previous_parts.events, &current_parts.events);
-    match compare(previous, old_events, current, new_events, false) {
-        Err(Unproven::Structure) => compare(
+    let mut proven = compare(previous, old_events, current, new_events, false);
+    let mut depth = nesting(old_events).max(nesting(new_events));
+    while matches!(proven, Err(Unproven::Structure)) && depth > 1 {
+        depth = depth.saturating_sub(1);
+        proven = compare(
             previous,
-            &outermost(old_events)?,
+            &to_depth(old_events, depth)?,
             current,
-            &outermost(new_events)?,
+            &to_depth(new_events, depth)?,
             false,
-        ),
-        proven => proven,
+        );
     }
-    .map(|(rects, _)| rects)
+    proven.map(|(rects, _)| rects)
 }
 
 /// [`damage`] for a host that presents the section over the pixels of the
@@ -639,7 +678,7 @@ pub fn damage_with_copies(
 ) -> Result<SectionDamage, Unproven> {
     let (old_events, new_events) = (&previous_parts.events, &current_parts.events);
     let (rects, copied) = match compare(previous, old_events, current, new_events, true) {
-        // Compared by their outermost parts, nested hints say nothing.
+        // Compared as wholes at a shallower depth, hints say nothing.
         Err(Unproven::Structure) => (
             damage(previous, previous_parts, current, current_parts)?,
             Vec::new(),
@@ -686,7 +725,6 @@ pub fn drawn_bounds(
     }
 }
 
-/// The index of the event that ends the part `begin` begins.
 #[cfg(feature = "native")]
 fn end_of(events: &[Event], begin: usize) -> Option<usize> {
     let mut depth = 0_usize;
@@ -705,7 +743,11 @@ fn end_of(events: &[Event], begin: usize) -> Option<usize> {
 }
 
 /// Where `scene` paints in its pieces from `first` on: a piece inside a
-/// bounded part by that part's bounds, any other by its draw bounds.
+/// bounded part by that part's bounds, any other by its draw bounds. The
+/// parts still open at `first` (those around the part that ended there)
+/// cover that part too, so their bounds would say everything after it is
+/// over it: a piece only they bound counts by its draw bounds, and by
+/// theirs only where those cannot bound it.
 #[cfg(feature = "native")]
 fn drawn_from(
     scene: &Scene,
@@ -714,22 +756,35 @@ fn drawn_from(
     bounds: &mut tilo_cpu_raster::DrawBounds,
 ) -> Option<Vec<Rect>> {
     let ends = part_ends(events).ok()?;
+    let bounds_of = |owner: &usize| match ends.get(*owner) {
+        Some(PartEnd::Bounds(rects)) => Some(*rects),
+        _ => None,
+    };
     let mut open: Vec<usize> = Vec::new();
+    let mut around: Option<Vec<usize>> = None;
     let mut drawn = Vec::new();
     for piece in 0..=events.len() {
         if piece >= first {
+            let around = around.get_or_insert_with(|| open.clone());
             let range = piece_range(scene.encoding(), events, piece);
             let piece_scene = slice(scene.encoding(), range)?;
             if !piece_scene.encoding().draw_tags.is_empty() {
-                let bounded = open.iter().rev().find_map(|&owner| match ends.get(owner) {
-                    Some(PartEnd::Bounds(rects)) => Some(*rects),
-                    _ => None,
-                });
-                match bounded {
+                let inside = open
+                    .iter()
+                    .rev()
+                    .filter(|owner| !around.contains(owner))
+                    .find_map(bounds_of);
+                match inside {
                     // A part claiming to paint nothing must not have drawn.
                     Some([]) => return None,
                     Some(rects) => drawn.extend_from_slice(rects),
-                    None => drawn.extend(bounds.of(piece_scene.encoding())?),
+                    None => match bounds.of(piece_scene.encoding()) {
+                        Some(rects) => drawn.extend(rects),
+                        None => match open.iter().rev().find_map(bounds_of) {
+                            Some([]) | None => return None,
+                            Some(rects) => drawn.extend_from_slice(rects),
+                        },
+                    },
                 }
             }
         }
@@ -799,7 +854,6 @@ fn compare(
                 }
             }
         }
-        // Advance past the boundary that ends this piece.
         match new_events.get(piece).map(|event| &event.boundary) {
             Some(Boundary::Begin(_)) => open.push(piece),
             Some(Boundary::End(_) | Boundary::EndHinted(_)) => {
@@ -842,6 +896,9 @@ fn changed_owner(
                     } else {
                         (owner, new.repainted(), false)
                     });
+                }
+                if let Some(rects) = new.reaches(old) {
+                    return Ok((owner, rects.to_vec(), false));
                 }
             }
             (PartEnd::Hint(_), PartEnd::Hint(_)) => {}
@@ -891,29 +948,63 @@ fn part_ends(events: &[Event]) -> Result<Vec<PartEnd<'_>>, Unproven> {
     }
 }
 
-/// The boundaries of the outermost parts only: each compares as a whole,
-/// whatever parts it draws inside.
-fn outermost(events: &[Event]) -> Result<Vec<Event>, Unproven> {
-    let mut depth = 0_usize;
-    let mut outer = Vec::new();
+/// How deep the parts of a section nest: 1 when none is inside another, 0
+/// with no parts.
+fn nesting(events: &[Event]) -> usize {
+    let (mut depth, mut deepest) = (0_usize, 0_usize);
     for event in events {
         match event.boundary {
             Boundary::Begin(_) => {
-                if depth == 0 {
-                    outer.push(event.clone());
+                depth = depth.saturating_add(1);
+                deepest = deepest.max(depth);
+            }
+            Boundary::End(_) | Boundary::EndHinted(_) => depth = depth.saturating_sub(1),
+        }
+    }
+    deepest
+}
+
+/// The boundaries of the parts nested at most `max` deep (1: the outermost
+/// parts only): each part at that depth compares as a whole, whatever parts
+/// it draws inside. Below the outermost depth a kept hinted part keeps no
+/// hint: a hint says what changed in content drawn alike, and parts inside
+/// it may have come or gone, so a change in it belongs to the bounded part
+/// around it. An outermost hinted part has no bounded part around it and
+/// keeps its hint, as the outermost comparison always has.
+fn to_depth(events: &[Event], max: usize) -> Result<Vec<Event>, Unproven> {
+    let mut depth = 0_usize;
+    let mut kept = Vec::new();
+    for event in events {
+        match event.boundary {
+            Boundary::Begin(_) => {
+                if depth < max {
+                    kept.push(event.clone());
                 }
                 depth = depth.saturating_add(1);
             }
-            Boundary::End(_) | Boundary::EndHinted(_) => {
+            Boundary::End(_) => {
                 depth = depth.checked_sub(1).ok_or(Unproven::Corrupt)?;
-                if depth == 0 {
-                    outer.push(event.clone());
+                if depth < max {
+                    kept.push(event.clone());
+                }
+            }
+            Boundary::EndHinted(_) => {
+                depth = depth.checked_sub(1).ok_or(Unproven::Corrupt)?;
+                if depth < max {
+                    kept.push(if depth == 0 {
+                        event.clone()
+                    } else {
+                        Event {
+                            boundary: Boundary::EndHinted(None),
+                            marks: event.marks,
+                        }
+                    });
                 }
             }
         }
     }
     if depth == 0 {
-        Ok(outer)
+        Ok(kept)
     } else {
         Err(Unproven::Corrupt)
     }

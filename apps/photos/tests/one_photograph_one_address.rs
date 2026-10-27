@@ -49,7 +49,6 @@ fn new_doc() -> AutoCommit {
     doc
 }
 
-/// The library `doc` holds.
 fn library(doc: &AutoCommit) -> PhotoLibrary {
     PhotoLibrary::read(doc).expect("the library reads")
 }
@@ -141,7 +140,6 @@ impl Session {
         Self::staging(prefix, &name, bytes)
     }
 
-    /// The address of the session's photograph, as its library publishes it.
     fn published_id(&self) -> String {
         let published = published(&self.doc);
         let shown: Vec<_> = published[0]
@@ -220,7 +218,6 @@ fn operations_act_on_the_photograph_addressed_by_its_content() {
             "the fixture starts out square, so squaring it would show nothing"
         );
 
-        // The agent enumerates its own session and squares the picture there.
         let address = PhotoLibrary::CROP.on(agent.published_id());
         agent
             .perform(&address, SQUARE_900X600)

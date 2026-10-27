@@ -28,8 +28,11 @@ pub enum Feature {
     OpenUri,
 }
 
-pub(crate) const WEB_PATHS: &str = "A browser page has no local files; choose by contents instead.";
-pub(crate) const WEB_LAUNCH: &str = "A browser page cannot open local files in other apps.";
+// Shown to the person when an app asks a browser for something only a
+// device with local files can do; apps choose by contents or save through a
+// destination, which work here.
+pub(crate) const WEB_PATHS: &str = "This browser can't choose a file by its place on this device.";
+pub(crate) const WEB_LAUNCH: &str = "This browser can't open files from this device in other apps.";
 
 impl tilo_platform_caps::Feature for Feature {
     /// The feature's availability on Linux, macOS and the web, in that

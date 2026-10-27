@@ -40,7 +40,7 @@ pub struct OutboxEntry {
     pub workspace_id: u64,
     /// Document route the commit belongs to.
     pub route: crate::document::DocumentRoute,
-    /// Retention channel ([`neighbour_wire::retention`]) of the body.
+    /// Retention channel ([`neighbour_wire::retention()`]) of the body.
     pub channel: [u8; 32],
     /// Whether the body is a retained checkpoint rather than a delta.
     pub checkpoint: bool,
@@ -62,13 +62,8 @@ pub struct PeerRecord {
 /// Persistence for a [`PeerRecord`]. The page implements it over `IndexedDB`
 /// (strict durability); a save counts only once it is durable.
 pub trait PeerStore: tilo_relay_client::MaybeSendSync {
-    /// The stored record, if any.
     fn load(&self) -> Option<PeerRecord>;
     /// Replace the stored record.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the write did not become durable.
     fn save(&self, record: &PeerRecord) -> Result<(), String>;
     /// The stored channel state (encrypted-channel membership and the
     /// edits held for it), if any. A store without it keeps channel state
@@ -77,10 +72,6 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
         None
     }
     /// Replace the stored channel state.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when the write did not become durable.
     fn save_channels(&self, _bytes: &[u8]) -> Result<(), String> {
         Ok(())
     }
@@ -148,10 +139,6 @@ pub enum CertifyError {
 /// waiting. Returns the device certificate and the host certificate to pin,
 /// both checked here: the host cannot hand back a certificate for another
 /// key, another user or wider capabilities.
-///
-/// # Errors
-///
-/// Returns [`CertifyError`] when signing, the transport, or the answer fails.
 pub async fn certify(
     host: &Host,
     user_public_key: [u8; 32],
@@ -294,7 +281,6 @@ pub async fn issue_device_cert(
     Ok(cert)
 }
 
-/// `approval` of `request`, signed by the member's `root`.
 async fn member_approval(
     root: &dyn DeviceSigner,
     request: ApproverRequest,

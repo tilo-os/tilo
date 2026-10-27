@@ -77,7 +77,6 @@ impl RowMenu {
         self.entry(label.into(), binding.into(), true)
     }
 
-    /// Whether the menu has any entry.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -263,7 +262,6 @@ mod tests {
             .expect("the spec is exported")
     }
 
-    /// Choosing an entry queues its action for the host, once.
     #[test]
     fn a_chosen_entry_queues_its_bound_action() {
         let mut menu = RowMenu::new("device.more", "More for Headphones")

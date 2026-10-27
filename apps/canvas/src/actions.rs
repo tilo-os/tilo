@@ -897,9 +897,82 @@ pub(crate) fn clip_named(art: &Artwork, clip: Option<&str>) -> Result<(String, S
 /// The clip that keeps a new mark inside the selection.
 pub const SELECTION_CLIP: &str = "selection";
 
+/// How a refusal names the `index`th mark of a `draw`, so its caller can
+/// repair that one: by the id it was given, else by its place in the list.
+fn named_mark(id: Option<&str>, index: usize) -> String {
+    match id {
+        Some(id) => format!("mark `{id}` (item {index})"),
+        None => format!("mark item {index}"),
+    }
+}
+
+/// `shape` with a rect's negative width or height turned to reach the other
+/// way from its corner, as a canvas `fillRect` draws it: a bar standing on
+/// its baseline may be written with `y` at the baseline and a negative
+/// height. The same box, with positive sides.
+fn upright(shape: &Shape) -> Shape {
+    match *shape {
+        Shape::Rect {
+            x,
+            y,
+            width,
+            height,
+            radius,
+        } if width < 0.0 || height < 0.0 => Shape::Rect {
+            x: if width < 0.0 { x + width } else { x },
+            y: if height < 0.0 { y + height } else { y },
+            width: width.abs(),
+            height: height.abs(),
+            radius,
+        },
+        ref other => other.clone(),
+    }
+}
+
+/// Why `shape` would draw too small to see: a rect side under one unit, or
+/// an ellipse radius under half of one, named with its value. Fractions
+/// written into a shape's units (`"width": 0.38`) and a side of 0 would
+/// otherwise draw nothing without a word.
+fn under_one_unit(shape: &Shape) -> Option<String> {
+    let (sides, least, units) = match shape {
+        Shape::Rect { width, height, .. } => (
+            [("width", *width), ("height", *height)],
+            1.0,
+            "x, y, width and height",
+        ),
+        Shape::Ellipse { rx, ry, .. } => ([("rx", *rx), ("ry", *ry)], 0.5, "cx, cy, rx and ry"),
+        _ => return None,
+    };
+    let short: Vec<String> = sides
+        .iter()
+        .filter(|(_, value)| value.is_nan() || value.abs() < least)
+        .map(|(side, value)| format!("{side} is {}", value.abs()))
+        .collect();
+    (!short.is_empty()).then(|| {
+        format!(
+            "the shape is under one unit across: {}; its {units} are units (pixels at scale \
+             1), so give each {} at least {least}, not a fraction of the artwork",
+            short.join(" and "),
+            if least < 1.0 { "radius" } else { "side" }
+        )
+    })
+}
+
 impl Draw {
     pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
         let layer = target_layer(art, self.layer.as_deref())?;
+        let shapes = self
+            .marks
+            .iter()
+            .enumerate()
+            .map(|(index, mark)| match under_one_unit(&mark.shape) {
+                Some(problem) => Err(refuse(format!(
+                    "{}: {problem}",
+                    named_mark(mark.id.as_deref(), index)
+                ))),
+                None => Ok(upright(&mark.shape)),
+            })
+            .collect::<Result<Vec<Shape>, Refusal>>()?;
         let clips = self
             .marks
             .iter()
@@ -962,7 +1035,10 @@ impl Draw {
                     ..placed(
                         id,
                         mark.name.clone().unwrap_or_default(),
-                        mark.shape.clone(),
+                        shapes
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_else(|| mark.shape.clone()),
                         style,
                     )
                 };
@@ -2400,9 +2476,13 @@ mod crop_tests {
         let expected = Rect::new(10.0, 20.0, 60.0, 60.0);
         assert_eq!(selection.region().bounds(), Some(expected));
         assert!((selection.feather - 3.0).abs() < f64::EPSILON);
-        assert_eq!(
-            selection.matte.as_ref().unwrap().rect,
-            [8.0, 18.0, 54.0, 44.0]
+        let matte = selection.matte.as_ref().unwrap().rect;
+        assert!(
+            matte
+                .iter()
+                .zip([8.0, 18.0, 54.0, 44.0])
+                .all(|(got, want)| (got - want).abs() < f64::EPSILON),
+            "matte rect {matte:?}"
         );
 
         art.apply(Artwork::USE_SELECTION.with(UseSelection {

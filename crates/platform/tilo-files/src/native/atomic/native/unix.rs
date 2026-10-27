@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) mod bounded_acl;
 #[cfg(target_os = "linux")]
 mod bounded_linux;
+#[cfg(target_os = "linux")]
+mod linux_profile;
 
 #[derive(Clone, Copy)]
 pub(crate) enum FilePolicy {
@@ -190,18 +192,8 @@ impl Directory {
     fn validate_permission_profile(&self) -> io::Result<()> {
         #[cfg(target_os = "linux")]
         {
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "statfs magic numbers are 32-bit; the width and sign of `f_type` vary by target"
-            )]
-            let profile = unix_fs::fstatfs(&self.file)?.f_type as u32;
-            // Local POSIX DAC/access-ACL profiles only. In particular FUSE may
-            // omit DAC checks. OverlayFS also requires trusted host/backing names.
-            if !matches!(
-                profile,
-                0xef53 | 0x9123_683e | 0x5846_5342 | 0x0102_1994 | 0x794c_7630
-            ) {
+            // Local POSIX DAC/access-ACL profiles only (linux_profile).
+            if !linux_profile::admits(&self.file, linux_profile::Use::Directory)? {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
                     "unproven directory permission profile",

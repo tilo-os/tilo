@@ -25,13 +25,41 @@ pub struct ToolServiceHandle {
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     path: PathBuf,
-    workspace_requests: Arc<Mutex<Vec<ShellRequest>>>,
-    identity_backup_requests: Arc<Mutex<Vec<ShellRequest>>>,
+    queues: Queues,
 }
 
 struct ShellRequest {
     request: ToolRequest,
     reply: mpsc::SyncSender<Result<(), String>>,
+}
+
+/// An app's open, waiting for the compositor thread to decide it
+/// ([`crate::shell::app_opens`]).
+struct OpenRequest {
+    request: ToolRequest,
+    caller: Option<crate::shell::app_opens::Caller>,
+    reply: mpsc::SyncSender<Decision>,
+}
+
+/// What the compositor thread decided about an app's open.
+#[derive(Debug, PartialEq, Eq)]
+enum Decision {
+    /// Nothing is behind it.
+    Refused,
+    /// The tools thread launches it in this room once the app is answered.
+    Launch(crate::shell::state::RoomId),
+    /// The person was shown what became of it; nothing to launch.
+    Shown,
+}
+
+/// What the client threads hand the compositor thread, and back.
+#[derive(Clone, Default)]
+struct Queues {
+    workspace: Arc<Mutex<Vec<ShellRequest>>>,
+    identity_backup: Arc<Mutex<Vec<ShellRequest>>>,
+    opens: Arc<Mutex<Vec<OpenRequest>>>,
+    /// Launches an app's open started that failed, for the person.
+    failed: Arc<Mutex<Vec<crate::shell::app_opens::FailedOpen>>>,
 }
 
 impl Drop for ToolServiceHandle {
@@ -56,29 +84,19 @@ impl Drop for ToolServiceHandle {
 pub fn spawn() -> std::io::Result<ToolServiceHandle> {
     launcher::services::ensure_services_root()?;
     let path = launcher::services::socket_for(TOOL_SERVICE);
-    let workspace_requests = Arc::new(Mutex::new(Vec::new()));
-    let pending_workspace = Arc::clone(&workspace_requests);
-    let identity_backup_requests = Arc::new(Mutex::new(Vec::new()));
-    let pending_identity_backup = Arc::clone(&identity_backup_requests);
+    let queues = Queues::default();
+    let pending_workspace = Arc::clone(&queues.workspace);
+    let pending_identity_backup = Arc::clone(&queues.identity_backup);
     spawn_at(
         path,
         Arc::new(move |request| {
-            let room = crate::shell::state::RoomId::parse(&request.workspace_id)
+            crate::shell::state::RoomId::parse(&request.workspace_id)
                 .ok_or_else(|| "invalid workspace identity".to_string())?;
             request.intent.validate()?;
             let pending = match route(&request.intent) {
-                Route::WorkspaceSettings => &pending_workspace,
-                Route::IdentityBackup => &pending_identity_backup,
-                Route::TerminalCommand(argv) => {
-                    return crate::shell::launcher::launch_terminal_command(&argv, room)
-                        .map(|_| ())
-                        .map_err(|e| e.user_message());
-                }
-                Route::Package => {
-                    return crate::shell::launcher::launch_tool_intent(&request.intent, room)
-                        .map(|_| ())
-                        .map_err(|e| e.user_message());
-                }
+                Some(Route::WorkspaceSettings) => &pending_workspace,
+                Some(Route::IdentityBackup) => &pending_identity_backup,
+                None => return Err("not a shell route".into()),
             };
             {
                 let (reply, result) = mpsc::sync_channel(1);
@@ -95,40 +113,30 @@ pub fn spawn() -> std::io::Result<ToolServiceHandle> {
                     .map_err(|_| "the shell did not accept the requested route".to_string())?
             }
         }),
-        workspace_requests,
-        identity_backup_requests,
+        queues,
     )
 }
 
-/// Where a validated intent is carried out.
+/// Which shell surface a validated intent opens, on the compositor thread.
+/// Opening an app or a tool is not a route: it is decided as an app's open
+/// ([`crate::shell::app_opens`]).
 #[derive(Debug, PartialEq, Eq)]
 enum Route {
-    /// Workspace Settings chrome, on the compositor thread.
+    /// Workspace Settings chrome.
     WorkspaceSettings,
-    /// The portable identity backup flow, on the compositor thread.
+    /// The portable identity backup flow.
     IdentityBackup,
-    /// A command run inside Terminal's confined guest.
-    TerminalCommand(Vec<String>),
-    /// The intent's installed package, given the intent as its context.
-    Package,
 }
 
-fn route(intent: &ToolIntent) -> Route {
+fn route(intent: &ToolIntent) -> Option<Route> {
     match intent {
-        ToolIntent::WorkspaceSettings { .. } => Route::WorkspaceSettings,
-        ToolIntent::IdentityBackup => Route::IdentityBackup,
-        _ => intent
-            .terminal_argv()
-            .map_or(Route::Package, Route::TerminalCommand),
+        ToolIntent::WorkspaceSettings { .. } => Some(Route::WorkspaceSettings),
+        ToolIntent::IdentityBackup => Some(Route::IdentityBackup),
+        _ => None,
     }
 }
 
-fn spawn_at(
-    path: PathBuf,
-    handler: Handler,
-    workspace_requests: Arc<Mutex<Vec<ShellRequest>>>,
-    identity_backup_requests: Arc<Mutex<Vec<ShellRequest>>>,
-) -> std::io::Result<ToolServiceHandle> {
+fn spawn_at(path: PathBuf, handler: Handler, queues: Queues) -> std::io::Result<ToolServiceHandle> {
     if path.exists() {
         if UnixStream::connect(&path).is_ok() {
             return Err(std::io::Error::new(
@@ -141,6 +149,7 @@ fn spawn_at(
     let listener = UnixListener::bind(&path)?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
+    let served = queues.clone();
     // Launches a client asks for report to the session that started the
     // service, like every other launch.
     let thread = crate::shell::launcher::spawn_reporting(
@@ -151,9 +160,10 @@ fn spawn_at(
                     Ok(_) if worker_shutdown.load(Ordering::Acquire) => break,
                     Ok((stream, _)) => {
                         let handler = Arc::clone(&handler);
+                        let queues = served.clone();
                         let _ = crate::shell::launcher::spawn_reporting(
                             std::thread::Builder::new().name("tilo-tool-client".into()),
-                            move || serve_client(stream, &handler),
+                            move || serve_client(stream, &handler, &queues),
                         );
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -169,8 +179,7 @@ fn spawn_at(
         shutdown,
         thread: Some(thread),
         path,
-        workspace_requests,
-        identity_backup_requests,
+        queues,
     })
 }
 
@@ -181,7 +190,8 @@ impl ToolServiceHandle {
     /// behind the person's back.
     pub fn pump_workspace_settings(&self, chrome: &Chrome) {
         let requests = self
-            .workspace_requests
+            .queues
+            .workspace
             .lock()
             .map(|mut pending| std::mem::take(&mut *pending))
             .unwrap_or_default();
@@ -198,7 +208,8 @@ impl ToolServiceHandle {
         F: FnMut() -> Result<(), String>,
     {
         let requests = self
-            .identity_backup_requests
+            .queues
+            .identity_backup
             .lock()
             .map(|mut pending| std::mem::take(&mut *pending))
             .unwrap_or_default();
@@ -207,6 +218,85 @@ impl ToolServiceHandle {
             let _ = pending.reply.send(result);
         }
     }
+
+    /// Decide the apps' opens waiting for the compositor thread, and tell
+    /// the person of the launches they started that failed. An open is the
+    /// caller's to make when the person's press in one of its windows is
+    /// behind it, or `broker` admits it for the invocation it names.
+    pub fn pump_app_opens(
+        &self,
+        chrome: &Chrome,
+        broker: Option<&tilo_action_broker::collab_broker::AppActionBroker>,
+    ) {
+        let failed = self
+            .queues
+            .failed
+            .lock()
+            .map(|mut failed| std::mem::take(&mut *failed))
+            .unwrap_or_default();
+        crate::shell::app_opens::notify_failed(chrome, failed);
+        let opens = self
+            .queues
+            .opens
+            .lock()
+            .map(|mut pending| std::mem::take(&mut *pending))
+            .unwrap_or_default();
+        for open in opens {
+            let decision = decide_open(chrome, broker, &open);
+            let _ = open.reply.send(decision);
+        }
+    }
+}
+
+/// Decide one app's open on the compositor thread
+/// ([`crate::shell::app_opens`]): refused unless the person's press or an
+/// admitted invocation is behind it; else a launch, or what the person is
+/// shown instead.
+fn decide_open(
+    chrome: &Chrome,
+    broker: Option<&tilo_action_broker::collab_broker::AppActionBroker>,
+    open: &OpenRequest,
+) -> Decision {
+    use crate::shell::app_opens;
+    // Only an app the shell launched opens anything.
+    let (Some(caller), Some(room)) = (
+        open.caller.as_ref(),
+        crate::shell::state::RoomId::parse(&open.request.workspace_id),
+    ) else {
+        return Decision::Refused;
+    };
+    let Some(target) = app_opens::target(&open.request.intent) else {
+        return Decision::Refused;
+    };
+    let authority = app_opens::authorize(
+        Some(caller),
+        &open.request,
+        &target,
+        |package| crate::compositor::activation::person_initiated(&chrome.borrow().tree(), package),
+        |caller, invocation, target| {
+            broker
+                .ok_or_else(|| "no action broker".to_string())?
+                .admit_app_open(&caller.package, &caller.workspace, invocation, target)
+        },
+    );
+    if authority.is_none() {
+        return Decision::Refused;
+    }
+    let resolution = app_opens::resolve(
+        &open.request.intent,
+        app_opens::installed,
+        crate::shell::catalogue::available_apps,
+    );
+    if resolution == app_opens::Resolution::Launch {
+        return Decision::Launch(room);
+    }
+    app_opens::show(
+        chrome,
+        caller,
+        &app_opens::opened_app(&open.request.intent),
+        &resolution,
+    );
+    Decision::Shown
 }
 
 fn apply_workspace_settings(chrome: &Chrome, request: &ToolRequest) -> Result<(), String> {
@@ -220,6 +310,7 @@ fn apply_workspace_settings(chrome: &Chrome, request: &ToolRequest) -> Result<()
         os_actions::WorkspaceSettingsRoute::Members => WsTab::Members,
         os_actions::WorkspaceSettingsRoute::PrivacySecurity => WsTab::Permissions,
         os_actions::WorkspaceSettingsRoute::AppsFiles => WsTab::Apps,
+        os_actions::WorkspaceSettingsRoute::Emoji => WsTab::Emoji,
     };
     state.open_workspace_settings(tab);
     state.bump();
@@ -247,7 +338,7 @@ fn ensure_active_workspace_matches(chrome: &Chrome, request: &ToolRequest) -> Re
         .tree()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room.to_string())
+        .map(|workspace| workspace.room().to_string())
         .ok_or_else(|| "there is no active workspace".to_string())?;
     if active_room != request.workspace_id {
         return Err("Personal Settings is attached to a different workspace".into());
@@ -255,7 +346,7 @@ fn ensure_active_workspace_matches(chrome: &Chrome, request: &ToolRequest) -> Re
     Ok(())
 }
 
-fn serve_client(stream: UnixStream, handler: &Handler) {
+fn serve_client(stream: UnixStream, handler: &Handler, queues: &Queues) {
     // Darwin inherits the listener's nonblocking flag on accept. This worker
     // uses blocking framed I/O; an empty receive is not the end of a session.
     if let Err(error) = stream.set_nonblocking(false) {
@@ -266,11 +357,25 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
     // it: only Files, which asks when the person clicks a drive, opens a
     // remembered drive without the person being asked again.
     #[cfg(target_os = "linux")]
-    let caller = crate::compositor::native::wayland_peer_credentials(&stream)
-        .and_then(|credentials| u32::try_from(credentials.pid).ok())
-        .and_then(crate::shell::launcher::verified_package_for_descendant);
+    let pid = crate::compositor::native::wayland_peer_credentials(&stream)
+        .and_then(|credentials| u32::try_from(credentials.pid).ok());
+    #[cfg(target_os = "linux")]
+    let caller = pid.and_then(crate::shell::launcher::verified_package_for_descendant);
     #[cfg(not(target_os = "linux"))]
     let caller: Option<String> = None;
+    // The app and workspace its opens are made from, as its launch recorded
+    // them: never what the request says.
+    #[cfg(target_os = "linux")]
+    let opener = pid
+        .and_then(crate::shell::launcher::verified_launch_for_descendant)
+        .and_then(|identity| {
+            Some(crate::shell::app_opens::Caller {
+                workspace: identity.workspace_id?,
+                package: identity.package_id,
+            })
+        });
+    #[cfg(not(target_os = "linux"))]
+    let opener: Option<crate::shell::app_opens::Caller> = None;
     let mut reader = BufReader::new(stream);
     loop {
         let mut line = String::new();
@@ -284,6 +389,7 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
         if read == 0 {
             return;
         }
+        let mut then: Option<Box<dyn FnOnce()>> = None;
         let reply = if read as u64 > MAX_WIRE_BYTES {
             ToolReply {
                 accepted: false,
@@ -292,8 +398,18 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
             }
         } else {
             match serde_json::from_str::<ToolRequest>(&line) {
+                Ok(request)
+                    if request.protocol == TOOL_PROTOCOL_VERSION
+                        && crate::shell::app_opens::opens_app(&request.intent) =>
+                {
+                    let (reply, launch) = open_reply(request, opener.clone(), queues);
+                    then = launch;
+                    reply
+                }
                 Ok(request) if request.protocol == TOOL_PROTOCOL_VERSION => {
-                    if let Some(reply) = drive_reply(&request, caller.as_deref()) {
+                    if let Some(reply) = drive_reply(&request, caller.as_deref())
+                        .or_else(|| app_reply(&request, caller.as_deref()))
+                    {
                         reply
                     } else {
                         match handler(request) {
@@ -329,6 +445,67 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
         if reader.get_mut().write_all(&bytes).is_err() {
             return;
         }
+        // The app has its answer; the launch it asked for runs now.
+        if let Some(then) = then {
+            then();
+        }
+    }
+}
+
+/// Answer an app's open ([`crate::shell::app_opens`]): the compositor thread
+/// decides it, the app is told only whether it was taken, and a launch it
+/// was taken for is returned to run once the app has that answer.
+fn open_reply(
+    request: ToolRequest,
+    caller: Option<crate::shell::app_opens::Caller>,
+    queues: &Queues,
+) -> (ToolReply, Option<Box<dyn FnOnce()>>) {
+    use crate::shell::app_opens::{FailedOpen, REFUSED, REQUESTED};
+    let refused = |message: String| ToolReply {
+        accepted: false,
+        message,
+        ..ToolReply::default()
+    };
+    if let Err(message) = request.intent.validate() {
+        return (refused(message), None);
+    }
+    let intent = request.intent.clone();
+    let (reply, decided) = mpsc::sync_channel(1);
+    {
+        let Ok(mut opens) = queues.opens.lock() else {
+            return (refused(REFUSED.into()), None);
+        };
+        if opens.len() >= MAX_PENDING_SHELL_ROUTES {
+            return (refused("too many opens are pending".into()), None);
+        }
+        opens.push(OpenRequest {
+            request,
+            caller,
+            reply,
+        });
+    }
+    let requested = ToolReply {
+        accepted: true,
+        message: REQUESTED.into(),
+        ..ToolReply::default()
+    };
+    match decided.recv_timeout(Duration::from_secs(2)) {
+        Ok(Decision::Launch(room)) => {
+            let failed = Arc::clone(&queues.failed);
+            let launch = move || {
+                if let Err(reason) = crate::shell::app_opens::launch(&intent, room)
+                    && let Ok(mut failed) = failed.lock()
+                {
+                    failed.push(FailedOpen {
+                        app: crate::shell::app_opens::opened_app(&intent),
+                        reason,
+                    });
+                }
+            };
+            (requested, Some(Box::new(launch)))
+        }
+        Ok(Decision::Shown) => (requested, None),
+        Ok(Decision::Refused) | Err(_) => (refused(REFUSED.into()), None),
     }
 }
 
@@ -349,6 +526,49 @@ fn drive_reply(request: &ToolRequest, caller: Option<&str>) -> Option<ToolReply>
             accepted: true,
             message: "opened".into(),
             drives,
+            ..ToolReply::default()
+        },
+        Err(message) => ToolReply {
+            accepted: false,
+            message,
+            ..ToolReply::default()
+        },
+    })
+}
+
+/// The person's apps, for Files' Applications place, and the requests made
+/// from it and from the Store ([`crate::shell::app_list`]); `None` for every
+/// other intent. The list is the person's own view of their apps, so only
+/// Files is answered it; an uninstall is asked of the person in the shell's
+/// sheet whoever requests it, and only Files and the Store may request one.
+fn app_reply(request: &ToolRequest, caller: Option<&str>) -> Option<ToolReply> {
+    use crate::shell::search::providers::applications::SYSTEM_FILE_MANAGER;
+    const STORE: &str = "so.tilo.store";
+    let from_files = caller == Some(SYSTEM_FILE_MANAGER);
+    let answer = match &request.intent {
+        ToolIntent::Applications if from_files => Ok(crate::shell::app_list::listed()
+            .iter()
+            .map(crate::shell::app_list::AppListItem::entry)
+            .filter(os_actions::AppEntry::fits)
+            .take(os_actions::MAX_LISTED_APPS)
+            .collect()),
+        ToolIntent::UninstallApplication { app } if from_files || caller == Some(STORE) => {
+            request.intent.validate().map(|()| {
+                crate::shell::app_list::ask(app);
+                Vec::new()
+            })
+        }
+        ToolIntent::Applications | ToolIntent::UninstallApplication { .. } => {
+            Err("not available to this app".to_string())
+        }
+        _ => return None,
+    };
+    Some(match answer {
+        Ok(applications) => ToolReply {
+            accepted: true,
+            message: "opened".into(),
+            applications,
+            ..ToolReply::default()
         },
         Err(message) => ToolReply {
             accepted: false,
@@ -391,66 +611,91 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tools.sock");
         let (service, listener) = tilo_test_env::idle::spawned_thread("tilo-tool-inten", || {
-            spawn_at(
-                path.clone(),
-                Arc::new(|_| Ok(())),
-                Arc::new(Mutex::new(Vec::new())),
-                Arc::new(Mutex::new(Vec::new())),
-            )
-            .unwrap()
+            spawn_at(path.clone(), Arc::new(|_| Ok(())), Queues::default()).unwrap()
         });
         tilo_test_env::idle::assert_stays_asleep(&listener, "tool-intent listener");
         UnixStream::connect(&path).expect("still accepts clients");
-        let started = std::time::Instant::now();
-        drop(service);
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "drop waited on its listener"
-        );
+        let (dropped, done) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(service);
+            let _ = dropped.send(());
+        });
+        tilo_test_env::recv("dropping the service to wake its listener", &done);
         assert!(!path.exists(), "drop unlinks the socket");
+    }
+
+    // An app opens another, or a system tool, only for the person's press
+    // in it or an invocation delivered to it. At the door, a request from a
+    // process the shell did not launch has neither: it is refused, the same
+    // for a tool and for an app, and nothing is launched for it.
+    #[test]
+    fn an_open_nothing_is_behind_is_refused_at_the_door() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tools.sock");
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        let service = spawn_at(
+            path.clone(),
+            Arc::new(move |r| {
+                record.lock().unwrap().push(r.intent);
+                Ok(())
+            }),
+            Queues::default(),
+        )
+        .unwrap();
+        let chrome = crate::shell::chrome_state::ChromeState::new(
+            crate::shell::state::WorkspaceTree::bootstrap_demo(),
+        );
+        let room = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .room()
+            .to_string();
+        let ask = |intent: ToolIntent| {
+            let path = path.clone();
+            let room = room.clone();
+            std::thread::spawn(move || {
+                let mut stream = UnixStream::connect(path).unwrap();
+                let request = ToolRequest {
+                    protocol: TOOL_PROTOCOL_VERSION,
+                    on_behalf_of: None,
+                    workspace_id: room,
+                    intent,
+                };
+                serde_json::to_writer(&mut stream, &request).unwrap();
+                stream.write_all(b"\n").unwrap();
+                let mut response = String::new();
+                BufReader::new(stream).read_line(&mut response).unwrap();
+                serde_json::from_str::<ToolReply>(&response).unwrap()
+            })
+        };
+        let answer = |client: std::thread::JoinHandle<ToolReply>| {
+            while !client.is_finished() {
+                service.pump_app_opens(&chrome, None);
+                std::thread::yield_now();
+            }
+            client.join().unwrap()
+        };
+
+        let tool = answer(ask(ToolIntent::Vpn {
+            route: VpnRoute::Profile,
+            profile: Some("Work VPN".into()),
+        }));
+        let app = answer(ask(ToolIntent::OpenApplication {
+            app: "so.tilo.contacts".into(),
+        }));
+
+        assert!(!tool.accepted, "{tool:?}");
+        assert_eq!(tool.message, crate::shell::app_opens::REFUSED);
+        assert_eq!(app, tool, "an app is refused exactly as a tool is");
+        assert!(seen.lock().unwrap().is_empty(), "nothing is launched");
     }
 
     #[test]
     fn workspace_tool_intents_are_typed_and_confined_to_the_active_room() {
-        // Phase `service_accepts_only_versioned_typed_requests`.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("tools.sock");
-            let seen = Arc::new(Mutex::new(Vec::new()));
-            let record = Arc::clone(&seen);
-            let _service = spawn_at(
-                path.clone(),
-                Arc::new(move |r| {
-                    record.lock().unwrap().push(r.intent);
-                    Ok(())
-                }),
-                Arc::new(Mutex::new(Vec::new())),
-                Arc::new(Mutex::new(Vec::new())),
-            )
-            .unwrap();
-
-            let mut stream = UnixStream::connect(path).unwrap();
-            let request = ToolRequest {
-                protocol: TOOL_PROTOCOL_VERSION,
-                workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
-                intent: ToolIntent::Vpn {
-                    route: VpnRoute::Profile,
-                    profile: Some("Work VPN".into()),
-                },
-            };
-            serde_json::to_writer(&mut stream, &request).unwrap();
-            stream.write_all(b"\n").unwrap();
-            let mut response = String::new();
-            BufReader::new(stream).read_line(&mut response).unwrap();
-            assert!(
-                serde_json::from_str::<ToolReply>(&response)
-                    .unwrap()
-                    .accepted
-            );
-            assert_eq!(seen.lock().unwrap().len(), 1);
-        }
-
-        // Phase `workspace_route_opens_exact_tab_for_active_room`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -461,10 +706,11 @@ mod tests {
                 .desktop
                 .active_workspace()
                 .unwrap()
-                .room
+                .room()
                 .to_string();
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,
+                on_behalf_of: None,
                 workspace_id: room,
                 intent: ToolIntent::WorkspaceSettings {
                     route: WorkspaceSettingsRoute::PrivacySecurity,
@@ -478,13 +724,13 @@ mod tests {
             assert_eq!(state.ws_settings_tab, WsTab::Permissions);
         }
 
-        // Phase `workspace_route_cannot_switch_or_target_another_room`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
             );
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,
+                on_behalf_of: None,
                 workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
                 intent: ToolIntent::WorkspaceSettings {
                     route: WorkspaceSettingsRoute::Members,
@@ -498,55 +744,51 @@ mod tests {
         }
     }
 
+    // Opening Terminal, a container shell, a system tool or an app is an
+    // app's open, decided as one; the shell's own surfaces are routes.
     #[test]
-    fn terminal_intents_run_their_command_in_terminal_or_open_it_plainly() {
-        // Phase `files_directory_runs_a_login_shell_there`.
-        {
-            let intent = ToolIntent::Terminal {
+    fn opens_are_decided_as_opens_and_shell_surfaces_are_routes() {
+        use crate::shell::app_opens::opens_app;
+        for open in [
+            ToolIntent::Terminal {
                 directory: Some("/home/u/Projects".into()),
-            };
-            let Route::TerminalCommand(argv) = route(&intent) else {
-                panic!("a directory runs a command in Terminal");
-            };
-            assert_eq!(argv.last().map(String::as_str), Some("/home/u/Projects"));
-        }
-        // Phase `container_shell_runs_the_engine_cli`.
-        {
-            let intent = ToolIntent::ContainerShell {
+            },
+            ToolIntent::Terminal { directory: None },
+            ToolIntent::ContainerShell {
                 container: "web".into(),
                 engine: ContainerEngine::Distrobox,
-            };
-            assert_eq!(
-                route(&intent),
-                Route::TerminalCommand(vec!["distrobox".into(), "enter".into(), "web".into()])
-            );
+            },
+            ToolIntent::Vpn {
+                route: VpnRoute::Overview,
+                profile: None,
+            },
+            ToolIntent::OpenApplication {
+                app: "so.tilo.contacts".into(),
+            },
+        ] {
+            assert!(opens_app(&open), "{open:?}");
+            assert_eq!(route(&open), None, "{open:?}");
         }
-        // Phase `plain_terminal_and_tools_open_their_package`.
-        {
-            assert_eq!(
-                route(&ToolIntent::Terminal { directory: None }),
-                Route::Package
-            );
-            assert_eq!(
-                route(&ToolIntent::Vpn {
-                    route: VpnRoute::Overview,
-                    profile: None,
-                }),
-                Route::Package
-            );
-            assert_eq!(
-                route(&ToolIntent::WorkspaceSettings {
-                    route: WorkspaceSettingsRoute::General,
-                }),
-                Route::WorkspaceSettings
-            );
-            assert_eq!(route(&ToolIntent::IdentityBackup), Route::IdentityBackup);
-        }
+        let settings = ToolIntent::WorkspaceSettings {
+            route: WorkspaceSettingsRoute::General,
+        };
+        assert!(!opens_app(&settings));
+        assert_eq!(route(&settings), Some(Route::WorkspaceSettings));
+        assert!(!opens_app(&ToolIntent::IdentityBackup));
+        assert_eq!(
+            route(&ToolIntent::IdentityBackup),
+            Some(Route::IdentityBackup)
+        );
+        assert!(!opens_app(&ToolIntent::OpenDrive {
+            drive: "sda1".into()
+        }));
+        assert!(!opens_app(&ToolIntent::UninstallApplication {
+            app: "so.tilo.contacts".into()
+        }));
     }
 
     #[test]
     fn identity_backup_intents_open_the_trusted_flow_only_for_this_workspace() {
-        // Phase `identity_backup_route_opens_trusted_flow_for_current_workspace`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
@@ -557,10 +799,11 @@ mod tests {
                 .desktop
                 .active_workspace()
                 .unwrap()
-                .room
+                .room()
                 .to_string();
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,
+                on_behalf_of: None,
                 workspace_id: room,
                 intent: ToolIntent::IdentityBackup,
             };
@@ -575,13 +818,13 @@ mod tests {
             assert_eq!(opens, 1);
         }
 
-        // Phase `identity_backup_route_cannot_target_another_workspace`.
         {
             let chrome = crate::shell::chrome_state::ChromeState::new(
                 crate::shell::state::WorkspaceTree::bootstrap_demo(),
             );
             let request = ToolRequest {
                 protocol: TOOL_PROTOCOL_VERSION,
+                on_behalf_of: None,
                 workspace_id: "7690fd4b-55aa-4a4f-8339-7405f4ad18ac".into(),
                 intent: ToolIntent::IdentityBackup,
             };

@@ -468,15 +468,25 @@ pub fn start() -> Displays {
 
 /// [`start`] on an established Wayland connection: configure until the
 /// outputs settle (bounded), then keep them configured on a watcher thread.
+pub fn configure_connection(connection: &Connection) -> Result<Displays, (&'static str, Displays)> {
+    configure_connection_within(connection, STARTUP_LIMIT)
+}
+
+/// [`configure_connection`], waiting up to `limit` for the outputs to settle
+/// rather than the sign-in window's own bound: a harness that answers the
+/// request itself, on a loaded machine, waits as long as it needs.
 ///
 /// # Errors
-/// Returns a content-free reason, with the displays the watcher keeps
-/// current all the same, when startup did not settle in time.
-pub fn configure_connection(connection: &Connection) -> Result<Displays, (&'static str, Displays)> {
+///
+/// As [`configure_connection`].
+pub fn configure_connection_within(
+    connection: &Connection,
+    limit: Duration,
+) -> Result<Displays, (&'static str, Displays)> {
     let displays = Displays::default();
     let mut queue = connection.new_event_queue::<Outputs>();
     let mut state = Outputs::new(displays.clone());
-    let settled = settle(connection, &mut queue, &mut state, STARTUP_LIMIT);
+    let settled = settle(connection, &mut queue, &mut state, limit);
     if state.manager.is_some() {
         watch(connection.clone(), queue, state);
     }
@@ -807,7 +817,6 @@ mod tests {
     #[test]
     fn the_card_goes_on_the_built_in_panel_and_rotated_heads_swap_sides() {
         let mut heads = laptop_and_monitor();
-        // The monitor left of the panel, as a user may arrange them.
         heads[1].position = Some((-1920, 0));
         heads[0].scale = Some(2.0);
         let arranged = arrangement(&heads);
@@ -827,7 +836,6 @@ mod tests {
             Some(Rect::new(1920.0, 0.0, 3392.0, 920.0))
         );
 
-        // Without a built-in panel, the leftmost output carries the card.
         heads[0].name = Some("HDMI-A-1".into());
         assert_eq!(
             arrangement(&heads).primary_in_window(),

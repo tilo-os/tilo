@@ -73,9 +73,9 @@ fn entries(root: &Path) -> Vec<Value> {
 fn append_journal_invocation_costs_one_data_barrier_per_durable_transition() {
     let (_dir, root, mut journal) = fresh();
     let k = key(&journal, 1);
-    let opened = journal.barriers;
+    let opened = journal.barriers();
     assert!(journal.admit(k.clone(), intent("draft"), 1).unwrap());
-    let admitted = journal.barriers;
+    let admitted = journal.barriers();
     assert_eq!(
         (
             admitted.writes - opened.writes,
@@ -90,7 +90,8 @@ fn append_journal_invocation_costs_one_data_barrier_per_durable_transition() {
         journal.update(&k, progress(&k, sequence), false).unwrap();
     }
     assert_eq!(
-        journal.barriers, admitted,
+        journal.barriers(),
+        admitted,
         "progress never writes or waits on the disk"
     );
     assert_eq!(store(&root).len(), length);
@@ -102,7 +103,7 @@ fn append_journal_invocation_costs_one_data_barrier_per_durable_transition() {
         "observers still see the latest progress"
     );
     journal.update(&k, succeeded(&k, "saved"), false).unwrap();
-    let done = journal.barriers;
+    let done = journal.barriers();
     assert_eq!(
         (
             done.writes - admitted.writes,
@@ -175,13 +176,38 @@ fn append_journal_failed_entry_is_taken_back_and_poisons_the_writer() {
         assert!(journal.admit(k.clone(), intent("draft"), 1).unwrap());
         let length = store(&root).len();
         journal.fail_at = Some(failure);
-        assert!(journal.update(&k, succeeded(&k, "lost"), false).is_err());
-        assert!(journal.lookup(&k).is_err(), "a failed barrier poisons");
-        if failure == BarrierFailure::File {
+        let outcome = journal.update(&k, succeeded(&k, "lost"), false);
+        assert!(
+            outcome.is_err(),
+            "a failed write is reported: {:?} failed={}",
+            outcome,
+            journal.failed()
+        );
+        assert!(
+            journal.failed() == (failure == BarrierFailure::Directory),
+            "only an unconfirmed write fails the journal (failed={})",
+            journal.failed()
+        );
+        if failure == BarrierFailure::Directory {
+            // The rename may have made it durable: the journal requires
+            // recovery, which reads the store back.
+            assert!(journal.lookup(&k).is_err(), "a failed barrier poisons");
+        } else {
             assert_eq!(
                 store(&root).len(),
                 length,
                 "the unacknowledged entry is withdrawn"
+            );
+            assert!(
+                !journal.failed(),
+                "a withdrawn write left the store as it was"
+            );
+            assert!(
+                matches!(
+                    journal.lookup(&k).unwrap().unwrap().update,
+                    InvocationUpdate::Accepted { .. }
+                ),
+                "the record still reads as the store has it"
             );
         }
         drop(journal);
@@ -247,7 +273,6 @@ fn two_invocations() -> (tempfile::TempDir, PathBuf, InvocationKey, InvocationKe
 #[test]
 fn append_journal_ignores_only_a_torn_final_entry() {
     let torn: [fn(&mut Vec<u8>); 3] = [
-        // The crash cut the final entry short.
         |bytes| {
             let keep = bytes.len() - 40;
             bytes.truncate(keep);
@@ -298,7 +323,6 @@ fn append_journal_corruption_before_the_final_entry_stays_fatal() {
             let second = bytes.iter().position(|byte| *byte == b'\n').unwrap() + 1;
             bytes.drain(second + 10..second + 20);
         },
-        // A middle entry's blocks read as zeros.
         |bytes| {
             let second = bytes.iter().position(|byte| *byte == b'\n').unwrap() + 1;
             bytes[second + 5..second + 15].fill(0);
@@ -507,7 +531,7 @@ fn append_journal_size_stays_bounded_over_ten_thousand_invokes() {
     const INVOKES: u128 = 10_000;
     let (_dir, root, mut journal) = fresh();
     // This measures bytes, not durability.
-    journal.barriers.elide = true;
+    journal.elide_barriers();
     let argument = "a".repeat(4096);
     let mut largest = 0;
     for n in 1..=INVOKES {
@@ -522,7 +546,7 @@ fn append_journal_size_stays_bounded_over_ten_thousand_invokes() {
         journal.update(&k, succeeded(&k, "ok"), false).unwrap();
         largest = largest.max(std::fs::metadata(root.join("records.json")).unwrap().len());
     }
-    let barriers = journal.barriers;
+    let barriers = journal.barriers();
     assert!(
         barriers.directory > 1,
         "the entries were compacted along the way"
@@ -552,4 +576,179 @@ fn append_journal_size_stays_bounded_over_ten_thousand_invokes() {
         "the store peaked at {largest} bytes for a {compacted}-byte live state"
     );
     assert!(!String::from_utf8_lossy(&store(&root)).contains(&argument));
+}
+
+#[test]
+fn append_journal_write_taken_back_leaves_the_next_write_possible() {
+    let (_dir, root, mut journal) = fresh();
+    let k = key(&journal, 21);
+    assert!(journal.admit(k.clone(), intent("draft"), 1).unwrap());
+    let admitted = store(&root);
+    journal.fail_at = Some(BarrierFailure::File);
+    assert!(journal.update(&k, succeeded(&k, "dropped"), false).is_err());
+    assert_eq!(store(&root), admitted, "the failed entry was withdrawn");
+    assert!(
+        !journal.failed(),
+        "a write that left nothing durable requires no recovery"
+    );
+    journal.fail_at = None;
+    journal.update(&k, succeeded(&k, "kept"), false).unwrap();
+    let record = journal.lookup(&k).unwrap().unwrap();
+    assert_eq!(record.update, succeeded(&k, "kept"));
+    assert!(!record.uncertain);
+    drop(journal);
+    let journal = InvocationJournal::open(&root).unwrap();
+    assert_eq!(
+        journal.lookup(&k).unwrap().unwrap().update,
+        succeeded(&k, "kept")
+    );
+}
+
+#[test]
+fn append_journal_recovers_a_durable_but_unconfirmed_write_without_restart() {
+    let (_dir, root, mut journal) = fresh();
+    let k = key(&journal, 22);
+    assert!(journal.admit(k.clone(), intent("draft"), 1).unwrap());
+    let before = store(&root).len();
+    journal.unconfirmed_next = true;
+    assert!(
+        journal.update(&k, succeeded(&k, "maybe"), false).is_err(),
+        "the caller is told the write failed"
+    );
+    assert!(journal.failed(), "the store may hold it");
+    assert!(
+        journal.lookup(&k).is_err(),
+        "nothing is read while recovery is required"
+    );
+    assert_ne!(store(&root).len(), before, "the entry did reach the store");
+    journal.recover().unwrap();
+    assert!(!journal.failed());
+    let record = journal.lookup(&k).unwrap().unwrap();
+    assert_eq!(
+        record.update,
+        succeeded(&k, "maybe"),
+        "recovery reads back the terminal the store holds"
+    );
+    assert!(!record.uncertain);
+    assert!(
+        entries(&root).is_empty(),
+        "recovery folds the store into one snapshot"
+    );
+    // The admission already made is still known, so it is never reissued.
+    assert!(!journal.admit(k.clone(), intent("draft"), 2).unwrap());
+    assert!(
+        journal.update(&k, succeeded(&k, "after"), false).is_err(),
+        "a terminal is final"
+    );
+    assert!(
+        matches!(
+            journal.lookup(&k).unwrap().unwrap().update,
+            InvocationUpdate::Succeeded { .. }
+        ),
+        "the journal goes on working once recovery settled the store"
+    );
+    drop(journal);
+    let journal = InvocationJournal::open(&root).unwrap();
+    assert_eq!(
+        journal.lookup(&k).unwrap().unwrap().update,
+        succeeded(&k, "maybe")
+    );
+}
+
+#[test]
+fn append_journal_recovery_turns_nonterminal_writes_uncertain_and_goes_on_working() {
+    let (_dir, root, mut journal) = fresh();
+    let other = key(&journal, 24);
+    // A second admission the failed write leaves untouched: a fresh
+    // invocation the recovered journal can still run to its end.
+    let running = key(&journal, 23);
+    assert!(journal.admit(running.clone(), intent("draft"), 1).unwrap());
+    assert!(journal.admit(other.clone(), intent("draft"), 2).unwrap());
+    journal.unconfirmed_next = true;
+    assert!(
+        journal
+            .update(&running, succeeded(&running, "maybe"), false)
+            .is_err()
+    );
+    assert!(
+        journal
+            .update(&other, succeeded(&other, "x"), false)
+            .is_err()
+    );
+    journal.recover().unwrap();
+    assert!(
+        journal.lookup(&other).unwrap().is_some(),
+        "recovery keeps every admission already made"
+    );
+    let later = key(&journal, 25);
+    assert!(
+        journal.admit(later.clone(), intent("draft"), 3).unwrap(),
+        "recovery leaves a writer that admits again"
+    );
+    journal
+        .update(&later, succeeded(&later, "after"), false)
+        .unwrap();
+    let later_key = later.clone();
+    assert_eq!(
+        journal.lookup(&later).unwrap().unwrap().update,
+        succeeded(&later, "after")
+    );
+    assert_eq!(journal.host(), journal.snapshot.host);
+    drop(journal);
+    let journal = InvocationJournal::open(&root).unwrap();
+    let running = journal.lookup(&running).unwrap().unwrap();
+    assert!(
+        matches!(&running.update, InvocationUpdate::Succeeded { .. }),
+        "recovery reads the store, and the store holds the terminal"
+    );
+    assert!(
+        !running.uncertain,
+        "a write the store holds whole is no longer uncertain"
+    );
+    let later = journal.lookup(&later_key).unwrap().unwrap();
+    assert_eq!(later.update, succeeded(&later_key, "after"));
+    assert!(
+        !later.uncertain,
+        "a transition made durable after recovery stands"
+    );
+}
+
+#[test]
+fn append_journal_next_transition_recovers_without_restart() {
+    let (_dir, root, mut journal) = fresh();
+    let k = key(&journal, 26);
+    assert!(journal.admit(k.clone(), intent("draft"), 1).unwrap());
+    journal.unconfirmed_next = true;
+    assert!(journal.update(&k, succeeded(&k, "maybe"), false).is_err());
+    assert!(journal.failed(), "the store may hold it");
+    // No `recover` call and no restart: the next transition recovers the
+    // journal it finds failed, then is staged on the recovered store.
+    let later = key(&journal, 27);
+    assert!(
+        journal.admit(later.clone(), intent("draft"), 2).unwrap(),
+        "the next admission recovers the journal and is made"
+    );
+    assert!(!journal.failed());
+    assert_eq!(
+        journal.lookup(&k).unwrap().unwrap().update,
+        succeeded(&k, "maybe"),
+        "recovery read back the terminal the store holds"
+    );
+    journal
+        .update(&later, succeeded(&later, "after"), false)
+        .unwrap();
+    assert_eq!(
+        journal.lookup(&later).unwrap().unwrap().update,
+        succeeded(&later, "after")
+    );
+    drop(journal);
+    let journal = InvocationJournal::open(&root).unwrap();
+    assert_eq!(
+        journal.lookup(&k).unwrap().unwrap().update,
+        succeeded(&k, "maybe")
+    );
+    assert_eq!(
+        journal.lookup(&later).unwrap().unwrap().update,
+        succeeded(&later, "after")
+    );
 }

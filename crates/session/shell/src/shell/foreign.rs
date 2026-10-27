@@ -86,6 +86,7 @@ use crate::compositor::surface_readback::{
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
 
 mod commit_damage;
+mod held;
 mod scale;
 mod sheets;
 pub use scale::SurfaceScale;
@@ -243,8 +244,8 @@ pub fn composites(code: Fourcc, modifier: Modifier) -> bool {
 
 /// Every format the importer composites, as the compositor advertises it: the
 /// single list behind `zwp_linux_dmabuf_v1` feedback, so a client can only pick
-/// what [`CpuLayout::for_fourcc`] reads. Each is `Linear`
-/// ([`modifier_is_cpu_readable`]).
+/// what `CpuLayout::for_fourcc` reads. Each is `Linear`
+/// (`modifier_is_cpu_readable`).
 #[cfg(target_os = "linux")]
 pub fn importable_formats() -> Vec<smithay::backend::allocator::Format> {
     use smithay::backend::allocator::Format;
@@ -530,12 +531,6 @@ fn swizzle_row(order: PixelOrder, src: &[u8], width: usize, out: &mut Vec<u8>) {
 ///
 /// Split out from [`import_dmabuf_rgba`] so the `zwp_linux_dmabuf_v1`
 /// import gate can answer *at negotiation time* — rejecting makes `create` fail (renegotiate/fall back to `wl_shm`) instead of failing at commit forever.
-///
-/// # Errors
-///
-/// Returns [`DmabufImportError`] when `dmabuf`'s modifier isn't CPU-readable
-/// (`NonLinearModifier`), it has more than one plane (`MultiPlanar`), or its
-/// `FourCC` isn't one of the RGBA-family formats this compositor swizzles (`UnsupportedFormat`).
 #[cfg(target_os = "linux")]
 pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
     let format = dmabuf.format();
@@ -554,12 +549,6 @@ pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
 }
 
 /// CPU-import `dmabuf` into `out` as row-major RGBA, returning its `(width, height)`.
-///
-/// # Errors
-///
-/// Returns [`DmabufImportError`] for the same reasons as
-/// [`validate_importable`], plus degenerate width/height/stride
-/// (`InvalidDimensions`) or a failed `mmap` (`MapFailed`).
 #[cfg(target_os = "linux")]
 pub fn import_dmabuf_rgba(
     dmabuf: &Dmabuf,
@@ -1291,7 +1280,7 @@ pub struct ChildFrame {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
-    /// Where each tab still showing its opening card was last laid out, so
+    /// Where each tab still holding its window's place was last laid out, so
     /// the window that binds into it is configured to that size at once
     /// rather than after the next layout pass.
     opening_tabs: Mutex<HashMap<crate::shell::state::TabId, Rect>>,
@@ -1315,6 +1304,13 @@ pub struct ForeignFrameStore {
     /// The size, in logical pixels, other devices of the person show each
     /// streamed window at. A window not shown here is configured to it.
     remote_extents: Mutex<HashMap<SurfaceId, (i32, i32)>>,
+    /// Each shown window's app, and whether its tile draws it edge to edge
+    /// ([`Widget::set_full_bleed`]): square, where a framed window's
+    /// corners are rounded at the theme's window radius.
+    full_bleed: Mutex<HashMap<SurfaceId, (String, bool)>>,
+    /// Every window's frame as it was when a screenshot opened, drawn
+    /// instead of the live ones until it is released ([`held`]).
+    held: Mutex<Option<held::HeldFrames>>,
 }
 
 /// Capture-protection requests, kept beside the frames they withhold.
@@ -3266,6 +3262,58 @@ impl ForeignFrameStore {
         })
     }
 
+    /// What differs between `id`'s snapshots numbered `previous` and
+    /// `current` ([`FrameSnapshot::seq`]), as whole pixels of the snapshot.
+    /// `None` when that is not known: the snapshot is composited from
+    /// subsurfaces or resampled, or the history between them is incomplete.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "each edge is rounded outwards and clamped into the u32 window first"
+    )]
+    pub fn snapshot_changes(
+        &self,
+        id: SurfaceId,
+        previous: u64,
+        current: u64,
+    ) -> Option<Vec<(u32, u32, u32, u32)>> {
+        self.with_frames(id, |guard, children| {
+            if !children.is_empty() {
+                return None;
+            }
+            let layout = layout_of(guard, id, &[]).filter(|l| l.canvas.root_is_canvas)?;
+            let entry = guard.get(&id)?;
+            let rects =
+                entry
+                    .damage_history
+                    .between(previous, current, (entry.width, entry.height))?;
+            let (x, y, width, height) = layout.content;
+            let window = Rect::new(
+                f64::from(x),
+                f64::from(y),
+                f64::from(x) + f64::from(width),
+                f64::from(y) + f64::from(height),
+            );
+            Some(
+                rects
+                    .into_iter()
+                    .map(|rect| rect.intersect(window).expand())
+                    .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+                    .map(|rect| {
+                        let left = (rect.x0 - f64::from(x)).max(0.0) as u32;
+                        let top = (rect.y0 - f64::from(y)).max(0.0) as u32;
+                        (
+                            left,
+                            top,
+                            (rect.width() as u32).min(width.saturating_sub(left)),
+                            (rect.height() as u32).min(height.saturating_sub(top)),
+                        )
+                    })
+                    .collect(),
+            )
+        })
+    }
+
     /// Record that the last capture failed and drop the stale frame.
     ///
     /// Two things read it: the window stops waiting (shown at once rather
@@ -3379,8 +3427,39 @@ impl ForeignFrameStore {
             || crate::shell::capture_protection::holds_secrets(app_id)
     }
 
+    /// Window `id` of `app_id` is drawn edge to edge (`full_bleed`), or
+    /// framed with rounded corners.
+    pub fn note_full_bleed(&self, id: SurfaceId, app_id: &str, full_bleed: bool) {
+        let mut shapes = self.full_bleed.lock_recover();
+        if shapes
+            .get(&id)
+            .is_some_and(|(app, bleed)| app == app_id && *bleed == full_bleed)
+        {
+            return;
+        }
+        shapes.insert(id, (app_id.to_owned(), full_bleed));
+    }
+
+    /// Whether `app_id`'s windows are drawn edge to edge: it has one shown,
+    /// and every one shown is. An app's windows share one shell-ui
+    /// connection, so one framed window keeps them all told they are
+    /// rounded.
+    pub fn app_drawn_full_bleed(&self, app_id: &str) -> bool {
+        let shapes = self.full_bleed.lock_recover();
+        let (shown, framed) = shapes
+            .values()
+            .filter(|(app, _)| app == app_id)
+            .fold((false, false), |(_, framed), (_, bleed)| {
+                (true, framed || !*bleed)
+            });
+        drop(shapes);
+        shown && !framed
+    }
+
     /// Drop everything tracked for `id` on toplevel destroy — without this the frame `Vec` (a full framebuffer) would outlive the client.
     pub fn forget(&self, id: SurfaceId) {
+        self.full_bleed.lock_recover().remove(&id);
+        self.forget_held(id);
         self.set_surface_capture_protected(id, false);
         let mut guard = self.entries.lock_recover();
         let forgotten = guard.remove(&id);
@@ -3445,18 +3524,13 @@ impl ForeignFrameStore {
     }
 
     fn surface_and_children_seq(&self, id: SurfaceId) -> u64 {
-        let children = self
-            .children
-            .lock_recover()
-            .get(&id)
-            .cloned()
-            .unwrap_or_default();
-        let guard = self.entries.lock_recover();
-        let mut seq = guard.get(&id).map_or(0, |e| e.seq);
-        for child in children {
-            seq = seq.wrapping_add(guard.get(&child.surface).map_or(0, |entry| entry.seq));
-        }
-        seq
+        self.with_frames(id, |entries, children| {
+            let mut seq = entries.get(&id).map_or(0, |e| e.seq);
+            for child in children {
+                seq = seq.wrapping_add(entries.get(&child.surface).map_or(0, |entry| entry.seq));
+            }
+            seq
+        })
     }
 
     /// Whether `id` has committed a non-null buffer and is therefore eligible
@@ -3512,11 +3586,7 @@ impl ForeignFrameStore {
     /// How `id`'s image is made: the canvas it and its subsurfaces are
     /// flattened onto, and the window cut out of it. `None` without a frame.
     fn layout(&self, id: SurfaceId) -> Option<scale::FrameLayout> {
-        let children = self.children_of(id);
-        let guard = self.entries.lock_recover();
-        let layout = layout_of(&guard, id, &children);
-        drop(guard);
-        layout
+        self.with_frames(id, |entries, children| layout_of(entries, id, children))
     }
 
     /// Copy out the current frame, or `None` when the surface has no pixels staged.
@@ -3529,39 +3599,46 @@ impl ForeignFrameStore {
         reason = "one snapshot assembled from every layer of the surface"
     )]
     pub fn snapshot(&self, id: SurfaceId) -> Option<FrameSnapshot> {
-        let children = self.children_of(id);
-        let guard = self.entries.lock_recover();
-        let e = guard.get(&id)?;
-        let layout = layout_of(&guard, id, &children)?;
-        let root_placed = e.buffer_placement()?;
-        let root_size = (e.width, e.height);
-        let gpu = if e.rgba.is_empty() {
-            Some(e.gpu.clone()?)
-        } else {
-            None
-        };
         // Shared under the lock, copied after it.
-        let cpu = Arc::clone(&e.rgba);
-        let (seq, hdr) = (e.seq, e.hdr.clone());
-        let child_frames: Vec<_> = children
-            .iter()
-            .filter_map(|child| {
-                let frame = guard.get(&child.surface)?;
-                let pixels = if frame.rgba.is_empty() {
-                    frame.gpu.clone().map(ChildSource::Gpu)
+        let (layout, root_placed, root_size, gpu, cpu, seq, hdr, child_frames) =
+            self.with_frames(id, |guard, children| {
+                let e = guard.get(&id)?;
+                let layout = layout_of(guard, id, children)?;
+                let root_placed = e.buffer_placement()?;
+                let gpu = if e.rgba.is_empty() {
+                    Some(e.gpu.clone()?)
                 } else {
-                    Some(ChildSource::Cpu(Arc::clone(&frame.rgba)))
+                    None
                 };
+                let child_frames: Vec<_> = children
+                    .iter()
+                    .filter_map(|child| {
+                        let frame = guard.get(&child.surface)?;
+                        let pixels = if frame.rgba.is_empty() {
+                            frame.gpu.clone().map(ChildSource::Gpu)
+                        } else {
+                            Some(ChildSource::Cpu(Arc::clone(&frame.rgba)))
+                        };
+                        Some((
+                            (child.x, child.y),
+                            frame.buffer_placement(),
+                            (frame.width, frame.height),
+                            frame.seq,
+                            pixels,
+                        ))
+                    })
+                    .collect();
                 Some((
-                    (child.x, child.y),
-                    frame.buffer_placement(),
-                    (frame.width, frame.height),
-                    frame.seq,
-                    pixels,
+                    layout,
+                    root_placed,
+                    (e.width, e.height),
+                    gpu,
+                    Arc::clone(&e.rgba),
+                    e.seq,
+                    e.hdr.clone(),
+                    child_frames,
                 ))
-            })
-            .collect();
-        drop(guard);
+            })?;
         // A frame that stayed on the GPU is read back here, on demand.
         let pixels = match gpu {
             Some(gpu) => gpu.rgba()?,
@@ -3654,45 +3731,40 @@ impl ForeignFrameStore {
         &self,
         id: SurfaceId,
     ) -> Option<(ImageData, Option<Arc<crate::shell::hdr_surface::HdrPlane>>)> {
-        let has_children = self
-            .children
-            .lock_recover()
-            .get(&id)
-            .is_some_and(|children| !children.is_empty());
-        if !has_children {
-            let shared = {
-                let guard = self.entries.lock_recover();
-                guard.get(&id).and_then(|e| {
-                    // A buffer that needs resampling is drawn from a snapshot.
-                    let layout = layout_of(&guard, id, &[]).filter(|l| l.canvas.root_is_canvas)?;
-                    // A frame on the GPU is drawn from its texture, also an
-                    // SHM frame that keeps its pixels on the CPU too.
-                    if let Some(gpu) = e.gpu.clone() {
-                        return Some(SharedFrame::Gpu(gpu, layout.content));
-                    }
-                    if e.rgba.is_empty() {
-                        return None;
-                    }
-                    // A CPU frame shown whole is drawn from the stored pixels
-                    // themselves; a cropped one is cut out of a snapshot.
-                    let whole = (0, 0, e.width, e.height);
-                    (layout.content == whole).then(|| {
-                        SharedFrame::Cpu(Arc::clone(&e.rgba), (e.width, e.height), e.hdr.clone())
-                    })
-                })
-            };
-            match shared {
-                Some(SharedFrame::Gpu(gpu, content)) => {
-                    if content.2 == 0 || content.3 == 0 {
-                        return None;
-                    }
-                    return Some((gpu.image(content), None));
-                }
-                Some(SharedFrame::Cpu(pixels, (width, height), hdr)) => {
-                    return Some((rgba_image(pixels, width, height), hdr));
-                }
-                None => {}
+        let shared = self.with_frames(id, |guard, children| {
+            if !children.is_empty() {
+                return None;
             }
+            guard.get(&id).and_then(|e| {
+                // A buffer that needs resampling is drawn from a snapshot.
+                let layout = layout_of(guard, id, &[]).filter(|l| l.canvas.root_is_canvas)?;
+                // A frame on the GPU is drawn from its texture, also an
+                // SHM frame that keeps its pixels on the CPU too.
+                if let Some(gpu) = e.gpu.clone() {
+                    return Some(SharedFrame::Gpu(gpu, layout.content));
+                }
+                if e.rgba.is_empty() {
+                    return None;
+                }
+                // A CPU frame shown whole is drawn from the stored pixels
+                // themselves; a cropped one is cut out of a snapshot.
+                let whole = (0, 0, e.width, e.height);
+                (layout.content == whole).then(|| {
+                    SharedFrame::Cpu(Arc::clone(&e.rgba), (e.width, e.height), e.hdr.clone())
+                })
+            })
+        });
+        match shared {
+            Some(SharedFrame::Gpu(gpu, content)) => {
+                if content.2 == 0 || content.3 == 0 {
+                    return None;
+                }
+                return Some((gpu.image(content), None));
+            }
+            Some(SharedFrame::Cpu(pixels, (width, height), hdr)) => {
+                return Some((rgba_image(pixels, width, height), hdr));
+            }
+            None => {}
         }
         let snapshot = self.snapshot(id)?;
         let hdr = snapshot.hdr.clone();
@@ -3747,7 +3819,7 @@ impl ForeignFrameStore {
     }
 
     /// A person is dragging an edge of `id`'s window and `fixed` holds still
-    /// (`None`: nothing holds). See [`ForeignEntry::frame_rect`].
+    /// (`None`: nothing holds). See `ForeignEntry::frame_rect`.
     pub fn set_resize_anchor(&self, id: SurfaceId, fixed: Option<ui::widget::WindowEdge>) {
         self.with_entry(id, |e| {
             e.resize_anchor = fixed.map(|fixed| ResizeAnchor {
@@ -3797,7 +3869,7 @@ impl ForeignFrameStore {
     /// tile draws it. The window's geometry is drawn at the corner of
     /// [`Self::target_box`], so a shadow or resize border the client keeps
     /// around it lies off the tile, and the image is scaled as
-    /// [`ForeignSurfaceWidget::fit_rect`] scales it.
+    /// `ForeignSurfaceWidget::fit_rect` scales it.
     pub fn surface_point(&self, id: SurfaceId, tile: Rect, (x, y): (f64, f64)) -> (f64, f64) {
         let target = self.target_box(id, tile);
         let Some(layout) = self.layout(id) else {
@@ -3810,6 +3882,19 @@ impl ForeignFrameStore {
         let scale_x = drawn.width() / f64::from(width);
         let scale_y = drawn.height() / f64::from(height);
         layout.to_surface(((x - drawn.x0) / scale_x, (y - drawn.y0) / scale_y))
+    }
+
+    /// Where surface-local `(x, y)` of `id` shown in `tile` is drawn: the
+    /// inverse of [`Self::surface_point`]. `None` while it has no frame.
+    pub fn tile_point(&self, id: SurfaceId, tile: Rect, (x, y): (f64, f64)) -> Option<(f64, f64)> {
+        let layout = self.layout(id)?;
+        let (_, _, width, height) = layout.content;
+        let drawn = self.frame_rect(id, tile, width, height)?;
+        let (ix, iy) = layout.to_image((x, y));
+        Some((
+            drawn.x0 + ix * drawn.width() / f64::from(width),
+            drawn.y0 + iy * drawn.height() / f64::from(height),
+        ))
     }
 
     /// The origin to hand the seat with a pointer or touch at desktop point
@@ -3894,15 +3979,34 @@ impl ForeignFrameStore {
         guard.get(&id).is_some_and(|e| e.presented)
     }
 
-    /// Whether the tile standing in for `id` should say its app is on its
-    /// way: nothing presented, waited longer than `OPENING_DELAY`. Read
-    /// by [`ForeignSurfaceWidget::opening`] before painting the
-    /// placeholder card; `presented` wins, so this goes false and stays false — a watched-away placeholder must not return.
-    pub fn is_opening(&self, id: SurfaceId) -> bool {
+    /// Whether `id`'s window stands on screen: drawn, or its place reserved
+    /// past the one frame budget its first frame may hold the window's
+    /// ([`ui::arriving`]). A launch is settled once it does.
+    pub fn stands(&self, id: SurfaceId) -> bool {
         let guard = self.entries.lock_recover();
         guard
             .get(&id)
-            .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
+            .is_some_and(|e| e.presented || e.first_seen.elapsed() >= ui::arriving::frame_budget())
+    }
+
+    /// When the store next decides something about `id`'s window by itself
+    /// while it has not presented: the opening configure sent anyway, or the
+    /// window shown anyway past [`PRESENT_GRACE`]. Deadlines, so a window
+    /// whose app is slow to draw asks for no frames meanwhile. Past the
+    /// backstop the deadline stays due until a draw presents the window
+    /// (`mark_presented`), which is what serving it does. `None` once
+    /// presented.
+    pub fn opening_deadline(&self, id: SurfaceId) -> Option<Instant> {
+        let first_seen = self
+            .entries
+            .lock_recover()
+            .get(&id)
+            .filter(|e| !e.presented)?
+            .first_seen;
+        let configure = first_seen
+            .checked_add(OPENING_CONFIGURE_GRACE)
+            .filter(|at| *at > Instant::now());
+        configure.or_else(|| first_seen.checked_add(PRESENT_GRACE))
     }
 
     /// Test-only: pretend this surface was first heard of `age` ago, reaching past a delay without sleeping; creates the entry if absent.
@@ -3999,13 +4103,13 @@ impl ForeignFrameStore {
     }
 
     /// Record the tab rectangle the surface is laid into, in physical pixels — called from `apply_layout`, the authority on where a tab lives.
-    /// The opening card of `tab` was laid out at `rect`.
+    /// The place `tab` holds for its window was laid out at `rect`.
     pub fn note_opening_tab(&self, tab: crate::shell::state::TabId, rect: Rect) {
         self.opening_tabs.lock_recover().insert(tab, rect);
     }
 
-    /// A window bound into `tab`, which showed its opening card: it is placed
-    /// where the card was, so the configure that lets it map can go out in
+    /// A window bound into `tab`, which held its place: it is placed where
+    /// that place was, so the configure that lets it map can go out in
     /// the same dispatch as its toplevel ([`flush_configures`]) instead of
     /// after the next layout. The next layout publishes the tab's own rect
     /// as for any window.
@@ -4016,7 +4120,7 @@ impl ForeignFrameStore {
         }
     }
 
-    /// Forget the opening card of `tab`: it closed or became something else.
+    /// Forget the place `tab` held: it closed or became something else.
     pub fn forget_opening_tab(&self, tab: crate::shell::state::TabId) {
         self.opening_tabs.lock_recover().remove(&tab);
     }
@@ -4200,13 +4304,6 @@ impl ForeignFrameStore {
     }
 }
 
-/// How long a window's place is held in silence before the card saying
-/// what's coming is put there.
-///
-/// An app already on this machine can be on screen well inside a quarter
-/// second, and a briefer flicker is noise, not information; past it, the wait is long enough to read as one.
-pub(crate) const OPENING_DELAY: Duration = Duration::from_millis(250);
-
 /// How long a surface may take to produce a frame that fits its tab
 /// before its window is shown regardless.
 ///
@@ -4282,6 +4379,9 @@ pub struct ForeignSurfaceWidget {
     /// Even when the client has not committed new pixels yet, the retained
     /// scene must be rebuilt so its cached image is drawn into the new rect.
     placement_dirty: bool,
+    /// The live views drawn over the window as last composed
+    /// ([`crate::shell::live_embeds::frames_over`]).
+    live_views_drawn: u64,
     /// Stable, human-addressable name so `FrameBuilder::widget_registry` (and the shell's click/rect resolver) can find the tile.
     test_id: String,
     /// The app's own name, resolved on the frame that first needs it.
@@ -4295,6 +4395,9 @@ pub struct ForeignSurfaceWidget {
     /// The window fills its display ([`Widget::set_full_bleed`]): the frame
     /// is drawn square and unclipped, the last thing in its tile.
     full_bleed: bool,
+    /// What this widget last noted in the store of [`Self::full_bleed`]:
+    /// `None` until it notes it once (it is rebuilt with the tab tree).
+    noted_full_bleed: Option<bool>,
     /// The card last painted on this window and where its actions are, for
     /// the pointer ([`WindowCard`]).
     card: Option<(WindowCard, ui::widget::BannerHit)>,
@@ -4321,7 +4424,7 @@ impl WindowCard {
             return Some(Self::NotResponding);
         }
         // Past its opening grace with nothing to show: the card says so.
-        // Before it, the window's opening card holds its place.
+        // Before it, the window's place is reserved for it.
         (store().is_presented(surface_id) && store().frame_seq(surface_id) == 0)
             .then_some(Self::Unshowable)
     }
@@ -4363,12 +4466,14 @@ impl ForeignSurfaceWidget {
             cached_seq: 0,
             sheet_images: Vec::new(),
             placement_dirty: true,
+            live_views_drawn: 0,
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
             floating_input_rect: None,
             last_draw: None,
             full_bleed: false,
+            noted_full_bleed: None,
             card: None,
             cursor: Point::new(f64::NAN, f64::NAN),
         }
@@ -4728,6 +4833,40 @@ impl ForeignSurfaceWidget {
     /// The anchor is load-bearing: pointer input reaches the client by
     /// subtracting the tile origin from the global cursor
     /// (`client_input::surface_local`), so a *centred* draw instead would slide every pixel while input kept addressing the un-slid position.
+    /// Draw the live views the window's app embeds over its picture
+    /// ([`crate::shell::live_embeds`]), where its own coordinates are drawn,
+    /// clipped to the tile.
+    fn paint_live_views(&self, scene: &mut Scene, transform: Affine) {
+        // A window withheld from a capture shows none of what it embeds
+        // there either.
+        if self.cached.is_none()
+            || (crate::shell::capture_protection::painting_for_capture()
+                && self.capture_protected_rect().is_some())
+        {
+            return;
+        }
+        let tile = self.rect;
+        let surface = self.surface_id;
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &tile,
+        );
+        crate::shell::live_embeds::paint_over(surface, scene, transform, |rect| {
+            let store = store();
+            match (
+                store.tile_point(surface, tile, (rect.x0, rect.y0)),
+                store.tile_point(surface, tile, (rect.x1, rect.y1)),
+            ) {
+                (Some((x0, y0)), Some((x1, y1))) => Rect::new(x0, y0, x1, y1),
+                _ => Rect::ZERO,
+            }
+        });
+        scene.pop_layer();
+    }
+
     fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return None;
@@ -5003,6 +5142,7 @@ impl Widget for ForeignSurfaceWidget {
         presence: &PresenceCtx,
     ) {
         self.paint_window(scene, transform, text_renderer, theme, presence);
+        self.paint_live_views(scene, transform);
         self.paint_card(scene, transform, text_renderer, theme);
     }
 
@@ -5048,6 +5188,13 @@ impl Widget for ForeignSurfaceWidget {
     }
 
     fn set_full_bleed(&mut self, full_bleed: bool) {
+        if self.noted_full_bleed != Some(full_bleed) {
+            // The app is told its window's shape (`corner_radius` of its
+            // appearance), so what runs along its edges keeps out of
+            // rounded corners and reaches square ones.
+            store().note_full_bleed(self.surface_id, &self.app_id, full_bleed);
+            self.noted_full_bleed = Some(full_bleed);
+        }
         if self.full_bleed != full_bleed {
             self.full_bleed = full_bleed;
             self.placement_dirty = true;
@@ -5058,11 +5205,6 @@ impl Widget for ForeignSurfaceWidget {
     /// judgement lives on [`ForeignFrameStore::mark_presented`] since it must latch per surface, and this widget rebuilds whenever the tab tree does.
     fn presented(&self) -> bool {
         store().mark_presented(self.surface_id, self.rect)
-    }
-
-    /// Whether this is a window's place being held for an app asked for but not yet drawn. See [`Widget::opening`], [`ForeignFrameStore::is_opening`].
-    fn opening(&self) -> bool {
-        store().is_opening(self.surface_id)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -5077,13 +5219,20 @@ impl Widget for ForeignSurfaceWidget {
         self.rect
     }
 
-    /// Only an unpresented window holds animation cadence: nothing else
-    /// wakes the loop for its first paint. A later client commit is
-    /// `needs_redraw` (one shot). Treating a pending sequence as cadence
-    /// kept off-screen tiles — never drawn, so never cached — asking for
-    /// frames at the refresh rate after the app itself had gone idle.
+    /// A window asks for no animation frames, not even while its first frame
+    /// is on its way: the client's commits wake the loop (one `needs_redraw`
+    /// each), what stands in its place meanwhile steps on deadlines
+    /// ([`ui::arriving`]), and the store's own decisions about it are
+    /// deadlines too ([`Self::next_wake_deadline`]). Treating a pending
+    /// sequence as cadence kept off-screen tiles — never drawn, so never
+    /// cached — asking for frames at the refresh rate after the app itself had
+    /// gone idle, and an app slow to start held the desktop at display rate.
     fn needs_animation_frame(&self) -> bool {
-        self.awaiting_first_paint()
+        false
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        store().opening_deadline(self.surface_id)
     }
 
     fn animation_detail(&self) -> Option<String> {
@@ -5094,11 +5243,13 @@ impl Widget for ForeignSurfaceWidget {
         self.placement_dirty
             || self.awaiting_first_paint()
             || store().frame_seq(self.surface_id) != self.cached_seq
+            || crate::shell::live_embeds::frames_over(self.surface_id) != self.live_views_drawn
             || WindowCard::of(self.surface_id) != self.card.map(|(card, _)| card)
     }
 
     fn mark_drawn(&mut self) {
         self.placement_dirty = false;
+        self.live_views_drawn = crate::shell::live_embeds::frames_over(self.surface_id);
     }
 }
 
@@ -5493,7 +5644,6 @@ pub fn shown_toplevel_surfaces(
         .collect()
 }
 
-/// The toplevel whose surface is `id`.
 #[cfg(target_os = "linux")]
 pub fn toplevel_surface(
     state: &crate::compositor::state::State,
@@ -5573,6 +5723,8 @@ fn frame_throttle_releases(
         || state.is_floating_toplevel(id)
         || state.is_closing_toplevel(id)
         || state.active_sessions.contains_key(&id)
+        // A live view's window is drawn inside the window that embeds it.
+        || crate::shell::live_embeds::is_embed_surface(id)
 }
 
 #[cfg(test)]
@@ -6032,53 +6184,56 @@ mod tests {
     const TILE: Rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn foreign_window_status_copy_names_the_app_in_plain_words() {
-        /// An app already on this machine can be on screen almost at once, so saying "on its way" that fast would flicker before anyone reads it.
-        fn a_surface_just_heard_of_is_not_yet_worth_saying_anything_about() {
+        /// An app on this machine may hold the window's first frame for one
+        /// frame budget: until then its window does not stand.
+        fn a_surface_just_heard_of_holds_its_first_frame() {
             let id = sid(50);
             store().forget(id);
             store().note_placement(id, TILE);
             assert!(
-                !store().is_opening(id),
-                "an app that may still open in a blink must not flash an \
-                 indicator on its way past",
+                !store().stands(id),
+                "an app that may still draw in time must not have its place put up \
+                 empty first",
             );
             store().forget(id);
         }
 
-        /// Past the delay the wait is a wait, and an empty space where a window was asked for reads as nothing having happened.
-        fn a_surface_still_starting_after_the_delay_says_so() {
+        /// Past the budget the window's place is reserved, and the store's
+        /// own decisions about it are deadlines, not frames.
+        fn a_surface_still_starting_after_its_budget_stands_and_waits_on_deadlines() {
             let id = sid(51);
             store().forget(id);
-            store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
+            store().backdate_first_seen(id, Duration::from_millis(50));
             assert!(
-                store().is_opening(id),
+                store().stands(id),
                 "the person is watching an empty desktop for a window they \
                  asked for, and nothing on screen accounts for it",
             );
+            let w = ForeignSurfaceWidget::new(id, "org.example.app".into());
+            assert!(
+                !Widget::needs_animation_frame(&w),
+                "an app slow to draw must not hold the desktop at display rate"
+            );
+            let due = Widget::next_wake_deadline(&w).expect("the store decides later");
+            assert!(due > Instant::now(), "the next decision is ahead");
             store().forget(id);
         }
 
-        /// And it stops the instant there is a window, without coming back —
-        /// a placeholder someone has watched go away must not return, worse to see than the wait it was covering.
-        fn a_surface_that_has_been_shown_is_never_opening_again() {
+        /// And once there is a window it stands for good, and nothing about
+        /// its opening is due any more.
+        fn a_surface_that_has_been_shown_stands_for_good() {
             let id = sid(52);
             store().forget(id);
-            store().backdate_first_seen(id, OPENING_DELAY + Duration::from_millis(50));
-            assert!(
-                store().is_opening(id),
-                "precondition: it was still starting"
-            );
+            store().backdate_first_seen(id, Duration::from_millis(50));
             store().publish_rgba(id, &vec![0; 1200 * 800 * 4], 1200, 800);
             assert!(
                 store().mark_presented(id, TILE),
                 "precondition: it presented"
             );
-            assert!(
-                !store().is_opening(id),
-                "the window is on screen; nothing may still be saying it is on \
-                 its way",
-            );
+            assert!(store().stands(id));
+            assert_eq!(store().opening_deadline(id), None);
             store().forget(id);
         }
 
@@ -6135,10 +6290,6 @@ mod tests {
             store().forget(id);
         }
 
-        /// The window itself has to answer with the same name its tab does.
-        ///
-        /// The tab title was fixed once already; the widget kept handing back
-        /// the raw wayland app-id from `app_title()`, so asking the tile directly (not the tab's stored title) got `so.tilo.chat`, an address nobody chose.
         fn a_foreign_window_answers_with_its_name_not_its_app_id() {
             let w = ForeignSurfaceWidget::new(3, "so.tilo.chat".into());
             assert_eq!(
@@ -6207,9 +6358,9 @@ mod tests {
             store().forget(id);
         }
 
-        a_surface_just_heard_of_is_not_yet_worth_saying_anything_about();
-        a_surface_still_starting_after_the_delay_says_so();
-        a_surface_that_has_been_shown_is_never_opening_again();
+        a_surface_just_heard_of_holds_its_first_frame();
+        a_surface_still_starting_after_its_budget_stands_and_waits_on_deadlines();
+        a_surface_that_has_been_shown_stands_for_good();
         a_card_in_a_windows_place_names_the_app_not_its_id();
         a_window_that_cannot_be_shown_says_so_in_plain_words();
         a_card_says_which_of_the_two_it_is_and_what_can_be_done();
@@ -6371,6 +6522,40 @@ mod tests {
     /// A toolkit drawing its own shadow commits a buffer bigger than its
     /// window and says where the window is. The tile shows that rectangle —
     /// shadow and resize border are not part of a tiled window.
+    #[test]
+    fn a_snapshot_says_what_changed_within_the_window() {
+        let id = sid(700);
+        store().forget(id);
+        let (w, h) = (20u32, 16u32);
+        let rgba = numbered_frame(w, h);
+        store().publish_rgba(id, &rgba, w, h);
+        store().note_window_geometry(id, Some(geometry(3, 2, 12, 10)));
+        let first = store().snapshot(id).expect("frame").seq;
+
+        store().publish_damaged_rgba_for_test(
+            id,
+            &rgba,
+            (w, h),
+            vec![Rect::new(5.0, 4.0, 7.0, 5.0), Rect::new(0.0, 0.0, 2.0, 2.0)],
+        );
+        let second = store().snapshot(id).expect("frame").seq;
+        assert_eq!(
+            store().snapshot_changes(id, first, second),
+            Some(vec![(2, 2, 2, 1)]),
+            "in the window's pixels, and nothing of the shadow around it"
+        );
+
+        store().publish_rgba(id, &rgba, w, h);
+        let third = store().snapshot(id).expect("frame").seq;
+        assert_eq!(store().snapshot_changes(id, second, third), None);
+        assert_eq!(
+            store().snapshot_changes(id, first, third),
+            None,
+            "a frame whose damage is unknown changed all of it"
+        );
+        store().forget(id);
+    }
+
     #[test]
     fn a_declared_window_geometry_crops_the_frame_to_the_window() {
         let id = sid(60);
@@ -6595,7 +6780,6 @@ mod tests {
         store().forget(id);
     }
 
-    /// A client's size hints are the limits a person resizing it meets.
     #[test]
     fn a_clients_size_hints_are_its_windows_resize_limits() {
         let id = sid(64);
@@ -6819,29 +7003,31 @@ mod tests {
             store().forget(id);
         }
 
-        /// A surface asks for frames until it has drawn, and after that only when
-        /// a newer one is waiting. The first half matters because an
-        /// undrawn-first-buffer client is the one case nothing else wakes the
-        /// paint loop for; the second: an app with nothing newer must not hold the loop awake.
-        fn widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one() {
+        /// A surface never asks for animation frames, before it has drawn or
+        /// after: its commits ask for one redraw each, so an app with nothing
+        /// newer, or slow to draw its first frame, never holds the loop awake.
+        fn widget_asks_for_no_frames_and_one_redraw_per_new_buffer() {
             let id = sid(7);
             store().forget(id);
+            // Its toplevel was adopted: the wait for its first frame starts.
+            store().note_adopted(id);
             let mut w = ForeignSurfaceWidget::new(id, "org.example.app".into());
             // A 1×1 tab, so the 1×1 frame below *fits* it — what being presented waits for, not merely a frame having landed.
             w.rect = Rect::new(0.0, 0.0, 1.0, 1.0);
             assert!(
-                w.needs_animation_frame(),
-                "nothing presented yet: a widget that stopped asking here would \
-                 never be woken to paint the window's first frame"
+                !w.needs_animation_frame(),
+                "nothing presented yet, and still no frames: its first buffer's \
+                 commit wakes the loop"
             );
             store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
             assert!(
                 !w.awaiting_first_paint(),
                 "the paint gate itself must settle a fitting first frame; native asks it before draw"
             );
-            assert!(
-                !w.needs_animation_frame(),
-                "an idle hosted app must not keep requesting frames after its first buffer landed"
+            assert_eq!(
+                w.next_wake_deadline(),
+                None,
+                "a presented window has nothing to wake for"
             );
             assert!(
                 w.needs_redraw(),
@@ -6939,7 +7125,7 @@ mod tests {
 
         pending_configure_fires_once_per_size_change();
         a_window_shown_only_elsewhere_takes_the_size_shown_there();
-        widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one();
+        widget_asks_for_no_frames_and_one_redraw_per_new_buffer();
         widget_fit_rect_letterboxes_preserving_aspect();
         painted_frame_origin_matches_the_origin_input_is_mapped_with();
         moving_a_static_foreign_surface_requests_one_repaint();
@@ -6988,14 +7174,10 @@ mod tests {
                 .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
                 .is_some()
         );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !take_published_shm_frames() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the loop must learn a client frame landed, or it never paints nor releases frame callbacks"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until(
+            "the loop to learn a client frame landed, or it never paints nor releases frame callbacks",
+            take_published_shm_frames,
+        );
         assert_ne!(store().frame_seq(id), 0, "reported only once published");
         assert!(!take_published_shm_frames(), "reported once");
         store().forget(id);
@@ -7070,14 +7252,9 @@ mod tests {
         let first = store()
             .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
             .expect("queue the first SHM readback");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while store().frame_seq(id) == 0 {
-            assert!(
-                Instant::now() < deadline,
-                "the actual SHM worker must publish"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the actual SHM worker to publish", || {
+            store().frame_seq(id) != 0
+        });
         assert!(!store().is_mapped(id), "readback is not a protocol commit");
         assert!(!store().note_shm_committed(id, first + 1));
         assert!(!store().is_mapped(id), "a generation not queued cannot map");
@@ -7088,14 +7265,9 @@ mod tests {
         let second = store()
             .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![255, 0, 0, 255], 1, 1))
             .expect("queue readback while the surface is detached");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while store().frame_seq(id) == sequence {
-            assert!(
-                Instant::now() < deadline,
-                "the second actual SHM readback must publish"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the second actual SHM readback to publish", || {
+            store().frame_seq(id) != sequence
+        });
         assert!(
             !store().is_mapped(id),
             "worker completion cannot remap a detached surface"
@@ -7145,14 +7317,9 @@ mod tests {
     #[test]
     fn damaged_shm_commits_build_on_the_current_frame_and_reuse_the_spare() {
         fn wait_seq(id: SurfaceId, seq: u64) {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            while store().frame_seq(id) < seq {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the SHM worker never published commit {seq}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
+            tilo_test_env::wait_until(format!("the SHM worker to publish commit {seq}"), || {
+                store().frame_seq(id) >= seq
+            });
         }
         fn pixels(id: SurfaceId) -> Vec<u8> {
             store().snapshot(id).expect("published frame").rgba
@@ -7256,16 +7423,9 @@ mod tests {
     /// Wait until the SHM worker is done with every commit queued for `id`.
     #[cfg(target_os = "linux")]
     fn wait_shm_done(id: SurfaceId) {
-        let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
-            .expect("a deadline five seconds out");
-        while store().with_entry(id, |entry| entry.shm_queued > entry.shm_done) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the SHM worker never finished the queued commits"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until("the SHM worker to finish the queued commits", || {
+            !store().with_entry(id, |entry| entry.shm_queued > entry.shm_done)
+        });
     }
 
     /// A damaged SHM commit after a dmabuf commit is relative to the dmabuf
@@ -7985,11 +8145,7 @@ mod tests {
     /// Wait until `barrier` is signalled, failing past the hang bound.
     #[cfg(target_os = "linux")]
     fn await_release(barrier: &Barrier, what: &str) {
-        let started = Instant::now();
-        while !barrier.is_signaled() {
-            assert!(started.elapsed() < tilo_test_env::hang_bound(), "{what}");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        tilo_test_env::wait_until(what, || barrier.is_signaled());
     }
 
     #[cfg(target_os = "linux")]

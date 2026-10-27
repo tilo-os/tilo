@@ -5,7 +5,7 @@
 # already formatted for display; `$count` selects the plural form.
 
 ## Health, as the status bubble reports it
-backups-health-ok = All backups healthy
+backups-health-ok = No failed backups
 backups-health-attention = { $count ->
     [one] One backup needs attention
    *[other] { $snapshots } backups need attention
@@ -19,14 +19,6 @@ backups-changed-files = { $count ->
 backups-size-in-files = { $count ->
     [one] { $size } in one file
    *[other] { $size } in { $files } files
-}
-backups-restored-files = { $count ->
-    [one] Restored and checked one file
-   *[other] Restored and checked { $files } files
-}
-backups-verified-files = { $count ->
-    [one] Checked one file, { $size }
-   *[other] Checked { $files } files, { $size }
 }
 backups-progress-files = { $count ->
     [one] One file copied, { $size }

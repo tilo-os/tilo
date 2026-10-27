@@ -17,6 +17,7 @@ pub mod block_actions;
 pub mod block_edit;
 pub mod block_markdown;
 pub mod field;
+mod replace_text;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -86,7 +87,7 @@ pub enum ClipAttr {
 /// a record: `pub body: RichText` stores a document's worth of rich text
 /// under the field, read as its [`RichTextState`] and edited through
 /// [`RichTextAction`]s at the field's path ([`field`]).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq)]
 pub struct RichText {
     state: Option<RichTextState>,
     /// Markdown a new value starts with, written when it is stored.
@@ -94,6 +95,19 @@ pub struct RichText {
     /// Edits a verb made to this value, applied in order when the record
     /// holding it is written back.
     pending: Vec<RichTextAction>,
+}
+
+// Written out rather than derived: a derived `clone` is inlined into every
+// app whose records hold rich text, and this one is compiled once, in the
+// runtime.
+impl Clone for RichText {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            initial: self.initial.clone(),
+            pending: self.pending.clone(),
+        }
+    }
 }
 
 /// One entry of the heading outline.
@@ -404,6 +418,12 @@ impl RichTextState {
             .into_iter()
             .map(|(_, view)| Rc::clone(view))
             .collect()
+    }
+
+    /// Every heading, image and table cell by id: the same `Rc` until one
+    /// of them changes, so what is made of them can be kept until then.
+    pub fn featured_blocks(&self) -> &Rc<HashMap<String, Rc<BlockView>>> {
+        &self.featured
     }
 
     pub fn header(&self) -> &Rc<Vec<BlockView>> {

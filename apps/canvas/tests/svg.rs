@@ -1,5 +1,3 @@
-//! SVG in and out, and working from a reference picture, through the host
-//! door an agent uses.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -35,8 +33,19 @@ fn import(app: &mut TestApp<App>, svg: &str, group: &str) {
 }
 
 fn operate(app: &mut TestApp<App>, id: &'static str) -> Value {
-    let op: ActionRef<Artwork, ()> = ActionRef::new(id, &[]);
-    app.operate(op.invoke()).unwrap().unwrap().value.unwrap()
+    view(app, id, serde_json::json!({}))
+}
+
+/// A view of the artwork, waited for as the job it is.
+fn view(app: &mut TestApp<App>, id: &str, args: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(args) = args else {
+        return serde_json::Value::Null;
+    };
+    let op = <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(id, &args).unwrap();
+    app.effect(&op)
+        .unwrap()
+        .value
+        .unwrap_or(serde_json::Value::Null)
 }
 
 /// An imported SVG is one step of marks in one group: gradients, outline
@@ -89,7 +98,6 @@ fn an_svg_imports_as_one_group_of_marks() {
     assert!(refused.contains("SVG"), "{refused}");
 }
 
-/// What `export-svg` writes imports back as the same drawing.
 #[test]
 fn exported_svg_imports_back_as_the_same_marks() {
     let mut app = TestApp::<App>::new().expect("the app opens");
@@ -147,8 +155,10 @@ fn compare_scores_the_artwork_against_its_reference() {
     .unwrap();
 
     let mut app = TestApp::<App>::new().expect("the app opens");
-    let refused = app.operate(ActionRef::<Artwork, ()>::new("compare", &[]).invoke());
-    assert!(refused.is_err(), "no reference yet");
+    let compare = canvas::resource::ViewOp::Compare {
+        compare: canvas::resource::Compare::default(),
+    };
+    assert!(app.effect(&compare).is_err(), "no reference yet");
 
     let set: ActionRef<Artwork, (String, [f64; 4])> =
         ActionRef::new("set-reference", &["image", "frame"]);
@@ -203,20 +213,24 @@ fn compare_scores_the_artwork_against_its_reference() {
 fn a_group_exports_alone_cropped_to_it() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     import(&mut app, BADGE, "badge");
-    let op: ActionRef<Artwork, Vec<String>> = ActionRef::new("export-svg", &["ids"]);
-    let exported = app
-        .operate(op.with(vec!["badge".into()]))
-        .unwrap()
-        .unwrap()
-        .value
-        .unwrap();
+    let exported = view(
+        &mut app,
+        "export-svg",
+        serde_json::json!({"ids": ["badge"]}),
+    );
     let svg = exported["svg"].as_str().expect("small SVG answers inline");
     assert!(!svg.contains("tilo-canvas-ground"), "{svg}");
     assert!(
         svg.contains(r#"width="200" height="100""#),
         "cropped to the badge: {svg}"
     );
-    let refused = app.operate(op.with(vec!["nothing".into()])).unwrap_err();
+    let nothing = canvas::resource::ViewOp::ExportSvg {
+        svg: canvas::resource::ExportSvg {
+            ids: Some(vec!["nothing".into()]),
+            ..Default::default()
+        },
+    };
+    let refused = app.effect(&nothing).unwrap_err();
     assert!(refused.to_string().contains("nothing"), "{refused}");
 }
 

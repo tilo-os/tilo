@@ -210,7 +210,6 @@ mod tests {
                 Duration::new(1, 234_567_800)
             );
         }
-        // Phase `entry_wire_requires_typed_copy_time_availability`.
         {
             let missing = serde_json::json!({
                 "token":"", "path":[], "key":[], "record":5, "sequence":1,
@@ -241,7 +240,6 @@ mod tests {
                 Some(CopyTimesUnavailableReason::InvalidStandardInformationCoverage);
             assert!(!both.copy_times_valid());
         }
-        // Phase `wire_schema_two_is_permanently_refused`.
         {
             let mut sequence = Sequence::default();
             let old = Request {
@@ -257,7 +255,6 @@ mod tests {
             };
             assert!(sequence.accept(&current, "selected").is_err());
         }
-        // Phase `duplicate_request_permanently_invalidates_session`.
         {
             let mut s = Sequence::default();
             let r = Request {
@@ -271,7 +268,6 @@ mod tests {
             let r = Request { id: 1, ..r };
             assert!(s.accept(&r, "selected").is_err());
         }
-        // Phase `foreign_nonce_cannot_authorize`.
         {
             let mut s = Sequence::default();
             let r = Request {

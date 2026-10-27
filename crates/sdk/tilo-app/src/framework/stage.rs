@@ -21,7 +21,7 @@
 //! toolkit's `Widget::has_pending_visual_work`.
 //!
 //! [`stage`] is the whole capture after the fixture: the launcher calls it
-//! for `--shots`, and [`TestApp::capture`](super::testing::HeadlessApp::capture)
+//! for `--shots`, and [`HeadlessApp::capture`](super::headless::HeadlessApp::capture)
 //! composes the same frame in a test.
 
 use std::cell::RefCell;
@@ -111,9 +111,6 @@ impl Stages {
     }
 
     /// Show the item at `anchor` in every view that opens items.
-    ///
-    /// # Errors
-    /// Returns why not, when no view opens items or every one refused it.
     pub(crate) fn open(&self, anchor: &str) -> Result<(), String> {
         let mut opened = false;
         let mut refusal = None;
@@ -132,10 +129,6 @@ impl Stages {
 /// Stage `scenario` (`None` for a plain `--shots`) on a running `A`: apply
 /// its resource actions through the host's door, then let its views and
 /// surfaces stage their view state, and run the frames that settles.
-///
-/// # Errors
-/// Returns the host's refusal of a scenario action, or an error when the
-/// harness does not host `A`.
 pub fn stage<A: ResourceApp>(
     harness: &mut FrameHarness,
     scenario: Option<&str>,
@@ -270,17 +263,13 @@ const SETTLE: ui_core::time::Duration = ui_core::time::Duration::from_secs(30);
 /// sync, lay out and draw, after one frame that warms the text caches: what
 /// a `--bench` command reports. Where no native runner is linked (a browser
 /// page) there is no headless capture to time.
-///
-/// # Errors
-/// Returns why the capture could not be built, or that this build has no
-/// headless capture.
 pub fn time_frames<A: ResourceApp>(
     scenario: Option<&str>,
     frames: usize,
 ) -> Result<Vec<ui_core::time::Duration>, String> {
     #[cfg(tilo_native_runner)]
     {
-        let mut app = super::testing::HeadlessApp::<A>::capture(scenario)
+        let mut app = super::headless::HeadlessApp::<A>::capture(scenario)
             .map_err(|error| error.to_string())?;
         let harness = app.harness();
         harness.relayout();

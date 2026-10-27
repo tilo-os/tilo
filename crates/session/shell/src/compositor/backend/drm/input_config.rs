@@ -144,7 +144,6 @@ pub const REPEAT_DELAY_MIN_MS: u32 = 200;
     reason = "persisted input toggles: each is an independent, named setting mirroring the Settings pane, not a state machine"
 )]
 pub struct InputSettings {
-    /// Content-follows-finger scrolling for touchpads.
     pub touchpad_natural_scroll: bool,
     /// Content-follows-finger scrolling for mice and trackballs.
     pub mouse_natural_scroll: bool,
@@ -343,6 +342,11 @@ impl SettingsChange {
         self.0.is_empty()
     }
 
+    /// The model providers, whose models apps offer for an agent's run.
+    pub fn agent_providers(&self) -> bool {
+        self.touches(&[agent_provider_config::SETTINGS_SECTION])
+    }
+
     /// The backend's input devices: pointer and keyboard preferences
     /// (`input`), accessibility filters and cursor size (`accessibility`),
     /// and the shortcut chords tablet buttons press (`shortcuts`).
@@ -365,6 +369,11 @@ impl SettingsChange {
     /// A request to show each output's identity badge.
     pub fn display_identify(&self) -> bool {
         self.touches(&["display_identify"])
+    }
+
+    /// Settings asked to stop a terminal tab controlling the desktop.
+    pub fn desktop_control_stop(&self) -> bool {
+        self.touches(&[settings_store::desktop_control::StopRequest::SECTION])
     }
 
     /// The shortcut table the compositor matches before a client sees a key.
@@ -1252,11 +1261,11 @@ mod tests {
         );
     }
 
-    /// Long enough for every notification of a write and one stamp poll.
-    fn settle() {
-        std::thread::sleep(
-            settings_store::live::POLL_INTERVAL.saturating_add(Duration::from_millis(300)),
-        );
+    /// Re-read the document now, as the refresh thread does on a
+    /// notification or a moved stamp, so whatever the write changed has been
+    /// published before the test looks.
+    fn settle(live: &LiveSettings) {
+        let _ = live.refresh_now();
     }
 
     #[test]
@@ -1286,7 +1295,7 @@ mod tests {
                 sections(&["input"]),
                 "the rewrite must be noticed"
             );
-            settle();
+            settle(&live);
             assert_eq!(
                 follower.changed_sections(&live),
                 sections(&[]),
@@ -1358,7 +1367,7 @@ mod tests {
         // A rewrite that changes no value is nothing to do.
         let generation = live.generation();
         write(&path, "notifications", json!({"do_not_disturb": true}));
-        settle();
+        settle(&live);
         assert_eq!(live.generation(), generation);
         assert_eq!(follower.changed_sections(&live), sections(&[]));
     }

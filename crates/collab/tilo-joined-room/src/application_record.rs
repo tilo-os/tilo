@@ -16,9 +16,6 @@ pub struct ApplicationRecord {
 
 impl ApplicationRecord {
     /// Bind the SDK's exact kind to a host-verified installed declaration.
-    ///
-    /// # Errors
-    /// The route is malformed or the installed package does not declare the kind.
     pub fn declared(
         app: &str,
         record: &str,
@@ -91,7 +88,7 @@ impl NativeWorkspaceOwner {
             .map_err(|error| error.to_string())?;
         // StatePeer's normal admitted snapshot merge preserves the original
         // graph, including fields this SDK does not know; never replace it.
-        let message = candidate.peer.publish_document(
+        let message = candidate.peer.publication_mut().publish_document(
             &route.app,
             &route.record,
             document.save(),
@@ -155,7 +152,7 @@ impl NativeWorkspaceOwner {
                 |view| {
                     let changes = member_bootstrap(view, creator, key, initialization, now)?
                         .ok_or("application initialization revision changed")?;
-                    let message = view.peer().clone().publish_incremental(
+                    let message = view.peer().clone().publication_mut().publish_incremental(
                         &route.app,
                         &route.record,
                         changes,
@@ -218,7 +215,7 @@ impl NativeWorkspaceOwner {
         if candidate.peer.document(&route.app, &route.record).is_some() {
             return Ok(false);
         }
-        let message = candidate.peer.publish_document(
+        let message = candidate.peer.publication_mut().publish_document(
             &route.app,
             &route.record,
             automerge::AutoCommit::new().save(),

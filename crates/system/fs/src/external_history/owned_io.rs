@@ -82,10 +82,12 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 signal.store(true, Ordering::Release);
             });
+            // The deadline is an hour away: returning is the cancellation's
+            // doing.
             let (owned, result) = exchange(
                 client,
                 &cancel,
-                Instant::now() + Duration::from_secs(2),
+                Instant::now() + Duration::from_secs(3600),
                 |stream| {
                     let mut byte = [0];
                     stream.read_exact(&mut byte)

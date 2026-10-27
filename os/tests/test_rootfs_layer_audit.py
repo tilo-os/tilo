@@ -11,9 +11,11 @@ from pathlib import Path
 import subprocess
 import sys
 import tarfile
-import time
 import unittest
 from unittest.mock import MagicMock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
 
 spec = importlib.util.spec_from_file_location('audit', Path(__file__).resolve().parents[1] / 'dev/audit-rootfs-layers.py')
 audit = importlib.util.module_from_spec(spec)
@@ -488,13 +490,17 @@ class LayerAuditTests(unittest.TestCase):
             if not (hasattr(os, 'killpg')):
                 self.skipTest('process-group deadline requires POSIX')
             original = subprocess.Popen
+            exports = []
             def stalled(*args, **kwargs):
-                return original([sys.executable, '-c', 'import time; time.sleep(60)'], **kwargs)
-            started = time.monotonic()
+                exports.append(original([sys.executable, '-c', 'import time; time.sleep(3600)'], **kwargs))
+                return exports[-1]
             with patch.object(audit.subprocess, 'Popen', side_effect=stalled):
                 with self.assertRaises(audit.AuditError):
                     audit.audit_image('sha256:' + 'a' * 64, timeout=1)
-            self.assertLess(time.monotonic() - started, 5)
+            # Stopped at the deadline, not waited out: it would sleep far longer.
+            self.assertTrue(exports)
+            for export in exports:
+                self.assertLess(export.wait(timeout=HANG_BOUND), 0, 'the stalled export must be killed')
 
 
 if __name__ == '__main__':

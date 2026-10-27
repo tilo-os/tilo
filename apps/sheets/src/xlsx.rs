@@ -13,12 +13,12 @@
 //! `table:formula` attribute on the `.ods` path) instead of collapsing to its
 //! last computed value — a re-import restores the live formula.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use tilo_doc::sheet::a1::{make_ref, parse_ref};
 use tilo_doc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
-use tilo_doc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs};
+use tilo_doc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs, number_format_codes};
 use tilo_doc_codecs::{ParsedSheet, XlsxCodec};
 
 use crate::model::{CellFormat, CellValue, format_number_general};
@@ -63,6 +63,8 @@ impl ImportedCell {
 #[derive(Clone, Debug, Default)]
 pub struct SheetTable {
     pub name: String,
+    /// Whether the file keeps the sheet hidden.
+    pub hidden: bool,
     /// `rows[r][c]` — rows may be ragged.
     pub rows: Vec<Vec<Option<ImportedCell>>>,
 }
@@ -113,6 +115,7 @@ impl SheetTable {
         }
         Self {
             name: name.to_string(),
+            hidden: false,
             rows,
         }
     }
@@ -130,29 +133,66 @@ pub fn read_xlsx(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
 }
 
 /// Read every sheet of the `.xlsx` workbook `bytes` into tables.
-///
-/// # Errors
-///
-/// As [`read_xlsx`], for a package that is already read.
 pub fn parse_xlsx(bytes: &[u8]) -> anyhow::Result<Vec<SheetTable>> {
     let parsed = XlsxCodec::parse(bytes)?;
-    // Excel stores dates as serial numbers; the cell's number format is the
-    // only sign one is a date.
-    let dates = parsed
+    // Excel stores dates, money and percentages as plain numbers; a cell's
+    // style is the only sign of what it shows.
+    let formats = parsed
         .preserved
         .get("xl/styles.xml")
-        .map(|styles| date_style_refs(styles))
+        .map(|styles| style_formats(styles))
         .unwrap_or_default();
-    tables_from_parsed(parsed.sheets, &dates)
+    tables_from_parsed(parsed.sheets, &formats)
+}
+
+/// What each cell style of a `styles.xml` shows a number as, by style index:
+/// a date, a percentage, an amount of money or a grouped number.
+fn style_formats(styles: &[u8]) -> BTreeMap<String, CellFormat> {
+    let dates = date_style_refs(styles);
+    let mut formats: BTreeMap<String, CellFormat> = number_format_codes(styles)
+        .into_iter()
+        .filter_map(|(style, code)| Some((style, format_of_code(&code)?)))
+        .collect();
+    for style in dates {
+        formats.insert(style, CellFormat::Date(DateStyle::Iso));
+    }
+    formats
+}
+
+/// The Sheets format an Excel number-format code shows: a percentage, money
+/// by its symbol, a number with digit grouping or decimals; `None` for the
+/// general format and codes Sheets has no form for.
+fn format_of_code(code: &str) -> Option<CellFormat> {
+    use tilo_locale::Currency;
+    // Only the first (positive) section counts.
+    let first = code.split(';').next().unwrap_or(code);
+    let symbols = [
+        ("$", Currency::USD),
+        ("\u{20AC}", Currency::EUR),
+        ("\u{00A3}", Currency::GBP),
+        ("\u{00A5}", Currency::JPY),
+        ("\u{20B9}", Currency::INR),
+        ("CHF", Currency::CHF),
+        ("EUR", Currency::EUR),
+        ("GBP", Currency::GBP),
+    ];
+    if first.contains('%') {
+        return Some(CellFormat::Percent);
+    }
+    if let Some((_, currency)) = symbols.iter().find(|(symbol, _)| first.contains(symbol)) {
+        return Some(CellFormat::Currency(*currency));
+    }
+    (first.contains('#') || first.contains("0.0") || first.contains(",0"))
+        .then_some(CellFormat::Number)
 }
 
 /// Materialise parsed tabs as tables, turning each cell into what Sheets
-/// stores: numbers in canonical form (`Date` when their style is in
-/// `date_styles`), text, `TRUE`/`FALSE` booleans, and formulas normalised to
-/// `=`-prefixed A1 form.
+/// stores: numbers in canonical form, in the format their cell style shows
+/// (`style_formats`), text, `TRUE`/`FALSE` booleans, and formulas normalised
+/// to `=`-prefixed A1 form.
 pub(crate) fn tables_from_parsed(
     sheets: Vec<ParsedSheet>,
-    date_styles: &BTreeSet<String>,
+    style_formats: &BTreeMap<String, CellFormat>,
 ) -> anyhow::Result<Vec<SheetTable>> {
     sheets
         .into_iter()
@@ -162,7 +202,7 @@ pub(crate) fn tables_from_parsed(
                 let Some((col, row)) = parse_ref(&reference) else {
                     continue;
                 };
-                match imported_cell(input, date_styles) {
+                match imported_cell(input, style_formats) {
                     Some(cell) => placed.insert((row, col), cell),
                     None => placed.remove(&(row, col)),
                 };
@@ -195,6 +235,7 @@ pub(crate) fn tables_from_parsed(
                 }
             }
             Ok(SheetTable {
+                hidden: sheet.hidden,
                 name: sheet.name,
                 rows,
             })
@@ -204,7 +245,15 @@ pub(crate) fn tables_from_parsed(
 
 /// One parsed cell as Sheets stores it, or `None` for a blank (a style-only
 /// cell carries nothing Sheets keeps).
-fn imported_cell(input: CellInput, date_styles: &BTreeSet<String>) -> Option<ImportedCell> {
+fn imported_cell(
+    input: CellInput,
+    style_formats: &BTreeMap<String, CellFormat>,
+) -> Option<ImportedCell> {
+    let styled = input
+        .style
+        .as_ref()
+        .and_then(|style| style_formats.get(style))
+        .copied();
     let formula = input
         .formula
         .as_deref()
@@ -212,18 +261,10 @@ fn imported_cell(input: CellInput, date_styles: &BTreeSet<String>) -> Option<Imp
         .map(normalize_read_formula);
     let value = match input.cell_type {
         CellType::Number => match input.value.trim().parse::<f64>() {
-            Ok(n) => {
-                let is_date = input
-                    .style
-                    .as_ref()
-                    .is_some_and(|style| date_styles.contains(style));
-                let format = if is_date {
-                    CellFormat::Date(DateStyle::Iso)
-                } else {
-                    CellFormat::General
-                };
-                Some(ImportedCell::value(format_number_general(n), format))
-            }
+            Ok(n) => Some(ImportedCell::value(
+                format_number_general(n),
+                styled.unwrap_or(CellFormat::General),
+            )),
             Err(_) => (!input.value.is_empty())
                 .then(|| ImportedCell::value(input.value, CellFormat::Text)),
         },
@@ -246,7 +287,7 @@ fn imported_cell(input: CellInput, date_styles: &BTreeSet<String>) -> Option<Imp
         }
         (None, Some(formula)) => Some(ImportedCell {
             raw: String::new(),
-            format: CellFormat::General,
+            format: styled.unwrap_or(CellFormat::General),
             formula: Some(formula),
             bold: false,
         }),
@@ -399,6 +440,7 @@ pub(crate) fn snapshot_of(
                 id: index.to_string(),
                 name: table.name.clone(),
                 cells,
+                hidden: table.hidden,
             }
         })
         .collect();
@@ -506,18 +548,36 @@ mod tests {
     use super::*;
     use tilo_locale::Currency;
 
-    /// XLSX values/formats, colliding tab names, formulas and formula normalisation.
+    #[test]
+    fn a_hidden_sheet_stays_hidden_through_an_xlsx() {
+        let table = |name: &str, hidden: bool| SheetTable {
+            name: name.into(),
+            hidden,
+            rows: vec![vec![Some(ImportedCell::value(
+                "1".into(),
+                CellFormat::General,
+            ))]],
+        };
+        let bytes = xlsx_bytes(&[table("Shown", false), table("Rates", true)]).unwrap();
+        let tables = parse_xlsx(&bytes).unwrap();
+        let hidden: Vec<(&str, bool)> = tables
+            .iter()
+            .map(|table| (table.name.as_str(), table.hidden))
+            .collect();
+        assert_eq!(hidden, [("Shown", false), ("Rates", true)]);
+    }
+
     #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "cases merged from separate tests; each case stays self-contained"
     )]
     fn xlsx_round_trips_values_formats_tabs_and_formulas() {
-        // Case `xlsx_round_trips_values_and_basic_formats`.
         {
             let dir = std::env::temp_dir();
             let path = dir.join("sheets-xlsx-test.xlsx");
             let table = SheetTable {
+                hidden: false,
                 name: "Data".into(),
                 rows: vec![
                     vec![
@@ -541,7 +601,6 @@ mod tests {
             let back = read_xlsx(&path).unwrap();
             assert_eq!(back.len(), 1);
             assert_eq!(back[0].name, "Data");
-            // Header text survived.
             assert_eq!(back[0].rows[0][0].as_ref().unwrap().raw, "Item");
             // The currency number survived as 100.
             let price = back[0].rows[1][1].as_ref().unwrap();
@@ -552,19 +611,21 @@ mod tests {
             let _ = std::fs::remove_file(&path);
         }
 
-        // Case `xlsx_export_preserves_tabs_whose_sanitized_names_collide`.
         {
             let path = std::env::temp_dir().join("sheets-xlsx-colliding-tabs.xlsx");
             let tables = vec![
                 SheetTable {
+                    hidden: false,
                     name: "Roadmap/2026".into(),
                     rows: vec![],
                 },
                 SheetTable {
+                    hidden: false,
                     name: "roadmap?2026".into(),
                     rows: vec![],
                 },
                 SheetTable {
+                    hidden: false,
                     name: "Roadmap_2026".into(),
                     rows: vec![],
                 },
@@ -646,14 +707,11 @@ mod tests {
             );
         }
 
-        // Case `read_formula_normalization`.
         {
             // XLSX bodies have no leading '=' and plain A1 refs.
             assert_eq!(normalize_read_formula("SUM(A1:A3)"), "=SUM(A1:A3)");
-            // ODF formulas carry a namespace prefix and bracketed refs.
             assert_eq!(normalize_read_formula("of:=SUM([.A1:.A3])"), "=SUM(A1:A3)");
             assert_eq!(normalize_read_formula("of:=[.B2]+[.C2]"), "=B2+C2");
-            // A cross-table qualifier is dropped down to the bare cell.
             assert_eq!(normalize_read_formula("of:=[.$A$1]"), "=$A$1");
         }
     }

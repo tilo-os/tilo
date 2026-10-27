@@ -13,7 +13,7 @@
 //! agent, a collaborator, an undo: after every change the calendar queues
 //! the upload or delete of what differs from what each server last
 //! confirmed ([`Calendar::remote`]) in its outboxes, which the device
-//! holding the account carries out ([`crate::outbox`]).
+//! holding the account carries out (`crate::outbox`).
 
 use std::rc::Rc;
 
@@ -108,7 +108,9 @@ impl Calendar {
     /// New event
     ///
     /// Adds an event, on the local calendar unless it names a remote one.
-    #[action]
+    /// One on the local calendar stays in the record; one on a remote
+    /// calendar is queued for its server.
+    #[action(local = calendar::NewEvent::stays_local)]
     pub fn new_event(
         &mut self,
         cx: &mut ActionCx,
@@ -185,10 +187,11 @@ impl Calendar {
             .map(|project| project.order.saturating_add(1))
             .max()
             .unwrap_or(0);
+        let color = Palette::next_after(self.projects.iter().map(|project| project.color));
         self.projects.push(Project {
             id: cx.uuid(),
             name: name.to_owned(),
-            color: Palette::Indigo,
+            color,
             order,
         });
         Ok(())
@@ -226,6 +229,27 @@ impl Calendar {
             .ok_or_else(|| Refusal::new("that event is gone"))?;
         event.start = start;
         event.end = end;
+        event.end_later_fold = false;
+        Ok(())
+    }
+
+    /// Set start
+    ///
+    /// Moves an event to start at another time, keeping how long it lasts:
+    /// what a caller who knows only the new start means by moving it.
+    #[action(item = events)]
+    pub fn set_start(
+        &mut self,
+        event: &Id,
+        #[param("When it starts (YYYY-MM-DDTHH:MM)")] start: NaiveDateTime,
+    ) -> Result<(), Refusal> {
+        let event = self
+            .events
+            .find_mut(event)
+            .ok_or_else(|| Refusal::new("that event is gone"))?;
+        let length = event.end - event.start;
+        event.start = start;
+        event.end = start + length;
         event.end_later_fold = false;
         Ok(())
     }
@@ -353,7 +377,7 @@ impl Calendar {
     ///
     /// Adds the events and tasks of a calendar file, leaving out what the
     /// calendar already holds.
-    #[action(id = "import-items")]
+    #[action(id = "import-items", audience = "agents")]
     pub fn import_items(
         &mut self,
         #[param("The events, retaining their source identities")] events: Vec<EventData>,
@@ -421,7 +445,7 @@ impl Calendar {
     ///
     /// Writes an event as its server holds it, which therefore needs no
     /// upload.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn adopt_remote_event(
         &mut self,
         #[param("The event as the server holds it")] event: EventData,
@@ -445,7 +469,7 @@ impl Calendar {
     /// Adopt a server's task
     ///
     /// Writes a task as its server holds it.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn adopt_remote_task(
         &mut self,
         #[param("The task as the server holds it")] task: TaskData,
@@ -468,7 +492,7 @@ impl Calendar {
     /// Drop what a server removed
     ///
     /// Removes an item its server no longer holds.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn drop_remote_item(&mut self, #[param("The event or task")] item: Uuid) {
         let id = key(item);
         self.events.take(&id);
@@ -480,7 +504,7 @@ impl Calendar {
     /// Record an upload
     ///
     /// Records that a server took the version of an event it was sent.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn server_applied(
         &mut self,
         #[param("The event")] event: Uuid,
@@ -495,7 +519,7 @@ impl Calendar {
     /// Record a server delete
     ///
     /// Records that a server deleted an item it was told to.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn server_removed(&mut self, #[param("The event")] item: Uuid) {
         self.remote.remove(&item.to_string());
     }
@@ -503,7 +527,7 @@ impl Calendar {
     /// Record a pull
     ///
     /// Remembers where a remote calendar's last pull ended.
-    #[action(external)]
+    #[action(external, audience = "agents")]
     pub fn pulled(
         &mut self,
         #[param("The remote calendar's id")] calendar: String,
@@ -828,23 +852,43 @@ pub enum CalendarEffect {
     /// Sync calendars
     ///
     /// Pulls the calendars of this device's accounts from their servers.
-    #[effect(job, device_only)]
+    #[effect(job)]
     Sync,
     /// Export ICS
     ///
     /// Saves every event and task to an iCalendar file you choose.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ExportIcs,
+    /// Export ICS content
+    ///
+    /// Keeps every event and task, or one event, as an iCalendar file in
+    /// the room's content and answers its content address. No file is
+    /// chosen or written, so it needs no one attending: the file stays in
+    /// the room until someone hands it on.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportIcsContent {
+        #[param("The event's id; every event and task when omitted")]
+        event: Option<Uuid>,
+    },
     /// Import ICS
     ///
     /// Imports the events and tasks of an iCalendar file you choose.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ImportIcs,
+    /// Invite from Contacts
+    ///
+    /// Shows the people of your address book to add to an event; each one
+    /// is added only once you confirm.
+    #[effect(view)]
+    ContactAttendees {
+        #[param("Event id")]
+        event_id: String,
+    },
     /// Prepare invitation in Mail
     ///
     /// Answers with the arguments of Mail's invitation draft for one attendee;
     /// nothing is sent.
-    #[effect(returns)]
+    #[effect(returns, audience = "agents")]
     PrepareInMail {
         #[param("Event id")]
         event_id: String,
@@ -1067,8 +1111,32 @@ fn local_path(target: &str) -> Result<std::path::PathBuf, String> {
 /// Importing the events and tasks of the iCalendar `source`, or `None` when
 /// it holds neither.
 pub(crate) fn import(source: &str) -> Option<Invoke<Calendar>> {
-    let (events, tasks) = crate::actions::import_payload(source)?;
-    Some(Calendar::IMPORT_ITEMS.with(calendar::ImportItems { events, tasks }))
+    import_reporting(source).map(|(import, _)| import)
+}
+
+/// [`import`], with the TZIDs in `source` that name no zone the calendar
+/// knows: their events keep the times as written.
+pub(crate) fn import_reporting(source: &str) -> Option<(Invoke<Calendar>, Vec<String>)> {
+    let parsed = crate::ics::parse_calendar(source);
+    let (events, tasks) = crate::actions::import_parsed(&parsed)?;
+    Some((
+        Calendar::IMPORT_ITEMS.with(calendar::ImportItems { events, tasks }),
+        parsed.unknown_zones,
+    ))
+}
+
+/// What an import says once it is done: which file, and, when a time zone
+/// it names is unknown, that its times stay as written.
+pub(crate) fn imported_status(file: &str, unknown_zones: &[String]) -> String {
+    match unknown_zones {
+        [] => format!("Imported calendar items from {file}"),
+        [zone] => format!(
+            "Imported calendar items from {file}. Times in {zone} stay as written, as that time zone is unknown"
+        ),
+        _ => format!(
+            "Imported calendar items from {file}. Times in unknown time zones stay as written"
+        ),
+    }
 }
 
 /// The search scope holding every event.
@@ -1083,14 +1151,22 @@ fn project_scope(id: crate::model::Id) -> String {
 
 /// What the binary runs instead of opening a window.
 ///
-/// `--probe-timezone-engine VALUE` (the value is ignored) runs the time-zone
-/// database's self-check. It needs `runtime-engine`, the release build, where
-/// that code is in `libtilo_timezone_engine.so`; the check proves Calendar
-/// loads that library and runs it.
-const COMMANDS: &[ui::framework::Command] = &[ui::framework::Command {
-    option: "--probe-timezone-engine",
-    run: probe_timezone_engine,
-}];
+/// `--probe-timezone-engine VALUE` and `--probe-contact-directory-engine
+/// VALUE` (the value is ignored) run the self-checks of the time-zone
+/// database and of the contact directory. They need `runtime-engine`, the
+/// release build, where that code is in `libtilo_timezone_engine.so` and
+/// `libtilo_contact_directory_engine.so`; the checks prove Calendar loads
+/// those libraries and runs them.
+const COMMANDS: &[ui::framework::Command] = &[
+    ui::framework::Command {
+        option: "--probe-timezone-engine",
+        run: probe_timezone_engine,
+    },
+    ui::framework::Command {
+        option: "--probe-contact-directory-engine",
+        run: probe_contact_directory_engine,
+    },
+];
 
 #[cfg(feature = "runtime-engine")]
 fn probe_timezone_engine(_: &str) -> Result<(), String> {
@@ -1102,6 +1178,18 @@ fn probe_timezone_engine(_: &str) -> Result<(), String> {
 #[cfg(not(feature = "runtime-engine"))]
 fn probe_timezone_engine(_: &str) -> Result<(), String> {
     Err("the time-zone engine library needs the `runtime-engine` feature".to_string())
+}
+
+#[cfg(feature = "runtime-engine")]
+fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
+    let report = tilo_contact_directory_engine::self_check()?;
+    println!("calendar --probe-contact-directory-engine: {report}");
+    Ok(())
+}
+
+#[cfg(not(feature = "runtime-engine"))]
+fn probe_contact_directory_engine(_: &str) -> Result<(), String> {
+    Err("the contact directory's engine library needs the `runtime-engine` feature".to_string())
 }
 
 impl ResourceApp for CalendarShell {
@@ -1130,11 +1218,29 @@ impl ResourceApp for CalendarShell {
             opens.borrow_mut().push(resource);
             Ok(())
         });
-        cx.surface(app)
+        // The shell keeps the sidebar (the lists, the calendars and the
+        // month), its width, its drawer in a narrow window and its keys;
+        // the calendar is the window's point, so the drawer floats over it.
+        let places = ui::widget::NavFeed::new();
+        let month = ui::widget::DateFeed::new();
+        let shell = ui::widget::NavShell::new()
+            .with_id("calendar-shell")
+            .content_kind(ui::widget::ContentKind::Document)
+            .with_window_toolbar();
+        let app = app.in_shell(&places, &month, shell.window_bar_link());
+        Box::new(
+            shell
+                .sidebar(crate::app::sidebar(&places, &month))
+                .content(cx.surface(app)),
+        )
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
         Some(&CATALOG)
+    }
+
+    fn import_record(context: &ui::application::HostContext) -> Result<(), String> {
+        crate::import_inbox::import(context)
     }
 
     /// A calendar file the calendar is opened with is imported into it: the
@@ -1217,6 +1323,9 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
         {
             self.follow_person_accounts(accounts);
         }
+        if cx.mode().is_live() {
+            self.follow_contacts(cx.shared_person::<tilo_contact_directory::ContactDirectory>());
+        }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -1241,7 +1350,24 @@ impl ResourceSurface<Calendar, CalendarEffect> for CalendarApp {
     fn live_rows(&self) -> Vec<LiveRow> {
         let mut rows = self.collection_rows();
         rows.extend(self.attendee_rows());
+        rows.extend(self.contact_rows());
         rows
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.contact_row(id)
+    }
+
+    const ROW_DECLARATIONS: bool = true;
+
+    /// A Contacts choice adds its person to the event through `invite`.
+    fn row_declarations(&self, row: &str) -> Vec<tilo_resource::ActionDecl<Calendar>> {
+        self.contact_declarations(row)
+    }
+
+    /// The people of the address book the Contacts picker offers.
+    fn search_entries(&self) -> Vec<SearchEntry> {
+        self.contact_search_entries()
     }
 }
 
@@ -1272,5 +1398,37 @@ pub(crate) fn at(date: chrono::NaiveDate, hour: u32, minute: u32) -> NaiveDateTi
     date.and_hms_opt(hour, minute, 0).expect("a time of day")
 }
 
+impl calendar::NewEvent {
+    /// Whether the event goes on the local calendar, so nothing is queued
+    /// for a server: [`Calendar::new_event`]'s kind for this invocation.
+    #[must_use]
+    pub fn stays_local(&self) -> bool {
+        self.event.calendar_id.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::CalendarShell::scenarios() {
+            let mut app = TestApp::<super::CalendarShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

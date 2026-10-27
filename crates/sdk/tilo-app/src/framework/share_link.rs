@@ -13,7 +13,7 @@ use tilo_reference::link::{
 };
 use tilo_resource::share::{SHARE_INVITE_TYPE, SHARE_TYPE, ShareRequest};
 use ui_core::time::{Duration, Instant};
-use ui_core::{CatalogueCall, LocalState, RemoteActions, RemoteCall};
+use ui_core::{Arrival, CatalogueCall, RemoteActions};
 
 /// How long a minting waits for the host's locator.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -42,7 +42,7 @@ struct Minting {
 struct Pending {
     invocation: tilo_actions::InvocationId,
     minting: Minting,
-    call: LocalState<CatalogueCall>,
+    call: CatalogueCall,
     started: Instant,
     /// A person asked through a view: the URL goes to the clipboard.
     copy: bool,
@@ -70,7 +70,6 @@ impl Default for ShareLinks {
     }
 }
 
-/// Whether `type_id` is one of the link operations.
 pub(crate) fn handles(type_id: &str) -> bool {
     type_id == SHARE_TYPE || type_id == SHARE_INVITE_TYPE
 }
@@ -222,11 +221,11 @@ impl ShareLinks {
 /// The URL `pending`'s host answer makes, once it has answered.
 fn settled(pending: &Pending) -> Option<Result<String, String>> {
     pending.call.with(|call| match call {
-        RemoteCall::Pending => None,
-        RemoteCall::Refused(error) => Some(Err(format!(
+        Arrival::Pending { .. } => None,
+        Arrival::Failed(error) => Some(Err(format!(
             "The workspace's host would not look the resource up: {error}"
         ))),
-        RemoteCall::Done(page) => Some(render(&pending.minting, page)),
+        Arrival::Ready(page) => Some(render(&pending.minting, page)),
     })
 }
 
@@ -387,6 +386,7 @@ fn render_at(
         record: Some(minting.record.clone()),
         resource: minting.resource.clone(),
         view: minting.view.clone(),
+        discuss: None,
     };
     Link {
         mode: minting.mode,

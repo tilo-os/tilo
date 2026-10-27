@@ -226,13 +226,20 @@ fn apply(
         if !is_key(id, &cert.device_public_key) {
             return Err(ImportError::IdentityKey);
         }
-        let verified = if let Some(known) = certificates.get(&cert.device_public_key) {
-            if known.as_ref() != cert {
-                return Err(ImportError::CertificateConflict);
+        let verified = match certificates.get(&cert.device_public_key) {
+            Some(known) if known.as_ref() == cert => known.clone(),
+            // The person's root renewed the device's certificate: the same
+            // member, under the certificate that replaces the one it held.
+            Some(known) if crate::state::certificate_renewal::renews(cert, known.as_ref()) => {
+                cert_work.certificate(cert, Some(now_ns(now)))?
             }
-            known.clone()
-        } else {
-            cert_work.certificate(cert, Some(now_ns(now)))?
+            // An older state of the room, from before the renewal it holds:
+            // the renewal stays.
+            Some(known) if crate::state::certificate_renewal::renews(known.as_ref(), cert) => {
+                known.clone()
+            }
+            Some(_) => return Err(ImportError::CertificateConflict),
+            None => cert_work.certificate(cert, Some(now_ns(now)))?,
         };
         if !original.contains_key(&cert.device_public_key)
             && cert.user_public_key != authority.user_public_key
@@ -254,7 +261,8 @@ fn apply(
                 .insert(entry.clone())
                 .map_err(ImportError::Revocation)?;
         }
-        changed |= certificates.get(&cert.device_public_key).map(AsRef::as_ref) != Some(cert);
+        changed |=
+            certificates.get(&cert.device_public_key).map(AsRef::as_ref) != Some(verified.as_ref());
         cert_work.tree::<[u8; 32], VerifiedCertificate>()?;
         certificates.insert(cert.device_public_key, verified);
     }

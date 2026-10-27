@@ -48,6 +48,7 @@ What a sandboxed app is actually presented with. It names none of this; the laun
 - Read-write: exactly one directory, `<data home>/tilo-rooms/<room>/<pkg-id>` → `/run/tilo/app`, with `HOME` and every `XDG_*` pointed inside it. Two rooms are two directories, so an app opened in one room cannot read what it wrote in another. Plus the compositor's public Wayland socket → `/run/user/1000/wayland-0`.
 - `env`: `WAYLAND_DISPLAY=wayland-0`, `XDG_RUNTIME_DIR=/run/user/1000`, and `TILO_APP_DIR`, `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` all under `/run/tilo/app`.
 - Private DBus session bus per workspace.
+- The AT-SPI bus, through its own filtered proxy (`launcher::dbus_proxy`): the app may embed its accessible tree in the registry and call nothing else. The proxy cannot filter calls into the app, so the launcher also sets `TILO_ATSPI_READ_ONLY=1`, and the app's bridge (the vendored `accesskit_unix`) serves its tree read-only to every other client: names, roles, states, text, values and events answer, while `Action.DoAction`, `EditableText`, setting `Value.CurrentValue`, selecting, `Component.GrabFocus` and moving the caret are refused with `AccessDenied`. A method call on the bus carries no proof that a person asked for it; acting on an app goes through its published actions, attributed to whoever invoked them, or the person's own input, which the compositor sees and which is how the built-in reader activates. The dev image (`/usr/lib/tilo/image-flavour` is `dev`) leaves the variable unset for its AT-SPI release gates.
 - Namespaces: `bwrap --unshare-all` (`launcher::sandbox`), so every app gets its own user, IPC, PID, network, UTS and cgroup namespace. The network namespace is shared back (`--share-net`) only when the app may reach any host (a `*` network grant, or host networking); an allowlist keeps the empty namespace and goes through the egress gate. Invited peers' apps run isolated; the owner's apps share the host network unless overridden.
 
 Anything outside that set is a capability the user grants at runtime, which becomes a bind on the app's next launch (`launcher::capabilities`).
@@ -250,9 +251,8 @@ two tenants' rooms, where a member one room lets invite, a member of the
 other and the host's delegated agent try every governance, host and member
 action, the administration door, subscription, write, catalogue and
 compute door against the room that is not theirs, and
-every refusal is checked against that room's governance afterwards. The
-`Security / tenant and agent isolation` workflow
-(`.forgejo/workflows/security-isolation.yml`) runs it nightly and on
+every refusal is checked against that room's governance afterwards. t's
+`security-isolation` check runs it nightly and on
 demand with the room-access, admission, revocation and agent-confinement
 suites, against the default relay build and the `agents` build the room
 service ships.
@@ -299,6 +299,31 @@ room's verified agents when it subscribes and whenever they change
 (`ChannelContext.historyAgents`). A device whose delegation does not verify
 for exactly that device stays an unknown participant. These lists are
 presentation only; nothing is admitted by them.
+
+An agent that acts through its person's own session has no key of its own:
+it invokes an app's action, and the write lands through the mount, signed by
+this device for its person like any other. Before Files writes for an
+invocation, it names the paths it is about to write and which of its own
+live invocations they are for (`runtime_collab::write_attribution`); the
+envelope cannot name an actor. The broker resolves the invocation against its
+own custody of that Files process's pending invocations, exactly as the
+clipboard does, and takes the actor from there; only an agent acting for the
+person whose session Files runs in is ever named, and anything else is
+refused. The shell's own clipboard transfers name it the same way, from the
+custody behind their command. The session then leases that attribution to
+the filesystem for those paths, for at most a minute, over
+`SessionBlobs.attributeWrites` on the document media socket, which no sandbox
+reaches (`crates/system/fs/src/write_attribution.rs`). Each
+version the mount then makes of a leased path is followed by a signed
+`RecordOperationV1::AttributeVersion` (`record_replication.rs`). The
+attribution names the agent; the person it acted for is always the version's
+own signer. Peers accept it only from the device that signed that same
+version, never for another actor's version, never naming anything but an
+agent, and never changed once made. The operation travels alone at record
+envelope version 5, so every other operation keeps its bytes and older
+devices keep reading them. Files' history read returns these attributions
+beside the versions, and the history rows name the agent, for its person.
+None of it grants anything.
 
 ### Load hints beside local records
 
@@ -401,7 +426,8 @@ Step 3 needs something to empty that queue. The compositor drains `PromptQueueHa
 - **The dialog is the prompt.** Choosing a file in the compositor-owned dialog is the act of authorisation, and the grant names exactly the path chosen: read-only for `OpenFile`, read-write for `SaveFile`, session-scoped. A separate prompt must not grant a broad path before the user chooses one.
 - A path outside the profile is reachable only through a capability the user grants, which becomes a bind at the next launch of that app (`launcher::capabilities`, the enforcement point).
 
-  **Next launch is the operative phrase.** A confined app's mount namespace is fixed when `bwrap` creates it, so a grant made mid-session cannot add anything to the namespace the app is already living in. `crates/session/shell/tests/portal_grant_reaches_sandbox.rs` asserts the grant→bind chain end to end; what it asserts is the *next* launch. For a running app the portal additionally publishes the pick through `shell::portal::doc_store`, which is where the three candidate mechanisms — a launch-time grant, a live re-bind, and a document store — are compared and one is chosen. The shipped store is `HostPathStore`, which is correct for callers sharing the compositor's namespace and reports `reaches_confined_apps() == false` rather than pretending otherwise; the compositor logs that at startup.
+  **Next launch is the operative phrase.** A confined app's mount namespace is fixed when `bwrap` creates it, so a grant made mid-session cannot add anything to the namespace the app is already living in. `crates/session/shell/tests/portal_grant_reaches_sandbox.rs` asserts the grant→bind chain end to end; what it asserts is the *next* launch. For a running app the portal additionally publishes the pick through `shell::portal::doc_store`, which is where the three candidate mechanisms — a launch-time grant, a live re-bind, and a document store — are compared and one is chosen. The D-Bus backend keeps `HostPathStore`: `xdg-desktop-portal` exports what it returns through `xdg-document-portal` for a confined caller, so it reports `reaches_confined_apps() == false` rather than pretending otherwise; the compositor logs that at startup.
+- **The shell's own chooser gives through the document store** (`crates/system/documents`, `tilo-documents`). The launcher hands every app launched into a room a chooser connection that names the app and room before the sandbox starts (`compositor::chooser_service`). A path request (`Request::Pick`: Open, Save, folder) shows the normal picker over everything the person can reach, and choosing is the consent: the shell adds exactly the chosen item to that app's documents and answers the path inside the sandbox, `/run/tilo/documents/<token>/<name>`. An Open gives the file to read; a Save gives that one file to write, created if new, plus its save sibling (`.<name>.tilo-save`) so a save replaces it whole; a folder gives the folder and what is under it, to read, or to change for a writable-folder request. Save and writable folders are refused under the lockdown's `disable-save-to-disk`. The compositor mounts the store (FUSE, owner-only, `nosuid,nodev,noexec`) at `$XDG_RUNTIME_DIR/tilo/documents` before any app starts; the launcher binds only `<room>/<app>` of it at `/run/tilo/documents` (`--bind-try`) with the one Landlock rule `--rw-noexec /run/tilo/documents`. So the mount topology never changes and no capability, bind or Landlock rule is widened by a choice: the boundary is the store, which answers an app only for its own room and package, re-checks the table on every operation (taking a document back is immediate), lists nothing above an app's view, and reaches the host only by `openat2` from the chosen item with `RESOLVE_BENEATH` (plus `RESOLVE_NO_SYMLINKS` for a single file), so `..` and links cannot leave what was chosen. Choices are private to the device: kept in a private state file (`tilo/documents.json`, mode 0600) so a recent file reopens at the same path in a later session, and never written into the room's capability list, which would replicate them to peers and widen the app's next launch. This applies when the asking app's workspace is the person's on screen (the same owner check contents selections use); otherwise, or where the store cannot be mounted, the chooser reaches only what the workspace grants, as before.
 
 **The mount is the second enforcement point** (`crates/system/fs/src/acl.rs`). `fs --acl FILE` binds a capability list to the mount, and every `open`/`read`/`write` is answered by `collab_types::decide_capability` — the same function the compositor calls, so a path readable through one and not the other is a bug rather than a policy. Without `--acl` the mount keeps the Unix-veneer-only behaviour, which is the documented opt-out.
 
@@ -574,27 +600,41 @@ What it can read depends on the channel and on its certificate:
 ## What leaves the device by default
 
 Tilo's own components carry no telemetry, analytics or crash-upload client: no
-such crate is in the build (`tools/policy/check_no_telemetry.py`), panics are written only to `~/.cache/tilo/crashes/`
-(`crash_log`), and the image removes `systemd-coredump`. A feedback report
+such crate is in the build (`tools/policy/check_no_telemetry.py`), panics and desktop freezes are written only to
+`~/.cache/tilo/crashes/` (`crash_log`), the kernel's records of the computer stopping (pstore) are copied
+there at the next start (`shell::crash_records`), and the image removes `systemd-coredump`. Settings → About
+lists those records and an agent reads them through the host's `tilo.crash-records` actions, under the same
+grants as Settings; neither sends one anywhere. A feedback report
 leaves only when the person has configured a destination room and approved the
 reviewed report; it travels to that room over the collaboration transport,
 never to a Tilo service (`docs/architecture/feedback.md`). What does leave,
 without anyone asking each time:
 
-- **number 0's iroh infrastructure.** Every peer-to-peer endpoint (the shell,
-  fs, the initrd's sibling unlock, the app-registry transport, `tilo-relay`)
-  binds with iroh's `presets::N0`. That preset publishes a signed record of the
+- **number 0's iroh infrastructure.** Tilo keeps n0's public relays
+  (`*.relay.n0.iroh.link`) and its DNS directory at `dns.iroh.link` as the
+  way two devices find each other without a Tilo-operated server: the
+  alternative is hosting both, which does not remove the disclosure, only
+  chooses who receives it. An endpoint publishes a signed record of its
   endpoint id — this device's public key — and its home relay URL (no IP
-  addresses) to n0's DNS service at `dns.iroh.link`, re-sent when it changes
-  and every five minutes, and looks peers up there; n0 sees the requesting IP
-  and the key. The shell holds n0's public relays (`*.relay.n0.iroh.link`)
-  back until something needs the device reachable — a shared room, an invite,
-  another of the person's devices — and lets them rest five minutes after the
-  last need (`endpoint-reachability`); fs mounts, sibling unlock and the
-  registry transport use them from the start. A relay sees IP addresses,
-  endpoint ids, which peers talk, timing and sizes; never content. Whether a
-  desktop whose relays are dormant still publishes to n0's DNS is not pinned
-  by a test.
+  addresses) and looks peers up there, so n0 sees the requesting IP and the
+  key. A relay sees IP addresses, endpoint ids, which peers talk, timing and
+  sizes; never content.
+  What is *published* is gated, in `tilo-endpoint-reachability`'s
+  `directory` module and nowhere else. The shell holds n0's relays back until
+  something needs the device reachable — a shared room, an invite, another of
+  the person's devices — and lets them rest five minutes after the last need;
+  its endpoint's record is held by the same condition, so a desktop with
+  nobody to talk to signs nothing in to n0's directory. fs endpoints
+  (`bind_endpoint_with_key`, and so `fs serve`) never publish at all: the
+  devices that mount a filesystem already hold its address, so a record would
+  be a sign-in nobody looks up. The initrd's sibling unlock, the app-registry
+  transport and `tilo-relay` still bind iroh's `presets::N0`, which publishes
+  from the start. Resolving stays open everywhere: it asks n0 for a
+  *collaborator's* key, which is the same disclosure that device already
+  made.
+  Three tests in that module pin this: a resting desktop's gate stays shut
+  with a record waiting in it, resting again closes a gate that opened, and
+  the filesystem's lookups publish nothing.
 - **OS updates.** `bootc-fetch-apply-updates.timer` is enabled and checks the
   machine's recorded origin, `registry.tilo.so/tilo/tilo` by default, on the
   owner's schedule, optionally deferred on metered links
@@ -620,15 +660,18 @@ operation, which also checks committed Store evidence and configured registries.
 
 The app catalogue (`apps.tilo.so`) is fetched only when the Store opens, and
 owner-opted extension refresh only after the owner opts in. LAN discovery
-(mDNS) is off unless `TILO_COLLAB_LAN_DISCOVERY` is set.
+finds only the person's own devices: its probes are sealed to the devices
+asked for and carry nothing an observer can tie to the person or count
+(`crates/collab/tilo-lan-discovery`).
 
 ## Private file contents from the session chooser
 
 The launcher-authenticated chooser connection also supports owner-confirmed Open
 selections for apps with no filesystem grants. The OS picker uses its normal
 user scope; a selection does not grant that directory to the application or
-publish the choice into collaborative state. Legacy path-returning requests still
-require existing workspace filesystem grants.
+publish the choice into collaborative state. Path-returning requests give the
+chosen item through the document store ("Filesystem" above), and fall back to
+existing workspace filesystem grants where the store is not served.
 
 A contents selection opens a regular file read-only beneath the approved picker
 roots using directory descriptors pinned when the request is admitted and the
@@ -735,14 +778,22 @@ this person authority.
 
 Only accepted workspace-state publication exports policy. The export retains
 matching person/membership policy and exact-app/action scopes, excludes host
-paths, devices, network and other apps, and checks current native custody before
-renewal. The existing launch supervisor holds the projection lease; the normal
-idle deadline and durable writer renew it once per second while that supervisor
-is live. An expired, future-dated, missing, malformed or foreign binding denies
-Admin admission. The maximum lease is three seconds: host death or failed file
-replacement cannot preserve stale admission indefinitely. Atomic replacement
-is visible through the read-only directory mount, and ordinary hosted model
-pumps republish changed authority without forcing a redraw.
+paths, devices, network and other apps, and checks current native custody
+whenever it is judged. The existing launch supervisor holds the projection
+lease. The projection carries no lifetime: the host holds an exclusive lock on
+each projection file it publishes, taken before the file is renamed into
+place, and the SDK admits a projection only while that lock is held. Host
+death releases it in the kernel, and a failed replacement withdraws the file
+and lets go of it, so neither preserves stale admission and nothing is renewed
+on a clock. A missing, unheld, malformed or foreign binding denies Admin
+admission. Projections and running sandboxes are judged again when what they
+read changes: an accepted publication, a policy-change announcement (owner
+fencing, identity invalidation, an uncertain state write, an owner retiring),
+the state writer retiring, an export dropped unpublished, or the wall-clock
+expiry of a grant a running sandbox captured. A projection is rewritten only
+when it changed. Atomic replacement is visible through the read-only directory
+mount, and ordinary hosted model pumps republish changed authority without
+forcing a redraw.
 
 This projection is action discovery/admission, not privileged backend proof.
 Host-mediated operations must independently authenticate the launcher-bound

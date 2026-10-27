@@ -131,7 +131,6 @@ mod tests {
 
     #[test]
     fn file_categories_decide_preview_or_badge() {
-        // Phase `preview_types_are_classified_and_previewable`.
         {
             for (ext, cat) in [
                 ("png", FileCategory::Image),
@@ -146,7 +145,6 @@ mod tests {
                 assert!(cat.has_preview(), "{ext} should be previewable");
             }
         }
-        // Phase `badge_types_have_no_preview`.
         {
             for (ext, cat) in [
                 ("zip", FileCategory::Archive),
@@ -163,7 +161,6 @@ mod tests {
                 assert!(!cat.has_preview(), "{ext} should be a badge, not a preview");
             }
         }
-        // Phase `path_without_extension_is_unknown`.
         {
             assert_eq!(
                 category_for_path(Path::new("/tmp/README")),

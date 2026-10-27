@@ -8,7 +8,7 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 fn workspace_activity_review_keeps_live_heads() {
     let workspace = Workspace::new(WorkspaceId(1), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     doc.put(ROOT, "name", "Design").unwrap();
     doc.commit();
     doc.put(ROOT, "name", "Design review").unwrap();
@@ -36,8 +36,9 @@ fn workspace_activity_review_keeps_live_heads() {
 }
 
 // A local desktop's room document, in the `contents` schema: its bookkeeping
-// (the id counter, the record index) listed as a change, or any storage key
-// shown as a row's words, must fail this regression.
+// (the id counter, the record index) listed as a change, a window opened
+// left out of History, or any storage key shown as a row's words, must fail
+// this regression.
 #[test]
 fn workspace_activity_names_room_events_and_leaves_bookkeeping_out() {
     use automerge::{ObjType, transaction::CommitOptions};
@@ -46,7 +47,7 @@ fn workspace_activity_names_room_events_and_leaves_bookkeeping_out() {
     let stamp = |doc: &mut AutoCommit, at: i64| {
         doc.commit_with(CommitOptions::default().with_time(1_800_000_000 + at));
     };
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     doc.put(ROOT, "name", "Reading group").unwrap();
     doc.put(ROOT, "owner", "You").unwrap();
     doc.put(ROOT, "desktop_counter_v1", 3_u64).unwrap();
@@ -115,19 +116,18 @@ fn workspace_activity_names_room_events_and_leaves_bookkeeping_out() {
     let summaries = rows.into_iter().map(|(_, s)| s).collect::<Vec<_>>();
     assert_eq!(
         summaries.len(),
-        2,
-        "setup, a plain open and bookkeeping stay out: {summaries:?}"
+        3,
+        "setup and bookkeeping stay out, a window opened is listed: {summaries:?}"
     );
-    let [updated, closed] = summaries.as_slice() else {
+    let [opened, updated, closed] = summaries.as_slice() else {
         return;
     };
+    assert_eq!(opened, "Opened Word Processor");
     assert_eq!(updated, "Updated the workspace");
     assert_eq!(closed, "Closed 1 window");
     assert!(
-        summaries
-            .iter()
-            .all(|s| !s.starts_with("Opened") && !s.starts_with("Created")),
-        "a plain open and the workspace's first write are not changes: {summaries:?}"
+        summaries.iter().all(|s| !s.starts_with("Created")),
+        "the workspace's first write is not a change: {summaries:?}"
     );
     for summary in &summaries {
         assert!(
@@ -152,7 +152,6 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
     let descriptors = workspace_view_descriptors(&tree, true);
     for (action, view) in [
         ("room.activity.open", ActivityView::CatchUp),
-        ("room.activity.tasks", ActivityView::Tasks),
         ("room.activity.explore", ActivityView::Explore),
         ("room.activity.replay", ActivityView::Replay),
     ] {
@@ -179,7 +178,7 @@ fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloa
     assert!(
         descriptors
             .iter()
-            .any(|d| d.id == format!("workspace.select.{}", id.0))
+            .any(|d| d.id == format!("workspace.select.{}", tree.room_of(id).unwrap()))
     );
     assert!(
         workspace_view_descriptors(&tree, false)
@@ -194,7 +193,7 @@ fn workspace_activity_detached_record_origins_do_not_collide() {
     use ui::record::{RecordCheckout, RecordId, RecordKind};
     let workspace = Workspace::new(WorkspaceId(9), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
@@ -264,7 +263,7 @@ fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
     use ui::record::{RecordCheckout, RecordId, RecordKind};
     let workspace = Workspace::new(WorkspaceId(9), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
@@ -345,7 +344,7 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
     use ui::record::{RecordCheckout, RecordId, RecordKind};
     let workspace = Workspace::new(WorkspaceId(9), "Design");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
     doc.commit();
     let mut tree = ActivitySnapshot::new(
         DesktopTree {
@@ -385,21 +384,39 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
     );
 }
 
+// Replay serving the room's first changes, made before the workspace stood
+// in it, as checkpoints with nothing to show must fail this regression.
 #[test]
-fn workspace_activity_admitted_tasks_are_projected_read_only() {
-    let workspace = Workspace::new(WorkspaceId(9), "Design");
+fn workspace_activity_replay_starts_where_the_workspace_does() {
+    use automerge::{ObjType, transaction::CommitOptions};
+    let workspace = Workspace::new(WorkspaceId(4), "Planning");
     let mut doc = AutoCommit::new();
-    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
-    let task: tilo_desktop_model::WorkspaceTask = serde_json::from_value(serde_json::json!({
-        "id":"real-task", "title":"Review actual admission", "description":"", "status":"queued", "route":"manual", "created_by":"author", "assigned_agent":null, "created_at":1, "updated_at":1
-    })).unwrap();
-    let tasks = doc
-        .put_object(ROOT, "tasks_v1", automerge::ObjType::Map)
+    let stamp = |doc: &mut AutoCommit, at: i64| {
+        doc.commit_with(CommitOptions::default().with_time(1_800_000_000 + at));
+    };
+    doc.put(ROOT, "room", workspace.room().to_string()).unwrap();
+    stamp(&mut doc, 0);
+    doc.put(ROOT, "name", "Planning").unwrap();
+    let contents = doc.put_object(ROOT, "contents", ObjType::Map).unwrap();
+    let strip = doc
+        .put_object(&contents, "0001000000000003", ObjType::Map)
         .unwrap();
-    doc.put(tasks, "real-task", serde_json::to_vec(&task).unwrap())
-        .unwrap();
-    doc.commit();
-    let snapshot = ActivitySnapshot::new(
+    doc.put(&strip, "name", "Planning").unwrap();
+    doc.put(&strip, "order", 0_u64).unwrap();
+    let groups = doc.put_object(&strip, "groups", ObjType::Map).unwrap();
+    for (at, group, tab, title) in [
+        (1, "0001000000000001", "0001000000000002", "Notes"),
+        (2, "0001000000000004", "0001000000000005", "Sheets"),
+    ] {
+        let group = doc.put_object(&groups, group, ObjType::Map).unwrap();
+        doc.put(&group, "order", 0_u64).unwrap();
+        let tabs = doc.put_object(&group, "tabs", ObjType::Map).unwrap();
+        let tab = doc.put_object(&tabs, tab, ObjType::Map).unwrap();
+        doc.put(&tab, "title", title).unwrap();
+        doc.put(&tab, "order", 0_u64).unwrap();
+        stamp(&mut doc, at);
+    }
+    let mut tree = ActivitySnapshot::new(
         DesktopTree {
             active: workspace.id,
             workspaces: vec![workspace],
@@ -408,5 +425,23 @@ fn workspace_activity_admitted_tasks_are_projected_read_only() {
         doc,
     )
     .unwrap();
-    assert_eq!(snapshot.active_workspace().unwrap().tasks, vec![task]);
+    let mut pane = RoomActivityPane::new();
+    pane.begin_view(tree.active.raw());
+    pane.refresh(&mut tree);
+    pane.set_view(ActivityView::Replay);
+    pane.refresh(&mut tree);
+    let replay = pane.serve_replay();
+    let first = replay
+        .frames
+        .first()
+        .expect("the workspace's changes replay");
+    assert!(
+        !first.workspaces.is_empty(),
+        "the first checkpoint shows the workspace: {:?}",
+        replay
+            .frames
+            .iter()
+            .map(|frame| &frame.summary)
+            .collect::<Vec<_>>()
+    );
 }

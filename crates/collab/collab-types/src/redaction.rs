@@ -1,8 +1,8 @@
 //! Cooperative cryptographic redaction.
 //!
 //! A `RedactRequest` is the payload of a [`crate::op::SignedOp`] whose
-//! `kind` is [`crate::role::OpKind::Redaction`]. Only the channel owner
-//! (see [`crate::role::role_permits`]) can mint one, declaring "this
+//! `kind` is [`crate::role::OpKind::Redaction`]. Only a member whose grants
+//! allow the redaction action can mint one, declaring "this
 //! earlier op is now compliance-required to be removed; peers, please honour it."
 //!
 //! Redaction is **cooperative**, not adversarial: an honest peer redacts
@@ -146,10 +146,6 @@ impl RedactedMarker {
 
     /// Encode to canonical bytes — the form an op's payload field
     /// carries after redaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CanonicalError`] if canonical serialisation fails.
     pub fn canonical(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(self)
     }
@@ -187,10 +183,6 @@ pub enum RedactionError {
 
 /// Encode a `RedactRequest` to canonical bytes — the form an op's payload
 /// carries when `kind == Redact`.
-///
-/// # Errors
-///
-/// Returns [`CanonicalError`] if canonical serialisation fails.
 pub fn encode_redact_payload(req: &RedactRequest) -> Result<Vec<u8>, CanonicalError> {
     canonical_bytes(req)
 }
@@ -229,10 +221,6 @@ pub fn parse_redact_payload(op: &SignedOp) -> Result<RedactRequest, RedactionErr
 /// `RedactRequest::target_op_hash` carries. Shared rather than
 /// re-implemented at each call site, keeping the audit log's verification
 /// in lock-step with the minting path.
-///
-/// # Errors
-///
-/// Returns [`CanonicalError`] if canonicalising `op` fails.
 pub fn hash_target_op(op: &SignedOp) -> Result<[u8; 32], CanonicalError> {
     let bytes = canonical_bytes(op)?;
     let digest = Sha256::digest(&bytes);

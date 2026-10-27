@@ -4,9 +4,11 @@
 //! `fs` binary twice, gives host and recipient distinct certified identity
 //! roots and persistent stores, and drives both mounts through the kernel.
 
-// This executable integration-test target uses panic/unwrap as assertion
-// boundaries while driving child processes and mandatory system facilities.
-#![allow(clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "an integration test: panic and unwrap are its assertion boundaries while it drives child processes and mandatory system facilities"
+)]
 
 use std::ffi::CString;
 use std::io::{BufRead, BufReader, Write};
@@ -431,7 +433,7 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
         .verifying_key()
         .to_bytes();
 
-    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let binary = &tilo_test_env::package_binary!("fs");
     let mut host = spawn_host(
         binary,
         &host_identity,
@@ -730,7 +732,7 @@ fn a_write_acknowledged_before_sigterm_survives_a_restart() {
     let clock_now = tilo_clock::unix_now_ms();
     write_clock(&clock, clock_now);
     install_identity(&identity, rand::random(), rand::random(), true, clock_now);
-    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let binary = &tilo_test_env::package_binary!("fs");
     let serving = |host: &mut MountedProcess| {
         host.wait_for_line("Mounting QuickFS");
         let seeded = mount.join("seeded.txt");
@@ -825,7 +827,7 @@ impl SoloHost {
     /// Starts the daemon and returns once the mount serves its seed.
     fn start(&self) -> MountedProcess {
         let mut process = spawn_host(
-            Path::new(env!("CARGO_BIN_EXE_fs")),
+            &tilo_test_env::package_binary!("fs"),
             &self.identity,
             &self.sockets,
             &self.mount,
@@ -1136,17 +1138,14 @@ fn synced_files_and_renames_survive_a_daemon_crash() {
 /// breaks it.
 const IDLE_SERVE_WAKEUP_BUDGET: f64 = 0.5;
 
-/// How long the mount may keep serving a file after its capability is
-/// revoked: the one-second poll's bound, which the file watch must keep.
-const REVOKE_BOUND: Duration = Duration::from_secs(1);
-
 /// The shipped daemon, started as `fs.service` starts it (the shipped
 /// capability list, `--principal person:local`), serving a mounted
 /// workspace that nobody touches sleeps: no persist poll, no
 /// session-supervisor poll, no repair tick, no capability-list poll, and
 /// no relays for a list that names nobody else. Prints the per-thread
 /// table the budget is judged on. Then a revocation written to the list
-/// still closes the mount within the old poll's bound.
+/// still closes the mount (that the file watch alone carries it is
+/// `caps_file`'s own test, with the poll and backstop an hour away).
 #[cfg(target_os = "linux")]
 #[test]
 fn idle_serve_mount_stays_asleep() {
@@ -1165,8 +1164,13 @@ fn idle_serve_mount_stays_asleep() {
         std::fs::create_dir_all(path).unwrap();
     }
     std::fs::write(seed.join("idle.txt"), PAYLOAD).unwrap();
-    // The list the image ships, at the path `fs.service` names it by.
-    let capabilities = temp.path().join("fs-capabilities.json");
+    // The list the image ships, at the path `fs.service` names it by. The
+    // daemon watches the list's directory, and every file opened there
+    // wakes that watch; the fixture's clock file, which the daemon opens on
+    // each clock read, must not share it, or the idle daemon is measured
+    // waking for the fixture's own clock.
+    let capabilities = temp.path().join("acl").join("fs-capabilities.json");
+    std::fs::create_dir_all(temp.path().join("acl")).unwrap();
     std::fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../os/usr/share/tilo/fs-capabilities.json"),
@@ -1176,7 +1180,7 @@ fn idle_serve_mount_stays_asleep() {
     let clock_now = tilo_clock::unix_now_ms();
     write_clock(&clock, clock_now);
     install_identity(&identity, rand::random(), rand::random(), true, clock_now);
-    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let binary = &tilo_test_env::package_binary!("fs");
     let mut command = host_command(binary, &identity, &sockets, &cache, &seed, &clock);
     command
         .arg("--mount-point")
@@ -1211,14 +1215,9 @@ fn idle_serve_mount_stays_asleep() {
     // Revoke the session's grant, the way the desktop rewrites the list.
     std::fs::write(&capabilities, b"[]").unwrap();
     let revoked = Instant::now();
-    while std::fs::read(&file).is_ok() {
-        assert!(
-            revoked.elapsed() <= REVOKE_BOUND,
-            "the mount still served a revoked file {} ms after the revocation",
-            revoked.elapsed().as_millis()
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    tilo_test_env::wait_until("the mount to stop serving the revoked file", || {
+        std::fs::read(&file).is_err()
+    });
     eprintln!(
         "#4224 revocation closed the mount {} ms after the write",
         revoked.elapsed().as_millis()
@@ -1239,13 +1238,19 @@ fn idle_serve_mount_stays_asleep() {
 /// 95472, 95473): 53.6-54.9/s before change awaits, when every 5 s poll was up to
 /// three fresh connections and peer handshakes, and 9.85/s after, on one
 /// held stream (iroh's relays and the connection's keepalive). The host
-/// answering it went from 54.6-55.3/s to 9.7/s. The budget lets the held
-/// stream through; a fallback to a single 5 s poll does not fit in it.
-const IDLE_SHARE_WAKEUP_BUDGET: f64 = 15.0;
+/// answering it went from 54.6-55.3/s to 9.7/s. With idle connections kept
+/// alive every 25 s instead of 5 s and an unchanged net report resting the
+/// next (`vendor/iroh/TILO-PATCH.md`), t's `real-fuse` check measured the
+/// recipient at 6.30-8.57/s and its host at 4.15-8.75/s (runs r263fec94c2,
+/// r251cc66096, rfa903b2cd7), all on iroh's runtime workers; the high pair
+/// came from a node loaded enough that another real-FUSE test failed in the
+/// same run. The budgets leave that loaded run a third of headroom, and a
+/// fallback to a single 5 s poll does not fit in them.
+const IDLE_SHARE_WAKEUP_BUDGET: f64 = 12.0;
 
-/// How long a host edit may take to reach an open recipient: the old 5 s
-/// poll, with room for the host's own commit.
-const EDIT_BOUND: Duration = Duration::from_secs(10);
+/// Voluntary wakeups per second the host serving that idle recipient may
+/// make across all of its threads; see [`IDLE_SHARE_WAKEUP_BUDGET`].
+const IDLE_SHARE_HOST_WAKEUP_BUDGET: f64 = 12.0;
 
 /// How long an idle share recipient is watched: one host await limit, so
 /// the window holds the recipient's once-a-minute renewal.
@@ -1298,7 +1303,7 @@ fn watch_durable_writes(cache: &Path) -> (notify::RecommendedWatcher, Arc<Mutex<
 /// sleeps: it holds one stream to the host and asks again once a
 /// minute, on that stream, with no new connection and no disk write. A
 /// host edit still reaches it, and revoking its link ends its refreshes
-/// within the bound the idle serve gate keeps for a revoked mount.
+/// through the revoked grant waking its held await.
 #[cfg(target_os = "linux")]
 #[test]
 #[allow(
@@ -1343,7 +1348,7 @@ fn idle_share_recipient_stays_asleep() {
         false,
         clock_now,
     );
-    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let binary = &tilo_test_env::package_binary!("fs");
     let mut host = spawn_host(
         binary,
         &host_identity,
@@ -1375,7 +1380,6 @@ fn idle_share_recipient_stays_asleep() {
     let viewer_file = wait_for_process(&mut viewer, "the viewer to list the shared file", || {
         one_visible_file(&viewer_mount)
     });
-    // Open it, as someone reading the shared document does.
     assert_eq!(std::fs::read(&viewer_file).unwrap(), PAYLOAD);
 
     // Startup and hydration settle well inside 10 s; the window sees idle.
@@ -1433,22 +1437,40 @@ fn idle_share_recipient_stays_asleep() {
         b"an edit the host makes while the recipient is idle",
     )
     .unwrap();
-    while content_hash(&viewer_file) == before_edit {
-        assert!(
-            edited.elapsed() <= EDIT_BOUND,
-            "the host's edit did not reach the recipient in {} s\nrecipient:\n{}\nhost:\n{}",
-            EDIT_BOUND.as_secs(),
-            viewer.logs.lock().unwrap().join("\n"),
-            host.logs.lock().unwrap().join("\n"),
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_for_process(
+        &mut viewer,
+        "the host's edit to reach the recipient",
+        || (content_hash(&viewer_file) != before_edit).then_some(()),
+    );
     eprintln!(
         "a host edit reached the idle recipient {} ms after the write",
         edited.elapsed().as_millis()
     );
+    // The new content hash shows as soon as the snapshot is applied; the
+    // recipient then persists it and exchanges replica receipts before it
+    // awaits again, and only an await is woken by a revocation. Its last
+    // step records the refresh's success at the moved clock: once that is
+    // on disk the recipient is idle again, which is what the bound is for.
+    let edit_time = clock_now.saturating_add(1_000);
+    let subscriptions = viewer_cache.join("record-subscriptions.json");
+    let settled = || {
+        fs::RecordSubscriptionStore::open_at(&subscriptions, edit_time)
+            .ok()
+            .and_then(|store| store.subscriptions().first()?.last_success_at_ms)
+            == Some(edit_time)
+    };
+    wait_for_process(
+        &mut viewer,
+        "the recipient to finish taking the host's edit",
+        || settled().then_some(()),
+    );
+    // Settled, the recipient awaits again from here, and the host answers
+    // that await on a change or once its limit passes.
+    let await_began = Instant::now();
+    let connections_at_revocation = connected(&viewer);
 
-    // Revoking the link ends the recipient's refreshes.
+    // Revoking the link ends the recipient's refreshes, through the event:
+    // the revoked grant wakes the host's held await, which answers Denied.
     while viewer.output.try_recv().is_ok() {}
     let revoked = Instant::now();
     assert!(matches!(
@@ -1461,13 +1483,24 @@ fn idle_share_recipient_stays_asleep() {
         "the revocation reached the recipient {} ms after it was made",
         revocation.as_millis()
     );
+    let denied_after_await = await_began.elapsed();
+    let reconnected = connected(&viewer) - connections_at_revocation;
     viewer.stop();
     host.stop();
 
+    // Nothing but the grant change answers the held await before the
+    // host's await limit, and a recipient that polled would have opened a
+    // connection of its own. How long the event takes on a loaded runner
+    // is printed above, not bounded.
     assert!(
-        revocation <= REVOKE_BOUND,
-        "the recipient kept refreshing a revoked link for {} ms",
-        revocation.as_millis()
+        denied_after_await < fs::RECORD_AWAIT_CHANGE_LIMIT,
+        "the revocation was answered only when the host's await limit passed ({} ms after \
+         the await began), not by the revoked grant waking it",
+        denied_after_await.as_millis()
+    );
+    assert_eq!(
+        reconnected, 0,
+        "the revocation must reach the recipient on the stream it holds, not by a poll"
     );
     assert_eq!(
         connections, 0,
@@ -1482,5 +1515,11 @@ fn idle_share_recipient_stays_asleep() {
         per_second <= IDLE_SHARE_WAKEUP_BUDGET,
         "an idle fs mount-share woke {per_second:.2} times a second (budget \
          {IDLE_SHARE_WAKEUP_BUDGET}):\n{wakeups}"
+    );
+    let host_per_second = host_wakeups.blocking_per_second();
+    assert!(
+        host_per_second <= IDLE_SHARE_HOST_WAKEUP_BUDGET,
+        "the fs serve answering an idle recipient woke {host_per_second:.2} times a second \
+         (budget {IDLE_SHARE_HOST_WAKEUP_BUDGET}):\n{host_wakeups}"
     );
 }

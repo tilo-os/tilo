@@ -35,6 +35,18 @@ mod governance;
 mod refresh;
 type ActualAuthority = Arc<Mutex<Option<TestGovernor>>>;
 
+/// When a fixture invitation stops being redeemable. Its lifetime is not what
+/// these tests check, and on a loaded runner the setup before a redemption
+/// (owners opened, roots mounted, endpoints bound) can take longer than a
+/// minute, so a short real lifetime expired mid-exchange: "join challenge is
+/// expired". It lasts as long as the stages before the redemption may wait.
+fn invitation_expiry_ns() -> u64 {
+    let lifetime = tilo_test_env::hang_bound().saturating_mul(4);
+    now_ns(SystemTime::now())
+        .unwrap()
+        .saturating_add(u64::try_from(lifetime.as_nanos()).unwrap_or(u64::MAX))
+}
+
 #[derive(Clone)]
 struct ActualService {
     authority: ActualAuthority,
@@ -173,16 +185,20 @@ async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted
         signature: [0; 64],
     };
     sign_device_cert(&mut device, &root_key).unwrap();
-    let now = now_ns(SystemTime::now()).unwrap();
     let signed_invitation = remote_owner.issue(
         vec![hint],
         MemberRole::Editor,
         Some(device.user_public_key),
         Some("Native receiver".into()),
-        now.checked_add(60_000_000_000).unwrap(),
+        invitation_expiry_ns(),
     );
+    // The device's one workspace is the room's own, joining it before the
+    // exchange starts (the shell's join makes such a workspace beside the
+    // others; this harness keeps the single workspace it was written for).
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
     let local = tree.desktop.active;
+    assert!(tree.stand_in_room(local, room));
+    tree.joining_rooms.insert(room);
     tree.persist_path = Some(directory.path().join("state.json"));
     let receiving_owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
     if cold_code {

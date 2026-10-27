@@ -251,7 +251,6 @@ fn apply(batch: Batch, backend: &mut impl AudioBackend, status: Option<&StatusBr
 mod tests {
     use super::*;
     use std::sync::mpsc;
-    use std::time::{Duration, Instant};
 
     /// Records every write; the first write blocks until the test opens
     /// `gate`, after telling it through `entered`.
@@ -337,14 +336,10 @@ mod tests {
     }
 
     fn wait_for(writes: &Mutex<Vec<String>>, count: usize) -> Vec<String> {
-        let started = Instant::now();
-        loop {
+        tilo_test_env::wait_for(format_args!("{count} sink writes"), || {
             let seen = writes.lock().unwrap().clone();
-            if seen.len() >= count || started.elapsed() > Duration::from_secs(10) {
-                return seen;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+            (seen.len() >= count).then_some(seen)
+        })
     }
 
     #[test]
@@ -388,10 +383,7 @@ mod tests {
         assert!(
             matches!(first, Some(crate::shell::media_keys::Response::Osd(osd)) if osd.caption() == "Volume 45%")
         );
-        harness
-            .entered
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the writer took the first step");
+        tilo_test_env::recv("the writer to take the first step", &harness.entered);
         // The sink is wedged on the first write; the key still answers at once.
         for _ in 0..3 {
             assert!(press(crate::shell::media_keys::MediaKey::VolumeUp).is_some());
@@ -433,17 +425,11 @@ mod tests {
             }),
             "the readout is optimistic"
         );
-        harness
-            .entered
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the writer took the step");
+        tilo_test_env::recv("the writer to take the step", &harness.entered);
         harness.release.send(()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while bridge.snapshot().volume.is_some_and(|volume| !volume.muted)
-            && Instant::now() < deadline
-        {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the tray to return to the sink's muted state", || {
+            bridge.snapshot().volume.is_none_or(|volume| volume.muted)
+        });
         assert_eq!(
             bridge.snapshot().volume,
             Some(os_actions::VolumeState {
@@ -460,10 +446,7 @@ mod tests {
         let writer = AudioWriter::new(backend, None);
         let (readout, mailbox) = crate::session_runtime::mailbox(Arc::new(|| {}));
         writer.toggle_source_mute(&readout).unwrap();
-        harness
-            .entered
-            .recv_timeout(Duration::from_secs(10))
-            .expect("the writer took the press");
+        tilo_test_env::recv("the writer to take the press", &harness.entered);
         writer.toggle_source_mute(&readout).unwrap();
         writer.toggle_source_mute(&readout).unwrap();
         harness.release.send(()).unwrap();
@@ -472,12 +455,11 @@ mod tests {
             ["toggle_source_mute", "source_muted"],
             "two presses queued behind the first cancel out, and are answered with a read"
         );
-        let deadline = Instant::now() + Duration::from_secs(10);
         let mut readouts = Vec::new();
-        while readouts.len() < 2 && Instant::now() < deadline {
+        tilo_test_env::wait_until("two mic mute readouts", || {
             readouts.extend(mailbox.drain());
-            std::thread::sleep(Duration::from_millis(5));
-        }
+            readouts.len() >= 2
+        });
         assert_eq!(
             readouts.iter().map(Osd::caption).collect::<Vec<_>>(),
             [Osd::mic_mute(true).caption(), Osd::mic_mute(true).caption()]

@@ -232,7 +232,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn dmabuf_descriptions_layouts_and_sizes_come_from_the_real_buffer() {
-        // Phase `linearity_covers_the_unstated_modifier_but_not_a_tiled_one`.
         {
             let img = |modifier| DmabufImage {
                 planes: vec![],
@@ -251,7 +250,6 @@ mod tests {
             // rejected: importing it as linear would sample garbage.
             assert!(!img(0x0200_0000_1040_1b04).is_linear());
         }
-        // Phase `describe_names_the_format_and_layout`.
         {
             let img = DmabufImage {
                 planes: vec![],
@@ -263,7 +261,6 @@ mod tests {
             };
             assert_eq!(img.describe(), "NV12 1920x1080 mod=0x0 planes=0");
         }
-        // Phase `dmabuf_size_reads_the_end_offset_of_a_real_fd`.
         {
             // A plain file stands in for a dmabuf here: both answer SEEK_END, and
             // this proves the binding returns the byte length rather than -1.

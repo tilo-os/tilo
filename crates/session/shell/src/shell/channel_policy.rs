@@ -145,9 +145,7 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
         let RoomAuthority::Peer(origin) = self.tree.read().room_authority(room) else {
             return None;
         };
-        let endpoint = origin.as_str().strip_prefix("iroh:")?;
-        let endpoint = endpoint.parse::<iroh::EndpointId>().ok()?;
-        Some(Ed25519PublicKey::from_bytes(*endpoint.as_bytes()))
+        Some(Ed25519PublicKey::from_bytes(*origin.endpoint()?.as_bytes()))
     }
 
     fn allowed_devices(
@@ -194,7 +192,7 @@ pub fn next_policy_change(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)?
+        .find(|workspace| workspace.room() == room)?
         .next_grant_expiry_after(now);
     let admitted = tree
         .room_peer_identities
@@ -238,7 +236,7 @@ pub fn allowed_devices(
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
     else {
         return BTreeSet::new();
     };
@@ -467,7 +465,6 @@ mod tests {
         // Bob's always-on host is not one of his reading devices.
         admit(&mut tree, room, cert(&bob, 22, true), Vec::new());
         admit(&mut tree, room, cert(&carol, 30, false), Vec::new());
-        // A revoked device of Bob's.
         let lost = cert(&bob, 23, false);
         let mut revocation = tilo_user_identity::RevocationEntry {
             user_public_key: lost.user_public_key,
@@ -584,7 +581,6 @@ mod tests {
             );
         }
 
-        // Lifting the Deny lets Bob read the record again.
         let entry = tree
             .desktop
             .workspaces

@@ -1,0 +1,14 @@
+[Unit]
+Description=Keep this device's copies of public catalogues current
+
+# Daily is only when the device may ask: the fs daemon asks an origin about a
+# copy once a week (public_content::REFRESH_EVERY), so a day spent on battery
+# or on a metered connection delays the week's question by a day, not a week.
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=4h
+Persistent=yes
+Unit=tilo-public-content-refresh.service
+
+[Install]
+WantedBy=timers.target

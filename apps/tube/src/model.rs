@@ -378,7 +378,13 @@ pub struct Video {
 }
 
 impl Video {
-    /// The title to display given the `DeArrow` toggle.
+    /// Whether this video plays only in the Tilo app: a live stream comes as
+    /// HLS alone, which the browser build has no player for (its media
+    /// element plays one progressive file through the fetch proxy).
+    pub fn plays_only_in_app(&self) -> bool {
+        self.live && !media::available(media::Feature::LiveStreams)
+    }
+
     pub fn display_title(&self, dearrow: bool) -> &str {
         if dearrow && let Some(t) = &self.dearrow_title {
             return t;
@@ -416,6 +422,20 @@ pub struct Settings {
     pub autoplay: bool,
     pub show_comments: bool,
     pub preferred_quality: String,
+    /// How fast the video plays: 1.0 is the video's own speed. The speeds a
+    /// person can choose are [`PLAYBACK_SPEEDS`](crate::app::PLAYBACK_SPEEDS).
+    #[serde(default = "default_speed")]
+    pub playback_speed: f32,
+    /// The caption track the person chose, by language code, or `None` for no
+    /// captions. A video without that track plays without captions rather
+    /// than with the wrong ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_language: Option<String>,
+}
+
+/// serde default for the playback speed: a video's own speed.
+fn default_speed() -> f32 {
+    1.0
 }
 
 /// serde default helper (a `#[serde(default)]` bool defaults to `false`; several
@@ -451,6 +471,8 @@ impl Default for Settings {
             autoplay: true,
             show_comments: true,
             preferred_quality: "1080p".to_string(),
+            playback_speed: default_speed(),
+            caption_language: None,
         }
     }
 }
@@ -570,6 +592,29 @@ pub struct TubeModel {
     /// it ([`crate::history::WatchHistory`]); never part of the shared library.
     /// Ids without loaded metadata stay, so a refresh cannot drop history.
     pub history: Vec<VideoId>,
+    /// Where each video in that history was left, in milliseconds: what makes
+    /// "continue watching" the minute you stopped at, and what the history
+    /// page's rows say. An empty entry is a video watched to its end.
+    #[serde(default)]
+    pub history_positions: BTreeMap<VideoId, u64>,
+    /// The caption tracks the open video offers.
+    #[serde(default)]
+    pub caption_tracks: Vec<crate::captions::CaptionTrack>,
+    /// The caption lines of the open video, when a track is on and loaded.
+    #[serde(default)]
+    pub captions: Vec<crate::captions::CaptionCue>,
+    /// The video `captions` belong to, so a page can never show one video's
+    /// words over another's picture.
+    #[serde(default)]
+    pub captions_of: VideoId,
+    /// Why the captions are not on screen when the person asked for them
+    /// (loading, none offered, the track would not download).
+    #[serde(default)]
+    pub captions_notice: Option<String>,
+    /// The quality label of the stream actually playing (`720p`), so the page
+    /// can say what the choice got rather than repeat what was asked for.
+    #[serde(default)]
+    pub stream_quality: String,
     /// Shown when the watch history could not be stored.
     #[serde(default)]
     pub history_notice: Option<String>,
@@ -582,6 +627,11 @@ pub struct TubeModel {
     /// Playhead position (seconds) on the current watch page.
     pub playhead: f64,
     pub playing: bool,
+    /// The video no source would play, and what `YouTube` said if it
+    /// refused: its watch page says so where the picture would be and
+    /// offers to try again, rather than standing on a still poster.
+    #[serde(skip)]
+    pub unplayable: Option<Unplayable>,
     /// Videos the user has liked this session (local, mirrored into the CRDT).
     /// The watch page's like pill reads this to render its active state + the
     /// incremented count.
@@ -646,6 +696,11 @@ pub struct TubeModel {
     /// retryable, not evidence that the network is unavailable.
     #[serde(default)]
     pub feed_error: Option<String>,
+    /// Why the newest feed request found no source, when the device is
+    /// online: Home names that cause instead of claiming to be offline.
+    /// A session's own network state, never persisted.
+    #[serde(skip)]
+    pub sources_unreached: Option<crate::api::Unreached>,
     /// Whether a search is in flight, so the results screen shows a skeleton
     /// instead of a premature "No results".
     #[serde(default)]
@@ -665,12 +720,19 @@ impl Default for TubeModel {
             subscriptions: Vec::new(),
             queue: Vec::new(),
             history: Vec::new(),
+            history_positions: BTreeMap::new(),
+            caption_tracks: Vec::new(),
+            captions: Vec::new(),
+            captions_of: String::new(),
+            captions_notice: None,
+            stream_quality: String::new(),
             history_notice: None,
             settings: Settings::default(),
             route: Route::Home,
             search_query: String::new(),
             playhead: 0.0,
             playing: false,
+            unplayable: None,
             liked: Vec::new(),
             comment_likes: BTreeSet::new(),
             notices: Vec::new(),
@@ -686,6 +748,7 @@ impl Default for TubeModel {
             dearrow_thumb_url: BTreeMap::new(),
             feed_loading: false,
             feed_error: None,
+            sources_unreached: None,
             search_loading: false,
             search_error: None,
         }
@@ -695,6 +758,23 @@ impl Default for TubeModel {
 impl TubeModel {
     pub fn video(&self, id: &str) -> Option<&Video> {
         self.videos.iter().find(|v| v.id == id)
+    }
+
+    /// The end (seconds) of the show-mode `SponsorBlock` segment the playhead
+    /// is inside on the open watch page: what Skip jumps to. `None` off the
+    /// watch route, with `SponsorBlock` off, or outside every such segment.
+    pub fn show_skip_end(&self) -> Option<f64> {
+        if !self.settings.sponsorblock_enabled {
+            return None;
+        }
+        let Route::Watch(id) = &self.route else {
+            return None;
+        };
+        self.video(id)?
+            .sponsor
+            .iter()
+            .find(|s| self.settings.should_show_skip(s.category) && s.contains(self.playhead))
+            .map(|s| s.end)
     }
 
     pub fn channel(&self, id: &str) -> Option<&Channel> {
@@ -798,6 +878,12 @@ impl TubeModel {
         &v.thumbnail_url
     }
 
+    /// What the watch page of `video` says about it not playing, if it did not.
+    #[must_use]
+    pub fn unplayable(&self, video: &str) -> Option<&Unplayable> {
+        self.unplayable.as_ref().filter(|u| u.video == video)
+    }
+
     /// Push a transient notice onto the front of the toast stack (newest first,
     /// capped so it stays a compact strip).
     pub fn push_notice(&mut self, msg: impl Into<String>) {
@@ -824,6 +910,41 @@ impl TubeModel {
             .collect()
     }
 
+    /// Where `video` was left, in milliseconds, when reopening it should
+    /// continue rather than start at the beginning.
+    #[must_use]
+    pub fn resume_at_ms(&self, video: &str) -> Option<u64> {
+        let position = self.history_positions.get(video).copied()?;
+        let duration = self.video(video).map(|v| u64::from(v.duration) * 1000);
+        // A video left within the tolerance of its end is watched: replaying
+        // it should start at the beginning, not at the credits.
+        duration
+            .is_none_or(|duration| {
+                duration == 0
+                    || position.saturating_add(crate::history::RESUME_TOLERANCE_MS) < duration
+            })
+            .then_some(position)
+            .filter(|position| *position > 0)
+    }
+
+    /// How far into `video` the playhead is, as a fraction of it, for a row
+    /// that says "12:34 of 1:02:00" and a bar that shows how much is left.
+    #[must_use]
+    pub fn watched_fraction(&self, video: &str) -> Option<f64> {
+        let position = self.resume_at_ms(video)?;
+        let duration = self.video(video).map(|v| f64::from(v.duration))?;
+        (duration > 0.0).then(|| (position as f64 / 1000.0 / duration).clamp(0.0, 1.0))
+    }
+
+    /// The caption track the person chose, from the ones this video offers.
+    #[must_use]
+    pub fn chosen_caption_track(&self) -> Option<&crate::captions::CaptionTrack> {
+        let language = self.settings.caption_language.as_deref()?;
+        self.caption_tracks
+            .iter()
+            .find(|track| track.language == language)
+    }
+
     /// Insert or update a video by id, preserving any `SponsorBlock` segments /
     /// comments already fetched for it (a fresh list item carries neither).
     pub fn upsert_video(&mut self, v: Video) {
@@ -832,7 +953,13 @@ impl TubeModel {
             let keep_comments = std::mem::take(&mut slot.comments);
             let keep_dearrow = slot.dearrow_title.take();
             let keep_thumb = std::mem::take(&mut slot.thumbnail_url);
+            let keep_likes = slot.likes;
             *slot = v;
+            // Search and related items carry no like count; keep the one a
+            // detail fetch or the votes answer already gave.
+            if slot.likes == 0 {
+                slot.likes = keep_likes;
+            }
             if slot.sponsor.is_empty() {
                 slot.sponsor = keep_sponsor;
             }
@@ -1061,7 +1188,6 @@ mod tests {
 
     #[test]
     fn sponsorblock_categories_default_cycle_and_round_trip() {
-        // Case `default_categories_match_sponsorblock_defaults`.
         {
             let s = Settings::default();
             // Sponsor auto-skips by default; Filler is off.
@@ -1071,7 +1197,6 @@ mod tests {
             assert!(!s.category_enabled(Category::Filler));
             assert_eq!(s.mode_of(Category::Filler), SkipMode::Disabled);
         }
-        // Case `sponsorblock_master_switch_overrides_categories`.
         {
             let s = Settings {
                 sponsorblock_enabled: false,
@@ -1081,7 +1206,6 @@ mod tests {
             assert_eq!(s.mode_of(Category::Sponsor), SkipMode::Disabled);
             assert!(!s.should_auto_skip(Category::Sponsor));
         }
-        // Case `modes_cycle_skip_show_off`.
         {
             let mut s = Settings::default();
             assert_eq!(s.mode_of(Category::Intro), SkipMode::Skip);
@@ -1104,7 +1228,6 @@ mod tests {
                 "cycles back to Auto-skip"
             );
         }
-        // Case `category_roundtrips_api_key`.
         {
             for c in Category::ALL {
                 assert_eq!(Category::from_api_key(c.api_key()), Some(c));
@@ -1114,7 +1237,6 @@ mod tests {
 
     #[test]
     fn dearrow_toggles_gate_titles_and_thumbnails() {
-        // Case `dearrow_sub_toggles_gate_titles_and_thumbnails`.
         {
             let mut s = Settings::default();
             assert!(s.dearrow_titles_on() && s.dearrow_thumbs_on());
@@ -1126,7 +1248,6 @@ mod tests {
                 "master gates both"
             );
         }
-        // Case `dearrow_title_swaps_only_when_present_and_enabled`.
         {
             let mut v = sample_video();
             v.dearrow_title = Some("Calm title".into());
@@ -1139,7 +1260,6 @@ mod tests {
 
     #[test]
     fn search_type_filter_narrows_toggles_and_reverts() {
-        // Case `search_type_filter_defaults_all_selected`.
         {
             let f = SearchTypeFilter::default();
             assert!(f.shows(SearchType::Video));
@@ -1147,7 +1267,6 @@ mod tests {
             assert!(f.shows(SearchType::Creator));
             assert!(f.pristine);
         }
-        // Case `search_type_filter_first_click_narrows_to_that_type`.
         {
             let mut f = SearchTypeFilter::default();
             f.click(SearchType::Playlist);
@@ -1162,7 +1281,6 @@ mod tests {
             assert!(!f.shows(SearchType::Creator));
             assert!(!f.pristine);
         }
-        // Case `search_type_filter_further_clicks_toggle_individually`.
         {
             let mut f = SearchTypeFilter::default();
             f.click(SearchType::Video); // narrow to Video only
@@ -1174,7 +1292,6 @@ mod tests {
             assert!(!f.shows(SearchType::Video));
             assert!(f.shows(SearchType::Creator));
         }
-        // Case `search_type_filter_toggling_all_off_reverts_to_all`.
         {
             let mut f = SearchTypeFilter::default();
             f.click(SearchType::Video); // Video only
@@ -1205,7 +1322,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn channel_records_reconcile_avatars_without_losing_data() {
-        // Case `adopt_channel_avatar_matches_by_id_and_by_normalized_name`.
         {
             let mut m = TubeModel::default();
             // Two records for the same creator: the card reads the id-A stub (empty).
@@ -1220,7 +1336,6 @@ mod tests {
                 "matched by name"
             );
 
-            // A fresh stub matched by exact id.
             m.channels.push(chan("UC_C", "Other Creator", ""));
             m.adopt_channel_avatar("UC_C", "irrelevant name", "https://yt3/c");
             assert_eq!(
@@ -1229,7 +1344,6 @@ mod tests {
                 "matched by id"
             );
         }
-        // Case `adopt_channel_avatar_never_overwrites_an_existing_avatar`.
         {
             let mut m = TubeModel::default();
             m.channels
@@ -1241,7 +1355,6 @@ mod tests {
                 "https://yt3/original"
             );
         }
-        // Case `upsert_channel_keeps_a_real_avatar_when_the_new_record_has_none`.
         {
             let mut m = TubeModel::default();
             m.upsert_channel(chan("UC_A", "Creator", "https://yt3/good"));
@@ -1250,7 +1363,6 @@ mod tests {
             m.upsert_channel(chan("UC_A", "Creator", ""));
             assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/good");
         }
-        // Case `reconcile_bridges_two_records_of_the_same_creator`.
         {
             let mut m = TubeModel::default();
             // The video card's uploader record (id A) has no avatar; a creator-row
@@ -1265,7 +1377,6 @@ mod tests {
                 "avatar-less record filled from the same-name record that had one",
             );
         }
-        // Case `upsert_playlist_preserves_video_ids`.
         {
             let mut m = TubeModel::default();
             m.upsert_playlist(Playlist {
@@ -1300,7 +1411,6 @@ mod tests {
                 "but refreshes other fields"
             );
         }
-        // Case `image_url_fields_round_trip_and_default`.
         {
             // A video/channel carrying real image URLs survives a serde round-trip
             // (the model is mirrored into the CRDT as JSON), and sparse JSON without
@@ -1368,4 +1478,12 @@ mod tests {
             live: false,
         }
     }
+}
+
+/// A video no source played.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unplayable {
+    pub video: VideoId,
+    /// `YouTube`'s own words when it refused, such as a bot check.
+    pub said: Option<String>,
 }

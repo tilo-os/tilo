@@ -8,14 +8,6 @@
 # chrome or renderer paths they still reach.
 [modules]
 
-# The workspace model asks the launcher for installed apps and action authority, and
-# doc_open for file labels. These go when those answers are handed to the model, ahead
-# of moving it into its own crate.
-"src/shell/state.rs" = [
-    "crate::shell::doc_open",
-    "crate::shell::launcher",
-]
-
 # Persistence reads launch keys from the launcher's process-wide table. This goes when
 # the model records a window's launch key itself.
 "src/shell/persist.rs" = [
@@ -92,7 +84,6 @@ grandfathered = [
     "iroh",
     "iroh-base",
     "iroh-gossip",
-    "iroh-mdns-address-lookup",
     "launcher",
     "legacy-agent-protocol",
     "libc",
@@ -225,8 +216,27 @@ grandfathered = [
 ]
 
 [shell_dependencies.added]
+"tilo-device-vpn" = "Routing a device's traffic through another device of the same person: the shell owns the iroh endpoint, so it accepts the tunnel ALPN and drives the client and exit; built with only the tunnel feature (wire format, packet loop, typed helper protocol), which brings iroh, tokio and serde that the shell already depends on, and none of the privileged helper"
+"settings-sections" = "The person's settings sections as resource models, carved out of the Settings app: the session keeps them as records and serves their field edits and verbs to the palette, agents and scripts whether or not Settings is open; it brings settings-store, tilo-wallpapers, tilo-accessibility-settings and tilo-app, which the shell already depends on, and tilo-locale, which itself brings only tilo-app and serde"
+"tasks" = "Runs of issues assigned to an agent (broker_services::tracker_runs) come from the tracker record, read with the Tasks app's own model as the shell already reads Notes, Code and Word records; it brings only tilo-document, tilo-rich-text and tilo-app, which the shell already depends on"
+"tilo-documents" = "The files a person chooses for an app in the shell's chooser, served into that app's sandbox: the shell mounts the store and gives into it; the table, the beneath-only host access and the FUSE adapter live in this crate, which the launcher shares for the paths"
+"tilo-lan-discovery" = "Replaces iroh-mdns-address-lookup, which the shell dropped: finding the person's own devices on the local network is an address lookup the shell's endpoint registers; the probe protocol, its freshness and the socket live in this crate"
+"tilo-location" = "The automatic time zone (time_zone_follower) asks where the device is through the XDG Location portal; tilo-location is the one location client, which the app host already uses for apps, and brings only ashpd's location feature, tilo-rt and tilo-clock with it"
 "tilo-owner-commit" = "The owner commit vocabulary carved out of tilo-peer-state, which the shell already depends on; the shell's native workspace owner implements its service and reaches the same code it did before, now in a smaller crate"
 "tilo-network-secret-agent" = "The NetworkManager secret agent carved out of the shell; the shell supplies only the sheet it asks in, the catalogue its keys resolve in and the roaming Wi-Fi store"
 "tilo-tray-host" = "The status-notifier tray host carved out of the shell; the shell serves its watcher, paints its items and supplies the named-icon rasteriser."
 "tilo-wallpapers" = "The shipped wallpapers' catalog, their lookup in the XDG data directories and the appearance.wallpaper setting, which Settings shares; the shell only paints the picture it decodes, and the crate brings only tilo-image-codec and tilo-paths with it"
 "tilo-lock" = "A dependency-free std helper that recovers a poisoned lock's guard; it replaces the shell's inline `.unwrap_or_else(PoisonError::into_inner)` at every lock and adds no code of its own"
+"account-custody" = "Service sessions (shell::broker_services::service_sessions) read and write the browser service-session secrets the person's account custody keeps; the custody crate is the one reader of that store, so the shell links it instead of a copy"
+"backtrace" = "The compositor's liveness dump records another thread's stack from that thread's own signal handler as bare return addresses, without allocating or locking, and symbolizes them afterwards (compositor::liveness::capture); std symbolizes only the captures it took itself, so this is the unwinder and symbolizer std is built from, Linux-only, bringing addr2line, gimli, object and rustc-demangle"
+"app-catalogue" = "The catalogue of installable apps (Flathub's cached AppStream metadata, the fleet's manifests, the block list) that the shell's search reads and the Store shares; reading it from this one crate keeps both answering from the same catalogue"
+"browser-continuity" = "First boot finishes the browser hand-off the installer prepared (onboarding_browser, onboarding_prepared) and service sessions read its cookie records; the format and completion receipts live in this crate, shared with Browser"
+"tilo-browser-peer" = "The member's side of pairing a new device through a shared host: the shell's network bridge answers the pending pairing requests with the crate's types, built without its default browser features"
+"tilo-handoff" = "First boot receives the prepared setup from the installer or a peer computer (onboarding_peer) through the crate's authenticated hand-off receiver, the same code the installer sends with"
+"tilo-net-answers" = "The wire format of the confined network-answers helper search runs for currency rates; only the protocol types, built without default features, so the shell gains no network code"
+"tilo-ntfs-mount" = "The consent-gated NTFS mount service's protocol for shell::drives, built without default features: the shell asks the service and never mounts itself"
+"tilo-render-protocol" = "The messages between the compositor's render broker and the per-room render service it starts (compositor::render_broker)"
+"tilo-render-service" = "The per-room render service runs as a mode of the session binary (linux_main dispatches it) and the compositor's broker starts it, so the binary links the service"
+"tilo-system-stats" = "The typed system information service the session serves to apps, and the readings its own System monitor desk widget shows"
+"host-fs" = "Uninstalling an app (shell::app_list) moves its program file and a Flatpak's data to the Trash, never deleting them; host-fs is the one Trash implementation, which Files and Backups already use, and brings only the trash crate and tilo-paths with it"
+"tilo-winit-x11" = "The hosted backend's winit with X11 turned on, split out so hakari keeps X11 out of the shared app runtime; it adds no code beyond winit, which the shell already depends on as tilo-winit"

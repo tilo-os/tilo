@@ -29,7 +29,7 @@ use crate::effects::BrowserEffect;
 use crate::library::{Bookmark, MAX_BOOKMARKS};
 use crate::settings::Settings;
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
+pub(crate) use crate::CATALOG;
 
 /// The browser's document: collaborative bookmarks, the preferences, and
 /// the origins tracker protection is off for.
@@ -124,9 +124,18 @@ impl Browser {
     /// The library's sections a search can be narrowed to.
     fn scopes(_: &Self) -> Vec<ScopeDecl> {
         vec![
-            ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
-            ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
-            ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
+            ScopeDecl::new(
+                crate::actions::HISTORY_SCOPE,
+                CATALOG.t("browser-library-section-history"),
+            ),
+            ScopeDecl::new(
+                crate::actions::BOOKMARKS_SCOPE,
+                CATALOG.t("browser-library-section-bookmarks"),
+            ),
+            ScopeDecl::new(
+                crate::actions::DOWNLOADS_SCOPE,
+                CATALOG.t("browser-library-section-downloads"),
+            ),
         ]
     }
 
@@ -173,8 +182,10 @@ impl Browser {
 }
 
 /// The screenshot scenarios: the page, the chrome's states, the library's
-/// sections and the tab strip.
+/// sections and the tab strip. `page` is the deterministic page as it opens,
+/// nothing staged over it.
 const SCENARIOS: &[&str] = &[
+    "page",
     "pip-active",
     "pip-empty",
     "settings",
@@ -182,6 +193,7 @@ const SCENARIOS: &[&str] = &[
     "loading",
     "error",
     "permission",
+    "page-dialog",
     "suggestions",
     "library-history",
     "library-bookmarks",
@@ -260,7 +272,7 @@ impl ResourceApp for BrowserShell {
         match scenario {
             Some("pip-empty" | "suggestions") => (1000, 650),
             Some("settings" | "history-paused") => (900, 700),
-            Some("loading" | "error" | "permission") => (900, 620),
+            Some("loading" | "error" | "permission" | "page-dialog") => (900, 620),
             Some(name) if name.starts_with("library-") || name.starts_with("downloads-") => {
                 (1000, 700)
             }
@@ -386,9 +398,11 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             // Visits and addresses are the person's own: they follow them to
             // their other devices and never reach a collaborator. A private
             // window keeps none.
-            // Downloads stay on this device, in its settings.
+            // Downloads stay on this device, in its settings, as do the
+            // widths side panels are dragged to.
             if !cx.is_private() {
                 self.attach_downloads(cx.storage().settings());
+                self.attach_side_panel_widths(cx.storage().settings());
             }
             if !cx.is_private()
                 && let Some(bookmarks) = cx.person::<crate::personal_bookmarks::PersonalBookmarks>()
@@ -699,6 +713,44 @@ mod tests {
         );
     }
 
+    /// The page's question is the window's row while the page waits on it,
+    /// with the dialog's answers bound to it; answered in the dialog, both
+    /// go. (An agent's answer through the row runs in the widget's tests:
+    /// a capture takes no effects.)
+    #[test]
+    fn a_pages_question_is_answered_through_its_row() {
+        let mut app = TestApp::<BrowserShell>::capture(Some("page-dialog")).unwrap();
+        app.settle();
+        let published = app.harness().resources();
+        let question = find(&published, crate::page_dialogs::ROW)
+            .expect("the question the page waits on is a row");
+        assert_eq!(question.label, "shop.example.org asks");
+        let ids: Vec<&str> = question.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["accept-page-dialog", "dismiss-page-dialog"]);
+        assert!(
+            question.actions.iter().all(|a| a.params().is_empty()),
+            "a confirm asks nothing more: the question is bound"
+        );
+        assert!(
+            app.harness()
+                .targets()
+                .contains_key(crate::page_dialogs::ROW),
+            "the dialog stands over the page"
+        );
+
+        // A person answers in the dialog, and the row goes with it.
+        app.harness()
+            .click_named(&format!("{}.secondary", crate::page_dialogs::ROW))
+            .unwrap();
+        app.settle();
+        assert!(find(&app.harness().resources(), crate::page_dialogs::ROW).is_none());
+        assert!(
+            !app.harness()
+                .targets()
+                .contains_key(crate::page_dialogs::ROW)
+        );
+    }
+
     #[test]
     fn a_launch_opens_only_the_web_pages_the_browser_claims() {
         let uri = "HTTPS://example.test/a --still-data";
@@ -757,3 +809,26 @@ mod tests {
 
 #[cfg(test)]
 mod model_tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::BrowserShell::scenarios() {
+            let mut app = TestApp::<super::BrowserShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

@@ -93,7 +93,6 @@ mod eager_bridge_tests {
                 assert!(matches!(response.poll_ready(), PendingPoll::Ready(Err(_))));
                 assert!(fixture.take_invocation_identity().is_none());
 
-                // Legacy/system calls still admit immediately, without a drain.
                 let request = self::request(&fixture);
                 let mut legacy = fixture.state.action_invoke(&caller, None, None, &request);
                 assert!(matches!(legacy.poll_ready(), PendingPoll::Ready(Ok(_))));

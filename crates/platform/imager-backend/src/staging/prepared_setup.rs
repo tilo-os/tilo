@@ -20,6 +20,10 @@ pub struct PreparedArtifact<E> {
     pub expectation: PreparedSetupExpectation,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub browser: Option<super::browser::BrowserArtifact<E>>,
+    /// A public sidecar whose only secret is TPM-sealed. It travels in the
+    /// secret-free handoff profile, never inside the encrypted package.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tpm_handoff: Option<crate::setup::prepared_tpm::SealedPreparation>,
 }
 impl<E: super::browser::Expectation> PreparedArtifact<E> {
     pub fn valid(&self) -> bool {
@@ -27,6 +31,12 @@ impl<E: super::browser::Expectation> PreparedArtifact<E> {
             && self.expectation.valid()
             && self.expectation.sealed_bytes <= SLOT_BYTES
             && self.browser_valid()
+            && self.tpm_valid()
+    }
+    fn tpm_valid(&self) -> bool {
+        self.tpm_handoff
+            .as_ref()
+            .is_none_or(|handoff| handoff.validate().is_ok())
     }
     pub fn browser_expectation(&self) -> Option<&E> {
         self.browser.as_ref().map(|browser| &browser.expectation)

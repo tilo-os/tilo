@@ -135,10 +135,6 @@ pub struct SourceGrant {
 }
 impl SourceGrant {
     /// Admit an explicit selection only when it names the expected directory.
-    ///
-    /// # Errors
-    /// Returns an error for non-absolute paths, links, placeholders, non-directories,
-    /// mismatched or changed identities, or native open and metadata failures.
     pub fn admit(selected: &Path, expected: &Path) -> io::Result<Self> {
         let grant = Self {
             selected: selected.into(),
@@ -156,10 +152,6 @@ impl SourceGrant {
         &self.expected
     }
     /// Recheck both held directory chains and their matching identity.
-    ///
-    /// # Errors
-    /// Returns an error if an ancestor or held directory changed, a Windows
-    /// placeholder is encountered, or native metadata inspection fails.
     pub fn validate(&self) -> io::Result<()> {
         self.selected_directory.validate()?;
         self.expected_directory.validate()?;

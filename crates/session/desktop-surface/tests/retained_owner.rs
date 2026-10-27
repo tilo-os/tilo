@@ -91,7 +91,7 @@ struct Source {
 }
 impl TileSource for Source {
     fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let signal = Signal::default();
         self.signals.borrow_mut().insert(tab.id, signal.clone());
         NEXT.with_borrow_mut(|slot| *slot = Some(signal));
@@ -147,6 +147,7 @@ fn tab(minter: &mut IdMinter) -> Tab {
             label: "Retained owner".into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 #[test]
@@ -222,4 +223,64 @@ fn inactive_retained_workspace_services_only_its_exact_current_checked_owner_bef
             && r.teardown_error.is_none())
     );
     assert!(closed_empty);
+}
+
+/// Resizing a window whose tab holds a checked component is ordinary input:
+/// the press on its edge and the drag after it reach every app in the window
+/// (to say which edge holds still) without handing its content out to be
+/// replaced, which a checked component refuses with a panic. The browser
+/// turns that panic into a desktop that stopped working.
+#[test]
+fn dragging_the_edge_of_a_window_with_a_checked_component_resizes_it() {
+    let root = std::env::temp_dir().join(format!("tilo-edge-drag-{}", uuid::Uuid::new_v4()));
+    let mut minter = IdMinter::new(29);
+    let tabs = vec![tab(&mut minter), tab(&mut minter)];
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let width_of = |tree: &tilo_desktop_model::DesktopTree| {
+        tree.workspaces[0].strips[0].window_groups[0].width
+    };
+    let before = width_of(&tree);
+    let queue = OwnerWakeQueue::default();
+    let source = Source {
+        owners: ui::record::RecordOwners::new(root.clone()),
+        root: root.clone(),
+        queue: queue.clone(),
+        signals: Rc::default(),
+    };
+    let (surface, handle) = DesktopSurface::new(tree, 29, Box::new(source));
+    handle.set_viewport_width(1440.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1440, 900),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("retained-author".into()),
+    );
+    driver.attach_owner_wake_queue(queue).unwrap();
+    driver.relayout();
+    driver.relayout();
+    let shown = handle.shown_tabs();
+    assert_eq!(shown.len(), 2, "both windows are shown: {shown:?}");
+    let left = shown[0].1;
+    let edge = (left.x1 + 1.0, left.center().y);
+    let button =
+        |state| ui::synthetic_input::mouse_input(state, ui::winit::event::MouseButton::Left);
+    // The press alone begins the edge drag.
+    driver.send(&ui::synthetic_input::cursor_moved(edge.0, edge.1));
+    driver.send(&button(ui::winit::event::ElementState::Pressed));
+    driver.relayout();
+    for step in 1..=4 {
+        let x = edge.0 - 30.0 * f64::from(step);
+        driver.send(&ui::synthetic_input::cursor_moved(x, edge.1));
+        driver.relayout();
+    }
+    driver.send(&button(ui::winit::event::ElementState::Released));
+    driver.relayout();
+    let after = handle.read(width_of);
+    driver.close_components();
+    let _ = driver.take_component_close_reports();
+    drop(driver);
+    std::fs::remove_dir_all(root).unwrap();
+    assert_ne!(after, before, "the drag resized the window");
 }

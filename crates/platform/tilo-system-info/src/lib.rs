@@ -19,6 +19,11 @@
 pub mod local;
 
 pub use tilo_system_stats::protocol;
+
+/// The machine's storage as the session reads it, for replaying a capture.
+pub mod storage {
+    pub use tilo_system_stats::storage::from_lsblk;
+}
 pub use tilo_system_stats::{Grant, Grants, SERVICE};
 
 /// The app's side of the service.

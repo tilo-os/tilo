@@ -58,21 +58,17 @@ mod tests {
 
     #[test]
     fn timecode_formats_clocks_and_snaps_to_frames() {
-        // Case `timecode_formats_minutes_seconds_frames`.
         {
             // 65.5s at 30fps → 01:05:15
             assert_eq!(timecode(65.5, 30.0), "01:05:15");
         }
-        // Case `timecode_adds_hours_past_an_hour`.
         {
             assert_eq!(timecode(3661.0, 25.0), "01:01:01:00");
         }
-        // Case `clock_is_compact`.
         {
             assert_eq!(clock(75.0), "1:15");
             assert_eq!(clock(9.0), "0:09");
         }
-        // Case `snap_lands_on_frame_grid`.
         {
             let snapped = snap_to_frame(1.013, 30.0);
             // nearest 1/30 boundary to 1.013 is 30/30 = 1.0 (1.013*30=30.39→30)
@@ -118,7 +114,6 @@ mod parse_tests {
 
     #[test]
     fn timecode_parses_typed_shapes_at_the_project_rate() {
-        // Case `parses_the_shapes_a_person_types`.
         {
             assert_eq!(parse("90", 30.0), Some(90.0));
             assert_eq!(parse("1:30", 30.0), Some(90.0));
@@ -126,7 +121,6 @@ mod parse_tests {
             assert_eq!(parse("1:30:15", 30.0), Some(90.5));
             assert_eq!(parse("1:02:03:00", 30.0), Some(3723.0));
         }
-        // Case `refuses_what_it_cannot_read_rather_than_guessing`.
         {
             // Landing somewhere arbitrary is worse than not moving: the user would
             // not know where they had gone.
@@ -134,9 +128,7 @@ mod parse_tests {
                 assert_eq!(parse(bad, 30.0), None, "{bad:?} must not parse");
             }
         }
-        // Case `a_frame_field_is_read_at_the_projects_rate`.
         {
-            // The same typed frame count is a different instant at a different fps.
             assert_eq!(parse("0:00:12", 24.0), Some(0.5));
             assert_eq!(parse("0:00:12", 48.0), Some(0.25));
         }

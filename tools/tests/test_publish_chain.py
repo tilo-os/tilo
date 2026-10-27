@@ -23,6 +23,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 PUBLISH = ROOT / "tools/ci/publish"
 sys.path.insert(0, str(ROOT / "tools/ci"))
+import t_matrix  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("ci_products", ROOT / "tools/ci/products.py")
 assert SPEC and SPEC.loader
 products = importlib.util.module_from_spec(SPEC)
@@ -35,7 +36,7 @@ DEFAULTS = {"buildah": "buildah@sha256:1", "skopeo": "skopeo@sha256:2", "signing
 
 def checks(*product: dict) -> dict[str, dict]:
     text = products.render({"defaults": DEFAULTS, "product": list(product)}, "f")
-    return {c["name"]: c for c in tomllib.loads(text)["check"]}
+    return {c["name"]: c for c in t_matrix.expand(tomllib.loads(text))["check"]}
 
 
 class GeneratorTests(unittest.TestCase):
@@ -53,12 +54,12 @@ class GeneratorTests(unittest.TestCase):
         self.assertEqual(build["isolation"], "vm")
         sign = c["sign-svc"]
         self.assertEqual(sign["on"], ["stable"])
-        self.assertEqual(sign["needs"], ["image-svc"])
+        self.assertEqual(sign["needs"], ["image-svc", "signing-tools"])
         self.assertEqual(sign["requires"], products.CREDENTIAL_REQUIRES)
         self.assertNotIn("isolation", sign)
         publish = c["publish-svc"]
         self.assertEqual(publish["on"], ["main", "dispatch", "stable"])
-        self.assertEqual(publish["needs"], ["image-svc"])
+        self.assertEqual(publish["needs"], ["image-svc", "signing-tools"])
         self.assertEqual(publish["optional_needs"], ["sign-svc"])
         self.assertIn("oci-publish.sh any r.example/svc /target/publish/svc 'dev:dev-{commit}' "
                       "'release:sha-{commit}'", publish["run"])
@@ -117,8 +118,8 @@ class GeneratorTests(unittest.TestCase):
                     "release_on": ["tag:v*"], "tlog": True, "gates": ["rel-e2e"],
                     "build": {"run": "build {out}"}})
         self.assertEqual(c["publish-rel"]["on"], ["tag:v*"])
-        self.assertEqual(c["publish-rel"]["needs"], ["image-rel", "rel-e2e", "sign-rel"])
-        self.assertEqual(c["sign-rel"]["needs"], ["image-rel", "rel-e2e"])
+        self.assertEqual(c["publish-rel"]["needs"], ["image-rel", "rel-e2e", "sign-rel", "signing-tools"])
+        self.assertEqual(c["sign-rel"]["needs"], ["image-rel", "rel-e2e", "signing-tools"])
         self.assertEqual(c["sign-rel"]["env"]["TILO_SIGN_TLOG"], "1")
         self.assertIn("/target/publish/rel/bundle.json", c["sign-rel"]["outputs"])
 
@@ -132,8 +133,18 @@ class GeneratorTests(unittest.TestCase):
                          "test /target/publish/m/aarch64/image.oci.tar\n")
         self.assertEqual(c["image-m"]["needs"], ["image-m-x86_64", "image-m-aarch64"])
         self.assertEqual(c["image-m"]["requires"], ["arch=any"])
-        self.assertEqual(c["publish-m"]["needs"], ["image-m"])
+        self.assertEqual(c["publish-m"]["needs"], ["image-m", "signing-tools"])
         self.assertIn("/target/publish/m/index 'sha-{commit}'", c["publish-m"]["run"])
+
+    def test_the_architectures_builds_are_one_declaration_t_expands(self):
+        product = {"family": "f", "name": "m", "repository": "r/m", "dev": ["sha-{commit}"],
+                   "arches": ["x86_64", "aarch64"], "index": True,
+                   "build": {"run": "build {arch} {platform} {out}"}}
+        text = products.render({"defaults": DEFAULTS, "product": [product]}, "f")
+        self.assertIn('name = "image-m-{arch}"', text)
+        self.assertIn('[check.matrix]\narch = [{ arch = "x86_64", platform = "linux/amd64" }, '
+                      '{ arch = "aarch64", platform = "linux/arm64" }]', text)
+        self.assertNotIn("image-m-x86_64\"\n", text)
 
     def test_an_index_with_children_signs_and_publishes_each_image(self):
         c = checks({"family": "f", "name": "b", "repository": "r/b", "dev": ["dev-{commit}"],
@@ -142,7 +153,7 @@ class GeneratorTests(unittest.TestCase):
         sign = c["sign-b"]["run"].splitlines()
         self.assertEqual([line.rsplit(" ", 1)[1] for line in sign],
                          ["/target/publish/b/x86_64", "/target/publish/b/aarch64", "/target/publish/b/index"])
-        self.assertEqual(c["sign-b"]["needs"], ["image-b", "image-b-x86_64", "image-b-aarch64", "canary"])
+        self.assertEqual(c["sign-b"]["needs"], ["image-b", "image-b-x86_64", "image-b-aarch64", "canary", "signing-tools"])
         publish = c["publish-b"]["run"].splitlines()
         self.assertEqual(publish[0], "bash tools/ci/publish/oci-publish.sh any r/b /target/publish/b/x86_64 "
                                      "'dev:dev-{commit}-x86_64' 'release:{commit}-x86_64'")
@@ -198,21 +209,21 @@ class GeneratorTests(unittest.TestCase):
                          ("vm", False, {"cores": 4, "memory": "8GiB"}, False))
         self.assertNotIn("id_token", carry)
         sign = c["sign-web"]
-        self.assertEqual(sign["needs"], ["carry-web"])
+        self.assertEqual(sign["needs"], ["carry-web", "signing-tools"])
         self.assertEqual(sign["run"], "bash tools/ci/publish/oci-sign.sh r/web /target/publish/web/release")
         # t keys a need of an uncached step by what that step produced this run, so a cached
         # signature is only ever over the same derived image.
         self.assertNotIn("cache", sign)
         publish = c["publish-web"]
         # Main publishes the build it tested; stable waits for the derived image and its signature.
-        self.assertEqual(publish["needs"], ["image-web"])
+        self.assertEqual(publish["needs"], ["image-web", "signing-tools"])
         self.assertEqual(publish["optional_needs"], ["sign-web", "carry-web"])
         self.assertEqual(publish["env"], {"TILO_RELEASE_OUT": "/target/publish/web/release"})
         self.assertIn("oci-publish.sh any r/web /target/publish/web 'dev:dev-{commit}'", publish["run"])
         self.assertEqual(publish["outputs"], ["/target/publish/web/receipt.json"])
         c = checks({"family": "f", "name": "rel", "repository": "r/rel", "release": ["{version}"],
                     "build": {"run": "b {out}"}, "release_build": {"name": "derive-rel", "run": "d"}})
-        self.assertEqual(c["publish-rel"]["needs"], ["image-rel", "sign-rel", "derive-rel"])
+        self.assertEqual(c["publish-rel"]["needs"], ["image-rel", "sign-rel", "derive-rel", "signing-tools"])
         for bad, why in (({"dev": ["t"]}, "without release tags"),
                          ({"release": ["t"], "arches": ["x86_64", "aarch64"]}, "one architecture"),
                          ({"release": ["t"], "anonymous": True}, "not a derived release")):
@@ -222,6 +233,22 @@ class GeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(products.ProductError, "may not set"):
             checks({"family": "f", "name": "x", "repository": "r", "release": ["t"], "build": {"run": "b"},
                     "release_build": {"name": "d", "run": "d", "on": ["main"]}})
+
+    def test_a_build_waits_for_a_credentialed_step_only_where_it_runs(self):
+        c = checks({"family": "f", "name": "b", "repository": "r/b",
+                    "build": {"run": "b {out}", "optional_needs": ["mirror-base"]}})
+        self.assertEqual(c["image-b"]["optional_needs"], ["mirror-base"])
+        self.assertNotIn("needs", c["image-b"])
+
+    def test_the_rpm_snapshot_builds_after_its_base_is_mirrored(self):
+        expanded = {check["name"]: check for check in t_matrix.checks(ROOT)}
+        mirror = expanded["mirror-base"]
+        self.assertEqual(mirror["id_token"], ["registry.tilo.so"])
+        self.assertIn("stable", mirror["on"])
+        self.assertIn("main", mirror["on"])
+        for arch in ("x86_64", "aarch64"):
+            with self.subTest(arch=arch):
+                self.assertEqual(expanded[f"image-rpms-{arch}"]["optional_needs"], ["mirror-base"])
 
     def test_products_without_tags_are_only_built(self):
         c = checks({"family": "f", "name": "b", "repository": "r/b", "build": {"run": "b {out}"}})
@@ -237,7 +264,7 @@ class GeneratorTests(unittest.TestCase):
         with self.assertRaisesRegex(products.ProductError, "index joins"):
             checks({"family": "f", "name": "x", "repository": "r", "dev": ["t"], "index": True, "build": {"run": "b"}})
 
-    def test_matrices_write_each_check_per_variant(self):
+    def test_matrices_stand_for_each_check_per_variant(self):
         text = products.render({"defaults": DEFAULTS, "matrix": [{
             "family": "f", "about": "per arch",
             "each": [{"arch": "x86_64", "node": "arch=x86_64"}, {"arch": "aarch64", "node": "arch=arm64"}],
@@ -248,21 +275,54 @@ class GeneratorTests(unittest.TestCase):
                 {"name": "pack", "run": "p", "needs": ["build-x86_64", "build-aarch64"], "default": True},
             ]}]}, "f")
         self.assertTrue(text.startswith("# per arch\n[[check]]"))
-        c = {x["name"]: x for x in tomllib.loads(text)["check"]}
-        self.assertEqual(list(c), ["build-x86_64", "wine-x86_64", "build-aarch64", "pack"])
+        # One declaration per check of the matrix, which t expands per variant.
+        self.assertEqual(text.count("[[check]]"), 3)
+        self.assertIn('[check.matrix]\narch = [{ arch = "x86_64", node = "arch=x86_64" }, '
+                      '{ arch = "aarch64", node = "arch=arm64" }]', text)
+        c = {x["name"]: x for x in t_matrix.expand(tomllib.loads(text))["check"]}
+        self.assertEqual(list(c), ["build-x86_64", "build-aarch64", "wine-x86_64", "pack"])
         self.assertEqual(c["build-aarch64"]["requires"], ["arch=arm64"])
         self.assertEqual(c["build-aarch64"]["run"], "b aarch64 {commit}")
         self.assertEqual(c["build-aarch64"]["image"], "img")
         self.assertFalse(c["build-aarch64"]["default"])
         self.assertTrue(c["pack"]["default"])
 
+    def test_the_env_tools_build_never_holds_the_publisher_identity(self):
+        c = {x["name"]: x for x in t_matrix.load(ROOT)["check"] if "env-tools" in x["name"]}
+        for arch in ("x86_64", "aarch64"):
+            for name in (f"env-tools-binaries-{arch}", f"env-tools-{arch}"):
+                self.assertNotIn("secrets", c[name], name)
+                self.assertNotIn("id_token", c[name], name)
+            self.assertEqual(c[f"env-tools-{arch}"]["optional_needs"], ["env-tools-plan"])
+            self.assertEqual(c[f"env-tools-binaries-{arch}"]["optional_needs"], ["env-tools-plan"])
+        self.assertEqual(c["env-tools-plan"]["on"], ["stable"])
+        self.assertFalse(c["env-tools-plan"]["cache"])
+        self.assertEqual(c["env-tools-plan"]["optional_needs"], ["release-env-runtime"])
+        self.assertEqual(c["seal-env-tools"]["secrets"], ["TAPP_PUBLISHER_IDENTITY"])
+        self.assertIn("sign-catalog", (ROOT / "tools/ci/publish/env-tools-release.sh").read_text())
+        holders = sorted(n for n, x in c.items() if "TAPP_PUBLISHER_IDENTITY" in x.get("secrets", []))
+        self.assertEqual(holders, ["seal-env-tools"])
+        self.assertEqual(c["sign-env-tools"]["env"]["TILO_SIGN_TLOG"], "1")
+        self.assertEqual(c["sign-env-tools"]["needs"], ["env-tools-plan", "image-env-tools", "signing-tools"])
+        self.assertIn("sign-env-tools", c["publish-env-tools"]["needs"])
+        for name in ("seal-env-tools", "sign-env-tools", "publish-env-tools"):
+            self.assertEqual(c[name]["on"], ["stable"], name)
+
     def test_the_manifest_renders(self):
         manifest = products.load()
+        # A product's own signing and publishing read only what its build produced, so they
+        # run anywhere. A hand-written `[[matrix.check]]` may do more with its credentials
+        # (the Windows signer packages again with Inno Setup, an x86_64 program) and says
+        # where it runs itself.
+        product_only = {**manifest, "matrix": []}
         names = set()
         for family in products.families(manifest):
-            for c in tomllib.loads(products.render(manifest, family))["check"]:
+            for c in t_matrix.expand(tomllib.loads(products.render(manifest, family)))["check"]:
                 self.assertNotIn(c["name"], names)
                 names.add(c["name"])
+                if "id_token" in c:
+                    self.assertTrue(c.get("requires"), c["name"])
+            for c in t_matrix.expand(tomllib.loads(products.render(product_only, family)))["check"]:
                 if "id_token" in c:
                     self.assertEqual(c["requires"], products.CREDENTIAL_REQUIRES, c["name"])
 
@@ -283,7 +343,7 @@ def publish_scripts(script: str, seen: set[str]) -> set[str]:
 class InputsTests(unittest.TestCase):
     def test_checks_read_the_publishing_scripts_they_run(self):
         """A change to a publishing script reruns exactly the checks that run it."""
-        for c in tomllib.loads((ROOT / "t.toml").read_text(encoding="utf-8"))["check"]:
+        for c in t_matrix.load(ROOT)["check"]:
             inputs = c.get("inputs", [])
             if "tools/ci/publish/**" in inputs:
                 continue
@@ -330,7 +390,9 @@ case $1 in
 import base64, json, sys
 args = sys.argv[1:]
 value = lambda flag: args[args.index(flag) + 1]
-statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://slsa.dev/provenance/v1",
+kind = value("--type")
+statement = {"_type": "https://in-toto.io/Statement/v0.1",
+             "predicateType": "https://slsa.dev/provenance/v1" if kind == "slsaprovenance1" else kind,
              "subject": [{"name": args[-1].rsplit("/", 1)[-1], "digest": {"sha256": value("--hash")}}],
              "predicate": json.load(open(value("--predicate")))}
 payload = base64.b64encode(json.dumps(statement, separators=(",", ":")).encode()).decode()
@@ -479,14 +541,34 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("names its channel", result.stderr)
         result = self.publish("release:sha-{commit}", ref="main")
         self.assertIn("no tags for the dev channel", result.stderr)
+        # A branch publishes only where a check publishes for branches, and only signed.
         result = self.publish("dev:x", ref="feature")
-        self.assertIn("no channel for feature", result.stderr)
+        self.assertIn("no tags for the branch channel", result.stderr)
+        result = self.publish("x", ref="feature", channel="branch")
+        self.assertIn("a branch build is published signed only", result.stderr)
 
     def test_version_tags_come_from_release_tags(self):
         self.signed()
         result = self.publish("release:{version}", ref="tag:v1.2.3")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.receipt()["tags"], ["1.2.3"])
+
+    def test_final_tags_move_only_for_a_final_version(self):
+        self.signed()
+        result = self.publish("release:{version}", "release:final:latest", ref="tag:v1.2.3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], ["1.2.3", "latest"])
+        result = self.publish("release:{version}", "release:final:latest", ref="tag:v1.2.4-rc.1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], ["1.2.4-rc.1"])
+
+    def test_the_relay_s_latest_follows_final_releases(self):
+        relay = next(p for p in tomllib.loads((ROOT / "tools/ci/products.toml").read_text())["product"]
+                     if p["name"] == "relay")
+        self.assertIn("final:latest", relay["release"])
+        for compose in ("os/containers/tilo-relay/compose.yaml", "os/containers/tilo-agent-host/compose.yaml"):
+            with self.subTest(compose=compose):
+                self.assertIn("registry.tilo.so/tilo/tilo-relay:latest", (ROOT / compose).read_text())
 
     def test_rust_tags_name_the_pinned_toolchain(self):
         self.signed()
@@ -514,6 +596,23 @@ class ScriptTests(unittest.TestCase):
         result = self.publish("release:sha-{commit}", ref="stable")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("cosign verify-blob-attestation", self.log.read_text())
+
+    def test_another_predicate_is_attested_beside_the_provenance(self):
+        self.provenance()
+        (self.out / "freshness.json").write_text(json.dumps({"digest": self.digest, "generation": 3}))
+        for args in (("oci-sign.sh",), ("oci-attest.sh",),
+                     ("oci-attest.sh", "freshness.json", "https://tilo.sh/security/release-freshness/v1")):
+            result = self.run_script(args[0], "r.example/img", str(self.out), *args[1:], ref="stable")
+            self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads((self.out / "freshness.attestation.json").read_text())
+        statement = json.loads(base64.b64decode(envelope["payload"]))
+        self.assertEqual(statement["predicateType"], "https://tilo.sh/security/release-freshness/v1")
+        self.assertEqual(statement["subject"][0]["digest"], {"sha256": self.digest[7:]})
+        (self.out / "generation").write_text("3\n")
+        result = self.publish("release:once:gen{generation}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], ["gen3"])
+        self.assertIn("--type https://tilo.sh/security/release-freshness/v1", self.log.read_text())
 
     def test_development_provenance_is_attested_on_main_only(self):
         self.provenance()
@@ -551,6 +650,88 @@ class ScriptTests(unittest.TestCase):
         self.assertTrue(self.receipt()["existing"])
         self.assertEqual(self.receipt()["digest"], self.digest)
 
+    def sign_for(self, out: Path, repository: str = "r.example/img") -> str:
+        """What oci-sign.sh leaves in OUT for its archive."""
+        digest = (out / "digest").read_text().strip()
+        (out / "payload.json").write_text(
+            '{"critical":{"identity":{"docker-reference":"' + repository + '"},"image":'
+            '{"docker-manifest-digest":"' + digest + '"},'
+            '"type":"cosign container image signature"},"optional":null}')
+        (out / "signature").write_text("sig")
+        return digest
+
+    def build_into(self, out: Path, arch: str) -> None:
+        out.mkdir(parents=True, exist_ok=True)
+        digest = self.archive(out / "image.oci.tar", f'{{"architecture":"{arch}","os":"linux"}}'.encode())
+        (out / "digest").write_text(digest + "\n")
+
+    def test_a_kernel_rebuilt_on_the_same_commit_keeps_the_published_digest_pinned(self):
+        kernel = self.tmp / "kernel"
+        published = {}
+        # The first stable run's x86_64 build stays where the stand-in registry reads it.
+        for arch, out in (("x86_64", self.tmp / "first/x86_64"), ("aarch64", kernel / "aarch64")):
+            self.build_into(out, arch)
+            published[arch] = self.sign_for(out)
+            result = self.run_script("oci-publish.sh", "release", "r.example/img", str(out),
+                                     f"once:sha-{{commit}}-{arch}", ref="stable")
+            self.assertEqual(result.returncode, 0, result.stderr)
+        # A second stable run on the commit rebuilt x86_64 into another image.
+        self.build_into(kernel / "x86_64", "amd64")
+        rebuilt = self.sign_for(kernel / "x86_64")
+        self.assertNotEqual(rebuilt, published["x86_64"])
+        result = self.run_script("oci-publish.sh", "release", "r.example/img", str(kernel / "x86_64"),
+                                 "once:sha-{commit}-x86_64", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("is published already", result.stdout)
+        result = self.run_script("kernel.sh", "pins", str(kernel), ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pins = (kernel / "pins.env").read_text()
+        self.assertIn(f"KERNEL_RPMS_X86_64_REF=registry.tilo.so/tilo/tilo-kernel@{published['x86_64']}\n", pins)
+        self.assertIn(f"KERNEL_RPMS_AARCH64_REF=registry.tilo.so/tilo/tilo-kernel@{published['aarch64']}\n", pins)
+        self.assertNotIn(rebuilt, pins)
+
+    def env_tools(self, mode: str, *args: str) -> subprocess.CompletedProcess:
+        return self.run_script("env-tools-release.sh", mode, *args, ref="stable")
+
+    def test_the_env_tools_catalog_publishes_once_under_the_plan_s_tag(self):
+        plan = self.tmp / "plan"
+        plan.mkdir()
+        tag = "set-" + "a" * 64 + "-" + "b" * 16
+        (plan / "tag").write_text(tag + "\n")
+        self.sign_for(self.out, "registry.tilo.so/tilo/env-tools")
+        result = self.env_tools("release", str(plan), str(self.out))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], [tag])
+        self.assertTrue(self.receipt()["signed"])
+        result = self.env_tools("release", str(plan), str(self.out))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.receipt()["existing"])
+        (plan / "tag").write_text("sha-" + COMMIT + "\n")
+        result = self.env_tools("release", str(plan), str(self.out))
+        self.assertIn("not a catalog tag", result.stderr)
+
+    def test_an_env_tools_catalog_published_already_is_neither_sealed_signed_nor_pushed(self):
+        plan = self.tmp / "plan"
+        plan.mkdir()
+        (plan / "published").write_text("set-" + "a" * 64 + "-" + "b" * 16 + "\n")
+        missing = str(self.tmp / "missing")
+        for mode, args in (("seal", (str(plan), missing, missing, missing)),
+                           ("image", (missing, missing, str(plan))),
+                           ("sign", (str(plan), missing)),
+                           ("release", (str(plan), missing))):
+            with self.subTest(mode=mode):
+                result = self.env_tools(mode, *args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("is published already", result.stdout)
+        self.assertFalse(self.log.exists())
+
+    def test_env_tools_are_sealed_only_with_the_publisher_identity(self):
+        plan = self.tmp / "plan"
+        (plan / "runtime").mkdir(parents=True)
+        result = self.env_tools("seal", str(plan), str(self.tmp), str(self.tmp), str(self.tmp / "sealed"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TAPP_PUBLISHER_IDENTITY is required", result.stderr)
+
     def test_an_archive_that_is_not_the_build_is_refused(self):
         (self.out / "digest").write_text("sha256:" + "0" * 64 + "\n")
         result = self.publish("dev:x", ref="main")
@@ -563,11 +744,16 @@ class ScriptTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("only releases are signed", result.stderr)
 
-    def test_development_signing_is_for_main_only(self):
+    def test_development_signing_is_for_main_and_branches_only(self):
         self.env["TILO_DEV_SIGNING"] = "1"
         result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="stable")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("signs main's candidates only", result.stderr)
+        self.assertIn("signs development candidates only", result.stderr)
+        result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="feature")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.publish("feature-x", ref="feature", channel="branch")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.receipt()["signed"])
         result = self.run_script("oci-sign.sh", "r.example/img", str(self.out), ref="main")
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.publish("{commit}", ref="main", channel="dev")
@@ -584,9 +770,16 @@ class ScriptTests(unittest.TestCase):
                          {"docker-manifest-digest": self.digest})
 
     def board(self, revision: str = COMMIT, board: str = "lenovo-83ed") -> subprocess.CompletedProcess:
-        """os-board-publish.sh on what `os-image.sh board` leaves in OUT."""
+        """os-board-publish.sh on what `os-image.sh board` and its signing leave in OUT."""
+        (self.out / "payload.json").write_text(
+            '{"critical":{"identity":{"docker-reference":"registry.tilo.so/tilo/tilo-vm"},"image":'
+            '{"docker-manifest-digest":"' + self.digest + '"},'
+            '"type":"cosign container image signature"},"optional":null}')
+        (self.out / "signature").write_text("sig")
         (self.out / "board").write_text(board + "\n")
         (self.out / "revision").write_text(revision + "\n")
+        (self.out / "disk").mkdir(exist_ok=True)
+        (self.out / "disk/disk.qcow2").write_bytes(b"flashable disk")
         return self.run_script("os-board-publish.sh", "lenovo-83ed", str(self.out), ref="main")
 
     def moving_tag_names(self, revision: str) -> None:
@@ -604,7 +797,12 @@ class ScriptTests(unittest.TestCase):
         receipt = self.receipt()
         self.assertEqual(receipt["repository"], "registry.tilo.so/tilo/tilo-vm")
         self.assertEqual(receipt["tags"], [f"main-{COMMIT[:7]}-lenovo-83ed", "lenovo-83ed-ci"])
-        self.assertEqual((receipt["digest"], receipt["signed"]), (self.digest, False))
+        self.assertEqual((receipt["digest"], receipt["signed"]), (self.digest, True))
+        # Its flashable disk, named for the board, with the commit it is of.
+        disks = self.tmp / "registry/packages/aarch64-lenovo-83ed"
+        self.assertEqual((disks / "tilo-vm-lenovo-83ed.qcow2").read_bytes(), b"flashable disk")
+        self.assertTrue((disks / "tilo-vm-lenovo-83ed.qcow2.sha256").read_text().endswith("  tilo-vm-lenovo-83ed.qcow2\n"))
+        self.assertEqual((disks / "revision").read_text(), COMMIT + "\n")
 
     def test_the_board_moving_tag_moves_only_forward_along_main(self):
         older = "f" * 40
@@ -627,6 +825,28 @@ class ScriptTests(unittest.TestCase):
         result = self.board()
         self.assertEqual(self.receipt()["tags"], [f"main-{COMMIT[:7]}-lenovo-83ed"])
         self.assertIn("could not be compared", result.stderr)
+
+    def test_a_branch_build_goes_only_to_the_branches_repository(self):
+        self.board()
+        ref = self.tmp / "ref"
+        self.env["TILO_DEV_SIGNING"] = "1"
+        result = self.run_script("os-ref.sh", "sign", "lenovo-83ed", str(self.out), str(ref), ref="quinten/Fix_it")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"docker-reference":"registry.tilo.so/tilo/tilo-vm-ref"', (ref / "payload.json").read_text())
+        result = self.run_script("os-ref.sh", "publish", "lenovo-83ed", str(self.out), str(ref), ref="quinten/Fix_it")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads((ref / "receipt.json").read_text())
+        self.assertEqual(receipt["repository"], "registry.tilo.so/tilo/tilo-vm-ref")
+        self.assertEqual(receipt["tags"], [f"ref-quinten-fix-it-{COMMIT[:7]}-lenovo-83ed"])
+        self.assertTrue(receipt["signed"])
+        result = self.run_script("os-ref.sh", "publish", "lenovo-83ed", str(self.out), str(ref), ref="main")
+        self.assertIn("publishes from a branch", result.stderr)
+
+    def test_a_board_image_is_published_only_signed(self):
+        self.board()
+        (self.out / "signature").unlink()
+        result = self.run_script("os-board-publish.sh", "lenovo-83ed", str(self.out), ref="main")
+        self.assertIn("holds no signature", result.stderr)
 
     def test_a_board_publication_refuses_another_build_and_branch(self):
         result = self.board(board="orangepi-3b-v2-1")

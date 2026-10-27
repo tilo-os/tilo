@@ -3,6 +3,7 @@
 pub use runtime_collab::approved_checks::{
     Receipt as ApprovedCheckReceipt, ReportObservation as ApprovedCheckReportObservation,
 };
+use tilo_sort::CompactSort as _;
 
 /// A host moderation receipt, suitable for an existing action worker.
 pub type ExternalModerationFuture = std::pin::Pin<
@@ -44,6 +45,33 @@ impl ExternalModerationReply {
             Self(std::sync::Arc::new(std::sync::Mutex::new(Some(send)))),
             receive,
         )
+    }
+}
+
+/// The host's answer to naming the paths an invocation is about to write
+/// ([`ResourceInvocationScope::attribute_writes`]). Wait for it before
+/// writing, so the versions those writes make record who caused them.
+#[derive(Debug)]
+pub struct WriteAttributionReceipt(std::sync::mpsc::Receiver<Result<(), String>>);
+
+impl WriteAttributionReceipt {
+    #[cfg_attr(
+        not(feature = "broker-transport"),
+        allow(dead_code, reason = "only the broker lane answers a write attribution")
+    )]
+    pub(crate) fn new(receive: std::sync::mpsc::Receiver<Result<(), String>>) -> Self {
+        Self(receive)
+    }
+
+    /// Wait at most `timeout` for the host's answer. Whatever it is, the
+    /// writes go ahead: a refusal or no answer leaves them the person's.
+    ///
+    /// # Errors
+    /// Returns the host's refusal, or that it did not answer in time.
+    pub fn wait(self, timeout: std::time::Duration) -> Result<(), String> {
+        self.0
+            .recv_timeout(timeout)
+            .map_err(|_| "the host did not answer the write attribution".to_owned())?
     }
 }
 
@@ -134,15 +162,18 @@ impl PublishedInvocationRequest {
 }
 
 thread_local! {
-    static CURRENT_INVOKERS: std::cell::RefCell<Vec<tilo_actions::ActionInvoker>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    /// Each scope's invoker, with the broker invocation it was delivered
+    /// under when it was one.
+    static CURRENT_INVOKERS: std::cell::RefCell<
+        Vec<(tilo_actions::ActionInvoker, Option<tilo_actions::InvocationId>)>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The invoker whose resource tree a delivered invocation resolves against,
 /// for the duration of its resolution and dispatch on this thread.
 ///
 /// Resource collection for resolution
-/// ([`crate::widget::Widget::resources_for`]) and view operations read it,
+/// ([`crate::resources::PublishesResources::resources_for`]) and view operations read it,
 /// so an invocation is resolved against the invoker's own view, rebuilt at
 /// invoke time, never against a published snapshot. Scopes nest; dropping
 /// the guard restores the enclosing invoker.
@@ -150,7 +181,18 @@ thread_local! {
 pub struct InvokerScope(());
 impl InvokerScope {
     pub fn enter(invoker: tilo_actions::ActionInvoker) -> Self {
-        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push(invoker));
+        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push((invoker, None)));
+        Self(())
+    }
+
+    /// Enter the invoker of `invocation`, which the broker delivered: a
+    /// request the app makes for it meanwhile names it
+    /// ([`delivered_invocation`]).
+    pub fn delivered(
+        invoker: tilo_actions::ActionInvoker,
+        invocation: tilo_actions::InvocationId,
+    ) -> Self {
+        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push((invoker, Some(invocation))));
         Self(())
     }
 }
@@ -303,7 +345,15 @@ pub(crate) fn check_continuation(
 /// The invoker of the delivered invocation being resolved on this thread.
 /// `None` outside any delivered invocation (the local person acting).
 pub fn current_invoker() -> Option<tilo_actions::ActionInvoker> {
-    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().cloned())
+    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().map(|(invoker, _)| invoker.clone()))
+}
+
+/// The broker invocation being dispatched on this thread, when the broker
+/// delivered it: what a request the app makes to the shell for it (opening
+/// another app) names, so the shell admits it as that invocation's caller.
+/// `None` for the local person acting, whose own press is the proof.
+pub fn delivered_invocation() -> Option<tilo_actions::InvocationId> {
+    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().and_then(|(_, invocation)| *invocation))
 }
 
 /// The participant whose view the current resolution builds, if any.
@@ -311,7 +361,7 @@ pub fn current_participant() -> Option<tilo_actions::ParticipantId> {
     CURRENT_INVOKERS.with_borrow(|invokers| {
         invokers
             .last()
-            .and_then(|invoker| invoker.participant.clone())
+            .and_then(|(invoker, _)| invoker.participant.clone())
     })
 }
 
@@ -656,7 +706,7 @@ impl ResourceInvocationScope {
             *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
             return;
         }
-        heads.sort_unstable();
+        heads.compact_sort();
         *self.locus_basis.borrow_mut() =
             InvocationLocusState::Captured(Box::new(InvocationLocusBasis {
                 invocation,
@@ -762,6 +812,39 @@ impl ResourceInvocationScope {
         #[cfg(not(feature = "broker-transport"))]
         {
             Err("external moderation requires the admitted native broker transport".into())
+        }
+    }
+
+    /// Name the paths this invocation is about to write (absolute paths; a
+    /// folder covers what is under it), so the host can record the agent
+    /// behind them. The host takes who acted from its own custody of this
+    /// invocation and names only an agent acting for the session's person;
+    /// `None` when this invocation is not an agent's, which spares a
+    /// person's writes the round trip. It grants nothing.
+    ///
+    /// # Errors
+    /// Refuses retired custody, invalid paths or an unavailable lane.
+    pub fn attribute_writes(
+        &self,
+        paths: Vec<String>,
+    ) -> Result<Option<WriteAttributionReceipt>, String> {
+        self.check()?;
+        if !self.lease.request.actor.starts_with("agent:") {
+            return Ok(None);
+        }
+        #[cfg(feature = "broker-transport")]
+        {
+            crate::collaboration::write_attribution_lane::enqueue(
+                &self.route().channel_id(),
+                self.invocation(),
+                paths,
+            )
+            .map(Some)
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = paths;
+            Ok(None)
         }
     }
 

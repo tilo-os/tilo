@@ -746,9 +746,6 @@ fn release_handoff_stage(req: &WriteRequest) {
 }
 
 /// Customize only a regular disk image through the shared installed-root path.
-///
-/// # Errors
-/// Returns target metadata, mounted-root discovery, or copy errors.
 pub(crate) fn apply_handoff_stage_to_image_file(image: &Path, staged: &Path) -> io::Result<()> {
     imager_backend::write::handoff::apply_handoff_stage_to_image_file(
         image,
@@ -818,11 +815,6 @@ fn handoff_when_root_was_not_found(
 /// validated and its live target identity is checked again by
 /// `run_system_job`. Progress is append-only JSON so the unprivileged window
 /// can remain responsive while the platform authentication broker waits.
-///
-/// # Errors
-///
-/// Returns a descriptive error for malformed arguments/request data or an I/O
-/// failure in the helper protocol.
 pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn std::error::Error>> {
     let Some(authorized) = imager_backend::write::helper::read_authorized_helper_request(args)?
     else {
@@ -1028,7 +1020,6 @@ mod tests {
     /// Target identity, confirmation and job admission.
     #[test]
     fn begin_refuses_mismatched_oversized_forbidden_or_invalid_jobs() {
-        // Phase `target_lock_prefers_stable_hardware_identity_then_falls_back_to_path`.
         {
             let mut original = sample_targets().remove(0);
             original.stable_id = Some("usb-serial-123".into());
@@ -1041,7 +1032,6 @@ mod tests {
             assert_ne!(target_lock_name(&original), target_lock_name(&renumbered));
         }
 
-        // Phase `confirmation_must_match_target`.
         {
             let r = req();
             assert!(r.confirmation_matches("sdb"));
@@ -1051,21 +1041,18 @@ mod tests {
             assert!(!r.confirmation_matches("nvme0n1"));
         }
 
-        // Phase `begin_refuses_on_mismatched_confirmation`.
         {
             let r = req();
             assert_eq!(begin_job(&r, "sda"), JobStart::ConfirmationMismatch);
             assert_eq!(begin_job(&r, ""), JobStart::ConfirmationMismatch);
         }
 
-        // Phase `begin_refuses_when_image_too_big`.
         {
             let mut r = req();
             r.source.size = 40_000_000_000; // bigger than the 30 GB stick
             assert_eq!(begin_job(&r, "sdb"), JobStart::TooSmall);
         }
 
-        // Phase `begin_refuses_internal_and_system_targets`.
         {
             let mut r = req();
             r.target.removable = false;
@@ -1076,7 +1063,6 @@ mod tests {
             assert_eq!(begin_job(&r, "sdb"), JobStart::UnsafeTarget);
         }
 
-        // Phase `begin_refuses_invalid_profile_before_worker_start`.
         {
             let mut r = req();
             r.profile.keyboard = "not-a-layout".into();
@@ -1086,7 +1072,6 @@ mod tests {
             ));
         }
 
-        // Phase `target_revalidation_rejects_reused_device_name`.
         {
             let selected = req().target;
             let mut replacement = selected.clone();
@@ -1142,7 +1127,6 @@ mod tests {
     /// Backend gating across builds and platforms.
     #[test]
     fn backend_selection_is_gated_and_never_simulates_writes() {
-        // Phase `default_backend_is_disabled_without_gate`.
         #[cfg(not(feature = "host-media-writer"))]
         {
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -1152,7 +1136,6 @@ mod tests {
             assert!(!allow_write());
         }
 
-        // Phase `packaged_host_build_enables_the_short_lived_helper_without_an_environment_flag`.
         #[cfg(feature = "host-media-writer")]
         {
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -1164,7 +1147,6 @@ mod tests {
             assert!(WriteBackend::for_window(false).is_available());
         }
 
-        // Phase `live_ui_uses_short_lived_privileged_helper`.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("TILO_IMAGER_ALLOW_WRITE");
@@ -1174,7 +1156,6 @@ mod tests {
             );
         }
 
-        // Phase `flatpak_selects_udisks_without_enabling_direct_device_writes`.
         #[cfg(all(target_os = "linux", feature = "flatpak-media-writer"))]
         {
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -1184,7 +1165,6 @@ mod tests {
             assert!(!allow_write(), "the sandbox never gains direct /dev access");
         }
 
-        // Phase `only_disabled_backend_is_unavailable`.
         {
             assert!(!WriteBackend::Disabled.is_available());
             assert!(WriteBackend::System.is_available());
@@ -1192,7 +1172,6 @@ mod tests {
             assert!(WriteBackend::Udisks2.is_available());
         }
 
-        // Phase `system_backend_selected_only_with_gate_on`.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             // The real block-device backend is chosen ONLY when the operator opts
@@ -1210,7 +1189,6 @@ mod tests {
             assert_eq!(WriteBackend::for_window(false), expected);
         }
 
-        // Phase `spawn_refuses_instead_of_simulating_with_gate_off`.
         #[cfg(not(feature = "host-media-writer"))]
         {
             let mut env = tilo_test_env::ScopedEnv::new();
@@ -1226,14 +1204,12 @@ mod tests {
         }
     }
 
-    /// Helper request integrity and elevation.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn privileged_helper_requests_are_secret_free_private_and_exact() {
-        // Phase `privileged_request_never_contains_user_or_encryption_secrets`.
         {
             let mut request = req();
             request.profile.user.password = "account-secret".into();
@@ -1245,7 +1221,6 @@ mod tests {
             assert!(encoded.contains("\"encryption_passphrase\":\"\""));
         }
 
-        // Phase `helper_rejects_a_request_changed_after_authorization`.
         {
             #[cfg(target_os = "linux")]
             use std::os::unix::fs::PermissionsExt;
@@ -1285,7 +1260,6 @@ mod tests {
             assert!(std::fs::read(progress_path).unwrap().is_empty());
         }
 
-        // Phase `helper_rejects_a_non_private_job_directory`.
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1307,7 +1281,6 @@ mod tests {
             assert!(error.to_string().contains("not private"));
         }
 
-        // Phase `helper_request_reader_never_follows_a_symlink`.
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1328,7 +1301,6 @@ mod tests {
             assert_eq!(error.raw_os_error(), Some(libc::ELOOP));
         }
 
-        // Phase `helper_never_follows_or_overwrites_a_planted_progress_path`.
         {
             let work = tempfile::Builder::new()
                 .prefix("tilo-imager-write-")
@@ -1341,7 +1313,6 @@ mod tests {
             assert_eq!(std::fs::read(progress_path).unwrap(), b"keep-me");
         }
 
-        // Phase `linux_elevates_only_the_hidden_helper_mode`.
         #[cfg(target_os = "linux")]
         {
             let source = tempfile::tempfile().unwrap();
@@ -1361,7 +1332,6 @@ mod tests {
             assert_eq!(args.len(), 6);
         }
 
-        // Phase `windows_elevation_script_native_quotes_paths_with_spaces`.
         {
             // PowerShell single-quoted strings do not treat backslash as an
             // escape. The wrapper must concatenate a literal `"`, not `\"`,
@@ -1380,7 +1350,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn helper_cancellation_and_child_processes_are_bounded_and_retryable() {
-        // Phase `cancellation_marker_is_separate_from_digest_bound_request`.
         {
             let work = tempfile::Builder::new()
                 .prefix("tilo-imager-write-")
@@ -1405,7 +1374,6 @@ mod tests {
             );
         }
 
-        // Phase `failed_cancellation_delivery_remains_retryable`.
         {
             let work = tempfile::tempdir().unwrap();
             let job_dir = work.path().join("tilo-imager-write-retry");
@@ -1423,7 +1391,6 @@ mod tests {
             assert!(cancel_path.is_file());
         }
 
-        // Phase `relay_error_waits_until_the_privileged_child_has_exited`.
         #[cfg(unix)]
         {
             let work = tempfile::tempdir().unwrap();
@@ -1434,7 +1401,6 @@ mod tests {
             let (tx, _rx) = std::sync::mpsc::channel();
             let control = JobControl::new();
 
-            // Opening a directory as the JSONL progress file fails immediately.
             let error = relay_helper_progress(
                 &mut child,
                 work.path(),
@@ -1448,19 +1414,18 @@ mod tests {
             assert!(child.try_wait().unwrap().is_some());
         }
 
-        // Phase `finite_platform_command_is_reaped_at_its_deadline`.
         #[cfg(unix)]
         {
+            let bound = tilo_test_env::hang_bound();
             let mut command = Command::new("sh");
-            command.args(["-c", "sleep 10"]);
+            command.args(["-c", &format!("sleep {}", bound.as_secs() * 2)]);
             let started = ui::time::now();
             let error = run_finite_status(command, Duration::from_millis(20)).unwrap_err();
 
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            assert!(started.elapsed() < Duration::from_secs(1));
+            assert!(started.elapsed() < bound);
         }
 
-        // Phase `helper_rejects_cancellation_marker_outside_private_job_directory`.
         {
             let work = tempfile::Builder::new()
                 .prefix("tilo-imager-write-")
@@ -1492,7 +1457,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn media_profile_block_is_reserved_secret_free_and_verified() {
-        // Phase `q_os_media_reserves_room_for_the_profile`.
         {
             let mut r = req();
             r.source.installable = true;
@@ -1500,7 +1464,6 @@ mod tests {
             assert_eq!(begin_job(&r, "sdb"), JobStart::TooSmall);
         }
 
-        // Phase `media_profile_is_secret_free_and_read_back_verified`.
         {
             let mut profile = InstallProfile {
                 hostname: "studio".into(),
@@ -1526,7 +1489,6 @@ mod tests {
             assert_eq!(&bytes[PROFILE_BLOCK_SIZE..], block.as_slice());
         }
 
-        // Phase `invalid_media_profile_is_rejected_before_a_block_is_encoded`.
         {
             let profile = InstallProfile {
                 hostname: "bad host".into(),
@@ -1582,7 +1544,6 @@ mod tests {
             );
         }
 
-        // Phase `profile_write_honours_cancel_before_touching_the_tail`.
         {
             let target = tmp_with(b"leave this target unchanged");
             let before = std::fs::read(target.path()).unwrap();
@@ -1606,7 +1567,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn write_engine_copies_verifies_and_reports_end_to_end() {
-        // Phase `stream_copy_reproduces_source_byte_for_byte`.
         {
             let data = sample_bytes(CHUNK * 2 + 12345); // multi-chunk + a ragged tail
             let src = tmp_with(&data);
@@ -1619,7 +1579,6 @@ mod tests {
             assert_eq!(back, data, "written bytes match the source exactly");
         }
 
-        // Phase `verify_readback_passes_on_identical_and_flags_the_diff`.
         {
             let data = sample_bytes(CHUNK + 999);
             let src = tmp_with(&data);
@@ -1629,7 +1588,6 @@ mod tests {
                 None,
                 "identical files verify clean"
             );
-            // Corrupt one byte deep in the second chunk and confirm it is caught.
             let mut corrupt = data.clone();
             let at = CHUNK + 100;
             corrupt[at] ^= 0xFF;
@@ -1641,7 +1599,6 @@ mod tests {
             );
         }
 
-        // Phase `run_job_paths_writes_and_verifies_end_to_end`.
         {
             let data = sample_bytes(CHUNK * 3 + 4096);
             let src = tmp_with(&data);
@@ -1665,7 +1622,6 @@ mod tests {
             assert!((last.verify_frac - 1.0).abs() < 1e-9);
         }
 
-        // Phase `authorized_descriptor_path_writes_verifies_and_embeds_profile`.
         {
             let data = sample_bytes(CHUNK + 917);
             let source = tmp_with(&data);
@@ -1701,7 +1657,6 @@ mod tests {
             assert!(profile.starts_with(PROFILE_MAGIC.as_bytes()));
         }
 
-        // Phase `run_job_paths_reports_write_failure_on_bad_dest`.
         {
             let data = sample_bytes(1024);
             let src = tmp_with(&data);
@@ -1711,7 +1666,6 @@ mod tests {
             assert!(matches!(result, JobResult::WriteFailed(_)));
         }
 
-        // Phase `macos_ejects_only_after_a_fully_verified_job`.
         {
             assert!(macos_should_eject(&JobResult::Verified));
             assert!(!macos_should_eject(&JobResult::WriteFailed(
@@ -1724,8 +1678,6 @@ mod tests {
         }
     }
 
-    // ---- the real engine, proven against temp files (never a device) -------
-
     fn tmp_with(bytes: &[u8]) -> tempfile::NamedTempFile {
         let mut f = tempfile::NamedTempFile::new().expect("temp");
         f.write_all(bytes).expect("write");
@@ -1734,7 +1686,6 @@ mod tests {
     }
 
     fn sample_bytes(n: usize) -> Vec<u8> {
-        // A deterministic, non-trivial pattern spanning several chunks.
         (0..n).map(|i| ((i * 31 + 7) % 251) as u8).collect()
     }
 
@@ -1745,7 +1696,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn cooperative_cancel_and_revalidation_failures_never_claim_success() {
-        // Phase `cooperative_cancel_stops_between_write_chunks_and_never_verifies`.
         {
             let data = sample_bytes(CHUNK * 3);
             let src = tmp_with(&data);
@@ -1772,7 +1722,6 @@ mod tests {
             assert_eq!(std::fs::metadata(dst.path()).unwrap().len(), CHUNK as u64);
         }
 
-        // Phase `cooperative_cancel_stops_during_readback_without_claiming_success`.
         {
             let data = sample_bytes(CHUNK * 3);
             let src = tmp_with(&data);
@@ -1800,7 +1749,6 @@ mod tests {
             assert!(saw_verify);
         }
 
-        // Phase `target_revalidation_failure_still_reports_an_actionable_terminal_event`.
         {
             let mut request = req();
             request.target.name = "tilo-test-device-that-cannot-exist".into();
@@ -1829,7 +1777,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn write_source_must_stay_the_reviewed_file_and_digest() {
-        // Phase `reviewed_source_size_fails_closed_after_truncation_or_growth`.
         {
             let data = sample_bytes(4096);
 
@@ -1848,7 +1795,6 @@ mod tests {
             );
         }
 
-        // Phase `replaced_source_is_rejected_before_destination_is_opened`.
         {
             let data = sample_bytes(4096);
             let root = tempfile::tempdir().unwrap();
@@ -1892,7 +1838,6 @@ mod tests {
             assert!(matches!(result, JobResult::WriteFailed(_)));
             assert!(!absent_destination.exists());
 
-            // The held identity still authorizes the original file at its new path.
             let result = run_job_paths_bound(
                 &root.path().join("reviewed.img"),
                 dst.path(),
@@ -1906,7 +1851,6 @@ mod tests {
             assert_eq!(std::fs::read(dst.path()).unwrap(), data);
         }
 
-        // Phase `descriptor_writer_rejects_another_file_with_identical_bytes_before_mutation`.
         {
             let data = sample_bytes(4096);
             let reviewed = tmp_with(&data);
@@ -1935,7 +1879,6 @@ mod tests {
             );
         }
 
-        // Phase `catalog_digest_is_checked_during_the_write`.
         {
             let data = sample_bytes(4096);
             let src = tmp_with(&data);
@@ -1963,7 +1906,6 @@ mod tests {
 
     #[test]
     fn handoff_apply_selects_root_partition_and_copies_onto_a_mounted_fixture() {
-        // Phase `select_tilo_root_partition_prefers_child_linux_fs`.
         {
             let lsblk = "\
 /dev/loop7\n\
@@ -1976,7 +1918,6 @@ mod tests {
             );
         }
 
-        // Phase `select_tilo_root_partition_falls_back_to_whole_device`.
         {
             let lsblk = "/dev/loop9 ext4\n";
             assert_eq!(
@@ -2065,7 +2006,6 @@ mod tests {
             );
         }
 
-        // Phase `apply_handoff_stage_onto_mounted_root_copies_etc_and_var`.
         {
             let staged = tempfile::tempdir().unwrap();
             let conn = staged.path().join("etc/NetworkManager/system-connections");

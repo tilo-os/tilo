@@ -276,11 +276,11 @@ fn publish_payloads(
     browser: Option<&[u8]>,
     cancel: &AtomicBool,
 ) -> io::Result<(Arc<PinnedDirectory>, Vec<u8>)> {
-    let setup_root = publication.directory(&directory, "prepared-setup", true)?;
+    let setup_root = publication.directory(directory, "prepared-setup", true)?;
     let browser_root = artifact
         .browser
         .as_ref()
-        .map(|_| publication.directory(&directory, "prepared-browser", true))
+        .map(|_| publication.directory(directory, "prepared-browser", true))
         .transpose()?;
     let setup_receipt = serde_json::to_vec(&artifact.expectation)?;
     // Verify every existing destination before publishing anything new.
@@ -317,7 +317,7 @@ fn publish_payloads(
         publication.publish(root, &artifact.expectation.filename, bytes, cancel)?;
         publication.publish(root, "expectation.json", &receipt, cancel)?;
     }
-    publication.publish(&setup_root, "prepared-setup.sealed", &setup, cancel)?;
+    publication.publish(&setup_root, "prepared-setup.sealed", setup, cancel)?;
     Ok((setup_root, setup_receipt))
 }
 

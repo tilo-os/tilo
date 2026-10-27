@@ -4,6 +4,7 @@
 //! plus the inbound-frame helpers the reader uses.
 
 mod reader;
+mod wire;
 mod writer;
 
 use super::{
@@ -11,7 +12,9 @@ use super::{
     PEER_OUTBOUND_CAPACITY, PeerContext, PeerError, ReplayWrite, SessionCtx, SessionReader,
     StateDelivery, mpsc,
 };
+use crate::metrics::EgressWrite;
 use reader::{ReaderQueues, SessionReaderLoop};
+use wire::{Heartbeats, Wire};
 use writer::{SessionWriter, WriterQueues};
 
 /// What the reader and the writer of one session both borrow while they
@@ -25,6 +28,8 @@ struct SessionLoop<'s, 'a> {
     pending_replays: &'s std::sync::atomic::AtomicUsize,
     /// Woken each time the writer finishes one of those replays.
     replay_written: &'s tokio::sync::Notify,
+    /// Pings read and not yet answered; the wire answers them at once.
+    heartbeats: &'s Heartbeats,
 }
 
 impl<'s, 'a> SessionLoop<'s, 'a> {
@@ -33,12 +38,14 @@ impl<'s, 'a> SessionLoop<'s, 'a> {
         session: &'s SessionCtx<'a>,
         pending_replays: &'s std::sync::atomic::AtomicUsize,
         replay_written: &'s tokio::sync::Notify,
+        heartbeats: &'s Heartbeats,
     ) -> Self {
         Self {
             peer,
             session,
             pending_replays,
             replay_written,
+            heartbeats,
         }
     }
 
@@ -143,7 +150,8 @@ where
     let lag = Arc::new(Lag::default());
     // Everything this session is sent passes here, so its egress and the
     // relay's are what the stream accepted, not an estimate.
-    let mut write = crate::metrics::EgressWrite::new(write, &metrics, peer.device_public_key);
+    let wire = Wire::new(EgressWrite::new(write, &metrics, peer.device_public_key));
+    let (mut write, beats) = (wire.writer(), Heartbeats::default());
 
     // Outbound channel — every workspace runtime this peer is
     // subscribed to writes into it; we drain to the wire.
@@ -196,7 +204,7 @@ where
     let (reply_tx, mut reply_rx) = mpsc::channel::<ReplayWrite>(8);
     let pending_replays = std::sync::atomic::AtomicUsize::new(0);
     let replay_written = tokio::sync::Notify::new();
-    let cx = SessionLoop::new(&peer, &session, &pending_replays, &replay_written);
+    let cx = SessionLoop::new(&peer, &session, &pending_replays, &replay_written, &beats);
     let reading = SessionReaderLoop::new(
         &mut reader,
         &mut subscribed,
@@ -215,13 +223,19 @@ where
         }
         result = reading => result,
         result = writing => result,
+        result = wire.answer_heartbeats(&beats) => result,
     };
 
     connection_live
         .0
         .store(false, std::sync::atomic::Ordering::SeqCst);
     let outcome = finish_peer_outcome(outcome, &metrics, &peer.device_public_key);
-    trace_session_end(&peer, write.bytes_sent(), &outcome, &subscribed);
+    trace_session_end(
+        &peer,
+        wire.io(EgressWrite::bytes_sent),
+        &outcome,
+        &subscribed,
+    );
     unregister_subscriber(
         &workspaces,
         &subscribed,
@@ -311,16 +325,14 @@ fn control_room(frame: &EnvelopeV2) -> Option<u64> {
 pub(super) fn private_may_overtake<'a>(
     frame: &EnvelopeV2,
     active_control: Option<u64>,
-    heartbeat_ready: bool,
     mut queued: impl Iterator<Item = &'a EnvelopeV2>,
 ) -> bool {
-    // A transport-only heartbeat cannot depend on state admission finishing:
-    // its silence deadline would otherwise replace an authorized live session.
-    // Preserve Ready and earlier capability/unsubscribe reply ordering.
+    // A heartbeat proves this session's reader and writer are alive, and
+    // nothing more: no client takes a Pong as an acknowledgement of what it
+    // sent before. Answered at once, a slow disk under a control, a replay
+    // or a state admission never looks like a host that stopped answering.
     if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
-        return heartbeat_ready
-            && active_control.is_none()
-            && queued.all(|frame| control_room(frame).is_none());
+        return true;
     }
     let action = match frame {
         EnvelopeV2::Directed(action) => action,

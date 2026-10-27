@@ -1,5 +1,50 @@
 use super::*;
 
+/// The pointer rests on a window bar's button: its tooltip's dwell is a
+/// deadline that wakes the loop, and a due deadline alone paints nothing.
+/// The tick it wakes must report the tooltip shown, or the frame that draws
+/// it never comes while the pointer stays still.
+#[test]
+fn a_bar_tooltips_dwell_running_out_asks_for_its_frame() {
+    let chrome = crate::shell::chrome_state::ChromeState::new(
+        crate::shell::state::WorkspaceTree::bootstrap_demo(),
+    );
+    let mut host =
+        ShellOverlayHost::new(Box::new(ui::widget::Container::new())).with_chrome(chrome);
+    host.force_desk_settled(std::time::Instant::now());
+    let doc = automerge::AutoCommit::new();
+    // The first updates bring the desk's own state in; then it rests.
+    assert!(
+        (0..20).any(|_| !host.update(&doc, &automerge::ROOT)),
+        "the host comes to rest"
+    );
+    let button = vello::kurbo::Rect::new(10.0, 10.0, 40.0, 40.0);
+    host.bar_tooltip
+        .on_pointer(Some((button, "Close".into())), ui::time::now());
+    let reveal = host
+        .bar_tooltip
+        .reveal_at()
+        .expect("the resting pointer's tooltip waits for its dwell");
+    assert!(
+        host.next_wake_deadline().is_some_and(|at| at <= reveal),
+        "the dwell wakes the loop"
+    );
+    assert!(
+        !host.update(&doc, &automerge::ROOT),
+        "before the dwell runs out nothing asks for a frame"
+    );
+    let shown =
+        ui::time::testing::with_monotonic_time(reveal, || host.update(&doc, &automerge::ROOT));
+    assert!(
+        shown,
+        "the tick the dwell wakes asks for the frame that shows it"
+    );
+    assert_eq!(
+        host.bar_tooltip.visible().map(|(label, _)| label),
+        Some("Close")
+    );
+}
+
 #[test]
 fn blocked_quick_settings_read_does_not_turn_waiting_into_animation() {
     let mut host = ShellOverlayHost::new(Box::new(ui::widget::Container::new()));
@@ -136,62 +181,39 @@ fn native_host_wake_delivers_a_failed_scan_to_the_ordinary_update() {
 
 #[test]
 fn wifi_radio_dispatch_does_not_wait_for_the_native_network_operation() {
-    struct SlowRadio;
-    impl os_actions::Dispatcher for SlowRadio {
-        fn prepare_radio_change(
-            &self,
-            change: os_actions::RadioChange,
-        ) -> Option<os_actions::RadioWork> {
-            Some(Box::new(move || change.run(&Self)))
-        }
-        fn set_brightness(&self, _: f32) -> Result<(), String> {
-            Ok(())
-        }
-        fn set_volume(&self, _: f32) -> Result<(), String> {
-            Ok(())
-        }
-        fn set_wifi(&self, _: bool) -> Result<(), String> {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            Err("fixture radio refusal".into())
-        }
-        fn set_bluetooth(&self, _: bool) -> Result<(), String> {
-            Ok(())
-        }
-        fn connect_wifi(&self, _: &str, _: Option<&str>) -> Result<(), String> {
-            Ok(())
-        }
-        fn set_power_profile(&self, _: os_actions::PowerProfile) -> Result<(), String> {
-            Ok(())
-        }
-    }
+    use crate::shell::quick_settings::radio::fixture::Fixture;
+    let fixture = Fixture::new();
     let chrome = crate::shell::chrome_state::ChromeState::new(
         crate::shell::state::WorkspaceTree::bootstrap_demo(),
     );
     chrome.borrow_mut().quick_settings.wifi = false;
     let mut host = ShellOverlayHost::new(Box::new(ui::widget::Container::new()))
         .with_chrome(chrome.clone())
-        .with_qs_actions(Box::new(SlowRadio));
+        .with_qs_actions(Box::new(fixture.dispatcher));
     let (wake_tx, wake_rx) = std::sync::mpsc::channel();
     host.set_quick_settings_wake(Arc::new(move || {
         let _ = wake_tx.send(());
     }));
-    let started = std::time::Instant::now();
     host.dispatch_quick_settings_toggle_actions(
         crate::shell::quick_settings::root::PendingRootActions {
             wifi: Some(true),
             ..Default::default()
         },
     );
-    assert!(
-        started.elapsed() < std::time::Duration::from_millis(200),
+    // The dispatch returned while the radio operation is still held.
+    assert_eq!(
+        tilo_test_env::recv("the native radio operation to start", &fixture.entered),
+        os_actions::RadioChange::Wifi(true),
         "ordinary Quick Settings input dispatch must not wait for a native radio operation"
     );
     assert!(chrome.borrow().quick_settings.radio_change_pending);
     assert!(!chrome.borrow().quick_settings.wifi);
     assert!(!host.needs_animation_frame());
-    wake_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("radio completion wakes native host");
+    fixture
+        .release
+        .send(Err("fixture radio refusal".into()))
+        .unwrap();
+    tilo_test_env::recv("radio completion to wake the native host", &wake_rx);
     let doc = automerge::AutoCommit::new();
     assert!(host.update(&doc, &automerge::ROOT));
     assert!(!chrome.borrow().quick_settings.radio_change_pending);
@@ -246,10 +268,7 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
     let mut handled = false;
     host.handle_shell_quick_settings_click(turn_on.center(), &mut handled);
     assert_eq!(
-        fixture
-            .entered
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap(),
+        tilo_test_env::recv("the native radio operation to start", &fixture.entered),
         os_actions::RadioChange::Wifi(true)
     );
     assert!(chrome.borrow().quick_settings.radio_change_pending);
@@ -263,16 +282,14 @@ fn the_wifi_sections_turn_on_waits_for_its_owned_radio_receipt() {
         "while it turns on there is nothing to press"
     );
     let doc = automerge::AutoCommit::new();
-    let before_update = std::time::Instant::now();
+    // The radio is still held: an update that waited on it would never return.
     host.update(&doc, &automerge::ROOT);
     assert!(
-        before_update.elapsed() < std::time::Duration::from_millis(200),
+        chrome.borrow().quick_settings.radio_change_pending,
         "unrelated updates cannot wait on radio work"
     );
     fixture.release.send(Ok(())).unwrap();
-    wake_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    tilo_test_env::recv("the Quick Settings wake", &wake_rx);
     assert!(host.update(&doc, &automerge::ROOT));
     let state = chrome.borrow();
     assert!(!state.quick_settings.radio_change_pending);
@@ -301,10 +318,7 @@ fn retired_radio_receipt_stays_pending_until_its_actual_worker_finishes() {
         .start_radio(os_actions::RadioChange::Wifi(true), &chrome)
         .unwrap()
         .expect("a prepared operation owns a pending receipt");
-    fixture
-        .entered
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    tilo_test_env::recv("the native radio operation to start", &fixture.entered);
     host.qs_action_slot.replace(
         std::rc::Rc::new(fixture.dispatcher),
         crate::shell::quick_settings::actions::QsActionAvailability::all(),
@@ -324,9 +338,7 @@ fn retired_radio_receipt_stays_pending_until_its_actual_worker_finishes() {
     );
     assert!(!chrome.borrow().quick_settings.wifi);
     fixture.release.send(Ok(())).unwrap();
-    wake_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    tilo_test_env::recv("the Quick Settings wake", &wake_rx);
     assert!(host.update(&doc, &automerge::ROOT));
     assert!(job.finished());
     assert!(
@@ -411,13 +423,42 @@ fn successful_radio_reading_refreshes_the_recovered_public_action_availability()
             ..FastReading::empty()
         }))
     });
-    wake_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
+    tilo_test_env::recv("the Quick Settings wake", &wake_rx);
     assert!(host.update(&doc, &automerge::ROOT));
     assert!(chrome.borrow().quick_settings.radios.wifi_available);
     assert!(
         available(),
         "actual recovered radio metadata must refresh both public actions"
     );
+}
+
+/// The desk's widgets fading in are motion the compositor must paint: the
+/// demand the frame pump reads names them while they move and lets go once
+/// they rest. The shell's demand is one model, so a motion missing from its
+/// named sources would get no frames at all.
+#[test]
+fn the_desk_appearing_is_named_demand_until_it_rests() {
+    let chrome = crate::shell::chrome_state::ChromeState::new(
+        crate::shell::state::WorkspaceTree::bootstrap_demo(),
+    );
+    let mut host =
+        ShellOverlayHost::new(Box::new(ui::widget::Container::new())).with_chrome(chrome);
+    let doc = automerge::AutoCommit::new();
+    let now = ui::time::now();
+    ui::time::testing::with_monotonic_time(now, || host.update(&doc, &automerge::ROOT));
+    let named = |host: &ShellOverlayHost| {
+        crate::shell::animation_diagnostics::host_labels(host.animation_demand_bits(now))
+            .any(|label| label == "desk")
+    };
+    assert!(
+        host.desk_animating(now),
+        "the desk's widgets fade in with the first update"
+    );
+    assert!(named(&host), "the desk fading in is named demand");
+    assert!(
+        host.needs_animation_frame_at(now),
+        "and the frame pump paints for it"
+    );
+    host.force_desk_settled(now);
+    assert!(!named(&host), "a desk at rest asks for nothing");
 }

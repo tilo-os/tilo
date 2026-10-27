@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 use tilo_contact_directory::{ContactDirectory, routing};
 use tilo_messaging::PersonAccounts;
 use ui::LocalState;
-use ui::framework::{Actions, Effected, Fixture, PersonRecord, ViewCx};
+use ui::framework::{Actions, Effected, Fixture, Jobs, PersonRecord, ViewCx};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::prelude::{Collection, Id};
 use ui::widget::virtual_list::{VecListModel, VirtualList};
 use ui::widget::{
-    Button, Column, Container, Dropdown, Element, EmptyState, ListRow, ModelView, NavPane,
-    NavShell, Row, Scrollable, Text, TextInput,
+    Button, Column, Container, Element, EmptyState, ListRow, ModelView, NavPane, NavShell, Row,
+    Scrollable, Text, TextInput, conversation::draft as draft_line,
 };
 
 use crate::{CATALOG, Messages, MessagesEffect};
@@ -81,9 +81,12 @@ impl Choice {
                 .accounts()
                 .accounts
                 .get(&Id::from_raw(&self.account))
+                // The account's name, never its identifier: which account a
+                // thread arrives on is what a person needs, and the opaque key
+                // behind it means nothing to them.
                 .map_or_else(
                     || self.account.clone(),
-                    |account| format!("{} ({})", account.display_name, self.account),
+                    |account| account.display_name.clone(),
                 )
         };
         let service = CATALOG.t(&format!("messages-{}", self.service));
@@ -262,6 +265,10 @@ fn answer(
         | MessagesEffect::Send { .. } => {
             return Err(CATALOG.t("messages-transport-unavailable"));
         }
+        // Answered from the record before the broker's effects are reached.
+        MessagesEffect::SearchMessages { .. } | MessagesEffect::ExportContent { .. } => {
+            return Err("the record answers this before the broker".to_owned());
+        }
     }
     Ok(Effected::done())
 }
@@ -340,7 +347,9 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     let sources = sources(cx);
     let selection = LocalState::new(Selection::default());
     let live = cx.mode().is_live() && !cx.is_past();
-    let sending = crate::sending::Sending::new(live.then(|| cx.take_lent()).flatten(), cx.me());
+    // What the person is writing is theirs: the live draft and the record it
+    // is kept in, made together so a send can clear it where it was kept.
+    let (sending, held_drafts) = sending_and_drafts(cx, live);
     let history = crate::history::HistoryView::new(
         sending
             .history()
@@ -376,7 +385,18 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     let projected_setup = setup.clone();
     let scheduled_setup = setup.clone();
     let projected_groups = groups.clone();
-    Box::new(
+    let cx_jobs = cx.jobs();
+    let link = Rc::new(std::cell::RefCell::new(None));
+    let bar = crate::window_bar::Bar {
+        sources: sources.clone(),
+        selection: selection.clone(),
+        history: history.clone(),
+        setup: setup.clone(),
+        groups: groups.clone(),
+        dispatcher: cx.dispatcher(),
+        link: Rc::clone(&link),
+    };
+    let content = Box::new(
         ModelView::from_document(
             move |_, _| {
                 (
@@ -403,39 +423,89 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
                         watched_history.read(&watched_sources, &watched_selection, &choice, cx)
                     });
                 }
-                let detail_sources = sources.clone();
-                let detail_actions = actions.clone();
-                let detail_history = history.clone();
-                let detail_sending = sending.clone();
-                let conversation = Box::new(ModelView::from_state(&selection, move |selected| {
-                    detail(
-                        &detail_sources,
-                        &detail_actions,
-                        selected,
-                        &detail_history,
-                        &detail_sending,
-                    )
-                }));
-                let detail = if groups.visible() {
-                    groups.panel(&sources, &actions)
-                } else if setup.visible() {
-                    setup.panel(&sources, &actions)
-                } else {
-                    conversation
-                };
-                let detail = Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .filling()
-                        .with_child(detail),
+                let detail = shown(
+                    &sources, &actions, &selection, &history, &sending, &setup, &groups, &cx_jobs,
                 );
-                navigation(detail, &sources, &actions, selected, &setup, &groups)
+                let shell = navigation(
+                    detail,
+                    &sources,
+                    &actions,
+                    selected,
+                    &setup,
+                    &groups,
+                    held_drafts.as_ref(),
+                );
+                link.replace(Some(shell.window_bar_link()));
+                Box::new(shell) as Element
             },
         )
         .with_wake_deadline(move || scheduled_setup.next_wake_deadline()),
+    );
+    Box::new(crate::window_bar::MessagesWindow { content, bar })
+}
+
+/// What the content column shows: the open groups, the account setup or
+/// the conversation with the selected person.
+/// The composer's sending state and the person's own record of drafts.
+fn sending_and_drafts(
+    cx: &ViewCx<Messages>,
+    live: bool,
+) -> (
+    crate::sending::Sending,
+    Option<PersonRecord<crate::drafts::MessageDrafts>>,
+) {
+    let drafts = cx.person::<crate::drafts::MessageDrafts>();
+    let sending = crate::sending::Sending::new(
+        live.then(|| cx.take_lent()).flatten(),
+        cx.me(),
+        drafts.clone(),
+    );
+    (sending, drafts)
+}
+
+fn shown(
+    sources: &Sources,
+    actions: &Actions<Messages>,
+    selection: &LocalState<Selection>,
+    history: &crate::history::HistoryView,
+    sending: &crate::sending::Sending,
+    setup: &crate::setup::SetupView,
+    groups: &crate::groups::GroupsView,
+    jobs: &Jobs<Messages>,
+) -> Element {
+    let detail = if groups.visible() {
+        groups.panel(sources, actions)
+    } else if setup.visible() {
+        setup.panel(sources, actions)
+    } else {
+        let sources = sources.clone();
+        let actions = actions.clone();
+        let history = history.clone();
+        let sending = sending.clone();
+        let selection_state = selection.clone();
+        let jobs = jobs.clone();
+        Box::new(ModelView::from_state(selection, move |selected| {
+            detail(
+                &sources,
+                &actions,
+                selected,
+                &selection_state,
+                &history,
+                &sending,
+                &jobs,
+            )
+        }))
+    };
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .filling()
+            .with_child(detail),
     )
 }
 
+/// The people beside the open conversation, groups or account setup. The
+/// window bar names which and holds its actions ([`crate::window_bar`]).
 fn navigation(
     detail: Element,
     sources: &Sources,
@@ -443,12 +513,23 @@ fn navigation(
     selected: &Selection,
     setup: &crate::setup::SetupView,
     groups: &crate::groups::GroupsView,
-) -> Element {
-    let overview = Box::new(
-        Column::new()
-            .push(groups.entries(sources, actions))
-            .push(overview(sources, actions, &selected.person)),
-    );
+    drafts: Option<&PersonRecord<crate::drafts::MessageDrafts>>,
+) -> NavShell {
+    let entries = groups.entries(sources, actions);
+    let nobody = nobody_listed(sources);
+    let people = overview(sources, actions, &selected.person, drafts);
+    let shell = NavShell::new()
+        .content_kind(ui::widget::ContentKind::Reading)
+        .with_window_toolbar();
+    // With nobody and no group to list, and neither setup nor a group
+    // open, how to start is the whole window's, not a narrow list's.
+    if nobody && entries.is_none() && !setup.visible() && !groups.visible() {
+        return shell.nothing_listed(start_in_contacts(actions));
+    }
+    let overview: Element = match entries {
+        Some(entries) => Box::new(Column::new().push(entries).push(people)),
+        None => people,
+    };
     let pane = LocalState::new(
         if selected.person.is_empty() && !setup.visible() && !groups.visible() {
             NavPane::Overview
@@ -456,24 +537,34 @@ fn navigation(
             NavPane::Content
         },
     );
-    Box::new(
-        NavShell::new()
-            .content_kind(ui::widget::ContentKind::Reading)
-            .overview(overview)
-            .overview_header(
-                CATALOG.t("messages-people"),
-                vec![account_setup_action(actions)],
-            )
-            .content(detail)
-            .content_header_leading(if groups.visible() {
-                Box::new(Text::new(&CATALOG.t("messages-list-groups")))
-            } else if setup.visible() {
-                Box::new(Text::new(&CATALOG.t("messages-setup-accounts")))
-            } else {
-                route_header(sources, actions, selected)
-            })
-            .with_pane_state(&pane),
-    )
+    shell
+        .overview(overview)
+        .content(detail)
+        .with_pane_state(&pane)
+}
+
+/// The draft line for `person`: the unsent words of whichever of their routes
+/// has them.
+fn draft_for(
+    sources: &Sources,
+    drafts: &crate::drafts::MessageDrafts,
+    person: &str,
+) -> Option<String> {
+    choices(sources, person).into_iter().find_map(|choice| {
+        drafts
+            .drafts
+            .get(&crate::drafts::key(&choice))
+            .and_then(|body| draft_line::line(body))
+    })
+}
+
+/// Whether there is nobody to message: every person removed, or none.
+fn nobody_listed(sources: &Sources) -> bool {
+    sources
+        .contacts()
+        .people
+        .iter()
+        .all(|(_, person)| person.removed)
 }
 
 fn discard_invalid_route(
@@ -492,6 +583,7 @@ fn discard_invalid_route(
     {
         return false;
     }
+    sending.forget_draft();
     sending.clear();
     history.clear();
     selection.set(Selection {
@@ -499,13 +591,6 @@ fn discard_invalid_route(
         choice: String::new(),
     });
     true
-}
-
-fn account_setup_action(actions: &Actions<Messages>) -> Element {
-    Box::new(actions.bind_effect_invocation(
-        Button::new("messages.accounts", "messages-setup-accounts"),
-        &MessagesEffect::OpenAccountSetup,
-    ))
 }
 
 fn register_capture_selection(
@@ -545,7 +630,31 @@ fn register_effects(
     let status_sending = sending.clone();
     let jobs = cx.jobs();
     let status_history = history.clone();
+    let content = cx.content();
     cx.effects(move |effect: MessagesEffect, cx| {
+        // What the record holds is read here, never through the broker.
+        match &effect {
+            MessagesEffect::SearchMessages { query } => {
+                return cx.live().get().search(query).map(Effected::value);
+            }
+            MessagesEffect::ExportContent { format, conversation } => {
+                let (bytes, count) = cx
+                    .live()
+                    .get()
+                    .transcript(format.as_deref(), conversation.as_deref())?;
+                let store = content
+                    .as_ref()
+                    .ok_or("this window keeps no content to export into")?;
+                let hash = store.put(&bytes).map_err(|error| error.to_string())?;
+                return Ok(crate::conversations::exported(
+                    &hash,
+                    format.as_deref(),
+                    count,
+                    bytes.len(),
+                ));
+            }
+            _ => {}
+        }
         if crate::groups::GroupsView::handles(&effect) { effect_setup.close(); return effect_groups.effect(&effect_sources, effect, cx); }
         if crate::setup::SetupView::handles(&effect) { effect_groups.close(); return effect_setup.effect(&effect_sources, effect, cx); }
         if matches!(effect, MessagesEffect::OpenPerson { .. } | MessagesEffect::Back) { effect_setup.close(); effect_groups.close(); }
@@ -587,7 +696,16 @@ fn register_effects(
     });
 }
 
-fn overview(sources: &Sources, actions: &Actions<Messages>, selected: &str) -> Element {
+fn overview(
+    sources: &Sources,
+    actions: &Actions<Messages>,
+    selected: &str,
+    drafts: Option<&PersonRecord<crate::drafts::MessageDrafts>>,
+) -> Element {
+    // The words left in a conversation are shown where the conversation is
+    // listed, beside the person they were written for: a draft you cannot find
+    // is a draft you have lost.
+    let kept = drafts.map(PersonRecord::get);
     let people: Vec<_> = sources
         .contacts()
         .people
@@ -595,14 +713,19 @@ fn overview(sources: &Sources, actions: &Actions<Messages>, selected: &str) -> E
         .filter(|(_, person)| !person.removed)
         .map(|(id, person)| (id.clone(), person.label.clone()))
         .collect();
+    // The pane is a column under the group entries: the empty state fills
+    // what is left of it, as the list would, instead of collapsing to nothing.
+    let fill =
+        |element: Element| -> Element { Box::new(Container::new().filling().with_child(element)) };
     if people.is_empty() {
-        return empty("messages-empty-heading", "messages-empty-hint");
+        return fill(empty("messages-empty-heading", "messages-empty-hint"));
     }
     let Ok(model) = VecListModel::new(people, |(id, _)| id.clone()) else {
-        return empty("messages-contact-missing", "messages-empty-hint");
+        return fill(empty("messages-contact-missing", "messages-empty-hint"));
     };
     let controls = actions.clone();
     let selected = selected.to_owned();
+    let row_sources = sources.clone();
     let list = VirtualList::new(model, 64.0, move |model, index, id| {
         let label = model
             .item(index)
@@ -610,9 +733,15 @@ fn overview(sources: &Sources, actions: &Actions<Messages>, selected: &str) -> E
         let open = MessagesEffect::OpenPerson {
             person: id.as_str().into(),
         };
-        let row = ListRow::new(format!("messages.person:{id}"), &label)
+        let mut row = ListRow::new(format!("messages.person:{id}"), &label)
             .avatar(&label, id.as_str())
             .selected(id.as_str() == selected);
+        let draft = kept
+            .as_ref()
+            .and_then(|kept| draft_for(&row_sources, kept, id.as_str()));
+        if let Some(draft) = draft.as_deref() {
+            row = row.secondary(draft).two_line_secondary();
+        }
         Box::new(match controls.effect(&open) {
             Some(binding) => row.on_action(binding),
             None => row.with_enabled(false),
@@ -624,62 +753,19 @@ fn overview(sources: &Sources, actions: &Actions<Messages>, selected: &str) -> E
     Box::new(Container::new().filling().with_child(Box::new(list)))
 }
 
-fn route_header(sources: &Sources, actions: &Actions<Messages>, selected: &Selection) -> Element {
-    let options = choices(sources, &selected.person);
-    let accessible = options
-        .iter()
-        .find(|choice| choice.value() == selected.choice)
-        .map_or_else(
-            || CATALOG.t("messages-route"),
-            |choice| {
-                CATALOG.t_args(
-                    "messages-route-current",
-                    &[("route", ArgValue::Text(choice.label(sources)))],
-                )
-            },
-        );
-    let value = LocalState::new(selected.choice.clone());
-    let mut dropdown = Dropdown::from_state(Vec::new(), &value)
-        .with_id("messages.route")
-        .with_accessible_name(accessible)
-        .with_placeholder(&CATALOG.t("messages-route-placeholder"))
-        .as_menu(Icon::ChevronDown);
-    dropdown.set_value_options(
-        options
-            .iter()
-            .map(|choice| (choice.value(), choice.label(sources)))
-            .collect(),
-    );
-    let dropdown = actions.bind_effect(dropdown, MessagesEffect::SELECT_ROUTE);
-    let name = sources
-        .contacts()
-        .people
-        .get(&Id::from_raw(&selected.person))
-        .map_or_else(String::new, |person| person.label.clone());
-    Box::new(
-        Row::new()
-            .no_wrap()
-            .push(Box::new(Text::dynamic(move || name.clone())))
-            .push(Box::new(dropdown)),
-    )
-}
-
 fn detail(
     sources: &Sources,
     actions: &Actions<Messages>,
     selected: &Selection,
+    selection: &LocalState<Selection>,
     history_view: &crate::history::HistoryView,
     sending: &crate::sending::Sending,
+    jobs: &Jobs<Messages>,
 ) -> Element {
     if selected.person.is_empty() {
         // With nobody to choose, the list beside says how to start, and
         // "Choose a person" would point at nothing.
-        if sources
-            .contacts()
-            .people
-            .iter()
-            .all(|(_, person)| person.removed)
-        {
+        if nobody_listed(sources) {
             return Box::new(Column::new());
         }
         return empty("messages-choose-heading", "messages-choose-hint");
@@ -692,6 +778,10 @@ fn detail(
     else {
         return empty("messages-contact-missing", "messages-choose-hint");
     };
+    let who = contacts
+        .people
+        .get(&Id::from_raw(&selected.person))
+        .map_or_else(String::new, |person| person.label.clone());
     let options = choices(sources, &selected.person);
     let chosen = options
         .iter()
@@ -708,7 +798,7 @@ fn detail(
             "messages.history:{}:{}",
             selected.person, selected.choice
         ))
-        .with_child(history_view.widget(sources, actions, selected, chosen, hint));
+        .with_child(history_view.widget(sources, selected, chosen, hint, &who));
     let mut body = Column::new();
     if let Some(choice) = chosen {
         let label = choice.label(sources);
@@ -734,27 +824,77 @@ fn detail(
     if chosen.is_some_and(|choice| choice.recipient.is_empty()) {
         body = body.push(Box::new(Text::new("messages-identity-unavailable")));
     }
-    Box::new(body.push(composer(sources, actions, sending, selected, chosen)))
+    Box::new(body.push(composer(
+        sources,
+        actions,
+        sending,
+        selected,
+        selection,
+        history_view,
+        jobs,
+        chosen,
+    )))
 }
 
+/// The composer: the words, the button, and the keyboard.
+///
+/// Enter sends and Shift+Enter breaks the line, exactly as in Chat — the rule
+/// is the toolkit's (`ui::widget::ComposerRule`), not this app's. Enter runs the
+/// same send the button does, so a refusal, an operation token and the draft it
+/// keeps are one path rather than two.
 fn composer(
     sources: &Sources,
     actions: &Actions<Messages>,
     sending: &crate::sending::Sending,
     selection: &Selection,
+    selection_state: &LocalState<Selection>,
+    history: &crate::history::HistoryView,
+    jobs: &Jobs<Messages>,
     choice: Option<&Choice>,
 ) -> Element {
     let enabled = choice
         .and_then(|c| crate::history::current_route(sources, selection, c).ok())
         .is_some_and(|route| sending.supports(&route));
+    // The draft follows the conversation, so what was left here is here when
+    // the person comes back — and is kept as they type, so closing the window
+    // does not throw it away.
+    if let Some(choice) = choice {
+        sending.open_draft(choice);
+    }
     let draft = sending.draft.clone();
     let text = draft.clone();
     let operation = sending.operation.clone();
-    let choice = selection.choice.clone();
+    let chosen = selection.choice.clone();
     let send = actions.bind_effect(
         Button::new("messages.send", "messages-send").with_enabled(enabled),
-        MessagesEffect::SEND.map(move |()| (choice.clone(), operation.get(), text.get())),
+        MessagesEffect::SEND.map(move |()| (chosen.clone(), operation.get(), text.get())),
     );
+    let kept = sending.clone();
+    let mut input = TextInput::from_state(&draft)
+        .multiline(true)
+        .with_id("messages.composer")
+        .with_accessible_name(CATALOG.t("messages-compose"))
+        .with_placeholder(CATALOG.t("messages-compose"))
+        .disabled(!enabled)
+        .on_change(move |text| kept.keep_draft(text));
+    if enabled {
+        let submitted = sending.clone();
+        let submit_sources = sources.clone();
+        let submit_selection = selection_state.clone();
+        let submit_history = history.clone();
+        let submit_jobs = jobs.clone();
+        let route = selection.choice.clone();
+        input = input.on_submit(move |text: &str| {
+            submitted.submit(
+                &submit_sources,
+                &submit_selection,
+                &submit_history,
+                &route,
+                text,
+                &submit_jobs,
+            );
+        });
+    }
     Box::new(
         Row::new()
             .no_wrap()
@@ -762,16 +902,27 @@ fn composer(
                 Container::new()
                     .with_no_padding()
                     .with_flex_grow()
-                    .with_child(Box::new(
-                        TextInput::from_state(&draft)
-                            .with_id("messages.composer")
-                            .with_accessible_name(CATALOG.t("messages-compose"))
-                            .with_placeholder(CATALOG.t("messages-compose"))
-                            .disabled(!enabled),
-                    )),
+                    .with_child(Box::new(input)),
             ))
             .push(Box::new(send)),
     )
+}
+
+/// How to start with nobody to message: add people in Contacts, which the
+/// button opens ([`crate::open_contacts_action`]).
+fn start_in_contacts(actions: &Actions<Messages>) -> Element {
+    let state = EmptyState::new("messages-empty-heading")
+        .with_icon(Icon::MessageSquare)
+        .with_message("messages-empty-hint");
+    match actions.spec_binding(&crate::open_contacts_action()) {
+        Some(binding) => Box::new(
+            state
+                .with_action("messages-open-contacts")
+                .with_action_id("messages.open-contacts")
+                .on_action(binding),
+        ),
+        None => Box::new(state),
+    }
 }
 
 pub(crate) fn empty(title: &str, hint: &str) -> Element {
@@ -841,6 +992,9 @@ pub(super) fn fixture(fixture: &mut Fixture<Messages>) {
 
 fn capture_history() -> tilo_messaging::HistoryPage {
     use tilo_messaging::{Delivery, Direction, HistoryPage, Message};
+    // Anchored to now, so the capture shows the day dividers a person would
+    // see whenever it is taken.
+    let now_ms = u64::try_from(ui::clock::local_now().timestamp_millis()).unwrap_or(0);
     HistoryPage {
         route: routing::Route {
             person: Id::from_raw("00000000-0000-4000-8000-000000000001"),
@@ -853,28 +1007,53 @@ fn capture_history() -> tilo_messaging::HistoryPage {
         },
         more: false,
         messages: [
-            ("capture-1", "Are you nearby?", Direction::Incoming, None),
+            // Two days, so the capture shows what a divider is for and what
+            // a time on every line is for.
+            (
+                "capture-1",
+                "Are you nearby?",
+                Direction::Incoming,
+                None,
+                -86_400 - 3_600,
+            ),
             (
                 "capture-2",
                 "On my way. See you in ten minutes!",
                 Direction::Outgoing,
                 Some(Delivery::RecipientDelivered),
+                -86_400 - 1_800,
             ),
             (
                 "capture-3",
                 "Perfect. I'll find us a table by the window.",
                 Direction::Incoming,
                 None,
+                -2_700,
+            ),
+            (
+                "capture-4",
+                "The corner one, by the plants. I'll keep it warm.",
+                Direction::Outgoing,
+                Some(Delivery::RecipientRead),
+                -2_400,
             ),
         ]
         .into_iter()
-        .map(|(id, text, direction, delivery)| Message {
-            id: id.into(),
-            text: text.to_owned().into(),
-            direction,
-            timestamp_ms: 1,
-            delivery,
-        })
+        .map(
+            |(id, text, direction, delivery, ago): (
+                &str,
+                &str,
+                Direction,
+                Option<Delivery>,
+                i64,
+            )| Message {
+                id: id.into(),
+                text: text.to_owned().into(),
+                direction,
+                timestamp_ms: now_ms.saturating_add_signed(ago.saturating_mul(1_000)),
+                delivery,
+            },
+        )
         .collect(),
     }
 }

@@ -5,7 +5,7 @@ name = "runtime-collab"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "Cap'n Proto client for the Tilo collaboration service."
@@ -32,6 +32,9 @@ settings-host = ["client", "dep:settings-store"]
 native-retained-qualification = ["client"]
 
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
 # Only the session vocabulary and the engine launch boundary: this crate is
 # in libruntime_dylib.so, and browser-continuity's capture (with SQLite) must
@@ -48,6 +51,8 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 # The typed action vocabulary the exported surface and directory rows hold;
 # only this crate's codec turns it into wire text.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# Where content a record references has got to, as collaboration events say.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 runtime-portal = { version = "0.1.0", path = "../runtime-portal", optional = true }
 capnp = { workspace = true, optional = true }
 capnp-rpc = { workspace = true, optional = true }

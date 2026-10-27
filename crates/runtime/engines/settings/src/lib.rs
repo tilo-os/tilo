@@ -1,5 +1,13 @@
-//! Libraries only Settings uses, as an engine library beside the shared
-//! runtime (`libtilo_settings_engine.so`).
+//! Settings' core and the panes people rarely open, and the libraries only
+//! Settings uses, as an engine library beside the shared runtime
+//! (`libtilo_settings_engine.so`).
+//!
+//! Settings' core (`settings-core`: the window, its effect vocabulary, its
+//! resource and what every pane shares) and the panes people rarely open
+//! (`settings-rare`: accounts, agent models, devices and sync, speakers,
+//! storage and drives, disk unlock, printers, users, region, updates and
+//! about) are here; the app's package carries the panes people open often,
+//! which register with the core beside the rare ones.
 //!
 //! Settings administers the model providers (`provider-settings-ui`), mounts
 //! NTFS drives through the root service (`tilo-ntfs-mount`'s protocol),
@@ -23,6 +31,8 @@
 // link then refuses (each crate may show up once).
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
+#[cfg(feature = "thin")]
+extern crate tilo_accounts_engine;
 
 #[cfg(feature = "thin")]
 pub use ntfs_mount;
@@ -30,6 +40,10 @@ pub use ntfs_mount;
 pub use pc_keyboard_geometry;
 #[cfg(feature = "thin")]
 pub use provider_settings_ui;
+#[cfg(feature = "thin")]
+pub use settings_core;
+#[cfg(feature = "thin")]
+pub use settings_rare;
 #[cfg(feature = "thin")]
 pub use tilo_accessibility_settings;
 #[cfg(feature = "thin")]

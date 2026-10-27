@@ -8,17 +8,15 @@
 //! a deliberate encrypted portable-backup choice; and a concise hand-off.
 //!
 //! Tilo mints a personal Ed25519 root plus a distinct device key certified
-//! by that root, with no escrow or recovery phrase. `threshold-identity`
-//! implements share-based recovery only after a genuine multi-device
-//! ceremony; this path creates a single-device identity, whose actual
-//! recovery material is an encrypted portable backup. The only true thing to
-//! tell a user is that losing every local key and that backup loses the
-//! identity. The copy in
+//! by that root, with no escrow. What brings it back is held by the person
+//! alone: a 24-word recovery key written on paper, or an encrypted portable
+//! backup file and its passphrase. The only true thing to tell a user is that
+//! losing every local key and both of those loses the identity. The copy in
 //! [`no_recovery_points`] says exactly that, and the flow makes the user
 //! acknowledge it before the key is created; softening it into "keep
-//! your device safe" would imply a safety net that doesn't exist. If
-//! recovery is ever wired up, this copy changes in the same commit —
-//! `tests::onboarding_copy_is_honest_about_identity_and_recovery` guards against drift.
+//! your device safe" would imply a safety net that doesn't exist.
+//! `tests::onboarding_copy_is_honest_about_identity_and_recovery` guards
+//! against drift.
 
 use std::error::Error;
 use std::fmt;
@@ -37,6 +35,8 @@ pub enum Screen {
     Nearby,
     /// Restore the identity from an encrypted backup file.
     Restore,
+    /// Restore the identity from the 24 words of its recovery key.
+    RecoveryKey,
     /// The consequence of losing the device, and the acknowledgement.
     NoRecovery,
     /// The minted key: fingerprint and path.
@@ -185,9 +185,17 @@ impl Onboarding {
 
     /// Return to the choice this screen was opened from, before any
     /// identity exists.
+    pub fn choose_recovery_key(&mut self) {
+        if self.screen == Screen::Existing {
+            self.screen = Screen::RecoveryKey;
+        }
+    }
+
     pub fn back(&mut self) {
         match self.screen {
-            Screen::Nearby | Screen::Restore => self.screen = Screen::Existing,
+            Screen::Nearby | Screen::Restore | Screen::RecoveryKey => {
+                self.screen = Screen::Existing;
+            }
             Screen::Existing | Screen::NoRecovery => {
                 self.screen = Screen::Intro;
                 self.acknowledged = false;
@@ -200,7 +208,7 @@ impl Onboarding {
     pub fn is_existing_branch(&self) -> bool {
         matches!(
             self.screen,
-            Screen::Existing | Screen::Nearby | Screen::Restore
+            Screen::Existing | Screen::Nearby | Screen::Restore | Screen::RecoveryKey
         )
     }
 
@@ -266,6 +274,101 @@ pub enum OnboardingError {
     NoUserDirectory,
     /// Minting or writing failed.
     Mint(String),
+    /// The identity chain this device holds could not be taken up. `problem`
+    /// tells the person what to do about it; `detail` is the diagnostic.
+    Identity {
+        problem: IdentityProblem,
+        detail: String,
+    },
+}
+
+impl OnboardingError {
+    /// What stopped the device from taking up its identity, when that is
+    /// what failed. A UI picks its recovery from this, never from `Display`.
+    #[must_use]
+    pub fn identity_problem(&self) -> Option<IdentityProblem> {
+        match self {
+            Self::Identity { problem, .. } => Some(*problem),
+            Self::NoUserDirectory | Self::Mint(_) => None,
+        }
+    }
+
+    fn from_provisioning(error: &std::io::Error) -> Self {
+        match IdentityProblem::of(error) {
+            Some(problem) => Self::Identity {
+                problem,
+                detail: error.to_string(),
+            },
+            None => Self::Mint(error.to_string()),
+        }
+    }
+}
+
+/// Why an identity chain this device holds cannot be used, each answered by
+/// a different step: unlock the keyring, bring the identity back, or replace
+/// what no longer verifies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdentityProblem {
+    /// The record is here but the secret store holding its private share is
+    /// locked or not running. Unlocking it and retrying is enough.
+    KeyringUnavailable,
+    /// No record resolves for this account although something on the device
+    /// says it holds an identity. Retrying cannot help; the person brings
+    /// the identity back from another device or a backup.
+    RecordMissing,
+    /// A record, key or certificate is present but malformed, or does not
+    /// verify against the rest of the chain (including a certificate not yet
+    /// or no longer valid at this device's clock).
+    ChainInvalid,
+}
+
+impl IdentityProblem {
+    /// Environment variable carrying the startup verdict from the process
+    /// entry point into the compositor's trusted recovery chrome, beside
+    /// [`crate::shell::identity_provisioning::IDENTITY_RECOVERY_ENV`].
+    pub const RECOVERY_ENV: &'static str = "TILO_IDENTITY_RECOVERY_REASON";
+
+    /// Classify a failure of the identity chain. Storage and permission
+    /// failures are not a problem of the identity and return `None`.
+    #[must_use]
+    pub fn of(error: &std::io::Error) -> Option<Self> {
+        if crate::shell::identity_provisioning::is_secret_service_unavailable(error) {
+            return Some(Self::KeyringUnavailable);
+        }
+        match error.kind() {
+            std::io::ErrorKind::NotFound => Some(Self::RecordMissing),
+            std::io::ErrorKind::InvalidData => Some(Self::ChainInvalid),
+            _ => None,
+        }
+    }
+
+    /// Stable token for [`Self::RECOVERY_ENV`].
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::KeyringUnavailable => "keyring-unavailable",
+            Self::RecordMissing => "record-missing",
+            Self::ChainInvalid => "chain-invalid",
+        }
+    }
+
+    /// Parse a token written by [`Self::as_str`].
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        [
+            Self::KeyringUnavailable,
+            Self::RecordMissing,
+            Self::ChainInvalid,
+        ]
+        .into_iter()
+        .find(|problem| problem.as_str() == value)
+    }
+
+    /// The verdict startup recorded before opening trusted recovery, if any.
+    #[must_use]
+    pub fn from_recovery_env() -> Option<Self> {
+        Self::parse(std::env::var(Self::RECOVERY_ENV).ok()?.as_str())
+    }
 }
 
 impl fmt::Display for OnboardingError {
@@ -277,6 +380,9 @@ impl fmt::Display for OnboardingError {
                  where a signing key belongs"
             ),
             OnboardingError::Mint(e) => write!(f, "could not create the identity: {e}"),
+            OnboardingError::Identity { detail, .. } => {
+                write!(f, "could not take up the identity: {detail}")
+            }
         }
     }
 }
@@ -293,9 +399,11 @@ impl Error for OnboardingError {}
 ///
 /// Returns an error if minting the collaboration identity fails, or if one
 /// already exists but its fingerprint can't be read back.
-pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
-    let identity_paths = crate::firstboot::collaboration_identity_paths();
-    mint_into_with_paths(identity_dir, &identity_paths, false)
+pub fn mint_into(
+    identity_dir: &Path,
+    identity_paths: &tilo_user_identity::IdentityPaths,
+) -> Result<MintedIdentity, OnboardingError> {
+    mint_into_with_paths(identity_dir, identity_paths, false)
 }
 
 /// Mint for Tilo Desktop running on a pre-existing Linux distribution.
@@ -309,9 +417,9 @@ pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError>
 /// read back the collaboration identity.
 pub fn mint_into_for_legacy_linux_host(
     identity_dir: &Path,
+    identity_paths: &tilo_user_identity::IdentityPaths,
 ) -> Result<MintedIdentity, OnboardingError> {
-    let identity_paths = crate::firstboot::collaboration_identity_paths();
-    mint_into_with_paths(identity_dir, &identity_paths, true)
+    mint_into_with_paths(identity_dir, identity_paths, true)
 }
 
 fn mint_into_with_paths(
@@ -323,34 +431,64 @@ fn mint_into_with_paths(
         ProvisionOutcome, ensure_collaboration_identity,
         ensure_collaboration_identity_for_legacy_linux_host,
     };
-    let path = identity_dir.join("primary.json");
     let outcome = if legacy_linux_host {
         ensure_collaboration_identity_for_legacy_linux_host(identity_dir, identity_paths)
     } else {
         ensure_collaboration_identity(identity_dir, identity_paths)
     }
-    .map_err(|e| OnboardingError::Mint(e.to_string()))?;
+    .map_err(|e| OnboardingError::from_provisioning(&e))?;
     match outcome {
         ProvisionOutcome::Created { pubkey_hex } => Ok(MintedIdentity {
             fingerprint: pubkey_hex,
-            path,
+            path: identity_dir.join(crate::firstboot::PRIMARY_IDENTITY_FILE),
         }),
-        // Already there — read its fingerprint back rather than reporting a key that wasn't the one minted.
-        ProvisionOutcome::Existing => {
-            let fingerprint = read_fingerprint(&path).map_err(|e| {
-                OnboardingError::Mint(format!("identity exists but is unreadable: {e}"))
-            })?;
-            Ok(MintedIdentity { fingerprint, path })
-        }
+        // Already there — read its fingerprint back rather than reporting a
+        // key that wasn't the one minted. Resolve it exactly as provisioning
+        // and startup do: an identity restored from a backup or joined from
+        // another device is stored under its fingerprinted id and selected
+        // by the account's `active` file, so it is never at `primary.json`.
+        ProvisionOutcome::Existing => existing_identity_in(identity_dir),
     }
 }
 
-/// Read the public half out of an existing record.
+/// The account's active identity in `identity_dir`, resolved as every other
+/// consumer resolves it, with a typed reason when it cannot be read.
 ///
 /// Goes through `IdentityRecord` — the same type that wrote the file —
-/// so a record this build can't parse is an error, not a fingerprint that belongs to nothing.
-fn read_fingerprint(path: &Path) -> Result<String, String> {
-    existing_identity_at(path).map(|identity| identity.fingerprint)
+/// so a record this build can't parse is an error, not a fingerprint that
+/// belongs to nothing.
+fn existing_identity_in(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError> {
+    use crate::shell::identity_provisioning::DiskIdentityStore;
+    use tilo_identity_ceremony::{IdentityFlowError, IdentityStore as _};
+
+    let path = runtime_identity::resolve_active_identity(identity_dir)
+        .unwrap_or_else(|| identity_dir.join(crate::firstboot::PRIMARY_IDENTITY_FILE));
+    let unreadable = |problem, error: &dyn fmt::Display| OnboardingError::Identity {
+        problem,
+        detail: format!("identity exists but is unreadable: {error}"),
+    };
+    let record = match DiskIdentityStore::at(&path).load() {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            return Err(unreadable(
+                IdentityProblem::RecordMissing,
+                &"the identity record is missing",
+            ));
+        }
+        Err(IdentityFlowError::Io(error)) => {
+            return Err(match IdentityProblem::of(&error) {
+                Some(problem) => unreadable(problem, &error),
+                None => {
+                    OnboardingError::Mint(format!("identity exists but is unreadable: {error}"))
+                }
+            });
+        }
+        Err(error) => return Err(unreadable(IdentityProblem::ChainInvalid, &error)),
+    };
+    Ok(MintedIdentity {
+        fingerprint: hex::encode(record.threshold_identity.group_public_key),
+        path,
+    })
 }
 
 /// Reconstruct the public result needed by the completion screen from an
@@ -528,6 +666,106 @@ mod tests {
         }
     }
 
+    /// A device joined from another device holds its person as a public
+    /// record under a fingerprinted id, selected by the account's `active`
+    /// file. Retrying from trusted recovery runs the minter, which provisioning
+    /// answers with `Existing`; reading `primary.json` instead of the selected
+    /// record reported "the identity record is missing" and kept a sound
+    /// device in recovery for good.
+    #[test]
+    fn a_joined_device_takes_up_the_identity_its_account_selects() {
+        use getrandom::{SysRng, rand_core::UnwrapErr};
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, persist};
+
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let person = root.verifying_key().to_bytes();
+        let dir = tempfile::tempdir().unwrap();
+        let identity_dir = dir.path().join("identity");
+        let system = tilo_user_identity::IdentityPaths::under(dir.path().join("system"));
+        let (device, _) = persist::load_or_create_device_key(&system).unwrap();
+        let mut cert = DeviceCert {
+            user_public_key: person,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        persist::install_device_cert(&system, &cert, 2_000).unwrap();
+        assert!(
+            tilo_identity_host::provisioning::complete_enrolled_device(
+                &identity_dir,
+                &system,
+                tilo_clock::unix_now_ns(),
+            )
+            .unwrap()
+        );
+        let selected = runtime_identity::resolve_active_identity(&identity_dir).unwrap();
+        assert!(!identity_dir.join("primary.json").exists());
+
+        let minted = mint_into_with_paths(&identity_dir, &system, false)
+            .expect("the joined identity is taken up, not reported missing");
+        assert_eq!(minted.fingerprint, hex::encode(person));
+        assert_eq!(minted.path, selected);
+        assert!(holds_no_identity_secret(&minted.path));
+
+        // The account's config is reset while the device's enrollment
+        // survives: the same person is taken up again.
+        std::fs::remove_dir_all(&identity_dir).unwrap();
+        let again = mint_into_with_paths(&identity_dir, &system, false)
+            .expect("the surviving enrollment brings its person back");
+        assert_eq!(again.fingerprint, hex::encode(person));
+        assert!(again.path.is_file());
+        assert!(!system.user_privkey.exists(), "no root is minted beside it");
+    }
+
+    #[test]
+    fn identity_problems_name_the_step_that_fixes_them() {
+        use std::io;
+        let of = |error: io::Error| IdentityProblem::of(&error);
+        assert_eq!(
+            of(runtime_identity::secret_service_unavailable_error()),
+            Some(IdentityProblem::KeyringUnavailable)
+        );
+        assert_eq!(
+            of(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad certificate"
+            )),
+            Some(IdentityProblem::ChainInvalid)
+        );
+        assert_eq!(
+            of(io::Error::new(io::ErrorKind::NotFound, "no record")),
+            Some(IdentityProblem::RecordMissing)
+        );
+        assert_eq!(
+            of(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "not private"
+            )),
+            None
+        );
+        for problem in [
+            IdentityProblem::KeyringUnavailable,
+            IdentityProblem::RecordMissing,
+            IdentityProblem::ChainInvalid,
+        ] {
+            assert_eq!(IdentityProblem::parse(problem.as_str()), Some(problem));
+        }
+        assert_eq!(IdentityProblem::parse("1"), None);
+
+        // A selector naming a record that is gone is reported as missing,
+        // distinct from a locked keyring or a broken chain.
+        let dir = tempfile::tempdir().unwrap();
+        let error = existing_identity_in(dir.path()).unwrap_err();
+        assert_eq!(
+            error.identity_problem(),
+            Some(IdentityProblem::RecordMissing)
+        );
+    }
+
     #[test]
     fn native_identity_readiness_requires_real_identity_device_and_certificate() {
         const CHILD: &str = "TILO_ONBOARDING_READINESS_TEST_CHILD";
@@ -546,7 +784,11 @@ mod tests {
             return;
         }
         let directory = runtime_identity::identity_dir_from_env().unwrap();
-        let minted = mint_into(&directory).unwrap();
+        let minted = mint_into(
+            &directory,
+            &crate::firstboot::collaboration_identity_paths(),
+        )
+        .unwrap();
         let mut flow = Onboarding::new();
         assert!(!flow.is_done());
         flow.resume_created(minted.clone());
@@ -562,7 +804,7 @@ mod tests {
         let paths = crate::firstboot::collaboration_identity_paths();
         for path in [
             paths.device_cert_for_user(&person),
-            paths.device_privkey.clone(),
+            paths.device_privkey,
             minted.path.clone(),
         ] {
             let held = path.with_extension("readiness-held");
@@ -584,20 +826,20 @@ mod tests {
             assert_eq!(m.grouped_fingerprint(), "0123 4567 89ab cdef");
         }
         // Phase `copy_does_not_promise_recovery`.
-        // The copy must not imply a safety net that does not exist.
-        //
-        // Tilo mints a root and certified device key with no escrow or recovery phrase.
-        // `threshold-identity` implements share-based recovery but is
-        // deliberately not wired into this path. A user-held encrypted export is
-        // a backup, but it is not escrow and cannot help without its passphrase.
+        // The copy must not imply a safety net that does not exist: there is
+        // no escrow, only what the person keeps themselves (a recovery key or
+        // an encrypted backup), and the copy names both.
         {
             let all = no_recovery_points().join(" ").to_lowercase();
             assert!(
                 all.contains("there is no recovery"),
                 "the no-recovery screen must say so outright: {all}"
             );
+            assert!(
+                all.contains("recovery key") && all.contains("encrypted backup"),
+                "the screen must name what the person keeps to recover: {all}"
+            );
             for weasel in [
-                "recovery phrase",
                 "backup code",
                 "restore your identity",
                 "we can help",

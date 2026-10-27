@@ -59,11 +59,11 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
+collab = "optional@10"
+tilo-fs = "optional@10"
 # Photos may request its fixed, local-only visual-analysis operation through
 # this broker. The app still has no network namespace or model socket.
-model-gateway = "optional@2"
+model-gateway = "optional@10"
 
 [entrypoint]
 bin             = "bin/photos"
@@ -72,16 +72,17 @@ splash-segments = ["bin/photos[0x0:0x400000]"]
 splash-budget   = 250
 
 # The installed-image acceptance client discovers these controls through the
-# real AT-SPI D-Bus endpoint. Activating Library must replace the viewer canvas
-# with the actual library surface. The gate runs on a freshly installed profile,
-# whose library holds no photographs, so the surface it must read out is the
-# library's empty state; the viewer never shows it, so a successful callback
-# without a UI change cannot pass. tests/atspi_acceptance.rs runs this scenario.
+# real AT-SPI D-Bus endpoint. Photos opens on the library, and the gate runs on
+# a freshly installed profile whose library holds no photographs, so the
+# library's empty state is read out on open. Activating Favorites must replace
+# it with the Favorites surface, whose own empty state only that view shows, so
+# a successful callback without a UI change cannot pass.
+# tests/atspi_acceptance.rs runs this scenario.
 [accessibility.atspi_acceptance]
 root = "Photos"
-required = ["Open", "Library"]
-action = "Library"
-after_action = ["Your library is empty"]
+required = ["Open", "Library", "Your library is empty"]
+action = "Favorites"
+after_action = ["No favorites yet"]
 
 # File types offered by the decoder.
 [providers]

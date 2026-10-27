@@ -44,6 +44,7 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 const NOBODY: &str = "nobody is at this computer to choose a file; name the file instead";
 const NOBODY_TO_CHOOSE: &str = "nobody is at this computer to choose an identity";
+const NOBODY_TO_CHOOSE_APP: &str = "nobody is at this computer to choose an app";
 const OUT_OF_TURN: &str = "the session's shell answered out of turn";
 const CLOSED: &str = "the session's file chooser is gone";
 const UNREACHABLE: &str = "could not reach the session's file chooser";
@@ -159,6 +160,27 @@ pub enum Request {
     ChooseIdentity {
         id: u64,
     },
+    /// Show the shell's app chooser: the installed apps, each with its
+    /// icon, to choose one for `purpose` (what the app will do with it, in
+    /// the person's words). Answered by [`Reply::AppChosen`],
+    /// [`Reply::Cancelled`], [`Reply::Nobody`] or [`Reply::Failed`].
+    ChooseApp {
+        id: u64,
+        purpose: String,
+    },
+}
+
+/// The app the person chose in the shell's app chooser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChosenApp {
+    /// The app's id: a Tilo app's package id, or a host app's desktop-file
+    /// id. Its windows announce it, or one of [`Self::window_ids`].
+    pub id: String,
+    /// The name the person knows the app by.
+    pub name: String,
+    /// Every id the app's windows may announce, [`Self::id`] among them.
+    #[serde(default)]
+    pub window_ids: Vec<String>,
 }
 
 /// Shell → app. Every reply names the request it answers.
@@ -204,6 +226,11 @@ pub enum Reply {
     IdentitySelected {
         id: u64,
     },
+    /// The person chose `app` ([`Request::ChooseApp`]).
+    AppChosen {
+        id: u64,
+        app: ChosenApp,
+    },
 }
 
 impl Reply {
@@ -219,6 +246,7 @@ impl Reply {
             | Reply::Opened { id }
             | Reply::Unclaimed { id }
             | Reply::IdentitySelected { id }
+            | Reply::AppChosen { id, .. }
             | Reply::Failed { id, .. } => *id,
         }
     }
@@ -411,6 +439,29 @@ impl ShellLink {
                 answered(match reply {
                     Reply::Opened { .. } => Ok(()),
                     Reply::Nobody { .. } => Err(NOBODY_TO_CHOOSE.to_owned()),
+                    Reply::Failed { reason, .. } => Err(reason),
+                    _ => Err(OUT_OF_TURN.to_owned()),
+                });
+            }),
+        );
+    }
+
+    /// Ask the shell to show its app chooser for `purpose`; `chosen` hears
+    /// the app the person chose, `None` when they chose none, on the
+    /// connection's reader thread.
+    pub fn choose_app(
+        &self,
+        purpose: &str,
+        chosen: impl FnOnce(Result<Option<ChosenApp>, String>) + Send + 'static,
+    ) {
+        let purpose = purpose.to_owned();
+        self.connection().ask(
+            move |id| Request::ChooseApp { id, purpose },
+            Box::new(move |reply| {
+                chosen(match reply {
+                    Reply::AppChosen { app, .. } => Ok(Some(app)),
+                    Reply::Cancelled { .. } => Ok(None),
+                    Reply::Nobody { .. } => Err(NOBODY_TO_CHOOSE_APP.to_owned()),
                     Reply::Failed { reason, .. } => Err(reason),
                     _ => Err(OUT_OF_TURN.to_owned()),
                 });
@@ -873,7 +924,9 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    const ANSWER: Duration = Duration::from_secs(10);
+    fn answer() -> Duration {
+        tilo_test_env::hang_bound()
+    }
 
     /// A stand-in shell: reads each request and answers with `respond`.
     fn shell(respond: impl Fn(Request) -> Reply + Send + 'static) -> UnixStream {
@@ -902,7 +955,8 @@ mod tests {
             | Request::ReadContents { id, .. }
             | Request::ReleaseContents { id, .. }
             | Request::AwaitIdentity { id }
-            | Request::ChooseIdentity { id } => *id,
+            | Request::ChooseIdentity { id }
+            | Request::ChooseApp { id, .. } => *id,
         }
     }
 
@@ -963,7 +1017,7 @@ mod tests {
         let request = PickRequest::open("Import spreadsheet", "Import")
             .filter(FileFilter::new("Excel").glob("*.xlsx"));
         assert_eq!(
-            chooser.pick(request).recv_timeout(ANSWER).unwrap(),
+            chooser.pick(request).recv_timeout(answer()).unwrap(),
             PortalOutcome::Opened("/data/in/x.xlsx".into())
         );
         let Request::Pick {
@@ -974,7 +1028,7 @@ mod tests {
             suggested_name,
             filters,
             ..
-        } = seen.recv_timeout(ANSWER).unwrap()
+        } = seen.recv_timeout(answer()).unwrap()
         else {
             panic!("a chooser request is a pick");
         };
@@ -991,11 +1045,11 @@ mod tests {
         assert_eq!(
             chooser
                 .pick_multiple(PickRequest::open_multiple("Open", "Open"))
-                .recv_timeout(ANSWER)
+                .recv_timeout(answer())
                 .unwrap(),
             MultiOutcome::Selected(vec!["/data/in/x.xlsx".into(), "/data/in/y.xlsx".into()])
         );
-        let Request::Pick { multiple, .. } = seen.recv_timeout(ANSWER).unwrap() else {
+        let Request::Pick { multiple, .. } = seen.recv_timeout(answer()).unwrap() else {
             panic!("a chooser request is a pick");
         };
         assert!(multiple);
@@ -1013,12 +1067,12 @@ mod tests {
         assert_eq!(
             chooser
                 .pick(PickRequest::save("Save", "Save", "report.xlsx"))
-                .recv_timeout(ANSWER)
+                .recv_timeout(answer())
                 .unwrap(),
             PortalOutcome::Opened(directory.path().join("report.xlsx"))
         );
         assert!(matches!(
-            chooser.pick(PickRequest::open("Open", "Open")).recv_timeout(ANSWER),
+            chooser.pick(PickRequest::open("Open", "Open")).recv_timeout(answer()),
             Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
         ));
 
@@ -1026,7 +1080,7 @@ mod tests {
         assert!(matches!(
             alone
                 .pick(PickRequest::save("Save", "Save", "report.xlsx"))
-                .recv_timeout(ANSWER),
+                .recv_timeout(answer()),
             Ok(PortalOutcome::Failed(reason)) if reason.contains("nobody")
         ));
     }
@@ -1049,14 +1103,14 @@ mod tests {
         assert_eq!(
             chooser
                 .launch(LaunchRequest::open("/data/in/a.docx"))
-                .recv_timeout(ANSWER)
+                .recv_timeout(answer())
                 .unwrap(),
             LaunchOutcome::Opened
         );
         assert_eq!(
             chooser
                 .launch(LaunchRequest::open("/etc/shadow"))
-                .recv_timeout(ANSWER)
+                .recv_timeout(answer())
                 .unwrap(),
             LaunchOutcome::Failed("not granted".into())
         );
@@ -1085,10 +1139,10 @@ mod tests {
         .unwrap();
         let (selected_tx, selected) = std::sync::mpsc::channel();
         link.await_identity(move |outcome| selected_tx.send(outcome).unwrap());
-        assert_eq!(selected.recv_timeout(ANSWER).unwrap(), Ok(()));
+        assert_eq!(selected.recv_timeout(answer()).unwrap(), Ok(()));
         let (opened_tx, opened) = std::sync::mpsc::channel();
         link.choose_identity(move |outcome| opened_tx.send(outcome).unwrap());
-        assert_eq!(opened.recv_timeout(ANSWER).unwrap(), Ok(()));
+        assert_eq!(opened.recv_timeout(answer()).unwrap(), Ok(()));
 
         let unattended = ShellLink::connect(shell(|request| Reply::Nobody {
             id: id_of(&request),
@@ -1097,9 +1151,35 @@ mod tests {
         let (opened_tx, opened) = std::sync::mpsc::channel();
         unattended.choose_identity(move |outcome| opened_tx.send(outcome).unwrap());
         assert_eq!(
-            opened.recv_timeout(ANSWER).unwrap(),
+            opened.recv_timeout(answer()).unwrap(),
             Err(NOBODY_TO_CHOOSE.to_owned())
         );
+    }
+
+    #[test]
+    fn the_app_chooser_answers_the_app_chosen_or_none() {
+        let terminal = ChosenApp {
+            id: "org.example.Terminal".into(),
+            name: "Terminal".into(),
+            window_ids: vec!["org.example.Terminal".into(), "terminal".into()],
+        };
+        let answer_with = terminal.clone();
+        let link = ShellLink::connect(shell(move |request| match request {
+            Request::ChooseApp { id, purpose } if purpose == "Paste in apps" => Reply::AppChosen {
+                id,
+                app: answer_with.clone(),
+            },
+            other => Reply::Cancelled { id: id_of(&other) },
+        }))
+        .unwrap();
+        let (chosen_tx, chosen) = std::sync::mpsc::channel();
+        let tx = chosen_tx.clone();
+        link.choose_app("Paste in apps", move |outcome| tx.send(outcome).unwrap());
+        assert_eq!(chosen.recv_timeout(answer()).unwrap(), Ok(Some(terminal)));
+        link.choose_app("Something else", move |outcome| {
+            chosen_tx.send(outcome).unwrap();
+        });
+        assert_eq!(chosen.recv_timeout(answer()).unwrap(), Ok(None));
     }
 
     #[test]
@@ -1154,7 +1234,7 @@ mod tests {
         assert_eq!(
             chooser
                 .pick(PickRequest::open("Open", "Open"))
-                .recv_timeout(ANSWER)
+                .recv_timeout(answer())
                 .unwrap(),
             PortalOutcome::Cancelled
         );
@@ -1164,13 +1244,13 @@ mod tests {
         let waiting = chooser.pick(PickRequest::open("Open", "Open"));
         drop(shell);
         assert!(matches!(
-            waiting.recv_timeout(ANSWER),
+            waiting.recv_timeout(answer()),
             Ok(PortalOutcome::Failed(_))
         ));
         assert!(matches!(
             chooser
                 .launch(LaunchRequest::open("/data/in/a.docx"))
-                .recv_timeout(ANSWER),
+                .recv_timeout(answer()),
             Ok(LaunchOutcome::Failed(_))
         ));
     }

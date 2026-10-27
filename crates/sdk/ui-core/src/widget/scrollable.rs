@@ -86,14 +86,29 @@ pub struct Scrollable {
     offset_y: f32,
     content_w: f32,
     content_h: f32,
+    /// How far below the content's top its deepest widget reached when the
+    /// layout last solved it (`layout::max_bottom_edge`), kept while it
+    /// only moves.
+    walked_h: f32,
     viewport_w: f32,
     viewport_h: f32,
-    vx: f32,
-    vy: f32,
-    /// When the glide was last advanced, or started; `None` at rest. The
-    /// glide shares the lists' time-based model
-    /// ([`crate::virtual_viewport::glide_step`]).
-    glide_clock: Option<crate::time::Instant>,
+    /// The glide after a flick: the lists' decay
+    /// ([`crate::virtual_viewport::glide_step`]), in whole device pixels so
+    /// a host that copies what a scroll keeps on screen copies every frame
+    /// of it.
+    glide: crate::virtual_viewport::ScrollGlide,
+    /// The motion toward what [`Self::scroll_into_view`] was asked to show.
+    scroll_to: crate::motion::ScrollTo,
+    /// Device pixels per logical pixel on the display the last input came
+    /// from: glides and jumps step in whole ones.
+    device_scale: f64,
+    /// The motion the theme allows, sampled by the latest draw.
+    motion: crate::tokens::EffectiveMotion,
+    /// The content's opacity in the latest draw: below 1 while it fades in
+    /// after a long jump.
+    fade_drawn: Cell<f32>,
+    /// The content's opacity in the frame the host last presented.
+    fade_shown: f32,
     /// Pins the outer viewport to an exact height instead of `percent(1.0)`,
     /// which resolves against nothing (viewport collapses to zero) when the
     /// parent has no definite height. See [`Scrollable::fill_parent_height`]
@@ -109,8 +124,9 @@ pub struct Scrollable {
     /// Absorbs the parent's remaining flex height instead of claiming
     /// `percent(1.0)`. `fixed_height` wins if both are set.
     fill_parent_height: bool,
-    /// Opt-in inherited decision, consumed by the retained content wrapper.
-    content_min_viewport_height: Option<Rc<Cell<f32>>>,
+    /// The content is wrapped to fill at least the viewport
+    /// ([`Self::with_content_min_viewport_height`]).
+    content_fills_viewport: bool,
     child: Option<Element>,
     /// A content shown in place of another since the host last read it
     /// ([`Self::replace_child`]): described.
@@ -164,6 +180,9 @@ pub struct Scrollable {
     /// Release-velocity samples of the continuous (touchpad/touchscreen)
     /// gesture in progress; a fast lift turns into [`Self::fling`].
     kinetic: crate::virtual_viewport::KineticSampler,
+    /// The give past the ends while fingers pull the content there, and its
+    /// spring back once they let go ([`crate::motion::RubberBand`]).
+    band: crate::motion::RubberBand,
     /// Survives this widget being dropped and rebuilt — needed by apps that
     /// recreate their whole widget subtree every frame. Every offset
     /// mutation writes back through `clamp`. See
@@ -176,10 +195,24 @@ pub struct Scrollable {
     /// theme (`metrics.scroll_thumb`, `metrics.scrollbar_gutter`).
     bar_thickness: f64,
     bar_margin: f64,
+    /// The rounded corners of the window this view sits in, learned where
+    /// it last drew: its bars keep out of them.
+    corners: crate::widget::scrollbar::SurfaceCorners,
     /// Whether the content overflowed on the last layout, so the bar's
     /// lane is reserved: vertical (trailing edge) and horizontal (bottom).
     /// Content that fits keeps the full width.
     reserve_vertical: bool,
+    /// The lanes (vertical, horizontal) this layout found the content
+    /// overflowing without: kept until the layout is applied, so content
+    /// that fits only beside its own bar does not drop the bar and overflow
+    /// again, pass after pass. A retained tree is laid out again without
+    /// being rebuilt, so applying the layout is what ends it.
+    lanes_needed: (bool, bool),
+    /// The scroll view's own size when `lanes_needed` was seen. A pass that
+    /// sizes the view differently (a parent measuring its content on the
+    /// way to its own size) says nothing about the box the view gets, so
+    /// what it needed is forgotten.
+    lanes_needed_in: Option<(f32, f32)>,
     /// Keep the themed trailing lane even when vertical content fits.
     stable_vertical_gutter: bool,
     reserve_horizontal: bool,
@@ -205,19 +238,43 @@ pub struct Scrollable {
     /// frame the host presented showed: a scroll between the two that moved
     /// nothing else is offered to the host as a copy
     /// ([`crate::scroll_copy::offer`]).
-    shown_drawing: Option<Shown>,
-    shown_presented: Option<Shown>,
+    shown: crate::scroll_copy::ShownFrames<Shown>,
     /// See [`Scrollable::following_end`].
     follow_end: bool,
 }
 
-/// Where a frame shows the content: its offset, the clip it paints into and
-/// the transform it is drawn with.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Where a frame shows the content: its offset, the clip it paints into,
+/// the transform it is drawn with, and what paints over the content there
+/// without moving with it (the bars' tracks, the edge fades' bands).
+#[derive(Clone, Debug, PartialEq)]
 struct Shown {
-    offset: (f32, f32),
+    offset: (f64, f64),
     clip: Rect,
     transform: Affine,
+    overlays: Vec<Rect>,
+}
+
+impl crate::scroll_copy::Shown for Shown {
+    fn scroll(&self) -> vello::kurbo::Vec2 {
+        vello::kurbo::Vec2::new(self.offset.0, self.offset.1)
+    }
+
+    fn clip(&self) -> Rect {
+        self.clip
+    }
+
+    fn transform(&self) -> Affine {
+        self.transform
+    }
+
+    /// The content's own widgets say what changed in it.
+    fn same_view(&self, _other: &Self) -> bool {
+        true
+    }
+
+    fn overlays(&self, out: &mut Vec<Rect>) {
+        out.extend(&self.overlays);
+    }
 }
 
 impl Scrollable {
@@ -237,15 +294,19 @@ impl Scrollable {
             offset_y: 0.0,
             content_w: 0.0,
             content_h: 0.0,
+            walked_h: 0.0,
             viewport_w: 0.0,
             viewport_h: 0.0,
-            vx: 0.0,
-            vy: 0.0,
-            glide_clock: None,
+            glide: crate::virtual_viewport::ScrollGlide::new(),
+            scroll_to: crate::motion::ScrollTo::new(),
+            device_scale: 1.0,
+            motion: crate::tokens::EffectiveMotion::default(),
+            fade_drawn: Cell::new(1.0),
+            fade_shown: 1.0,
             fixed_height: None,
             max_height: None,
             fill_parent_height: false,
-            content_min_viewport_height: None,
+            content_fills_viewport: false,
             child: None,
             structure: crate::widget::StructureChange::None,
             child_node: None,
@@ -269,11 +330,15 @@ impl Scrollable {
             terminal_fade_damage: Cell::new(false),
             reduce_motion_active: false,
             kinetic: crate::virtual_viewport::KineticSampler::new(),
+            band: crate::motion::RubberBand::new(),
             persisted_offset: None,
             content_gutter: 0.0,
             bar_thickness: BAR_THICKNESS,
             bar_margin: BAR_MARGIN,
+            corners: crate::widget::scrollbar::SurfaceCorners::default(),
             reserve_vertical: false,
+            lanes_needed: (false, false),
+            lanes_needed_in: None,
             stable_vertical_gutter: false,
             reserve_horizontal: false,
             edge_fade: false,
@@ -281,8 +346,7 @@ impl Scrollable {
             bottom_content_inset: 0.0,
             compact_bottom_content_inset: None,
             semantic_key: None,
-            shown_drawing: None,
-            shown_presented: None,
+            shown: crate::scroll_copy::ShownFrames::default(),
             follow_end: false,
         }
     }
@@ -321,9 +385,10 @@ impl Scrollable {
     /// `c` as the child, in the wrapper that keeps it at least the viewport's height when the
     /// view asks for one.
     fn content(&self, c: Element) -> Element {
-        match &self.content_min_viewport_height {
-            Some(minimum) => Box::new(ViewportContent::new(c, Rc::clone(minimum))),
-            None => c,
+        if self.content_fills_viewport {
+            Box::new(ViewportContent::new(c))
+        } else {
+            c
         }
     }
     /// Let auto-height content fill at least the measured viewport height,
@@ -332,16 +397,16 @@ impl Scrollable {
     /// content-sized unless their Scrollable opts in.
     ///
     /// Adds a presentational single-child wrapper to normal widget traversal;
-    /// the content keeps its identity, focus and action bindings. Hosts must
-    /// use the shared measured layout solver to resolve the viewport minimum.
+    /// the content keeps its identity, focus and action bindings. Where the
+    /// scroll view's height comes from its content rather than its parent,
+    /// there is no viewport to fill and the content keeps its own height.
     #[must_use]
     pub fn with_content_min_viewport_height(mut self) -> Self {
-        if self.content_min_viewport_height.is_none() {
-            let minimum = Rc::new(Cell::new(0.0));
+        if !self.content_fills_viewport {
             if let Some(child) = self.child.take() {
-                self.child = Some(Box::new(ViewportContent::new(child, Rc::clone(&minimum))));
+                self.child = Some(Box::new(ViewportContent::new(child)));
             }
-            self.content_min_viewport_height = Some(minimum);
+            self.content_fills_viewport = true;
         }
         self
     }
@@ -602,10 +667,18 @@ impl Scrollable {
         self.draw_scrollbars(scene, transform, theme);
     }
     pub fn momentum_speed(&self) -> f32 {
-        (self.vx * self.vx + self.vy * self.vy).sqrt()
+        let (vx, vy) = self.glide.velocity();
+        f32_of_f64(vx.hypot(vy))
     }
 
+    /// Move the content by `dx`, `dy`: the hand (a wheel, a key, a bar
+    /// drag) or the caller takes over from any jump in progress.
     pub fn scroll_by(&mut self, dx: f32, dy: f32) {
+        self.scroll_to.take_over(crate::motion::frame_now());
+        self.move_by(dx, dy);
+    }
+
+    fn move_by(&mut self, dx: f32, dy: f32) {
         let (ox, oy) = (self.offset_x, self.offset_y);
         match self.axis {
             ScrollAxis::Vertical => {
@@ -631,48 +704,104 @@ impl Scrollable {
         }
     }
 
+    /// The offset the content is drawn at: where it is scrolled, and past
+    /// an end by the give fingers pull it there with.
+    fn drawn_offset(&self) -> (f64, f64) {
+        let give = self
+            .band
+            .give(crate::motion::frame_now(), self.device_scale);
+        (
+            f64::from(self.offset_x) + give.x,
+            f64::from(self.offset_y) + give.y,
+        )
+    }
+
+    /// Where the content's origin lands on screen, as drawn.
+    fn content_origin(&self) -> Point {
+        let (x, y) = self.drawn_offset();
+        Point::new(self.rect.x0 - x, self.rect.y0 - y)
+    }
+
+    /// Whether the give moved since the content was placed with it.
+    fn give_unplaced(&self) -> bool {
+        self.band
+            .needs_frame(crate::motion::frame_now(), self.device_scale)
+    }
+
     fn wake(&mut self) {
         self.last_activity = Some(crate::time::now());
         self.bar_dirty = true;
     }
+    /// Glide on at `vx`, `vy` (logical pixels per second, in content
+    /// space); zero stops a glide. Only along the axes this view scrolls:
+    /// a flick that wavers sideways in a list that scrolls up and down
+    /// glides up or down alone.
     pub fn fling(&mut self, vx: f32, vy: f32) {
-        if self.momentum_speed() == 0.0 {
-            self.glide_clock = Some(crate::time::now());
-        }
-        self.vx = vx;
-        self.vy = vy;
-        if self.momentum_speed() == 0.0 {
-            self.glide_clock = None;
-        }
+        let vx = if self.axis_has_horizontal() { vx } else { 0.0 };
+        let vy = if self.axis_has_vertical() { vy } else { 0.0 };
+        self.glide.set_device_scale(self.device_scale);
+        self.glide.fling(f64::from(vx), f64::from(vy));
     }
 
     /// Advance a glide to `now` (the frame's time): by the time since the
     /// last step, or since the fling began — never by an idle gap before it.
     pub fn advance_momentum(&mut self, now: crate::time::Instant) {
-        let elapsed = self.glide_clock.replace(now).map_or(0.0, |last| {
-            now.saturating_duration_since(last).as_secs_f32()
-        });
-        self.tick(elapsed);
-        if self.momentum_speed() == 0.0 {
-            self.glide_clock = None;
-        }
+        let (dx, dy) = self.glide.advance(now);
+        self.glided(dx, dy);
     }
 
     /// Advance a glide by `dt` seconds ([`crate::virtual_viewport::glide_step`]).
     pub fn tick(&mut self, dt: f32) {
-        let (ox, oy) = (self.offset_x, self.offset_y);
-        let seconds = f64::from(dt);
-        let (dx, vx) = crate::virtual_viewport::glide_step(f64::from(self.vx), seconds);
-        let (dy, vy) = crate::virtual_viewport::glide_step(f64::from(self.vy), seconds);
-        self.offset_x += f32_of_f64(dx);
-        self.offset_y += f32_of_f64(dy);
-        self.vx = f32_of_f64(vx);
-        self.vy = f32_of_f64(vy);
-        self.clamp();
-        if self.offset_x.to_bits() != ox.to_bits() || self.offset_y.to_bits() != oy.to_bits() {
-            self.scroll_dirty = true;
-            self.cursor_initialized = false;
+        let elapsed = Duration::from_secs_f64(f64::from(dt.max(0.0)));
+        let (dx, dy) = self.glide.advance_by(elapsed);
+        self.glided(dx, dy);
+    }
+
+    /// Move by a glide's step; an axis the content cannot move further
+    /// along stops, and the other glides on. Each axis is judged alone: in
+    /// a short frame one axis's step can round to nothing while the
+    /// other's moves a pixel, and that is no end.
+    fn glided(&mut self, dx: f64, dy: f64) {
+        let before = (self.offset_x, self.offset_y);
+        self.move_by(f32_of_f64(dx), f32_of_f64(dy));
+        if dx != 0.0 && self.offset_x.to_bits() == before.0.to_bits() {
+            self.glide.stop_x();
         }
+        if dy != 0.0 && self.offset_y.to_bits() == before.1.to_bits() {
+            self.glide.stop_y();
+        }
+    }
+
+    /// Follow a jump in progress ([`Self::scroll_into_view`]) to where it is
+    /// drawn at `now`.
+    fn follow_scroll_to(&mut self, now: Instant) {
+        let Some(at) = self
+            .scroll_to
+            .offset_in_device_pixels(now, self.device_scale)
+        else {
+            return;
+        };
+        self.move_by(
+            f32_of_f64(at.x) - self.offset_x,
+            f32_of_f64(at.y) - self.offset_y,
+        );
+        let _ = self.scroll_to.arrived(now);
+    }
+
+    /// A jump still moves, or has arrived and waits for the frame that
+    /// puts the content at its target.
+    fn jump_in_progress(&self) -> bool {
+        self.scroll_to.target().is_some()
+            || self.scroll_to.is_moving(crate::motion::frame_now())
+            || self.fade_drawn.get() < 1.0
+    }
+
+    /// The content fades in after a long jump, or the last frame drew it
+    /// still fading: its whole viewport repaints.
+    fn content_fading(&self) -> bool {
+        self.fade_drawn.get() < 1.0
+            || self.fade_shown < 1.0
+            || self.scroll_to.opacity(crate::motion::frame_now()) < 1.0
     }
     /// Reveal newly focused controls while allowing manual scroll away from
     /// unchanged focus. Opt-in for form panels; ordinary scrolling is unchanged.
@@ -682,27 +811,71 @@ impl Scrollable {
         self
     }
 
+    /// Show the content rect at `x`, `y` (`w` by `h`, in content
+    /// coordinates), moving as little as it takes. A jump the person's hand
+    /// or key just asked for moves there ([`crate::motion::ScrollTo`]): it
+    /// glides when short and fades in at the target when long; one nobody
+    /// asked for (a sync, a restored view) or an agent's lands at once.
     pub fn scroll_into_view(&mut self, x: f32, y: f32, w: f32, h: f32) {
-        let (ox, oy) = (self.offset_x, self.offset_y);
-        if y < self.offset_y {
-            self.offset_y = y;
-        } else if y + h > self.offset_y + self.effective_viewport_h() {
-            self.offset_y = (y + h - self.effective_viewport_h()).max(0.0);
+        let now = crate::motion::frame_now();
+        let (tx, ty) = self.offset_showing(x, y, w, h);
+        let viewport = vello::kurbo::Vec2::new(
+            f64::from(self.viewport_w),
+            f64::from(self.effective_viewport_h()),
+        );
+        let drawn = vello::kurbo::Vec2::new(f64::from(self.offset_x), f64::from(self.offset_y));
+        let target = vello::kurbo::Vec2::new(f64::from(tx), f64::from(ty));
+        self.glide.stop();
+        if self.scroll_to.go(drawn, target, viewport, self.motion, now)
+            == crate::motion::ScrollJump::Glide
+        {
+            self.follow_scroll_to(now);
+        } else {
+            self.move_by(tx - self.offset_x, ty - self.offset_y);
         }
-        if x < self.offset_x {
-            self.offset_x = x;
-        } else if x + w > self.offset_x + self.viewport_w {
-            self.offset_x = (x + w - self.viewport_w).max(0.0);
-        }
-        self.clamp();
-        if self.offset_x.to_bits() != ox.to_bits() || self.offset_y.to_bits() != oy.to_bits() {
+        if self.scroll_to.is_moving(now) {
             self.scroll_dirty = true;
-            self.cursor_initialized = false;
         }
+    }
+
+    /// [`Self::scroll_into_view`] that lands at once: keyboard focus moving
+    /// to a control out of view while tabbing.
+    pub fn scroll_into_view_at_once(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        let (tx, ty) = self.offset_showing(x, y, w, h);
+        self.glide.stop();
+        self.scroll_to
+            .land(vello::kurbo::Vec2::new(f64::from(tx), f64::from(ty)));
+        self.move_by(tx - self.offset_x, ty - self.offset_y);
+    }
+
+    /// The offset that shows the content rect at `x`, `y`, `w` by `h`,
+    /// moving the least from where the content is going.
+    fn offset_showing(&self, x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
+        let (mut ox, mut oy) = self
+            .scroll_to
+            .target()
+            .map_or((self.offset_x, self.offset_y), |target| {
+                (f32_of_f64(target.x), f32_of_f64(target.y))
+            });
+        if y < oy {
+            oy = y;
+        } else if y + h > oy + self.effective_viewport_h() {
+            oy = (y + h - self.effective_viewport_h()).max(0.0);
+        }
+        if x < ox {
+            ox = x;
+        } else if x + w > ox + self.viewport_w {
+            ox = (x + w - self.viewport_w).max(0.0);
+        }
+        let max_x = (self.content_w - self.viewport_w).max(0.0);
+        (ox.clamp(0.0, max_x), oy.clamp(0.0, self.max_offset_y()))
     }
     /// Reserve the bar's lane on the edge it scrolls along while the solved
     /// content overflows the viewport, and give it back once it fits.
-    /// Narrower content is never shorter, so this settles in one step.
+    /// Narrower content is usually taller, not always: a grid whose cells
+    /// scale with the width can overflow at full width and fit beside the
+    /// lane. A lane the content needed then stays for the rest of the layout,
+    /// so this settles within two steps.
     fn follow_overflow(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -728,6 +901,23 @@ impl Scrollable {
             && self.show_scrollbar
             && viewport_w > 0.0
             && content_w > viewport_w + FIT_EPS;
+        // A lane the content overflowed without stays: content that fits
+        // only because the lane narrowed it would overflow again without it.
+        // Only in a box of the same size: one the view was measured at on
+        // the way to its own size needed nothing of the box it gets.
+        let size = (layout.size.width, layout.size.height);
+        if self.lanes_needed_in != Some(size) {
+            self.lanes_needed = (false, false);
+            self.lanes_needed_in = Some(size);
+        }
+        if vertical && !self.reserve_vertical {
+            self.lanes_needed.0 = true;
+        }
+        if horizontal && !self.reserve_horizontal {
+            self.lanes_needed.1 = true;
+        }
+        let vertical = vertical || (self.reserve_vertical && self.lanes_needed.0);
+        let horizontal = horizontal || (self.reserve_horizontal && self.lanes_needed.1);
         if vertical == self.reserve_vertical && horizontal == self.reserve_horizontal {
             return false;
         }
@@ -792,10 +982,11 @@ impl Scrollable {
         if self.hbar_active() {
             y1 -= thickness + margin;
         }
-        if y1 - y0 <= MIN_THUMB_LEN.min(1.0) {
+        let track = self.corners.clear(Rect::new(x0, y0, x1, y1), true);
+        if track.height() <= MIN_THUMB_LEN.min(1.0) {
             return None;
         }
-        Some(Rect::new(x0, y0, x1, y1))
+        Some(track)
     }
 
     fn horizontal_track(&self) -> Option<Rect> {
@@ -810,10 +1001,11 @@ impl Scrollable {
         if self.vbar_active() {
             x1 -= thickness + margin;
         }
-        if x1 - x0 <= MIN_THUMB_LEN.min(1.0) {
+        let track = self.corners.clear(Rect::new(x0, y0, x1, y1), false);
+        if track.width() <= MIN_THUMB_LEN.min(1.0) {
             return None;
         }
-        Some(Rect::new(x0, y0, x1, y1))
+        Some(track)
     }
 
     fn v_metrics(&self) -> ScrollMetrics {
@@ -928,7 +1120,6 @@ impl Scrollable {
         } else {
             self.viewport_w * PAGE_FRACTION
         };
-        // Stop once the thumb has reached/passed the press point.
         let reached = if hold.vertical {
             match self.vertical_thumb() {
                 Some(thumb) => {
@@ -983,26 +1174,6 @@ impl Scrollable {
             }
         }
         edges
-    }
-
-    /// Where the content paints and how far it moved on screen, when the
-    /// frame being drawn shows it at another offset than the last presented
-    /// frame did, in the same clip and with the same transform.
-    fn scrolled_since_presented(&self) -> Option<(Shown, vello::kurbo::Vec2)> {
-        let (drawing, presented) = (self.shown_drawing?, self.shown_presented?);
-        if drawing.clip != presented.clip
-            || drawing.transform != presented.transform
-            || drawing.offset == presented.offset
-        {
-            return None;
-        }
-        Some((
-            drawing,
-            vello::kurbo::Vec2::new(
-                f64::from(presented.offset.0) - f64::from(drawing.offset.0),
-                f64::from(presented.offset.1) - f64::from(drawing.offset.1),
-            ),
-        ))
     }
 
     /// What this view paints over its content inside `clip` that does not
@@ -1259,11 +1430,27 @@ impl Scrollable {
         // winit y-positive means "scroll up", but content is drawn at
         // (… − offset), so wheel-up must DECREASE offset_y — negate.
         const LINE_PX: f32 = 60.0;
+        self.device_scale = scale_factor;
+        // The hand takes over a jump in progress from where it is drawn.
+        self.scroll_to.take_over(crate::motion::frame_now());
         let pixel = matches!(delta, MouseScrollDelta::PixelDelta(_));
         if pixel {
             match phase {
                 TouchPhase::Ended => {
                     let release = self.kinetic.release(crate::time::now());
+                    let now = crate::motion::frame_now();
+                    // Let go past an end, the give springs back instead.
+                    if self.band.is_stretched(now) {
+                        let (vx, vy) = release.unwrap_or_default();
+                        self.band.release(
+                            vello::kurbo::Vec2::new(vx, vy),
+                            self.band_viewport(),
+                            self.motion,
+                            now,
+                        );
+                        self.scroll_dirty = true;
+                        return true;
+                    }
                     return match release {
                         Some((vx, vy)) if !self.reduce_motion_active => {
                             self.fling(f32_of_f64(vx), f32_of_f64(vy));
@@ -1274,6 +1461,15 @@ impl Scrollable {
                 }
                 TouchPhase::Cancelled => {
                     self.kinetic.reset();
+                    if self.band.is_stretched(crate::motion::frame_now()) {
+                        self.band.release(
+                            vello::kurbo::Vec2::ZERO,
+                            self.band_viewport(),
+                            self.motion,
+                            crate::motion::frame_now(),
+                        );
+                        self.scroll_dirty = true;
+                    }
                     return false;
                 }
                 TouchPhase::Started => self.kinetic.reset(),
@@ -1295,35 +1491,90 @@ impl Scrollable {
             dx = dy;
             dy = 0.0;
         }
+        if pixel {
+            return self.pan(dx, dy);
+        }
         let before = (self.offset_x, self.offset_y);
         self.scroll_by(dx, dy);
-        let (moved_x, moved_y) = (self.offset_x - before.0, self.offset_y - before.1);
-        let moved = moved_x != 0.0 || moved_y != 0.0;
-        if !moved {
-            self.kinetic.reset();
-        } else if pixel {
-            self.kinetic
-                .record(f64::from(moved_x), f64::from(moved_y), crate::time::now());
+        self.offset_x.to_bits() != before.0.to_bits()
+            || self.offset_y.to_bits() != before.1.to_bits()
+    }
+
+    /// Fingers moved the content by `dx`, `dy`: one to one inside, and past
+    /// an end through the rubber band; moving back takes the give in first.
+    /// Returns whether anything moved.
+    fn pan(&mut self, dx: f32, dy: f32) -> bool {
+        let now = crate::motion::frame_now();
+        let hand = vello::kurbo::Vec2::new(f64::from(dx), f64::from(dy));
+        let viewport = self.band_viewport();
+        let rest = self.band.take_in(hand, viewport, self.motion, now);
+        let took_in = rest != hand;
+        let before = (self.offset_x, self.offset_y);
+        self.scroll_by(f32_of_f64(rest.x), f32_of_f64(rest.y));
+        let moved = vello::kurbo::Vec2::new(
+            f64::from(self.offset_x - before.0),
+            f64::from(self.offset_y - before.1),
+        );
+        // What the content could not take, on an axis it scrolls along.
+        let excess = vello::kurbo::Vec2::new(
+            if self.axis_has_horizontal() && self.content_w > self.viewport_w + FIT_EPS {
+                rest.x - moved.x
+            } else {
+                0.0
+            },
+            if self.axis_has_vertical() && self.max_offset_y() > 0.0 {
+                rest.y - moved.y
+            } else {
+                0.0
+            },
+        );
+        if excess != vello::kurbo::Vec2::ZERO {
+            self.band.pull(excess, viewport, self.motion, now);
         }
-        moved
+        let gave = took_in || self.band.is_stretched(now);
+        if gave {
+            self.scroll_dirty = true;
+            self.cursor_initialized = false;
+            self.wake();
+        }
+        if moved == vello::kurbo::Vec2::ZERO && !gave {
+            self.kinetic.reset();
+            return false;
+        }
+        self.kinetic.record(hand.x, hand.y, crate::time::now());
+        true
+    }
+
+    /// The view the give is measured against.
+    fn band_viewport(&self) -> vello::kurbo::Vec2 {
+        vello::kurbo::Vec2::new(
+            f64::from(self.viewport_w),
+            f64::from(self.effective_viewport_h()),
+        )
     }
 }
 
-/// A presentational Grid surface. Container supplies the ordinary single-child
-/// lifecycle; we register its layout node as this wrapper's own node so only
-/// this hook adjusts its minimum. The child style is never rewritten.
+/// A presentational Grid surface at least as tall as the scroll view's
+/// viewport. Container supplies the ordinary single-child lifecycle; we
+/// register its layout node as this wrapper's own node. The child style is
+/// never rewritten.
+///
+/// The minimum is a percentage of the viewport, so it resolves only where
+/// the scroll view's height is given to it. It was the scroll view's last
+/// solved height, measured between passes: where an ancestor took its height
+/// from content, that height became the content's floor, and with the scroll
+/// view and this wrapper adjusting a pass apart the two traded heights
+/// without settling.
 struct ViewportContent {
     inner: crate::widget::Container,
-    minimum: Rc<Cell<f32>>,
 }
 
 impl ViewportContent {
-    fn new(child: Element, minimum: Rc<Cell<f32>>) -> Self {
+    fn new(child: Element) -> Self {
         Self {
             inner: crate::widget::Container::new()
                 .with_no_padding()
                 .with_child(child),
-            minimum,
         }
     }
 }
@@ -1359,31 +1610,16 @@ impl crate::widget::Decorator for ViewportContent {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
-                min_size: Size::from_lengths(0.0, self.minimum.get()),
+                min_size: Size {
+                    width: Dimension::length(0.0),
+                    height: Dimension::percent(1.0),
+                },
                 flex_shrink: 0.0,
                 ..Default::default()
             },
         );
         crate::widget::decorator::register_node(nodes, node, self);
         node
-    }
-
-    fn adjust_layout_style(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        _text: &mut TextRenderer,
-    ) -> bool {
-        let Ok(style) = taffy.style(node) else {
-            return false;
-        };
-        let height = Dimension::length(self.minimum.get());
-        if style.min_size.height == height {
-            return false;
-        }
-        let mut style = style.clone();
-        style.min_size.height = height;
-        taffy.set_style(node, style).is_ok()
     }
 
     fn name(&self) -> &'static str {
@@ -1394,19 +1630,6 @@ impl crate::widget::Decorator for ViewportContent {
         self.inner
             .for_each_child(&mut |child| child.collect_damage(regions));
     }
-}
-
-/// Maximum `rect.y1` across a widget subtree, for finding the true bottom
-/// edge when taffy's `content_size` under-reports.
-fn max_bottom_edge(w: &dyn Widget) -> f64 {
-    let mut deepest = w.get_rect().y1;
-    if w.child_clip_rect().is_some() {
-        return deepest;
-    }
-    for c in w.children() {
-        deepest = deepest.max(max_bottom_edge(c));
-    }
-    deepest
 }
 
 impl Widget for Scrollable {
@@ -1440,14 +1663,20 @@ impl Widget for Scrollable {
     /// A glide in progress advances here, once per frame, and moves only
     /// this view: like a wheel that only pans
     /// ([`crate::widget::note_view_only_pan`]) it is no change of the model,
-    /// so it does not report one. The frame it asks for
-    /// ([`Widget::needs_animation_frame`]) lays the content out where the
-    /// glide took it; reporting it synced the app and republished its
-    /// resources on every frame of every fling.
+    /// so it does not report one; reporting it synced the app and
+    /// republished its resources on every frame of every fling. The host
+    /// places the content where the glide took it
+    /// ([`crate::widget::note_placement_moved`]).
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
-        if self.momentum_speed() > 0.0 {
+        if self.glide.is_active() {
             self.advance_momentum(crate::time::now());
         }
+        // The give springing back moves the content like a glide does.
+        if self.give_unplaced() {
+            self.scroll_dirty = true;
+        }
+        // A jump in progress, like a glide, moves only this view.
+        self.follow_scroll_to(crate::motion::frame_now());
         // Click-and-hold auto-repeat: the host wakes on the repeat's
         // deadline (`next_wake_deadline`), not on animation frames.
         let held = self.hold.is_some() && {
@@ -1455,6 +1684,9 @@ impl Widget for Scrollable {
             self.advance_hold(crate::time::now());
             (self.offset_x, self.offset_y) != before
         };
+        if self.scroll_dirty {
+            crate::widget::note_placement_moved();
+        }
         let child = self.child.as_mut().is_some_and(|c| c.update(s, p));
         held || child
     }
@@ -1466,6 +1698,7 @@ impl Widget for Scrollable {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.height_limit_dirty = false;
+        self.lanes_needed = (false, false);
         self.child_node = self
             .child
             .as_mut()
@@ -1597,15 +1830,6 @@ impl Widget for Scrollable {
             return changed;
         };
         changed |= self.follow_overflow(taffy, node, &layout);
-        if let Some(minimum) = &self.content_min_viewport_height {
-            let height = layout.size.height.max(0.0);
-            if (minimum.get() - height).abs() >= f32::EPSILON {
-                // Inherited decision only. The wrapper's hook changes its OWN
-                // style, regardless of the host's node visitation order.
-                minimum.set(height);
-                changed = true;
-            }
-        }
         changed
     }
 
@@ -1613,6 +1837,9 @@ impl Widget for Scrollable {
         // Geometry may have moved beneath a stationary pointer. The next
         // same-position event must therefore be routed once again.
         self.cursor_initialized = false;
+        // This layout is over: the next one checks the lanes afresh, so
+        // content that now fits at full width gives its bar back.
+        self.lanes_needed = (false, false);
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = crate::widget::placed(&l, origin);
         // At the end before this layout: a transcript that follows its end stays there.
@@ -1628,15 +1855,13 @@ impl Widget for Scrollable {
             self.content_h = cl.content_size.height.max(cl.size.height);
         }
         let previous_offset = (self.offset_x, self.offset_y);
+        let placing_again = crate::widget::placing_again(taffy);
         // Content placed below knows what this view shows of it
         // (`widget::layout_clip`), so a long collection lays out only that.
         let clip = self.content_viewport_rect();
+        let origin = self.content_origin();
         if let Some(c) = &mut self.child {
             if let Some(child_node) = self.child_node {
-                let origin = Point::new(
-                    self.rect.x0 - f64::from(self.offset_x),
-                    self.rect.y0 - f64::from(self.offset_y),
-                );
                 crate::widget::with_layout_clip(clip, || {
                     c.apply_layout(taffy, child_node, origin);
                 });
@@ -1652,12 +1877,14 @@ impl Widget for Scrollable {
                 // taffy's content_size can still cap at the available block for
                 // a flex column shorter than the literal sum of its children.
                 // Walk the subtree and take the deeper of the two so scrolling
-                // always reaches the real last pixel.
-                let scroll_origin_y = self.rect.y0 - f64::from(self.offset_y);
-                let max_y = max_bottom_edge(c.as_ref());
-                let walked_h = f32_of_f64((max_y - scroll_origin_y).max(0.0));
-                if walked_h > self.content_h {
-                    self.content_h = walked_h;
+                // always reaches the real last pixel; placed again, the
+                // content only moved and the walk would find the same.
+                if !placing_again {
+                    let max_y = super::layout::max_bottom_edge(c.as_ref());
+                    self.walked_h = f32_of_f64((max_y - origin.y).max(0.0));
+                }
+                if self.walked_h > self.content_h {
+                    self.content_h = self.walked_h;
                 }
             }
         }
@@ -1665,21 +1892,19 @@ impl Widget for Scrollable {
             self.offset_y = self.max_offset_y();
         }
         self.clamp();
+        let origin = self.content_origin();
         if previous_offset != (self.offset_x, self.offset_y)
             && let (Some(c), Some(child_node)) = (&mut self.child, self.child_node)
         {
             // A restored offset or a resize may need clamping. Publish
             // geometry at the final offset in this same layout pass.
-            let origin = Point::new(
-                self.rect.x0 - f64::from(self.offset_x),
-                self.rect.y0 - f64::from(self.offset_y),
-            );
             crate::widget::with_layout_clip(clip, || {
                 c.apply_layout(taffy, child_node, origin);
             });
         }
         // Flash the overlay bar the first frame content overflows.
-        if self.reveal_focus {
+        // Placed again, focus is where it was and stands revealed.
+        if self.reveal_focus && !placing_again {
             fn focused(
                 widget: &dyn Widget,
                 path: &mut Vec<usize>,
@@ -1712,18 +1937,15 @@ impl Widget for Scrollable {
             if path != self.last_focus_path {
                 self.last_focus_path = path;
                 if let Some((_, rect)) = focus {
-                    self.scroll_into_view(
+                    self.scroll_into_view_at_once(
                         f32_of_f64(rect.x0 - self.rect.x0) + self.offset_x,
                         f32_of_f64(rect.y0 - self.rect.y0) + self.offset_y,
                         f32_of_f64(rect.width()),
                         f32_of_f64(rect.height()),
                     );
                     let clip = self.content_viewport_rect();
+                    let origin = self.content_origin();
                     if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
-                        let origin = Point::new(
-                            self.rect.x0 - f64::from(self.offset_x),
-                            self.rect.y0 - f64::from(self.offset_y),
-                        );
                         crate::widget::with_layout_clip(clip, || {
                             child.apply_layout(taffy, node, origin);
                         });
@@ -1732,8 +1954,16 @@ impl Widget for Scrollable {
             }
         }
         let scrollable_now = self.vbar_active() || self.hbar_active();
-        if scrollable_now && !self.was_overflowing && self.last_activity.is_none() {
-            self.wake();
+        // Content that has just begun to overflow is something to scroll, not
+        // something the person did: an overlay bar appears when they scroll
+        // (or reach for it), never because a window was opened at a size its
+        // content does not fit or because a resize made it overflow. A bar
+        // that is always drawn is repainted so the thumb shows at once.
+        if scrollable_now && !self.was_overflowing {
+            self.bar_dirty = true;
+            if !self.overlay && self.last_activity.is_none() {
+                self.wake();
+            }
         }
         self.was_overflowing = scrollable_now;
     }
@@ -1747,11 +1977,18 @@ impl Widget for Scrollable {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion_active = theme.reduce_motion;
+        self.motion = theme.motion();
+        let corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
+        if corners != self.corners {
+            self.corners = corners;
+            self.bar_dirty = true;
+        }
         let clip = self.paint_clip_rect(theme);
-        self.shown_drawing = Some(Shown {
-            offset: (self.offset_x, self.offset_y),
+        self.shown.note(Shown {
+            offset: self.drawn_offset(),
             clip,
             transform: crate::scroll_copy::on_screen(transform),
+            overlays: self.copy_overlays(clip),
         });
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -1761,8 +1998,28 @@ impl Widget for Scrollable {
             &clip,
         );
         let previous_viewport = presence.push_viewport(self.content_viewport_rect());
+        // After a long jump the content fades in where it landed.
+        let opacity = self.scroll_to.opacity(crate::motion::frame_now());
+        self.fade_drawn.set(opacity);
+        let fading = opacity < 1.0;
+        if fading {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                BlendMode::default(),
+                opacity,
+                transform,
+                &clip,
+            );
+        }
+        // Unless fading in, what a copy keeps is not drawn (`draw_cull`).
+        let keep = self.shown.keep().filter(|_| !fading);
         if let Some(c) = &mut self.child {
-            crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme, presence);
+            crate::draw_cull::keeping(scene, keep, |scene| {
+                crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme, presence);
+            });
+        }
+        if fading {
+            scene.pop_layer();
         }
         presence.pop_viewport(previous_viewport);
         scene.pop_layer();
@@ -1838,6 +2095,11 @@ impl Widget for Scrollable {
                 if *ctx.handled {
                     return;
                 }
+            }
+            // Ctrl+scroll zooms (`crate::content_zoom`): what no child took
+            // goes to the window, never into a scroll.
+            if crate::content_zoom::is_zoom_scroll(event, ctx.modifiers) {
+                return;
             }
             // Only consume when it moved the view, so an at-the-edge wheel
             // bubbles to an outer/sibling scroll region.
@@ -1923,6 +2185,16 @@ impl Widget for Scrollable {
         }
     }
 
+    /// Its content under what the view shows of it: a long column below
+    /// visits only the children near the viewport.
+    fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if let Some(child) = &self.child {
+            crate::widget::with_layout_clip(self.content_viewport_rect(), || {
+                visitor(child.as_ref());
+            });
+        }
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.child
             .as_mut()
@@ -1960,7 +2232,9 @@ impl Widget for Scrollable {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.momentum_speed() > 0.0
+        self.glide.is_active()
+            || self.give_unplaced()
+            || self.jump_in_progress()
             || self.fade_in_progress()
             || self.needs_terminal_fade_frame()
             || self
@@ -1985,6 +2259,7 @@ impl Widget for Scrollable {
     /// hold the thumb stays unchanged; only the fade itself needs new damage.
     fn needs_redraw(&self) -> bool {
         self.scroll_dirty
+            || self.content_fading()
             || self.bar_dirty
             || self.fade_in_progress()
             || self.needs_terminal_fade_frame()
@@ -1992,36 +2267,43 @@ impl Widget for Scrollable {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.scroll_dirty {
-            if let Some((shown, delta)) = self.scrolled_since_presented()
-                && crate::scroll_copy::offer(
-                    self,
-                    shown.clip,
-                    delta,
-                    self.copy_overlays(shown.clip),
-                    shown.transform,
-                )
-            {
-                // What changed in the content besides moving, where its
-                // widgets say; the host carries it with the copy.
-                if let Some(child) = &self.child {
-                    let first = regions.len();
-                    child.collect_damage(regions);
-                    if let Some(changed) = regions.get_mut(first..) {
-                        for rect in changed {
-                            *rect = rect.intersect(shown.clip);
-                        }
-                    }
-                }
-                return;
-            }
+        if self.content_fading() {
             regions.push(self.rect);
             return;
+        }
+        if self.scroll_dirty {
+            match self.shown.compare(self, regions) {
+                crate::scroll_copy::Since::Copied => {
+                    // What changed in the content besides moving, where its
+                    // widgets say; the host carries it with the copy.
+                    let clip = self.shown.drawing().map_or(self.rect, |shown| shown.clip);
+                    if let Some(child) = &self.child {
+                        let first = regions.len();
+                        crate::widget::with_layout_clip(self.content_viewport_rect(), || {
+                            child.collect_damage(regions);
+                        });
+                        if let Some(changed) = regions.get_mut(first..) {
+                            for rect in changed {
+                                *rect = rect.intersect(clip);
+                            }
+                        }
+                    }
+                    return;
+                }
+                crate::scroll_copy::Since::Repaint => {
+                    regions.push(self.rect);
+                    return;
+                }
+                // Scrolled back where the screen shows it: only what changed.
+                crate::scroll_copy::Since::Still => {}
+            }
         }
 
         if let Some(child) = &self.child {
             let first = regions.len();
-            child.collect_damage(regions);
+            crate::widget::with_layout_clip(self.content_viewport_rect(), || {
+                child.collect_damage(regions);
+            });
             if let Some(child_regions) = regions.get_mut(first..) {
                 for rect in child_regions {
                     *rect = rect.intersect(self.rect);
@@ -2056,7 +2338,8 @@ impl Widget for Scrollable {
         // Not drawn this frame (hidden, culled, or a cache above it reused),
         // what the screen shows where it lies is not known to be its content:
         // the next scroll repaints its viewport before copies resume.
-        self.shown_presented = self.shown_drawing.take();
+        self.shown.present();
+        self.fade_shown = self.fade_drawn.get();
         self.scroll_dirty = false;
         self.bar_dirty = false;
         self.terminal_fade_damage.set(false);
@@ -2091,7 +2374,7 @@ impl Widget for Scrollable {
         // The margin is capped so very small viewports still prioritise the
         // control itself.
         let context = (self.effective_viewport_h() * 0.12).clamp(16.0, 56.0);
-        self.scroll_into_view(
+        self.scroll_into_view_at_once(
             (x - context).max(0.0),
             (y - context).max(0.0),
             crate::num::f32_of_f64(rect.width()) + context * 2.0,
@@ -2142,10 +2425,16 @@ impl crate::widget::controls::ActionControls for Scrollable {
 mod tests {
     use super::*;
     use crate::testing::{Dispatch, dispatch};
-    use crate::widget::scrollbar::{BAR_FADE_MS as FADE_MS, BAR_HOLD_MS as VISIBLE_HOLD_MS};
+    use crate::widget::scrollbar::BAR_HOLD_MS as VISIBLE_HOLD_MS;
+    // The bar fades as all chrome does.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the chrome fade is a few hundred milliseconds"
+    )]
+    const FADE_MS: u64 = crate::animation::CHROME_FADE.as_millis() as u64;
     use automerge::AutoCommit;
 
-    fn vertical(content_h: f32) -> Scrollable {
+    pub(super) fn vertical(content_h: f32) -> Scrollable {
         let mut s = Scrollable::new_vertical();
         s.rect = Rect::new(0.0, 0.0, 200.0, 300.0);
         s.set_viewport_size(200.0, 300.0);
@@ -2154,7 +2443,7 @@ mod tests {
     }
 
     use crate::synthetic_input::cursor_moved;
-    fn mouse(state: ElementState) -> WindowEvent {
+    pub(super) fn mouse(state: ElementState) -> WindowEvent {
         crate::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
@@ -2257,6 +2546,149 @@ mod tests {
         }
     }
 
+    /// A 40 px row that counts the times its damage is asked for.
+    struct DamageCounter {
+        rect: Rect,
+        asked: Rc<Cell<usize>>,
+    }
+
+    impl Widget for DamageCounter {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let style = Style {
+                size: Size::from_lengths(200.0, 40.0),
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.rect = crate::widget::layout_rect(taffy, node, origin);
+        }
+
+        fn collect_damage(&self, regions: &mut Vec<Rect>) {
+            self.asked.set(self.asked.get() + 1);
+            regions.push(self.rect);
+        }
+
+        fn name(&self) -> &'static str {
+            "DamageCounter"
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp, reason = "a give at rest is exactly zero")]
+    fn fingers_past_the_top_pull_the_content_through_the_band_and_it_springs_back() {
+        use crate::time::testing::with_monotonic_time;
+        let start = crate::time::now();
+        let mut s = vertical(1000.0);
+        with_monotonic_time(start, || {
+            assert!(s.pan(0.0, -60.0), "the give is a move");
+            let (_, y) = s.drawn_offset();
+            assert!(
+                y < 0.0 && y > -60.0,
+                "the content gives, less than the hand: {y}"
+            );
+            assert_eq!(s.offset_y, 0.0, "the scroll itself stays at the end");
+            // Moving back takes the give in before the content scrolls.
+            assert!(s.pan(0.0, 30.0));
+            let (_, back) = s.drawn_offset();
+            assert!(back < 0.0 && back > y, "{y} then {back}");
+            assert_eq!(s.offset_y, 0.0);
+            let lift = MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, 0.0));
+            assert!(s.on_wheel(&lift, TouchPhase::Ended, false, 1.0));
+            assert!(s.needs_animation_frame() || s.band.is_moving(start));
+        });
+        with_monotonic_time(start + Duration::from_secs(1), || {
+            assert_eq!(s.drawn_offset(), (0.0, 0.0), "sprung back to the end");
+        });
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp, reason = "a give at rest is exactly zero")]
+    fn under_reduced_motion_fingers_stop_at_the_end() {
+        use crate::time::testing::with_monotonic_time;
+        let mut s = vertical(1000.0);
+        s.motion = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), true);
+        with_monotonic_time(crate::time::now(), || {
+            assert!(!s.pan(0.0, -60.0), "nothing moved: the wheel may bubble");
+            assert_eq!(s.drawn_offset(), (0.0, 0.0));
+        });
+    }
+
+    #[test]
+    fn a_long_column_scrolled_asks_only_the_rows_near_the_view_for_damage() {
+        let asked = Rc::new(Cell::new(0));
+        let column = (0..2000).fold(
+            crate::widget::Column::new().with_intrinsic_height(),
+            |column, _| {
+                column.push(Box::new(DamageCounter {
+                    rect: Rect::ZERO,
+                    asked: asked.clone(),
+                }))
+            },
+        );
+        let mut scroll = Scrollable::new_vertical().with_child(Box::new(column));
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = scroll.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(400.0),
+                },
+            )
+            .unwrap();
+        scroll.offset_y = 20_000.0;
+        scroll.apply_layout(&taffy, node, Point::ZERO);
+        let mut regions = Vec::new();
+        scroll.collect_damage(&mut regions);
+        let visited = asked.get();
+        // Only the rows that meet the view are asked, and all of them: the
+        // first starts at its top, and none could fit below the last.
+        let view = scroll.content_viewport_rect();
+        let rows: Vec<Rect> = regions
+            .iter()
+            .copied()
+            .filter(|rect| rect.width() == 200.0)
+            .collect();
+        assert_eq!(rows.len(), visited, "each row asked says it changed");
+        let meets = |rect: &Rect| rect.y1 > view.y0 && rect.y0 < view.y1;
+        assert!(
+            rows.iter().all(meets),
+            "only rows meeting {view:?} are asked: {rows:?}"
+        );
+        let pitch = rows[1].y0 - rows[0].y0;
+        assert!(
+            rows[0].y0 <= view.y0 && rows[rows.len() - 1].y0 + pitch >= view.y1,
+            "every row meeting {view:?} is asked: {rows:?}"
+        );
+        assert!(
+            regions
+                .iter()
+                .all(|rect| rect.y1 > -30.0 && rect.y0 < 430.0)
+        );
+
+        // The copy plan's walk of the tree visits the same few.
+        let mut walked = 0;
+        fn count(widget: &dyn Widget, walked: &mut usize) {
+            *walked += 1;
+            widget.for_each_child_in_clip(&mut |child| count(child, walked));
+        }
+        count(&scroll, &mut walked);
+        assert!(walked < 20, "{walked} widgets walked");
+    }
+
     #[test]
     fn content_is_placed_under_the_viewport_as_its_layout_clip() {
         let clip = Rc::new(Cell::new(None));
@@ -2285,7 +2717,6 @@ mod tests {
             "the clip ends with the content's placement"
         );
 
-        // A view inside another narrows to what both show.
         let outer = Rect::new(0.0, 0.0, 400.0, 100.0);
         crate::widget::with_layout_clip(outer, || {
             scroll.apply_layout(&taffy, node, Point::new(10.0, 20.0));
@@ -2298,7 +2729,6 @@ mod tests {
 
     #[test]
     fn focus_reveal_scrolls_to_new_focus_with_context_but_respects_manual_scroll() {
-        // Case `focus_reveal_keeps_context_above_a_form_control_visible`.
         {
             let mut scroll = vertical(900.0).with_child(Box::new(EventSpy {
                 rect: Rect::new(12.0, 520.0, 188.0, 568.0),
@@ -2324,7 +2754,6 @@ mod tests {
             );
         }
 
-        // Case `focus_reveal_scrolls_new_focus_but_preserves_manual_scroll`.
         {
             use crate::{LocalState, widget::TextInput};
             let mut input = TextInput::from_state(&LocalState::new(String::new())).with_id("last");
@@ -2488,7 +2917,6 @@ mod tests {
 
     #[test]
     fn draw_publishes_the_viewport_and_cursor_motion_is_coalesced_until_scroll() {
-        // Case `ordinary_draw_publishes_and_restores_the_content_viewport`.
         {
             let observed = Rc::new(Cell::new(None));
             let mut scroll = Scrollable::new_vertical().with_child(Box::new(EventSpy {
@@ -2512,7 +2940,6 @@ mod tests {
             assert_eq!(presence.viewport.get(), Some(outer));
         }
 
-        // Case `duplicate_cursor_motion_is_coalesced_without_becoming_an_action`.
         {
             let mut s = vertical(1200.0);
             let position = winit::dpi::PhysicalPosition::new(40.0, 80.0);
@@ -2528,7 +2955,6 @@ mod tests {
             );
         }
 
-        // Case `scrolling_invalidates_duplicate_cursor_coalescing`.
         {
             let mut s = vertical(1200.0);
             let position = winit::dpi::PhysicalPosition::new(40.0, 80.0);
@@ -2692,7 +3118,6 @@ mod tests {
 
     #[test]
     fn content_insets_keep_the_child_clear_of_footer_lanes_and_the_bar() {
-        // Case `bottom_content_inset_blocks_pointer_and_focus_from_invisible_content`.
         {
             let pointer_events = Rc::new(Cell::new(0));
             let activations = Rc::new(Cell::new(0));
@@ -2773,7 +3198,6 @@ mod tests {
             assert!(focus_target.is_some(), "visible content remains focusable");
         }
 
-        // Case `bottom_content_inset_keeps_overflow_out_of_a_sticky_footer_lane`.
         {
             const INSET: f32 = 12.0;
             let mut scroll = Scrollable::new_vertical().with_bottom_content_inset(INSET);
@@ -2798,7 +3222,6 @@ mod tests {
             );
         }
 
-        // Case `bottom_content_inset_does_not_create_overflow_when_content_already_fits`.
         {
             let mut scroll = Scrollable::new_vertical().with_bottom_content_inset(12.0);
             scroll.set_viewport_rect(Rect::new(20.0, 30.0, 420.0, 330.0));
@@ -2812,7 +3235,6 @@ mod tests {
             assert_eq!(scroll.offset_y(), 0.0, "fitting content has no max scroll");
         }
 
-        // Case `the_scrollbar_gutter_insets_the_child_so_the_bar_never_overlaps_it`.
         {
             use std::collections::HashMap;
             let theme = Theme::dark();
@@ -2890,215 +3312,7 @@ mod tests {
     }
 
     #[test]
-    fn thumb_geometry_tracks_ratio_offset_minimum_and_visibility() {
-        // Case `thumb_length_scales_with_viewport_over_content_ratio`.
-        {
-            let short = vertical(600.0).vertical_thumb().expect("bar shown at 2x");
-            let tall = vertical(1200.0).vertical_thumb().expect("bar shown at 4x");
-            assert!(
-                short.height() > tall.height(),
-                "thumb must shrink as content grows: 2x={}, 4x={}",
-                short.height(),
-                tall.height(),
-            );
-            let track_len = 300.0 - 2.0 * BAR_MARGIN;
-            let expected = 0.5 * track_len;
-            assert!(
-                (short.height() - expected).abs() < 1.0,
-                "2x content thumb should be ≈half the track ({expected}), got {}",
-                short.height(),
-            );
-        }
-
-        // Case `thumb_never_shorter_than_minimum`.
-        {
-            let thumb = vertical(100_000.0).vertical_thumb().expect("bar shown");
-            assert!(
-                thumb.height() >= MIN_THUMB_LEN - 1e-6,
-                "thumb {} below min {}",
-                thumb.height(),
-                MIN_THUMB_LEN,
-            );
-        }
-
-        // Case `thumb_hidden_when_content_fits`.
-        {
-            let s = vertical(150.0);
-            assert!(s.thumb_rect(ScrollAxis::Vertical).is_none());
-            assert!(s.vertical_track().is_none());
-            // Exactly fitting is still hidden.
-            let s = vertical(300.0);
-            assert!(s.thumb_rect(ScrollAxis::Vertical).is_none());
-        }
-
-        // Case `thumb_hidden_when_scrollbar_disabled`.
-        {
-            let mut s = vertical(1200.0);
-            s = s.with_scrollbar(false);
-            assert!(s.thumb_rect(ScrollAxis::Vertical).is_none());
-        }
-
-        // Case `thumb_tracks_offset`.
-        {
-            let mut s = vertical(1200.0);
-            let top = s.vertical_thumb().unwrap();
-            let track = s.vertical_track().unwrap();
-            assert!(
-                (top.y0 - track.y0).abs() < 1e-6,
-                "thumb starts at track top"
-            );
-
-            s.scroll_by(0.0, 100_000.0); // clamp to max
-            let bottom = s.vertical_thumb().unwrap();
-            assert!(
-                (bottom.y1 - track.y1).abs() < 1e-3,
-                "fully scrolled thumb should reach track bottom: {} vs {}",
-                bottom.y1,
-                track.y1,
-            );
-        }
-    }
-
-    #[test]
-    fn thumb_drags_and_track_presses_scroll_by_offset_and_page() {
-        // Case `dragging_thumb_updates_offset`.
-        {
-            let mut s = vertical(1200.0); // max_scroll = 900
-            let thumb = s.vertical_thumb().unwrap();
-            let bar_x = s.rect.x1 - BAR_MARGIN - BAR_THICKNESS / 2.0;
-            let mid_y = f64::midpoint(thumb.y0, thumb.y1);
-
-            dispatch(&mut s, &cursor_moved(bar_x, mid_y));
-            assert!(
-                dispatch(&mut s, &mouse(ElementState::Pressed)),
-                "press on thumb handled"
-            );
-            assert!(s.vbar.is_dragging(), "press on thumb begins a drag");
-            assert!(s.wants_pointer_capture(), "drag requests pointer capture");
-            assert_eq!(s.offset_y(), 0.0);
-
-            dispatch(&mut s, &cursor_moved(bar_x, mid_y + 100.0));
-            assert!(s.offset_y() > 0.0, "drag down increases offset");
-            assert!(s.offset_y() <= 900.0, "offset stays clamped to max");
-            let after_down = s.offset_y();
-
-            dispatch(&mut s, &cursor_moved(bar_x, mid_y - 100.0));
-            assert!(s.offset_y() < after_down, "drag up decreases offset");
-
-            dispatch(&mut s, &mouse(ElementState::Released));
-            assert!(!s.vbar.is_dragging(), "release ends the drag");
-        }
-
-        // Case `clicking_track_pages_toward_click`.
-        {
-            let mut s = vertical(1200.0);
-            let thumb = s.vertical_thumb().unwrap();
-            let bar_x = s.rect.x1 - BAR_MARGIN - BAR_THICKNESS / 2.0;
-            let below_y = thumb.y1 + 5.0;
-            dispatch(&mut s, &cursor_moved(bar_x, below_y));
-            assert!(
-                dispatch(&mut s, &mouse(ElementState::Pressed)),
-                "track click handled"
-            );
-            assert!(!s.vbar.is_dragging(), "track click does not start a drag");
-            let paged = s.offset_y();
-            assert!(paged > 0.0, "click below thumb pages down: {paged}");
-            let page_frac = PAGE_FRACTION;
-            assert!(
-                (paged - 300.0 * page_frac).abs() < 1.0,
-                "page step should be ≈viewport*{page_frac}, got {paged}",
-            );
-        }
-
-        // Case `horizontal_thumb_drag_updates_offset_x`.
-        {
-            let mut s = both(1200.0, 1200.0);
-            let track = s.horizontal_track().expect("h-bar shown");
-            let thumb = s.thumb_rect(ScrollAxis::Horizontal).expect("h-thumb");
-            let mid_x = f64::midpoint(thumb.x0, thumb.x1);
-            let bar_y = track.y0 + track.height() / 2.0;
-            dispatch(&mut s, &cursor_moved(mid_x, bar_y));
-            assert!(
-                dispatch(&mut s, &mouse(ElementState::Pressed)),
-                "press on h-thumb handled"
-            );
-            assert!(s.hbar.is_dragging(), "h-thumb press begins a drag");
-            dispatch(&mut s, &cursor_moved(mid_x + 80.0, bar_y));
-            assert!(
-                s.offset_x() > 0.0,
-                "drag right increases offset_x: {}",
-                s.offset_x()
-            );
-            dispatch(&mut s, &mouse(ElementState::Released));
-            assert!(!s.hbar.is_dragging(), "release ends the h-drag");
-        }
-
-        // Case `holding_track_pages_repeatedly_then_settles_at_click`.
-        {
-            let mut s = vertical(3000.0); // viewport 300, max_scroll 2700
-            let bar_x = s.rect.x1 - BAR_MARGIN - BAR_THICKNESS / 2.0;
-            let thumb = s.vertical_thumb().unwrap();
-            let click_y = thumb.y1 + (s.rect.y1 - thumb.y1) * 0.8;
-            dispatch(&mut s, &cursor_moved(bar_x, click_y));
-            assert!(
-                dispatch(&mut s, &mouse(ElementState::Pressed)),
-                "track press handled"
-            );
-            assert!(
-                s.hold.is_some(),
-                "a track press below the thumb arms a hold"
-            );
-            assert!(!s.needs_animation_frame(), "a repeat is a wait, not motion");
-            assert_eq!(
-                s.next_wake_deadline(),
-                s.hold.map(|h| h.next_at),
-                "a held track pins the bar and wakes for its next page"
-            );
-            let after_first = s.offset_y();
-            assert!(after_first > 0.0, "first page moved down: {after_first}");
-            assert!(
-                s.wants_pointer_capture(),
-                "a live hold captures the pointer"
-            );
-
-            // Force several ticks by advancing the injected clock past the
-            // repeat interval each time.
-            let mut prev = after_first;
-            let mut steps = 0;
-            for _ in 0..40 {
-                let due = s.hold.map(|h| h.next_at).unwrap();
-                s.advance_hold(due + Duration::from_millis(1));
-                if s.offset_y() > prev {
-                    steps += 1;
-                    prev = s.offset_y();
-                } else {
-                    break; // thumb reached the click point → paging stopped
-                }
-            }
-            assert!(
-                steps >= 2,
-                "the hold auto-repeats past the first page ({steps} extra steps)"
-            );
-
-            let thumb_now = s.vertical_thumb().unwrap();
-            assert!(
-                thumb_now.y1 >= click_y - BAR_THICKNESS && thumb_now.y0 <= click_y + 1.0,
-                "paging stopped at the click, thumb=({},{}) click_y={click_y}",
-                thumb_now.y0,
-                thumb_now.y1,
-            );
-
-            assert!(
-                dispatch(&mut s, &mouse(ElementState::Released)),
-                "release handled"
-            );
-            assert!(s.hold.is_none(), "release ends the hold");
-        }
-    }
-
-    #[test]
     fn keyboard_scrolling_and_focusability_require_scrollable_focus() {
-        // Case `accessibility_reports_group_role_and_no_name`.
         {
             use crate::a11y::Role;
             let s = vertical(1200.0);
@@ -3111,7 +3325,6 @@ mod tests {
             assert_eq!(node.value, None);
         }
 
-        // Case `focusable_only_when_it_can_scroll`.
         {
             assert!(
                 Widget::is_focusable(&vertical(1200.0)),
@@ -3126,7 +3339,6 @@ mod tests {
             assert!(!Widget::is_focusable(&hidden));
         }
 
-        // Case `keyboard_pages_home_end_and_lines_when_focused`.
         {
             let mut s = vertical(1200.0); // viewport 300, max_scroll 900
             s.set_focus(true);
@@ -3174,7 +3386,6 @@ mod tests {
             );
         }
 
-        // Case `keyboard_ignored_when_unfocused`.
         {
             let mut s = vertical(1200.0);
             assert!(!s.is_focused());
@@ -3188,7 +3399,6 @@ mod tests {
 
     #[test]
     fn wheel_scrolls_vertically_and_horizontally() {
-        // Case `wheel_still_scrolls_with_scrollbar_present`.
         {
             let mut s = vertical(1200.0);
             let before = s.offset_y();
@@ -3197,7 +3407,6 @@ mod tests {
             assert!(s.offset_y() > before, "wheel down increases offset");
         }
 
-        // Case `shift_wheel_scrolls_horizontally`.
         {
             use winit::keyboard::ModifiersState;
             let mut s = both(1200.0, 1200.0);
@@ -3222,7 +3431,6 @@ mod tests {
             assert_eq!(s.offset_y(), 0.0, "shift+wheel leaves Y untouched");
         }
 
-        // Case `tilt_wheel_scrolls_horizontally_without_shift`.
         {
             let mut s = both(1200.0, 1200.0);
             let tilt = WindowEvent::MouseWheel {
@@ -3420,7 +3628,7 @@ mod tests {
             scroll.set_offset_y(scroll.max_offset_y());
             for _ in 0..3 {
                 host_solve(&mut scroll, 311.0, 257.0);
-                let bottom = max_bottom_edge(scroll.children()[0]);
+                let bottom = crate::widget::layout::max_bottom_edge(scroll.children()[0]);
                 assert!(
                     bottom <= scroll.content_viewport_rect().y1,
                     "layout must not pull the last descendant below the viewport: {bottom}"
@@ -3584,7 +3792,6 @@ mod tests {
 
     #[test]
     fn height_constraints_decide_scrollability_under_indefinite_parents() {
-        // Case `with_height_pins_viewport_under_indefinite_parent`.
         {
             let h = viewport_height_under_indefinite_parent(
                 Scrollable::new_vertical()
@@ -3598,7 +3805,6 @@ mod tests {
             );
         }
 
-        // Case `pinned_height_makes_pane_scrollable_under_indefinite_parent`.
         {
             let (vh, scrolled) = can_scroll_under_indefinite_parent(
                 Scrollable::new_vertical()
@@ -3612,7 +3818,6 @@ mod tests {
             );
         }
 
-        // Case `max_height_keeps_short_documents_compact_and_long_ones_scrollable`.
         {
             let short = viewport_height_under_indefinite_parent(
                 Scrollable::new_vertical()
@@ -3636,7 +3841,6 @@ mod tests {
             assert!(scrolled, "a capped long document must remain scrollable");
         }
 
-        // Case `default_scrollable_cannot_scroll_under_indefinite_parent`.
         {
             let (_vh, scrolled) = can_scroll_under_indefinite_parent(
                 Scrollable::new_vertical().with_child(tall_child()),
@@ -3652,7 +3856,6 @@ mod tests {
 
     #[test]
     fn scroll_offset_persists_reclamps_and_needs_no_remeasure() {
-        // Case `scroll_is_layout_dirty_but_needs_no_remeasure`.
         {
             use std::collections::HashMap;
             let theme = Theme::dark();
@@ -3698,7 +3901,6 @@ mod tests {
             );
         }
 
-        // Case `persisted_offset_survives_a_rebuild_into_a_fresh_scrollable`.
         {
             let cell = Rc::new(Cell::new((0.0f32, 0.0f32)));
 
@@ -3722,7 +3924,6 @@ mod tests {
             assert_eq!(c.offset_y(), 0.0, "an unbound Scrollable is unaffected");
         }
 
-        // Case `persisted_offset_reclamps_and_rewrites_when_content_shrinks`.
         {
             let cell = Rc::new(Cell::new((0.0f32, 0.0f32)));
             let mut s = Scrollable::new_vertical().with_persisted_offset(cell.clone());
@@ -3741,7 +3942,7 @@ mod tests {
         }
     }
 
-    fn both(content_w: f32, content_h: f32) -> Scrollable {
+    pub(super) fn both(content_w: f32, content_h: f32) -> Scrollable {
         let mut s = Scrollable::new(ScrollAxis::Both);
         s.rect = Rect::new(0.0, 0.0, 300.0, 300.0);
         s.set_viewport_size(300.0, 300.0);
@@ -3752,8 +3953,66 @@ mod tests {
     use crate::synthetic_input::named_key;
 
     #[test]
+    fn bars_keep_out_of_the_windows_rounded_corners_only() {
+        let draw = |s: &mut Scrollable, theme: &Theme| {
+            s.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                theme,
+                &PresenceCtx::empty(),
+            );
+        };
+        let mut square = both(900.0, 900.0);
+        let mut theme = Theme::dark();
+        draw(&mut square, &theme);
+        let (v_square, h_square) = (
+            square.vertical_track().expect("tall content shows the bar"),
+            square
+                .horizontal_track()
+                .expect("wide content shows the bar"),
+        );
+
+        let radius = f64::from(theme.tokens.radii.tile);
+        theme.surface = Some(crate::theme::SurfaceShape::rounded(
+            Rect::new(0.0, 0.0, 300.0, 300.0),
+            radius,
+        ));
+        let mut rounded = both(900.0, 900.0);
+        draw(&mut rounded, &theme);
+        let v = rounded.vertical_track().expect("bar");
+        let h = rounded.horizontal_track().expect("bar");
+        assert!((v.y0 - radius).abs() < 1e-9, "the top corner: {v:?}");
+        assert!(
+            (h.x0 - radius).abs() < 1e-9,
+            "the bottom-left corner: {h:?}"
+        );
+        assert!(v.y1 <= v_square.y1 && h.x1 <= h_square.x1);
+
+        // Square again: the same window, edge to edge.
+        theme.surface = Some(crate::theme::SurfaceShape::rounded(
+            Rect::new(0.0, 0.0, 300.0, 300.0),
+            0.0,
+        ));
+        draw(&mut rounded, &theme);
+        assert_eq!(rounded.vertical_track(), Some(v_square));
+        assert_eq!(rounded.horizontal_track(), Some(h_square));
+
+        theme.surface = Some(crate::theme::SurfaceShape::rounded(
+            Rect::new(0.0, 0.0, 300.0, 300.0),
+            radius,
+        ));
+        let mut alone = Scrollable::new_vertical();
+        alone.rect = Rect::new(0.0, 0.0, 300.0, 300.0);
+        alone.set_viewport_size(300.0, 300.0);
+        alone.set_content_size(300.0, 1200.0);
+        draw(&mut alone, &theme);
+        let track = alone.vertical_track().expect("bar");
+        assert!((track.y1 - (300.0 - radius)).abs() < 1e-9, "{track:?}");
+    }
+
+    #[test]
     fn overlay_bar_fades_with_activity_and_damages_its_last_frame() {
-        // Case `overlay_bar_fades_in_on_activity_and_out_when_idle`.
         {
             let mut s = vertical(1200.0);
             s.last_activity = None; // as freshly constructed
@@ -3791,7 +4050,6 @@ mod tests {
             );
         }
 
-        // Case `terminal_fade_frame_damages_the_track_after_draw_omits_the_thumb`.
         {
             let mut s = vertical(1200.0);
             s.last_activity = Some(
@@ -3799,7 +4057,6 @@ mod tests {
                     .checked_sub(Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS + 1))
                     .expect("the test duration is far shorter than the monotonic clock"),
             );
-            // Model the preceding submitted frame, where the thumb was visible.
             s.bar_visible_last_draw.set(true);
             let mut scene = Scene::new();
             s.draw_scrollbars(&mut scene, Affine::IDENTITY, &Theme::dark());
@@ -3822,7 +4079,6 @@ mod tests {
             );
         }
 
-        // Case `overlay_fade_pins_visible_when_pinned_or_reduced_motion_or_persistent`.
         {
             let mut s = vertical(1200.0);
             s.wake();
@@ -3849,7 +4105,6 @@ mod tests {
             );
         }
 
-        // Case `needs_animation_frame_only_while_fading_or_repeating`.
         {
             let s = vertical(1200.0);
             assert!(
@@ -3873,106 +4128,106 @@ mod tests {
 
     #[test]
     fn opaque_hold_sleeps_until_fade_while_preserving_other_deadlines() {
-        // Case `opaque_hold_sleeps_until_fade_start_without_losing_initial_damage`.
-        {
-            let mut s = vertical(1200.0);
-            s.wake();
-            let activity = s.last_activity.unwrap();
-            assert!(s.needs_redraw(), "activity must still paint the thumb");
-            s.bar_visible_last_draw.set(true);
-            s.mark_drawn();
-            assert!(
-                !s.needs_animation_frame(),
-                "opaque hold must not pump frames"
-            );
-            assert!(!s.needs_redraw(), "unchanged opaque thumb needs no damage");
-            assert!(
-                !s.needs_terminal_fade_frame(),
-                "hold is not an expired fade"
-            );
-            assert_eq!(
-                s.next_wake_deadline(),
-                Some(activity + Duration::from_millis(900))
-            );
-        }
-
-        // Case `opaque_hold_boundaries_preserve_fade_and_terminal_clear`.
-        {
-            let mut s = vertical(1200.0);
-            let start = crate::time::now();
-            s.last_activity = Some(start);
-            s.bar_visible_last_draw.set(true);
-            let fade_start = start + Duration::from_millis(900);
-            let fade_end = start + Duration::from_millis(1220);
-            assert_eq!(s.fade_start_deadline_at(start), Some(fade_start));
-            assert!(!s.fade_in_progress_at(fade_start - Duration::from_nanos(1)));
-            assert!(!s.needs_terminal_fade_frame_at(fade_start - Duration::from_nanos(1)));
-            assert!(s.fade_in_progress_at(fade_start));
-            assert_eq!(s.fade_start_deadline_at(fade_start), None);
-            assert!(s.fade_in_progress_at(fade_end - Duration::from_nanos(1)));
-            assert!(!s.needs_terminal_fade_frame_at(fade_end - Duration::from_nanos(1)));
-            assert!(!s.fade_in_progress_at(fade_end));
-            assert!(s.needs_terminal_fade_frame_at(fade_end));
-            s.last_activity = Some(start + Duration::from_millis(50));
-            assert_eq!(
-                s.fade_start_deadline_at(start + Duration::from_millis(50)),
-                Some(fade_start + Duration::from_millis(50))
-            );
-            s.focused = true;
-            assert_eq!(s.fade_start_deadline_at(start), None);
-            s.focused = false;
-            s.reduce_motion_active = true;
-            assert_eq!(s.fade_start_deadline_at(start), None);
-            s.reduce_motion_active = false;
-            s.overlay = false;
-            assert_eq!(s.fade_start_deadline_at(start), None);
-        }
-
-        // Case `opaque_hold_preserves_earlier_child_deadline`.
-        {
-            let now = crate::time::now();
-            let mut child = vertical(1200.0);
-            child.last_activity = Some(now - Duration::from_millis(100));
-            let mut outer = vertical(1200.0);
-            outer.last_activity = Some(now);
-            outer.child = Some(Box::new(child));
-            assert_eq!(
-                outer.next_wake_deadline(),
-                Some(now + Duration::from_millis(800))
-            );
-        }
-
-        // Case `opaque_hold_removal_preserves_independent_momentum_demand`.
-        {
-            let mut s = vertical(1200.0);
-            s.fling(0.0, 120.0);
-            assert!(
-                s.needs_animation_frame(),
-                "momentum must not depend on scrollbar opacity"
-            );
-            let doc = AutoCommit::new();
-            // Match the admitted primary-frame lifecycle: update runs even when
-            // the prior frame consumed all ordinary dirty flags. Frames are
-            // 1/60 s apart on the clock the glide reads.
-            let mut frame = crate::time::now();
-            for _ in 0..240 {
-                if !s.needs_animation_frame() {
-                    break;
-                }
-                frame += Duration::from_nanos(16_666_667);
-                crate::time::testing::with_monotonic_time(frame, || {
-                    s.update(&doc, &automerge::ROOT);
-                });
-                s.sync(&doc, &automerge::ROOT);
+        // Fresh curves are read in the instant they start: a descheduled
+        // runner cannot age them.
+        crate::time::testing::with_monotonic_time(crate::time::now(), || {
+            {
+                let mut s = vertical(1200.0);
+                s.wake();
+                let activity = s.last_activity.unwrap();
+                assert!(s.needs_redraw(), "activity must still paint the thumb");
+                s.bar_visible_last_draw.set(true);
                 s.mark_drawn();
+                assert!(
+                    !s.needs_animation_frame(),
+                    "opaque hold must not pump frames"
+                );
+                assert!(!s.needs_redraw(), "unchanged opaque thumb needs no damage");
+                assert!(
+                    !s.needs_terminal_fade_frame(),
+                    "hold is not an expired fade"
+                );
+                assert_eq!(
+                    s.next_wake_deadline(),
+                    Some(activity + Duration::from_millis(900))
+                );
             }
-            assert!(s.offset_y() > 0.0, "the demanded frames advance content");
-            assert_eq!(s.momentum_speed(), 0.0);
-            assert!(
-                !s.needs_animation_frame(),
-                "settled momentum must stop the pump"
-            );
-        }
+
+            {
+                let mut s = vertical(1200.0);
+                let start = crate::time::now();
+                s.last_activity = Some(start);
+                s.bar_visible_last_draw.set(true);
+                let fade_start = start + Duration::from_millis(900);
+                let fade_end = start + Duration::from_millis(1220);
+                assert_eq!(s.fade_start_deadline_at(start), Some(fade_start));
+                assert!(!s.fade_in_progress_at(fade_start - Duration::from_nanos(1)));
+                assert!(!s.needs_terminal_fade_frame_at(fade_start - Duration::from_nanos(1)));
+                assert!(s.fade_in_progress_at(fade_start));
+                assert_eq!(s.fade_start_deadline_at(fade_start), None);
+                assert!(s.fade_in_progress_at(fade_end - Duration::from_nanos(1)));
+                assert!(!s.needs_terminal_fade_frame_at(fade_end - Duration::from_nanos(1)));
+                assert!(!s.fade_in_progress_at(fade_end));
+                assert!(s.needs_terminal_fade_frame_at(fade_end));
+                s.last_activity = Some(start + Duration::from_millis(50));
+                assert_eq!(
+                    s.fade_start_deadline_at(start + Duration::from_millis(50)),
+                    Some(fade_start + Duration::from_millis(50))
+                );
+                s.focused = true;
+                assert_eq!(s.fade_start_deadline_at(start), None);
+                s.focused = false;
+                s.reduce_motion_active = true;
+                assert_eq!(s.fade_start_deadline_at(start), None);
+                s.reduce_motion_active = false;
+                s.overlay = false;
+                assert_eq!(s.fade_start_deadline_at(start), None);
+            }
+
+            {
+                let now = crate::time::now();
+                let mut child = vertical(1200.0);
+                child.last_activity = Some(now - Duration::from_millis(100));
+                let mut outer = vertical(1200.0);
+                outer.last_activity = Some(now);
+                outer.child = Some(Box::new(child));
+                assert_eq!(
+                    outer.next_wake_deadline(),
+                    Some(now + Duration::from_millis(800))
+                );
+            }
+
+            {
+                let mut s = vertical(1200.0);
+                s.fling(0.0, 120.0);
+                assert!(
+                    s.needs_animation_frame(),
+                    "momentum must not depend on scrollbar opacity"
+                );
+                let doc = AutoCommit::new();
+                // Match the admitted primary-frame lifecycle: update runs even when
+                // the prior frame consumed all ordinary dirty flags. Frames are
+                // 1/60 s apart on the clock the glide reads.
+                let mut frame = crate::time::now();
+                for _ in 0..240 {
+                    if !s.needs_animation_frame() {
+                        break;
+                    }
+                    frame += Duration::from_nanos(16_666_667);
+                    crate::time::testing::with_monotonic_time(frame, || {
+                        s.update(&doc, &automerge::ROOT);
+                    });
+                    s.sync(&doc, &automerge::ROOT);
+                    s.mark_drawn();
+                }
+                assert!(s.offset_y() > 0.0, "the demanded frames advance content");
+                assert_eq!(s.momentum_speed(), 0.0);
+                assert!(
+                    !s.needs_animation_frame(),
+                    "settled momentum must stop the pump"
+                );
+            }
+        });
     }
 
     #[test]
@@ -4117,3 +4372,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "scrollable_lane_tests.rs"]
+mod lane_tests;
+
+#[cfg(test)]
+#[path = "scrollable_thumb_tests.rs"]
+mod thumb_tests;

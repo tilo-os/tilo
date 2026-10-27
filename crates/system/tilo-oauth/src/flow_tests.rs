@@ -71,7 +71,6 @@ fn a_code_redeemed_with_the_wrong_verifier_is_rejected() {
         let mut query: Vec<(String, String)> = rebuilt.query_pairs().into_owned().collect();
         for (key, value) in &mut query {
             if key == "redirect_uri" {
-                // Send the code somewhere the fake browser answers itself.
                 *value = format!("{}/nowhere", server.url());
             }
         }

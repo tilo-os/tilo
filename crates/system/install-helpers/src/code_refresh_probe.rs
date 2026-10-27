@@ -58,7 +58,6 @@ pub trait Fixture {
         PathBuf::from("/run")
     }
 
-    /// Whether `path` is a block device.
     fn is_block_device(&self, path: &Path) -> bool {
         fs::metadata(path).is_ok_and(|info| info.file_type().is_block_device())
     }

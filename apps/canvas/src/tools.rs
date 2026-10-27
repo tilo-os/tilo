@@ -106,7 +106,6 @@ pub enum Tool {
     Oval,
     /// Selects freehand (drag) or point by point (click).
     Lasso,
-    /// Selects like colour touching a point.
     Wand,
     /// Fills like colour touching a point.
     Bucket,
@@ -225,6 +224,9 @@ pub struct Tools {
     /// How far the canvas is zoomed: screen pixels per artwork unit, as
     /// the canvas last showed it.
     pub zoom: LocalState<f64>,
+    /// The artwork's title, as the canvas last read it: what the window's
+    /// bar shows as the window's location.
+    pub title: LocalState<String>,
     /// A change of view asked for from outside the canvas (the zoom
     /// buttons), carried out by the canvas on its next frame.
     pub view: LocalState<Option<ViewRequest>>,
@@ -290,6 +292,10 @@ pub struct Tools {
     pub files: LocalState<Option<FileRequest>>,
     /// The file this window's artwork was last opened from or saved to.
     pub file: LocalState<Option<String>>,
+    /// Where the artwork was last saved when that place has no path here
+    /// (a browser page's Save dialog file): every later Save writes there
+    /// without asking, and only Save as asks again.
+    pub kept: LocalState<Option<ui::portal::SaveDestination>>,
     /// What the last file request came to, said beside the title.
     pub notice: LocalState<Option<String>>,
     /// The artworks opened or saved lately, newest first.
@@ -298,7 +304,6 @@ pub struct Tools {
     pub welcomed: LocalState<bool>,
     /// What was chosen from the artwork's menu, until it is carried out.
     pub menu: LocalState<String>,
-    /// What the export dialog is set to.
     pub export: crate::panels::export::Choices,
     /// What the new-artwork dialog is set to.
     pub new: crate::panels::start::Choices,
@@ -324,7 +329,9 @@ pub enum FileRequest {
     Open,
     /// Open the artwork at this path.
     OpenRecent(String),
-    /// Save to the file the artwork came from, or choose one.
+    /// Open, in this window, the workspace's artwork this launch argument
+    /// names: one an earlier window made.
+    OpenWorkspace(String),
     Save,
     /// Choose a file to save the artwork to, and keep working on it there.
     SaveAs,
@@ -400,9 +407,7 @@ pub struct CanvasKey {
 pub enum ViewRequest {
     ZoomIn,
     ZoomOut,
-    /// The whole artwork in view.
     Fit,
-    /// One artwork unit to a screen pixel.
     Actual,
     /// Whole screen pixels per artwork cell.
     Pixel,
@@ -445,6 +450,7 @@ impl Default for Tools {
             preview: LocalState::new(None),
             checkpoint_name: LocalState::new(String::new()),
             zoom: LocalState::new(1.0),
+            title: LocalState::new(String::new()),
             view: LocalState::new(None),
             keys: LocalState::new(Vec::new()),
             sidebar: LocalState::new(true),
@@ -475,6 +481,7 @@ impl Default for Tools {
             sheet: LocalState::new(None),
             files: LocalState::new(None),
             file: LocalState::new(None),
+            kept: LocalState::new(None),
             notice: LocalState::new(None),
             recents: LocalState::new(crate::document::RecentArtworks::default()),
             welcomed: LocalState::new(false),

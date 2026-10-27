@@ -375,6 +375,79 @@ pub fn ownership_check(found: &[std::path::PathBuf], user: &str) -> Check {
     )
 }
 
+/// The extension of the file that proves a build directory is cargo's: the
+/// dep-info a profile's `deps/` carries.
+const CARGO_OUTPUT: &str = "d";
+
+/// Every build directory another worktree owns and that cargo, run in this
+/// one, would overwrite: the same profile means the same output paths.
+///
+/// The compiler cache is shared on purpose; a `target/` is not (`AGENTS.md`,
+/// "never point two worktrees at one target directory"). Two cargo runs whose
+/// jobs fill the same directory silently hand each other's binary back and
+/// churn the same incremental state, which is how a full volume turns a slow
+/// build into a failed one.
+pub fn contended_build_dirs(mine: &Path, others: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    let here = identity(mine);
+    let mut found: Vec<std::path::PathBuf> = Vec::new();
+    for other in others {
+        if identity(other) == here || holds_cargo_outputs(other).is_empty() {
+            continue;
+        }
+        found.push(other.clone());
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Where a path really is, so a linked `target/` is the directory it points at.
+fn identity(dir: &Path) -> std::path::PathBuf {
+    std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned())
+}
+
+/// The cargo outputs `dir` holds, in the `target/<profile>/deps/*.d` cargo
+/// writes them to. The compiler cache stores objects elsewhere and is shared
+/// on purpose, so a cache is not one of these.
+fn holds_cargo_outputs(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for level in ["debug/deps", "release/deps", "deps"] {
+        let deps = dir.join(level);
+        let Ok(entries) = std::fs::read_dir(&deps) else {
+            continue;
+        };
+        found.extend(entries.flatten().map(|entry| entry.path()).filter(|path| {
+            path.extension()
+                .is_some_and(|kind| kind == std::ffi::OsStr::new(CARGO_OUTPUT))
+                && path.is_file()
+        }));
+    }
+    found.truncate(3);
+    found
+}
+
+/// The verdict on [`contended_build_dirs`], with the command that ends the
+/// contention.
+pub fn contended_build_check(found: &[std::path::PathBuf]) -> Check {
+    const NAME: &str = "build target contention";
+    if found.is_empty() {
+        return Check::ok(NAME, "no other worktree shares this one's cargo outputs");
+    }
+    let paths: Vec<String> = found.iter().map(|p| p.display().to_string()).collect();
+    let shown = paths.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    let more = paths.len().saturating_sub(3);
+    let detail = if more == 0 {
+        format!("another worktree writes the same cargo outputs in {shown}")
+    } else {
+        format!("another worktree writes the same cargo outputs in {shown} and {more} more")
+    };
+    Check::fail(
+        NAME,
+        detail,
+        "give each worktree its own target: remove the linked one and let cargo rebuild it",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,7 +632,7 @@ mod tests {
             let none = disk_check(Ok((200, "[]".into())), Some(&token), None);
             assert_eq!(none.state, "warn");
             let fix = none.fix.unwrap();
-            assert!(fix.contains("Release / Dev VM disk"), "{fix}");
+            assert!(fix.contains("t dispatch publish-os-dev-"), "{fix}");
             assert!(
                 fix.contains("no local dev-image build is available"),
                 "{fix}"
@@ -614,6 +687,68 @@ mod ownership_tests {
             check.fix.as_deref(),
             Some("sudo chown -R xaver: /w/a/target /var/cache/tilo-vm/sccache")
         );
+    }
+
+    /// One target for two worktrees is a failure that names the shared
+    /// directory and how to end it; a worktree's own target and the shared
+    /// compiler cache are not.
+    #[test]
+    fn another_worktrees_target_fails_the_contention_check() {
+        let root = tempfile::tempdir().unwrap();
+        let mine = root.path().join("mine/target");
+        let theirs = root.path().join("theirs/target");
+        let cache = root.path().join("cache");
+        for dir in [&mine, &theirs] {
+            std::fs::create_dir_all(dir.join("debug/deps")).unwrap();
+            std::fs::write(dir.join("debug/deps/thing.d"), "").unwrap();
+        }
+        std::fs::create_dir_all(cache.join("ab")).unwrap();
+        std::fs::write(cache.join("ab/thing.o"), "").unwrap();
+
+        let found = contended_build_dirs(
+            &mine,
+            &[
+                mine.clone(),
+                theirs.clone(),
+                cache,
+                root.path().join("gone"),
+            ],
+        );
+        assert_eq!(found, vec![theirs.clone()]);
+        let check = contended_build_check(&found);
+        assert_eq!(check.state, "fail");
+        assert!(check.detail.contains(&theirs.display().to_string()));
+        assert!(check.detail.contains("another worktree writes"));
+        assert!(check.fix.is_some());
+    }
+
+    /// A worktree whose `target` is a link to another's is the same directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_target_is_the_target_it_points_at() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real/target");
+        std::fs::create_dir_all(real.join("debug/deps")).unwrap();
+        std::fs::write(real.join("debug/deps/thing.d"), "").unwrap();
+        let link = root.path().join("link/target");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let linked = root.path().join("mine/target");
+        std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&link, &linked).unwrap();
+
+        let mine = root.path().join("mine2/target");
+        std::fs::create_dir_all(&mine).unwrap();
+        assert!(!holds_cargo_outputs(&real).is_empty());
+        assert_eq!(
+            contended_build_dirs(&mine, std::slice::from_ref(&real)),
+            vec![real.clone()]
+        );
+        assert_eq!(identity(&linked), identity(&real));
+
+        let elsewhere = root.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        assert!(contended_build_dirs(&linked, std::slice::from_ref(&elsewhere)).is_empty());
     }
 
     #[cfg(unix)]

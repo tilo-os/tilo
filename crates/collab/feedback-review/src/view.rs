@@ -11,6 +11,7 @@
 //! that reaches into a placeholder is refused.
 
 use crate::{DeclaredSensitivity, RedactionCategory, ReviewTraceRequest, Span, TextOrigin};
+use tilo_sort::CompactSort as _;
 
 /// How much of a trace a model may see, decided by where the model runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +68,7 @@ pub(crate) fn declared_values(request: &ReviewTraceRequest) -> Vec<(String, Reda
             }
         }
     }
-    values.sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
+    values.compact_sort_by_key(|(value, _)| std::cmp::Reverse(value.len()));
     values
 }
 
@@ -85,7 +86,7 @@ pub(crate) fn declared_occurrences(
             }
         }
     }
-    found.sort_unstable_by_key(|(start, _, _)| *start);
+    found.compact_sort_by_key(|(start, _, _)| *start);
     found
 }
 
@@ -98,7 +99,6 @@ struct Segment {
     hidden: bool,
 }
 
-/// One text as a model sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelText {
     pub step: u32,
@@ -302,7 +302,6 @@ mod tests {
         let name = body.shown.find('\u{2039}').unwrap();
         assert_eq!(body.original_span(name, name + 3), None);
         assert_eq!(body.original_span(0, name + 3), None);
-        // Spanning a whole placeholder addresses the original value it hides.
         let comma = body.shown.find(',').unwrap();
         let spanning = body.original_span(0, comma).unwrap();
         assert_eq!(

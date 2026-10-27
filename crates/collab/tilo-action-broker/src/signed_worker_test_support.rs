@@ -303,7 +303,6 @@ pub async fn join_worker(
     )
 }
 
-/// A device certificate for `key`, signed by `root`.
 pub fn signed_device(
     root: &SigningKey,
     key: &SigningKey,
@@ -416,13 +415,17 @@ impl OriginalRoom {
         };
         let (clock, time_control) = crate::peer_actions::OwnerPolicyClock::for_test(start);
         let origin = clock.new_origin();
-        let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceId(83),
-            "Original room",
-        );
-        if let Some(room) = room.flatten() {
-            workspace.set_room(room);
-        }
+        let mut workspace = match room.flatten() {
+            Some(room) => crate::test_support::Workspace::in_room(
+                crate::test_support::WorkspaceId(83),
+                room,
+                "Original room",
+            ),
+            None => crate::test_support::Workspace::new(
+                crate::test_support::WorkspaceId(83),
+                "Original room",
+            ),
+        };
         // Someone the room grants everything until 100s, and nothing after.
         let principal = principal_id_for_root(cert.user_public_key);
         let changes = tilo_action_policy::Grant::new(
@@ -439,7 +442,7 @@ impl OriginalRoom {
         workspace.grant(changes);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",
-            workspace.room.to_string(),
+            workspace.room().to_string(),
             "document-1",
         );
         let mut tree = crate::test_support::WorkspaceTree::default();

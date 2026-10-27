@@ -15,13 +15,13 @@ const ADA: [u8; 32] = [8; 32];
 const GREETER: &str = "0b7e4c2a-9d1f-4e3b-8a6c-5f2d1e0c9b8a";
 
 /// The root `governor()`'s device belongs to, which installs the room's bots.
-fn owner_root() -> ed25519_dalek::SigningKey {
+pub(super) fn owner_root() -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&[1; 32])
 }
 
 /// A host that decides what members and bots change against the surfaces
 /// of the apps it runs, as a room host does.
-async fn bot_host(
+pub(super) async fn bot_host(
     state: &std::path::Path,
     key: &ed25519_dalek::SigningKey,
     cert: &DeviceCert,
@@ -128,6 +128,17 @@ async fn post_in(
     cert: &DeviceCert,
     (author, channel, text): (&str, &str, &str),
 ) -> String {
+    post_with(rooms, room, cert, (author, channel, text), None).await
+}
+
+/// [`post_in`] with `attachment`, a file another action put in the store.
+async fn post_with(
+    rooms: &Rooms,
+    room: &str,
+    cert: &DeviceCert,
+    (author, channel, text): (&str, &str, &str),
+    attachment: Option<serde_json::Value>,
+) -> String {
     let catalogue = AppCatalogue::native();
     let chat = rooms
         .record_document(room, CHAT, "")
@@ -167,7 +178,10 @@ async fn post_in(
                 .unwrap();
         }
         let before = message_ids(&page);
-        let arguments = serde_json::json!({ "channel": channel, "text": text });
+        let mut arguments = serde_json::json!({ "channel": channel, "text": text });
+        if let Some(attachment) = attachment {
+            arguments["attachment"] = attachment;
+        }
         page.invoke(
             &tilo_actions::door::ActionAddress::new(
                 ui::record::chain_resource_id(&chat::parts::chain()),
@@ -353,6 +367,7 @@ fn greeter(channel: &str) -> installed::InstalledBot {
                 appearance: None,
             },
         )],
+        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: vec![trigger],
@@ -374,6 +389,7 @@ fn greeter(channel: &str) -> installed::InstalledBot {
             .unwrap(),
         inputs: serde_json::Map::new(),
         installed_at_ms: 1,
+        release: String::new(),
     }
 }
 
@@ -657,6 +673,7 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
                 appearance: None,
             },
         )],
+        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: vec![trigger],
@@ -677,6 +694,7 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
             .unwrap(),
         inputs: serde_json::Map::new(),
         installed_at_ms: 1,
+        release: String::new(),
     };
     let mut runner = member_runner(
         &rooms,
@@ -763,7 +781,7 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
     clippy::significant_drop_tightening,
     reason = "the relay and its room stay live for the whole test"
 )]
-async fn a_refused_change_is_a_dead_letter_and_later_runs_still_land() {
+async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_land() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
@@ -795,12 +813,21 @@ async fn a_refused_change_is_a_dead_letter_and_later_runs_still_land() {
     ada_says(&rooms, &room, &cert, &general, "first").await;
     let reports = runner.step().await.unwrap();
     assert!(reports.is_empty(), "{reports:?}");
+    assert_eq!(runner.dead_letters().count(), 0, "a refused run goes again");
+    // Each run again meets the same refusal, until its attempts are spent.
+    for _ in 0..40 {
+        if runner.dead_letters().count() > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        runner.step().await.unwrap();
+    }
     let dead: Vec<_> = runner.dead_letters().collect();
-    assert_eq!(dead.len(), 1, "the refusal is kept, not retried");
+    assert_eq!(dead.len(), 1, "the refusal is kept once its runs are spent");
     assert!(
         dead[0]
             .reason
-            .starts_with("the room refused the bot's change"),
+            .starts_with("the room refused the bot's change to so.tilo.chat/"),
         "{}",
         dead[0].reason
     );
@@ -898,6 +925,7 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
         name: "Mirror".into(),
         inputs: trigger.payload().to_vec(),
         steps: Vec::new(),
+        step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
         triggers: vec![trigger],
@@ -1012,5 +1040,605 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     assert!(
         posted.iter().any(|message| message.text == "hello"),
         "beside Ada's post"
+    );
+}
+
+/// The files the chat's first part references, as the room holds it.
+async fn referenced_in(rooms: &Rooms, room: &str) -> Vec<attachments::Referenced> {
+    attachments::referenced(
+        &rooms
+            .record_document(room, CHAT, &first_part())
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+}
+
+/// The file `bytes` as a message's attachment.
+fn file(name: &str, bytes: &[u8]) -> serde_json::Value {
+    serde_json::json!({
+        "kind": "file",
+        "name": name,
+        "blob": blake3::hash(bytes).to_hex().to_string(),
+        "size": bytes.len(),
+    })
+}
+
+/// The one piece `device` answers `want` with when it keeps `bytes`, as a
+/// member's device answers.
+fn answer(want: &[u8], device: [u8; 32], bytes: &[u8]) -> Vec<u8> {
+    let neighbour_wire::NeighbourMsg::RecordContentWant {
+        requester,
+        app_id,
+        cluster_id,
+        hash,
+    } = postcard::from_bytes(want).unwrap()
+    else {
+        panic!("a request for content")
+    };
+    postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentPiece {
+        responder: tilo_peer_state::peer_handle(&device),
+        requester,
+        app_id,
+        cluster_id,
+        hash,
+        total: u64::try_from(bytes.len()).unwrap(),
+        offset: 0,
+        bytes: bytes.to_vec(),
+    })
+    .unwrap()
+}
+
+/// What the room answers `device` asking it for `bytes`, assembled.
+fn opened(rooms: &Rooms, room: &str, device: [u8; 32], bytes: &[u8]) -> Option<Vec<u8>> {
+    let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentWant {
+        requester: tilo_peer_state::peer_handle(&device),
+        app_id: CHAT.into(),
+        cluster_id: room.into(),
+        hash: blake3::hash(bytes).to_hex().to_string(),
+    })
+    .unwrap();
+    let mut whole = Vec::new();
+    for frame in rooms.content_answer(room, &want) {
+        match postcard::from_bytes(&frame).unwrap() {
+            neighbour_wire::NeighbourMsg::RecordContentPiece { bytes, .. } => whole.extend(bytes),
+            neighbour_wire::NeighbourMsg::RecordContentLacks { .. } => return None,
+            _ => panic!("a piece of content, or word that the host keeps none"),
+        }
+    }
+    (!whole.is_empty()).then_some(whole)
+}
+
+/// Ada posts a file in the room's Chat. While her device is online it
+/// answers the host's request for it; once she left, Bo opens the file
+/// from the host's copy. Past Ada's quota her oldest file goes, and a file
+/// over the cap is not asked for at all.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its room stay live for the whole test"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: posting, leaving, the host's copy, the quota and the cap"
+)]
+async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
+    const BO: [u8; 32] = [9; 32];
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let (room, general) = chat_room(&rooms, &cert).await;
+    let blobs =
+        std::sync::Arc::new(installed::FsBlobs::new(scratch.path().join("blobs"), None).unwrap());
+    rooms.serve_content(blobs.clone());
+    let attachments_of = |limits| {
+        attachments::RoomAttachments::new(
+            rooms.clone(),
+            room.clone(),
+            cert.device_public_key,
+            blobs.clone(),
+            scratch.path().join("attachments.json"),
+            limits,
+        )
+    };
+    let keeper = attachments_of(attachments::AttachmentLimits {
+        file_bytes: 64,
+        member_bytes: 40,
+        room_bytes: 1000,
+    });
+    rooms.keep_content(keeper.clone());
+    let ada = hex::encode(ADA);
+
+    let notes = b"the meeting notes, version one".to_vec();
+    post_with(
+        &rooms,
+        &room,
+        &cert,
+        (&ada, &general, "notes"),
+        Some(file("notes.txt", &notes)),
+    )
+    .await;
+    let asks = keeper.asks(&referenced_in(&rooms, &room).await, 0);
+    assert_eq!(
+        asks.len(),
+        1,
+        "the host asks the room for the file it lacks"
+    );
+    assert!(
+        keeper
+            .asks(&referenced_in(&rooms, &room).await, 1)
+            .is_empty(),
+        "and only once a while"
+    );
+    // Ada's device answers the host; then she leaves.
+    rooms.content_for_host(&room, ADA, &answer(&asks[0], ADA, &notes));
+    assert_eq!(
+        keeper.kept_for(&blake3::hash(&notes).to_hex()).as_deref(),
+        Some(ada.as_str())
+    );
+    assert_eq!(
+        opened(&rooms, &room, BO, &notes),
+        Some(notes.clone()),
+        "Bo opens it from the host"
+    );
+
+    // A second file takes Ada past her quota: her oldest goes.
+    let slides = b"the slides that came after them".to_vec();
+    post_with(
+        &rooms,
+        &room,
+        &cert,
+        (&ada, &general, "slides"),
+        Some(file("slides.txt", &slides)),
+    )
+    .await;
+    assert!(
+        keeper
+            .asks(&referenced_in(&rooms, &room).await, 2)
+            .is_empty(),
+        "within the hour her quota has no room for it"
+    );
+    let an_hour_later = 3_600_000 + 2;
+    let asks = keeper.asks(&referenced_in(&rooms, &room).await, an_hour_later);
+    assert_eq!(
+        asks.len(),
+        1,
+        "an hour later only the new file is asked for"
+    );
+    rooms.content_for_host(&room, ADA, &answer(&asks[0], ADA, &slides));
+    assert_eq!(opened(&rooms, &room, BO, &slides), Some(slides.clone()));
+    assert_eq!(
+        opened(&rooms, &room, BO, &notes),
+        None,
+        "the oldest went past her quota"
+    );
+
+    // A file over the cap stays with its poster.
+    let video = vec![7_u8; 65];
+    post_with(
+        &rooms,
+        &room,
+        &cert,
+        (&ada, &general, "a video"),
+        Some(file("big.bin", &video)),
+    )
+    .await;
+    assert!(
+        keeper
+            .asks(&referenced_in(&rooms, &room).await, an_hour_later + 1)
+            .is_empty()
+    );
+
+    // A restart keeps counting what it kept.
+    drop(keeper);
+    let again = attachments_of(attachments::AttachmentLimits::default());
+    assert_eq!(
+        again.kept_for(&blake3::hash(&slides).to_hex()).as_deref(),
+        Some(ada.as_str())
+    );
+    assert_eq!(again.kept_for(&blake3::hash(&notes).to_hex()), None);
+}
+
+/// The Discord bridge as the host installs it, its program as shipped.
+pub(super) fn discord_bridge() -> installed::InstalledBot {
+    installed::InstalledBot {
+        installation: "5b8d2278-de54-4bf8-a0b8-8ae4f0587eed".into(),
+        entry: "discord-bridge".into(),
+        name: "Discord Bridge".into(),
+        program: include_str!("../../../../../apps/discord/bridge/program.json").to_owned(),
+        inputs: serde_json::Map::new(),
+        installed_at_ms: 1,
+        release: String::new(),
+    }
+}
+
+/// The room's Chat categories by name, each with its channels' names.
+async fn chat_layout(rooms: &Rooms, room: &str) -> Vec<(String, Vec<String>)> {
+    let record = room_record(&AppCatalogue::native(), CHAT);
+    let saved = rooms
+        .record_document(room, CHAT, &record)
+        .await
+        .unwrap()
+        .unwrap();
+    let chat = chat_of(&saved);
+    let named = |category: Option<&tilo_resource::Id>| {
+        chat.channels
+            .values()
+            .filter(|channel| channel.conversation_with.is_none())
+            .filter(|channel| channel.category.as_ref() == category)
+            .map(|channel| channel.name.clone())
+            .collect::<Vec<_>>()
+    };
+    std::iter::once((String::new(), named(None)))
+        .chain(
+            chat.categories
+                .iter()
+                .map(|(id, category)| (category.name.clone(), named(Some(id)))),
+        )
+        .collect()
+}
+
+/// Connect `room` to the Discord server the bridge last saw as `goal`, and
+/// `chat` holding `general` and `voice`.
+async fn bridged_lounge(rooms: &Rooms, room: &str, cert: &DeviceCert) {
+    use tilo_resource::Fields as _;
+    let link = discord::DiscordLink {
+        guild_id: "1000".into(),
+        only_channel: None,
+        name: "Fake".into(),
+        mirror_channels: false,
+        map_roles: false,
+    };
+    discord::connect(rooms, room, cert, &link).await.unwrap();
+    let catalogue = AppCatalogue::native();
+    // The server as the bridge last saw it: `goal`, and `chat` holding
+    // `general` and `voice`.
+    rooms
+        .author_application(
+            room,
+            cert,
+            &catalogue,
+            discord::APP,
+            &room_record(&catalogue, discord::APP),
+            |doc| {
+                let current = ::discord::Guild::read_fields(doc, &automerge::ROOT)
+                    .map_err(|error| error.to_string())?;
+                let mut seen = current.clone();
+                let channel = |id: &str, kind: &str, name: &str, parent: Option<&str>, at: i64| {
+                    serde_json::json!({"id": id, "kind": kind, "name": name, "parent": parent, "position": at})
+                };
+                seen.observe(
+                    "2000".into(),
+                    serde_json::from_value(serde_json::json!([
+                        channel("1103", "text", "goal", None, 0),
+                        channel("1100", "category", "chat", None, 1),
+                        channel("1101", "text", "general", Some("1100"), 2),
+                        channel("1102", "voice", "voice", Some("1100"), 3),
+                    ]))
+                    .map_err(|error| error.to_string())?,
+                    Vec::new(),
+                );
+                seen.write_changed_fields(
+                    &current,
+                    doc,
+                    &automerge::ROOT,
+                    &tilo_resource::Delta::default(),
+                )
+                .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// A bridge run the room refuses part of leaves the import half done: the
+/// category it made stands, the moves after it were dropped. The run goes
+/// again from the room's records and finishes the layout, the channels
+/// under the server's category as in Discord.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its room stay live for the whole test"
+)]
+async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_again() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    bridged_lounge(&rooms, &room, &cert).await;
+    let catalogue = AppCatalogue::native();
+    let mut runner = member_runner(
+        &rooms,
+        &room,
+        &cert,
+        discord_bridge(),
+        scratch.path().join("bridge.json"),
+    )
+    .await;
+    assert!(runner.step().await.unwrap().is_empty());
+
+    // A change to the room's Chat has the bridge reconcile; the room
+    // refuses the run's second change, mapping the category it just made.
+    let owner = hex::encode(cert.user_public_key);
+    rooms
+        .author_application(
+            &room,
+            &cert,
+            &catalogue,
+            CHAT,
+            &room_record(&catalogue, CHAT),
+            |doc| {
+                chat::demo::apply_as(
+                    doc,
+                    &owner,
+                    chat::Chat::CREATE_CHANNEL.with(chat::record::chat::CreateChannel {
+                        name: "welcome".into(),
+                        category: None,
+                        kind: None,
+                        topic: None,
+                    }),
+                )
+                .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
+    runner.refuse_change_after(1);
+    runner.step().await.unwrap();
+    let half = chat_layout(&rooms, &room).await;
+    assert!(
+        half.iter()
+            .any(|(name, channels)| name == "chat" && channels.is_empty()),
+        "the category stands, empty: {half:?}"
+    );
+
+    // It goes again, from the room's records, and finishes.
+    let done = |layout: &[(String, Vec<String>)]| {
+        layout.iter().any(|(name, channels)| {
+            name == "chat"
+                && channels.contains(&"general".to_owned())
+                && channels.contains(&"voice".to_owned())
+        })
+    };
+    for _ in 0..40 {
+        if done(&chat_layout(&rooms, &room).await) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        runner.step().await.unwrap();
+    }
+    let layout = chat_layout(&rooms, &room).await;
+    assert!(done(&layout), "general and voice under chat: {layout:?}");
+    assert_eq!(
+        layout.iter().filter(|(name, _)| name == "chat").count(),
+        1,
+        "one chat category, the one the refused run made: {layout:?}"
+    );
+    assert!(
+        layout[0].1.contains(&"goal".to_owned()),
+        "goal stands apart, as in Discord: {layout:?}"
+    );
+}
+
+/// The image ships the Discord bridge as a program file; installing from it
+/// keeps the path as where the bot came from, and the program's own name as
+/// its name, rather than naming the bot after the path.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bot_installed_from_a_program_file_is_named_for_itself_not_its_path() {
+    let scratch = tempfile::tempdir().unwrap();
+    let program = scratch.path().join("discord-bridge.json");
+    std::fs::write(
+        &program,
+        include_str!("../../../../../apps/discord/bridge/program.json"),
+    )
+    .unwrap();
+    let file = program.to_str().unwrap();
+    let installed = installed::install(&scratch.path().join("bot"), file, serde_json::Map::new())
+        .await
+        .unwrap();
+    assert_eq!(installed.entry, file, "the program file it came from");
+    assert_eq!(installed.name, "Discord Bridge", "the program's own name");
+
+    // Kept, and read back unchanged: a restart installs nothing new.
+    let kept = installed::install(&scratch.path().join("bot"), file, serde_json::Map::new())
+        .await
+        .unwrap();
+    assert_eq!(kept, installed);
+}
+
+/// A room installed from an older image keeps its bot when the host starts
+/// on a newer one, and the bot runs the program the newer image ships: a
+/// grant the older program lacked (reaching outside when the bridge settles
+/// an outbox entry) reaches the room's row, so the room stops refusing the
+/// bot's settles.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its room stay live for the whole test"
+)]
+async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
+    use membership::{HostRootCertifier, Kept, keep_member};
+    let shipped = include_str!("../../../../../apps/discord/bridge/program.json");
+    let settle = "resource:*/**/item:*/**/action:field-edit";
+    // The bridge as an older image shipped it: settling read and undoable only.
+    let mut older: serde_json::Value = serde_json::from_str(shipped).unwrap();
+    let grant = older["grant"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|grant| grant["node"].as_str().unwrap().ends_with(settle))
+        .expect("the bridge grants settling its outbox entries");
+    grant["kinds"] = serde_json::json!(["read", "undoable"]);
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let (room, _) = chat_room(&rooms, &cert).await;
+    let file = scratch.path().join("discord-bridge.json");
+    let entry = file.to_str().unwrap();
+    let dir = scratch.path().join("bot");
+    let certifier = HostRootCertifier::new(owner_root());
+
+    std::fs::write(&file, serde_json::to_vec(&older).unwrap()).unwrap();
+    let before = installed::install(&dir, entry, serde_json::Map::new())
+        .await
+        .unwrap();
+    let (kept, _) = keep_member(&rooms, &room, &cert, &certifier, &before)
+        .await
+        .unwrap();
+    assert_eq!(kept, Kept::Installed);
+
+    // The newer image ships the bridge as it is now.
+    std::fs::write(&file, shipped).unwrap();
+    let after = installed::install(&dir, entry, serde_json::Map::new())
+        .await
+        .unwrap();
+    assert_eq!(after.installation, before.installation, "the same bot");
+    assert_eq!(after.installed_at_ms, before.installed_at_ms);
+    assert_ne!(after.program, before.program, "it runs the shipped program");
+    let grants = &after.shortcut().unwrap().grant;
+    assert!(
+        grants
+            .iter()
+            .any(|rule| rule.node.to_string().ends_with(settle)
+                && rule.kinds.contains(tilo_action_policy::ActionKind::Outside)),
+        "the shipped bridge may reach outside as it settles: {grants:?}"
+    );
+    let (kept, _) = keep_member(&rooms, &room, &cert, &certifier, &after)
+        .await
+        .unwrap();
+    assert_eq!(kept, Kept::Updated, "the room's row follows the program");
+    let row = rooms
+        .installed_bot(&room, &after.installation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        row.installation.program,
+        tilo_automation::program::program_hash(after.program.as_bytes())
+    );
+    // Read back on the next start: nothing changes when the file did not.
+    let again = installed::install(&dir, entry, serde_json::Map::new())
+        .await
+        .unwrap();
+    assert_eq!(again, after);
+}
+
+/// A developer pushes their bot's program into a running room, then a
+/// changed one: the room's host runs each as soon as the room asks for it,
+/// without restarting, and the second is the same bot (its installation and
+/// what it read up to) running the new program under its new grants.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its room stay live for the whole test"
+)]
+async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
+    use tilo_peer_state::workspace_membership::{BotRequest, WorkspaceMembershipCommand};
+    const ENTRY: &str = "dev.ada.greeter";
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let (room, general) = chat_room(&rooms, &cert).await;
+    let first = greeter(general.as_str()).program;
+    let second = first.replace("welcome!", "welcome, again!");
+    assert_ne!(first, second);
+    let follower = requested::Follower {
+        rooms: rooms.clone(),
+        room: room.clone(),
+        host: cert.clone(),
+        root: owner_root(),
+        state: scratch.path().join("host"),
+        operator: std::collections::BTreeSet::new(),
+        connectors: None,
+    };
+    let push = |version: &str, program: &str| {
+        let command = WorkspaceMembershipCommand::RequestBot(BotRequest {
+            entry: ENTRY.into(),
+            version: version.into(),
+            inputs: std::collections::BTreeMap::new(),
+            program: Some(program.to_owned()),
+        });
+        let rooms = rooms.clone();
+        let (room, cert) = (room.clone(), cert.clone());
+        let id = *blake3::hash(program.as_bytes()).as_bytes();
+        async move { rooms.ask_for_bot(&room, &cert, id, command).await.unwrap() }
+    };
+    let row_program = |installation: String| {
+        let rooms = rooms.clone();
+        let room = room.clone();
+        async move {
+            rooms
+                .installed_bot(&room, &installation)
+                .await
+                .unwrap()
+                .expect("the bot is on the room's roster")
+                .installation
+                .program
+        }
+    };
+    // Ada posts until the bot answers with `text`: a runner that just
+    // started answers only what is posted after its first look.
+    let answered = |text: &'static str| {
+        let (rooms, room, cert, general) =
+            (rooms.clone(), room.clone(), cert.clone(), general.clone());
+        async move {
+            tilo_test_env::within(format!("the bot answers {text}"), async {
+                loop {
+                    ada_says(&rooms, &room, &cert, general.as_str(), "hello").await;
+                    for _ in 0..20 {
+                        if posts(&rooms, &room)
+                            .await
+                            .iter()
+                            .any(|post| post.text == text)
+                        {
+                            return;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                }
+            })
+            .await;
+        }
+    };
+    let welcomes = |rooms: Rooms, room: String| async move {
+        posts(&rooms, &room)
+            .await
+            .iter()
+            .filter(|post| post.text == "welcome!")
+            .count()
+    };
+
+    let mut followed = requested::Followed::default();
+    push("0.1.0-dev.1", &first).await;
+    follower.follow_requests(&mut followed).await;
+    let (installation, _) = followed.running(ENTRY).expect("the pushed bot runs");
+    let installation = installation.to_owned();
+    assert_eq!(
+        row_program(installation.clone()).await,
+        tilo_automation::program::program_hash(first.as_bytes())
+    );
+    answered("welcome!").await;
+    let first_answers = welcomes(rooms.clone(), room.clone()).await;
+
+    push("0.1.0-dev.2", &second).await;
+    follower.follow_requests(&mut followed).await;
+    let (now, release) = followed.running(ENTRY).expect("the bot still runs");
+    assert_eq!(now, installation, "the same bot, not a new one");
+    assert!(release.starts_with("0.1.0-dev.2#"), "{release}");
+    assert_eq!(
+        row_program(installation.clone()).await,
+        tilo_automation::program::program_hash(second.as_bytes()),
+        "the room's row names the program it runs now"
+    );
+    answered("welcome, again!").await;
+    assert_eq!(
+        welcomes(rooms.clone(), room.clone()).await,
+        first_answers,
+        "the first program answers nothing once replaced"
     );
 }

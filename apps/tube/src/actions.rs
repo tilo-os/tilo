@@ -47,9 +47,30 @@ pub enum TubeEffect {
         #[param("The playlist's id")]
         playlist: String,
     },
+    /// Search for videos.
+    #[effect(kind = "read")]
+    Search {
+        #[param("What to search for")]
+        query: String,
+    },
     /// Play or pause.
     #[effect(kind = "read")]
     TogglePlayback,
+    /// Seek to seconds.
+    ///
+    /// Moves the open video to a moment; a segment you chose to skip is
+    /// skipped from there as during playback.
+    #[effect(kind = "read")]
+    Seek {
+        #[param("Position in the open video, in seconds from its start")]
+        seconds: f64,
+    },
+    /// Skip segment.
+    ///
+    /// Jumps to the end of the marked segment playing now, one you chose to
+    /// see with a skip button rather than skip on its own.
+    #[effect(kind = "read")]
+    SkipSegment,
     /// Copy share link.
     #[effect(kind = "read")]
     Share {
@@ -57,7 +78,6 @@ pub enum TubeEffect {
         video: String,
     },
     /// Download video.
-    #[effect(device_only)]
     Download {
         #[param("The video's id")]
         video: String,
@@ -84,25 +104,24 @@ pub enum TubeEffect {
     ///
     /// Pairs a Grayjay device, which then reads and writes your
     /// subscriptions, history and settings.
-    #[effect(destructive, device_only)]
+    #[effect(destructive)]
     PairDevice {
         #[param(secret, "Grayjay pairing invite; redacted from logs and history")]
         invite: String,
     },
     /// Sync approved devices now.
-    #[effect(device_only)]
     SyncDevices,
     /// Approve device.
     ///
     /// Lets a device that asked to pair read and write your subscriptions,
     /// history and settings.
-    #[effect(destructive, device_only)]
+    #[effect(destructive)]
     ApproveDevice {
         #[param("The device's id")]
         device: String,
     },
     /// Revoke device access.
-    #[effect(destructive, device_only)]
+    #[effect(destructive)]
     RevokeDevice {
         #[param("The device's id")]
         device: String,

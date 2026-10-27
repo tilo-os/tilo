@@ -141,6 +141,16 @@ when the transport proves no request was sent, or when the provider explicitly
 refuses an unprocessed request. Unknown outcomes and interrupted generation are
 not automatically replayed.
 
+Signed-in providers carry no key: the gateway asks account custody for a
+current access token for the profile's own grant (`sign_in_grant_id`),
+refreshed there when due, and keeps it no longer than its expiry. A Google
+sign-in adds the billing project; a ChatGPT sign-in speaks Responses to the
+ChatGPT backend with the account its token names; a Copilot sign-in names the
+editor GitHub's API requires, its token minted from the GitHub grant.
+`ListModels` lists a provider's models with the same credential, for Settings'
+model picker and connection test; it needs the credential-management grant
+and answers only model ids, names and context sizes.
+
 Provider keys use `accounts::ServiceCredentials`, bound to the model-gateway
 service, provider-key purpose and exact canonical endpoint origin. Storage and
 durable-write failures are reported, not treated as missing credentials or

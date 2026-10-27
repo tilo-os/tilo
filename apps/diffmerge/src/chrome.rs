@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::icons::Icon;
-use ui::widget::toggle_group::{Segment, SegmentedStyle};
-use ui::widget::{Button, ButtonRole, ControlSize, Element, ModelView, ToggleGroup};
+use ui::widget::toggle_group::Segment;
+use ui::widget::{Button, ButtonRole, ControlSize, Element, ModelView};
 
 use crate::app::Mode;
 use crate::i18n::t;
@@ -25,6 +25,12 @@ pub(crate) enum Command {
     Next,
     Open,
     LoadSample,
+    /// Write the merged result where it was last saved, or ask for a place.
+    SaveMerged,
+    /// Choose two folders and list what differs between them.
+    CompareFolders,
+    /// Show the folder listing again after a paired comparison was opened.
+    ShowFolders,
 }
 
 /// What the header controls show.
@@ -33,6 +39,12 @@ pub(crate) struct Header {
     pub mode: Mode,
     /// A comparison with changes is loaded, so there is somewhere to go.
     pub changes: bool,
+    /// A merge is open, so its result can be saved.
+    pub merge_open: bool,
+    /// The merged result holds nothing that is not already saved.
+    pub saved: bool,
+    /// A folder comparison is open, so its listing can be shown again.
+    pub folders: bool,
     /// The window is too narrow for the controls' labels: they drop to short
     /// labels and icons.
     pub compact: bool,
@@ -52,6 +64,9 @@ impl Chrome {
             header: LocalState::new(Header {
                 mode: Mode::Diff,
                 changes: false,
+                merge_open: false,
+                saved: false,
+                folders: false,
                 compact: false,
             }),
             commands: Rc::default(),
@@ -82,8 +97,11 @@ impl Chrome {
             Command::Mode(Mode::Diff),
             Command::Previous,
             Command::Next,
+            Command::ShowFolders,
             Command::LoadSample,
+            Command::CompareFolders,
             Command::Open,
+            Command::SaveMerged,
         ]
         .into_iter()
         .map(|command| {
@@ -102,11 +120,10 @@ impl Chrome {
             t("toolbar-merge")
         };
         Box::new(
-            ToggleGroup::new(
+            ui::widget::ViewTabs::new(
                 vec![Segment::new(t("toolbar-diff")), Segment::new(merge_label)],
                 usize::from(header.mode == Mode::Merge),
             )
-            .with_style(SegmentedStyle::Segmented)
             .control_size(if header.compact {
                 ControlSize::Large
             } else {
@@ -157,7 +174,62 @@ impl Chrome {
                 } else {
                     "toolbar-sample"
                 });
-                Button::new("diffmerge.load-sample", &label).on_effect(self.request(command))
+                // The relayed effect decides who may run it, so the button
+                // itself asks nothing.
+                Button::new("diffmerge.load-sample", &label)
+                    .on_own_device_effect(self.request(command))
+            }
+            Command::SaveMerged => {
+                // The tool's reason to exist: hand the merged result back.
+                // It stays available once saved, writing to the same place
+                // again, so the label says whether anything is pending
+                // rather than disabling the control.
+                let label = if header.saved {
+                    t(if header.compact {
+                        "toolbar-saved-short"
+                    } else {
+                        "toolbar-saved"
+                    })
+                } else {
+                    t(if header.compact {
+                        "toolbar-save-short"
+                    } else {
+                        "toolbar-save"
+                    })
+                };
+                let button = if header.compact {
+                    Button::icon_only("diffmerge.save", Icon::Download, &label)
+                } else {
+                    Button::new("diffmerge.save", &label).with_icon(Icon::Download)
+                };
+                button
+                    .role(ButtonRole::Primary)
+                    .with_enabled(header.merge_open)
+                    .on_own_device_effect(self.request(Command::SaveMerged))
+            }
+            Command::ShowFolders => {
+                let label = t("toolbar-folders");
+                let button = if header.compact {
+                    Button::icon_only("diffmerge.show-folders", Icon::Folder, &label)
+                } else {
+                    Button::new("diffmerge.show-folders", &label).with_icon(Icon::Folder)
+                };
+                button
+                    .with_enabled(header.folders)
+                    .on_own_device_effect(self.request(Command::ShowFolders))
+            }
+            Command::CompareFolders => {
+                let label = t(if header.compact {
+                    "toolbar-compare-folders-short"
+                } else {
+                    "toolbar-compare-folders"
+                });
+                let button = if header.compact {
+                    Button::icon_only("diffmerge.compare-folders", Icon::FolderOpen, &label)
+                } else {
+                    Button::new("diffmerge.compare-folders", &label).with_icon(Icon::FolderOpen)
+                };
+                button.on_own_device_effect(self.request(Command::CompareFolders))
             }
             Command::Open => {
                 let button = if header.compact {
@@ -167,7 +239,7 @@ impl Chrome {
                 };
                 button
                     .role(ButtonRole::Primary)
-                    .on_effect(self.request(command))
+                    .on_own_device_effect(self.request(command))
             }
             Command::Mode(_) => return self.mode(header),
         };

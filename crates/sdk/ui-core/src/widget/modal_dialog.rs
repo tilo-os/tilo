@@ -39,6 +39,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -176,6 +177,9 @@ impl<'a> ModalAction<'a> {
 pub struct ModalSpec<'a> {
     /// The sheet's title, set in the `Title` role.
     pub title: &'a str,
+    /// An icon leading the title that names who asks (a lock for a
+    /// password, the network for a Wi-Fi join).
+    pub icon: Option<Icon>,
     /// Draw a close control. Escape always dismisses; this is its visible
     /// half, for a sheet with no Cancel action.
     pub closable: bool,
@@ -201,6 +205,7 @@ impl Default for ModalSpec<'_> {
     fn default() -> Self {
         Self {
             title: "",
+            icon: None,
             closable: true,
             actions: &[],
             platform: PlatformConventions::default(),
@@ -223,6 +228,11 @@ impl<'a> ModalSpec<'a> {
     #[must_use]
     pub fn actions(mut self, actions: &'a [ModalAction<'a>]) -> Self {
         self.actions = actions;
+        self
+    }
+    #[must_use]
+    pub fn icon(mut self, icon: Option<Icon>) -> Self {
+        self.icon = icon;
         self
     }
     #[must_use]
@@ -268,7 +278,6 @@ impl<'a> ModalSpec<'a> {
 pub struct ModalLayout {
     /// The whole window. The scrim covers this.
     pub scrim: Rect,
-    /// The sheet.
     pub card: Rect,
     /// The title's line, from the sheet's leading padding to the close
     /// control (or the trailing padding).
@@ -394,6 +403,19 @@ fn title_row_height(theme: &Theme) -> f64 {
     line.max(f64::from(theme.tokens.metrics.min_pointer_target))
 }
 
+/// The side of a title icon: the large icon size.
+fn title_icon_side(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.icon_lg)
+}
+
+/// Where a title icon is drawn: before the title, centred on its first row.
+pub fn title_icon_rect(layout: &ModalLayout, theme: &Theme) -> Rect {
+    let side = title_icon_side(theme);
+    let x1 = layout.title.x0 - f64::from(theme.tokens.spacing.s3);
+    let mid = layout.title.y0 + title_row_height(theme).min(layout.title.height()) / 2.0;
+    Rect::new(x1 - side, mid - side / 2.0, x1, mid + side / 2.0)
+}
+
 /// The title wrapped to `width`: one or two lines, the second elided.
 fn title_lines(
     text_renderer: &mut TextRenderer,
@@ -447,12 +469,18 @@ pub fn layout(
     let close_overhang = (close_side - f64::from(theme.tokens.metrics.icon_md)) / 2.0;
     // The title stops where the close control starts, so a long title wraps
     // (and then elides) instead of running under it.
+    // A title icon stands at the leading edge; the title starts after it.
+    let icon_lead = if spec.icon.is_some() && has_title {
+        title_icon_side(theme) + f64::from(spacing.s3)
+    } else {
+        0.0
+    };
     let title_w = if spec.closable {
         w - pad * 2.0 + close_overhang - close_side - f64::from(spacing.s2)
     } else {
         w - pad * 2.0
-    }
-    .max(0.0);
+    } - icon_lead;
+    let title_w = title_w.max(0.0);
     let lines = title_lines(text_renderer, spec.title, title_w, theme).len();
     let line_h = f64::from(theme.text(TextRole::Title).line_height_px());
     let title_h = if has_title {
@@ -500,9 +528,9 @@ pub fn layout(
         )
     });
     let title = Rect::new(
-        card.x0 + pad,
+        card.x0 + pad + icon_lead,
         title_top,
-        card.x0 + pad + title_w,
+        card.x0 + pad + icon_lead + title_w,
         title_top + title_h,
     );
 
@@ -615,7 +643,7 @@ fn place_actions(
             order == DialogActionOrder::PrimaryLast
                 && spec.actions.get(i).is_some_and(ModalAction::is_alternate)
         });
-    trailing.sort_by_key(|&index| {
+    trailing.compact_sort_by_key(|&index| {
         let Some(a) = spec.actions.get(index) else {
             return 3;
         };
@@ -719,6 +747,18 @@ pub fn paint_sheet(
         floating_surface::paint(scene, transform, layout.card, theme);
     }
 
+    if let Some(icon) = spec.icon.filter(|_| layout.title.height() > 0.0) {
+        let (ink, _) = ink(theme);
+        let rect = title_icon_rect(layout, theme);
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            rect,
+            icon,
+            ink,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
     if !spec.title.is_empty() {
         let (ink, _) = ink(theme);
         let style = theme.text(TextRole::Title);
@@ -932,7 +972,7 @@ impl ModalSheet {
         let layout = layout(window, spec, text_renderer, theme);
         self.enabled = spec.actions.iter().map(|a| a.enabled).collect();
         let mut visual: Vec<usize> = (0..spec.actions.len()).collect();
-        visual.sort_by(|&a, &b| {
+        visual.compact_sort_by(|&a, &b| {
             let x = |i: usize| layout.actions.get(i).map_or(0.0, |r| r.x0);
             x(a).total_cmp(&x(b))
         });
@@ -1305,6 +1345,8 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     action_identity: uuid::Uuid,
     test_id: Option<String>,
     title: String,
+    /// Leads the title ([`ModalSpec::icon`]).
+    icon: Option<Icon>,
     primary_action: Option<DialogAction>,
     secondary_action: Option<DialogAction>,
     tertiary_action: Option<DialogAction>,
@@ -1323,6 +1365,10 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     window: Rect,
     /// `window` came from the host's top layer rather than the layout node.
     presented: bool,
+    /// The layout node of the window the dialog stands in, when a host
+    /// shares one tree among several windows ([`within_window`]); `None`
+    /// when the root of the tree is the window.
+    window_node: Option<NodeId>,
     layout: Option<ModalLayout>,
     laid_out_for: Option<LayoutKey>,
     slots: Vec<Slot>,
@@ -1374,6 +1420,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             action_identity: uuid::Uuid::new_v4(),
             test_id: None,
             title: title.into(),
+            icon: None,
             content,
             primary_action: None,
             secondary_action: None,
@@ -1387,6 +1434,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             max_width: MODAL_MAX_WIDTH,
             window: Rect::ZERO,
             presented: false,
+            window_node: None,
             layout: None,
             laid_out_for: None,
             slots: Vec::new(),
@@ -1407,6 +1455,13 @@ impl<C: Widget + 'static> ModalDialog<C> {
             layout_theme: Theme::dark(),
             appear: crate::motion::Appearing::closed(),
         }
+    }
+
+    /// An icon before the title naming who asks.
+    #[must_use]
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     /// A stable address for inspection, headless scenarios and `tilo-control`.
@@ -1634,6 +1689,20 @@ impl<C: Widget + ?Sized> ModalDialog<C> {
         self.open
     }
 
+    /// Whether anything of it is drawn now: open, arriving, or closed and
+    /// still leaving. A host that stops holding a closed dialog drops it
+    /// once this is false.
+    #[must_use]
+    pub fn is_drawn(&self) -> bool {
+        self.appear.is_drawn()
+    }
+
+    /// How far it has arrived now, `0..=1` (`motion::Appear`).
+    #[must_use]
+    pub fn appear_progress(&self) -> f64 {
+        self.appear.progress()
+    }
+
     fn slot_rect(&self, slot: Slot) -> Rect {
         let Some(layout) = &self.layout else {
             return Rect::ZERO;
@@ -1756,6 +1825,7 @@ impl ModalDialog<dyn Widget> {
     fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let (actions, slots) = self.actions();
         let spec = ModalSpec::new(&self.title)
+            .icon(self.icon)
             .actions(&actions)
             .platform_conventions(self.platform)
             .body_height(self.content_size.1)
@@ -2157,13 +2227,17 @@ impl Widget for ModalDialog<dyn Widget> {
         // A presented dialog's last painted viewport can precede a resize.
         // Measure against the current host tree before the next paint, so
         // its body and wrapped text use the width they will actually occupy.
-        let window = tree_window(taffy, node).unwrap_or_else(|| {
-            if self.presented {
-                self.window
-            } else {
-                Rect::new(0.0, 0.0, node_w, f64::from(l.size.height))
-            }
-        });
+        let window = self
+            .window_node
+            .and_then(|window| window_node_rect(taffy, node, window))
+            .or_else(|| tree_window(taffy, node))
+            .unwrap_or_else(|| {
+                if self.presented {
+                    self.window
+                } else {
+                    Rect::new(0.0, 0.0, node_w, f64::from(l.size.height))
+                }
+            });
         let body_w = body_width(window, self.max_width, &self.layout_theme);
         let pad = crate::num::f32_of_f64((node_w - body_w).max(0.0));
         let Ok(mut style) = taffy.style(node).cloned() else {
@@ -2184,9 +2258,13 @@ impl Widget for ModalDialog<dyn Widget> {
         // root of the tree the dialog stands in is the window: the sheet is
         // centred where the first paint will put it, so the content is
         // placed where it is drawn and hit from the first frame.
+        let host_window = current_window();
+        self.window_node = host_window.map(|(window, _)| window);
         if !self.presented {
-            self.window = tree_window(taffy, node)
-                .unwrap_or_else(|| crate::widget::layout_rect(taffy, node, origin));
+            self.window = host_window.map(|(_, rect)| rect).unwrap_or_else(|| {
+                tree_window(taffy, node)
+                    .unwrap_or_else(|| crate::widget::layout_rect(taffy, node, origin))
+            });
         }
         let Some(content_node) = taffy
             .children(node)
@@ -2282,6 +2360,7 @@ impl Widget for ModalDialog<dyn Widget> {
         }
         let close_hovered = layout.close.is_some_and(|c| self.hovered(c));
         let spec = ModalSpec::new(&self.title)
+            .icon(self.icon)
             .actions(&actions)
             .platform_conventions(self.platform)
             .closable(layout.close.is_some())
@@ -2488,6 +2567,15 @@ impl Widget for ModalDialog<dyn Widget> {
         }
     }
 
+    /// Laid out also while closed.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.content);
+        for key in &self.keys {
+            visitor(key);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if !self.open {
             return Vec::new();
@@ -2541,17 +2629,21 @@ impl Widget for ModalDialog<dyn Widget> {
         self.open
     }
 
+    // A closed dialog is hidden from the tree.
+    fn accessibility_hidden(&self) -> bool {
+        !self.open
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The title is the accessible name (FTL-resolved). A closed dialog
-        // is hidden from the tree.
+        // The title is the accessible name (FTL-resolved).
         let title = crate::i18n!(&self.title);
         let name = (!title.is_empty()).then_some(title);
         let mut node = AccessNode::new(Role::Dialog)
             .with_optional_name(name)
             .with_state(AccessState {
                 modal: true,
-                hidden: !self.open,
+                hidden: self.accessibility_hidden(),
                 ..Default::default()
             });
         // Footer actions a host laid out are buttons of their own focus
@@ -2727,6 +2819,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.as_dyn().for_each_child(visitor);
     }
 
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        self.as_dyn().for_each_layout_child(visitor)
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.as_dyn_mut().children_mut()
     }
@@ -2777,6 +2873,52 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         self.as_dyn().synthetic_accessibility_rect(path)
     }
+}
+
+thread_local! {
+    /// The window whose content is being placed ([`within_window`]).
+    static LAYOUT_WINDOW: std::cell::Cell<Option<(NodeId, Rect)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Place a window's content (`place` runs its `apply_layout`) knowing which
+/// window it is: the layout node and on-screen rect of the window.
+///
+/// A host that lays several windows out in one tree (the desktop's strip of
+/// app tiles) calls this around each window's content, so a dialog of that
+/// app centres on, and measures its sheet against, its own window rather
+/// than the root of the shared tree (the whole screen). A standalone app
+/// needs nothing: the root of its tree is its window.
+pub fn within_window<R>(window: NodeId, rect: Rect, place: impl FnOnce() -> R) -> R {
+    /// Restores the outer window, also when a contained app's layout
+    /// panics and the host recovers.
+    struct Restore(Option<(NodeId, Rect)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LAYOUT_WINDOW.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(LAYOUT_WINDOW.with(|cell| cell.replace(Some((window, rect)))));
+    place()
+}
+
+/// The window being placed, if a host named one ([`within_window`]).
+fn current_window() -> Option<(NodeId, Rect)> {
+    LAYOUT_WINDOW.with(std::cell::Cell::get)
+}
+
+/// The current size of `window`, a node the dialog at `node` stands under,
+/// at the origin; `None` when the tree was rebuilt and `window` is no longer
+/// an ancestor of `node`. Only the size is read: it is what the sheet is
+/// measured against.
+fn window_node_rect(taffy: &TaffyTree<()>, node: NodeId, window: NodeId) -> Option<Rect> {
+    let mut at = node;
+    while at != window {
+        at = taffy.parent(at)?;
+    }
+    let l = taffy.layout(window).ok()?;
+    let rect = Rect::new(0.0, 0.0, f64::from(l.size.width), f64::from(l.size.height));
+    (rect.width() > 0.0 && rect.height() > 0.0).then_some(rect)
 }
 
 /// The window a node stands in: the root of its layout tree.

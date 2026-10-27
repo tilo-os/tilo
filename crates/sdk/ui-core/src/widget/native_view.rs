@@ -693,7 +693,6 @@ mod tests {
 
     #[test]
     fn native_mount_lifecycle_is_idempotent_and_owns_geometry_visibility_and_focus() {
-        // Case `mount_geometry_visibility_focus_and_unmount_are_one_lifecycle`.
         {
             use crate::platform::Platform;
 
@@ -730,7 +729,6 @@ mod tests {
             assert_eq!(calls.last(), Some(&Call::Unmount));
         }
 
-        // Case `mounting_is_idempotent_and_real_host_changes_do_not_recreate_the_child`.
         {
             let calls = Rc::new(RefCell::new(Vec::new()));
             let mut view = NativeView::new("Preview", backend(&calls));
@@ -758,7 +756,6 @@ mod tests {
             );
         }
 
-        // Case `forwarded_input_is_local_and_a_handled_press_requests_focus`.
         {
             let calls = Rc::new(RefCell::new(Vec::new()));
             let mut view = NativeView::new("Native editor", backend(&calls));
@@ -786,7 +783,6 @@ mod tests {
 
     #[test]
     fn native_mount_failure_and_platform_accessibility_stay_truthful() {
-        // Case `mount_failure_is_visible_and_accessible_without_fake_native_state`.
         {
             let calls = Rc::new(RefCell::new(Vec::new()));
             let mut view = NativeView::new(
@@ -809,14 +805,12 @@ mod tests {
             assert_eq!(node.description.as_deref(), Some("native API unavailable"));
         }
 
-        // Case `platform_owned_accessibility_does_not_export_a_duplicate_wrapper`.
         {
             let calls = Rc::new(RefCell::new(Vec::new()));
             let view = NativeView::platform_accessible(backend(&calls));
             assert!(view.accessibility().is_none());
         }
 
-        // Case `toolkit_fallback_remains_in_the_tree_when_native_mounting_fails`.
         {
             let calls = Rc::new(RefCell::new(Vec::new()));
             let mut view = NativeView::new(

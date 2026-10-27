@@ -40,7 +40,6 @@ fn hosted_rooms_path(state_dir: &Path) -> PathBuf {
 /// A room this computer reaches over its host's HTTPS routes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct HostedRoom {
-    /// The host's origin.
     pub origin: String,
     /// The site whose home workspace the room is, when it was joined as one.
     pub site: Option<String>,
@@ -68,12 +67,14 @@ pub enum JoinProgress {
     Joining,
     /// It was not joined, and why, in the person's words.
     Failed(String),
+    /// It is held, but its host admits this device's person no longer: it
+    /// is joined again when the person asks.
+    NeedsJoinAgain,
 }
 
 /// A site's workspace this session is joining or failed to join.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SiteJoinState {
-    /// Its room.
     pub room: RoomId,
     /// The site it is the workspace of, as its listing names it.
     pub site: Option<String>,
@@ -87,7 +88,6 @@ pub struct SiteJoinState {
 /// in the app its site names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Arrival {
-    /// Its room.
     pub room: RoomId,
     /// The app it opens in, once.
     pub app: Option<String>,
@@ -101,18 +101,12 @@ pub(super) struct State {
     /// The community site this computer follows, once it does: its
     /// workspace is named as the community's.
     community: std::sync::OnceLock<String>,
-    /// The site workspaces this session is joining, or failed to.
+    /// The workspaces this session is joining through their hosts, failed
+    /// to join, or that need joining again.
     joins: Mutex<BTreeMap<RoomId, SiteJoinState>>,
     /// Joins installed since chrome last looked.
     arrivals: Mutex<Vec<Arrival>>,
-    /// When this session last asked a room's door to admit its person
-    /// again (`ShellNetwork::readmit_site_room`), by room.
-    readmits: Arc<Mutex<BTreeMap<RoomId, std::time::Instant>>>,
 }
-
-/// How long after asking a room's door to admit the person again it is
-/// asked again, when the room still turns this device away.
-const READMIT_AGAIN_AFTER: Duration = Duration::from_secs(10 * 60);
 
 impl State {
     /// What `state_dir` keeps; nothing yet, or nothing readable, is none.
@@ -127,32 +121,6 @@ impl State {
             rooms: Mutex::new(rooms),
             ..Self::default()
         }
-    }
-
-    /// Whether `room`'s door may be asked to admit the person again now:
-    /// not within [`READMIT_AGAIN_AFTER`] of the last time. Asking counts.
-    pub(super) fn begin_readmit(&self, room: RoomId) -> bool {
-        let now = std::time::Instant::now();
-        let mut readmits = self.readmits.lock_recover();
-        let recent = readmits
-            .get(&room)
-            .is_some_and(|at| now.duration_since(*at) < READMIT_AGAIN_AFTER);
-        if !recent {
-            readmits.insert(room, now);
-        }
-        drop(readmits);
-        !recent
-    }
-
-    /// The person was admitted to `room` again: the next refusal asks at
-    /// once.
-    pub(super) fn readmitted(readmits: &Mutex<BTreeMap<RoomId, std::time::Instant>>, room: RoomId) {
-        readmits.lock_recover().remove(&room);
-    }
-
-    /// The record of readmissions, for a task that outlives the call.
-    pub(super) fn readmits(&self) -> Arc<Mutex<BTreeMap<RoomId, std::time::Instant>>> {
-        Arc::clone(&self.readmits)
     }
 
     /// Say where joining `room` stands now.
@@ -182,9 +150,15 @@ impl State {
         self.arrivals.lock_recover().push(Arrival { room, app });
     }
 
-    /// The joins installed since this was last asked.
-    pub(super) fn take_arrivals(&self) -> Vec<Arrival> {
-        std::mem::take(&mut *self.arrivals.lock_recover())
+    /// The joins installed since this was last asked whose rooms are
+    /// `ready`; the others wait for a later ask.
+    pub(super) fn take_arrivals(&self, ready: impl Fn(RoomId) -> bool) -> Vec<Arrival> {
+        let mut arrivals = self.arrivals.lock_recover();
+        let (taken, waiting) = std::mem::take(&mut *arrivals)
+            .into_iter()
+            .partition(|arrival| ready(arrival.room));
+        *arrivals = waiting;
+        taken
     }
 
     /// The origin of `room`'s host, when this computer reaches it over HTTPS.
@@ -237,7 +211,9 @@ impl State {
     pub(super) fn remember(&self, room: RoomId, hosted: HostedRoom) -> Result<(), String> {
         let mut rooms = self.rooms.lock_recover();
         rooms.rooms.insert(room.to_string(), hosted);
-        self.persist(&rooms)
+        let persisted = self.persist(&rooms);
+        drop(rooms);
+        persisted
     }
 
     /// Stop reaching `room` through a site.
@@ -246,7 +222,9 @@ impl State {
         if rooms.rooms.remove(&room.to_string()).is_none() {
             return Ok(());
         }
-        self.persist(&rooms)
+        let persisted = self.persist(&rooms);
+        drop(rooms);
+        persisted
     }
 
     /// Whether the person left `site`'s workspace.
@@ -310,7 +288,6 @@ pub(crate) struct HostHttp {
 }
 
 impl HostHttp {
-    /// The host at `origin`.
     pub(crate) fn new(origin: &str) -> Result<Arc<Self>, String> {
         let origin = web_origin(origin).map_err(|error| error.to_string())?;
         Ok(Arc::new(Self {
@@ -378,9 +355,7 @@ pub(crate) enum SiteError {
 pub(crate) struct SiteWorkspace {
     /// The site's entry: where its links point.
     pub entry: url::Url,
-    /// The workspace's name.
     pub name: String,
-    /// The HTTPS origin of its host.
     pub origin: String,
     /// The host's admission door, when it admits people without an
     /// invitation.
@@ -401,7 +376,6 @@ struct EntryJson {
 /// What a site's `entry.json` says: its home workspace and its directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SiteEntry {
-    /// The home workspace, when the site names one.
     pub home: Option<SiteWorkspace>,
     /// The directory of public workspaces, when the site names one.
     pub directory: Option<url::Url>,
@@ -485,16 +459,15 @@ pub(crate) async fn read_site(entry: &url::Url) -> Result<SiteEntry, SiteError> 
         .and_then(|directory| entry.join(directory).ok())
         .and_then(|directory| web_origin(directory.as_str()).ok());
     let home = match config.home {
-        Some(home) => Some(home_workspace(entry, home, directory.clone())?),
+        Some(home) => Some(home_workspace(entry, &home, directory.clone())?),
         None => None,
     };
     Ok(SiteEntry { home, directory })
 }
 
-/// The home workspace `home` of the site at `entry`.
 fn home_workspace(
     entry: &url::Url,
-    home: HomeJson,
+    home: &HomeJson,
     directory: Option<url::Url>,
 ) -> Result<SiteWorkspace, SiteError> {
     let origin = web_origin(&home.host.origin)?;
@@ -656,6 +629,26 @@ pub(crate) async fn admit(
 mod tests {
     use super::*;
 
+    /// A person who joined a site arrives once the room's own desktop is
+    /// here: before it, the arrival could not see the room's window of the
+    /// site's app, and opened a second one beside it.
+    #[test]
+    fn an_arrival_waits_for_its_rooms_desktop() {
+        let state = State::default();
+        let room = RoomId::parse("6f9619ff-8b86-d011-b42d-00cf4fc964ff").unwrap();
+        state.arrive(room);
+        assert!(
+            state.take_arrivals(|_| false).is_empty(),
+            "not before the desktop"
+        );
+        assert_eq!(
+            state.take_arrivals(|_| true),
+            vec![Arrival { room, app: None }],
+            "then once"
+        );
+        assert!(state.take_arrivals(|_| true).is_empty());
+    }
+
     #[test]
     fn a_typed_site_names_its_entry_directory() {
         assert_eq!(
@@ -688,7 +681,7 @@ mod tests {
             admission: Some("https://eu1.tilo.coffee/".into()),
             app: app.map(str::to_owned),
         };
-        let read = |app| home_workspace(&entry, home(app), None).unwrap().app;
+        let read = |app| home_workspace(&entry, &home(app), None).unwrap().app;
         assert_eq!(read(Some("so.tilo.chat")).as_deref(), Some("so.tilo.chat"));
         assert_eq!(read(None), None);
         for refused in [

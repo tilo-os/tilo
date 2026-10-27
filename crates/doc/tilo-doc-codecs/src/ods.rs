@@ -153,6 +153,7 @@ fn parse_content(xml: &[u8]) -> Result<Vec<ParsedSheet>, CodecError> {
                 sheets.push(ParsedSheet {
                     name,
                     cells: Vec::new(),
+                    hidden: false,
                 });
                 row = 0;
             }

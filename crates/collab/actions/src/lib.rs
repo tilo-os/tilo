@@ -150,7 +150,8 @@ pub mod surface;
 pub mod task_step;
 
 pub use action::{
-    Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
+    Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind, asks_first,
+    undo_takes_back,
 };
 pub use appearance::{Appearance, AppearanceError, Persona};
 pub use content::{
@@ -159,15 +160,16 @@ pub use content::{
 pub use context::{
     AGENT_TASK_PARTICIPANT_PREFIX, ActionApp, ActionContext, ActionFacet, ActionGroup,
     ActionInvoker, ActionResource, CHANGE_MESSAGE_PREFIX, CONTINUATION_PREFIX, Cause, ChangeKind,
-    MAX_PARTICIPANT_ID_BYTES, ParticipantId, RISK_FACET,
+    MAX_PARTICIPANT_ID_BYTES, PLACE_FACET, ParticipantId, RISK_FACET,
 };
 pub use contract::{
-    ARGUMENT_RISK_TAG, ActionContract, ActionKind, ActionNeed, Availability, COMPENSATED_UNDO_TAG,
-    ConfirmationPolicy, DOCUMENT_READ_TAG, ExecutionMode, HOUSEKEEPING_TAG, INCOMING_MESSAGE_FACET,
-    INCOMING_MESSAGE_TAG, LOCAL_DEVICE_ONLY, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES,
-    MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES,
-    OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, Offload, PROGRAMMATIC_TAG, ResultSpec,
-    RetryPolicy, RiskLevel, UNTRUSTED_CONTENT_TAG, action_node,
+    AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,
+    Audience, Availability, COMPENSATED_UNDO_TAG, ConfirmationPolicy, DOCUMENT_READ_TAG,
+    ExecutionMode, HOST_RENDER_TAG, HOUSEKEEPING_TAG, INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG,
+    IRREVERSIBLE_TAG, MAX_OFFLOAD_CPU_TIME_MS, MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES,
+    MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES, OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG,
+    OWN_DEVICE_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, ResultSpec, RetryPolicy, RiskLevel,
+    UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
@@ -198,7 +200,8 @@ pub use outcome::{
 };
 pub use params::{
     ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ArgViolation,
-    CONTENT_ANNOTATION, PLACE_ANNOTATION, ParamType, place_schema, validate_json_schema,
+    CHOICE_LABELS_ANNOTATION, CONTENT_ANNOTATION, PEOPLE_ANNOTATION, PICK_ANNOTATION,
+    PLACE_ANNOTATION, ParamType, Pick, place_schema, validate_json_schema,
 };
 pub use protocol::{ContractViolation, validate_surface, validate_surface_contracts};
 pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
@@ -209,9 +212,10 @@ pub use registry::{ActionRegistry, DecodePayload, decode_json, decode_payload};
 pub use resource::{
     ActionBinding, ActionBindingError, ActionInput, ActionSpec, ActionType, ArgsBuilder, Collects,
     ContinuationArguments, ContinuationEvidence, ContinuationKey, ContinuationQuery,
-    ControlInvocation, FlatAction, KEY_SEP, NESTED_RESOURCE_FACET, PROMPTED_PARAM, Resource,
-    ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
-    ResourceViewRangeSpec, ResourceViewSpec, Target, flatten, sole_text_argument,
+    ControlInvocation, FlatAction, KEY_SEP, ListedRow, NESTED_RESOURCE_FACET, PROMPTED_PARAM,
+    Resource, ResourceId, ResourcePresentation, ResourceSemanticIdentity, ResourceViewMountSpec,
+    ResourceViewRangeSpec, ResourceViewSpec, RunBy, Target, flatten, listed_row,
+    listed_row_problems, sole_text_argument,
 };
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PARTICIPANT_VIEW_TAG, REQUIRES_TAG_PREFIX,
@@ -537,10 +541,8 @@ mod tests {
         };
         let encoded = EncodedAction::encode(COUNTER_TYPE, &action).unwrap();
 
-        // A plays locally, producing an envelope to replicate.
         let env = apply_local(&mut a, &action, encoded).unwrap();
 
-        // B replays the envelope from the same base state.
         replay(&mut b, &env, &registry()).unwrap();
 
         // Identical *history*, not just identical materialized values.

@@ -47,6 +47,13 @@ pub struct SourceEditor {
     /// Last known hover position (window space), or `None` when the pointer is
     /// off the pane. Drives the inline-diagnostic tooltip.
     hover: Option<Point>,
+    /// The matches the window's search found, in reading order, and which of
+    /// them is the caret's.
+    matches: Vec<ui::widget::FindMatch>,
+    current: Option<usize>,
+    /// Counts the source it has seen, so the search finds again when an edit
+    /// moves the text under it.
+    revision: u64,
 }
 
 impl SourceEditor {
@@ -64,7 +71,44 @@ impl SourceEditor {
             rect: Rect::ZERO,
             drag_anchor: None,
             hover: None,
+            matches: Vec::new(),
+            current: None,
+            revision: 0,
         }
+    }
+}
+
+/// The source is a document the window's search finds in: the matches are
+/// kept here and each is revealed as the caret, scrolled into view.
+impl ui::widget::Findable for SourceEditor {
+    fn find(
+        &mut self,
+        query: &str,
+        options: ui::widget::FindOptions,
+    ) -> Vec<ui::widget::FindMatch> {
+        self.matches = crate::find::in_text(self.text(), query, options);
+        self.current = None;
+        self.matches.clone()
+    }
+
+    fn reveal(&mut self, index: usize) {
+        let Some(found) = self.matches.get(index).cloned() else {
+            return;
+        };
+        self.current = Some(index);
+        let text = self.text().to_owned();
+        let line = text[..found.start.min(text.len())]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
+        self.goto_line(&text, line);
+        self.set_caret(found.end);
+        self.focused = true;
+    }
+
+    fn content_revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -97,6 +141,7 @@ impl SourceEditor {
     /// Show the source at `path`, each edit a splice there once a
     /// dispatcher is attached.
     pub fn follow(&mut self, path: Path<Workspace, String>) {
+        self.revision = self.revision.wrapping_add(1);
         let mut control = Self::control_new();
         control.set_rect(self.rect);
         self.code = TextControl::view_only_at(control, path);
@@ -114,6 +159,9 @@ impl SourceEditor {
     /// Show the open file's source as `doc` holds it. Called from the app's
     /// `sync`.
     pub fn pull(&mut self, doc: &AutoCommit) {
+        // An edit anywhere moves the text under the search: its next drive
+        // finds again, keeping the match the person is looking at.
+        self.revision = self.revision.wrapping_add(1);
         self.code.pull(doc);
     }
 
@@ -170,8 +218,6 @@ impl SourceEditor {
         self.control_mut().goto_line(line_1based);
     }
 
-    // ----- scrolling -------------------------------------------------------
-
     /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
     /// only scrolls vertically.
     pub fn scroll_by(&mut self, _dx: f32, dy: f32, _text: &str) {
@@ -181,8 +227,6 @@ impl SourceEditor {
     /// Scroll the caret into view. The shared widget follows the caret after
     /// every edit automatically, so this is a no-op kept for call-site parity.
     pub fn ensure_visible(&mut self, _text: &str) {}
-
-    // ----- mouse -----------------------------------------------------------
 
     pub fn on_mouse_down(&mut self, p: Point, shift: bool, _text: &str) {
         self.focused = true;
@@ -221,8 +265,6 @@ impl SourceEditor {
         self.hover = p;
         true
     }
-
-    // ----- keyboard --------------------------------------------------------
 
     /// Handle a keyboard event through the shared widget, submitting what it
     /// edited as one splice of the open file's source. Returns true if
@@ -266,8 +308,6 @@ impl SourceEditor {
         handled
     }
 
-    // ----- rendering -------------------------------------------------------
-
     /// Paint the pane. The editor stands on the window ground: it fills
     /// nothing of its own. The shared widget paints the gutter, line numbers,
     /// current-line band, selection, highlighted text and caret, and the
@@ -291,11 +331,11 @@ impl SourceEditor {
         self.control_mut()
             .inner_mut()
             .set_content_size(Some(theme.text(ui::tokens::TextRole::Code).size));
-        let text = self.control().value().to_string();
+        let text = self.control().value();
         let spans = diags
             .iter()
             .filter_map(|d| {
-                let (b0, b1) = diag_byte_span(d, &text)?;
+                let (b0, b1) = diag_byte_span(d, text)?;
                 let severity = match d.kind {
                     DiagKind::Error => Severity::Error,
                     DiagKind::Warning => Severity::Warning,
@@ -312,6 +352,28 @@ impl SourceEditor {
         self.control_mut().set_pointer(pointer);
         self.control_mut()
             .draw_embedded(scene, transform, tr, theme);
+    }
+
+    /// The editor's damage since the frame on screen, as part of `owner`, the
+    /// widget in the tree it is drawn in.
+    pub fn collect_damage_for<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) {
+        self.control().collect_damage_for(owner, regions);
+    }
+
+    /// From the host's `mark_drawn`: the frame just drawn is on screen.
+    pub fn mark_shown(&mut self) {
+        self.control_mut().mark_shown();
+    }
+
+    /// Where the caret is, in the window.
+    #[cfg(test)]
+    pub(crate) fn caret_rect(&self) -> Option<Rect> {
+        ui::widget::Widget::ime_cursor_rect(self.control())
+    }
+
+    /// Whether the hover card of a diagnostic shows over the window.
+    pub fn shows_tooltip(&self) -> bool {
+        self.control().shows_diagnostic_card()
     }
 
     /// The hover card for the diagnostic under the pointer, drawn in the
@@ -403,7 +465,6 @@ mod tests {
 
     #[test]
     fn editor_maps_positions_and_diagnostic_spans() {
-        // Case `byte_of_line_col_maps_positions`.
         {
             let t = "ab\ncde\nf";
             assert_eq!(byte_of_line_col(t, 0, 0), 0);
@@ -411,7 +472,6 @@ mod tests {
             assert_eq!(byte_of_line_col(t, 1, 2), 5);
             assert_eq!(byte_of_line_col(t, 2, 0), 7);
         }
-        // Case `diag_byte_span_covers_the_reported_span`.
         {
             // 1-based ln 2 cols 3..6 → 0-based line 1 cols 2..5 → bytes 5..8 in
             // "ab\ncdefg".
@@ -427,7 +487,6 @@ mod tests {
             };
             assert_eq!(diag_byte_span(&d, t), Some((5, 8)));
         }
-        // Case `diag_zero_width_span_is_widened`.
         {
             let t = "abc";
             let d = Diagnostic {
@@ -445,7 +504,6 @@ mod tests {
                 "a zero-width span still underlines at least one byte"
             );
         }
-        // Case `gutter_severity_prefers_error`.
         {
             let warn = Diagnostic {
                 kind: DiagKind::Warning,
@@ -551,7 +609,6 @@ mod tests {
             assert_eq!(source(&doc), "");
             assert_eq!(ed.text(), "");
         }
-        // Case `goto_line_moves_the_caret_to_the_line_start`.
         {
             let (_doc, mut ed) = showing("one\ntwo\nthree");
             ed.goto_line("", 2);

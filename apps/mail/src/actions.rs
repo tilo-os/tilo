@@ -125,6 +125,55 @@ pub enum MailEffect {
     /// device.
     #[effect(row, job, cancellable)]
     Save { message: String, index: usize },
+    /// Load remote images
+    ///
+    /// Shows the images, fonts and styles an HTML message loads from the
+    /// web, for this message only. Loading them tells the sender it was
+    /// read; nothing else it asks for (script, frames, forms) ever runs.
+    #[effect(view, row)]
+    LoadRemoteContent { message: String },
+    /// Always load remote images from this sender
+    ///
+    /// Loads them in every message from this message's sender, now and
+    /// later. Part of the person's Mail preferences.
+    #[effect(view, row)]
+    AlwaysLoadRemoteContent { message: String },
+    /// Search messages
+    ///
+    /// Finds the messages held in the mailbox whose sender, recipients,
+    /// subject or text hold every word, newest first. Changes nothing.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    SearchMessages {
+        #[param("The words to find, ignoring case")]
+        query: String,
+        #[param("The folder to search; every folder when omitted")]
+        folder: Option<crate::model::Folder>,
+    },
+    /// Export content
+    ///
+    /// Keeps held mail as a file in the room's content and answers its
+    /// content address: one message as Markdown, JSON or .eml, or a
+    /// folder's or every message as Markdown or JSON. No file is written
+    /// and nothing is sent.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ExportContent {
+        #[param("md, json or eml; md when omitted", choices = ["md", "json", "eml"])]
+        format: Option<String>,
+        #[param("The id of one held message; every message when omitted")]
+        message: Option<String>,
+        #[param("The folder whose messages to export")]
+        folder: Option<crate::model::Folder>,
+    },
+    /// Open link
+    ///
+    /// Opens one of the message's links (as Read message lists them) in the
+    /// Browser.
+    #[effect(view, row)]
+    OpenLink {
+        message: String,
+        #[param("A link of the message, as Read message lists it")]
+        url: String,
+    },
 }
 
 /// What invoking `effect` where it is bound sends its handler.
@@ -611,6 +660,15 @@ fn with_message_views(resource: Resource, id: &str) -> Resource {
         .with_action(MailEffect::Reply { message: message() }.bound())
         .with_action(MailEffect::ReplyAll { message: message() }.bound())
         .with_action(MailEffect::Forward { message: message() }.bound())
+        .with_action(MailEffect::LoadRemoteContent { message: message() }.bound())
+        .with_action(MailEffect::AlwaysLoadRemoteContent { message: message() }.bound())
+        .with_action(
+            MailEffect::OpenLink {
+                message: message(),
+                url: String::new(),
+            }
+            .bound_asking(&["url"]),
+        )
 }
 
 /// This device's accounts `(id, label, active)`, each opening its inbox.

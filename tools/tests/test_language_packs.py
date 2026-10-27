@@ -38,10 +38,34 @@ class LanguagePackTests(unittest.TestCase):
             self.assertFalse((out / "en-US").exists(), "English stays in the packages")
             self.assertFalse((out / "de-DE").exists(), "a self-embedding catalogue is not packed")
 
+    def test_one_pack_per_language_whatever_region_a_crate_names(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            repo = pathlib.Path(scratch) / "repo"
+            crate(repo, "notes", 'ui::embedded_catalog!(pub fn, ["en-US", "de"]);\n',
+                  {"en-US": "a = A\n", "de": "a = Ä\n"})
+            crate(repo, "files", 'ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);\n',
+                  {"en-US": "b = B\n", "de-DE": "b = Ö\n"})
+            out = pathlib.Path(scratch) / "packs"
+            self.assertEqual(packs.build(repo, out), 0)
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ["de"])
+            self.assertEqual((out / "de" / "files.ftl").read_text(encoding="utf-8"), "b = Ö\n")
+            # Two different catalogues of one language in one crate are refused.
+            (repo / "files" / "locales" / "de.ftl").write_text("b = Ü\n", encoding="utf-8")
+            self.assertEqual(packs.build(repo, out), 1)
+
     def test_the_repository_packs_settings_german(self) -> None:
         found = {(locale, name) for locale, name, _ in packs.catalogues(ROOT)}
-        self.assertIn(("de-DE", "settings"), found)
+        self.assertIn(("de-DE", "settings-core"), found)
         self.assertNotIn("en-US", {locale for locale, _ in found})
+
+    def test_a_locales_pack_is_signed_data_named_by_the_locale(self) -> None:
+        import tomllib
+        manifest = tomllib.loads(packs.manifest("de-DE", "0.1.7", "ab" * 32))
+        self.assertEqual(manifest["package"]["id"], "so.tilo.language-pack.de-de")
+        self.assertEqual(manifest["package"]["kind"], "language-pack")
+        self.assertNotIn("isa", manifest["package"], "a pack is for every architecture")
+        self.assertEqual(manifest["publisher"]["identity"], "ed25519:" + "ab" * 32)
+        self.assertEqual(packs.metadata("de-DE")["supported_languages"], ["en"])
 
 
 if __name__ == "__main__":

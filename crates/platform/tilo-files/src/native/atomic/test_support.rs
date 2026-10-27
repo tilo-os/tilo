@@ -87,10 +87,6 @@ pub fn with_failure<T>(checkpoint: Checkpoint, operation: impl FnOnce() -> T) ->
 ///
 /// Other matching occurrences proceed normally. Nested scopes restore the
 /// previous failure and its remaining occurrence count, including on unwind.
-///
-/// # Panics
-///
-/// Panics when `occurrence` is zero or `checkpoint` is observation-only.
 pub fn with_failure_on_nth<T>(
     checkpoint: Checkpoint,
     occurrence: usize,
@@ -308,10 +304,6 @@ pub fn with_provision_observer<T>(
     provision_scope(|hooks| hooks.observer = Some(Rc::new(observer)), operation)
 }
 /// Fail the exact physical path/checkpoint, after its observer has run.
-///
-/// # Panics
-///
-/// Panics when `checkpoint` is the observation-only `Synced`.
 #[cfg(unix)]
 pub fn with_provision_failure<T>(
     checkpoint: ProvisionCheckpoint,

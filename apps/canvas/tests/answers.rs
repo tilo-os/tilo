@@ -7,11 +7,7 @@
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use canvas::App;
-use canvas::render::Renderer;
 use serde_json::{Value, json};
 use ui::prelude::TestApp;
 
@@ -327,12 +323,9 @@ fn the_wand_finds_colour_on_one_layer_when_asked() {
         "draw",
         json!({"layer": "top", "marks": [rect("blue", [150.0, 150.0, 100.0, 100.0], "#2040c0")]}),
     );
-    let renderer = Rc::new(RefCell::new(Renderer::default()));
-    canvas::author::see(&renderer, &Rc::new(app.state()));
-
     let shown = call(
         &mut app,
-        "select",
+        "find-area",
         json!({"at": [200, 200], "tolerance": 0.1}),
     );
     let area = shown["selection"]["area"].as_f64().unwrap();
@@ -343,7 +336,7 @@ fn the_wand_finds_colour_on_one_layer_when_asked() {
 
     let alone = call(
         &mut app,
-        "select",
+        "find-area",
         json!({"at": [200, 200], "tolerance": 0.1, "layer": "layer-1"}),
     );
     let area = alone["selection"]["area"].as_f64().unwrap();
@@ -353,7 +346,7 @@ fn the_wand_finds_colour_on_one_layer_when_asked() {
     );
 
     let error = app
-        .call("select", json!({"at": [200, 200], "layer": "nowhere"}))
+        .call("find-area", json!({"at": [200, 200], "layer": "nowhere"}))
         .unwrap_err()
         .to_string();
     assert!(

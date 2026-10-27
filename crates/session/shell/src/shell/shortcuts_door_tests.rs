@@ -142,9 +142,11 @@ fn spawn_broker(
     crate::shell::state::WorkspaceTreeHandle,
 ) {
     let owner = owner_principal();
-    let mut workspace =
-        crate::shell::state::Workspace::new(crate::shell::state::WorkspaceId(1), "Drafts room");
-    workspace.set_room(crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"));
+    let mut workspace = crate::shell::state::Workspace::in_room(
+        crate::shell::state::WorkspaceId(1),
+        crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id"),
+        "Drafts room",
+    );
     workspace.set_owner(owner.clone());
     let by = tilo_action_policy::Subject::person(owner.clone());
     workspace.admit_agent_preset(
@@ -678,6 +680,7 @@ fn publish_draft(id: &str, granted: &[&str]) -> Shortcut {
                 &[("draft", Binding::step("draft", "/draft"))],
             ),
         ],
+        step_timeout_secs: None,
         output: Some(Binding::step("draft", "/draft")),
         grant: granted
             .iter()
@@ -746,7 +749,6 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
         "the saved shortcut is offered as `{resource}#run`"
     );
 
-    // Run it through the door and serve its steps.
     let (run, _) = door
         .invoke(&resource, "run", &json!({ "title": "Launch notes" }))
         .expect("the run is admitted");
@@ -953,7 +955,10 @@ fn press(
 #[test]
 fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     let mut door = Door::open();
-    let session = Caller::local_person(session_person());
+    // The person is read while the door's host identity is installed:
+    // dropping the door restores the environment it replaced.
+    let person = session_person();
+    let session = Caller::local_person(person.clone());
     let chord = TriggerSpec::Keyboard {
         chord: "Super+Shift+Y".into(),
     };
@@ -1001,7 +1006,7 @@ fn a_chord_pressed_in_the_shell_runs_the_shortcut_saved_with_it() {
     drop(door);
     assert_eq!(finished.len(), 1);
     assert_eq!(finished[0].report.trigger, "keyboard");
-    assert_eq!(finished[0].invoker, session_person());
+    assert_eq!(finished[0].invoker, person);
 }
 
 #[test]

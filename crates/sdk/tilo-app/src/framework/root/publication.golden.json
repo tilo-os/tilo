@@ -29,7 +29,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -78,7 +77,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -114,7 +112,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -122,7 +119,7 @@
           "type": "none"
         },
         "tags": [
-          "surface:programmatic",
+          "audience:agents",
           "confirmation:by-argument"
         ]
       },
@@ -167,7 +164,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -175,7 +171,7 @@
           "type": "none"
         },
         "tags": [
-          "surface:programmatic",
+          "audience:agents",
           "confirmation:by-argument"
         ]
       },
@@ -277,7 +273,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -313,7 +308,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -349,7 +343,6 @@
           "mode": "none"
         },
         "retry": "idempotent",
-        "reversible": false,
         "execution": {
           "mode": "immediate"
         },
@@ -358,7 +351,10 @@
           "schema": {
             "type": "object"
           }
-        }
+        },
+        "tags": [
+          "audience:agents"
+        ]
       },
       "input": {
         "Text": {
@@ -407,7 +403,6 @@
           "mode": "none"
         },
         "retry": "idempotent",
-        "reversible": false,
         "execution": {
           "mode": "immediate"
         },
@@ -416,7 +411,10 @@
           "schema": {
             "type": "object"
           }
-        }
+        },
+        "tags": [
+          "audience:agents"
+        ]
       },
       "input": "None",
       "params": []
@@ -446,7 +444,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -516,7 +513,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -568,7 +564,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -632,7 +627,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -684,7 +678,6 @@
           "mode": "none"
         },
         "retry": "idempotent",
-        "reversible": false,
         "execution": {
           "mode": "immediate"
         },
@@ -736,7 +729,6 @@
           "mode": "none"
         },
         "retry": "idempotent",
-        "reversible": false,
         "execution": {
           "mode": "immediate"
         },
@@ -794,7 +786,6 @@
           "mode": "none"
         },
         "retry": "idempotent",
-        "reversible": false,
         "execution": {
           "mode": "immediate"
         },
@@ -805,7 +796,8 @@
           }
         },
         "tags": [
-          "read:document"
+          "read:document",
+          "audience:agents"
         ]
       },
       "input": {
@@ -864,7 +856,6 @@
           "mode": "none"
         },
         "retry": "at_most_once",
-        "reversible": true,
         "execution": {
           "mode": "immediate"
         },
@@ -873,7 +864,10 @@
           "schema": {
             "type": "object"
           }
-        }
+        },
+        "tags": [
+          "audience:agents"
+        ]
       },
       "input": {
         "Text": {
@@ -964,7 +958,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -996,7 +989,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1028,7 +1020,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1060,7 +1051,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1102,7 +1092,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1134,7 +1123,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1166,7 +1154,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1198,7 +1185,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1240,7 +1226,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1272,7 +1257,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1304,7 +1288,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1336,7 +1319,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1378,7 +1360,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1410,7 +1391,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1442,7 +1422,6 @@
               "mode": "none"
             },
             "retry": "at_most_once",
-            "reversible": true,
             "execution": {
               "mode": "immediate"
             },
@@ -1483,7 +1462,6 @@
                   "mode": "none"
                 },
                 "retry": "at_most_once",
-                "reversible": true,
                 "execution": {
                   "mode": "immediate"
                 },
@@ -1515,7 +1493,6 @@
                   "mode": "none"
                 },
                 "retry": "at_most_once",
-                "reversible": true,
                 "execution": {
                   "mode": "immediate"
                 },
@@ -1547,7 +1524,6 @@
                   "mode": "none"
                 },
                 "retry": "at_most_once",
-                "reversible": true,
                 "execution": {
                   "mode": "immediate"
                 },

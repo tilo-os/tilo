@@ -90,7 +90,6 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     assert_eq!(found["pages"][0]["resource"], resource.as_str());
     assert_eq!(found["pages"][0]["title"], "Todo");
 
-    // Read as Markdown, an id on every line.
     let note = read(&mut app, &resource);
     assert_eq!(lines(&note), ["buy milk", "buy eggs", "call mum"]);
     let first_read = ids(&note);
@@ -127,7 +126,6 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
         "the blocks are the ones that were there"
     );
 
-    // Tick one, reword one, add one.
     let milk = id_of(&note, "- [ ] buy milk");
     let eggs = id_of(&note, "- [ ] buy eggs");
     let ticked = call(
@@ -151,7 +149,6 @@ fn an_agent_turns_the_todo_page_into_a_checklist_ticks_items_and_rewords_one() {
     );
     assert_eq!(added["created"].as_array().unwrap().len(), 1, "{added}");
 
-    // Find text returns the block to edit by.
     let hits = call(
         &mut app,
         "notes.notebook",
@@ -334,4 +331,141 @@ fn a_selection_in_a_note_is_shared_as_the_place_replace_range_edits() {
     app.settle();
     let note = read(&mut app, &resource);
     assert_eq!(lines(&note), ["see the search docs for xy", "last line"]);
+}
+
+/// The titles of the notebook's top-level notes as its read lists them.
+fn top_level_titles(app: &mut TestApp<NotesShell>) -> Vec<String> {
+    let notebook = call(app, "notes.notebook", "read", json!({}));
+    notebook["pages"]
+        .as_array()
+        .expect("the notebook's notes")
+        .iter()
+        .filter(|page| page["parent"].is_null())
+        .map(|page| page["title"].as_str().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// The resource the notebook's read lists the note titled `title` as.
+fn listed_item(app: &mut TestApp<NotesShell>, title: &str) -> String {
+    let notebook = call(app, "notes.notebook", "read", json!({}));
+    notebook["pages"]
+        .as_array()
+        .expect("the notebook's notes")
+        .iter()
+        .find(|page| page["title"] == title)
+        .and_then(|page| page["item"].as_str())
+        .unwrap_or_else(|| panic!("no note titled {title:?}: {notebook}"))
+        .to_owned()
+}
+
+#[test]
+fn an_agent_makes_converts_and_ticks_checklist_items_and_reads_them_back_in_order() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    let created = call(
+        &mut app,
+        "notes.notebook",
+        "create-page",
+        json!({ "title": "Errands", "markdown": "pack bags\nbook train\nwater plants" }),
+    );
+    let resource = created["resource"].as_str().unwrap().to_owned();
+    let note = read(&mut app, &resource);
+    let body = note["body"].as_str().unwrap().to_owned();
+    let pack = id_of(&note, "pack bags");
+    let water = id_of(&note, "water plants");
+
+    // A paragraph becomes an unticked checklist item, keeping its block.
+    let converted = call(
+        &mut app,
+        &body,
+        "set-block-kind",
+        json!({ "block": pack, "kind": "checklist" }),
+    );
+    assert_eq!(converted, json!({ "changed": [pack] }));
+
+    // A new item, ticked, right after it.
+    let added = call(
+        &mut app,
+        &body,
+        "insert-block",
+        json!({ "kind": "checklist", "text": "buy tickets", "after": pack, "done": true }),
+    );
+    assert_eq!(added["created"].as_array().unwrap().len(), 1, "{added}");
+
+    // Without `done` the item toggles; with it, it takes that state.
+    call(&mut app, &body, "set-block-kind", json!({ "block": pack }));
+    assert_eq!(id_of(&read(&mut app, &resource), "- [x] pack bags"), pack);
+    call(
+        &mut app,
+        &body,
+        "set-block-kind",
+        json!({ "block": pack, "done": false }),
+    );
+
+    // The paragraph moves to the top.
+    call(
+        &mut app,
+        &body,
+        "move-block",
+        json!({ "block": water, "position": "start" }),
+    );
+
+    // The read says each block's kind and state, in the body's order.
+    let note = read(&mut app, &resource);
+    assert_eq!(
+        lines(&note),
+        [
+            "water plants",
+            "- [ ] pack bags",
+            "- [x] buy tickets",
+            "book train"
+        ]
+    );
+    assert_eq!(note["blocks"], 4, "{note}");
+    assert_eq!(ids(&note)[..2], [water, pack]);
+    let read_body = call(&mut app, "notes.notebook", "read", json!({ "item": body }));
+    assert_eq!(read_body["markdown"], note["markdown"]);
+}
+
+#[test]
+fn the_notebook_read_lists_sibling_notes_in_order_and_its_ids_move_them() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    for title in ["Alpha", "Beta", "Gamma"] {
+        call(
+            &mut app,
+            "notes.notebook",
+            "create-page",
+            json!({ "title": title }),
+        );
+    }
+    let ours = |titles: Vec<String>| -> Vec<String> {
+        titles
+            .into_iter()
+            .filter(|title| ["Alpha", "Beta", "Gamma"].contains(&title.as_str()))
+            .collect()
+    };
+    assert_eq!(ours(top_level_titles(&mut app)), ["Alpha", "Beta", "Gamma"]);
+
+    // An agent moves a note before another by the ids the read gave it.
+    let alpha = listed_item(&mut app, "Alpha");
+    let gamma = listed_item(&mut app, "Gamma");
+    app.call_on(&gamma, "move-note", json!({ "before": alpha }))
+        .unwrap();
+    app.settle();
+    assert_eq!(ours(top_level_titles(&mut app)), ["Gamma", "Alpha", "Beta"]);
+
+    // And under another note, where the read names its parent.
+    app.call_on(&alpha, "move-note", json!({ "parent": gamma }))
+        .unwrap();
+    app.settle();
+    assert_eq!(ours(top_level_titles(&mut app)), ["Gamma", "Beta"]);
+    let notebook = call(&mut app, "notes.notebook", "read", json!({}));
+    let moved = notebook["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|page| page["title"] == "Alpha")
+        .expect("the moved note");
+    assert_eq!(moved["parent"], gamma.as_str(), "{notebook}");
 }

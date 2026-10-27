@@ -73,7 +73,6 @@ fn read_u64(bytes: &[u8], at: usize) -> Option<u64> {
 }
 
 impl Manifest {
-    /// A manifest of `chunks`, chunked with `tier`.
     pub fn new(tier: ChunkTier, chunks: Vec<ChunkRef>) -> Self {
         let ends = ends_of(&chunks);
         let mut m = Self {
@@ -177,10 +176,6 @@ impl Manifest {
     }
 
     /// Decodes a manifest; the content id is BLAKE3 of `bytes`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `bytes` are not a well-formed manifest.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         use DecodeError::Malformed;
         if !is_manifest(bytes) {

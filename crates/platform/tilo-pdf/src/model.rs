@@ -305,14 +305,12 @@ impl RenderOptions {
         }
     }
 
-    /// Pixel size of the whole page at these options.
     #[must_use]
     pub fn page_pixels(&self, page: PageSize) -> (u32, u32) {
         let size = self.rotation.apply_size(page);
         (px(size.width * self.scale), px(size.height * self.scale))
     }
 
-    /// Pixel size of the output bitmap.
     #[must_use]
     pub fn output_pixels(&self, page: PageSize) -> (u32, u32) {
         match self.region {
@@ -347,7 +345,6 @@ pub struct TileGrid {
     pub tile: u32,
 }
 
-/// One tile of a [`TileGrid`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Tile {
     pub col: u32,
@@ -464,7 +461,6 @@ mod tests {
 
     #[test]
     fn tiles_cover_the_visible_region_at_stable_scales() {
-        // Phase `tiles_cover_the_visible_region_and_clip_at_page_edges`.
         {
             let page = PageSize {
                 width: 600.0,
@@ -505,7 +501,6 @@ mod tests {
             assert_eq!(some.len(), 1);
             assert_eq!((some[0].col, some[0].row), (1, 1));
         }
-        // Phase `scale_snapping_is_stable`.
         {
             assert_eq!(TileGrid::snap_scale(1.0), 1.0);
             assert_eq!(TileGrid::snap_scale(2.05), 2.0);

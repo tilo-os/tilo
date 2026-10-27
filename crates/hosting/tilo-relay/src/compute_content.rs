@@ -224,10 +224,6 @@ pub async fn prove_job_input(
 /// store returned for `digest`: the keyed hash of the bytes under `nonce`
 /// when they match `digest`, otherwise a refusal coded as
 /// [`answer_content`] codes it. `locator` is passed on as the hint.
-///
-/// # Errors
-///
-/// Returns an error when the stream fails.
 pub async fn answer_proof<W>(
     send: &mut W,
     (digest, nonce): ([u8; 32], [u8; 32]),
@@ -252,11 +248,6 @@ where
     refuse_proof(send, code).await
 }
 
-/// Refuse a content proof stream with `code`.
-///
-/// # Errors
-///
-/// Returns an error when the stream fails.
 pub(crate) async fn refuse_proof<W>(send: &mut W, code: &str) -> Result<(), EnvironmentStreamError>
 where
     W: AsyncWrite + Unpin + Send,
@@ -267,10 +258,6 @@ where
 /// Answer a [`WorkerStreamOpen::ComputeContent`] from what the local store
 /// returned for it: the bytes when they match `digest`, otherwise a refusal
 /// (`missing` when the store has nothing, `unreadable` when it failed).
-///
-/// # Errors
-///
-/// Returns an error when the stream fails.
 pub async fn answer_content<W>(
     send: &mut W,
     digest: [u8; 32],
@@ -294,11 +281,6 @@ where
     Ok(())
 }
 
-/// Refuse a content stream with `code`.
-///
-/// # Errors
-///
-/// Returns an error when the stream fails.
 pub(crate) async fn refuse<W>(send: &mut W, code: &str) -> Result<(), EnvironmentStreamError>
 where
     W: AsyncWrite + Unpin + Send,
@@ -318,10 +300,6 @@ struct ContentRoute {
 /// The relay's side of [`StreamOpen::ComputeContent`]: decide from the
 /// job's durable record whether `peer` may have `digest`, ask the end that
 /// holds it, and forward its answer, checked against the digest.
-///
-/// # Errors
-///
-/// Returns an error when a stream fails.
 pub(crate) async fn route_content(
     context: &RoutingContext,
     peer: &AuthenticatedPeer,
@@ -418,10 +396,6 @@ pub(crate) async fn route_content(
 /// rule ([`proof_source_for`]), ask the job's requester to prove it holds
 /// `digest` under the worker's `nonce`, and forward its answer. The relay
 /// cannot check the proof (it never sees the bytes); the worker does.
-///
-/// # Errors
-///
-/// Returns an error when a stream fails.
 pub(crate) async fn route_proof(
     context: &RoutingContext,
     peer: &AuthenticatedPeer,
@@ -710,8 +684,6 @@ mod tests {
             source_for(&job, &ComputeJobPhase::Running, requester, [6; 32]),
             Err("not_authorised")
         );
-        // A reported output, to the requester, from the worker, within the
-        // job's output bound.
         assert_eq!(
             source_for(&job, &done, requester, [6; 32]),
             Ok((job.worker, 1024))

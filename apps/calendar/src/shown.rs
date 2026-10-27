@@ -41,7 +41,6 @@ impl Viewer {
         self.zone.map(Tz::name)
     }
 
-    /// `instant` on the viewer's clock.
     pub fn wall(&self, instant: DateTime<Utc>) -> NaiveDateTime {
         match self.zone {
             Some(zone) => instant.with_timezone(&zone).naive_local(),
@@ -240,20 +239,17 @@ mod tests {
         let berlin = Viewer::named("Europe/Berlin");
         let day = NaiveDate::from_ymd_opt(2026, 6, 30).unwrap();
 
-        // A Google event stored in UTC.
         let utc = event("UTC", at(2026, 6, 30, 7, 0), 60);
         let shown = occurrences(&utc, day, day, &berlin);
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].start, at(2026, 6, 30, 9, 0));
         assert_eq!(shown[0].end, at(2026, 6, 30, 10, 0));
 
-        // A New York morning meeting is a Berlin afternoon.
         let ny = event("America/New_York", at(2026, 6, 30, 9, 0), 30);
         let shown = occurrences(&ny, day, day, &berlin);
         assert_eq!(shown[0].start, at(2026, 6, 30, 15, 0));
         assert_eq!(shown[0].original, day);
 
-        // Floating time is the same wall time everywhere.
         let floating = event("floating", at(2026, 6, 30, 9, 0), 30);
         assert_eq!(
             occurrences(&floating, day, day, &berlin)[0].start,

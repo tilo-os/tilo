@@ -47,7 +47,6 @@ fn only_what_gnome_would_start_outside_its_own_session_starts() {
     assert_eq!(
         started,
         vec![
-            // The user's own entries.
             "Quadrant",
             "example-appimage",
             // Desktop-neutral entries every desktop starts. The guest-tool

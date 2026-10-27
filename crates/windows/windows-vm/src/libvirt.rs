@@ -641,7 +641,6 @@ mod tests {
 
     #[test]
     fn generated_domains_are_headless_default_deny_and_architecture_correct() {
-        // Phase `domain_is_headless_and_default_deny`.
         {
             let xml = render_domain_xml(&config()).unwrap();
             assert!(xml.contains("type='kvm'"));
@@ -672,7 +671,6 @@ mod tests {
             assert!(!xml.contains("listen='0.0.0.0'"));
             assert!(!xml.contains("<redirdev"));
         }
-        // Phase `cpu_allocation_uses_one_socket_for_both_architectures_and_modes`.
         {
             for architecture in [
                 crate::GuestArchitecture::X86_64,
@@ -737,7 +735,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn domain_ownership_definition_and_devices_change_only_safely() {
-        // Phase `foreign_same_named_domain_is_refused`.
         {
             let runner = Runner::new(vec![
                 CommandOutput::successful("tilo-windows-appliance\n"),
@@ -751,7 +748,6 @@ mod tests {
                 Err(VmBackendError::ForeignDomainCollision)
             ));
         }
-        // Phase `an_owned_domain_survives_a_metadata_namespace_migration`.
         {
             let domain = render_domain_xml(&config())
                 .unwrap()
@@ -763,7 +759,6 @@ mod tests {
             let backend = LibvirtBackend::new(runner);
             backend.ensure_singleton(&config()).unwrap();
         }
-        // Phase `absent_domain_is_defined_through_stdin`.
         {
             let runner = Runner::new(vec![
                 CommandOutput::successful(""),
@@ -777,7 +772,6 @@ mod tests {
             assert!(String::from_utf8_lossy(&requests[1].stdin).contains("<domain type='kvm'>"));
             drop(requests);
         }
-        // Phase `an_explicit_partition_is_attached_persistently_only_while_shut_off`.
         {
             let domain = render_domain_xml(&config()).unwrap();
             let runner = Runner::new(vec![
@@ -809,7 +803,6 @@ mod tests {
             assert!(!attach.args.iter().any(|arg| arg == "--live"));
             assert!(String::from_utf8_lossy(&attach.stdin).contains("managed='no'"));
         }
-        // Phase `graphics_attachment_refuses_a_running_guest`.
         {
             let domain = render_domain_xml(&config()).unwrap();
             let runner = Runner::new(vec![
@@ -829,7 +822,6 @@ mod tests {
                 Err(VmBackendError::GraphicsRequiresShutoff)
             ));
         }
-        // Phase `enrollment_media_is_detached_live_and_persistently`.
         {
             let runner = Runner::new(vec![
                 CommandOutput::successful("<disk><target dev='sdb'/></disk>"),
@@ -849,7 +841,6 @@ mod tests {
             }
             drop(requests);
         }
-        // Phase `already_retired_media_is_an_idempotent_success`.
         {
             let runner = Runner::new(vec![
                 CommandOutput::successful("<domain/>"),

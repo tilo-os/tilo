@@ -71,7 +71,6 @@ pub enum Denial {
     Credentials,
     /// Too many failed attempts; the account is locked for now.
     Locked,
-    /// The account itself has expired.
     AccountExpired,
     /// The passcode has expired and must be changed first.
     PasscodeExpired,

@@ -14,10 +14,6 @@ impl PeerRevocations {
     }
     /// Verify every signature and form the earliest-entry union. No roster
     /// filter, authority or domain is inferred.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`BoundedPeerError`] if a signature does not verify.
     pub fn verified(entries: &[RevocationEntry]) -> Result<Self, BoundedPeerError> {
         let inner = backend::revocations::BoundedRevocations::verified(entries)
             .map_err(|_| BoundedPeerError::Invalid(BoundedPeerInvalid::Revocation))?;

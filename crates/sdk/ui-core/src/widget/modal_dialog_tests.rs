@@ -1751,7 +1751,6 @@ fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
     with_monotonic_time(at(800), || {
         let gone = present(&mut d, WINDOW, &theme);
         assert!(gone.encoding().is_empty(), "and then it has gone");
-        // A key opens it at once.
         note_source(MotionSource::Keyboard);
         d.set_open(true);
         lay_out(&mut d, WINDOW, &theme);

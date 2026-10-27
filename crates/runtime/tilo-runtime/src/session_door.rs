@@ -32,10 +32,6 @@ pub enum Route {
 /// explicit choice of a profile (`--standalone`, `--profile` or
 /// `TILO_RUNTIME_PROFILE`); `door` is [`agent_socket_path`]'s answer and
 /// `exists` whether something is there.
-///
-/// # Errors
-/// Inside a Tilo login with no door, says why the desktop's door is not
-/// available instead of starting a second authority beside the desktop.
 pub fn route(
     standalone: bool,
     tilo_login: bool,
@@ -125,7 +121,7 @@ pub enum HelloError {
     /// goes on to `initialize` on the same connection, as the protocol has
     /// it fall back. Nothing is asked of the person and nothing runs.
     Discover(serde_json::Value),
-    /// The line was unreadable, over [`MAX_HELLO`], or the client left.
+    /// The line was unreadable, over `MAX_HELLO`, or the client left.
     Io(io::Error),
 }
 
@@ -296,13 +292,51 @@ fn finish_refusal(stream: &mut std::os::unix::net::UnixStream) {
     }
 }
 
-/// Serve one accepted session-door connection.
+/// The first line a client sends the door, read a byte at a time so nothing
+/// after it is consumed, within the bound and time an `initialize` gets.
+/// What it says decides how the connection is served: [`is_control_request`].
 ///
 /// # Errors
-/// Returns the I/O error that ended the connection.
+/// The client left, sent too much, or said nothing in time.
+#[cfg(unix)]
+pub fn read_first_line(stream: &mut std::os::unix::net::UnixStream) -> io::Result<Vec<u8>> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let mut budget = MAX_HELLO;
+    read_hello_line(stream, &mut budget)
+}
+
+/// Whether `line` is a request of the desktop's control protocol — one JSON
+/// object naming its `op` — rather than MCP's JSON-RPC. `tilo action` and
+/// `tilo open` speak it from inside a terminal app.
+#[must_use]
+pub fn is_control_request(line: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(line).is_ok_and(|request| {
+        request.get("op").is_some_and(serde_json::Value::is_string)
+            && request.get("jsonrpc").is_none()
+    })
+}
+
+/// Serve one accepted session-door connection.
 #[cfg(unix)]
 pub fn serve<H>(
+    stream: std::os::unix::net::UnixStream,
+    host: H,
+    ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
+) -> io::Result<()>
+where
+    H: tilo_actions::remote::ActionHost + Send + Sync + 'static,
+{
+    serve_after(stream, None, host, ask)
+}
+
+/// [`serve`] a connection whose first line, `first`, was already read
+/// ([`read_first_line`]).
+#[cfg(unix)]
+pub fn serve_after<H>(
     mut stream: std::os::unix::net::UnixStream,
+    mut first: Option<Vec<u8>>,
     host: H,
     ask: impl FnOnce(&Hello, &dyn Fn() -> bool) -> Consent,
 ) -> io::Result<()>
@@ -312,9 +346,13 @@ where
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
-    let mut budget = MAX_HELLO;
+    let mut budget = MAX_HELLO.saturating_sub(first.as_ref().map_or(0, Vec::len));
     let hello = loop {
-        match read_hello_line(&mut stream, &mut budget)
+        let line = match first.take() {
+            Some(line) => Ok(line),
+            None => read_hello_line(&mut stream, &mut budget),
+        };
+        match line
             .map_err(HelloError::Io)
             .and_then(|line| parse_hello(&line))
         {
@@ -402,6 +440,19 @@ mod tests {
     }
 
     #[test]
+    fn control_requests_are_told_from_mcp_by_their_op() {
+        assert!(is_control_request(
+            br#"{"args":{},"id":"x","op":"actions_invoke","provider":"p"}"#
+        ));
+        assert!(!is_control_request(
+            br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#
+        ));
+        assert!(!is_control_request(br#"{"jsonrpc":"2.0","op":"x"}"#));
+        assert!(!is_control_request(br#"{"op":7}"#));
+        assert!(!is_control_request(b"op"));
+    }
+
+    #[test]
     fn the_door_lives_in_the_private_session_directory() {
         assert_eq!(
             agent_socket_path(Some("/run/user/1000".into())),
@@ -422,8 +473,6 @@ mod tests {
         assert_eq!(missing.kind(), io::ErrorKind::NotFound);
         assert!(missing.to_string().contains("--standalone"), "{missing}");
         assert!(route(false, true, None, |_| true).is_err());
-        // The client's own explicit choice, and every other desktop, keep the
-        // standalone runtime.
         assert_eq!(
             route(true, true, Some(door.clone()), |_| true).unwrap(),
             Route::Standalone
@@ -505,8 +554,9 @@ mod tests {
             &self,
             _caller: &tilo_actions::remote::Caller,
             _id: &tilo_actions::InvocationId,
-        ) -> Result<(), tilo_actions::remote::ActionHostError> {
-            Ok(())
+        ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>>
+        {
+            tilo_actions::remote::Pending::ready(Ok(()))
         }
     }
 
@@ -689,18 +739,16 @@ mod tests {
         let (mut near, far) = std::os::unix::net::UnixStream::pair().unwrap();
         near.write_all(format!("{INITIALIZE}\n").as_bytes())
             .unwrap();
+        let (asking, asked) = std::sync::mpsc::channel();
         let served = std::thread::spawn(move || {
-            serve(far, Recording::default(), |_hello, connected| {
+            serve(far, Recording::default(), move |_hello, connected| {
                 assert!(connected(), "the client is still there");
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-                while connected() {
-                    assert!(std::time::Instant::now() < deadline, "never saw it leave");
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
+                asking.send(()).unwrap();
+                tilo_test_env::wait_until("the waiting client to leave", || !connected());
                 Consent::Refuse("gone".into())
             })
         });
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        tilo_test_env::recv("the person to be asked", &asked);
         drop(near);
         served.join().unwrap().unwrap();
     }

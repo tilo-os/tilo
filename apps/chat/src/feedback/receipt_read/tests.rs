@@ -24,6 +24,7 @@ fn submitted_as(author: &str) -> (automerge::AutoCommit, Submission, Resource) {
             text: "The page loses my position".into(),
             context: Vec::new(),
             screenshot: None,
+            ..Default::default()
         },
     };
     crate::testing::apply_as(
@@ -123,6 +124,7 @@ fn fixture_submission(room: &str) -> Submission {
             text: "The reader loses my position".into(),
             context: Vec::new(),
             screenshot: None,
+            ..Default::default()
         },
     }
 }

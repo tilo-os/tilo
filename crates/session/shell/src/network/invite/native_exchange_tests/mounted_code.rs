@@ -3,6 +3,7 @@ use super::*;
 use crate::network::actor::{Actor, NetCmd};
 use crate::shell::network::ShellNetwork;
 use cold_code::{APP, BODY, FILE, LocalSurface, MountedCode};
+use futures_util::FutureExt as _;
 use sha2::{Digest as _, Sha256};
 
 #[path = "mounted_code/acknowledgement_recovery.rs"]
@@ -95,6 +96,13 @@ struct RefreshConsumer {
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// The relay's refusals of a refresh whose requesting session has ended: the
+/// device reconnected or left before the owner's turn finished.
+const REQUESTER_GONE: [&str; 2] = [
+    "checkpoint refresh session ended during owner turn",
+    "checkpoint refresh subscription is no longer current",
+];
+
 impl RefreshConsumer {
     fn start(
         mut requests: tokio::sync::mpsc::Receiver<tilo_relay::peer::sync_refresh::Request>,
@@ -108,6 +116,16 @@ impl RefreshConsumer {
             while let Some(request) = requests.recv().await {
                 observed.store(true, std::sync::atomic::Ordering::Release);
                 let result = super::refresh::refresh_shared_on_request(&authority, request).await;
+                if let Err(reason) = &result
+                    && REQUESTER_GONE.contains(&reason.as_str())
+                {
+                    // The device that asked reconnected or left while its
+                    // request waited: the relay answers no session that is
+                    // gone, and the device's current session asks again.
+                    // Nothing under test was refused.
+                    eprintln!("refresh for an ended session not answered: {reason}");
+                    continue;
+                }
                 if result.is_ok() {
                     publish(&authority, &publisher);
                 }
@@ -225,6 +243,27 @@ impl Mounted {
             ))
             .await
             .unwrap();
+        // Joining installs the room's governance alone; the record Code opens
+        // arrives through the room's sync once the device is connected. The
+        // network's turn admits that input into the owner; mounting waits
+        // until the owner holds the record, as a person opens a file they
+        // see in the workspace.
+        tilo_test_env::within("the room's sync to deliver the Code record", async {
+            loop {
+                network.tick();
+                let held = device
+                    .owner
+                    .with_current(room, |view| {
+                        Ok(view.peer().document(APP, cold_code::RECORD).is_some())
+                    })
+                    .unwrap_or(false);
+                if held {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
         let code = cold_code::mount_with_network_and_reads(
             &device.owner,
             &device.identity,
@@ -381,6 +420,19 @@ pub(super) async fn run(
         endpoint: context.endpoint.clone(),
     };
     let active_writer = active_reads::enroll_writer(&context, &authority, &receiving_custody).await;
+    // The host answers a device's sync with fresh checkpoints of the room's
+    // records: joining installed governance alone, so the records the roots
+    // open reach each device this way before it mounts them.
+    let (mailbox, requests) = tilo_relay::peer::sync_refresh::Mailbox::bounded();
+    let topic = tilo_relay::room_workspace_id(tilo_joined_room::testing::ROOM).unwrap();
+    context
+        .relay
+        .install_sync_refresh(topic, mailbox)
+        .await
+        .unwrap();
+    let mut refreshes =
+        RefreshConsumer::start(requests, authority.clone(), context.publisher.clone());
+    publish(&authority, context.publisher);
     eprintln!("mounted journey: mounting both original Code roots");
     let mut mounted = vec![
         Mounted::new_observed(
@@ -403,16 +455,6 @@ pub(super) async fn run(
         )
         .await,
     ];
-    let (mailbox, requests) = tilo_relay::peer::sync_refresh::Mailbox::bounded();
-    let topic = tilo_relay::room_workspace_id(tilo_joined_room::testing::ROOM).unwrap();
-    context
-        .relay
-        .install_sync_refresh(topic, mailbox)
-        .await
-        .unwrap();
-    let mut refreshes =
-        RefreshConsumer::start(requests, authority.clone(), context.publisher.clone());
-    publish(&authority, context.publisher);
     // Showing the file is the editor's own effect, which the effect broker
     // signs a receipt for; the framework's `open` is a view and signs none.
     let show =
@@ -550,14 +592,16 @@ async fn enroll_device(
             MemberRole::Editor,
             Some(certificate.user_public_key),
             Some(certificate.device_label.clone()),
-            now_ns(SystemTime::now())
-                .unwrap()
-                .checked_add(60_000_000_000)
-                .unwrap(),
+            invitation_expiry_ns(),
         )
     };
+    // The device's one workspace is the room's own, joining it (as in
+    // [`super::actual_exchange`]).
     let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
     let slot = tree.desktop.active;
+    let joined = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+    assert!(tree.stand_in_room(slot, joined));
+    tree.joining_rooms.insert(joined);
     tree.persist_path = Some(
         context
             .directory
@@ -625,10 +669,7 @@ fn inspect_while_ui_caller_is_blocked(context: &Context<'_>, authority: &ActualA
             MemberRole::Viewer,
             None,
             None,
-            now_ns(SystemTime::now())
-                .unwrap()
-                .checked_add(60_000_000_000)
-                .unwrap(),
+            invitation_expiry_ns(),
         )
     };
     let client = WorkspaceJoinClient::new(context.endpoint.clone());
@@ -694,26 +735,74 @@ async fn drive(
                     result.expect("the actual refresh owner must remain live").unwrap();
                 }
                 Some(tilo_relay::Inbound::Delta { author, data }) = context.publisher.recv() => {
-                    let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
-                    if let NeighbourMsg::AppDocument { app_id, .. } = &message
-                        && app_id == APP
-                        && author != authority.lock().unwrap().as_ref().unwrap().governor().device_public_key
+                    // An edit arrives as several deltas. The governor takes
+                    // every one already here and re-signs its checkpoint once
+                    // for them: a checkpoint per delta queued more relay
+                    // writes than a loaded runner's disk completes.
+                    let mut admitted = govern_member_delta(authority, source, author, &data);
+                    while let Some(Some(tilo_relay::Inbound::Delta { author, data })) =
+                        context.publisher.recv().now_or_never()
                     {
-                        let admission = source.receive(RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(), tilo_peer_state::TransportOrigin::RelayDelta(author), message.clone(), SystemTime::now()).unwrap();
-                        eprintln!("mounted native governor input {}: {:?}", hex::encode(blake3::hash(&data).as_bytes()), admission.primary());
-                        {
-                            let mut state = authority.lock().unwrap();
-                            let state = state.as_mut().unwrap();
-                            state.receive(tilo_peer_state::TransportOrigin::RelayDelta(author), message).unwrap();
-                            state.refresh_checkpoint().unwrap();
-                        }
-                        publish(authority, context.publisher);
+                        admitted |= govern_member_delta(authority, source, author, &data);
+                    }
+                    if admitted {
+                        let mut state = authority.lock().unwrap();
+                        let state = state.as_mut().unwrap();
+                        state.commit_changes().unwrap();
+                        super::refresh::publish_changes(state, context.publisher);
                     }
                 }
                 () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
             }
         }
     }).await;
+}
+
+/// Admit a member's delta of the mounted app into the governor; `false` for
+/// anything else.
+fn govern_member_delta(
+    authority: &ActualAuthority,
+    source: &NativeWorkspaceOwner,
+    author: [u8; 32],
+    data: &[u8],
+) -> bool {
+    let message: NeighbourMsg = postcard::from_bytes(data).unwrap();
+    let governor = authority
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .governor()
+        .device_public_key;
+    if !matches!(&message, NeighbourMsg::AppDocument { app_id, .. } if app_id == APP)
+        || author == governor
+    {
+        return false;
+    }
+    let admission = source
+        .receive(
+            RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
+            tilo_peer_state::TransportOrigin::RelayDelta(author),
+            message.clone(),
+            SystemTime::now(),
+        )
+        .unwrap();
+    eprintln!(
+        "mounted native governor input {}: {:?}",
+        hex::encode(blake3::hash(data).as_bytes()),
+        admission.primary()
+    );
+    authority
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .receive(
+            tilo_peer_state::TransportOrigin::RelayDelta(author),
+            message,
+        )
+        .unwrap();
+    true
 }
 
 fn signed_audits(owner: &NativeWorkspaceOwner) -> std::collections::BTreeSet<uuid::Uuid> {

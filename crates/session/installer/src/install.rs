@@ -153,6 +153,10 @@ pub const INSTALL_BIN: &str = "/usr/libexec/tilo-install";
 pub const POWER_BIN: &str = "/usr/libexec/tilo-power";
 
 /// User-selected install options threaded through to the backend.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent backend policy flag, not a state combination"
+)]
 #[derive(Clone, PartialEq, Eq)]
 pub struct InstallOptions {
     /// Discovery-time identity bound to the privileged target. Size and
@@ -199,10 +203,22 @@ pub struct InstallOptions {
     pub purpose: String,
     pub device_label: String,
     pub prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
+    /// Public TPM-sealed sidecar for the exact prepared package above.
+    pub tpm_handoff: Option<String>,
     /// Hostname seeded into the installed system.
     pub hostname: String,
     /// Optional human-readable account name (GECOS), never a credential.
     pub full_name: String,
+    /// The first stdin line is already a canonical SHA-512 crypt hash, not a
+    /// plaintext password. Only the unattended recipe path sets this; the
+    /// privileged helper records the hash exactly as the interactive helper
+    /// would after hashing a typed password.
+    pub password_is_hash: bool,
+    /// Do not use the measured-boot TPM2 PIN policy even when the target
+    /// proves it. The supplied secret is enrolled as an independent strong
+    /// LUKS passphrase. Empty in the interactive flow, which keeps the
+    /// reviewed target's existing choice.
+    pub force_startup_passphrase: bool,
     /// POSIX locale seeded into `/etc/locale.conf`.
     pub locale: String,
     /// IANA time zone (e.g. `Europe/Amsterdam`). Empty ⇒ leave the
@@ -276,9 +292,12 @@ impl Default for InstallOptions {
             purpose: install_profile_model::default_purpose(),
             device_label: String::new(),
             prepared_setup: None,
+            tpm_handoff: None,
             filesystem: "btrfs".to_string(),
             hostname: "tilo".to_string(),
             full_name: String::new(),
+            password_is_hash: false,
+            force_startup_passphrase: false,
             locale: String::new(),
             timezone: String::new(),
             keymap: "us".to_string(),
@@ -352,6 +371,10 @@ fn add_guided_alongside_args(cmd: &mut Command, disk: &str, opts: &InstallOption
 
 /// Build the backend [`Command`] for `disk` + `user` + `opts`. stdin /
 /// stdout / stderr are wired up by [`stream_command`].
+#[expect(
+    clippy::too_many_lines,
+    reason = "the argv binding is one ordered contract and is easier to audit in place"
+)]
 pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command {
     let mut cmd = Command::new(INSTALL_BIN);
     if opts.online_accounts.is_some() {
@@ -380,6 +403,12 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     }
     if !opts.full_name.trim().is_empty() {
         cmd.arg("--full-name").arg(opts.full_name.trim());
+    }
+    if opts.password_is_hash {
+        cmd.arg("--password-hash");
+    }
+    if opts.force_startup_passphrase {
+        cmd.arg("--startup-passphrase-only");
     }
     if !opts.locale.trim().is_empty() {
         cmd.arg("--locale").arg(opts.locale.trim());
@@ -430,6 +459,9 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             .to_string(),
         );
     }
+    if let Some(handoff) = &opts.tpm_handoff {
+        cmd.arg("--prepared-tpm-handoff").arg(handoff);
+    }
     if opts.purpose != "computer" {
         cmd.arg("--purpose").arg(&opts.purpose);
     }
@@ -459,7 +491,6 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     cmd
 }
 
-/// Build the [`Command`] for a power action.
 pub fn power_command(action: PowerAction) -> Command {
     let mut cmd = Command::new(POWER_BIN);
     cmd.arg(action.flag());
@@ -752,6 +783,16 @@ pub fn run_install<F: FnMut(String)>(
     {
         return Err(std::io::Error::other("invalid selected-account operation"));
     }
+    if opts.password_is_hash {
+        if password.is_empty() {
+            return Err(std::io::Error::other("missing account password hash"));
+        }
+        if opts.prepared_setup.is_some() || opts.online_accounts.is_some() {
+            return Err(std::io::Error::other(
+                "a prepared setup or account transport cannot take a password hash",
+            ));
+        }
+    }
     stream_command_with_accounts(
         install_command(disk, user, opts),
         password,
@@ -863,7 +904,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn install_command_binds_every_storage_identity_without_credentials() {
-        // Phase `prepared_preflight_binds_every_storage_identity_without_credentials`.
         {
             let opts = InstallOptions {
                 disk_size_bytes: 500_000_000_000,
@@ -906,7 +946,6 @@ mod tests {
                 "prepared preflight must never enter partition creation"
             );
         }
-        // Phase `install_command_names_all_alongside_partitions`.
         {
             let opts = InstallOptions {
                 disk_size_bytes: 1_000_000_000_000,
@@ -966,7 +1005,6 @@ mod tests {
             );
             assert!(!args.contains(&"--confirm-erase"));
         }
-        // Phase `install_command_binds_the_complete_guided_free_space_plan`.
         {
             let opts = InstallOptions {
                 disk_size_bytes: 200 * 1024 * 1024 * 1024,
@@ -1014,7 +1052,6 @@ mod tests {
                 );
             }
         }
-        // Phase `internal_handoff_travels_only_with_the_guided_plan`.
         {
             let guided = InstallOptions {
                 guided_free_start_bytes: 100 * 1024 * 1024 * 1024,
@@ -1040,7 +1077,6 @@ mod tests {
             let cmd = install_command("/dev/nvme0n1", "qq", &erase);
             assert!(!cmd.get_args().any(|arg| arg == "--internal-handoff"));
         }
-        // Phase `whole_disk_command_binds_all_available_discovery_identity`.
         {
             let opts = InstallOptions {
                 disk_size_bytes: 64 * 1024 * 1024 * 1024,
@@ -1068,7 +1104,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn install_and_power_commands_build_argv_from_options() {
-        // Phase `install_command_builds_expected_argv`.
         {
             let opts = InstallOptions {
                 filesystem: "ext4".to_string(),
@@ -1111,9 +1146,7 @@ mod tests {
                 ]
             );
         }
-        // Phase `install_command_passes_keyvariant_with_keymap`.
         {
-            // Dvorak = xkb layout "us" + variant "dvorak".
             let opts = InstallOptions {
                 filesystem: "btrfs".to_string(),
                 hostname: "tilo".to_string(),
@@ -1148,7 +1181,6 @@ mod tests {
                 ]
             );
         }
-        // Phase `install_command_omits_empty_timezone_and_keymap`.
         {
             let opts = InstallOptions {
                 filesystem: "btrfs".to_string(),
@@ -1183,7 +1215,6 @@ mod tests {
             assert!(!args.contains(&"--keymap"));
             assert!(!args.contains(&"--keyvariant"));
         }
-        // Phase `install_command_omits_keyvariant_when_no_keymap`.
         {
             // A stray variant without a layout must not be emitted alone.
             let opts = InstallOptions {
@@ -1201,7 +1232,6 @@ mod tests {
             assert!(!args.contains(&"--keyvariant"));
             assert!(!args.contains(&"--keymap"));
         }
-        // Phase `default_options_are_btrfs_tilo_us`.
         {
             let o = InstallOptions::default();
             assert_eq!(o.filesystem, "btrfs");
@@ -1213,7 +1243,6 @@ mod tests {
             assert!(!o.fido2, "FIDO2 enrolment is opt-in (default off)");
             assert!(!o.codecs, "media codecs are opt-in (default off)");
         }
-        // Phase `power_command_builds_expected_argv`.
         {
             let reboot = power_command(PowerAction::Reboot);
             assert_eq!(reboot.get_program(), POWER_BIN);
@@ -1232,7 +1261,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn install_command_always_encrypts_with_optional_factors() {
-        // Phase `install_command_always_appends_encrypt`.
         {
             let opts = InstallOptions {
                 filesystem: "btrfs".to_string(),
@@ -1318,7 +1346,6 @@ mod tests {
                 "the PIN value must not leak onto the command line"
             );
         }
-        // Phase `install_command_keeps_encryption_with_additional_factors`.
         {
             let opts = InstallOptions {
                 filesystem: "btrfs".to_string(),
@@ -1355,7 +1382,6 @@ mod tests {
             assert!(args.contains(&"--fido2"));
             assert!(!args.contains(&"--pin"));
         }
-        // Phase `install_command_encrypts_by_default`.
         {
             let opts = InstallOptions::default();
             let cmd = install_command("/dev/vda", "qq", &opts);
@@ -1443,7 +1469,6 @@ mod tests {
 
     #[test]
     fn stream_command_feeds_secrets_on_stdin_and_bounds_output() {
-        // Phase `stream_command_reads_password_and_collects_stdout`.
         {
             // Stub backend: echo the password it received + a second line.
             let mut cmd = Command::new("sh");
@@ -1453,7 +1478,6 @@ mod tests {
             assert!(ok, "exit 0 should map to success");
             assert_eq!(lines, vec!["pw=s3cret".to_string(), "second".to_string()]);
         }
-        // Phase `stream_command_feeds_extra_stdin_lines_after_password`.
         {
             // The PIN (and any other secret) is read AFTER the password, one
             // line each, in order. Stub: read password then PIN, echo both.
@@ -1465,7 +1489,6 @@ mod tests {
             assert!(ok);
             assert_eq!(lines, vec!["pw=s3cret".to_string(), "pin=4242".to_string()]);
         }
-        // Phase `run_install_sends_pin_on_second_stdin_line`.
         {
             // End-to-end through run_install: with encryption + a PIN, the PIN
             // must arrive as the second stdin line. We point INSTALL_BIN-style
@@ -1475,7 +1498,6 @@ mod tests {
                 pin: "9182".to_string().into(),
                 ..InstallOptions::default()
             };
-            // Mirror run_install's stdin-extra derivation.
             let extra: Vec<&str> = if opts.pin.is_empty() {
                 Vec::new()
             } else {
@@ -1490,7 +1512,6 @@ mod tests {
             assert!(ok);
             assert_eq!(lines, vec!["9182".to_string()]);
         }
-        // Phase `run_install_sends_no_extra_line_without_pin`.
         {
             // Encryption on but no PIN ⇒ nothing extra on stdin (the backend
             // doesn't read a PIN line when `--pin` wasn't passed).
@@ -1505,7 +1526,6 @@ mod tests {
             };
             assert!(extra.is_empty());
         }
-        // Phase `stream_command_reports_failure_and_relays_stderr`.
         {
             let mut cmd = Command::new("sh");
             cmd.arg("-c").arg("echo working; echo boom 1>&2; exit 7");
@@ -1521,7 +1541,6 @@ mod tests {
                 "stderr relayed on failure"
             );
         }
-        // Phase `stream_command_drains_large_stderr_without_deadlocking`.
         {
             let mut cmd = Command::new("sh");
             cmd.arg("-c").arg(
@@ -1540,7 +1559,6 @@ mod tests {
                 "the tail of stderr was drained and relayed"
             );
         }
-        // Phase `stream_command_rejects_oversized_output_on_either_stream`.
         {
             // The stdout producer then stays alive holding its pipe: the call
             // returns only because the overflow kills the command's tree.
@@ -1564,6 +1582,41 @@ mod tests {
                     .unwrap_err();
                 assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
             }
+        }
+    }
+
+    #[test]
+    fn unattended_credentials_are_transported_without_argv_or_policy_downgrade() {
+        {
+            let opts = InstallOptions {
+                password_is_hash: true,
+                force_startup_passphrase: true,
+                ..InstallOptions::default()
+            };
+            let command = install_command("/dev/vdb", "ada", &opts);
+            let args: Vec<&str> = command
+                .get_args()
+                .map(|arg| arg.to_str().unwrap())
+                .collect();
+            assert!(args.contains(&"--password-hash"));
+            assert!(args.contains(&"--startup-passphrase-only"));
+            assert!(
+                !args.iter().any(|arg| arg.starts_with("$6$")),
+                "a credential hash must not travel on argv"
+            );
+        }
+        {
+            let opts = InstallOptions {
+                password_is_hash: true,
+                prepared_setup: Some(install_profile_model::PreparedSetupExpectation {
+                    schema: 1,
+                    sealed_bytes: 48,
+                    ciphertext_sha256: "0".repeat(64),
+                }),
+                ..InstallOptions::default()
+            };
+            let error = run_install("/dev/vdb", "ada", "$6$salt$AAAA", &opts, |_| {}).unwrap_err();
+            assert!(error.to_string().contains("password hash"), "{error}");
         }
     }
 }

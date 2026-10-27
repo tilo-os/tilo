@@ -75,9 +75,7 @@ pub struct ImageEndorsement {
     pub image_manifest_sha256: [u8; 32],
     /// Monotonic Tilo generation embedded in the signed UKI.
     pub generation: u64,
-    /// Time at which the device issued this endorsement.
     pub issued_at_ns: u64,
-    /// Root-signed certificate for the device endorsing the image.
     pub device_certificate: DeviceCert,
     /// Separate root grant proving this device may endorse OS images.
     pub signing_authorization: ImageSigningAuthorization,
@@ -189,10 +187,6 @@ fn validate_image_signing_authorization_validity(
 }
 
 /// Return the domain-separated digest the human root signs for an image grant.
-///
-/// # Errors
-///
-/// Returns an error if canonical serialization fails.
 pub fn image_signing_authorization_digest(
     authorization: &ImageSigningAuthorization,
 ) -> Result<[u8; 32], ImageSigningAuthorizationError> {
@@ -204,11 +198,6 @@ pub fn image_signing_authorization_digest(
 }
 
 /// Grant one device key time-bounded authority to endorse OS images.
-///
-/// # Errors
-///
-/// Returns an error for the wrong human root, an invalid validity interval, or
-/// canonical serialization failure.
 pub fn sign_image_signing_authorization(
     authorization: &mut ImageSigningAuthorization,
     user_root: &ed25519_dalek::SigningKey,
@@ -223,10 +212,6 @@ pub fn sign_image_signing_authorization(
 }
 
 /// Verify a dedicated image-signing grant under an explicitly trusted root.
-///
-/// # Errors
-///
-/// Returns an error for the wrong root, invalid lifetime, expiry, or signature.
 pub fn verify_image_signing_authorization_at(
     authorization: &ImageSigningAuthorization,
     trusted_user_root: &[u8; 32],
@@ -248,10 +233,6 @@ pub fn verify_image_signing_authorization_at(
 }
 
 /// Return the exact digest an external/non-exportable device key must sign.
-///
-/// # Errors
-///
-/// Returns an error if canonical serialization fails.
 pub fn image_endorsement_signing_digest(
     endorsement: &ImageEndorsement,
 ) -> Result<[u8; 32], ImageEndorsementError> {
@@ -259,12 +240,6 @@ pub fn image_endorsement_signing_digest(
 }
 
 /// Sign an image endorsement with the certified primary-device key.
-///
-/// # Errors
-///
-/// Returns an error if the device certificate is invalid at issuance, the
-/// dedicated grant does not match it, the key does not match it, or canonical
-/// serialization fails.
 pub fn sign_image_endorsement(
     endorsement: &mut ImageEndorsement,
     device_key: &ed25519_dalek::SigningKey,
@@ -297,11 +272,6 @@ pub fn sign_image_endorsement(
 }
 
 /// Verify the complete human-root → device → immutable-image chain.
-///
-/// # Errors
-///
-/// Returns an error if the certificate is invalid/expired, the device is not
-/// authorized, the statement is future-dated, or its signature is invalid.
 pub fn verify_image_endorsement_at(
     endorsement: &ImageEndorsement,
     trusted_user_root: &[u8; 32],

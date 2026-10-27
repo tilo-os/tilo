@@ -13,7 +13,7 @@ use ui::a11y::{AccessNode, AccessState, Action, Politeness, Role};
 use ui::widget::{TextInput, Widget};
 use vello::kurbo::Rect;
 
-use super::{DialogView, PendingDialog, PortalDialogController, PortalDialogQueue};
+use super::{DialogView, PortalDialogController};
 use crate::shell::i18n::t;
 
 const TARGET_PREFIX: &str = "portal-sheet:";
@@ -24,10 +24,6 @@ enum Part {
     /// A choice row: an app, an answer, an identity, a USB device or a
     /// shortcut binding.
     Choice(usize),
-    /// The authentication sheet's secret.
-    Secret,
-    /// A network-secrets field.
-    Field(usize),
     Remember,
     /// The launcher title, or a shortcut step's answer.
     Name,
@@ -40,8 +36,6 @@ impl Part {
     fn encode(self) -> String {
         match self {
             Self::Choice(index) => format!("choice/{index}"),
-            Self::Secret => "secret".into(),
-            Self::Field(index) => format!("field/{index}"),
             Self::Remember => "remember".into(),
             Self::Name => "name".into(),
             Self::Icon(index) => format!("icon/{index}"),
@@ -53,7 +47,6 @@ impl Part {
     fn decode(part: &str) -> Option<Self> {
         let indexed = |prefix: &str| part.strip_prefix(prefix)?.parse::<usize>().ok();
         Some(match part {
-            "secret" => Self::Secret,
             "remember" => Self::Remember,
             "name" => Self::Name,
             "cancel" => Self::Cancel,
@@ -61,8 +54,6 @@ impl Part {
             _ => {
                 if let Some(index) = indexed("choice/") {
                     Self::Choice(index)
-                } else if let Some(index) = indexed("field/") {
-                    Self::Field(index)
                 } else {
                     Self::Icon(indexed("icon/")?)
                 }
@@ -73,6 +64,37 @@ impl Part {
 
 fn target(handle: &str, part: Part) -> String {
     format!("{TARGET_PREFIX}{}#{handle}", part.encode())
+}
+
+/// The part name of a password prompt's node: its key path in the prompt.
+const PROMPT_PART: &str = "prompt/";
+
+/// Give every keyed node of a password prompt an action target naming its
+/// key path and the sheet's handle.
+fn target_prompt_parts(children: &mut [AccessNode], handle: &str, path: &mut Vec<u64>) {
+    for child in children {
+        let Some(key) = child.key else {
+            continue;
+        };
+        path.push(key);
+        let encoded = path
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(".");
+        let target = format!("{TARGET_PREFIX}{PROMPT_PART}{encoded}#{handle}");
+        child.semantic_key = Some(target.clone());
+        child.action_target = Some(target);
+        target_prompt_parts(&mut child.children, handle, path);
+        path.pop();
+    }
+}
+
+fn prompt_key_path(part: &str) -> Option<Vec<u64>> {
+    part.strip_prefix(PROMPT_PART)?
+        .split('.')
+        .map(|key| key.parse().ok())
+        .collect()
 }
 
 /// Whether `target` was published by a portal sheet, current or answered.
@@ -116,25 +138,6 @@ fn set_field(input: &mut TextInput, value: &str) {
     input.set_cursor_pos(typed.len());
 }
 
-impl PortalDialogQueue {
-    /// PAM's prompt and the last attempt's notice, for the live sheet.
-    fn authentication_prompt(&self, handle: &str) -> Option<(String, Option<String>)> {
-        let inner = self.inner.lock().ok()?;
-        match inner.pending.get(handle)? {
-            PendingDialog::Authentication { request, .. } => Some((
-                request
-                    .prompt
-                    .trim()
-                    .trim_end_matches(':')
-                    .trim()
-                    .to_owned(),
-                request.notice.clone().filter(|notice| !notice.is_empty()),
-            )),
-            _ => None,
-        }
-    }
-}
-
 impl PortalDialogController {
     /// The sheet on screen as one modal dialog, laid out in `bounds` like
     /// the painted one. `None` while no sheet is up.
@@ -146,6 +149,11 @@ impl PortalDialogController {
         let view = self.view()?;
         let layout = self.layout(bounds)?;
         let handle = view.handle().to_owned();
+        if let Some(prompt) = &self.prompt {
+            let mut node = prompt.access_node().with_bounds(layout.sheet);
+            target_prompt_parts(&mut node.children, &handle, &mut Vec::new());
+            return Some(node);
+        }
         let target = |part| target(&handle, part);
         let mut children = vec![AccessNode::new(Role::StaticText).with_name(view.app_name())];
 
@@ -159,7 +167,20 @@ impl PortalDialogController {
 
         let choices = view.choices();
         let total = choices.len();
-        for (index, choice) in choices.iter().enumerate() {
+        // The drive sheet's choices are its answer buttons: each one opens
+        // the drive that way.
+        let answer_buttons = !layout.answers.is_empty();
+        for (index, choice) in choices.iter().enumerate().filter(|_| answer_buttons) {
+            let mut node = AccessNode::new(Role::Button)
+                .with_name(choice.clone())
+                .with_action_target(target(Part::Choice(index)))
+                .with_state(focusable(row_focus && index == self.selected));
+            if let Some(rect) = layout.answers.get(index) {
+                node = node.with_bounds(*rect);
+            }
+            children.push(node);
+        }
+        for (index, choice) in choices.iter().enumerate().filter(|_| !answer_buttons) {
             let selected = index == self.selected;
             let mut node = AccessNode::new(Role::RadioButton)
                 .with_name(choice.clone())
@@ -282,35 +303,6 @@ impl PortalDialogController {
             }
         }
 
-        if matches!(view, DialogView::Authentication { .. }) {
-            let (prompt, notice) = self
-                .queue
-                .authentication_prompt(&handle)
-                .unwrap_or_default();
-            let name = if prompt.is_empty() {
-                t("portal-network-password")
-            } else {
-                prompt
-            };
-            children.push(field_node(
-                &self.secret,
-                name,
-                target(Part::Secret),
-                layout.secret,
-                AccessState {
-                    required: true,
-                    ..focusable(true)
-                },
-            ));
-            if let Some(notice) = notice {
-                children.push(
-                    AccessNode::new(Role::StaticText)
-                        .with_name(notice)
-                        .with_live(Politeness::Assertive),
-                );
-            }
-        }
-
         if matches!(
             view,
             DialogView::ShortcutStep {
@@ -326,30 +318,6 @@ impl PortalDialogController {
                 );
             }
         }
-        if let DialogView::NetworkSecrets { fields, .. } = &view {
-            for (index, (field, input)) in fields.iter().zip(&self.entries).enumerate() {
-                let invalid = self.entry_error.is_some() && index == self.entry_focus;
-                children.push(field_node(
-                    input,
-                    field.label.clone(),
-                    target(Part::Field(index)),
-                    layout.secret_fields.get(index).copied(),
-                    AccessState {
-                        required: field.required,
-                        invalid,
-                        ..focusable(index == self.entry_focus)
-                    },
-                ));
-            }
-            if let Some(error) = self.entry_error() {
-                children.push(
-                    AccessNode::new(Role::StaticText)
-                        .with_name(error.to_owned())
-                        .with_live(Politeness::Assertive),
-                );
-            }
-        }
-
         if let (Some(rect), Some((remember, focused)), Some(label)) = (
             layout.remember,
             self.remember_display(),
@@ -377,13 +345,15 @@ impl PortalDialogController {
                 .with_bounds(layout.cancel)
                 .with_state(focusable(false)),
         );
-        children.push(
-            AccessNode::new(Role::Button)
-                .with_name(view.confirm_label())
-                .with_action_target(target(Part::Confirm))
-                .with_bounds(layout.confirm)
-                .with_state(focusable(confirm_focus)),
-        );
+        if !answer_buttons {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(view.confirm_label())
+                    .with_action_target(target(Part::Confirm))
+                    .with_bounds(layout.confirm)
+                    .with_state(focusable(confirm_focus)),
+            );
+        }
 
         Some(
             AccessNode::new(Role::Dialog)
@@ -405,10 +375,16 @@ impl PortalDialogController {
         else {
             return false;
         };
+        if self.view().is_none_or(|view| view.handle() != handle) {
+            return false;
+        }
+        if let Some(path) = prompt_key_path(part) {
+            return self.perform_prompt_action(&path, action);
+        }
         let Some(part) = Part::decode(part) else {
             return false;
         };
-        let Some(view) = self.view().filter(|view| view.handle() == handle) else {
+        let Some(view) = self.view() else {
             return false;
         };
         match (part, action) {
@@ -421,6 +397,11 @@ impl PortalDialogController {
                     return false;
                 }
                 self.selected = index;
+                if matches!(view, DialogView::DriveConsent { .. })
+                    && matches!(action, Action::Activate)
+                {
+                    return self.confirm();
+                }
                 if matches!(view, DialogView::UsbDevices { .. }) && !matches!(action, Action::Focus)
                 {
                     return self.toggle_selected_usb_device();
@@ -455,47 +436,36 @@ impl PortalDialogController {
                 }
                 true
             }
-            (Part::Secret, Action::Focus | Action::Activate) => self.is_authentication(),
-            (Part::Secret, Action::SetValue(value)) => {
-                if !self.is_authentication() {
-                    return false;
-                }
-                set_field(&mut self.secret, value);
-                true
-            }
-            (Part::Field(index), Action::Focus | Action::Activate) => {
-                if index >= self.entries.len() {
-                    return false;
-                }
-                self.entry_focus = index;
-                true
-            }
-            (Part::Field(index), Action::SetValue(value)) => {
-                let Some(entry) = self.entries.get_mut(index) else {
-                    return false;
-                };
-                set_field(entry, value);
-                self.entry_focus = index;
-                self.entry_error = None;
-                true
-            }
-            (Part::Remember, Action::Focus) => {
-                if self.remember_display().is_none() {
-                    return false;
-                }
-                self.entry_focus = self.entries.len();
-                true
-            }
+            (Part::Remember, Action::Focus) => self.remember_display().is_some(),
             (Part::Remember, Action::Activate | Action::ToggleCheck) => {
                 if self.remember_display().is_none() {
                     return false;
                 }
-                self.entry_focus = self.entries.len();
                 self.remember = !self.remember;
                 true
             }
             _ => false,
         }
+    }
+
+    /// Operate the part of the password prompt at `path`. An answer the
+    /// sheet refuses (a Wi-Fi password too short) is not carried out.
+    fn perform_prompt_action(&mut self, path: &[u64], action: &Action) -> bool {
+        let Some(prompt) = &mut self.prompt else {
+            return false;
+        };
+        // The prompt's fields are local: the scratch document is never
+        // written and never leaves this call.
+        let mut scratch = automerge::AutoCommit::new();
+        let applied = prompt.perform_access_action(
+            action,
+            path,
+            &mut ui::widget::Edits::lend(&mut scratch),
+            &automerge::ROOT,
+        );
+        let answered = prompt.answer_pending();
+        let closed = self.settle_prompt();
+        applied && (closed || !answered)
     }
 
     fn focus_name(&mut self, view: &DialogView) -> bool {

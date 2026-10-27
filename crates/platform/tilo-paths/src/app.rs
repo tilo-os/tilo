@@ -166,11 +166,6 @@ impl AppPaths {
     }
 
     /// Scratch space for this login session (on the web, this page).
-    ///
-    /// # Errors
-    ///
-    /// [`Unsupported`] when the session has no private runtime directory
-    /// (Linux without `$XDG_RUNTIME_DIR`, macOS without `$TMPDIR`).
     pub fn runtime(&self) -> Result<Location, Unsupported> {
         match &self.scope {
             Scope::System { .. } => system::runtime(&self.app),
@@ -180,11 +175,6 @@ impl AppPaths {
     }
 
     /// One of the user's content folders.
-    ///
-    /// # Errors
-    ///
-    /// [`Unsupported`] on the web, for scoped paths, and when the user has
-    /// no such folder (disabled in `user-dirs.dirs`, or no home directory).
     pub fn user_dir(&self, dir: UserDir) -> Result<Location, Unsupported> {
         match self.scope {
             Scope::System { .. } => system::user_dir(dir),
@@ -195,11 +185,6 @@ impl AppPaths {
     /// The collaborative workspace the host mounted for this app:
     /// `$TILO_WORKSPACE_ROOT` when absolute, else `/var/workspace` on a Tilo
     /// Linux session (`$TILO_WORKSPACE_ID` set).
-    ///
-    /// # Errors
-    ///
-    /// [`Unsupported`] on the web, for scoped paths, and when no workspace
-    /// is mounted.
     pub fn workspace_root(&self) -> Result<Location, Unsupported> {
         match self.scope {
             Scope::System { .. } => system::workspace_root(),
@@ -210,11 +195,6 @@ impl AppPaths {
     /// The directory holding the Tilo font catalog: where the OS image
     /// installs it on Linux, the app bundle's `Contents/Resources/fonts` on
     /// macOS. Only the location is resolved; readers verify what they use.
-    ///
-    /// # Errors
-    ///
-    /// [`Unsupported`] on the web (fonts arrive as data), for scoped paths,
-    /// and on macOS when the app does not run from a bundle.
     pub fn font_root(&self) -> Result<Location, Unsupported> {
         match self.scope {
             Scope::System { .. } => system::font_root(),

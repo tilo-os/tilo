@@ -73,7 +73,6 @@ pub struct ClientScope {
     pub host_root: [u8; 32],
     /// Exact authorized HTTPS origin/audience.
     pub origin: String,
-    /// Authority-validated descriptor generation.
     pub descriptor_generation: u64,
     /// Digest of the exact authority-validated signed descriptor.
     pub descriptor_digest: [u8; 32],
@@ -163,10 +162,6 @@ impl ServerProof {
         encode(self)
     }
     /// Decode only canonical, complete, bounded wire values; not authentication.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AuthError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, AuthError> {
         decode(bytes)
     }
@@ -191,10 +186,6 @@ impl ClientProof {
         encode(self)
     }
     /// Decode only canonical, complete, bounded wire values; not authentication.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AuthError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, AuthError> {
         decode(bytes)
     }
@@ -207,7 +198,6 @@ pub struct Credentials<'a> {
     pub device: &'a DeviceCert,
     /// Current certificate for the independently pinned host.
     pub host: &'a DeviceCert,
-    /// Verified revocations applicable to the participant's root.
     pub device_revocations: &'a RevocationList,
     /// Verified revocations applicable to the host's root.
     pub host_revocations: &'a RevocationList,
@@ -218,10 +208,6 @@ pub trait Authority {
     /// Require exact current roster certificates and an admitted role for this
     /// workspace/host. Implement under the native owner's admission boundary;
     /// a cached historical retention proof cannot satisfy this contract.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the value fails validation or verification.
     fn authorize(
         &self,
         binding: &Binding,
@@ -265,10 +251,6 @@ pub struct Challenge {
 impl Challenge {
     /// Check current authorization and issue a fresh mutually scoped challenge.
     /// The host signing key must match the independently certified host pin.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AuthError` if the inputs violate this operation's bounds or invariants.
     pub fn issue(
         context: &VerificationContext<'_>,
         client_nonce: [u8; 32],
@@ -306,10 +288,6 @@ impl Challenge {
 
     /// Consume the challenge on success or failure; recheck current authority
     /// and both proofs before constructing the opaque verified session.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AuthError` if the inputs violate this operation's bounds or invariants.
     pub fn finish(
         self,
         client: &ClientProof,
@@ -347,10 +325,6 @@ pub struct VerifiedHost {
 }
 impl VerifiedHost {
     /// Sign the verified full transcript with the exact enrolled device key.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AuthError` if the value fails validation or verification.
     pub fn client_proof(self, device_key: &SigningKey) -> Result<ClientProof, AuthError> {
         if device_key.verifying_key().to_bytes() != self.transcript.binding.device {
             return Err(AuthError::KeyMismatch);
@@ -364,10 +338,6 @@ impl VerifiedHost {
 
 /// Verify a host proof without relying on TLS alone or any legacy nonce domain.
 /// The caller must independently verify TLS and bootstrap authority first.
-///
-/// # Errors
-///
-/// Returns `AuthError` if the value fails validation or verification.
 pub fn verify_server(
     expected: &ClientExpectations<'_>,
     expected_client_nonce: [u8; 32],
@@ -431,10 +401,6 @@ impl VerifiedSession {
     }
     /// Fail after expiry, revocation, certificate/roster changes or boot/scope
     /// replacement. Call under the actual admission/replay owner's boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AuthError` if the value fails validation or verification.
     pub fn revalidate(&self, context: &VerificationContext<'_>) -> Result<(), AuthError> {
         if &self.device != context.credentials.device || &self.host != context.credentials.host {
             return Err(AuthError::Scope);

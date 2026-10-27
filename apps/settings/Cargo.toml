@@ -11,6 +11,10 @@ license.workspace = true
 [lib]
 name = "settings"
 path = "src/lib.rs"
+# The panes are tested in settings-core's own tests, with every pane; the
+# app's own tests are the integration suites under tests/.
+test = false
+doctest = false
 
 [[bin]]
 name = "settings"
@@ -28,17 +32,16 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-settings-engine/thin"]
 
 [dependencies]
-provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui" }
+# The window and what the panes share, and the panes people rarely open:
+# both come from the Settings engine library in a release.
+settings-core = { path = "../settings-core" }
+settings-rare = { path = "../settings-rare" }
 # Shared platform layout data keeps Settings independent of the OSK app.
 tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyboard-map" }
 # The outlines the keyboard preview draws.
 tilo-pc-keyboard-geometry = { path = "../../crates/platform/pc-keyboard-geometry" }
-# The Date & Time pane's globe.
-tilo-zone-globe = { path = "../../crates/platform/zone-globe" }
-tilo-locale = { path = "../../crates/platform/tilo-locale" }
 # The shipped wallpapers' catalog and thumbnails, for the Appearance picker.
 tilo-wallpapers = { version = "0.1.0", path = "../../crates/platform/tilo-wallpapers" }
-hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
@@ -72,28 +75,11 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/system/os-actions" }
-# Remembered NTFS drives: the mount service's protocol (panes::drives).
-tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount", default-features = false }
-tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
-# Public identity summaries, as the host's identity actions answer them. The
-# identity store itself is the host's: no record or secret enters Settings.
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
-runtime-fs = { path = "../../crates/runtime/runtime-fs" }
-# Device role, workspace residency and server relay policy use the same types
-# the tilo-relay daemon loads; Settings never keeps a shadow sync model.
-tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
 tilo-bluez = { path = "../../crates/system/tilo-bluez" }
 # The shared multi-account store + encrypted secret vault. Settings reads and
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
 accounts = { path = "../../crates/system/accounts", features = ["person"] }
-# Credential custody for cloud accounts: the shared OAuth client, Nextcloud
-# Login Flow v2, iCloud sessions and the short-lived handoff to the storage
-# daemon.
-account-custody = { path = "../../crates/system/account-custody" }
-# Provider metadata is shared with the headless agent runner. This dependency
-# contains no HTTP client and no secret values.
-agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
 # The audio graph client: enumerate the PipeWire/WirePlumber node graph and
 # route per-application streams. The Sound pane drives audio routing
 # through it (default features only — no gstreamer decode stack pulled in).
@@ -101,49 +87,36 @@ media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.
-automerge.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
-rustls = { workspace = true, features = ["std", "tls12"] }
-tilo-net = { path = "../../crates/platform/tilo-net" }
-# Account probes speak DAV through the shared bounded client and IMAP through
-# async-imap, the client Mail uses, on a per-probe current-thread runtime.
-tilo-dav = { path = "../../crates/system/tilo-dav" }
-async-imap.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "time"] }
-tokio-rustls.workspace = true
 zeroize.workspace = true
 # The shared account + region/format stores Settings owns are plain
 # serde-serialisable JSON documents that other apps (Mail, Calendar,
 # Sheets, Weather) read. serde/serde_json render them; dirs resolves the
-# per-user config root; uuid mints stable account ids.
+# per-user config root.
 serde.workspace = true
 serde_json.workspace = true
-# The change-only directory watch the panes follow host snapshots with.
-tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
 quick-xml.workspace = true
-uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui", features = ["test-support"] }
+# The integration suites read the account store and the runtime's files back.
+hex.workspace = true
+runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client" }
+account-custody = { path = "../../crates/system/account-custody" }
 # Exercise the published Files surface against the production cloud service.
 file-explorer = { path = "../file-explorer" }
-zip.workspace = true
 # The platform adapter the native runner feeds, for the live-bus benchmark.
 accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 # Prove that discovered selections are consumed by Calendar, not just valid JSON.
 calendar = { path = "../calendar", default-features = false }
-tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount" }
 # Serialised, self-restoring HOME/XDG redirection for the tests that
 # construct the whole app or persist through the per-user settings file.
 tilo-test-env = { path = "../../crates/dev/test-env" }
-rcgen.workspace = true
 test-http = { path = "../../crates/dev/test-http" }
 # The persistence tests read the shared account store + vault back to verify
 # the pane wrote through them.

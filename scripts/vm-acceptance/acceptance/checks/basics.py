@@ -26,10 +26,36 @@ def _named(action_id: str, names) -> bool:
     return action_id.rsplit("\x1f", 1)[-1] in names
 
 
+# What a listed action without a contract is taken to be: it declares no availability, so
+# nothing tells a caller it does not work, and it counts as offered.
+UNDECLARED = {"state": "available", "reason": "listed without a contract: no availability declared"}
+
+
+def _availability(action: dict) -> dict:
+    """An action row's declared availability. The listing carries rows without a contract
+    (`contract: null`), and those never say they are unavailable."""
+    return (action.get("contract") or {}).get("availability") or UNDECLARED
+
+
+# The provider of Settings' pages: its `page:<slug>` rows open Settings at that page.
+SETTINGS_PAGES = "settings-pages"
+
+
+def _shows_only(action: dict) -> bool:
+    """Whether a row only changes what is shown, so it is no toggle of the hardware: a view
+    or navigation (`operation_kind` View), an action whose contract only reads, or a row
+    that opens a Settings page (`page:bluetooth`, which launches Settings there and
+    declares no contract)."""
+    if str(action.get("operation_kind", "")).lower() == "view":
+        return True
+    if (action.get("contract") or {}).get("kind") == "read":
+        return True
+    return action.get("provider") == SETTINGS_PAGES and str(action.get("id", "")).startswith("page:")
+
+
 def _offered(ctx, names) -> list:
     """Every published action named one of `names`, with its availability."""
-    return [(a["id"], a["contract"]["availability"]) for a in ctx.vm.actions()
-            if _named(a["id"], names)]
+    return [(a["id"], _availability(a)) for a in ctx.vm.actions() if _named(a["id"], names)]
 
 
 def _action(ctx, query, action_id):
@@ -52,8 +78,8 @@ def _no_hardware_control(ctx, res, kind, query, action_id, args, words):
         raise Unobservable(f"this VM has {kind} hardware; the no-hardware case cannot be observed")
     problems = []
     a = _action(ctx, query, action_id)
-    res.metrics["action_availability"] = a and a["contract"]["availability"]
-    if a and a["contract"]["availability"].get("state") == "available":
+    res.metrics["action_availability"] = a and _availability(a)
+    if a and _availability(a).get("state") == "available":
         try:
             out = ctx.vm.invoke("actions", action_id, args)
             state = out.get("receipt", {}).get("update", {}).get("state")
@@ -103,9 +129,11 @@ def bluetooth(ctx, res):
         raise Unobservable("this VM has a Bluetooth adapter")
     # Settings' radio effects by name (`set-discovering` does not say
     # "bluetooth"), and every other Bluetooth action but the pairing prompts.
-    actions = [(a["id"], a["contract"]["availability"]) for a in ctx.vm.actions()
-               if ("bluetooth" in a["id"] and "pairing" not in a["id"])
-               or _named(a["id"], ("set-bluetooth", "set-discovering", "refresh-bluetooth"))]
+    # Rows that only show something (the Bluetooth settings page) are no toggle.
+    actions = [(a["id"], _availability(a)) for a in ctx.vm.actions()
+               if not _shows_only(a)
+               and (("bluetooth" in a["id"] and "pairing" not in a["id"])
+                    or _named(a["id"], ("set-bluetooth", "set-discovering", "refresh-bluetooth")))]
     res.metrics["actions"] = actions
     targets = _qs_targets(ctx, ("bluetooth",))
     res.metrics["quick_settings_targets"] = targets

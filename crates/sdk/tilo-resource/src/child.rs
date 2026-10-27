@@ -30,7 +30,7 @@ pub fn child_resource_id<R: Resource>(name: &str) -> String {
 
 /// The child resource `C` at `id`, inside a resource `R`, for
 /// [`Resource::children`]: `C`'s whole published tree (its declared actions,
-/// [`APPLY`], [`GROUP`](crate::GROUP), and given its `state` its views and
+/// [`APPLY`](crate::resource::APPLY), [`GROUP`](crate::GROUP), and given its `state` its views and
 /// its own children), each document action building `R`'s action
 /// `wrap(edit)` instead of `C`'s. A group of `C`'s edits becomes one group
 /// of `R`'s, so it is still one step. A parent that does not keep the
@@ -198,11 +198,17 @@ pub fn nested_resource_id(parent: &str, key: &str) -> String {
 /// each published beneath `parent` (the record's published id) with its
 /// actions applied as field edits of the resource `vocabulary` at `prefix`
 /// (the record's path) followed by the field's key.
+///
+/// A field of an item is labelled with its item's (`item`): "Body of
+/// Review v1". Every note's body would otherwise read "Body", and an agent
+/// choosing where to write, shown only the labels, could not tell one
+/// note's body from another's.
 pub(crate) fn nested_children(
     vocabulary: &'static crate::Vocabulary,
     shape: crate::Shape,
     parent: &str,
     prefix: &[crate::Segment],
+    item: Option<&str>,
 ) -> Vec<tilo_actions::Resource> {
     let mut children = Vec::new();
     for field in shape.fields() {
@@ -212,7 +218,11 @@ pub(crate) fn nested_children(
         let mut path = prefix.to_vec();
         path.push(crate::Segment::Field(field.key.to_owned()));
         let id = nested_resource_id(parent, field.key);
-        let resource = (nested.publish)(&id, field.title);
+        let label = item.filter(|label| !label.trim().is_empty()).map_or_else(
+            || field.title.to_owned(),
+            |item| format!("{} of {item}", field.title),
+        );
+        let resource = (nested.publish)(&id, &label);
         children.push(as_field_edits(
             resource,
             vocabulary,
@@ -223,13 +233,19 @@ pub(crate) fn nested_children(
     children
 }
 
-/// The children [`nested_children`] publishes for the record itself
+/// The children `nested_children` publishes for the record itself
 /// (`#[model(resource)]` fields of `R`, not of its items).
 #[must_use]
 pub fn record_nested_children<R: Resource>() -> Vec<tilo_actions::Resource> {
-    let vocabulary = crate::vocabulary::<R>();
+    nested_children_of(crate::vocabulary::<R>())
+}
+
+/// [`record_nested_children`] of the record whose vocabulary is `vocabulary`.
+pub(crate) fn nested_children_of(
+    vocabulary: &'static crate::Vocabulary,
+) -> Vec<tilo_actions::Resource> {
     match (vocabulary.shape)() {
-        Some(shape) => nested_children(vocabulary, shape, R::KIND, &[]),
+        Some(shape) => nested_children(vocabulary, shape, vocabulary.kind, &[], None),
         None => Vec::new(),
     }
 }
@@ -280,13 +296,7 @@ fn field_edits(
         Ok(members)
     });
     match built {
-        Ok(mut members) => match (members.pop(), members.is_empty()) {
-            (Some(only), true) => crate::resource::encoded(&only),
-            (last, _) => {
-                members.extend(last);
-                crate::resource::encode_group(vocabulary, &members)
-            }
-        },
+        Ok(members) => crate::resource::encode_group(vocabulary, &members),
         Err(reason) => crate::resource::encode_built(Err(reason)),
     }
 }

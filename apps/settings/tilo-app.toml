@@ -10,9 +10,12 @@
 # /etc, the system bus filtered to the named authorities, the PipeWire
 # socket and the compositor's runtime state. Printing stays behind the
 # Print portal. The launcher also binds the parts of `~/.config/tilo` this
-# app edits (the settings document's own directory, the account stores and
-# their credential vault) and, read-only, the workspace tree; never the
-# identity store, trust lists, app registries or settings records. The
+# app is custodian of (the account stores and their credential vault) and,
+# read-only, the workspace tree; never the settings document, the identity
+# store, trust lists, app registries or settings records. The device's
+# settings it reads and writes through the shell's settings service, as
+# every app does: `settings.system` asks for every section, which the
+# image grants to this package alone. The
 # identity store is the host's: Settings administers identities and devices
 # through the host's `tilo.identity` actions.
 #
@@ -37,7 +40,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.open", "files.paths", "app-files", "open-uri", "secrets", "settings", "network.http", "threads", "media.decode", "processes", "clipboard"]
+optional = ["files.open", "files.save", "files.paths", "app-files", "open-uri", "secrets", "settings", "settings.system", "network.http", "threads", "media.decode", "processes", "clipboard"]
 
 # Selected browser accounts are forgotten through the session action broker.
 # Cross-app invocation still requires the workspace's grant.
@@ -45,7 +48,7 @@ optional = ["files.open", "files.paths", "app-files", "open-uri", "secrets", "se
 query = true
 invoke = true
 [resources]
-kinds = ["settings.accessibility", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.default-apps", "settings.desk_widgets", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale"]
+kinds = ["settings.accessibility", "settings.agent-providers", "settings.appearance", "settings.audio", "settings.automatic-display", "settings.continuity", "settings.default-apps", "settings.desk_widgets", "settings.desktop-controls", "settings.display", "settings.display-arrangement", "settings.input", "settings.notifications", "settings.osk-sources", "settings.power", "settings.root", "settings.updates", "tilo.accounts", "settings.locale", "settings.clock"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -80,17 +83,20 @@ mode = "off"
 # image's system authority grant. A build is offered to, installed on and run
 # by only an OS that serves this version (os/usr/share/tilo/system-interfaces.toml).
 system = "required@1"
-collab = "optional@2"
-tilo-fs = "optional@2"
+collab = "optional@10"
+tilo-fs = "optional@10"
 # The window's bar shows the app's toolbar (ui::window_toolbar).
-shell-ui = "optional@10"
-tools = "optional@2"
+shell-ui = "optional@17"
+tools = "optional@10"
 # Settings remains usable when the device has no local-model stack.  The
 # Agent Models pane already reports unavailable lifecycle/credential services;
 # requiring either socket here instead prevents every other settings pane from
 # opening at all.
-models = "optional@2"
-model-gateway = "optional@2"
+models = "optional@10"
+model-gateway = "optional@10"
+# The person's languages: which language packs the repositories offer, and
+# installing the one chosen. The host answers Settings that and nothing else.
+app-host = "optional@3"
 
 [entrypoint]
 bin             = "bin/settings"

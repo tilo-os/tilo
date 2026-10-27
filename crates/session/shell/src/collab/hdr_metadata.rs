@@ -82,7 +82,6 @@ mod tests {
 
     #[test]
     fn hdr_metadata_pairs_colorimetry_and_round_trips() {
-        // Phase `hdr_config_colorimetry_pairs_correctly`.
         {
             use crate::collab::colorimetry::TransferCharacteristics;
             let pq = HdrConfig::pq_reference();
@@ -96,7 +95,6 @@ mod tests {
                 TransferCharacteristics::AribStdB67
             );
         }
-        // Phase `serde_round_trip_preserves_metadata`.
         {
             let cfg = HdrConfig::pq_reference();
             let s = serde_json::to_string(&cfg).unwrap();

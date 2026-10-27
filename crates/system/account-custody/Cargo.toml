@@ -22,6 +22,13 @@ name = "helper"
 path = "tests/helper.rs"
 required-features = ["custody"]
 
+# The unofficial subscription sign-ins against the live services; ignored
+# in ordinary runs, run by the `nightly-live-sign-in` check.
+[[test]]
+name = "live_sign_in_contracts"
+path = "tests/live_sign_in_contracts.rs"
+required-features = ["custody"]
+
 [[test]]
 name = "icloud_auth"
 path = "tests/icloud_auth.rs"
@@ -34,8 +41,12 @@ default = ["custody"]
 # against. Without it the crate is the client registrations and provider
 # descriptors only, for builds that must stay free of the TLS/HTTP stack.
 hints = ["dep:tilo-seal", "dep:serde_json", "dep:url", "dep:zeroize", "dep:sha2"]
+# Signing in with Hugging Face for model downloads, and renewing that
+# sign-in: what the model manager needs, without the custodian.
+hugging-face = ["tilo-oauth/client", "dep:serde_json", "dep:zeroize"]
 custody = [
     "hints",
+    "hugging-face",
     "dep:browser-continuity-core",
     "dep:tilo-seal",
     "dep:rustix",
@@ -67,7 +78,7 @@ tracing.workspace = true
 # The committed public client registrations (`oauth-clients.toml`).
 toml.workspace = true
 tilo-net = { path = "../../platform/tilo-net", optional = true, features = ["blocking"] }
-reqwest = { workspace = true, optional = true, features = ["blocking", "json"] }
+reqwest = { workspace = true, optional = true, features = ["blocking", "form", "json"] }
 serde_json = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
@@ -95,6 +106,7 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-oauth = { path = "../tilo-oauth", features = ["fake"] }
 test-http = { path = "../../dev/test-http" }
 tempfile.workspace = true
+agent-provider-config = { path = "../../agent/provider-config" }
 
 [lints]
 workspace = true

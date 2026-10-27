@@ -6,10 +6,11 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 HELPER = ROOT / "tools/ci/qualify_native_envelope.py"
 
 
@@ -110,7 +111,7 @@ class NativeEnvelope(unittest.TestCase):
                 self.assertEqual((directory / "memory.swap.max").read_text(), "max\n")
 
     def test_t_checks_build_on_arm64_inside_the_qualified_envelope(self):
-        checks = {check["name"]: check for check in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        checks = {check["name"]: check for check in t_matrix.load(ROOT)["check"]}
         wrapper = (ROOT / "tools/ci/native-envelope.sh").read_text()
         self.assertIn('--memory "${memory}g" --memory-swap "${memory}g" --cpus 24', wrapper)
         for phase in ("envelope prepare", "envelope before", "envelope after || status=1"):

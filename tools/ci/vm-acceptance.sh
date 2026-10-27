@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
-# The OS image's acceptance scenarios in tilo-vm, as t's vm-acceptance check
-# runs them on a privileged x86-64 node with KVM (t.toml). The tree under test
-# is the check's own copy of the sources: its components are swapped onto the
-# dev disk of the newest main commit at or before it that has a published dev
-# disk or dev image, then scripts/vm-acceptance/run.py drives the checks.
+# The OS image's acceptance scenarios in tilo-vm, as t's vm-acceptance checks
+# run them in a micro-VM on an x86-64 node with KVM (t.toml). The disk is this
+# tree's own dev image as os-dev-disk-x86_64 installed it (os/dev/build-image.sh,
+# the disk the dev channel publishes); each run boots a throwaway overlay of it.
+# tilo-vm is tilo-vm-binary-x86_64's. scripts/vm-acceptance/run.py then drives
+# the checks.
 #
-# Inputs (t dispatch vm-acceptance --input name=value; every other run gets
-# the defaults):
-#   swap     default (shell plus the apps the tree changed), none, all, or a
-#            comma-separated list (components, app:<dir>)
+#   vm-acceptance.sh           what vm-acceptance runs
+#   vm-acceptance.sh cohort    what vm-acceptance-cohort runs: the launcher,
+#                              install, shell and apps+runtime layers vm-cohort.sh
+#                              produced from this commit enter through verified
+#                              swap-artifact, verified by the tilo-vm it built
+#                              from main
+#
+# Inputs (t dispatch <check> --input name=value; every other run gets the
+# defaults):
+#   swap     vm-acceptance only: none, all (every userspace component in
+#            os/components.toml), or a comma-separated list (components,
+#            app:<dir>) to build from this tree and swap in, which exercises
+#            the swap path; the image is this tree's already
 #   only     comma-separated check ids or areas; empty: every check, or on a
 #            working tree the checks its changes select
 #   outputs  the slot's outputs
@@ -17,28 +27,33 @@
 # The report and the performance records land in /target/vm-acceptance/report.
 set -euo pipefail
 
+mode=${1:-}
+[[ -z $mode || $mode == cohort ]] || { echo "usage: vm-acceptance.sh [cohort]" >&2; exit 2; }
 arch=x86_64
 work=/var/tmp/vm-acceptance
 report=${CARGO_TARGET_DIR:-/target}/vm-acceptance/report
+gate=/target/publish/os-dev-disk/$arch/disk
+tilo_vm=/target/tilo-vm-bin/tilo-vm
+cohort=/target/vm-cohort
+verifier=/target/vm-cohort-verifier
 run_user=acceptance
-behind_warn=20
+# Where the time goes, phase by phase, for the log.
+phase() { echo "vm-acceptance: $1 at ${SECONDS}s"; }
 
-# The node's own Fedora: the tools the run needs come from dnf.
-dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y \
-  libvirt-daemon-driver-qemu libvirt-client passt qemu-kvm qemu-img edk2-ovmf \
-  ipxe-roms-qemu openssh-clients rsync python3-pillow binutils btrfs-progs dosfstools \
-  e2fsprogs fuse-overlayfs podman jq skopeo slirp4netns socat sudo systemd \
-  shadow-utils util-linux bash-devel readline-devel git curl python3 rustup gcc
-command -v virsh qemu-system-x86_64 qemu-img passt ssh podman skopeo systemd-repart sudo >/dev/null
+# The guest's userspace is the builder image: what it lacks to run a libvirt guest
+# comes from dnf. The disk is installed already and tilo-vm built, so nothing here
+# images a disk or compiles.
+missing=()
+for p in libvirt-daemon-driver-qemu libvirt-client passt qemu-kvm qemu-img edk2-ovmf \
+  ipxe-roms-qemu openssh-clients rsync python3-pillow binutils jq socat sudo systemd \
+  shadow-utils util-linux git python3; do
+  rpm -q "$p" >/dev/null 2>&1 || missing+=("$p")
+done
+((${#missing[@]} == 0)) \
+  || dnf --setopt=retries=3 --setopt=install_weak_deps=False install -y "${missing[@]}"
+command -v virsh qemu-system-x86_64 qemu-img passt ssh sudo >/dev/null
 python3 -c 'import PIL'
-# Rust as rust-toolchain.toml pins it, kept with the build directory.
-# Its own homes: the session user builds with them too.
-export RUSTUP_HOME=${CARGO_TARGET_DIR:-/target}/rustup
-export CARGO_HOME=${CARGO_TARGET_DIR:-/target}/cargo-home
-export PATH=$CARGO_HOME/bin:$PATH
-command -v rustup >/dev/null 2>&1 && [[ -x $CARGO_HOME/bin/cargo ]] \
-  || rustup-init -y --no-modify-path --default-toolchain none --profile minimal >/dev/null
-cargo --version
+phase 'tools ready'
 
 ./os/dev/assert-native-arch.sh "$arch"
 python3 os/dev/probe-kvm.py "$arch" || {
@@ -46,69 +61,50 @@ python3 os/dev/probe-kvm.py "$arch" || {
   exit 1
 }
 
-
 rm -rf "$work" "$report"
 mkdir -p "$work" "$report"
-# The swaps build as the session user, in a copy of the tree it owns.
-src=$work/src
-cp -a --reflink=auto "$PWD" "$src"
 
-# The tree under test, its base disk, the swaps and the checks.
 target=$(git rev-parse HEAD)
-commit="" disk_url="" image=""
-packages=https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk
-auth=()
-[[ -z ${REGISTRY_TOKEN:-} ]] || auth=(-H "Authorization: Bearer $REGISTRY_TOKEN")
-for c in $(git rev-list --first-parent -n 1000 main); do
-  git merge-base --is-ancestor "$c" "$target" || continue
-  tag="main-${c:0:7}-ci"
-  if curl -fsS "${auth[@]}" -o "$work/disk.json" "$packages/$tag/tilo-vm-disk-$arch.json" 2>/dev/null; then
-    commit=$c disk_url="$packages/$tag/tilo-vm-disk-$arch.json"
-    break
-  fi
-  digest=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://registry.tilo.so/tilo/tilo-vm:$tag-$arch" 2>/dev/null || true)
-  if [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]; then
-    commit=$c image="registry.tilo.so/tilo/tilo-vm@$digest"
-    break
-  fi
-done
-[[ -n $commit ]] || { echo "no main commit at or before ${target:0:12} (last 1000) has a published dev disk or dev image" >&2; exit 1; }
-behind=$(git rev-list --count "$commit..$target")
-bridge=$(python3 scripts/vm-acceptance/management.py "$commit" "$target")
+disk=$gate/disk.qcow2
+[[ -s $disk && -s $gate/revision && -s $gate/image-digest ]] \
+  || { echo "no installed dev disk in $gate: the check needs os-dev-disk-$arch" >&2; exit 1; }
+[[ -x $tilo_vm ]] || { echo "no $tilo_vm: the check needs tilo-vm-binary-$arch" >&2; exit 1; }
+commit=$(cat "$gate/revision")
+[[ $commit == "$target" ]] || { echo "the dev disk is of $commit, this tree is $target" >&2; exit 1; }
+oci_digest=$(cat "$gate/image-digest")
 
-# What differs from the base: committed changes, and a working tree's own.
-changed() { { git diff --name-only "$@"; git diff --name-only HEAD; } | sort -u; }
-swap=${T_INPUT_SWAP:-default}
+swap=${T_INPUT_SWAP:-none}
 case $swap in
   none) swap="" ;;
-  default)
-    swap=""
-    from=$(git merge-base main "$target")
-    [[ $from != "$target" ]] || from=$commit
-    if [[ -n $(changed "$commit" "$target") ]]; then
-      swap=shell
-      [[ -z $(changed "$commit" "$target" -- crates/dev/tilo-vmd crates/dev/tilo-vm-protocol) ]] || swap+=",vmd"
-      apps=""
-      for app in $(changed "$from" "$target" -- apps/ | grep '^apps/' | cut -d/ -f2 | sort -u); do
-        [[ -f apps/$app/Cargo.toml ]] && apps+=",app:$app"
-      done
-      if [[ -n $apps && -n $(changed "$commit" "$target" -- Cargo.lock | grep -x Cargo.lock || true) ]]; then
-        swap+=",apps+runtime"
-      else
-        swap+=$apps
-      fi
-    fi ;;
   all)
     swap=$(python3 -c '
 import tomllib
 print(",".join(c["name"] for c in tomllib.load(open("os/components.toml", "rb"))["component"]
                if c.get("kind") == "userspace"))') ;;
 esac
+artifact_args=()
+if [[ $mode == cohort ]]; then
+  # The cohort's identity comes from its producer's outputs, the receipt digest
+  # included: t hands a check only the outputs of the result it needs.
+  handoff=$cohort/handoff.json
+  [[ -s $handoff && -x $verifier/tilo-vm-artifact ]] \
+    || { echo "no cohort: vm-acceptance-cohort needs vm-cohort-$arch and vm-cohort-verifier-$arch" >&2; exit 1; }
+  field() { jq -er ".$1" "$handoff"; }
+  [[ $(field source) == "$target" ]] || { echo "the cohort is of $(field source), this tree is $target" >&2; exit 1; }
+  swap=$(field components)
+  install -m 0755 "$verifier/tilo-vm-artifact" /usr/local/bin/tilo-vm-artifact
+  cp -a "$cohort/cohort" "$work/cohort"
+  artifact_args=(--artifact-receipt "$work/cohort/manifest.json" --artifact-source "$target"
+                 --artifact-builder-image "$(field builder_image)" --artifact-run-id "$(field run_id)"
+                 --artifact-run-attempt "$(field run_attempt)" --artifact-receipt-sha256 "$(field receipt_sha256)"
+                 --artifact-tilo-vm /usr/local/bin/tilo-vm-artifact)
+  echo "cohort of ${target:0:12} verified by tilo-vm of main $(jq -r .commit "$verifier/verifier.json")"
+fi
 
 # A run of someone's tree checks what its changes reach; main checks all.
 only=${T_INPUT_ONLY:-}
 if [[ -z $only && -z ${T_TRIGGER:-} ]]; then
-  mapfile -t paths < <(changed "$(git merge-base main HEAD)" HEAD)
+  mapfile -t paths < <({ git diff --name-only "$(git merge-base main HEAD)" HEAD; git diff --name-only HEAD; } | sort -u)
   (( ${#paths[@]} == 0 )) || only=$(python3 scripts/vm-acceptance/ci_select.py "${paths[@]}")
 fi
 gl=${T_INPUT_GL:-auto}
@@ -118,45 +114,32 @@ case $gl in
   *) echo 'gl must be auto, on or off' >&2; exit 1 ;;
 esac
 outputs=${T_INPUT_OUTPUTS:-1920x1080@1,1280x800@1.25}
-echo "testing ${target:0:12} on the dev disk of ${commit:0:12} ($behind commits behind) from ${disk_url:-$image}; swap: ${swap:-nothing}; checks: ${only:-all}; gl=$gl"
-(( behind <= behind_warn )) || echo "warning: the base disk is $behind commits behind: only the swapped components ($swap) are this tree's code"
+echo "testing ${target:0:12} on its own dev image $oci_digest; swap: ${swap:-nothing}; checks: ${only:-all}; gl=$gl"
 
 export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$work/test-assets}
-cargo build --locked -p tilo-vm
-install -m 0755 "${CARGO_TARGET_DIR:-target}/debug/tilo-vm" /usr/local/bin/tilo-vm
+install -m 0755 "$tilo_vm" /usr/local/bin/tilo-vm
 
-if [[ $bridge == true ]]; then
-  git worktree add --detach "$work/base-cli" "$commit"
-  (cd "$work/base-cli" && CARGO_TARGET_DIR=$work/base-cli/target cargo build --locked -p tilo-vm)
-  install -m 0755 "$work/base-cli/target/debug/tilo-vm" /usr/local/bin/tilo-vm-base
+# The swaps build as the session user, in a copy of the tree it owns, with the
+# builder's toolchain (rust-toolchain.toml's) and a download cache of its own.
+src=$PWD
+if [[ -n $swap ]]; then
+  src=$work/src
+  cp -a --reflink=auto "$PWD" "$src"
+  export CARGO_HOME=$work/cargo-home
+  mkdir -p "$CARGO_HOME"
 fi
+# tilo-vm keeps its run receipts under the tree's target/dev-runs.
+mkdir -p "$src/target/dev-runs"
 
-if [[ -n $image ]]; then
-  modprobe fuse 2>/dev/null || true
-  modprobe loop 2>/dev/null || true
-  test -c /dev/fuse && test -c /dev/loop-control
-  chmod 0666 /dev/fuse
-  losetup --find >/dev/null
-  ./os/dev/ci-native-podman-store.sh
-  mkdir -p "$work/install" "$work/install-run"
-  podman pull "$image"
-  podman tag "$image" localhost/tilo-vm:ci
-  TILO_IMAGE=localhost/tilo-vm:ci TILO_SKIP_BUILD=1 TILO_DISTROBOX="" \
-    TILO_OUTPUT=$work/install TILO_RUN=$work/install-run TILO_DISK_SIZE=64G \
-    TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-vm:main-${commit:0:7}-ci" ./os/dev/build-image.sh
-  disk="$work/tilo-dev-${commit:0:9}.qcow2"
-  mv "$work/install/qcow2/disk.qcow2" "$disk"
-  oci_digest=${image#*@}
-else
-  read -r url sha256 < <(jq -er '.disks[] | select(.format == "qcow2") | "\(.url) \(.sha256)"' "$work/disk.json")
-  disk="$work/tilo-dev-${commit:0:9}.qcow2"
-  curl -fsS --retry 3 "${auth[@]}" -o "$disk" "$url"
-  echo "$sha256  $disk" | sha256sum -c -
-  oci_digest=$(jq -r .imageDigest "$work/disk.json")
-fi
+# The installed disk stays as it is, never booted: the run's disk is a qcow2
+# overlay of it that the session user owns, with the provenance record beside it,
+# and tilo-vm boots a throwaway overlay of that, so R06 still times a cold boot.
+base=$disk
+disk="$work/tilo-dev-${commit:0:9}.qcow2"
+qemu-img create -q -f qcow2 -F qcow2 -b "$base" "$disk"
 jq -n --arg commit "$commit" --arg subject "$(git log -1 --format=%s "$commit")" \
   --arg time "$(git log -1 --format=%cI "$commit")" --arg digest "$oci_digest" \
-  --arg built "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" --arg source "${disk_url:-$image}" \
+  --arg built "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)" --arg source "t os-dev-disk-$arch" \
   '{commit:$commit, subject:$subject, commit_time:$time, oci_digest:$digest,
     built_at:$built, built_by:"t vm-acceptance", source:$source}' > "$disk.provenance.json"
 
@@ -165,11 +148,13 @@ id "$run_user" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$run_
 uid=$(id -u "$run_user")
 install -d -m 0700 -o "$run_user" -g "$run_user" "/run/user/$uid"
 chmod 0666 /dev/kvm
-install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config/libvirt"
-echo 'max_core = 0' | install -m 0644 -o "$run_user" -g "$run_user" /dev/stdin "/home/$run_user/.config/libvirt/qemu.conf"
-mkdir -p "$src/target/dev-runs"
-chown -R "$run_user:" "$work" "$report"
-chown -R "$run_user:" "$CARGO_HOME" "$RUSTUP_HOME"
+# install -d gives -o only to the directories it names, so .config is named too: a
+# root-owned .config would leave the user unable to make tilo-vm's config and keys there.
+install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config" "/home/$run_user/.config/libvirt"
+# The micro-VM's /dev has no /dev/stdin to install from.
+printf 'max_core = 0\n' > "/home/$run_user/.config/libvirt/qemu.conf"
+chown "$run_user:" "/home/$run_user/.config/libvirt/qemu.conf"
+chown -R "$run_user:" "$work" "$report" "$src/target"
 keep=$(env | sed -n 's/^\(RUSTC_WRAPPER\|SCCACHE_[A-Z0-9_]*\|CARGO_[A-Z0-9_]*\|RUSTUP_HOME\|TILO_[A-Z0-9_]*\)=.*/\1/p' \
   | grep -vx CARGO_TARGET_DIR | paste -sd, -)
 as_user() { sudo -n -u "$run_user" -H --preserve-env="$keep" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
@@ -177,14 +162,22 @@ as_user virsh --connect qemu:///session capabilities | grep -q "<domain type='kv
 
 args=(--disk "$disk" --commit "$commit" --outputs "$outputs" --out "$report"
       --tilo-vm /usr/local/bin/tilo-vm --records "$report/records.jsonl" --runner t)
-[[ $bridge != true ]] || args+=(--bootstrap-tilo-vm /usr/local/bin/tilo-vm-base --bootstrap-from "$src" --swap-ref "$target")
 [[ -z $swap ]] || args+=(--swap "$swap" --swap-from "$src" --swap-ref "$target")
+args+=("${artifact_args[@]}")
 [[ -z $only ]] || args+=(--only "$only")
 [[ $gl != on ]] || args+=(--gl)
+phase 'VM host ready'
 status=0
 cd "$src"
 as_user env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' \
   python3 scripts/vm-acceptance/run.py "${args[@]}" || status=$?
+phase 'scenarios done'
 [[ ! -f $report/report.md ]] || cat "$report/report.md"
+# A failed check keeps no outputs, so its text evidence (tracebacks, boot gate,
+# memory maps, shell runtime excerpts) is printed here, bounded by report.py.
+if [[ -s $report/failure-evidence.txt ]]; then
+  echo "## Evidence of the failed checks"
+  cat "$report/failure-evidence.txt"
+fi
 [[ ! -f $report/report.json ]] || jq -r '"score: \([.results[] | select(.status == "pass")] | length)/\(.results | length) checks pass (\(.overall))"' "$report/report.json"
 exit "$status"

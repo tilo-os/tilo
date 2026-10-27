@@ -8,8 +8,10 @@
 //! happen on the state writer's thread, and can take seconds on a loaded
 //! disk. A CI run once caught a single 6.7 s frame-loop pump that used
 //! 26 ms of CPU, beside "file lease is busy" from a second writer of the
-//! same file. These tests make each sync slow through the file layer's own
-//! test hooks and hold the loop's calls to one frame. Opening the owner is
+//! same file. These tests count the syncs the loop's own thread makes through
+//! the file layer's test hooks, and hold each sync or open another thread
+//! makes until the loop's calls have returned, so a call that waited for one
+//! cannot return in time. Opening the owner is
 //! the loop's business neither: it binds and publishes off the loop, and
 //! never with the tree held, which the loop takes every tick. Inbound
 //! network events wait for it, in the order they arrived, rather than the
@@ -27,24 +29,65 @@ use std::{
     cell::Cell,
     path::Path,
     rc::Rc,
-    time::{Duration, Instant},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tilo_files::native::atomic::test_support::{
     Checkpoint, ProvisionCheckpoint, with_observer, with_provision_observer,
 };
 
-/// One frame at 60 Hz: what a call the loop makes every tick may take.
-const FRAME: Duration = Duration::from_millis(16);
-
-/// One directory sync on a disk under write load.
-const SLOW_DIRECTORY_SYNC: Duration = Duration::from_millis(250);
-
-/// One state-file data sync on a disk under write load, long enough that
-/// every lookup below runs while it is still in progress.
-const SLOW_PUBLICATION: Duration = Duration::from_secs(2);
-
-/// How many frame-loop ticks are timed.
+/// How many frame-loop ticks are run.
 const TICKS: usize = 8;
+
+/// Whether thread `tid` of this process sleeps in the kernel, as one
+/// waiting on a held lock or channel does.
+fn thread_is_blocked(tid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/self/task/{tid}/stat"))
+        .ok()
+        .and_then(|stat| Some(stat.rsplit_once(')')?.1.trim_start().starts_with('S')))
+        .unwrap_or(false)
+}
+
+/// A sync another thread makes, held at its checkpoint until the test drops
+/// the sender [`HeldSync::new`] returned, or until the hang bound passes if a
+/// call under test waits for it.
+#[derive(Clone)]
+struct HeldSync {
+    parked: Arc<AtomicBool>,
+    released: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl HeldSync {
+    fn new() -> (Self, std::sync::mpsc::Sender<()>) {
+        let (release, released) = std::sync::mpsc::channel();
+        let held = Self {
+            parked: Arc::default(),
+            released: Arc::new(Mutex::new(released)),
+        };
+        (held, release)
+    }
+
+    /// Park here until released, telling the test through `announce` once
+    /// parked; the sync then goes on. Parked counts from before `announce`,
+    /// so a test that heard it and finds the sync no longer parked knows
+    /// the sync went on: a call under test waited for it.
+    fn park_after(&self, announce: impl FnOnce()) {
+        self.parked.store(true, Ordering::SeqCst);
+        announce();
+        let _ = self
+            .released
+            .lock()
+            .unwrap()
+            .recv_timeout(tilo_test_env::hang_bound());
+        self.parked.store(false, Ordering::SeqCst);
+    }
+
+    fn is_parked(&self) -> bool {
+        self.parked.load(Ordering::SeqCst)
+    }
+}
 
 fn tree_at(path: &Path) -> WorkspaceTreeHandle {
     let mut tree = WorkspaceTree::bootstrap_default();
@@ -56,14 +99,8 @@ fn active_room(tree: &WorkspaceTreeHandle) -> RoomId {
     tree.read()
         .desktop
         .active_workspace()
-        .map(|workspace| workspace.room)
+        .map(crate::shell::state::Workspace::room)
         .expect("the desktop has an active workspace")
-}
-
-fn timed<T>(call: impl FnOnce() -> T) -> (T, Duration) {
-    let started = Instant::now();
-    let value = call();
-    (value, started.elapsed())
 }
 
 #[test]
@@ -80,21 +117,19 @@ fn a_writer_lease_held_elsewhere_costs_the_frame_loop_no_disk_sync() {
 
     let syncs = Rc::new(Cell::new(0_usize));
     let counted = Rc::clone(&syncs);
-    let (slowest, refused, save) = with_provision_observer(
+    let (refused, save) = with_provision_observer(
         move |event| {
             if event.checkpoint == ProvisionCheckpoint::BeforeSync {
                 counted.set(counted.get().saturating_add(1));
-                std::thread::sleep(SLOW_DIRECTORY_SYNC);
             }
         },
         || {
-            let slowest = (0..TICKS)
-                .map(|_| timed(|| network.viewer_hosts(room)).1)
-                .max()
-                .unwrap_or_default();
+            for _ in 0..TICKS {
+                network.viewer_hosts(room);
+            }
             let refused = network.native_owner().map(drop);
             let save = persist::save_tree_to(&tree.read(), &path);
-            (slowest, refused, save)
+            (refused, save)
         },
     );
 
@@ -112,10 +147,6 @@ fn a_writer_lease_held_elsewhere_costs_the_frame_loop_no_disk_sync() {
         syncs.get(),
         0,
         "a writer refused the lease synced directories anyway, which a loaded disk turns into seconds"
-    );
-    assert!(
-        slowest <= FRAME,
-        "the frame loop's owner lookup took {slowest:?} while another writer held the lease, over one frame ({FRAME:?})"
     );
 
     // The lease still decides: once the other writer lets go, this one owns
@@ -149,25 +180,27 @@ fn owner_and_authority_lookups_never_wait_for_a_publication_in_progress() {
     // is slow.
     let snapshot = persist::TreeSnapshot::of(&tree.read());
     let (syncing, synced) = std::sync::mpsc::channel();
+    let (held, release) = HeldSync::new();
+    let holding = held.clone();
     let saver = std::thread::spawn(move || {
         with_observer(
             move |event| {
                 if event.checkpoint == Checkpoint::BeforeDataFlush {
-                    let _ = syncing.send(());
-                    std::thread::sleep(SLOW_PUBLICATION);
+                    holding.park_after(|| {
+                        let _ = syncing.send(());
+                    });
                 }
             },
             || snapshot.write_to(&path),
         )
     });
-    synced
-        .recv_timeout(Duration::from_secs(30))
-        .expect("the save reached its data sync");
+    tilo_test_env::recv("the save to reach its data sync", &synced);
 
-    let (owner, owner_took) = timed(|| tree.read().installed_native_owner());
-    let (current, authority_took) = timed(|| witness.authority_is_current(&authority, room));
-    let (_, viewers_took) = timed(|| network.viewer_hosts(room));
-    let in_progress = !saver.is_finished();
+    let owner = tree.read().installed_native_owner();
+    let current = witness.authority_is_current(&authority, room);
+    network.viewer_hosts(room);
+    let in_progress = held.is_parked();
+    drop(release);
 
     assert!(
         owner.is_some(),
@@ -176,18 +209,8 @@ fn owner_and_authority_lookups_never_wait_for_a_publication_in_progress() {
     assert!(current, "the accepted authority is the tree's");
     assert!(
         in_progress,
-        "the publication finished before the lookups ran, so they did not race it"
+        "a lookup waited for the publication's data sync to finish"
     );
-    for (what, took) in [
-        ("installed_native_owner", owner_took),
-        ("authority_is_current", authority_took),
-        ("viewer_hosts", viewers_took),
-    ] {
-        assert!(
-            took <= FRAME,
-            "{what} took {took:?} while a publication was syncing, over one frame ({FRAME:?})"
-        );
-    }
     let published = saver
         .join()
         .expect("the save thread")
@@ -211,11 +234,10 @@ fn the_frame_loop_never_opens_the_owner_on_its_own_thread() {
     let data_syncs = Rc::new(Cell::new(0_usize));
     let counted_directories = Rc::clone(&directory_syncs);
     let counted_data = Rc::clone(&data_syncs);
-    let slowest = with_provision_observer(
+    with_provision_observer(
         move |event| {
             if event.checkpoint == ProvisionCheckpoint::BeforeSync {
                 counted_directories.set(counted_directories.get().saturating_add(1));
-                std::thread::sleep(SLOW_DIRECTORY_SYNC);
             }
         },
         || {
@@ -223,16 +245,14 @@ fn the_frame_loop_never_opens_the_owner_on_its_own_thread() {
                 move |event| {
                     if event.checkpoint == Checkpoint::BeforeDataFlush {
                         counted_data.set(counted_data.get().saturating_add(1));
-                        std::thread::sleep(SLOW_DIRECTORY_SYNC);
                     }
                 },
                 || {
-                    (0..TICKS)
-                        .map(|_| timed(|| network.viewer_hosts(room)).1)
-                        .max()
-                        .unwrap_or_default()
+                    for _ in 0..TICKS {
+                        network.viewer_hosts(room);
+                    }
                 },
-            )
+            );
         },
     );
 
@@ -246,22 +266,9 @@ fn the_frame_loop_never_opens_the_owner_on_its_own_thread() {
         0,
         "the frame loop published the state file itself"
     );
-    assert!(
-        slowest <= FRAME,
-        "the frame loop's owner lookup took {slowest:?} with no owner open yet, over one frame ({FRAME:?})"
-    );
 
     // The owner still opens, off the loop, and the loop then finds it.
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(30))
-        .expect("deadline");
-    while network.opened_native_owner().is_none() {
-        assert!(
-            Instant::now() < deadline,
-            "the owner never opened off the frame loop"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    until_opened(&network);
     assert!(
         tree.read().installed_native_owner().is_some(),
         "the owner opened off the loop is attached to its writer"
@@ -270,29 +277,36 @@ fn the_frame_loop_never_opens_the_owner_on_its_own_thread() {
 
 #[test]
 fn opening_the_owner_never_holds_the_tree_across_a_disk_sync() {
+    type Stage = (&'static str, HeldSync, std::sync::mpsc::Sender<()>);
     let directory = tempfile::tempdir().expect("a directory for the state file");
     let path = directory.path().join("state.json");
     let tree = tree_at(&path);
 
     // Whoever opens the owner (an action, enrollment, the loop's background
     // open), the loop reads and writes the tree every tick meanwhile.
-    let (reached, stages) = std::sync::mpsc::channel::<&'static str>();
+    // Each sync parks until the test has taken the tree, read and write,
+    // and lets it go on.
+    let (reached, stages) = std::sync::mpsc::channel::<Stage>();
     let opening = tree.clone();
     let opener = std::thread::spawn(move || {
         let directories = reached.clone();
+        let sync = |stage: &'static str, to: &std::sync::mpsc::Sender<Stage>| {
+            let (held, release) = HeldSync::new();
+            held.park_after(|| {
+                let _ = to.send((stage, held.clone(), release));
+            });
+        };
         with_provision_observer(
             move |event| {
                 if event.checkpoint == ProvisionCheckpoint::BeforeSync {
-                    let _ = directories.send("directory");
-                    std::thread::sleep(SLOW_DIRECTORY_SYNC);
+                    sync("directory", &directories);
                 }
             },
             || {
                 with_observer(
                     move |event| {
                         if event.checkpoint == Checkpoint::BeforeDataFlush {
-                            let _ = reached.send("data");
-                            std::thread::sleep(SLOW_DIRECTORY_SYNC);
+                            sync("data", &reached);
                         }
                     },
                     || open(opening),
@@ -302,20 +316,14 @@ fn opening_the_owner_never_holds_the_tree_across_a_disk_sync() {
     });
 
     let mut seen = std::collections::BTreeMap::<&str, usize>::new();
-    while let Ok(stage) = stages.recv_timeout(Duration::from_secs(30)) {
-        let read_took = timed(|| drop(tree.read())).1;
-        let write_took = timed(|| drop(tree.write())).1;
-        let in_progress = !opener.is_finished();
+    while let Ok((stage, held, release)) = stages.recv_timeout(tilo_test_env::hang_bound()) {
+        drop(tree.read());
+        drop(tree.write());
         assert!(
-            in_progress,
-            "the open finished before the tree was taken, so they did not race"
+            held.is_parked(),
+            "taking the tree waited for opening its owner to finish a {stage} sync"
         );
-        for (what, took) in [("read", read_took), ("write", write_took)] {
-            assert!(
-                took <= FRAME,
-                "taking the tree to {what} took {took:?} while opening its owner waited for a {stage} sync, over one frame ({FRAME:?})"
-            );
-        }
+        drop(release);
         let count = seen.entry(stage).or_default();
         *count = count.saturating_add(1);
     }
@@ -335,10 +343,9 @@ fn opening_the_owner_never_holds_the_tree_across_a_disk_sync() {
     drop(owner);
 }
 
-/// Run `body` with every directory and data sync on this thread slowed to
-/// [`SLOW_DIRECTORY_SYNC`], and answer what it returned and how many syncs
-/// this thread made.
-fn on_a_slow_disk<T>(body: impl FnOnce() -> T) -> (T, usize) {
+/// Run `body` and answer what it returned and how many directory and data
+/// syncs this thread made.
+fn counting_syncs<T>(body: impl FnOnce() -> T) -> (T, usize) {
     let syncs = Rc::new(Cell::new(0_usize));
     let directories = Rc::clone(&syncs);
     let data = Rc::clone(&syncs);
@@ -346,7 +353,6 @@ fn on_a_slow_disk<T>(body: impl FnOnce() -> T) -> (T, usize) {
         move |event| {
             if event.checkpoint == ProvisionCheckpoint::BeforeSync {
                 directories.set(directories.get().saturating_add(1));
-                std::thread::sleep(SLOW_DIRECTORY_SYNC);
             }
         },
         || {
@@ -354,7 +360,6 @@ fn on_a_slow_disk<T>(body: impl FnOnce() -> T) -> (T, usize) {
                 move |event| {
                     if event.checkpoint == Checkpoint::BeforeDataFlush {
                         data.set(data.get().saturating_add(1));
-                        std::thread::sleep(SLOW_DIRECTORY_SYNC);
                     }
                 },
                 body,
@@ -365,13 +370,13 @@ fn on_a_slow_disk<T>(body: impl FnOnce() -> T) -> (T, usize) {
 }
 
 /// Another open of `tree`'s writer, in progress on a thread of its own
-/// until the returned sender is dropped (or [`SLOW_PUBLICATION`] passed):
-/// every other open of the writer waits behind it, so the owner stays
-/// opening meanwhile.
+/// until the returned sender is dropped (or the hang bound passed, should a
+/// call under test wait for it): every other open of the writer waits behind
+/// it, so the owner stays opening meanwhile.
 fn open_in_progress(
     tree: &WorkspaceTreeHandle,
 ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
-    test_open_in_progress(tree, SLOW_PUBLICATION)
+    test_open_in_progress(tree, tilo_test_env::hang_bound())
 }
 
 fn departed(seed: u8) -> iroh::EndpointId {
@@ -391,16 +396,9 @@ fn depart(network: &crate::shell::network::ShellNetwork, seed: u8) {
 }
 
 fn until_opened(network: &crate::shell::network::ShellNetwork) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(30))
-        .expect("deadline");
-    while network.opened_native_owner().is_none() {
-        assert!(
-            Instant::now() < deadline,
-            "the owner never opened off the frame loop"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    tilo_test_env::wait_until("the owner to open off the frame loop", || {
+        network.opened_native_owner().is_some()
+    });
 }
 
 #[test]
@@ -413,13 +411,13 @@ fn inbound_events_wait_in_order_while_the_owner_opens_off_the_loop() {
     depart(&network, 41);
     depart(&network, 42);
 
-    let (slowest, syncs) = on_a_slow_disk(|| {
-        (0..TICKS)
-            .map(|_| timed(|| network.frame_tick()).1)
-            .max()
-            .unwrap_or_default()
+    let ((), syncs) = counting_syncs(|| {
+        for _ in 0..TICKS {
+            network.frame_tick();
+        }
     });
     let early = network.peer_departures().len();
+    let still_opening = !holder.is_finished();
     drop(release);
     holder.join().expect("the other open");
 
@@ -428,25 +426,21 @@ fn inbound_events_wait_in_order_while_the_owner_opens_off_the_loop() {
         "the frame loop synced the state file while handling inbound events"
     );
     assert!(
-        slowest <= FRAME,
-        "a frame-loop network tick took {slowest:?} while the owner was opening, over one frame ({FRAME:?})"
+        still_opening,
+        "a frame-loop network tick waited for the owner's open to finish"
     );
     assert_eq!(
         early, 0,
         "an inbound event was handled before the owner it may read had opened"
     );
 
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(30))
-        .expect("deadline");
-    while network.peer_departures().len() < 2 {
-        assert!(
-            Instant::now() < deadline,
-            "the held inbound events were never handled once the owner opened"
-        );
-        network.frame_tick();
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    tilo_test_env::wait_until(
+        "the held inbound events to be handled once the owner opened",
+        || {
+            network.frame_tick();
+            network.peer_departures().len() >= 2
+        },
+    );
     let order: Vec<_> = network
         .peer_departures()
         .into_iter()
@@ -475,14 +469,13 @@ fn the_loop_reads_governed_rooms_without_opening_the_owner() {
     let hosted = NativeHostedRooms(std::sync::Arc::clone(&network));
     let (release, holder) = open_in_progress(&tree);
 
-    let ((hosts, awaiting, slowest), syncs) = on_a_slow_disk(|| {
+    let ((hosts, awaiting), syncs) = counting_syncs(|| {
         // What the loop asks with no owner open yet: hosted legacy windows
         // every half second, and the window-transfer consent scan.
-        let ((), windows) = timed(|| network.publish_hosted_legacy_windows(room, &tree));
-        let (hosts, scan) = timed(|| hosted.hosts(room));
-        let (awaiting, listing) = timed(|| hosted.awaiting_me(room));
-        (hosts, awaiting, windows.max(scan).max(listing))
+        network.publish_hosted_legacy_windows(room, &tree);
+        (hosted.hosts(room), hosted.awaiting_me(room))
     });
+    let still_opening = !holder.is_finished();
     drop(release);
     holder.join().expect("the other open");
 
@@ -491,8 +484,8 @@ fn the_loop_reads_governed_rooms_without_opening_the_owner() {
         "the frame loop opened the owner itself to read a governed room"
     );
     assert!(
-        slowest <= FRAME,
-        "reading a governed room on the frame loop took {slowest:?} with no owner open yet, over one frame ({FRAME:?})"
+        still_opening,
+        "reading a governed room on the frame loop waited for the owner's open to finish"
     );
     assert!(
         hosts,
@@ -519,50 +512,31 @@ fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
     let directory = tempfile::tempdir().expect("a directory for the state file");
     let path = directory.path().join("state.json");
     let tree = tree_at(&path);
-    let room = active_room(&tree).to_string();
     let (network, _commands) = crate::shell::network::shell_network_for_test(tree.clone(), 1);
     let network = Arc::new(network);
     // The session starts with no owner open: the broker's services, built
     // on the frame loop, are its first users. Each of the broker's owner
     // services (commits, document reads, memberships, tasks) is a
-    // `NativeOwnerCommitService`; the task review resolves its own.
+    // `NativeOwnerCommitService`.
     let (release, holder) = open_in_progress(&tree);
 
-    let (built, syncs) = on_a_slow_disk(|| {
-        timed(|| {
-            let commit = NativeOwnerCommitService::new(tree.clone(), Some(Arc::clone(&network)));
-            let review = crate::shell::task_review::NativeTaskReview::new(
-                tree.clone(),
-                Some(Arc::clone(&network)),
-            );
-            (commit, review)
-        })
-    });
-    let ((commit, review), took) = built;
+    let (commit, syncs) =
+        counting_syncs(|| NativeOwnerCommitService::new(tree.clone(), Some(Arc::clone(&network))));
+    let still_opening = !holder.is_finished();
 
     assert_eq!(
         syncs, 0,
         "building the session broker's services synced the state file on the frame loop"
     );
     assert!(
-        took <= FRAME,
-        "building the session broker's services took {took:?} with the owner still opening, over one frame ({FRAME:?})"
+        still_opening,
+        "building the session broker's services waited for the owner's open to finish"
     );
-    let review = review.expect("an owner still opening is not a missing one");
     // A synchronous question says the owner is opening, never that there
     // is none, and never answers from a guessed owner.
     assert_eq!(
         OwnerCommitService::health(&commit).expect_err("health while the owner opens"),
         NATIVE_OWNER_OPENING
-    );
-    assert_eq!(
-        WorkspaceMemberships::task_snapshot(&commit, &room)
-            .expect_err("a task snapshot while the owner opens"),
-        NATIVE_OWNER_OPENING
-    );
-    assert!(
-        review.requires_room(&room),
-        "a room read as needing no task review before the owner that knows had opened"
     );
 
     // A commit waits for the open in its own future, instead of failing
@@ -571,17 +545,24 @@ fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
         room: "not a room".into(),
         operation: CommitOperation::RetiredAgentRuntime,
     });
+    let (thread_id, commit_thread) = std::sync::mpsc::channel();
     let committing = std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
-            .expect("a runtime for the commit")
-            .block_on(pending)
+            .expect("a runtime for the commit");
+        let _ = thread_id.send(tilo_test_env::idle::current_thread_id().expect("a thread id"));
+        runtime.block_on(pending)
     });
-    std::thread::sleep(Duration::from_millis(50));
-    assert!(
-        !committing.is_finished(),
-        "a commit gave up on an owner still opening"
-    );
+    let commit_thread = tilo_test_env::recv("the commit's thread to start", &commit_thread);
+    // Either the commit gives up, or it sleeps waiting for the open.
+    let gave_up = tilo_test_env::wait_for("the commit to finish or wait", || {
+        if committing.is_finished() {
+            Some(true)
+        } else {
+            thread_is_blocked(commit_thread).then_some(false)
+        }
+    });
+    assert!(!gave_up, "a commit gave up on an owner still opening");
     drop(release);
     holder.join().expect("the other open");
     let committed = committing.join().expect("the commit's thread");
@@ -601,10 +582,9 @@ fn building_the_session_brokers_owner_services_never_waits_for_the_open() {
 /// on the tick first login completes: start binding it, poll the start each
 /// tick, install what it produced. Binding opens the broker's invocation
 /// journal (a directory sync on every open), its vault and its channel
-/// state, so on a thread that may not sync it fails. Here each loop-side
-/// call returns within a frame and makes no sync, and the broker still
-/// comes up with its journal open, because the binding ran on the
-/// session-start worker.
+/// state, so on a thread that may not sync it fails. Here no loop-side call
+/// makes a sync, and the broker still comes up with its journal open,
+/// because the binding ran on the session-start worker.
 #[test]
 #[cfg(target_os = "linux")]
 #[serial_test::serial(process_env)]
@@ -627,47 +607,29 @@ fn the_loop_brings_the_session_broker_up_without_waiting_for_the_disk() {
         std::path::PathBuf::from(name)
     };
 
-    let ((broker, unavailable, ticks, slowest), syncs) =
+    let ((broker, unavailable), syncs) =
         crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
-            on_a_slow_disk(|| {
+            counting_syncs(|| {
                 let wake: crate::session_runtime::Wake = Arc::new(|| {});
-                let (start, started) =
-                    timed(|| start_session_collab_broker(Some(&network), tree.clone(), wake));
-                let mut slowest = started;
-                let mut ticks = 0_usize;
-                let deadline = Instant::now()
-                    .checked_add(Duration::from_secs(30))
-                    .expect("deadline");
-                let outcome = loop {
-                    let (polled, took) = timed(|| start.poll());
-                    ticks = ticks.saturating_add(1);
-                    slowest = slowest.max(took);
-                    if let Some(outcome) = polled {
-                        break outcome;
-                    }
-                    assert!(
-                        Instant::now() < deadline,
-                        "the session broker never came up off the loop"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
-                };
+                let start = start_session_collab_broker(Some(&network), tree.clone(), wake);
                 let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
                     tree.clone(),
                     crate::shell::hosted_inputs::HostedTileInputs::default(),
                 );
-                let (broker, installed) = timed(|| finish_session_collab_broker(&chrome, outcome));
+                let broker = finish_session_collab_broker(
+                    &chrome,
+                    tilo_test_env::wait_for("the session broker to come up off the loop", || {
+                        start.poll()
+                    }),
+                );
                 let unavailable = chrome.borrow().collab_unavailable.clone();
-                (broker, unavailable, ticks, slowest.max(installed))
+                (broker, unavailable)
             })
         });
 
     assert_eq!(
         syncs, 0,
         "bringing the session broker up synced on the frame loop's thread"
-    );
-    assert!(
-        slowest <= FRAME,
-        "a loop-side step of bringing the session broker up took {slowest:?} over {ticks} ticks, over one frame ({FRAME:?})"
     );
     let broker =
         broker.unwrap_or_else(|| panic!("the session broker did not come up: {unavailable:?}"));

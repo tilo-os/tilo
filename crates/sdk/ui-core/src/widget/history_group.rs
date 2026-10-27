@@ -20,6 +20,7 @@
 
 use crate::time::{Duration, SystemTime};
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 
 use crate::widget::EntryKind;
 
@@ -214,22 +215,40 @@ impl HistoryGroup {
     /// surface lays out apart ([`crate::widget::primitives::Facts`]), never
     /// joined by a glyph.
     pub fn subtitle_facts(&self, entries: &[HistoryEntry]) -> Vec<String> {
+        self.subtitle_facts_summarised(entries, None)
+    }
+
+    /// [`Self::subtitle_facts`], with what the app says the band amounts to
+    /// (`summary`) in place of how much text moved.
+    pub fn subtitle_facts_summarised(
+        &self,
+        entries: &[HistoryEntry],
+        summary: Option<String>,
+    ) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
         if self.name.is_some() {
             let count = crate::i18n!("history-group-changes", "count" => self.len());
             parts.push(self.over_span(count));
         }
+        // What the app says the band amounts to is what it is read by, so
+        // it is kept before who made it (whose faces the band shows too).
+        let summarised = summary.is_some();
+        if let Some(summary) = summary {
+            parts.push(summary);
+        }
         let who = self.authors_label();
         if !who.is_empty() {
             parts.push(who);
         }
-        if let Some((ins, del)) = self.text_delta
+        if !summarised
+            && let Some((ins, del)) = self.text_delta
             && (ins > 0 || del > 0)
         {
             // Same spelling as a row's own summary: a group that wrote its
             // counts with a different minus sign reads as a different unit.
             parts.push(crate::i18n!("history-group-chars", "inserted" => ins, "deleted" => del));
-        } else if self.name.is_none()
+        } else if !summarised
+            && self.name.is_none()
             && self.len() > 1
             && let Some(first) = entries.get(self.start)
         {
@@ -407,7 +426,7 @@ pub fn group_entries(
     }
     // Outermost first at a given start, then by record id so two peers order
     // identically.
-    resolved.sort_by(|a, b| {
+    resolved.compact_sort_by(|a, b| {
         a.start
             .cmp(&b.start)
             .then(b.end.cmp(&a.end))
@@ -712,7 +731,6 @@ mod tests {
             let mut entries: Vec<HistoryEntry> = (0..3)
                 .map(|i| entry(i, "Alice", 1000 + u64::from(i), EntryKind::Text))
                 .collect();
-            // Six minutes later, same person, same kind of change.
             entries.extend(
                 (3..6).map(|i| entry(i, "Alice", 1000 + 360 + u64::from(i), EntryKind::Text)),
             );

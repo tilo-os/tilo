@@ -223,7 +223,10 @@ fn preparation_directory() -> std::io::Result<PathBuf> {
 fn trusted_helper() -> Option<PathBuf> {
     let current = std::env::current_exe().ok()?.canonicalize().ok()?;
     let sibling = current.parent()?.join("tilo-enroll");
-    trusted_helper_from(&current, [sibling, PathBuf::from("/usr/bin/tilo-enroll")])
+    trusted_helper_from(
+        &current,
+        [sibling, PathBuf::from("/usr/libexec/tilo/tilo-enroll")],
+    )
 }
 
 fn trusted_helper_from(
@@ -529,7 +532,7 @@ mod tests {
         (temporary, custody)
     }
     fn wait(pairing: &mut Pairing, ready: impl Fn(&Pairing) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while !ready(pairing) {
             assert!(
                 Instant::now() < deadline,
@@ -631,7 +634,7 @@ mod tests {
             .arg(fake.to_string());
         let mut pairing = Pairing::default();
         pairing
-            .begin(command, custody, Duration::from_secs(5))
+            .begin(command, custody, tilo_test_env::hang_bound())
             .unwrap();
         wait(&mut pairing, |value| !value.busy());
         assert_eq!(pairing.projection()["state"], "failed");

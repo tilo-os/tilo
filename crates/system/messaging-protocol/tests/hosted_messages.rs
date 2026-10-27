@@ -151,6 +151,19 @@ fn has_text(app: &mut ui::framework::testing::TestApp<MessagesShell>, text: &str
         .iter()
         .any(|(_, n)| n.label() == Some(text))
 }
+/// Whether `text` shows once the conversation settles. A send publishes the
+/// history change, so the next frame starts a fresh read of the conversation
+/// that hides the page until it answers; on a loaded machine that answer
+/// comes after the send's own frame, so a single look can miss it.
+fn shows_text(app: &mut ui::framework::testing::TestApp<MessagesShell>, text: &str) -> bool {
+    app.harness()
+        .wait_until(tilo_test_env::hang_bound(), |harness| {
+            harness
+                .a11y_nodes()
+                .iter()
+                .any(|(_, n)| n.label() == Some(text))
+        })
+}
 fn field(value: &serde_json::Value, path: &str) -> serde_json::Value {
     value
         .pointer(path)
@@ -347,7 +360,7 @@ fn messages_send_crosses_native_adapter_and_private_history_survives_restart_wit
         "sensitive send requires normal confirmation"
     );
     app.effect_confirmed(&send).expect("confirmed actual send");
-    assert!(has_text(&mut app, "private outgoing"));
+    assert!(shows_text(&mut app, "private outgoing"));
     assert!(has_text(&mut app, "private incoming"));
     assert!(has_text(
         &mut app,
@@ -448,7 +461,7 @@ fn idle_inbound_arrival_persists_and_wakes_the_selected_conversation() {
     go.send(()).expect("fixture arrival");
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .a11y_nodes()
                     .iter()
@@ -510,10 +523,10 @@ fn signal_ready_publication_already_owns_receiver_and_observes_its_failure() {
             native
                 .lock()
                 .expect("shutdown lock")
-                .recv_timeout(ui::time::Duration::from_secs(5))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .expect("native peer"),
         );
-        let deadline = std::time::Instant::now() + ui::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + tilo_test_env::hang_bound();
         while supervisor.client().account_state(&account) != AccountState::Failed
             && std::time::Instant::now() < deadline
         {
@@ -535,7 +548,7 @@ fn signal_ready_publication_already_owns_receiver_and_observes_its_failure() {
     setup.join().expect("bounded native fixture");
     assert_eq!(
         observed
-            .recv_timeout(ui::time::Duration::from_secs(5))
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("actual ready observer"),
         AccountState::Failed
     );
@@ -683,7 +696,7 @@ fn actual_signal_recipient_receipt_correlates_native_operation_and_updates_priva
     };
     app.effect_confirmed(&send)
         .expect("confirmed native submission");
-    assert!(has_text(&mut app, "Read by recipient"));
+    assert!(shows_text(&mut app, "Read by recipient"));
     assert!(has_text(&mut app, "private outgoing"));
     assert!(!app.harness().dump_json().contains("private outgoing"));
     assert!(app.effect_confirmed(&send).is_err());
@@ -740,7 +753,7 @@ fn unknown_signal_timestamp_or_foreign_sender_never_promotes_recipient_delivery(
             text: "private outgoing".into(),
         })
         .expect("server accepts the exact submission");
-        assert!(has_text(
+        assert!(shows_text(
             &mut app,
             &<MessagesShell as ui::framework::ResourceApp>::catalog()
                 .expect("catalog")
@@ -795,7 +808,7 @@ fn idle_signal_receipt_wakes_the_selected_private_conversation() {
     go.send(()).expect("receipt arrival");
     assert!(
         app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .a11y_nodes()
                     .iter()

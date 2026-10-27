@@ -38,7 +38,6 @@ pub struct Picture<'a> {
 pub struct Wand<'a> {
     /// The pixel it starts from.
     pub seed: Option<(usize, usize)>,
-    /// Or the colour it looks for, `[r, g, b]`.
     pub colour: Option<[u8; 3]>,
     /// `0..=1`.
     pub tolerance: f64,

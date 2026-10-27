@@ -184,10 +184,8 @@ mod tests {
 
     #[test]
     fn chooser_types_are_the_union_and_widen_rather_than_hide() {
-        // Case `no_filters_offer_everything`.
         assert_eq!(open_mime_types(&[], known), ["*/*"]);
 
-        // Case `mime_types_and_known_globs_merge_without_duplicates`.
         let images = FileFilter::new("Images")
             .glob("*.png")
             .glob("*.JPG")
@@ -198,7 +196,6 @@ mod tests {
             ["image/png", "image/jpeg", "text/x-vcard"]
         );
 
-        // Case `all_files_widens_the_whole_chooser`.
         assert_eq!(
             open_mime_types(&[images.clone(), FileFilter::all_files()], known),
             ["*/*"]
@@ -208,23 +205,19 @@ mod tests {
             ["*/*"]
         );
 
-        // Case `an_unknown_extension_widens_instead_of_hiding_the_file`.
         let odd = FileFilter::new("Tilo slides").glob("*.qvp");
         assert_eq!(open_mime_types(&[images, odd], known), ["*/*"]);
 
-        // Case `a_glob_that_is_not_an_extension_widens`.
         for glob in ["Makefile", "*", "*.*", "photo-*.png", "*.tar.gz"] {
             let filter = FileFilter::new("Odd").glob(glob);
             assert_eq!(open_mime_types(&[filter], known), ["*/*"], "{glob}");
         }
 
-        // Case `a_wildcard_subtype_is_kept`.
         assert_eq!(
             open_mime_types(&[FileFilter::new("Audio").mimetype("audio/*")], known),
             ["audio/*"]
         );
 
-        // Case `an_empty_filter_widens`.
         assert_eq!(open_mime_types(&[FileFilter::new("Empty")], known), ["*/*"]);
     }
 
@@ -250,25 +243,21 @@ mod tests {
     fn activity_results_map_to_outcomes_honestly() {
         let doc = "content://com.android.externalstorage.documents/document/primary%3Aa.png";
 
-        // Case `ok_with_documents_is_a_pick_in_order`.
         assert_eq!(
             document_result(RESULT_OK, vec![doc.into(), format!("{doc}2")], None),
             DocumentResult::Picked(vec![doc.into(), format!("{doc}2")])
         );
 
-        // Case `cancel_is_cancel`.
         assert_eq!(
             document_result(RESULT_CANCELED, Vec::new(), None),
             DocumentResult::Cancelled
         );
 
-        // Case `ok_without_a_document_is_a_failure_not_a_cancel`.
         assert!(matches!(
             document_result(RESULT_OK, Vec::new(), None),
             DocumentResult::Failed(_)
         ));
 
-        // Case `file_uris_are_never_picks`.
         assert!(matches!(
             document_result(RESULT_OK, vec!["file:///data/data/x/secret".into()], None),
             DocumentResult::Failed(_)
@@ -282,7 +271,6 @@ mod tests {
             DocumentResult::Picked(vec![doc.into()])
         );
 
-        // Case `a_launch_error_wins`.
         assert_eq!(
             document_result(
                 RESULT_CANCELED,
@@ -292,7 +280,6 @@ mod tests {
             DocumentResult::Failed("no app on this device handles OPEN".into())
         );
 
-        // Case `an_unknown_result_code_is_a_failure`.
         assert!(matches!(
             document_result(1, vec![doc.into()], None),
             DocumentResult::Failed(_)

@@ -134,10 +134,6 @@ impl Report {
 
 /// `A` as its `--shots` capture shows it (the fixture of `scenario`, or the
 /// plain capture), at [`YOGA`], with every frame the launch queued run.
-///
-/// # Errors
-/// Returns the capture's launch failure, or an invalid viewport when the app
-/// refuses the Yoga's.
 pub fn open<A: ResourceApp>(scenario: Option<&str>) -> Result<HeadlessApp<A>, LaunchError> {
     let mut app = HeadlessApp::<A>::capture_at(scenario, YOGA)?;
     app.settle();
@@ -198,9 +194,6 @@ pub fn measure<A: ResourceApp>(
 ///
 /// What the GPU, the window and the compositor add on a device is not here:
 /// this is the part of a launch the app's own code decides.
-///
-/// # Errors
-/// Returns the launch failure.
 pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
     let profile = tempfile::tempdir().map_err(|error| LaunchError::Operation(error.to_string()))?;
     drop(HeadlessApp::<A>::open_data_dir(profile.path())?);
@@ -239,9 +232,6 @@ pub fn start<A: ResourceApp>(launches: usize) -> Result<Report, LaunchError> {
 /// Each sample is the time from the process starting to its first frame
 /// drawn; the phases are the startup marks' (`APP-STARTUP`) and the named
 /// scopes' (`FIRST-FRAME-SCOPE`) medians over the launches.
-///
-/// # Panics
-/// When a launch fails or prints no startup line.
 #[must_use]
 #[allow(
     clippy::expect_used,
@@ -556,9 +546,6 @@ pub fn glide<A: ResourceApp>(app: &mut HeadlessApp<A>, at: (f64, f64), frames: u
 
 /// Keystrokes into the field at `field`: one click focuses it, then each
 /// step types one character of `text`, cycling.
-///
-/// # Panics
-/// When `text` is empty.
 pub fn keystrokes<A: ResourceApp>(
     app: &mut HeadlessApp<A>,
     field: (f64, f64),
@@ -606,18 +593,6 @@ pub fn switch_views<A: ResourceApp>(
     )
 }
 
-/// Clicks at `at` that change nothing an app shows: an empty spot. What
-/// every click costs before it does anything.
-pub fn idle_clicks<A: ResourceApp>(
-    app: &mut HeadlessApp<A>,
-    at: (f64, f64),
-    steps: usize,
-) -> Report {
-    measure(app, "idle click", (2, steps), |app, _| {
-        app.harness().click_at(at.0, at.1);
-    })
-}
-
 /// The interactions [`profile`] measured; `None` where the app's capture
 /// offers nothing of that kind to drive.
 pub struct Profile {
@@ -636,9 +611,6 @@ pub struct Profile {
 /// Every interaction [`profile`] finds in `A`'s capture of `scenario`,
 /// measured and printed with the app's id: what scrolling, typing,
 /// switching views and selecting items cost on the UI thread.
-///
-/// # Errors
-/// Returns the capture's launch failure.
 pub fn profile<A: ResourceApp>(scenario: Option<&str>) -> Result<Profile, LaunchError> {
     let id = A::ID;
     let fresh = || open::<A>(scenario);
@@ -699,7 +671,6 @@ pub fn profile<A: ResourceApp>(scenario: Option<&str>) -> Result<Profile, Launch
     })
 }
 
-/// [`targets`] of `roles` with the area of each one's bounds.
 fn targets_with_area<A: ResourceApp>(
     app: &mut HeadlessApp<A>,
     roles: &[Role],

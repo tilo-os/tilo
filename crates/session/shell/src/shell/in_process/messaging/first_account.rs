@@ -568,7 +568,6 @@ impl Actor {
             .publish_native_signal_enrollment(permission.completed.candidate, permission.name)
             .map_err(|_| SendError::Revoked)?;
         attempt.published = true;
-        ensure_contacts(apps, &identity)?;
         let authority = apps
             .native_messaging_authority(&identity, &credential, &linked.scope)
             .map_err(|_| SendError::Revoked)?;
@@ -686,28 +685,6 @@ impl Actor {
         );
     }
 }
-pub(super) fn ensure_contacts(
-    apps: &mut super::super::InProcessApps,
-    identity: &NativeMessagingIdentity,
-) -> Result<(), SendError> {
-    use tilo_contact_directory::ContactDirectory;
-    use tilo_resource::Resource as _;
-    identity.check()?;
-    let records = ui::record::person::PersonRecords::open(
-        &mut apps.owners,
-        "so.tilo.contacts",
-        apps.author.clone(),
-    )
-    .map_err(|_| SendError::Unavailable)?;
-    records
-        .open_original_record(ui::record::RecordKind::new(ContactDirectory::KIND), |doc| {
-            ContactDirectory::initialize(doc).map_err(|error| error.to_string())
-        })
-        .map_err(|_| SendError::Unavailable)?;
-    records.flush().map_err(|_| SendError::Unavailable)?;
-    identity.check()
-}
-
 #[cfg(test)]
 pub(super) fn fixture(
     principal: String,

@@ -51,7 +51,7 @@ impl Fixture {
                 scope: crate::shell::state::GRANT_SESSION,
             },
         );
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree {
             persist_path: Some(directory.path().join("state.json")),
             ..Default::default()
@@ -288,8 +288,19 @@ impl Connection {
         clippy::future_not_send,
         reason = "Cap'n Proto runs on this test's LocalSet"
     )]
-    async fn settled(&self, operation: &str) -> Reply {
-        tokio::time::timeout(Duration::from_secs(10), async {
+    #[track_caller]
+    fn settled<'a>(&'a self, operation: &'a str) -> impl std::future::Future<Output = Reply> + 'a {
+        let awaited = std::panic::Location::caller();
+        async move { self.settled_at(operation, awaited).await }
+    }
+
+    #[expect(
+        clippy::future_not_send,
+        reason = "Cap'n Proto runs on this test's LocalSet"
+    )]
+    async fn settled_at(&self, operation: &str, awaited: &std::panic::Location<'_>) -> Reply {
+        let last = std::cell::RefCell::new(None);
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 let reply = self
                     .command(Command::Observe {
@@ -300,11 +311,17 @@ impl Connection {
                 if matches!(reply, Reply::Settled { .. }) {
                     break reply;
                 }
+                *last.borrow_mut() = Some(reply);
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("bounded clipboard worker settlement")
+        .unwrap_or_else(|_| {
+            panic!(
+                "clipboard worker never settled {operation} (awaited at {awaited}); last observed {:?}",
+                last.borrow()
+            )
+        })
     }
 }
 fn selected(path: &Path) -> (File, SelectedDescriptor) {
@@ -571,7 +588,7 @@ fn clipboard_bridge_expired_ticket_and_closed_source_cannot_publish_or_paste() {
         let offer = a.publish(ticket, false).await;
         let destination = b.capture(&folder, true).await;
         drop(a);
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(tilo_test_env::hang_bound(), async {
             loop {
                 if matches!(
                     b.command(Command::Snapshot).await,

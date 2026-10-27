@@ -153,8 +153,6 @@ impl EncryptedBackend {
 
     /// Retain the original native account grant on every SDK state operation.
     /// The supplied key constructor alone does not establish host authority.
-    /// # Errors
-    /// Refuses a grant which is already revoked.
     pub fn guarded(self, authority: Arc<dyn StateAuthority>) -> Result<Self> {
         if !authority.allowed() {
             return Err(unavailable());

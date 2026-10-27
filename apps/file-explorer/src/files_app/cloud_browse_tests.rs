@@ -1,19 +1,22 @@
 use super::*;
-use std::io::Write;
-use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, ImportReadState};
 
+// Cloud import stages through descriptor-relative paths only Linux provides.
+#[cfg(target_os = "linux")]
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one sequential action, portal and protocol scenario keeps the observable transfer lifecycle together"
 )]
 fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
+    use std::io::Write;
+    use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse, ImportReadState};
     let mut env = tilo_test_env::ScopedEnv::new();
     let root = tempfile::tempdir().unwrap();
-    env.set("XDG_RUNTIME_DIR", root.path());
+    let runtime = tilo_test_env::runtime_tempdir().unwrap();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
     let destination = root.path().join("Chosen");
     std::fs::create_dir(&destination).unwrap();
-    let socket = tilo_cloud_files::cloud::files_socket_in(root.path());
+    let socket = tilo_cloud_files::cloud::files_socket_in(runtime.path());
     std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
     let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
     let mut office = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -100,7 +103,7 @@ fn provider_actions_choose_destination_and_import_office_bytes_without_mount() {
             account: "account".into(),
         })
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while files.cloud.pending.is_some() {
         assert!(std::time::Instant::now() < deadline);
         files.poll_cloud();
@@ -190,7 +193,7 @@ fn explicit_import_folder_is_pinned_without_a_chooser_and_is_not_source_consent(
         *pinned,
         crate::cloud_transfer::pin_destination(folder, std::iter::empty()).unwrap()
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while files.cloud.transfer.is_some() {
         assert!(std::time::Instant::now() < deadline);
         files.poll_cloud();
@@ -236,7 +239,8 @@ fn browse_test_entry() -> ImportEntry {
 fn replacing_folder_or_account_detaches_pending_pages_and_selection() {
     let mut env = tilo_test_env::ScopedEnv::new();
     let root = tempfile::tempdir().unwrap();
-    env.set("XDG_RUNTIME_DIR", root.path());
+    let runtime = tilo_test_env::runtime_tempdir().unwrap();
+    env.set("XDG_RUNTIME_DIR", runtime.path());
     let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
     files.startup_accounts = Some(vec![
         browse_test_account("first"),
@@ -270,7 +274,7 @@ fn replacing_folder_or_account_detaches_pending_pages_and_selection() {
             .is_err()
         );
         assert!(files.run_effect(FilesEffect::MoreCloud).is_err());
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = tilo_test_env::hang_deadline();
         while files.cloud.pending.is_some() {
             assert!(Instant::now() < deadline);
             files.poll_cloud();
@@ -387,4 +391,108 @@ fn legacy_cloud_links_do_not_offer_document_import() {
         );
     }
     assert!(files.importable_cloud_entry(&root.path().join("Document.docx")));
+}
+
+/// A cloud folder is named by the window's bar as the account and the folder in
+/// it, and the window draws no header of its own while the bar hosts it.
+#[test]
+fn the_window_bar_names_the_cloud_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
+    files.header_in_bar = true;
+    files.debug_show_cloud_folder();
+    files.refresh_cloud_header();
+    assert!(
+        !files.cloud.header_shown,
+        "no cloud title in the window while the bar names the place"
+    );
+    let location = files.window_toolbar().location.expect("a location");
+    assert_eq!(location.label, "Trip to Lisbon");
+    assert_eq!(
+        location
+            .segments
+            .iter()
+            .map(|segment| segment.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Drive", "Trip to Lisbon"]
+    );
+    assert!(!location.editable, "a cloud folder has no path to type");
+}
+
+/// A cloud folder the window named itself before the bar hosted it moves
+/// into the bar: the bar is told the account and the folder, and the window
+/// stops drawing its own title for it.
+#[test]
+fn a_cloud_folder_named_before_the_bar_hosts_the_window_moves_into_the_bar() {
+    let root = tempfile::tempdir().unwrap();
+    let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
+    ui::window_toolbar::set_hosted(false);
+    files.debug_show_cloud_folder();
+    files.sync_window_toolbar();
+    files.refresh_cloud_header();
+    assert!(
+        files.cloud.header_shown,
+        "outside a Tilo session the window names the cloud folder"
+    );
+
+    ui::window_toolbar::set_hosted(true);
+    files.sync_window_toolbar();
+    files.refresh_cloud_header();
+    assert!(
+        !files.cloud.header_shown,
+        "the window draws no cloud title while the bar names the place"
+    );
+    let location = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.location)
+        .expect("the bar is told the place");
+    assert_eq!(location.label, "Trip to Lisbon");
+    assert_eq!(
+        location
+            .segments
+            .iter()
+            .map(|segment| segment.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Drive", "Trip to Lisbon"]
+    );
+}
+
+/// The cloud folder as a window shows it, its place in the window's bar,
+/// in dark and light, for a person to look at: each picture is printed as
+/// hex between `capture <name>` and `end capture` lines. Run on request
+/// (`--ignored --nocapture`).
+#[test]
+#[ignore = "prints captures for review"]
+fn a_cloud_folder_capture_shows_its_place_in_the_bar() {
+    for (name, theme) in [("dark", ui::Theme::dark()), ("light", ui::Theme::light())] {
+        let root = tempfile::tempdir().unwrap();
+        let files = FileExplorerWidget::with_persistence(None, Some(root.path().to_path_buf()));
+        let mut harness =
+            ui::headless::FrameHarness::for_app(ui::State::new(), files, (1200, 720), theme);
+        harness.present_in_window_bar();
+        harness
+            .root_mut::<FileExplorerWidget>()
+            .debug_show_cloud_folder();
+        for _ in 0..3 {
+            harness.recompose().unwrap();
+        }
+        assert_eq!(
+            ui::window_toolbar::declared()
+                .and_then(|toolbar| toolbar.location)
+                .map(|location| location.label)
+                .as_deref(),
+            Some("Trip to Lisbon"),
+            "the bar is told the cloud folder"
+        );
+        let out = root.path().join("capture.png");
+        harness.render_window_png(&out);
+        let png = std::fs::read(&out).unwrap();
+        println!("capture cloud-folder-{name}");
+        let hex = png.iter().fold(String::new(), |mut hex, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        });
+        println!("{hex}");
+        println!("end capture");
+    }
 }

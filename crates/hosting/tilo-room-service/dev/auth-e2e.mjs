@@ -27,6 +27,14 @@
 //   tabs-one-person
 //                  another person in the room sees the two tabs as one
 //                  person, and neither tab lists the other as someone else
+//   visitor-types  that other person, a fresh visitor, opens Contacts, starts
+//                  a new contact and types into its first name: the text
+//                  lands there, not in another window
+//   door-failing   a fresh profile whose join the door cannot answer (503
+//                  without Retry-After, as when the room's relay does not
+//                  answer in time) watches the room as its spectator: the
+//                  desktop presents, through the spectator's own replica of
+//                  the room, and nothing is kept as membership
 //   new-tab        every tab closed, then the room's link in a new tab of the
 //                  same profile: presents as the same person, no new join
 //   damaged-link   a link whose invitation secrets are out of order is refused
@@ -59,11 +67,77 @@
 //                  the new host: the old state was never reused or handed to it
 //   stale-rejoined the old room's link once joined again: refused without a
 //                  join, the new membership kept
+//   lost-certificate
+//                  the person's browser loses what it kept for the host (its
+//                  records, as when site data is partly cleared) but keeps
+//                  its device key, which the room admitted under the
+//                  certificate now gone and never admits under another: the
+//                  bare entry joins again as the same person on a new
+//                  device (two joins at the door, both answered), never the
+//                  "couldn't let you in" page, and the desktop presents
 //   kept-membership
 //                  the host started again (not anew), and the person away
 //                  past the old prune passes: the host still has them. The bare entry joins at no door,
 //                  and the desktop presents as the same person in the same
 //                  room (membership persists; TILO_ROOMS_INACTIVE_AFTER_DAYS)
+//   invite-door    the host started again taking people by invitation
+//                  (TILO_ROOMS_ADMISSION=invite): a fresh profile opening the
+//                  bare entry is refused at the door: a page of its own
+//                  saying Tilo is invite-only, with the wait list's email
+//                  field, signing in with an existing identity, and the
+//                  invite link's field folded behind a toggle; no desktop
+//                  and nothing kept (screenshots at 1440x900, 390x844 and
+//                  2560x1440 at DPR 2); a pasted text that is no invite link
+//                  is said so
+//                  The door mails (TILO_ROOMS_MAIL_FROM with
+//                  TILO_ROOMS_RESEND_KEY_FILE) through a stand-in for
+//                  Resend's API on loopback (TILO_ROOMS_RESEND_URL), which
+//                  keeps every mail; the checks open the links in them.
+//   stranger-own   another fresh profile opening the person's own desktop
+//                  (#/me) directly lands on that door: no desktop of their
+//                  own, nothing offered in its place, nothing kept
+//   wait-list      at that door, a text that is no email address is said so
+//                  beside the field; an address is kept as typed and the
+//                  door says to check the inbox, with a way to have the link
+//                  sent again and "Changed your mind? Take me off the list",
+//                  the browser keeping its removal secret; one mail went
+//                  there, with a confirmation and a removal link; the same
+//                  address again is answered alike, with a secret of its
+//                  own, and mailed nothing more within the hour
+//   wait-list-revisit
+//                  the door again in that browser still says to check the
+//                  inbox, as the door says the address waits to be confirmed
+//   wait-list-confirm
+//                  the mail's confirmation link opens the door saying
+//                  "You're on the list" with the address, and leaves the
+//                  address bar clean
+//   wait-list-remove
+//                  taking it off shows the form again saying "You're off the
+//                  list.", the secret forgotten, and mails word of it; a
+//                  wrong secret is answered exactly as the right one was;
+//                  another address's mailed removal link, opened in a fresh
+//                  browser, takes that one off and says so
+//   wait-list-invite
+//                  the first person, a member, opens "Waiting to join"
+//                  through search: an address not confirmed is not listed,
+//                  one confirmed is, and Remove takes that off by hand. The
+//                  address left again and confirmed is found with when it
+//                  was left; Invite has the door mail it an invite link, the
+//                  card says so with the link to copy, and the row says it
+//                  was invited and stays (screenshots of every door state
+//                  and the inviter's list at 1440x900 and 390x844)
+//   invite-admits  the mailed invite link opened in the person's browser
+//                  asks to join, the member lets them in from the banner's
+//                  button, pressed through accessibility, and the desktop
+//                  presents as a member. Every check before ran with the
+//                  door open (TILO_ROOMS_ADMISSION unset), as do the ones
+//                  after
+//   wait-list-joined
+//                  once they are in, the address is off the wait list
+//   invite-admits-again
+//                  three more strangers, each in a fresh browser, invited
+//                  and let in the same way, each open as a member; one that
+//                  is not keeps its console in the check's detail
 //   removed-member the host started again with the person as one of the
 //                  room's moderators (TILO_ROOMS_MODERATORS: a moderator
 //                  removes the guests ranked below them); a second person
@@ -90,8 +164,9 @@
 // cannot draw WebGPU. Credentials are all made here, by the pages and run.py;
 // nothing reaches a deployed host.
 import {spawn} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {createHash, randomBytes} from 'node:crypto';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {createServer as createHttpServer} from 'node:http';
 import {createServer} from 'node:net';
 import {tmpdir} from 'node:os';
 import {dirname, join, resolve} from 'node:path';
@@ -136,8 +211,10 @@ export function parseBanner(text) {
   return match ? {room: match[1]} : null;
 }
 
-/** The membership `memberships` (localStorage's JSON) keeps for `origin`, or `null`. */
+/** The membership `memberships` (localStorage's JSON) keeps for `origin`, or `null`;
+ * `null` too without an origin (a caller that accepts any host, as the site web view). */
 export function membershipFor(memberships, origin) {
+  if (!origin) return null;
   let all;
   try { all = JSON.parse(memberships ?? '{}') ?? {}; } catch { return null; }
   return all[new URL(origin).origin] ?? null;
@@ -216,8 +293,12 @@ export async function startStack(options, ports, {fresh, env = {}}) {
     '--relay-bin', options.relayBin, '--room-service-bin', options.roomServiceBin, '--name', 'auth',
     '--web-port', String(ports.web), '--api-port', String(ports.api), '--port-base', String(ports.base),
     ...(fresh ? ['--fresh'] : [])];
-  // run.py hands TILO_ROOMS_* in its environment to the room service.
-  const child = spawn('python3', args, {stdio: ['ignore', 'pipe', 'pipe'], env: {...process.env, ...env}});
+  // run.py hands TILO_ROOMS_* in its environment to the room service. Every
+  // person here comes from 127.0.0.1, one address: the guest join limits
+  // meant for a crowd's addresses (5 in ten minutes) turned the sixth
+  // visitor of a run into a spectator.
+  const joins = {TILO_ROOMS_GUEST_JOINS_PER_10_MIN: '100', TILO_ROOMS_GUEST_JOINS_PER_DAY: '1000'};
+  const child = spawn('python3', args, {stdio: ['ignore', 'pipe', 'pipe'], env: {...process.env, ...joins, ...env}});
   let output = '';
   const exited = new Promise(done => child.once('exit', code => done(code)));
   const banner = new Promise((done, fail) => {
@@ -241,6 +322,45 @@ export async function startStack(options, ports, {fresh, env = {}}) {
   return {room, stop, log: () => output};
 }
 
+/** A stand-in for Resend's API (`POST /emails`) on loopback: `mails` keeps
+ * each mail the door sent with the right key, in order. `{url, key, mails,
+ * close}`. */
+export async function fakeResend() {
+  const mails = [];
+  const key = `re_test_${randomBytes(12).toString('hex')}`;
+  const server = createHttpServer((request, response) => {
+    let body = '';
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      const answer = (status, reply) => {
+        response.writeHead(status, {'content-type': 'application/json'});
+        response.end(JSON.stringify(reply));
+      };
+      if (request.method !== 'POST' || request.url !== '/emails' || request.headers.authorization !== `Bearer ${key}`) {
+        answer(401, {message: 'not for this key'});
+        return;
+      }
+      try {
+        const mail = JSON.parse(body);
+        if (!Array.isArray(mail.to) || !mail.from || !mail.subject || !mail.text || !mail.html) throw new Error('incomplete');
+        mails.push(mail);
+        answer(200, {id: `fake-${mails.length}`});
+      } catch (error) {
+        answer(422, {message: error.message});
+      }
+    });
+  });
+  await new Promise(done => server.listen(0, '127.0.0.1', done));
+  return {url: `http://127.0.0.1:${server.address().port}/emails`, key, mails, close: () => new Promise(done => server.close(done))};
+}
+
+/** The link in `mail`'s text that carries `parameter` (a wait-list secret,
+ * or `invite`), or `null`. */
+export function mailLink(mail, parameter) {
+  const pattern = parameter === 'invite' ? /https?:\/\/\S*[?&]invite=\S+/ : new RegExp(`https?://\\S*[?&]${parameter}=[0-9a-f]{64}`);
+  return mail?.text?.match(pattern)?.[0] ?? null;
+}
+
 // Every fetch a page makes, told to the harness through a DevTools binding
 // (which outlives reloads), with the body of the door's answers. DevTools'
 // own network domain held up later pages of the run.
@@ -259,10 +379,13 @@ const FETCHES = `(() => {
     try {
       const response = await original.call(this, input, init);
       const entry = {url, method, status: response.status};
-      if (method === 'POST' && new URL(url).pathname.endsWith('/join')) {
+      const path = new URL(url).pathname;
+      if (method === 'POST' && path.endsWith('/join')) {
         entry.body = await response.clone().text().catch(() => null);
         entry.request = typeof init?.body === 'string' ? init.body : null;
       }
+      // What the door answered taking an address off its wait list.
+      if (method === 'POST' && path.endsWith('/wait-list/remove')) entry.body = await response.clone().text().catch(() => null);
       tell(entry);
       return response;
     } catch (error) {
@@ -272,8 +395,25 @@ const FETCHES = `(() => {
   };
 })();`;
 
-/** A page of `browser` in `context`, with the fetches it makes recorded. */
-export async function page(browser, context) {
+/** In the page: the door at `api` answers every join 503 without
+ * Retry-After, as it does when the room's relay did not answer in time. */
+export const doorFails = api => `(() => {
+  const door = ${JSON.stringify(new URL('join', `${api}/`).href)};
+  const original = globalThis.fetch;
+  globalThis.fetch = function (input, init) {
+    const url = new URL(input instanceof Request ? input.url : String(input), location.href).href;
+    const method = String(init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+    if (method === 'POST' && url === door) {
+      return Promise.resolve(new Response(JSON.stringify({error: 'the room did not answer in time'}),
+        {status: 503, headers: {'content-type': 'application/json'}}));
+    }
+    return original.apply(this, arguments);
+  };
+})();`;
+
+/** A page of `browser` in `context`, with the fetches it makes recorded;
+ * the scripts `before` run in each document ahead of the recording. */
+export async function page(browser, context, {before = []} = {}) {
   const tab = await browser.tab({context});
   const requests = [];
   const off = browser.on(message => {
@@ -282,6 +422,7 @@ export async function page(browser, context) {
     try { requests.push(JSON.parse(message.params.payload)); } catch { /* Not one of ours. */ }
   });
   await tab.send('Runtime.addBinding', {name: '__authE2eFetch'});
+  for (const source of before) await tab.send('Page.addScriptToEvaluateOnNewDocument', {source});
   await tab.send('Page.addScriptToEvaluateOnNewDocument', {source: FETCHES});
   await tab.send('Emulation.setFocusEmulationEnabled', {enabled: true});
   return {...tab, requests, close: async () => { off(); await tab.close(); }};
@@ -292,14 +433,20 @@ export async function page(browser, context) {
 async function settle(tab, {relay, timeout}) {
   // A page that never settles is that check's failure, reported with what
   // it showed by then; the run goes on to the next check.
+  // The page keeps waiting for a graphics start that stopped moving on
+  // (`data-gpu-stalled`: 60 s on one step without progress), offering Try
+  // again; for this test that is a desktop that never drew, and the check
+  // fails then, naming the step, instead of waiting out its whole timeout.
+  const STALLED = "document.documentElement.hasAttribute('data-gpu-stalled') ? 'no first frame' : null";
   const state = await tab.waitFor(`(() => {
     const root = document.documentElement.dataset;
-    return !globalThis.__authE2eLeft && ${JSON.stringify(SETTLED)}.includes(root.entry) ? root.entry : null;
+    if (globalThis.__authE2eLeft) return null;
+    return ${JSON.stringify(SETTLED)}.includes(root.entry) ? root.entry : ${STALLED};
   })()`, {timeout}).catch(() => null);
   if (state === 'open') {
     // The desktop drew its first frame (`data-arrival` done); SwiftShader
     // compiles its pipelines on the first one.
-    await tab.waitFor("document.documentElement.dataset.arrival === 'done'", {timeout}).catch(() => {});
+    await tab.waitFor(`document.documentElement.dataset.arrival === 'done' || (${STALLED})`, {timeout}).catch(() => {});
   }
   return tab.evaluate(`(() => ({
     entry: globalThis.__authE2eLeft ? 'not loaded' : document.documentElement.dataset.entry ?? 'unsettled',
@@ -308,6 +455,9 @@ async function settle(tab, {relay, timeout}) {
     status: document.getElementById('status')?.textContent ?? '',
     hash: location.hash,
     desktop: Boolean(globalThis.tiloMount),
+    // A desktop that never drew: the graphics step it stopped on.
+    firstFrame: document.documentElement.hasAttribute('data-gpu-stalled')
+      ? \`none: stalled on \${document.documentElement.dataset.gpuStep ?? 'graphics start-up'}\` : undefined,
     persistAsked: globalThis.__authE2ePersistAsked ?? 0,
     membership: (${membershipFor})(localStorage.getItem(${JSON.stringify(MEMBERSHIPS)}), ${JSON.stringify(relay)}),
     // Where a page that never settled stood: still loading its modules, or past them.
@@ -497,8 +647,9 @@ async function until(condition, timeout, every = 500) {
   }
 }
 
-/** In the page: the room's Chat window (opened if the desktop shows none)
- * and the first channel it can post in, `{window, resource}`. */
+/** In the page: the room's Chat window (opened if the desktop shows none),
+ * the resource it posts on and the first text channel the room lists,
+ * `{window, resource, channel}`. */
 export const CHAT_CHANNEL = `(async () => {
   const chat = () => tiloMount.navigation.getSnapshot().entries.find(entry => entry.app === 'so.tilo.chat');
   if (!chat()) {
@@ -508,29 +659,381 @@ export const CHAT_CHANNEL = `(async () => {
   const window = chat()?.route.tab;
   if (!window) return null;
   const post = tiloMount.actions(undefined, {window}).find(action => action.address.action === 'post');
-  return post ? {window, resource: post.address.resource} : null;
+  if (!post) return null;
+  // An app's action answers at once and a room's own a promise: either way
+  // awaited, so a refusal reads as nothing rather than throwing.
+  const room = await Promise.resolve().then(() => tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window})).catch(() => null);
+  const channel = room?.output?.value?.channels
+    ?.find(({value}) => value.kind === 'text' && !value.archived && !value.conversation_with)?.id;
+  return channel ? {window, resource: post.address.resource, channel} : null;
 })()`;
 
-/** Post `text` in Chat from `tab`: `{resource}` of the channel, or `{error}`. */
+/** In the page: why `CHAT_CHANNEL` finds nothing, step by step, for a
+ * failure's report. */
+export const CHAT_WHY = `(async () => {
+  const shown = tiloMount.navigation.getSnapshot();
+  const entry = shown.entries.find(entry => entry.app === 'so.tilo.chat');
+  const window = entry?.route?.tab;
+  if (!window) return {step: 'window', apps: shown.entries.map(entry => entry.app)};
+  let actions;
+  try {
+    actions = tiloMount.actions(undefined, {window}).map(action => action.address.resource + ' ' + action.address.action);
+  } catch (error) {
+    return {step: 'actions', error: String(error?.message ?? error)};
+  }
+  if (!actions.some(action => action.endsWith(' post'))) return {step: 'post', actions: actions.slice(0, 40)};
+  let room;
+  try {
+    room = await tiloMount.invokeAction('chat.workspace', 'read-room', {}, {window});
+  } catch (error) {
+    return {step: 'read-room', error: String(error?.message ?? error)};
+  }
+  const channels = room?.output?.value?.channels;
+  return {step: 'channel', state: room?.state ?? null, error: room?.error ?? null,
+    channels: Array.isArray(channels) ? channels.map(({id, value}) => ({id, kind: value?.kind, archived: value?.archived, with: value?.conversation_with})) : channels ?? null};
+})()`;
+
+/** Post `text` in Chat from `tab`: `{channel}` it went to, or `{error}`. */
 async function postInChat(tab, text) {
-  const channel = await until(() => tab.evaluate(CHAT_CHANNEL), 60_000);
-  if (!channel) return {error: 'no Chat channel to post in'};
+  const chat = await until(() => tab.evaluate(CHAT_CHANNEL), 60_000);
+  if (!chat) return {error: 'no Chat channel to post in', why: await tab.evaluate(CHAT_WHY).catch(error => error.message)};
   return tab.evaluate(`(async () => {
-    const result = await tiloMount.invokeAction(${JSON.stringify(channel.resource)}, 'post', {value: ${JSON.stringify(text)}},
-      {window: ${JSON.stringify(channel.window)}});
-    return result?.state === 'completed' ? {resource: ${JSON.stringify(channel.resource)}} : {error: result?.state ?? 'not posted'};
+    const result = await tiloMount.invokeAction(${JSON.stringify(chat.resource)}, 'post',
+      {channel: ${JSON.stringify(chat.channel)}, text: ${JSON.stringify(text)}}, {window: ${JSON.stringify(chat.window)}});
+    return result?.state === 'completed' ? {channel: ${JSON.stringify(chat.channel)}} : {error: result?.state ?? 'not posted'};
   })()`).catch(error => ({error: error.message}));
 }
 
-/** Whether `tab`'s Chat shows `text` in the channel `resource`. */
-async function chatShows(tab, resource, text) {
-  const channel = await tab.evaluate(CHAT_CHANNEL);
-  if (!channel) return false;
-  return tab.evaluate(`(async () => {
-    const result = await tiloMount.invokeAction(${JSON.stringify(resource)}, 'read-messages', {pageSize: 32},
-      {window: ${JSON.stringify(channel.window)}});
-    return Boolean(result?.output?.value?.content?.messages?.some(message => message.text === ${JSON.stringify(text)}));
-  })()`);
+/** In the page: the messages the Chat window `window` holds in the
+ * channel with id `channel`, through the channel's own `read-messages`
+ * (published on the channel's row, not the chat's root), as
+ * `{messages}` or `{refused}`. An app's action answers at once and may
+ * throw at once, so the call is made inside the try. */
+export const READ_CHANNEL = (window, channel) => `(async () => {
+  try {
+    const result = await tiloMount.invokeAction(${JSON.stringify(`chat.workspace/channels/${channel}`)}, 'read-messages',
+      {pageSize: 32}, {window: ${JSON.stringify(window)}});
+    const messages = result?.output?.value?.messages;
+    return Array.isArray(messages) ? {messages} : {refused: result?.error ?? result?.state ?? 'no messages'};
+  } catch (error) {
+    return {refused: String(error?.message ?? error)};
+  }
+})()`;
+
+/** What `tab`'s Chat reads in the channel with id `channel`, for a
+ * failure's detail: the last few texts, or why it read none. */
+async function chatReads(tab, channel) {
+  const chat = await tab.evaluate(CHAT_CHANNEL).catch(() => null);
+  if (!chat) return {error: 'no Chat channel'};
+  const read = await tab.evaluate(READ_CHANNEL(chat.window, channel)).catch(error => ({refused: error.message.slice(-300)}));
+  return read.messages ? {count: read.messages.length, last: read.messages.slice(-3).map(m => m.text)} : read;
+}
+
+/** Whether `tab`'s Chat shows `text` in the channel with id `channel`. */
+export async function chatShows(tab, channel, text) {
+  const chat = await tab.evaluate(CHAT_CHANNEL);
+  if (!chat) return false;
+  const read = await tab.evaluate(READ_CHANNEL(chat.window, channel));
+  return Boolean(read.messages?.some(message => message.text === text));
+}
+
+/** In the page: where the widget with test id `id` is on the page (CSS px,
+ * its middle) and the value it reads, or null while the desktop shows none. */
+const WIDGET = id => `(() => {
+  const canvas = tiloMount.canvas.getBoundingClientRect();
+  const find = node => {
+    if (!node) return null;
+    if (node.test_id === ${JSON.stringify(id)}) return node;
+    for (const child of node.children ?? []) {
+      const found = find(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const node = find(tiloMount.state()?.semantics?.root);
+  if (!node) return null;
+  const [x, y, w, h] = node.rect;
+  return {x: Math.round(canvas.left + x + w / 2), y: Math.round(canvas.top + y + h / 2),
+    value: node.semantics?.value ?? null, focused: Boolean(node.semantics?.state?.focused)};
+})()`;
+
+/** In the page: press the control a reader knows as a button or menu item
+ * named `name`, through assistive technology, as automation driving the
+ * desktop by role does. Apps' toolbars are the window bar's slots, drawn by
+ * the desktop as the bar's own children (or its More menu's items in a
+ * narrow window), so they carry no test id of the app's. True once pressed,
+ * null while the desktop shows no such control. */
+const PRESS_NAMED = name => PRESS_WHERE(`name => name === ${JSON.stringify(name)}`);
+
+/** In the page: the roles and names of what its desktop shows whose name
+ * matches `pattern`, for a failure's detail. */
+const NAMES_MATCHING = pattern => `(() => {
+  const found = [];
+  const named = name => new RegExp(${JSON.stringify(pattern)}).test(name ?? '');
+  const walk = access => {
+    for (const child of access?.children ?? []) {
+      if (named(child.name)) found.push(child.role + ' ' + child.name);
+      walk(child);
+    }
+  };
+  const visit = node => {
+    if (!node) return;
+    if (named(node.semantics?.name)) found.push(node.semantics.role + ' ' + node.semantics.name);
+    walk(node.semantics);
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(tiloMount.state()?.semantics?.root);
+  return found.slice(0, 20);
+})()`;
+
+/** In the page: press the first control whose name `named` (the source of
+ * a function of the name) takes. */
+const PRESS_WHERE = named => `(() => {
+  const named = ${named};
+  const pressable = new Set(['Button', 'MenuItem']);
+  const find = node => {
+    if (!node) return null;
+    const own = node.semantics;
+    if (own && pressable.has(own.role) && named(own.name)) {
+      return {path: node.path, target: own.action_target ?? undefined};
+    }
+    const synthetic = (access, path) => {
+      for (const child of access?.children ?? []) {
+        if (pressable.has(child.role) && named(child.name) && child.action_target) {
+          return {path, target: child.action_target};
+        }
+        const found = synthetic(child, path);
+        if (found) return found;
+      }
+      return null;
+    };
+    const inside = synthetic(own, node.path);
+    if (inside) return inside;
+    for (const child of node.children ?? []) {
+      const found = find(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const control = find(tiloMount.state()?.semantics?.root);
+  if (!control) return null;
+  return tiloMount.semantic(control.path, control.target, 'activate', '', 0, 0) === true || null;
+})()`;
+
+/** In the page: the control whose name matches `pattern`, wherever the
+ * desktop shows it (its own node or one of a node's synthetic children):
+ * `{path, target, own, at}`, `at` its middle on the page where it has a
+ * rect, or null while it shows none. */
+const CONTROL_MATCHING = pattern => `(() => {
+  const named = name => new RegExp(${JSON.stringify(pattern)}).test(name ?? '');
+  const canvas = tiloMount.canvas.getBoundingClientRect();
+  const middle = rect => rect && rect.length === 4
+    ? {x: Math.round(canvas.left + rect[0] + rect[2] / 2), y: Math.round(canvas.top + rect[1] + rect[3] / 2)} : null;
+  // A synthetic child's own bounds, where it publishes them ({x0, y0, x1, y1}).
+  const within = bounds => bounds && Number.isFinite(bounds.x0)
+    ? middle([bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0]) : null;
+  const find = node => {
+    if (!node) return null;
+    const own = node.semantics;
+    if (own && named(own.name)) return {path: node.path, target: own.action_target ?? null, own: true, at: middle(node.rect)};
+    const synthetic = access => {
+      for (const child of access?.children ?? []) {
+        if (named(child.name)) {
+          return {path: node.path, target: child.action_target ?? null, own: false, at: within(child.bounds) ?? middle(child.rect), bounds: child.bounds ?? null};
+        }
+        const found = synthetic(child);
+        if (found) return found;
+      }
+      return null;
+    };
+    const inside = synthetic(own);
+    if (inside) return inside;
+    for (const child of node.children ?? []) {
+      const found = find(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  return find(tiloMount.state()?.semantics?.root);
+})()`;
+
+/** Strangers invited and let in after the first, each in a fresh browser:
+ * a failure that comes only sometimes shows in one of them. */
+const INVITEE_ROUNDS = 3;
+
+/** Press the control in `tab` whose name matches `pattern` through
+ * assistive technology, as a screen reader does: by its own node, or by the
+ * action target a synthetic child (a banner's button) publishes. Resolves
+ * to `{control, pressed: 'semantic'}` once pressed, or the last attempt
+ * with its `error`. */
+async function pressMatching(tab, pattern, timeout) {
+  let last = {pressed: false, error: 'not shown'};
+  const done = await until(async () => {
+    const control = await tab.evaluate(CONTROL_MATCHING(pattern));
+    if (!control) return null;
+    // Activating the owner of a synthetic child without a target of its
+    // own would press something else: such a control is unreachable.
+    if (!control.own && !control.target) {
+      last = {control, pressed: false, error: 'no semantic target'};
+      return null;
+    }
+    const pressed = await tab.evaluate(`tiloMount.semantic(${JSON.stringify(control.path)}, ${JSON.stringify(control.target ?? undefined)}, 'activate', '', 0, 0) === true`)
+      .catch(error => ({error: error.message}));
+    if (pressed === true) return (last = {control, pressed: 'semantic'});
+    last = {control, pressed: false, error: pressed?.error ?? String(pressed)};
+    return null;
+  }, timeout, 2000);
+  return done ?? last;
+}
+
+/** Click at `at` in `tab`, as a person's pointer does. */
+async function click(tab, at) {
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await tab.send('Input.dispatchMouseEvent', {type, x: at.x, y: at.y, button: 'left', clickCount: 1});
+  }
+}
+
+/** Open Contacts in `tab`, start a new contact and type `text` into its
+ * first name, key by key: `{value}`, what the field then reads, or
+ * `{error}` naming the step that did not happen. */
+async function typeInNewContact(tab, text) {
+  await tab.evaluate(`(async () => {
+    const shown = tiloMount.navigation.getSnapshot();
+    await tiloMount.navigation.dispatch({kind: 'open', app: 'so.tilo.contacts', generation: shown.generation});
+  })()`).catch(() => {});
+  if (!await until(() => tab.evaluate(PRESS_NAMED('New contact')), 60_000)) {
+    return {error: 'Contacts showed no New contact'};
+  }
+  const field = await until(() => tab.evaluate(WIDGET('contacts.form.first')), 30_000);
+  if (!field) return {error: 'New contact showed no first name field'};
+  // The form opens in place of the list and may still be settling where
+  // it stands: click where the field is now until it takes focus.
+  const focused = await until(async () => {
+    const now = await tab.evaluate(WIDGET('contacts.form.first'));
+    if (now?.focused) return now;
+    if (now) await click(tab, now);
+    return null;
+  }, 20_000);
+  if (!focused) {
+    return {error: 'the first name field did not take focus'};
+  }
+  for (const key of text) {
+    await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key, text: key});
+    await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key});
+  }
+  const landed = await until(async () => {
+    const now = await tab.evaluate(WIDGET('contacts.form.first'));
+    return now?.value === text ? now : null;
+  }, 20_000);
+  return landed ? {value: landed.value} : {value: (await tab.evaluate(WIDGET('contacts.form.first')))?.value ?? null};
+}
+
+/** Press `name` in `tab` as a keyboard does (CDP modifier bits: Ctrl 2). */
+async function key(tab, name, modifiers = 0) {
+  const named = {Enter: 13, Escape: 27};
+  const code = name.length === 1 ? `Key${name.toUpperCase()}` : name;
+  const event = {key: name, code, windowsVirtualKeyCode: named[name] ?? name.toUpperCase().charCodeAt(0), modifiers};
+  await tab.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...event, ...(name === 'Enter' ? {text: '\r'} : {})});
+  await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', ...event});
+  await sleep(300);
+}
+
+const WAITING_CARD = "document.querySelector('[data-card=waiting]')";
+/** The wait list's row of `contact` in the open "Waiting to join" card. */
+const WAIT_ROW = contact => `[...document.querySelectorAll('[data-card=waiting] [data-list=wait-list] li')]
+    .find(li => li.querySelector('.tilo-waiting-contact')?.textContent === ${JSON.stringify(contact)})`;
+/** The addresses on the open card's wait list, each with its buttons and
+ * whether it says it was invited. */
+const WAIT_ROWS = `[...document.querySelectorAll('[data-card=waiting] [data-list=wait-list] li')].map(li => ({
+    contact: li.querySelector('.tilo-waiting-contact')?.textContent ?? null,
+    added: li.querySelector('time')?.dateTime ?? null,
+    invited: li.querySelector('.tilo-waiting-invited')?.textContent ?? null,
+    buttons: [...li.querySelectorAll('button')].map(b => b.textContent)}))`;
+
+/** In `tab`, a member's desktop: "Waiting to join" opened afresh through
+ * search (Ctrl+K, its name, Enter), so it reads the wait list now. Whether
+ * it opened. */
+async function openWaiting(tab) {
+  await tab.evaluate(`${WAITING_CARD}?.querySelector('button[type=submit]')?.click()`).catch(() => {});
+  await until(() => tab.evaluate(`!${WAITING_CARD} || null`), 5000, 250);
+  const opened = await until(async () => {
+    if (await tab.evaluate(`Boolean(${WAITING_CARD})`)) return true;
+    await key(tab, 'k', 2);
+    if (!await until(() => tab.evaluate('tiloMount.state()?.searchOpen === true || null'), 5000, 250)) return null;
+    for (const ch of 'Waiting to join') {
+      await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch});
+      await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
+    }
+    await sleep(800);
+    await key(tab, 'Enter');
+    return await until(() => tab.evaluate(`Boolean(${WAITING_CARD}) || null`), 5000, 250);
+  }, 60_000, 1000);
+  // The list loads after the card shows.
+  if (opened) await sleep(1500);
+  return Boolean(opened);
+}
+
+/** In `tab`, "Waiting to join" open: press `label` in `contact`'s row of
+ * the wait list. Whether the row and its button were there. */
+const pressInRow = (tab, contact, label) => tab.evaluate(`(() => {
+  const button = [...(${WAIT_ROW(contact)})?.querySelectorAll('button') ?? []].find(b => b.textContent === ${JSON.stringify(label)});
+  button?.click();
+  return Boolean(button);
+})()`).catch(() => false);
+
+/** In `tab`, a member's desktop: open "Waiting to join", find `contact` on
+ * the wait list and invite it: the door mails the link (`mailed()` resolves
+ * to it once the mail is in), the card saying so, or the member is handed
+ * it to share; the row then says it was invited, and stays until someone
+ * joins with the link. `{row, link, sent, after}` (the row before and
+ * after inviting, `sent` what the card said), or what did not happen as
+ * `error`. */
+async function inviteFromWaitList(tab, contact, shoot, mailed = async () => null) {
+  const card = WAITING_CARD;
+  const ROW = WAIT_ROW(contact);
+  if (!await openWaiting(tab)) return {error: 'search did not open Waiting to join'};
+  const row = await until(() => tab.evaluate(`(() => {
+    const row = ${ROW};
+    return row ? {contact: row.querySelector('.tilo-waiting-contact').textContent, added: row.querySelector('time')?.dateTime ?? null} : null;
+  })()`), 30_000);
+  if (!row) return {error: 'the address is not on the wait list', shown: await tab.evaluate(`${card}?.innerText ?? null`).catch(() => null)};
+  for (const [name, width, height, mobile] of [['wait-list-inviter-1440x900', 1440, 900, false], ['wait-list-inviter-390x844', 390, 844, true]]) {
+    await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
+    await sleep(500);
+    await shoot(name, tab);
+  }
+  await tab.send('Emulation.clearDeviceMetricsOverride');
+  await pressInRow(tab, contact, 'Invite');
+  const shared = () => tab.evaluate("document.querySelector('[data-card=share] input[name=link]')?.value || null");
+  const said = () => tab.evaluate(`(() => { const sent = ${card}?.querySelector('.tilo-waiting-sent');
+    return sent && !sent.hidden ? sent.textContent : null; })()`);
+  const handed = await until(async () => {
+    const link = await shared().catch(() => null);
+    if (link) return {link, sent: null};
+    const sent = await said().catch(() => null);
+    return sent ? {link: await until(mailed, 30_000), sent} : null;
+  }, 30_000);
+  await tab.evaluate("document.querySelector('[data-card=share] button[type=submit]')?.click()").catch(() => {});
+  if (!handed?.link) return {row, sent: handed?.sent ?? null, error: 'Invite made no link'};
+  const {link, sent} = handed;
+  // Invited: the row says so, and stays on the list.
+  const after = await until(() => tab.evaluate(`(${WAIT_ROWS}).find(r => r.contact === ${JSON.stringify(contact)} && r.invited) ?? null`), 30_000);
+  for (const [name, width, height, mobile] of [['wait-list-invited-1440x900', 1440, 900, false], ['wait-list-invited-390x844', 390, 844, true]]) {
+    await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
+    await sleep(500);
+    await shoot(name, tab);
+  }
+  await tab.send('Emulation.clearDeviceMetricsOverride');
+  await tab.evaluate(`${card}?.querySelector('button[type=submit]')?.click()`).catch(() => {});
+  return {row, link, sent, after};
+}
+
+/** In `tab`, a member's desktop: the wait list as "Waiting to join" shows
+ * it now (`rows`), or `error`. */
+async function readWaitList(tab) {
+  if (!await openWaiting(tab)) return {error: 'search did not open Waiting to join'};
+  const rows = await tab.evaluate(WAIT_ROWS).catch(() => null);
+  return rows ? {rows} : {error: 'no wait list in the card'};
 }
 
 /** Whether the page shows an entry card (an offer waiting for the person). */
@@ -598,6 +1101,7 @@ async function main() {
   const keepLog = (name, tab) => pages.push({name, log: tab.log, requests: tab.requests.map(({url, method, status, error}) => ({url, method, status, error}))});
 
   let stack = await startStack(options, ports, {fresh: true});
+  let resend = null;
   // Chrome's own WebGPU on the CPU, as the qualification runs it: CI runners
   // have no GPU, and a host GPU in headless Chrome can lose its device mid-run.
   const browser = await launch({args: chromeFlags('swiftshader', process.getuid?.())});
@@ -645,8 +1149,10 @@ async function main() {
     // tabs-sync: what one tab posts, the other shows.
     const text = `From the first tab ${Date.now()}`;
     const posted = beside.entry === 'open' ? await postInChat(first, text) : {error: 'second tab not open'};
-    const shown = posted.resource ? await until(() => chatShows(second, posted.resource, text), 60_000) : null;
-    check('tabs-sync', Boolean(posted.resource) && Boolean(shown), {posted, shown: Boolean(shown)});
+    const shown = posted.channel ? await until(() => chatShows(second, posted.channel, text), 60_000) : null;
+    const reads = shown || !posted.channel ? undefined
+      : {first: await chatReads(first, posted.channel), second: await chatReads(second, posted.channel)};
+    check('tabs-sync', Boolean(posted.channel) && Boolean(shown), {posted, shown: Boolean(shown), reads});
     if (!shown) await shoot('tabs-sync', second);
 
     // tabs-one-person: someone else in the room sees one person, and each
@@ -675,7 +1181,31 @@ async function main() {
     }
     check('tabs-one-person', Boolean(together), together ?? {entry: watching.entry, status: watching.status, seen: await seen()});
     if (!together) await shoot('tabs-one-person', watcher);
+
+    // visitor-types: a fresh visitor's typing lands in an app other than
+    // Chat, in a field they clicked, while the room's desktop goes on.
+    const typed = watching.entry === 'open' ? await typeInNewContact(watcher, 'Ada') : {error: 'the visitor is not in'};
+    check('visitor-types', typed.value === 'Ada', typed);
+    if (typed.value !== 'Ada') await shoot('visitor-types', watcher);
     await watcher.close();
+
+    // door-failing: the door cannot answer a fresh visitor's join, so the
+    // page watches the room as its spectator. A spectator's device lives
+    // only in memory; its desktop still needs the room replicated, which
+    // once failed every such visit with "the peer has no replicated room".
+    const passerby = await page(browser, await browser.context(), {before: [doorFails(api)]});
+    const watched = await open(passerby, `${web}/`, settleOptions);
+    keepLog('door-failing', passerby);
+    const turned = joinsTo(passerby.requests, api);
+    const spectating = passerby.requests.filter(request => request.method === 'POST'
+      && request.url === new URL('spectate', `${api}/`).href);
+    check('door-failing', watched.entry === 'open' && watched.arrival === 'done' && watched.desktop
+      && turned.length === 1 && turned[0].status === 503 && spectating.length === 1 && spectating[0].status === 200
+      && watched.membership === null,
+    {entry: watched.entry, arrival: watched.arrival, joins: turned.map(j => j.status), spectate: spectating.map(s => s.status),
+      membership: watched.membership, status: watched.status, firstFrame: watched.firstFrame});
+    if (watched.arrival !== 'done') await shoot('door-failing', passerby);
+    await passerby.close();
 
     // new-tab: the room's link, in a new tab once no other holds the key.
     await first.close();
@@ -846,6 +1376,35 @@ async function main() {
     if (staleAgainOpened.entry !== 'refused') await shoot('stale-rejoined', staleAgain);
     await staleAgain.close();
 
+    // lost-certificate: the records gone, the device key kept.
+    const wiping = await browser.tab({context: person});
+    let wiped;
+    try {
+      await wiping.navigate(`${web}/healthz`);
+      await wiping.waitFor("location.pathname === '/healthz' && document.readyState === 'complete'", {timeout: 30_000});
+      wiped = await wiping.evaluate(`new Promise(done => {
+        const request = indexedDB.deleteDatabase('tilo-browser-records-v1');
+        request.onsuccess = () => done('deleted');
+        request.onerror = () => done(String(request.error));
+        request.onblocked = () => done('blocked');
+      })`);
+    } catch (error) {
+      wiped = error.message;
+    } finally {
+      await wiping.close();
+    }
+    const lost = await page(browser, person);
+    const lostOpened = await open(lost, `${web}/`, settleOptions);
+    keepLog('lost-certificate', lost);
+    const lostJoins = joinsTo(lost.requests, api);
+    check('lost-certificate', wiped === 'deleted' && lostOpened.entry === 'open' && lostOpened.arrival === 'done'
+      && lostJoins.length === 2 && lostJoins.every(j => j.status === 200)
+      && lostOpened.membership?.userPublicKey === me && lostOpened.membership?.room === stack.room,
+    {wiped, entry: lostOpened.entry, arrival: lostOpened.arrival, joins: lostJoins.map(j => j.status),
+      membership: lostOpened.membership, room: stack.room, status: lostOpened.status});
+    if (lostOpened.entry !== 'open') await shoot('lost-certificate', lost);
+    await lost.close();
+
     // kept-membership: the same host started again (its room kept), every
     // tab of the person closed, and the person away past its prune passes:
     // they are still a member, and come back without joining again.
@@ -865,6 +1424,351 @@ async function main() {
     if (returned.entry !== 'open') await shoot('kept-membership', returning);
     await returning.close();
 
+    // invite-door: the host started again taking people by invitation,
+    // mailing through the stand-in for Resend.
+    await stack.stop();
+    resend = await fakeResend();
+    const resendKey = join(options.scratch, 'resend-key');
+    writeFileSync(resendKey, `${resend.key}\n`, {mode: 0o600});
+    stack = await startStack(options, ports, {fresh: false, env: {TILO_ROOMS_ADMISSION: 'invite',
+      TILO_ROOMS_MAIL_FROM: 'Tilo Lounge <door@example.org>', TILO_ROOMS_RESEND_KEY_FILE: resendKey, TILO_ROOMS_RESEND_URL: resend.url}});
+    const mailsTo = to => resend.mails.filter(mail => mail.to?.[0] === to);
+    const mailTo = (to, count = 1) => until(async () => (mailsTo(to).length >= count ? mailsTo(to)[count - 1] : null), 30_000);
+    const outsider = await browser.context();
+    // Whether Try again ever showed or took the keyboard on the way to the
+    // door: a refusal has nothing to try again, and the door's field is
+    // where the keyboard belongs.
+    const RETRY_WATCH = `addEventListener('DOMContentLoaded', () => {
+      const retry = document.getElementById('arrival-retry');
+      if (!retry) return;
+      retry.addEventListener('focus', () => { globalThis.tiloRetrySeen = 'focused'; });
+      new MutationObserver(() => {
+        if (!globalThis.tiloRetrySeen && getComputedStyle(retry).display !== 'none') globalThis.tiloRetrySeen = 'shown';
+      }).observe(document.documentElement, {attributes: true});
+    });`;
+    const door = await page(browser, outsider, {before: [RETRY_WATCH]});
+    // Until its relay has the room back, the door answers 503 and the page
+    // watches live; asked again once it is back, it turns them away.
+    let doorTurned = await open(door, `${web}/`, settleOptions);
+    if (doorTurned.entry !== 'refused') {
+      doorTurned = await until(async () => {
+        const now = await reload(door, settleOptions);
+        return now.entry === 'refused' ? now : null;
+      }, 90_000, 3000) ?? doorTurned;
+    }
+    keepLog('invite-door', door);
+    const doorJoins = joinsTo(door.requests, api);
+    // The door: shown, apologising that Tilo is invite-only, the wait list's
+    // field first, signing in and the invite link's toggle below it, the
+    // link's field folded away until asked for.
+    const DOOR = `(() => {
+      const shown = id => { const el = document.getElementById(id); return Boolean(el) && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0; };
+      return {door: shown('arrival-door'), waitList: shown('arrival-wait'), signIn: shown('arrival-sign-in'), toggle: shown('arrival-invite-toggle'),
+        link: shown('arrival-invite'), inDoor: document.getElementById('arrival-invite')?.closest('#arrival-door') !== null,
+        heading: document.getElementById('arrival-door-heading')?.textContent ?? '', note: document.getElementById('arrival-wait-note')?.textContent ?? '',
+        done: shown('arrival-wait-done') ? document.getElementById('arrival-wait-done').textContent : null,
+        off: shown('arrival-wait-off') ? document.getElementById('arrival-wait-off').textContent.trim() : null,
+        again: shown('arrival-wait-again-line') ? document.getElementById('arrival-wait-again-line').textContent.trim() : null,
+        state: document.documentElement.dataset.waitList ?? null,
+        invalid: document.getElementById('arrival-wait-email')?.getAttribute('aria-invalid') === 'true'};
+    })()`;
+    const field = await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    // A click in the wait list's field keeps the keyboard there.
+    const emailAt = await door.evaluate(`(() => { const r = document.getElementById('arrival-wait-email').getBoundingClientRect();
+      return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()`).catch(() => null);
+    if (emailAt) await click(door, emailAt);
+    await sleep(3000);
+    const keyboard = await door.evaluate(`({retry: globalThis.tiloRetrySeen ?? null, focused: document.activeElement?.id ?? null})`)
+      .catch(error => ({error: error.message}));
+    for (const [name, width, height, mobile, deviceScaleFactor = 1] of [['invite-door-1440x900', 1440, 900, false],
+      ['invite-door-390x844', 390, 844, true], ['invite-door-2560x1440-dpr2', 2560, 1440, false, 2]]) {
+      await door.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor, mobile});
+      await sleep(500);
+      await shoot(name, door);
+    }
+    await door.send('Emulation.clearDeviceMetricsOverride');
+    const notALink = await door.evaluate(`(() => {
+      document.getElementById('arrival-invite-toggle').click();
+      document.getElementById('arrival-invite-link').value = 'hello';
+      document.getElementById('arrival-invite').requestSubmit();
+      return document.getElementById('arrival-invite-error').textContent;
+    })()`).catch(error => `failed: ${error.message}`);
+    const unfolded = await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    check('invite-door', doorTurned.entry === 'refused' && !doorTurned.desktop && doorTurned.membership === null
+      && /need an invitation/.test(doorTurned.status) && field.door && field.waitList && field.signIn && field.toggle && !field.link
+      && /invite-only/.test(field.heading) && /email you a link to confirm/.test(field.note) && unfolded.link && unfolded.inDoor
+      && doorJoins.at(-1)?.status === 403 && /invitation-only/.test(doorJoins.at(-1)?.body ?? '')
+      && /"waitList":true/.test(doorJoins.at(-1)?.body ?? '') && /"mail":true/.test(doorJoins.at(-1)?.body ?? '')
+      && /isn’t an invite link/.test(notALink) && keyboard.retry === null && keyboard.focused === 'arrival-wait-email',
+    {entry: doorTurned.entry, desktop: doorTurned.desktop, membership: doorTurned.membership, status: doorTurned.status, field, unfolded, keyboard,
+      joins: doorJoins.map(j => ({status: j.status, body: j.body})), notALink});
+
+    // stranger-own: the own desktop, asked for directly, is that door.
+    const ownStranger = await page(browser, await browser.context());
+    const strangerOpened = await open(ownStranger, `${web}/#/me`, settleOptions);
+    keepLog('stranger-own', ownStranger);
+    const strangerDoor = await ownStranger.evaluate(`(() => ({
+      door: document.documentElement.dataset.door ?? null,
+      own: 'ownDesktop' in document.documentElement.dataset,
+      offered: (() => { const el = document.getElementById('arrival-own'); return Boolean(el) && getComputedStyle(el).display !== 'none'
+        && getComputedStyle(el).visibility !== 'hidden' && el.getBoundingClientRect().height > 0; })(),
+    }))()`).catch(error => ({error: error.message}));
+    check('stranger-own', strangerOpened.entry === 'refused' && !strangerOpened.desktop && strangerOpened.membership === null
+      && strangerDoor.door === 'wait-list' && !strangerDoor.own && !strangerDoor.offered,
+    {entry: strangerOpened.entry, desktop: strangerOpened.desktop, membership: strangerOpened.membership,
+      status: strangerOpened.status, ...strangerDoor});
+    if (strangerOpened.entry !== 'refused') await shoot('stranger-own', ownStranger);
+    await ownStranger.close();
+
+    // wait-list: an address that is none is said so on the page, a real one
+    // is kept as typed and the door says to check the inbox, where one mail
+    // went with its links; the same one again (as typed differently) is
+    // answered the same, with a removal secret of its own, and mailed
+    // nothing more within the hour.
+    const leave = text => door.evaluate(`(async () => {
+      const email = document.getElementById('arrival-wait-email');
+      email.value = ${JSON.stringify(text)};
+      email.dispatchEvent(new Event('input'));
+      document.getElementById('arrival-wait').requestSubmit();
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline && document.querySelector('#arrival-wait button')?.disabled !== false) await new Promise(r => setTimeout(r, 100));
+      await new Promise(r => setTimeout(r, 300));
+      return ${DOOR};
+    })()`).catch(error => ({error: error.message}));
+    const shootBoth = async (name, tab) => {
+      for (const [size, width, height, mobile] of [['1440x900', 1440, 900, false], ['390x844', 390, 844, true]]) {
+        await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
+        await sleep(500);
+        await shoot(`${name}-${size}`, tab).catch(() => {});
+      }
+      await tab.send('Emulation.clearDeviceMetricsOverride').catch(() => {});
+    };
+    const postTo = (path, body) => fetch(`${api}/${path}`, {method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify(body)}).then(async r => ({status: r.status, body: await r.json().catch(() => null)}))
+      .catch(error => ({error: error.message}));
+    const PERSON = 'Waiting.Person@Example.org';
+    const badAddress = await leave('not an address');
+    await shoot('wait-list-invalid', door).catch(() => {});
+    const waitListed = await leave(`${PERSON} `);
+    await shootBoth('wait-list-inbox', door);
+    const kept = await door.evaluate("JSON.parse(localStorage.getItem('tilo-wait-listings') ?? '{}')").catch(() => ({}));
+    const keptSecret = Object.values(kept)[0]?.secret ?? '';
+    const confirmMail = await mailTo(PERSON);
+    const confirmLink = mailLink(confirmMail, 'wait-list-confirm');
+    const listedAgain = await postTo('wait-list', {email: 'waiting.person@example.org'});
+    await sleep(2000);
+    check('wait-list', badAddress.invalid && /doesn’t look like an email/.test(badAddress.note) && badAddress.done === null
+      && waitListed.state === 'inbox' && waitListed.done === `Check your inbox: we sent a link to ${PERSON} to confirm.`
+      && waitListed.again === 'Didn’t get it? Send it again'
+      && waitListed.off === 'Changed your mind? Take me off the list' && !waitListed.waitList
+      && /^[0-9a-f]{64}$/.test(keptSecret) && Object.values(kept)[0]?.email === PERSON
+      && confirmMail?.from === 'Tilo Lounge <door@example.org>' && /wait list/.test(confirmMail?.subject ?? '')
+      && confirmLink?.startsWith(`${web}/?wait-list-confirm=`) && mailLink(confirmMail, 'wait-list-remove') === `${web}/?wait-list-remove=${keptSecret}`
+      && confirmMail.html.includes(confirmLink)
+      && listedAgain.status === 200 && listedAgain.body?.email === 'waiting.person@example.org' && listedAgain.body.mail === true
+      && /^[0-9a-f]{64}$/.test(listedAgain.body?.removal ?? '') && listedAgain.body.removal !== keptSecret
+      && mailsTo(PERSON).length === 1 && mailsTo('waiting.person@example.org').length === 0,
+    {badAddress, waitListed, kept: Object.values(kept).map(k => k.email), subject: confirmMail?.subject, confirmLink,
+      listedAgain: {status: listedAgain.status, email: listedAgain.body?.email, mail: listedAgain.body?.mail},
+      mailed: resend.mails.map(mail => mail.subject)});
+
+    // wait-list-revisit: the door again in that browser still says to check
+    // the inbox: the address waits to be confirmed.
+    const revisit = await reload(door, settleOptions);
+    await sleep(1500);
+    const revisited = await until(() => door.evaluate(`${DOOR}.state === 'inbox' ? ${DOOR} : null`), 30_000)
+      ?? await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    check('wait-list-revisit', revisit.entry === 'refused' && revisited.state === 'inbox' && !revisited.waitList
+      && revisited.done === `Check your inbox: we sent a link to ${PERSON} to confirm.`
+      && revisited.off === 'Changed your mind? Take me off the list',
+    {entry: revisit.entry, revisited});
+
+    // wait-list-confirm: the mail's link opens the door, listed, with a
+    // clean address bar.
+    await leaving(door);
+    const confirming = confirmLink ? await open(door, confirmLink, settleOptions) : {entry: 'no link'};
+    const confirmed = await until(() => door.evaluate(`${DOOR}.state === 'listed' ? ${DOOR} : null`), 30_000)
+      ?? await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    const cleanUrl = await door.evaluate('location.href').catch(() => null);
+    await shootBoth('wait-list-confirmed', door);
+    check('wait-list-confirm', confirming.entry === 'refused' && confirmed.state === 'listed'
+      && confirmed.done === `You’re on the list (${PERSON})` && confirmed.off === 'Changed your mind? Take me off the list'
+      && confirmed.again === null && typeof cleanUrl === 'string' && !cleanUrl.includes('wait-list-confirm'),
+    {entry: confirming.entry, confirmed, cleanUrl});
+
+    // wait-list-remove: taking it off shows the form again, saying so, and
+    // mails word of it; a wrong secret is answered as that one was. A
+    // removal link from another address's mail, opened in a fresh browser,
+    // takes that one off.
+    const sinceLeave = door.requests.length;
+    await door.evaluate("document.getElementById('arrival-wait-leave').click()").catch(() => {});
+    const removedDoor = await until(() => door.evaluate(`${DOOR}.state === 'left' ? ${DOOR} : null`), 30_000)
+      ?? await door.evaluate(DOOR).catch(error => ({error: error.message}));
+    await shootBoth('wait-list-left', door);
+    const leaveAsked = door.requests.slice(sinceLeave).find(request => request.url.endsWith('/wait-list/remove'));
+    const wrong = await postTo('wait-list/remove', {secret: 'ab'.repeat(32)});
+    const listingAfter = await door.evaluate("localStorage.getItem('tilo-wait-listings')").catch(() => 'unreadable');
+    const removedMail = await mailTo(PERSON, 2);
+    const BY_LINK = 'by.link@example.org';
+    const byLink = await postTo('wait-list', {email: BY_LINK});
+    const byLinkMail = await mailTo(BY_LINK);
+    const linkTab = await page(browser, await browser.context());
+    const removing = mailLink(byLinkMail, 'wait-list-remove');
+    const removedByLink = removing ? await open(linkTab, removing, settleOptions) : {entry: 'no link'};
+    const linkDoor = await until(() => linkTab.evaluate(`${DOOR}.state === 'left' ? ${DOOR} : null`), 30_000)
+      ?? await linkTab.evaluate(DOOR).catch(error => ({error: error.message}));
+    await linkTab.close();
+    check('wait-list-remove', removedDoor.state === 'left' && removedDoor.waitList && removedDoor.done === null && removedDoor.off === null
+      && removedDoor.note === 'You’re off the list.' && leaveAsked?.status === 200 && wrong.status === 200
+      && JSON.stringify(wrong.body) === leaveAsked?.body && listingAfter === null
+      && /off the/.test(removedMail?.subject ?? '') && byLink.status === 200 && removedByLink.entry === 'refused'
+      && linkDoor.state === 'left' && linkDoor.note === 'You’re off the list.',
+    {removedDoor, leaveAsked: {status: leaveAsked?.status, body: leaveAsked?.body}, wrong, listingAfter,
+      removedMail: removedMail?.subject ?? null, byLink: byLink.status, linkDoor});
+
+    // wait-list-invite: the member finds the list in "Waiting to join"
+    // (through search, as a person does): an address not confirmed is not
+    // on it; one confirmed is, and Remove takes it off by hand. The person
+    // leaves the address again and confirms it, and the member invites it:
+    // the door mails the link, and the row says it was invited and stays.
+    const inviter = await page(browser, person);
+    const inviting = await open(inviter, `${web}/`, settleOptions);
+    keepLog('inviter', inviter);
+    const BY_HAND = 'by.hand@example.org';
+    const byHand = await postTo('wait-list', {email: BY_HAND});
+    const handToken = mailLink(await mailTo(BY_HAND), 'wait-list-confirm')?.split('=').at(-1);
+    const handConfirmed = await postTo('wait-list/confirm', {token: handToken ?? ''});
+    const listedBefore = inviting.entry === 'open' ? await until(async () => {
+      const read = await readWaitList(inviter);
+      return read.rows?.some(row => row.contact === BY_HAND) ? read : null;
+    }, 60_000, 2000) ?? await readWaitList(inviter) : {error: 'the inviter is not in'};
+    const handRemoved = Boolean(await pressInRow(inviter, BY_HAND, 'Remove'))
+      && Boolean(await until(() => inviter.evaluate(`!(${WAIT_ROW(BY_HAND)}) || null`), 30_000));
+    // Left again within the hour of its first mail, the address is sent no
+    // other: until it is confirmed it is not listed, and the link in that
+    // first mail confirms it.
+    const relisted = await leave(PERSON);
+    const mailsAfterRelisting = mailsTo(PERSON).length;
+    const unconfirmedHidden = inviting.entry === 'open'
+      && !(await readWaitList(inviter)).rows?.some(row => row.contact === PERSON);
+    const reconfirm = mailLink(confirmMail, 'wait-list-confirm');
+    const reconfirmed = await postTo('wait-list/confirm', {token: reconfirm?.split('=').at(-1) ?? ''});
+    const mailedBefore = mailsTo(PERSON).length;
+    const listed = inviting.entry === 'open'
+      ? await inviteFromWaitList(inviter, PERSON, shoot, async () => mailLink(mailsTo(PERSON)[mailedBefore], 'invite'))
+      : {error: 'the inviter is not in'};
+    const inviteMail = mailsTo(PERSON)[mailedBefore] ?? null;
+    check('wait-list-invite', byHand.status === 200 && handConfirmed.body?.confirmed === true
+      && listedBefore.rows?.length === 1 && listedBefore.rows[0].contact === BY_HAND
+      && handRemoved && relisted.state === 'inbox' && mailsAfterRelisting === 2 && unconfirmedHidden
+      && reconfirmed.body?.confirmed === true
+      && listed.row?.contact === PERSON && Boolean(listed.row?.added)
+      && /^Invitation emailed to /.test(listed.sent ?? '') && /Copy link/.test(listed.sent ?? '')
+      && /[?&]invite=/.test(listed.link ?? '') && listed.link.startsWith(`${web}/`)
+      && /invited/i.test(inviteMail?.subject ?? '') && Boolean(mailLink(inviteMail, 'wait-list-remove'))
+      && /^Invited (just now|1 minute ago)$/.test(listed.after?.invited ?? '')
+      && listed.after?.buttons?.includes('Invite again') && listed.after.buttons.includes('Remove'),
+    {listedBefore, handConfirmed: handConfirmed.body, handRemoved, relisted: {state: relisted.state, note: relisted.note, error: relisted.error}, mailsAfterRelisting, unconfirmedHidden,
+      reconfirmed: reconfirmed.body,
+      listed, inviteSubject: inviteMail?.subject ?? null});
+
+    // invite-admits: the person who left the address opens the mailed link,
+    // asks to join, and the member lets them in; once they are in, their
+    // address is off the wait list (wait-list-joined).
+    const inviteLink = listed.link ?? null;
+    const sinceInvite = door.requests.length;
+    let invited = {entry: 'not asked'};
+    let joined = false;
+    let letIn = {pressed: false, error: 'no invitation'};
+    if (inviteLink) {
+      await leaving(door);
+      await door.navigate(inviteLink);
+      await door.waitFor('!globalThis.__authE2eLeft', {timeout}).catch(() => {});
+      joined = await press(door, 'Join', timeout);
+      // Let in from the banner the inviter's desktop offers; once the
+      // invitee is in, nothing more is offered.
+      letIn = await pressMatching(inviter, '^Let .+ in$', 90_000);
+      invited = await until(async () => {
+        const now = await settle(door, settleOptions);
+        return now.entry === 'open' && now.membership ? now : null;
+      }, 90_000) ?? await settle(door, settleOptions);
+    }
+    keepLog('invite-admits', door);
+    const invitedJoins = joinsTo(door.requests.slice(sinceInvite), api);
+    const asking = letIn.pressed ? null : await inviter.evaluate(NAMES_MATCHING('asks to join|^Let |Waiting')).catch(error => error.message);
+    check('invite-admits', inviting.entry === 'open' && inviting.membership?.userPublicKey === me && Boolean(inviteLink)
+      && /[?&]invite=/.test(inviteLink ?? '') && joined && Boolean(letIn.pressed) && invited.entry === 'open' && invited.arrival === 'done'
+      && /^[0-9a-f]{64}$/.test(invited.membership?.userPublicKey ?? '') && invited.membership.userPublicKey !== me
+      && invitedJoins.length === 0,
+    {inviter: {entry: inviting.entry, membership: inviting.membership, status: inviting.status}, inviteLink,
+      joined, letIn, asking, inviterLog: letIn.pressed ? undefined : inviter.log.slice(-8),
+      inviteeLog: invited.entry === 'open' ? undefined : door.log.slice(-12), entry: invited.entry, arrival: invited.arrival, membership: invited.membership, status: invited.status,
+      firstFrame: invited.firstFrame, doorJoins: invitedJoins.map(j => j.status)});
+    if (invited.entry !== 'open') await shoot('invite-admits', door);
+    await door.close();
+
+    // wait-list-joined: the address invited from the wait list is off it
+    // now that someone joined with its invitation.
+    const afterJoin = inviting.entry === 'open' ? await until(async () => {
+      const read = await readWaitList(inviter);
+      return read.rows && !read.rows.some(row => row.contact === PERSON) ? read : null;
+    }, 60_000, 3000) ?? await readWaitList(inviter) : {error: 'the inviter is not in'};
+    await inviter.evaluate(`${WAITING_CARD}?.querySelector('button[type=submit]')?.click()`).catch(() => {});
+    check('wait-list-joined', invited.entry === 'open' && Array.isArray(afterJoin.rows) && afterJoin.rows.length === 0, afterJoin);
+
+    // invite-admits-again: more strangers, each in a browser of their own,
+    // invited and let in the same way. Being let in opens the workspace
+    // every time, not most times; one that does not keeps its console.
+    const rounds = [];
+    for (let round = 1; round <= INVITEE_ROUNDS && inviting.entry === 'open'; round++) {
+      const pressedInvite = Boolean(await until(() => inviter.evaluate(PRESS_NAMED('Invite')), 60_000));
+      const link = pressedInvite ? await until(() => inviter.evaluate(
+        "document.querySelector('[data-card=share] input[name=link]')?.value || null"), 30_000) : null;
+      await inviter.evaluate("document.querySelector('[data-card=share] button[type=submit]')?.click()").catch(() => {});
+      if (!link) {
+        rounds.push({round, error: 'no invite link', pressedInvite});
+        continue;
+      }
+      const stranger = await page(browser, await browser.context());
+      await stranger.navigate(link);
+      const joinedAgain = await press(stranger, 'Join', timeout);
+      // Each step of getting in and drawing, timed from being let in: how
+      // long the first frame takes tells a slow software rasteriser from a
+      // frame that never comes.
+      await stranger.evaluate(`(() => {
+        const steps = globalThis.__authE2eSteps = [];
+        const note = () => {
+          const {arrival, phase, gpuStep, frames} = document.documentElement.dataset;
+          const stalled = document.documentElement.hasAttribute('data-gpu-stalled');
+          const last = steps.at(-1);
+          if (!last || last.arrival !== arrival || last.phase !== phase || last.gpuStep !== gpuStep || last.stalled !== stalled || (last.frames === '0') !== (frames === '0')) {
+            steps.push({at: Math.round(performance.now()), arrival, phase, gpuStep, frames, stalled});
+          }
+        };
+        note();
+        new MutationObserver(note).observe(document.documentElement, {attributes: true});
+      })()`).catch(() => {});
+      const pressed = await pressMatching(inviter, '^Let .+ in$', 90_000);
+      const letInAt = await stranger.evaluate('Math.round(performance.now())').catch(() => null);
+      const now = await until(async () => {
+        const state = await settle(stranger, settleOptions);
+        return state.entry === 'open' && state.membership ? state : null;
+      }, 90_000) ?? await settle(stranger, settleOptions);
+      const opened = now.entry === 'open' && now.arrival === 'done';
+      const steps = await stranger.evaluate('globalThis.__authE2eSteps ?? []').catch(() => []);
+      rounds.push({round, joined: joinedAgain, letIn: pressed.pressed || pressed.error, entry: now.entry, arrival: now.arrival,
+        status: now.status, firstFrame: now.firstFrame, steps: steps.map(step => ({...step, at: letInAt === null ? step.at : step.at - letInAt})),
+        console: opened ? undefined : stranger.log.slice(-40)});
+      if (!opened) {
+        keepLog(`invite-admits-again-${round}`, stranger);
+        await shoot(`invite-admits-again-${round}`, stranger);
+      }
+      await stranger.close();
+    }
+    check('invite-admits-again', rounds.length === INVITEE_ROUNDS
+      && rounds.every(r => r.joined && r.letIn === 'semantic' && r.entry === 'open' && r.arrival === 'done'), {rounds});
+    await inviter.close();
+
     // removed-member: the host started again with the person as one of the
     // room's moderators, and someone new in the room for them to remove.
     // This comes last: the removal cools the address every person here
@@ -877,7 +1781,16 @@ async function main() {
     if (moderating.entry !== 'open') await shoot('moderator', moderator);
     const visitor = await browser.context();
     const guest = await page(browser, visitor);
-    const guestOpened = await open(guest, `${web}/`, settleOptions);
+    let guestOpened = await open(guest, `${web}/`, settleOptions);
+    // The host just started again: until its relay has the room back, the
+    // door answers 503 and the page watches live, then joins by itself.
+    // What is checked here is the removal, so wait for that join.
+    if (!guestOpened.membership) {
+      guestOpened = await until(async () => {
+        const now = await settle(guest, settleOptions);
+        return now.membership ? now : null;
+      }, 90_000) ?? guestOpened;
+    }
     const guestKey = guestOpened.membership?.userPublicKey ?? null;
     const guestJoins = joinsTo(guest.requests, api);
     if (guestOpened.entry !== 'open') await shoot('removed-guest', guest);
@@ -897,12 +1810,13 @@ async function main() {
     keepLog('removed-member', guest);
     const removedJoins = joinsTo(guest.requests.slice(sinceRemoval), api);
     check('removed-member', moderating.entry === 'open' && moderating.membership?.userPublicKey === me
-      && guestOpened.entry === 'open' && guestJoins.length === 1 && guestJoins[0].status === 200 && removal.ok
+      && guestOpened.entry === 'open' && guestJoins.at(-1)?.status === 200
+      && guestJoins.slice(0, -1).every(j => j.status === 503) && removal.ok
       && removedOpened.entry === 'refused' && !removedOpened.desktop && removedOpened.arrival !== 'done' && removedOwn
       && /\bremoved\b/.test(removedOpened.status) && removedJoins.length <= (byItself ? 1 : 2)
       && removedJoins.every(j => j.status === 403),
     {moderator: {entry: moderating.entry, membership: moderating.membership, status: moderating.status},
-      guest: {entry: guestOpened.entry, phase: guestOpened.phase, arrival: guestOpened.arrival, joins: guestJoins.map(j => j.status),
+      guest: {entry: guestOpened.entry, phase: guestOpened.phase, arrival: guestOpened.arrival, joins: guestJoins.map(j => j.status === 200 ? 200 : {status: j.status, body: j.body}),
         userPublicKey: guestKey, status: guestOpened.status, loading: guestOpened.loading}, removal, byItself, ownDesktop: removedOwn,
       entry: removedOpened.entry, desktop: removedOpened.desktop, arrival: removedOpened.arrival,
       joins: removedJoins.map(j => j.status), membership: removedOpened.membership, status: removedOpened.status,
@@ -938,6 +1852,7 @@ async function main() {
   } finally {
     await browser.close().catch(error => console.error(`closing Chrome: ${error.message}`));
     await stack.stop();
+    await resend?.close();
     writeFileSync(join(options.out, 'stack.log'), stack.log());
     writeFileSync(join(options.out, 'pages.json'), `${JSON.stringify(pages, null, 2)}\n`);
     rmSync(options.scratch, {recursive: true, force: true});

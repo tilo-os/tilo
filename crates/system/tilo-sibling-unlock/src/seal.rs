@@ -28,9 +28,6 @@ pub fn available() -> Sealing {
 }
 
 /// Seals `plaintext` and returns it as the token stores it (base64).
-///
-/// # Errors
-/// When the TPM refuses to seal.
 pub fn seal(sealing: Sealing, plaintext: &[u8]) -> Result<String> {
     let engine = base64::engine::general_purpose::STANDARD;
     match sealing {

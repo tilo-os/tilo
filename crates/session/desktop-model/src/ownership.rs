@@ -10,12 +10,19 @@
 //! can grant anyone ([`act_node`]). What nobody made (a strip the room
 //! itself lists) is nobody's own, so only moderation changes it.
 //!
+//! What someone who has left the room made is released ([`released`]):
+//! it is no longer anyone's own, and whoever writes there closes or moves
+//! it as their own, so a window of someone gone never stays stuck on
+//! everyone's desktop. Who is still in the room is its governance's member
+//! list ([`crate::projection::room_members`]).
+//!
 //! [`foreign_acts`] names what one desktop value did to another's strips
 //! and windows that its writer did not make. A relay decides every write of
-//! a shared desktop with it, and a desktop asks [`may_rearrange`] before it
+//! a shared desktop with it, and a desktop asks [`crate::commands::policy::may_rearrange_window`] before it
 //! offers to close or move a window, so the offer and the decision agree.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::MODERATION_FIELD;
@@ -49,9 +56,6 @@ pub struct SharedDesktop {
 
 impl SharedDesktop {
     /// The shared desktop in the JSON text a room's desktop record holds.
-    ///
-    /// # Errors
-    /// The text is not a shared desktop.
     pub fn parse(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|error| format!("read the shared desktop: {error}"))
     }
@@ -129,11 +133,16 @@ pub fn made_by(authors: &Authors, id: u64, person: &str) -> bool {
     authors.get(&id).is_some_and(|author| author == person)
 }
 
-/// Whether `person` may close or move the window `tab` (or remove or rename
-/// the strip `tab`): they opened it, or they moderate the desktop.
+/// Whether the strip or window `id` is released: someone made it who is no
+/// longer among the room's `members`. `None` while the members are not
+/// known: then nothing is released, so nobody's window is taken early.
 #[must_use]
-pub fn may_rearrange(authors: &Authors, tab: u64, person: &str, moderates: bool) -> bool {
-    moderates || made_by(authors, tab, person)
+pub fn released(authors: &Authors, id: u64, members: Option<&BTreeSet<String>>) -> bool {
+    members.is_some_and(|members| {
+        authors
+            .get(&id)
+            .is_some_and(|author| !members.contains(author))
+    })
 }
 
 /// Where a window is: its workspace, strip and group.
@@ -161,14 +170,21 @@ fn index(tree: &DesktopTree) -> Index {
 }
 
 /// What `after` did to the strips and windows of `before` that `writer` did
-/// not make, each once, in the order `before` holds them: windows closed or
+/// not make and that are not [`released`] (`members`: the room's current
+/// members, when known), each once, in the order `before` holds them: windows closed or
 /// moved, strips removed or renamed, and anything whose maker changed. A
 /// window `writer` opened, or one opened since `before`, is theirs to
 /// arrange; so is the order of their own windows among others', since a
 /// state cannot tell moving one's own window past another from the reverse.
 #[must_use]
-pub fn foreign_acts(before: &SharedDesktop, after: &SharedDesktop, writer: &str) -> Vec<Touched> {
-    let foreign = |id: u64| !made_by(&before.authors, id, writer);
+pub fn foreign_acts(
+    before: &SharedDesktop,
+    after: &SharedDesktop,
+    writer: &str,
+    members: Option<&BTreeSet<String>>,
+) -> Vec<Touched> {
+    let foreign =
+        |id: u64| !made_by(&before.authors, id, writer) && !released(&before.authors, id, members);
     let owner = |id: u64| before.authors.get(&id).cloned();
     let was = index(&before.tree);
     let now = index(&after.tree);
@@ -256,7 +272,7 @@ pub fn foreign_acts(before: &SharedDesktop, after: &SharedDesktop, writer: &str)
         .copied()
         .filter(|id| live(*id) && lived(*id))
         .collect();
-    ids.sort_unstable();
+    ids.compact_sort();
     ids.dedup();
     for id in ids {
         if foreign(id) && before.authors.get(&id) != after.authors.get(&id) {
@@ -285,6 +301,7 @@ mod tests {
                 label: "Notes".into(),
                 note: String::new(),
             },
+            app_title: None,
         }
     }
 
@@ -332,23 +349,49 @@ mod tests {
     }
 
     fn acts(after: &SharedDesktop, writer: &str) -> Vec<(u64, Act)> {
-        foreign_acts(&desktop(), after, writer)
+        foreign_acts(&desktop(), after, writer, None)
             .into_iter()
             .map(|t| (t.id, t.act))
             .collect()
     }
 
+    /// Ben has left the room: closing his window is no act on anyone's,
+    /// while the strip nobody made stays the room's.
+    #[test]
+    fn what_someone_who_left_made_is_released() {
+        let mut after = desktop();
+        strip_mut(&mut after, 10)
+            .window_groups
+            .retain(|g| g.id != 200);
+        let members: BTreeSet<String> = [ADA.to_owned()].into();
+        assert_eq!(acts(&after, ADA), vec![(2, Act::Close)], "Ben still counts");
+        assert!(
+            foreign_acts(&desktop(), &after, ADA, Some(&members)).is_empty(),
+            "Ben left: his window is released"
+        );
+        let mut removed = desktop();
+        removed.tree.workspaces[0]
+            .strips
+            .retain(|s| s.id != StripId(10));
+        assert_eq!(
+            foreign_acts(&desktop(), &removed, ADA, Some(&members))
+                .into_iter()
+                .map(|t| (t.id, t.act))
+                .collect::<Vec<_>>(),
+            vec![(10, Act::Close)],
+            "the room's own strip is nobody's to release"
+        );
+    }
+
     #[test]
     fn closing_moving_and_reordering_ones_own_windows_touches_nobody_else() {
         let mut after = desktop();
-        // Ada moves her window past both of Ben's, then into her own strip.
         let lounge = strip_mut(&mut after, 10);
         lounge.window_groups.rotate_left(1);
         assert!(acts(&after, ADA).is_empty());
         let mine = strip_mut(&mut after, 10).window_groups.remove(2);
         strip_mut(&mut after, 20).window_groups.push(mine);
         assert!(acts(&after, ADA).is_empty());
-        // Then closes it, and opens another.
         strip_mut(&mut after, 20).window_groups.clear();
         strip_mut(&mut after, 20)
             .window_groups
@@ -361,7 +404,7 @@ mod tests {
     fn closing_someone_elses_window_is_named_with_its_owner() {
         let mut after = desktop();
         strip_mut(&mut after, 10).window_groups.remove(1);
-        let touched = foreign_acts(&desktop(), &after, ADA);
+        let touched = foreign_acts(&desktop(), &after, ADA, None);
         assert_eq!(
             touched,
             vec![Touched {
@@ -370,7 +413,6 @@ mod tests {
                 owner: Some(BEN.into()),
             }]
         );
-        // Ben closing his own is his to do.
         assert!(acts(&after, BEN).is_empty());
     }
 
@@ -415,7 +457,6 @@ mod tests {
             acts(&removed, ADA),
             vec![(10, Act::Close), (2, Act::Close), (3, Act::Close)]
         );
-        // Ada's own strip is hers to remove and rename.
         let mut hers = desktop();
         strip_mut(&mut hers, 20).name = "Ada's corner".into();
         assert!(acts(&hers, ADA).is_empty());
@@ -429,7 +470,6 @@ mod tests {
         let mut unclaimed = desktop();
         unclaimed.authors.remove(&3);
         assert_eq!(acts(&unclaimed, ADA), vec![(3, Act::Attribute)]);
-        // Claiming the room's strip is one too.
         let mut strip = desktop();
         strip.authors.insert(10, ADA.into());
         assert_eq!(acts(&strip, ADA), vec![(10, Act::Attribute)]);
@@ -464,14 +504,5 @@ mod tests {
         // covers.
         assert!(moderation.covers(&moderation_node("room-1")));
         assert!(!node.covers(&moderation_node("room-1")));
-    }
-
-    #[test]
-    fn only_the_opener_or_a_moderator_may_rearrange_a_window() {
-        let authors = desktop().authors;
-        assert!(may_rearrange(&authors, 1, ADA, false));
-        assert!(!may_rearrange(&authors, 2, ADA, false));
-        assert!(may_rearrange(&authors, 2, ADA, true));
-        assert!(!may_rearrange(&authors, 10, ADA, false));
     }
 }

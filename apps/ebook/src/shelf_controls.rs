@@ -35,6 +35,8 @@ fn sort_choice(sort: LibrarySort) -> &'static str {
 pub(super) struct ShelfControls {
     sort: HostedDropdown,
     hits: Vec<(Rect, ShelfControlAction)>,
+    /// The "Hide finished" switch, sliding as a click turns it.
+    faces: ui::widget::FaceMotions,
 }
 
 impl Default for ShelfControls {
@@ -42,11 +44,18 @@ impl Default for ShelfControls {
         Self {
             sort: HostedDropdown::new("books.library.sort", "Sort books"),
             hits: Vec::new(),
+            faces: ui::widget::FaceMotions::default(),
         }
     }
 }
 
 impl ShelfControls {
+    /// Whether its switch must be painted again: on its way, or not yet
+    /// painted at rest. Its frames come from the motion clock.
+    pub(super) fn needs_redraw(&self) -> bool {
+        self.faces.needs_redraw(ui::motion::frame_now())
+    }
+
     pub(super) fn accessibility_nodes(
         &self,
         prefs: LibraryPrefs,
@@ -189,7 +198,12 @@ impl ShelfControls {
             ctx.scene,
             ctx.transform,
             theme,
-            &ToggleFace::new(track, prefs.hide_read).hovered(cluster.contains(cursor)),
+            &ToggleFace::new(track, prefs.hide_read)
+                .pose(
+                    self.faces
+                        .switch("hide-read", prefs.hide_read, theme.motion()),
+                )
+                .hovered(cluster.contains(cursor)),
         );
         self.hits
             .push((cluster, ShelfControlAction::ToggleHideRead));

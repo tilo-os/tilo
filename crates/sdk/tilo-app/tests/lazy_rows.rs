@@ -1,8 +1,5 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
-//! An item past the published page is resolved by id on its own, with the
-//! row a surface shows for it, as an item in the page is.
-
 use std::cell::RefCell;
 use std::rc::Rc;
 

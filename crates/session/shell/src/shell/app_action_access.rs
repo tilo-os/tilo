@@ -31,7 +31,6 @@ pub fn installed(app_id: &str) -> ActionAccess {
         .unwrap_or_default()
 }
 
-/// [`installed`] as a resolver.
 #[must_use]
 pub fn installed_resolver() -> AccessResolver {
     Arc::new(installed)

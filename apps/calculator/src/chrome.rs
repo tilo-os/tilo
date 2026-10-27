@@ -1,17 +1,17 @@
-//! The window's header row and the collapsible side panel every mode shares.
+//! The collapsible side panel every mode shares, and its header row.
 //!
-//! One header row runs across the top of the window and holds each column's
-//! header: the panel's title and its show/hide button, and the content
-//! column's mode and angle-unit controls. The panel is the toolkit's
-//! [`SidebarDrawer`]: docked beside the content in a wide window, a floating
-//! drawer over it in a narrow one.
+//! The panel heads itself with its title and its own actions; its show/hide
+//! button, the modes and the angle unit are the window bar's slots
+//! ([`crate::app`]). The panel is the toolkit's [`SidebarDrawer`]: docked
+//! beside the content in a wide window, a floating drawer over it in a
+//! narrow one.
 
 use ui::theme::Theme;
 use ui::widget::{SidebarDrawer, SidebarSide, text_control_height};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Point, Rect};
 
-/// The measurements of the header row in one theme.
+/// The measurements of a panel's header row in one theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Header {
     /// Height of the whole row.
@@ -20,9 +20,6 @@ pub struct Header {
     pub inset: f64,
     /// Between neighbouring controls.
     pub gap: f64,
-    /// Between two clusters of controls on the row (the mode strip and the
-    /// angle-unit strip), far enough apart to read as separate controls.
-    pub cluster_gap: f64,
     /// Side of an icon button.
     pub chip: f64,
 }
@@ -41,7 +38,6 @@ impl Header {
             height: f64::from(theme.tokens.metrics.header_height).max(chip + 2.0 * inset),
             inset,
             gap: f64::from(theme.tokens.spacing.s2),
-            cluster_gap: f64::from(theme.tokens.spacing.rhythm.group),
             chip,
         }
     }
@@ -50,51 +46,43 @@ impl Header {
     pub fn band(&self, col: Rect) -> Rect {
         Rect::new(col.x0, col.y0, col.x1, (col.y0 + self.height).min(col.y1))
     }
-
-    /// An icon button seated at the leading or trailing end of `col`'s header
-    /// row.
-    pub fn chip_at(&self, col: Rect, leading: bool) -> Rect {
-        let y = col.y0 + (self.height - self.chip) / 2.0;
-        let x = if leading {
-            col.x0 + self.inset
-        } else {
-            col.x1 - self.inset - self.chip
-        };
-        Rect::new(x, y, x + self.chip, y + self.chip)
-    }
 }
 
-/// A collapsible side panel: its geometry, its show/hide button and its
-/// remembered state, all from the shared drawer.
+/// The narrowest the formulas shrink to before the panel stops docking.
+///
+/// A formula row is a math field between its visibility and delete targets,
+/// so the panel needs about this much before it is a row rather than a
+/// stack of buttons; below docked width plus the plot's it floats instead.
+const PANEL_MIN_WIDTH: f64 = 340.0; // allow-breakpoint: the narrowest the panel may be, not a breakpoint
+
+/// A collapsible side panel: its geometry and its remembered state, both
+/// from the shared drawer. Its show/hide button is the window bar's.
 pub struct SidePanel {
     drawer: SidebarDrawer,
-    leading: bool,
     column: Rect,
     content: Rect,
-    toggle: Rect,
     header: Header,
-    /// Room kept at the window's trailing corner for the window's History
-    /// control, which the trailing show/hide button stands beside.
-    trailing_reserve: f64,
 }
 
 impl SidePanel {
     /// A panel at the leading edge (`leading`) or the trailing edge, `docked`
-    /// wide at 1× when it sits beside the content.
-    pub fn new(leading: bool, docked: f64) -> Self {
+    /// wide at 1× when it sits beside the content — a page of formulas beside
+    /// the result it calculates, as the shell's sidebar sits beside a page.
+    pub fn new(leading: bool, docked: f64, kind: ui::widget::ContentKind) -> Self {
         let side = if leading {
             SidebarSide::Left
         } else {
             SidebarSide::Right
         };
         Self {
-            drawer: SidebarDrawer::new().side(side).docked_width(docked),
-            leading,
+            drawer: SidebarDrawer::new()
+                .side(side)
+                .docked_width(docked)
+                .content_kind(kind)
+                .panel_min_width(PANEL_MIN_WIDTH),
             column: Rect::ZERO,
             content: Rect::ZERO,
-            toggle: Rect::ZERO,
             header: Header::default(),
-            trailing_reserve: 0.0,
         }
     }
 
@@ -110,13 +98,7 @@ impl SidePanel {
         self.drawer.tick(theme);
     }
 
-    /// Keep `reserve` of the trailing corner free for the window's History
-    /// control; the show/hide button of a trailing panel stands beside it.
-    pub fn set_trailing_reserve(&mut self, reserve: f64) {
-        self.trailing_reserve = reserve;
-    }
-
-    /// Resolve the panel, content column and button for the window `area`.
+    /// Resolve the panel and the content column for the window `area`.
     pub fn layout(&mut self, area: Rect) {
         self.content = self.drawer.resolve(area);
         let visible = self.drawer.reveal() > 0.001 && self.drawer.sidebar_rect().width() > 0.5;
@@ -125,18 +107,6 @@ impl SidePanel {
         } else {
             Rect::ZERO
         };
-        // Docked, the button stays at the window's corner (on the panel while
-        // it shows, on the content while it is hidden) so it never chases a
-        // sliding edge. A floating drawer carries its own.
-        let on = if self.drawer.is_overlay() && self.column != Rect::ZERO {
-            self.column
-        } else {
-            area
-        };
-        self.toggle = self.header.chip_at(on, self.leading);
-        if !self.leading {
-            self.toggle = self.toggle - Vec2::new(self.trailing_reserve, 0.0);
-        }
     }
 
     /// The panel's rect (header row included), `Rect::ZERO` while hidden.
@@ -177,10 +147,6 @@ impl SidePanel {
         }
     }
 
-    pub fn toggle_rect(&self) -> Rect {
-        self.toggle
-    }
-
     pub fn is_open(&self) -> bool {
         self.drawer.is_open()
     }
@@ -191,16 +157,6 @@ impl SidePanel {
 
     pub fn is_animating(&self) -> bool {
         self.drawer.is_animating()
-    }
-
-    /// Whether the toggle sits in the content column's header (the panel is
-    /// hidden) rather than inside the panel's own.
-    pub fn toggle_on_content(&self) -> bool {
-        !(self.column != Rect::ZERO && self.column.contains_rect(self.toggle))
-    }
-
-    pub fn toggle_at(&self, p: Point) -> bool {
-        self.toggle != Rect::ZERO && self.toggle.contains(p)
     }
 
     /// Whether `p` is a press on the dismiss scrim of an open drawer.
@@ -230,20 +186,5 @@ impl SidePanel {
     /// Paint the panel's ground and return the theme its contents draw with.
     pub fn paint_panel(&self, scene: &mut Scene, transform: Affine, theme: &Theme) -> Theme {
         self.drawer.paint_panel(scene, transform, theme)
-    }
-
-    /// Paint the show/hide button with the theme of the ground it stands on.
-    pub fn paint_toggle(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        hovered: bool,
-    ) {
-        if self.toggle != Rect::ZERO {
-            self.drawer
-                .draw_toggle(scene, transform, text, theme, self.toggle, hovered);
-        }
     }
 }

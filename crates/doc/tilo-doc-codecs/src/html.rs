@@ -549,7 +549,6 @@ fn import_html(src: &str, doc: &mut DocMut, inputs: &mut ContentInputs) {
         }
     }
 
-    // Close any inline wrappers still open at EOF, then apply gathered marks.
     finish_inline_now(&mut st);
     inputs.append(&mut st.inputs);
     apply_pending_marks(doc, st.pending);
@@ -1078,7 +1077,6 @@ mod tests {
             "the message itself holds no rich text"
         );
 
-        // Nothing to import still leaves a paragraph to type in.
         let empty = doc
             .put_object(&message, "empty", automerge::ObjType::Map)
             .unwrap();
@@ -1093,7 +1091,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn html_import_block_structure_and_tolerance() {
-        // Phase `headings_and_paragraph`.
         {
             let snap = import("<h1>Title</h1><h2>Sub</h2><p>Body text</p>");
             assert_eq!(snap.blocks[0].kind, "heading");
@@ -1114,7 +1111,6 @@ mod tests {
                 .expect("paragraph");
             assert_eq!(p.text, "Body text");
         }
-        // Phase `blockquote_becomes_quote_block`.
         {
             let snap = import("<blockquote><p>quoted line</p></blockquote>");
             let q = snap
@@ -1124,7 +1120,6 @@ mod tests {
                 .expect("quote block");
             assert!(q.text.contains("quoted line"), "got {:?}", q.text);
         }
-        // Phase `table_cells_tagged_table_row_col`.
         {
             let snap =
                 import("<table><tr><td>a</td><td>b</td></tr><tr><td>1</td><td>2</td></tr></table>");
@@ -1139,7 +1134,6 @@ mod tests {
             assert_eq!(cells[3].attrs.get("row"), Some(&tilo_doc::AttrVal::Int(1)));
             assert_eq!(cells[3].attrs.get("col"), Some(&tilo_doc::AttrVal::Int(1)));
         }
-        // Phase `pre_code_is_verbatim_code_block`.
         {
             let snap = import("<pre><code>let x = 1;\nlet y = 2;\n</code></pre>");
             let code = snap
@@ -1149,13 +1143,11 @@ mod tests {
                 .expect("code block");
             assert_eq!(code.text, "let x = 1;\nlet y = 2;\n");
         }
-        // Phase `entities_are_unescaped`.
         {
             let snap = import("<p>a &amp; b &lt; c &gt; d &#65; &#x42; &nbsp;e</p>");
             let p = &snap.blocks[0];
             assert_eq!(p.text, "a & b < c > d A B \u{a0}e");
         }
-        // Phase `head_is_skipped`.
         {
             let snap = import("<head><title>Doc Title</title></head><body><p>Body</p></body>");
             let texts: Vec<_> = snap.blocks.iter().map(|b| b.text.clone()).collect();
@@ -1165,12 +1157,10 @@ mod tests {
                 "title must not leak into body: {snap:?}"
             );
         }
-        // Phase `whitespace_is_collapsed`.
         {
             let snap = import("<p>a   b\n  c</p>");
             assert_eq!(snap.blocks[0].text, "a b c");
         }
-        // Phase `unclosed_tags_are_tolerated`.
         {
             // No closing `</b>`/`</p>`; the importer must still produce sane blocks.
             let snap = import("<p>start <b>bold and more");
@@ -1186,7 +1176,6 @@ mod tests {
                 p.marks
             );
         }
-        // Phase `export_is_unsupported`.
         {
             let d = Document::new();
             let err = HtmlCodec
@@ -1202,7 +1191,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn html_import_marks_and_styles() {
-        // Phase `bold_italic_underline_strike_marks`.
         {
             let snap = import("<p>a<strong>b</strong><em>c</em><u>d</u><s>e</s></p>");
             let p = &snap.blocks[0];
@@ -1236,7 +1224,6 @@ mod tests {
                 p.marks
             );
         }
-        // Phase `b_and_i_aliases_map_to_strong_em`.
         {
             let snap = import("<p><b>x</b> <i>y</i></p>");
             let p = &snap.blocks[0];
@@ -1244,7 +1231,6 @@ mod tests {
             assert!(p.marks.iter().any(|m| m.name == "strong"), "{:?}", p.marks);
             assert!(p.marks.iter().any(|m| m.name == "em"), "{:?}", p.marks);
         }
-        // Phase `link_becomes_mark`.
         {
             let snap = import(r#"<p>See <a href="https://tilo.so/">the docs</a> now</p>"#);
             let p = &snap.blocks[0];
@@ -1260,7 +1246,6 @@ mod tests {
             );
             assert_eq!(p.text.get(link.start..link.end), Some("the docs"));
         }
-        // Phase `span_style_carries_color_size_font`.
         {
             let snap = import(
                 r#"<p><span style="color: #ff0000; font-size: 20pt; font-family: serif">styled</span></p>"#,
@@ -1288,7 +1273,6 @@ mod tests {
                 p.marks
             );
         }
-        // Phase `background_becomes_highlight`.
         {
             let snap = import(r#"<p><span style="background: #ffff00">hi</span></p>"#);
             let p = &snap.blocks[0];
@@ -1299,7 +1283,6 @@ mod tests {
                 p.marks
             );
         }
-        // Phase `sup_and_sub_marks`.
         {
             let snap = import("<p>x<sup>2</sup>y<sub>n</sub></p>");
             let p = &snap.blocks[0];
@@ -1323,7 +1306,6 @@ mod tests {
 
     #[test]
     fn html_import_lists_carry_kind_and_level() {
-        // Phase `unordered_and_ordered_list_items`.
         {
             let snap = import("<ul><li>one</li><li>two</li></ul><ol><li>first</li></ol>");
             let items: Vec<_> = snap
@@ -1342,7 +1324,6 @@ mod tests {
                 Some(&tilo_doc::AttrVal::Bool(true))
             );
         }
-        // Phase `nested_lists_carry_level`.
         {
             let snap = import("<ul><li>top</li><ul><li>sub</li></ul></ul>");
             let items: Vec<_> = snap
@@ -1382,7 +1363,6 @@ mod tests {
     fn html_import_images_decode_data_uris_and_keep_remote_src() {
         // Phase `base64_payload_decoding_is_lenient_about_layout_only`.
         {
-            // Padded, unpadded and wrapped payloads decode alike.
             assert_eq!(base64_decode("Zm9vYg==").as_deref(), Some(&b"foob"[..]));
             assert_eq!(base64_decode("Zm9vYg").as_deref(), Some(&b"foob"[..]));
             assert_eq!(
@@ -1398,7 +1378,6 @@ mod tests {
             // Decoding stops at the first `=`; whatever follows is ignored.
             assert_eq!(base64_decode("QQ==garbage!").as_deref(), Some(&b"A"[..]));
             assert_eq!(base64_decode("QQ=").as_deref(), Some(&b"A"[..]));
-            // Non-zero trailing bits and a dangling final sextet are dropped.
             assert_eq!(base64_decode("QR==").as_deref(), Some(&b"A"[..]));
             assert_eq!(base64_decode("Zm9vY").as_deref(), Some(&b"foo"[..]));
             assert_eq!(base64_decode("Q").as_deref(), Some(&[][..]));
@@ -1408,7 +1387,6 @@ mod tests {
             assert_eq!(base64_decode("!"), None);
             assert_eq!(base64_decode("Zm9v\u{a0}"), None);
         }
-        // Phase `data_uri_image_becomes_blob`.
         {
             // A 1-byte payload "A" (base64 "QQ==").
             let (snap, inputs) =
@@ -1425,7 +1403,6 @@ mod tests {
             };
             assert_eq!(inputs.get(&blob), Some(b"A".as_slice()), "{inputs:?}");
         }
-        // Phase `http_image_keeps_src`.
         {
             let snap = import(r#"<img src="https://example.com/p.png" alt="remote">"#);
             let img = snap

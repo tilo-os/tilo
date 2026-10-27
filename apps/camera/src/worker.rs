@@ -342,10 +342,6 @@ impl CameraWorker {
         worker.process_recording_control();
     }
 
-    /// # Errors
-    ///
-    /// Returns an explanatory error when the worker failed to start, stopped,
-    /// or its single admitted job is still running.
     pub fn submit(&self, job: PhotoJob) -> Result<(), String> {
         match self
             .tx
@@ -375,7 +371,6 @@ impl CameraWorker {
 
     /// Whether a submitted photo's result has not been taken yet: it is
     /// still being encoded and saved, or waits to be drained.
-    #[cfg(test)]
     pub fn saving_photo(&self) -> bool {
         self.photos_outstanding.load(Ordering::Acquire) > 0
     }
@@ -420,10 +415,6 @@ impl CameraWorker {
     /// Replace the admitted recorder frame and coalesce wake-ups. This does
     /// no pixel conversion, allocation beyond the caller's bounded frame
     /// clone, or blocking send on the UI path.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the recorder worker state or wake channel ended.
     pub fn submit_recording_frame(&self, frame: FrameBuf) -> Result<(), String> {
         let mut control = self
             .recording
@@ -436,11 +427,6 @@ impl CameraWorker {
 
     /// Request worker-side finish. AVI muxing, content-store verification, and local
     /// projection all remain on the worker; sync owns canonical settlement.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a finalization is already admitted or the worker
-    /// state/wake channel is unavailable.
     pub fn finish_recording(&self, job: VideoJob) -> Result<(), String> {
         let mut control = self
             .recording
@@ -458,9 +444,6 @@ impl CameraWorker {
         self.video_rx.try_recv().ok()
     }
 
-    /// # Errors
-    ///
-    /// Returns a visible error if the bounded queue is full or its worker ended.
     pub fn submit_scan(&self, job: ScanJob) -> Result<(), String> {
         match self
             .tx
@@ -488,7 +471,6 @@ mod tests {
 
     #[test]
     fn recorder_control_coalesces_the_newest_frame_and_orders_start_then_finish() {
-        // Phase `recorder_ingress_keeps_only_the_newest_frame`.
         {
             let mut control = RecordingControl {
                 start: false,
@@ -502,7 +484,6 @@ mod tests {
             assert_eq!((newest.w, newest.h), (48, 36));
             assert_eq!(control.latest.iter().count(), 1, "one-slot backpressure");
         }
-        // Phase `recorder_control_orders_start_newest_frame_then_finish`.
         {
             let mut control = RecordingControl {
                 start: true,

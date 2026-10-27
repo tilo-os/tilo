@@ -42,13 +42,15 @@ impl Trace {
 
     fn record(&mut self, event: &'static str, detail: u64, micros: u64) {
         self.sequence = self.sequence.saturating_add(1);
-        self.entries[self.next] = Entry {
-            sequence: self.sequence,
-            micros,
-            event,
-            detail,
-        };
-        self.next = (self.next + 1) % CAPACITY;
+        if let Some(slot) = self.entries.get_mut(self.next) {
+            *slot = Entry {
+                sequence: self.sequence,
+                micros,
+                event,
+                detail,
+            };
+        }
+        self.next = self.next.saturating_add(1) % CAPACITY;
     }
 }
 
@@ -75,10 +77,7 @@ pub(super) fn render() -> String {
     // Copy under the lock, symbolize/format only after releasing it.
     let mut entries = TRACE.lock().entries;
     entries.sort_unstable_by_key(|entry| entry.sequence);
-    let mut out = format!(
-        "wake trace (missed {} contended records):\n",
-        MISSED.load(Ordering::Relaxed)
-    );
+    let mut out = String::from("wake trace:\n");
     for entry in entries.iter().filter(|entry| entry.sequence != 0) {
         let _ = writeln!(
             out,
@@ -86,6 +85,13 @@ pub(super) fn render() -> String {
             entry.sequence, entry.micros, entry.event, entry.detail
         );
     }
+    // Last, where a log's tail still shows it: a record missing from the
+    // sequence above may be one of these.
+    let _ = writeln!(
+        out,
+        "(missed {} contended records)",
+        MISSED.load(Ordering::Relaxed)
+    );
     out
 }
 

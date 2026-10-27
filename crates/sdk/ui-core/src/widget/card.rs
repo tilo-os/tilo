@@ -7,7 +7,9 @@
 //! [`FormSection`], [`StatTile`]).
 //!
 //! A card has a header (its name in `Subheading`, with one optional trailing
-//! action), a body, and an optional footer of [`Actions`]. Its height is its
+//! action), a body, and an optional footer of [`Actions`]. A card led by its
+//! art ([`Card::with_media`]: a cover, a preview) shows the art first at the
+//! card's full inner width and the header under it. Its height is its
 //! content's; in a [`CardGrid`] a row is as tall as its tallest card and the
 //! footers line up. A card that opens something is itself pressable
 //! ([`Card::on_activate`]) and lifts under the pointer. A leading stripe in a
@@ -110,14 +112,23 @@ fn paint_surface(
     let theme = ctx.theme;
     let m = CardMetrics::new(theme);
     let raised = theme.tokens.colors.surfaces.raised;
-    let fill = if selected || (pressable && !interaction.disabled && interaction.pressed) {
+    let fill = if pressable && !interaction.disabled && interaction.pressed {
         theme.tokens.colors.lift_on(raised, 1.0)
     } else if pressable && !interaction.disabled && interaction.hovered {
         theme.tokens.colors.lift_on(raised, 0.5)
     } else {
         raised
     };
-    crate::surface::card(ctx.scene, ctx.transform, rect, m.radius, fill);
+    // The selected object: its own edge, heavier and in the accent, at the
+    // same place (`surface::selected_edge`).
+    crate::surface::selectable_card(
+        ctx.scene,
+        ctx.transform,
+        (rect, m.radius),
+        fill,
+        selected,
+        theme,
+    );
     if let Some(tone) = stripe {
         let shape = RoundedRect::from_rect(rect, m.radius);
         ctx.scene.push_layer(
@@ -135,17 +146,6 @@ fn paint_surface(
             &Rect::new(rect.x0, rect.y0, rect.x0 + m.stripe, rect.y1),
         );
         ctx.scene.pop_layer();
-    }
-    if selected {
-        // The selected object: its lift and an edge in primary ink, so it
-        // reads beside a hovered one.
-        ctx.scene.stroke(
-            &vello::kurbo::Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px) * 1.5),
-            ctx.transform,
-            theme.text_primary,
-            None,
-            &crate::surface::edge_outline(rect, m.radius),
-        );
     }
     if interaction.focused && !interaction.disabled {
         crate::widget::paint_focus_ring(ctx.scene, ctx.transform, rect, m.radius, theme);
@@ -351,6 +351,9 @@ impl Widget for CardHeader {
 /// A retained card. See the module docs.
 pub struct Card {
     parts: Parts,
+    /// The body is art that leads the card, above the header
+    /// ([`Card::with_media`]).
+    media_first: bool,
     has_header: bool,
     has_footer: bool,
     stripe: Option<Tone>,
@@ -366,6 +369,7 @@ impl Card {
     pub fn new(body: Element) -> Self {
         Self {
             parts: Parts::new(vec![body]),
+            media_first: false,
             has_header: false,
             has_footer: false,
             stripe: None,
@@ -377,12 +381,30 @@ impl Card {
         }
     }
 
-    /// The selected object among its peers: a lift with an edge in primary
-    /// ink, announced as selected.
+    /// A card led by its art (a cover, a rendered preview): `media` spans
+    /// the card's top at its full inner width, and the header
+    /// ([`Self::with_title`], [`Self::with_title_action`]) sits under it, so
+    /// the object's name and its actions read as the caption of its picture.
+    pub fn with_media(media: Element) -> Self {
+        Self {
+            media_first: true,
+            ..Self::new(media)
+        }
+    }
+
+    /// The selected object among its peers: its edge heavier and in the
+    /// accent, in place of the rest edge ([`crate::surface::selected_edge`]),
+    /// announced as selected.
     #[must_use]
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
         self
+    }
+
+    /// Whether the card is the selected one ([`Self::selected`]).
+    #[must_use]
+    pub fn get_selected(&self) -> bool {
+        self.selected
     }
 
     pub fn set_selected(&mut self, selected: bool) {
@@ -446,12 +468,14 @@ impl Card {
         let header: Element = Box::new(CardHeader {
             parts: Parts::new(children),
         });
+        // The header leads the card, or follows the art that leads it.
+        let at = usize::from(self.media_first);
         if self.has_header
-            && let Some(slot) = self.parts.children.first_mut()
+            && let Some(slot) = self.parts.children.get_mut(at)
         {
             *slot = header;
         } else {
-            self.parts.children.insert(0, header);
+            self.parts.children.insert(at, header);
             self.has_header = true;
         }
         self
@@ -531,10 +555,19 @@ impl Widget for Card {
     ) -> NodeId {
         let m = CardMetrics::new(theme);
         let mut tracks = Vec::new();
-        if self.has_header {
+        if self.media_first {
+            // The art keeps its own height; a row taller than this card
+            // grows its caption, so the art never stretches.
             tracks.push(min_content());
+            if self.has_header {
+                tracks.push(minmax(min_content(), fr(1.0_f32)));
+            }
+        } else {
+            if self.has_header {
+                tracks.push(min_content());
+            }
+            tracks.push(minmax(min_content(), fr(1.0_f32)));
         }
-        tracks.push(minmax(min_content(), fr(1.0_f32)));
         if self.has_footer {
             tracks.push(min_content());
         }

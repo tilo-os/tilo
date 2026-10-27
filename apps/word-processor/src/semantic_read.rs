@@ -116,11 +116,6 @@ fn compare(order: &[u8], id: &str, other_order: &[u8], other_id: &str) -> Orderi
     tilo_resource::order::bytes::cmp(order, other_order).then(id.cmp(other_id))
 }
 /// The text of a Writer record's body; the owner still supplies/stamps the canonical record route.
-///
-/// # Errors
-///
-/// Returns a [`ReadError`] when the document has pending operations, the cursor
-/// is stale or invalid for this basis, or the page exceeds its limits.
 pub fn read_text(
     doc: &AutoCommit,
     owner_heads: &[automerge::ChangeHash],

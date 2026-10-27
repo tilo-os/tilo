@@ -115,7 +115,7 @@ fn registry(entries: usize) -> Registry {
 
 impl Registry {
     fn run(&self, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+        Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
             .arg("--data-dir")
             .arg(self.dir.path())
             .args(args)
@@ -327,7 +327,6 @@ fn snapshot_history_size_is_bounded() {
         assert_eq!(history.len(), published.min(SNAPSHOT_HISTORY_RETAINED));
         let bytes = registry.history_bytes();
         let retained = u64::try_from(SNAPSHOT_HISTORY_RETAINED).unwrap();
-        // Retained members plus the fixed-size compaction record.
         assert!(
             bytes <= retained * largest + 512,
             "{bytes} bytes of history after {published} publishes"

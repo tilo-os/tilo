@@ -59,6 +59,17 @@ impl FilterCount {
     pub const fn new(shown: usize, total: usize) -> Self {
         Self { shown, total }
     }
+
+    /// What the field's counter says: "3 of 12", or "No matches" when
+    /// nothing matches.
+    #[must_use]
+    pub fn label(self) -> String {
+        if self.shown == 0 {
+            crate::i18n::widget_format("search-no-matches", &[])
+        } else {
+            format!("{} of {}", self.shown, self.total)
+        }
+    }
 }
 
 /// A view a [`SearchField`] can narrow: a list, a table, a grid of cards.
@@ -338,6 +349,13 @@ impl SearchField {
         self.input.value()
     }
 
+    /// Where the caret stands in the text, in bytes, as the input reports it
+    /// for review.
+    #[must_use]
+    pub fn caret_byte(&self) -> Option<usize> {
+        self.input.text_review().map(|(caret, _)| caret)
+    }
+
     /// Goes through the shared text core, so caret/selection stay consistent.
     pub fn set_query(&mut self, text: &str) {
         self.input.set_text(text);
@@ -345,6 +363,34 @@ impl SearchField {
 
     pub fn set_focused(&mut self, on: bool) {
         self.input.set_focus(on);
+    }
+
+    /// The field's selection, when a chrome surface owning it outside the
+    /// retained tree needs to mirror pointer placement back into its own
+    /// query model.
+    pub fn selection_anchor_focus_public(&self) -> Option<(usize, usize)> {
+        self.input.selection_anchor_focus_public()
+    }
+
+    /// The selection a host should paint after a pointer event, collapsed to
+    /// the caret when nothing is selected.
+    pub fn selection_anchor_focus_or_caret(&self) -> (usize, usize) {
+        self.input.selection_anchor_focus_or_caret()
+    }
+
+    /// Handle a pointer event for a chrome surface that lays this field out
+    /// itself. Returns whether the field took it.
+    pub fn handle_chrome_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        self.input
+            .handle_chrome_pointer(event, scale_factor, modifiers)
     }
 
     /// Select the current query for conventional Find/Search re-entry.
@@ -452,11 +498,11 @@ impl SearchField {
         } else {
             self.rect.x1 - SLOT_PAD
         };
-        // The count stays, "0 of 120" included: it is what tells the person
-        // nothing here matches.
+        // The count stays when nothing matches: "No matches" tells the person
+        // so in words.
         if let Some(count) = self.count {
             let style = theme.text(TextRole::Caption).numeric();
-            let text = format!("{} of {}", count.shown, count.total);
+            let text = count.label();
             let (w, h) = text_renderer.measure_style(&text, None, &style);
             let x0 = right - f64::from(w);
             if x0 >= self.rect.x0 + ICON_GUTTER {
@@ -869,7 +915,7 @@ impl Widget for SearchField {
             description.push(token.clone());
         }
         if let Some(count) = self.count {
-            description.push(format!("{} of {}", count.shown, count.total));
+            description.push(count.label());
         }
         if !description.is_empty() {
             node = node.with_description(description.join(", "));
@@ -1260,7 +1306,6 @@ mod tests {
             "one request per Enter"
         );
 
-        // With nothing matching, the count slot offers the same escalation.
         sf.set_count(Some(FilterCount::new(0, 12)));
         sf.input.set_focus(false);
         draw(&mut sf);
@@ -1325,6 +1370,22 @@ mod tests {
             node.description
                 .as_deref()
                 .is_some_and(|d| d.contains("2 of 9"))
+        );
+    }
+
+    #[test]
+    fn a_count_with_nothing_matching_says_no_matches() {
+        assert_eq!(FilterCount::new(0, 0).label(), "No matches");
+        assert_eq!(FilterCount::new(0, 120).label(), "No matches");
+        assert_eq!(FilterCount::new(1, 52).label(), "1 of 52");
+        let mut sf = SearchField::filter();
+        sf.input.set_text("zzz");
+        sf.set_count(Some(FilterCount::new(0, 0)));
+        let node = Widget::accessibility(&sf).expect("a11y");
+        assert!(
+            node.description
+                .as_deref()
+                .is_some_and(|d| d.contains("No matches"))
         );
     }
 

@@ -211,7 +211,6 @@ mod tests {
 
     #[test]
     fn installers_are_validated_hashed_and_honestly_typed() {
-        // Phase `validates_and_hashes_pe_from_descriptor`.
         {
             let file = pe(0x8664);
             let mut source = file.reopen().unwrap();
@@ -221,7 +220,6 @@ mod tests {
             assert_eq!(inspected.display_name, "Favorite App");
             assert_eq!(inspected.sha256.len(), 64);
         }
-        // Phase `msi_signature_wins_but_extension_must_be_honest`.
         {
             let mut file = NamedTempFile::new().unwrap();
             file.write_all(&[0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0, 0])
@@ -237,7 +235,6 @@ mod tests {
                 Err(InstallerError::ExtensionMismatch)
             ));
         }
-        // Phase `rejects_paths_streams_and_fake_executables`.
         {
             let mut fake = NamedTempFile::new().unwrap();
             fake.write_all(b"MZ but not a PE").unwrap();

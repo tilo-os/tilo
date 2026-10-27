@@ -332,11 +332,17 @@ mod tests {
             .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let key = format!("target:{id}");
-        let before = Instant::now();
-        retain_read_medium(key.clone(), child, file, request);
-        assert!(
-            before.elapsed() < Duration::from_millis(500),
-            "UI teardown waited on a read helper"
+        // The helper reads until released below, so retaining it returns
+        // only if UI teardown does not wait on it.
+        let (retained, done) = mpsc::channel();
+        let retaining = key.clone();
+        std::thread::spawn(move || {
+            retain_read_medium(retaining, child, file, request);
+            let _ = retained.send(());
+        });
+        tilo_test_env::recv(
+            "UI teardown to retain the read helper without waiting",
+            &done,
         );
         assert!(pending(&key));
         assert!(super::super::pending_target(&id));
@@ -362,25 +368,35 @@ mod tests {
         let (ready, arrived) = mpsc::sync_channel(1);
         let joined = std::thread::spawn(move || {
             ready.send(()).unwrap();
-            held.recv_timeout(Duration::from_secs(5)).unwrap();
+            held.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         });
-        arrived.recv_timeout(Duration::from_secs(2)).unwrap();
+        arrived.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         retain(Some(key.clone()), joined, None, None, None);
         let (complete, observed) = mpsc::sync_channel(1);
+        let (started, teardown_tid) = mpsc::channel();
         let closing_key = key.clone();
         let teardown = std::thread::spawn(move || {
+            started
+                .send(tilo_test_env::idle::current_thread_id().ok())
+                .unwrap();
             complete.send(finish_pending(&closing_key)).unwrap();
         });
+        // Teardown blocks on the held worker, seen blocked where the platform
+        // shows it, and has not finished.
+        if let Some(tid) =
+            tilo_test_env::recv("teardown to start", &teardown_tid).map(|tid| tid.to_string())
+        {
+            tilo_test_env::wait_until("teardown to block on the held worker", || {
+                tilo_test_env::idle::blocked(&tid)
+            });
+        }
         assert!(matches!(
-            observed.recv_timeout(Duration::from_millis(50)),
-            Err(mpsc::RecvTimeoutError::Timeout)
+            observed.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
         ));
         assert!(super::super::pending_target(&id));
         release.send(()).unwrap();
-        observed
-            .recv_timeout(Duration::from_secs(3))
-            .unwrap()
-            .unwrap();
+        tilo_test_env::recv("teardown to finish once the worker exits", &observed).unwrap();
         teardown.join().unwrap();
         assert!(!pending(&key));
         assert!(!super::super::pending_target(&id));
@@ -407,25 +423,31 @@ mod tests {
             ready_send.send(()).unwrap();
             // Bounded rendezvous uses a real held writable descriptor. Cancellation
             // is deliberately cooperative; signalling it is not proof of exit.
-            release_recv.recv_timeout(Duration::from_secs(5)).unwrap();
+            release_recv
+                .recv_timeout(tilo_test_env::hang_bound())
+                .unwrap();
             assert!(worker_cancel.load(Ordering::Acquire));
             assert!(held.metadata().is_ok());
             drop(held);
             drop(result_send);
         });
-        ready_recv.recv_timeout(Duration::from_secs(2)).unwrap();
+        ready_recv
+            .recv_timeout(tilo_test_env::hang_bound())
+            .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let mut delivery = Delivery::default();
         delivery.target = Some(target(id.clone()));
         delivery.joined = Some(joined);
         delivery.worker = Some(result_recv);
         delivery.cancel = Some(cancel.clone());
-        let before = Instant::now();
-        drop(delivery);
-        assert!(
-            before.elapsed() < Duration::from_millis(500),
-            "UI teardown waited on a live writer"
-        );
+        // The writer runs until released below, so the drop returns only if
+        // UI teardown does not wait on it.
+        let (dropped, done) = mpsc::channel();
+        std::thread::spawn(move || {
+            drop(delivery);
+            let _ = dropped.send(());
+        });
+        tilo_test_env::recv("UI teardown to drop the delivery without waiting", &done);
         assert!(cancel.load(Ordering::Acquire));
         assert!(
             weak.upgrade().is_some(),
@@ -451,7 +473,7 @@ mod tests {
                 .is_ok()
         );
         release_send.send(()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = tilo_test_env::hang_deadline();
         while same.busy() {
             assert!(
                 Instant::now() < deadline,

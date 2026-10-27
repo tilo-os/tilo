@@ -80,7 +80,7 @@ pub fn required_action(
 
         // Launching puts a tab in the workspace: an undoable change of that
         // app.
-        ResourceKind::Application | ResourceKind::HostApplication => Some((
+        ResourceKind::Application => Some((
             TreePath::root().app(resource.id.clone()),
             ActionKind::Undoable,
         )),
@@ -257,7 +257,6 @@ mod tests {
         ws
     }
 
-    /// `subject` granted `kinds` everywhere in `ws`'s room.
     fn grant_room(ws: &mut Workspace, subject: Subject, kinds: KindSet) {
         let owner = ws.owner().cloned().expect("owned");
         let grant = Grant::new(
@@ -493,7 +492,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn acting_needs_the_matching_answer_and_unclassified_acts_fail_closed() {
-        // Phase `acting_on_the_room_is_an_undoable_act_and_membership_governs`.
         {
             for id in [
                 "tab.new.terminal.here",
@@ -532,7 +530,6 @@ mod tests {
             }
         }
 
-        // Phase `writing_into_a_document_is_an_undoable_act`.
         {
             let (node, kind) =
                 required_action(&resource("actions", "record.bring"), &ResourceKind::Action)
@@ -571,7 +568,6 @@ mod tests {
                 "the room's owner may edit its documents"
             );
 
-            // A grant makes exactly that act appear.
             grant_room(
                 &mut ws,
                 Subject::person(stranger.clone()),

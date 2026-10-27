@@ -85,11 +85,8 @@ fn text_at(tree: &SemanticTree, key: &str) -> *const u8 {
 fn a_refresh_moves_unchanged_rows_over_and_answers_as_a_full_rebuild_does() {
     let frames = [
         vec![row("a", "alpha"), row("b", "beta"), row("c", "gamma")],
-        // A key typed into one row.
         vec![row("a", "alpha"), row("b", "betaa"), row("c", "gamma")],
-        // A row gone.
         vec![row("a", "alpha"), row("c", "gamma")],
-        // A row back, and the rows moved.
         vec![row("c", "gamma"), row("a", "alpha"), row("b", "betaa")],
         // Two rows with one key: a repeat only the full walk reports.
         vec![row("a", "alpha"), row("a", "alpha"), row("c", "gamma")],

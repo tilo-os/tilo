@@ -154,7 +154,7 @@ mod tests {
             controller.disconnect();
             assert!(matches!(
                 controller.status,
-                crate::shell::projection::ProjectionStatus::Error(_)
+                crate::shell::projection::ProjectionStatus::Failed(_)
             ));
             assert!(controller.devices.is_empty());
             assert_eq!(guard.attempts(), 0);
@@ -307,7 +307,7 @@ mod tests {
                 .desktop
                 .active_workspace()
                 .unwrap()
-                .room;
+                .room();
             let record = crate::shell::tab_documents::scratch_tab_record(note);
             room_index
                 .borrow_mut()
@@ -504,9 +504,10 @@ mod tests {
                 .unwrap()
         );
         let told = files.notice_line().expect("a refused open is said");
-        assert!(
-            told.contains(&file_explorer::i18n::t("files-open-unavailable")),
-            "{told}"
-        );
+        // The notice comes from Files' catalogue, not the shell's: naming the
+        // key apart from the call keeps the shell's catalogue check from
+        // claiming it.
+        let files_key = "files-open-unavailable";
+        assert!(told.contains(&file_explorer::i18n::t(files_key)), "{told}");
     }
 }

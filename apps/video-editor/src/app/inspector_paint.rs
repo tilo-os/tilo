@@ -1,3 +1,4 @@
+use super::strip_menu::StripHost;
 #[allow(
     clippy::wildcard_imports,
     reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
@@ -201,7 +202,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|((w, h), _)| *w == self.project.width && *h == self.project.height)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels, sel),
+            );
         }
         if let Some((_, first)) = l.project_rates.first() {
             caption_above(scene, tr, tf, theme, "Frame rate", x0, first.y0);
@@ -215,7 +222,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(rate, _)| (rate - self.project.fps).abs() < 1e-6)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &refs, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&refs, sel),
+            );
         }
         if let Some(rect) = l.project_match {
             // The button names the source it will copy, so pressing it is not
@@ -750,7 +763,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(t, _)| *t == clip.transition)
                 .unwrap_or(0);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels, sel),
+            );
         }
         // Transition length.
         if let Some(track) = l.transition_len {
@@ -839,7 +858,7 @@ impl VideoEditorApp {
                 draw_toggle_button(
                     &mut PaintCtx::new(scene, tf, tr, theme),
                     *rect,
-                    ToggleContent::Label(""),
+                    "",
                     on,
                     hovered,
                 );
@@ -864,6 +883,49 @@ impl VideoEditorApp {
                     g.y1 - 2.0 - ih
                 };
                 fill_round(scene, tf, Rect::new(ix, iy, ix + iw, iy + ih), 1.5, fg);
+            }
+        }
+        // Side by side: two sibling buttons, each a miniature frame with the
+        // picture in its half, so the row reads as the arrangement rather
+        // than as two unexplained words.
+        if let Some((_, _, first)) = l.sides.first() {
+            caption_above(scene, tr, tf, theme, "Side by side", x0, first.y0);
+            for (_, side, rect) in &l.sides {
+                let placement = side.placement();
+                let on = placement.is_some_and(|p| {
+                    (clip.transform.scale_x - p.scale_x).abs() < 1e-6
+                        && (clip.transform.pos_x - p.pos_x).abs() < 1e-6
+                });
+                draw_toggle_button(
+                    &mut PaintCtx::new(scene, tf, tr, theme),
+                    *rect,
+                    "",
+                    on,
+                    rect.contains(self.last_mouse),
+                );
+                let fg = if on { c.text_primary } else { c.text_dim };
+                let g = Rect::new(
+                    rect.center().x - 14.0,
+                    rect.center().y - 6.0,
+                    rect.center().x + 14.0,
+                    rect.center().y + 6.0,
+                );
+                stroke_round(scene, tf, g, 2.0, fg, 1.0);
+                let half = Rect::new(
+                    if *side == Side::Left {
+                        g.x0
+                    } else {
+                        g.center().x
+                    },
+                    g.y0,
+                    if *side == Side::Left {
+                        g.center().x
+                    } else {
+                        g.x1
+                    },
+                    g.y1,
+                );
+                fill_round(scene, tf, half.inset(1.5), 1.0, fg);
             }
         }
         if l.crop_label_y > 0.0 {
@@ -905,15 +967,12 @@ impl VideoEditorApp {
                         && (clip.transform.anchor_y - a.1).abs() < 1e-6
                 })
                 .unwrap_or(usize::MAX);
-            draw_segmented(
+            self.draw_strip(
                 scene,
                 tf,
-                tr,
-                theme,
-                &rects,
-                &labels[..rects.len().min(3)],
-                sel,
-                self.last_mouse,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels[..rects.len().min(3)], sel),
             );
             for (i, (a, rect)) in band.iter().enumerate() {
                 let ink = if i == sel { c.text_primary } else { c.text_dim };
@@ -961,7 +1020,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(rate, _)| (rate - clip.speed.rate()).abs() < 1e-6)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &refs, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&refs, sel),
+            );
         }
         if let Some(rect) = l.reverse {
             draw_switch_row(
@@ -969,6 +1034,8 @@ impl VideoEditorApp {
                 rect,
                 "Play backwards",
                 clip.speed.reverse,
+                self.faces
+                    .switch((clip.id, "reverse"), clip.speed.reverse, theme.motion()),
                 rect.contains(self.last_mouse),
             );
         }
@@ -1012,7 +1079,6 @@ impl VideoEditorApp {
                 rect.contains(self.last_mouse),
             );
         }
-        // ---- tone curves ------------------------------------------------
         if !l.curve_channels.is_empty() {
             let rects: Vec<Rect> = l.curve_channels.iter().map(|(_, r)| *r).collect();
             let labels: Vec<&str> = l.curve_channels.iter().map(|(c, _)| c.label()).collect();
@@ -1021,7 +1087,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(c, _)| *c == self.curve_channel)
                 .unwrap_or(0);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels, sel),
+            );
         }
         if let Some(canvas) = l.curve_canvas {
             self.draw_curve_editor(scene, tf, tr, theme, canvas, &clip);
@@ -1038,13 +1110,14 @@ impl VideoEditorApp {
                 shaped,
             );
         }
-        // ---- colour key -----------------------------------------------
         if let Some(rect) = l.key_enable {
             draw_switch_row(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
                 "Key a colour out",
                 clip.key.enabled,
+                self.faces
+                    .switch((clip.id, "key"), clip.key.enabled, theme.motion()),
                 rect.contains(self.last_mouse),
             );
         }
@@ -1093,7 +1166,6 @@ impl VideoEditorApp {
                 have,
             );
         }
-        // ---- mask -------------------------------------------------------
         if !l.mask_shapes.is_empty() {
             let rects: Vec<Rect> = l.mask_shapes.iter().map(|(_, r)| *r).collect();
             let labels: Vec<&str> = l.mask_shapes.iter().map(|(s, _)| s.label()).collect();
@@ -1102,7 +1174,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(s, _)| *s == clip.mask.shape)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels, sel),
+            );
         }
         if let Some(rect) = l.mask_fit {
             draw_button(
@@ -1122,10 +1200,11 @@ impl VideoEditorApp {
                 rect,
                 "Invert",
                 clip.mask.invert,
+                self.faces
+                    .switch((clip.id, "mask-invert"), clip.mask.invert, theme.motion()),
                 rect.contains(self.last_mouse),
             );
         }
-        // ---- title ----------------------------------------------------
         if let Some(rect) = l.title_text {
             let text_src = media
                 .as_ref()
@@ -1210,7 +1289,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(a, _)| *a == cur)
                 .unwrap_or(0);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (StripHost::Inspector, &rects),
+                (&labels, sel),
+            );
         }
         if let Some(rect) = l.title_font {
             let current = media
@@ -1274,7 +1359,7 @@ impl VideoEditorApp {
             draw_toggle_button(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 rect,
-                ToggleContent::Label(words),
+                words,
                 on,
                 rect.contains(self.last_mouse),
             );

@@ -12,7 +12,7 @@ fn image(name: &str) -> TestResult<PathBuf> {
 fn operation(name: &str, args: &[String]) -> TestResult<Value> {
     let path = image(name)?;
     let before = Sha256::digest(fs::read(&path)?);
-    let output = Command::new(env!("CARGO_BIN_EXE_tilo-ntfs-image-test"))
+    let output = Command::new(tilo_test_env::package_binary!("tilo-ntfs-image-test"))
         .arg(&path)
         .args(args)
         .output()?;

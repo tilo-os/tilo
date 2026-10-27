@@ -99,7 +99,6 @@ impl HandoffCredential {
         }
     }
 
-    /// Whether it expires within `skew` of `now`.
     pub fn is_expired(&self, now: u64, skew: u64) -> bool {
         self.expires_unix()
             .is_some_and(|expires| now.saturating_add(skew) >= expires)

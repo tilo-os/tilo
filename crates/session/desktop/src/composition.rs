@@ -1,15 +1,17 @@
 //! The production desktop hierarchy, shared by native and portable hosts.
-use crate::resolver::{TileRequest, TileResolver, tile_app_kind};
+use crate::resolver::{TileRequest, TileResolver};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tilo_desktop_model::{
     DesktopTree, OutputPartition, RoomId, Strip, StripId, WindowGroup, WindowWidth,
 };
+use tilo_desktop_surface::tile_app_kind;
+use tilo_sort::CompactSort as _;
 use ui::record::RecordStore;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
-    Column, Container, GroupRow, Stack, StripView, TabDescriptor, Widget, WindowGroup as UiGroup,
-    WorkspaceView,
+    Column, Container, GroupRow, Stack, StripDeck, StripView, TabDescriptor, Widget,
+    WindowGroup as UiGroup, WorkspaceView,
 };
 use ui::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
 use vello::{
@@ -83,6 +85,8 @@ pub struct DesktopSurface {
     fullscreen: bool,
     pub(crate) external_navigation: bool,
     column_index: usize,
+    /// Where the [`StripDeck`] holding every strip's row sits in the column.
+    deck_index: usize,
     pub(crate) navigation: crate::navigation::Navigation,
     root: Box<dyn Widget>,
     component_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -90,6 +94,7 @@ pub struct DesktopSurface {
     wake_sink: std::sync::Arc<dyn Fn() + Send + Sync>,
     context: Option<(tilo_desktop_model::WorkspaceId, RoomId)>,
     empty_workspace_visible: Option<bool>,
+    /// Each strip's row, by its place in the deck.
     rows: HashMap<StripId, usize>,
     order: Vec<StripId>,
     failures: Vec<ui::launch::LaunchError>,
@@ -122,7 +127,7 @@ pub fn display_ordered<'a>(partition: &OutputPartition, strip: &'a Strip) -> Vec
         return groups;
     }
     let order = partition.reading_order();
-    groups.sort_by_key(|g| {
+    groups.compact_sort_by_key(|g| {
         partition
             .display_of(g.id)
             .and_then(|d| order.iter().position(|id| *id == d))
@@ -143,12 +148,7 @@ pub fn build_group(
         .iter()
         .map(|tab| {
             let resolution = resolver.resolve(TileRequest { room, tab });
-            let checked = matches!(
-                &resolution,
-                crate::resolver::TileResolution::Component(_)
-                    | crate::resolver::TileResolution::App(..)
-                    | crate::resolver::TileResolution::Retained(_)
-            );
+            let checked = resolution.holds_its_own_record();
             let mut host = resolution.mount(failures, wake.clone());
             if !checked {
                 host.bind_record(records.clone(), crate::records::scratch_tab_record(tab.id));
@@ -159,6 +159,7 @@ pub fn build_group(
                     title: tab.title.clone(),
                     app_kind: Some(tile_app_kind(&tab.tile)),
                     icon: resolver.tab_icon(tab),
+                    attention: false,
                 },
                 host,
             )
@@ -269,6 +270,7 @@ impl DesktopSurface {
         let mut rows = HashMap::new();
         let mut order = Vec::new();
         let mut failures = Vec::new();
+        let mut deck_rows = Vec::new();
         if let Some(workspace) = tree.active_workspace() {
             for strip in &workspace.strips {
                 let groups = display_ordered(&tree.outputs, strip)
@@ -276,7 +278,7 @@ impl DesktopSurface {
                     .map(|g| {
                         build_group(
                             g,
-                            workspace.room,
+                            workspace.room(),
                             records,
                             resolver,
                             &mut failures,
@@ -286,12 +288,13 @@ impl DesktopSurface {
                     .collect();
                 let mut row = GroupRow::new(groups).with_leading_inset(chrome.leading_inset);
                 row.set_external_navigation(external_navigation);
-                rows.insert(strip.id, row_offset);
+                rows.insert(strip.id, deck_rows.len());
                 order.push(strip.id);
-                row_offset = row_offset.saturating_add(1);
-                column = column.push(Box::new(row));
+                deck_rows.push(row);
             }
         }
+        let deck_index = row_offset;
+        column = column.push(Box::new(StripDeck::new(deck_rows, active_strip)));
         let mut foreground = Column::new().with_no_padding();
         if matches!(chrome.work_area, WorkArea::Flush { .. }) {
             foreground = foreground.with_gap(0.0);
@@ -317,9 +320,10 @@ impl DesktopSurface {
             fullscreen: false,
             external_navigation,
             column_index: usize::from(!external_navigation),
+            deck_index,
             navigation: crate::navigation::Navigation::default(),
             root,
-            context: tree.active_workspace().map(|w| (w.id, w.room)),
+            context: tree.active_workspace().map(|w| (w.id, w.room())),
             empty_workspace_visible,
             component_wake,
             retained_wakes: vec![],
@@ -513,11 +517,11 @@ impl DesktopSurface {
             for group in &mut row.groups {
                 let tabs: Vec<u64> = group.tabs().iter().map(|tab| tab.id).collect();
                 for tab in tabs {
-                    if let Some(ui::widget::TileContent::App(app)) = group
+                    if let Some(app) = group
                         .host_for_tab_mut(tab)
-                        .map(ui::widget::TileHost::content_mut)
+                        .and_then(ui::widget::TileHost::app_mut)
                     {
-                        visit(tab, app.as_mut());
+                        visit(tab, app);
                     }
                 }
             }
@@ -531,14 +535,31 @@ impl DesktopSurface {
         self.row_at_mut(*self.rows.get(&id)?)
     }
     fn row_at(&self, index: usize) -> Option<&GroupRow> {
-        child(self.root.as_ref(), &[0, 1, self.column_index, index])?
-            .as_any()?
-            .downcast_ref()
+        self.strip_deck()?.row(index)
     }
     fn row_at_mut(&mut self, index: usize) -> Option<&mut GroupRow> {
-        child_mut(self.root.as_mut(), &[0, 1, self.column_index, index])?
-            .as_any_mut()?
-            .downcast_mut()
+        self.strip_deck_mut()?.row_mut(index)
+    }
+    /// The deck of full-height strips, one shown at a time.
+    pub fn strip_deck(&self) -> Option<&StripDeck> {
+        child(
+            self.root.as_ref(),
+            &[0, 1, self.column_index, self.deck_index],
+        )?
+        .as_any()?
+        .downcast_ref()
+    }
+    pub fn strip_deck_mut(&mut self) -> Option<&mut StripDeck> {
+        child_mut(
+            self.root.as_mut(),
+            &[0, 1, self.column_index, self.deck_index],
+        )?
+        .as_any_mut()?
+        .downcast_mut()
+    }
+    /// The strip at `index` of the workspace's strips, top to bottom.
+    pub fn strip_at(&self, index: usize) -> Option<StripId> {
+        self.order.get(index).copied()
     }
     /// The column holding the navigation drivers, the empty-workspace card
     /// and one row per strip, for hosts that restyle it per frame.
@@ -642,6 +663,15 @@ impl DesktopSurface {
                 out.push(DesktopIntent::Local(LocalViewIntent::Strip(*id)));
             }
         }
+        // A drag carried to the deck's edge went to another strip.
+        if let Some(index) = self
+            .strip_deck_mut()
+            .and_then(StripDeck::take_requested_strip)
+            && let Some(id) = self.order.get(index).copied()
+        {
+            self.selected_strip = index;
+            out.push(DesktopIntent::Local(LocalViewIntent::Strip(id)));
+        }
         out
     }
     /// A client that exits after refusing or deferring a close request
@@ -681,7 +711,7 @@ impl DesktopSurface {
         let Some(workspace) = tree.active_workspace() else {
             return ReconcileOutcome::RebuildRequired;
         };
-        if Some((workspace.id, workspace.room)) != self.context {
+        if Some((workspace.id, workspace.room())) != self.context {
             return ReconcileOutcome::RebuildRequired;
         }
         if workspace.strips.iter().map(|s| s.id).collect::<Vec<_>>() != self.order {
@@ -714,6 +744,25 @@ impl DesktopSurface {
             .iter()
             .position(|s| Some(&s.id) == tree.active_strip.get(&workspace.id))
             .unwrap_or(0);
+        let shown = self.selected_strip;
+        // What asked for it: a chord says so before acting
+        // ([`Self::begin_transition`]); a click or swipe was just handled.
+        let source = self
+            .navigation
+            .transition
+            .or_else(|| ui::motion::recent_input(ui::motion::frame_now()));
+        if let Some(deck) = self.strip_deck_mut()
+            && deck.shown() != shown
+        {
+            // Going to another strip slides the deck to it: a hand gets the
+            // paged-strip settle, a shortcut the same within `fast`. A change
+            // nobody's hand made (an agent's turn, a script) lands at once.
+            match source {
+                Some(source) => deck.show(shown, source),
+                None => deck.jump_to(shown),
+            }
+            changed = true;
+        }
         if let Some(view) = (!self.external_navigation)
             .then(|| child_mut(self.root.as_mut(), &[0, 1, 1, 0]))
             .flatten()
@@ -880,6 +929,7 @@ impl DesktopSurface {
                         title: tab.title.clone(),
                         app_kind: Some(tile_app_kind(&tab.tile)),
                         icon: resolver.tab_icon(tab),
+                        attention: false,
                     };
                     if let Some(from) = live.tabs().iter().position(|t| t.id == tab.id) {
                         changed |= live.reorder_tab(from, index);
@@ -888,19 +938,31 @@ impl DesktopSurface {
                         // desktop entry is installed, or the app sets its own.
                         changed |= live.set_tab_icon(tab.id, descriptor.icon.clone());
                         let refusal = resolver.creation_refusal(tab);
+                        // A window holding its place while its app's record
+                        // opens asks again: the host's storage wake brought
+                        // this pass.
+                        let arriving = live.host_for_tab_mut(tab.id).is_some_and(|h| {
+                            matches!(h.content(), ui::widget::TileContent::Arriving)
+                        });
                         let replace = tiles.get(&tab.id) != Some(&tab.tile)
+                            || arriving
                             || (refusal.is_none()
                                 && live
                                     .host_for_tab_mut(tab.id)
                                     .is_some_and(|h| h.record_creation_refused()));
                         if replace && resolver.ready_to_replace(tab) {
                             let resolution = resolver.resolve(TileRequest {
-                                room: workspace.room,
+                                room: workspace.room(),
                                 tab,
                             });
                             match resolution {
+                                // Still opening: the arrival it shows goes on.
+                                crate::resolver::TileResolution::Opening if arriving => {
+                                    tiles.insert(tab.id, tab.tile.clone());
+                                    continue;
+                                }
                                 // Plain content swaps inside the live host, which keeps
-                                // its visibility and opening card until the new content
+                                // its visibility and its arrival until the new content
                                 // presents, and publishes the new content's size on the
                                 // next layout.
                                 crate::resolver::TileResolution::Content(content) => {
@@ -919,18 +981,19 @@ impl DesktopSurface {
                                     continue;
                                 }
                                 other => {
-                                    if let Some((_, mut old)) = live.detach_tab(tab.id) {
+                                    let old = live.detach_tab(tab.id).map(|(_, mut old)| {
                                         reports.extend(ui::component_lifecycle::close_components(
                                             &mut old,
                                         ));
-                                    }
-                                    let checked = matches!(
-                                        &other,
-                                        crate::resolver::TileResolution::Component(_)
-                                            | crate::resolver::TileResolution::App(..)
-                                            | crate::resolver::TileResolution::Retained(_)
-                                    );
+                                        old
+                                    });
+                                    let checked = other.holds_its_own_record();
                                     let mut host = other.mount(&mut failures, wake_sink.clone());
+                                    // The app whose record opened goes on with
+                                    // the arrival its window showed meanwhile.
+                                    if let Some(old) = old.as_ref().filter(|_| arriving) {
+                                        host.continue_arrival(old);
+                                    }
                                     if !checked {
                                         host.bind_record(
                                             records.clone(),
@@ -947,7 +1010,9 @@ impl DesktopSurface {
                                 }
                             }
                         }
-                        if let Some(host) = live.host_for_tab_mut(tab.id) {
+                        if let Some(host) = live.host_for_tab_mut(tab.id)
+                            && !arriving
+                        {
                             if let Some(reason) = refusal {
                                 host.refuse_record_binding(reason);
                             } else if host.callback_binding().is_none() {
@@ -975,15 +1040,10 @@ impl DesktopSurface {
                         host
                     } else {
                         let resolution = resolver.resolve(TileRequest {
-                            room: workspace.room,
+                            room: workspace.room(),
                             tab,
                         });
-                        let checked = matches!(
-                            &resolution,
-                            crate::resolver::TileResolution::Component(_)
-                                | crate::resolver::TileResolution::App(..)
-                                | crate::resolver::TileResolution::Retained(_)
-                        );
+                        let checked = resolution.holds_its_own_record();
                         let mut host = resolution.mount(&mut failures, wake_sink.clone());
                         if !checked {
                             host.bind_record(
@@ -1089,7 +1149,7 @@ impl DesktopSurface {
         let mut hosts = HashMap::new();
         if let Some(workspace) = tree
             .active_workspace()
-            .filter(|w| self.context.is_some_and(|(_, room)| room == w.room))
+            .filter(|w| self.context.is_some_and(|(_, room)| room == w.room()))
         {
             let keep: Vec<u64> = workspace
                 .strips
@@ -1194,10 +1254,26 @@ impl DesktopSurface {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Rect> {
+        let bounds =
+            self.draw_chrome_sections(backdrop, topbar, transform, text, theme, presence)?;
+        self.draw_workspace_area(workspace, transform, text, theme, presence)?;
+        Some(bounds)
+    }
+
+    /// The backdrop and the bar of [`Self::draw_sections`], without the
+    /// workspace's windows: the bounds of the bar, or zero under external
+    /// navigation.
+    pub fn draw_chrome_sections(
+        &mut self,
+        backdrop: &mut Scene,
+        topbar: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<Rect> {
         child_mut(self.root.as_mut(), &[0, 0])?.draw(backdrop, transform, text, theme, presence);
         if self.external_navigation {
-            child_mut(self.root.as_mut(), &[0, 1, 0])?
-                .draw(workspace, transform, text, theme, presence);
             return Some(Rect::ZERO);
         }
         let bar = child_mut(self.root.as_mut(), &[0, 1, 0])?;
@@ -1206,9 +1282,26 @@ impl DesktopSurface {
         if let Some(display_chrome) = child_mut(self.root.as_mut(), &[0, 2]) {
             display_chrome.draw(topbar, transform, text, theme, presence);
         }
-        child_mut(self.root.as_mut(), &[0, 1, 1])?
-            .draw(workspace, transform, text, theme, presence);
         Some(Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + 28.0))
+    }
+
+    /// The workspace's windows of [`Self::draw_sections`] alone: what a
+    /// workspace switch moves.
+    pub fn draw_workspace_area(
+        &mut self,
+        workspace: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<()> {
+        let path: &[usize] = if self.external_navigation {
+            &[0, 1, 0]
+        } else {
+            &[0, 1, 1]
+        };
+        child_mut(self.root.as_mut(), path)?.draw(workspace, transform, text, theme, presence);
+        Some(())
     }
 }
 impl Widget for DesktopSurface {
@@ -1280,6 +1373,12 @@ impl Widget for DesktopSurface {
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.root.children_mut()
+    }
+    /// The surface stands for its root's node; the root's own children are
+    /// laid out under it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(self.root.as_ref());
+        true
     }
     fn name(&self) -> &'static str {
         "DesktopSurface"

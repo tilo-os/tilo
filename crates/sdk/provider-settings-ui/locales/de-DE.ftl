@@ -1,4 +1,6 @@
 agent-provider-no-authority = Nur eine Administratorin oder ein Administrator dieses Computers kann Modellanbieter hinzufügen oder ändern.
+agent-provider-admin-only-title = Modellanbieter richtet die Administration ein
+agent-provider-admin-only-message = Gehostete KI-Modelle kommen von Anbietern wie Anthropic oder einem OpenAI-kompatiblen Dienst. Nur eine Administratorin oder ein Administrator dieses Computers kann einen verbinden. Danach funktionieren seine Modelle in jeder App, die KI nutzt.
 agent-fit-excellent = Sehr gut geeignet
 agent-fit-good = Gut geeignet
 agent-fit-tight = Läuft, mit Einschränkungen
@@ -67,8 +69,24 @@ agent-model-storage = Speicher
 agent-progress-downloading = { $name } wird heruntergeladen
 agent-progress-installing = { $name } wird installiert
 agent-download-progress = { $done } von { $total } heruntergeladen. Du kannst diese Seite verlassen.
-agent-add-anthropic = Anthropic hinzufügen
-agent-add-compatible = Kompatible API hinzufügen
+agent-add-provider = Anbieter hinzufügen
+agent-add-provider-placeholder = Anbieter wählen
+agent-preset-unknown = Dieser Anbieter kann hier nicht hinzugefügt werden.
+agent-test-connection = Verbindung testen
+agent-test-connected = { $count ->
+        [one] Verbunden. Der Anbieter bietet ein Modell an.
+       *[other] Verbunden. Der Anbieter bietet { $count } Modelle an.
+    }
+agent-test-no-models = Verbunden, aber der Anbieter nennt keine Modelle. Gib die Modell-ID oben ein.
+agent-test-no-list = Dieser Anbieter nennt seine Modelle nicht. Prüfe die URL oder gib die Modell-ID oben ein.
+agent-test-key-refused = Der Anbieter hat den Schlüssel oder die Anmeldung abgelehnt. Prüfe sie und teste erneut.
+agent-test-unreachable = Der Anbieter ist nicht erreichbar. Prüfe die URL und deine Verbindung.
+agent-test-rate-limited = Der Anbieter begrenzt gerade Anfragen. Warte kurz und teste erneut.
+agent-test-no-credits = Das Konto beim Anbieter hat kein Guthaben mehr.
+agent-test-failed = Der Anbieter hat nicht wie erwartet geantwortet. Prüfe die URL und das Protokoll.
+agent-choose-model = Modell
+agent-choose-model-placeholder = Modell wählen
+agent-model-invalid = Gib eine Modell-ID in einer Zeile ein.
 agent-placeholder-name = Anbietername
 agent-placeholder-url = https://provider.example/v1
 agent-placeholder-model = Modell-ID
@@ -161,3 +179,73 @@ agent-ready-running-caption = Das Modell ist bereit und läuft auf diesem Gerät
 agent-ready-stopped-caption = Das Modell wurde heruntergeladen. Starte es bei Bedarf.
 agent-rec-waiting-caption = Eine Empfehlung erscheint, sobald der Modelldienst verfügbar ist.
 agent-sign-in-custody = Anmeldedaten werden von den Systemkonten verwaltet, nicht als API-Schlüssel.
+agent-models-agents-title = Agenten
+agent-models-agents-caption = Diese Agenten planen mit einem eigenen Modell, alle anderen mit dem Standard. Das Modell eines Agenten wählst du in den Einstellungen seines Arbeitsbereichs.
+agent-model-of-provider = { $model } von { $provider }
+agent-model-unavailable = Sein Anbieter ist ausgeschaltet: Er plant ohne Modell, bis du ihn einschaltest oder ein anderes wählst.
+agent-model-use-default = Standard verwenden
+agent-model-choice-incomplete = Nenne den Anbieter und sein Modell, oder keins von beiden für den Standard.
+
+agent-hub-title = Modelle von Hugging Face
+agent-hub-caption = Durchsuche Hugging Face mit der Suche des Fensters, öffne ein beliebiges Modell per Name oder Link oder füge eine eigene GGUF-Datei hinzu. Ein Modell sind Daten: Es läuft in Tilos signierten Laufzeiten auf diesem Gerät, und seine Lizenz wird angezeigt, bevor etwas heruntergeladen wird.
+agent-hub-format = Format
+agent-hub-reference = Per Name oder Link hinzufügen
+agent-hub-reference-hint = besitzer/modell oder ein huggingface.co-Link
+agent-hub-show = Anzeigen
+agent-hub-file = Füge eine GGUF-Modelldatei von diesem Gerät hinzu. Du wählst sie aus, und der Modellspeicher behält eine eigene Kopie.
+agent-hub-file-choose = Modelldatei auswählen
+agent-hub-file-filter = GGUF-Modelle
+agent-hub-file-chooser-gone = Die Dateiauswahl wurde ohne Antwort geschlossen.
+agent-hub-add-file = Datei hinzufügen
+agent-hub-working = Hugging Face wird gefragt …
+agent-hub-search-error = Hugging Face kann nicht durchsucht werden: { $error }
+agent-hub-no-results = Keine passenden Modelle.
+agent-hub-result-downloads = { $downloads ->
+    [one] { $downloads } Download
+   *[other] { $downloads } Downloads
+}
+agent-hub-result-likes = { $likes ->
+    [one] { $likes } Like
+   *[other] { $likes } Likes
+}
+agent-hub-result-license = Lizenz: { $license }
+agent-hub-gated = Seine Bedingungen müssen zuerst auf Hugging Face akzeptiert werden
+agent-hub-model-title = Von Hugging Face
+agent-hub-model-error = Das Modell kann nicht von Hugging Face gelesen werden: { $error }
+agent-hub-gated-caption = Der Besitzer bittet darum, die Bedingungen des Modells auf Hugging Face zu akzeptieren. Akzeptiere sie dort mit dem Konto, das auf diesem Gerät angemeldet ist oder dessen Token hier gespeichert ist.
+agent-hub-gated-token-caption = Der Besitzer bittet darum, die Bedingungen des Modells auf Hugging Face zu akzeptieren. Akzeptiere sie dort und melde dich dann unten bei Hugging Face an.
+agent-hub-open-page = Modellseite öffnen
+agent-hub-no-variants = Dieses Modell hat keine GGUF- oder safetensors-Dateien, die Tilo ausführen kann.
+agent-hub-no-runtime = Noch keine signierte Laufzeit auf diesem Gerät führt dieses Format aus. Es kann jetzt heruntergeladen und gestartet werden, sobald eine verfügbar ist.
+agent-hub-download = Herunterladen
+agent-hub-variant = Variante
+agent-hub-format-gguf = GGUF für llama.cpp
+agent-hub-format-shards = GGUF in { $count } Teilen für llama.cpp
+agent-hub-format-safetensors = safetensors für vLLM
+agent-hub-fit-accelerator = Passt in den Beschleunigerspeicher
+agent-hub-fit-accelerator-and-memory = Teilt Beschleuniger- und Arbeitsspeicher
+agent-hub-fit-memory = Läuft auf dem Prozessor aus dem Arbeitsspeicher
+agent-hub-fit-too-large = Braucht etwa { $size } Speicher
+agent-hub-fit-processor-too-small = Auf dem Prozessor braucht es 8 GB Arbeitsspeicher und vier Threads
+agent-hub-fit-no-storage = Nicht genug freier Speicherplatz
+agent-hub-token-title = Hugging-Face-Token
+agent-hub-token-caption = Geschützte Modelle werden mit deinem Hugging-Face-Konto heruntergeladen. Melde dich an oder füge einen Zugriffstoken ein; beides bleibt im Tresor dieses Geräts und wird nur an huggingface.co gesendet.
+agent-hub-token-paste-caption = Oder füge einen Zugriffstoken aus deinen Hugging-Face-Einstellungen ein.
+agent-hub-sign-in-code = Mit einem Code anmelden
+agent-hub-sign-out = Abmelden
+agent-hub-signed-in-as = Bei Hugging Face angemeldet als { $account }.
+agent-hub-sign-in-ended = Die Hugging-Face-Anmeldung von { $account } ist abgelaufen. Melde dich erneut an.
+agent-hub-token = Zugriffstoken
+agent-hub-token-hint = hf_…
+agent-hub-token-save = Token speichern
+agent-hub-token-remove = Token entfernen
+agent-hub-token-stored = Auf diesem Gerät ist ein Token gespeichert.
+agent-hub-token-none = Auf diesem Gerät ist kein Token gespeichert.
+agent-hub-token-read-error = Nicht erkennbar, ob ein Token gespeichert ist: { $error }
+agent-hub-token-empty = Gib zuerst einen Token ein.
+agent-hub-token-saved = Hugging-Face-Token auf diesem Gerät gespeichert.
+agent-hub-token-removed = Hugging-Face-Token von diesem Gerät entfernt.
+agent-hub-changed = Das Modell hat sich geändert, seit es angezeigt wurde; zeige es erneut an.
+agent-hub-query-empty = Gib ein, wonach gesucht werden soll.
+agent-hub-format-unknown = Wähle gguf oder safetensors.
+agent-hub-unavailable = Der lokale Modelldienst kann das hier nicht.

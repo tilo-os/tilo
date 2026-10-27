@@ -17,11 +17,24 @@ use std::rc::Rc;
 pub trait EventTransfer {
     /// Offer `text` as `text/plain`. Returns whether the event took it.
     fn set_text(&self, text: &str) -> bool;
+    /// Offer `html` as `text/html` with `plain` as its `text/plain`
+    /// fallback. Returns whether the event took both. The default offers
+    /// only `plain`.
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        let _ = html;
+        self.set_text(plain)
+    }
     /// The event's `text/plain`, if any.
     fn text(&self) -> Option<String>;
     /// Paired HTML/plain payloads from this same event. Optional and bounded;
     /// returning `None` leaves the ordinary plain-text read available.
     fn rich_text(&self) -> Option<crate::RichTextOffer> {
+        None
+    }
+    /// The picture this same event pastes (a screenshot, an image copied in
+    /// another app), as an encoded file of one of
+    /// [`PASTED_IMAGE_TYPES`](crate::PASTED_IMAGE_TYPES). Optional.
+    fn image(&self) -> Option<crate::ClipboardImage> {
         None
     }
 }
@@ -41,10 +54,19 @@ struct Transfer {
     #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
     data: Rc<dyn EventTransfer>,
     #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-    read: bool,
-    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-    rich_attempted: bool,
+    taken: Taken,
     copied: bool,
+}
+
+/// What of an event's data has been read: each at most once.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+#[derive(Default)]
+struct Taken {
+    read: bool,
+    /// Whether rich text was probed (a refused offer leaves plain to read).
+    rich_attempted: bool,
+    /// Its picture.
+    image: bool,
 }
 
 thread_local! {
@@ -69,9 +91,7 @@ pub fn during<R>(transfer: Rc<dyn EventTransfer>, run: impl FnOnce() -> R) -> R 
             #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
             data: transfer,
             #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-            read: false,
-            #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
-            rich_attempted: false,
+            taken: Taken::default(),
             copied: false,
         })
     });
@@ -117,16 +137,29 @@ pub(crate) fn write(text: &str) -> Option<bool> {
     })
 }
 
+/// Write formatted text to the event being dispatched. `None` when there is
+/// none.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn write_rich(html: &str, plain: &str) -> Option<bool> {
+    TRANSFER.with_borrow_mut(|slot| {
+        let t = slot.as_mut()?;
+        if !t.copied {
+            t.copied = t.data.set_rich_text(html, plain);
+        }
+        Some(t.copied)
+    })
+}
+
 /// Read the event being dispatched, once. `None` when there is none, it was
 /// already read, or it holds no text.
 #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn read() -> Option<String> {
     TRANSFER.with_borrow_mut(|slot| {
         let t = slot.as_mut()?;
-        if t.read {
+        if t.taken.read {
             return None;
         }
-        t.read = true;
+        t.taken.read = true;
         t.data.text().filter(|text| !text.is_empty())
     })
 }
@@ -137,13 +170,29 @@ pub(crate) fn read() -> Option<String> {
 pub(crate) fn read_rich() -> Option<crate::RichTextOffer> {
     TRANSFER.with_borrow_mut(|slot| {
         let t = slot.as_mut()?;
-        if t.read || t.rich_attempted {
+        if t.taken.read || t.taken.rich_attempted {
             return None;
         }
-        t.rich_attempted = true;
+        t.taken.rich_attempted = true;
         let offer = t.data.rich_text().filter(crate::RichTextOffer::is_valid)?;
-        t.read = true;
+        t.taken.read = true;
         Some(offer)
+    })
+}
+
+/// The picture the event being dispatched pastes, once. `None` when there
+/// is no event, it was already read, or it pastes no picture.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn read_image() -> Option<crate::ClipboardImage> {
+    TRANSFER.with_borrow_mut(|slot| {
+        let t = slot.as_mut()?;
+        if t.taken.image {
+            return None;
+        }
+        t.taken.image = true;
+        t.data
+            .image()
+            .filter(|image| image.bytes.len() <= crate::MAX_PASTED_IMAGE_BYTES)
     })
 }
 
@@ -161,17 +210,23 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         offered: RefCell<Vec<String>>,
+        offered_html: RefCell<Vec<String>>,
         text: Option<String>,
         refuse: bool,
         reads: Cell<usize>,
         rich: Option<crate::RichTextOffer>,
         rich_reads: Cell<usize>,
+        image: Option<crate::ClipboardImage>,
     }
 
     impl EventTransfer for Fake {
         fn set_text(&self, text: &str) -> bool {
             self.offered.borrow_mut().push(text.to_owned());
             !self.refuse
+        }
+        fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+            self.offered_html.borrow_mut().push(html.to_owned());
+            self.set_text(plain)
         }
         fn rich_text(&self) -> Option<crate::RichTextOffer> {
             self.rich_reads.set(self.rich_reads.get().saturating_add(1));
@@ -181,6 +236,28 @@ mod tests {
             self.reads.set(self.reads.get().saturating_add(1));
             self.text.clone()
         }
+        fn image(&self) -> Option<crate::ClipboardImage> {
+            self.image.clone()
+        }
+    }
+
+    #[test]
+    fn a_pasted_picture_is_read_once_inside_its_event() {
+        let image = crate::ClipboardImage {
+            mime: "image/png",
+            bytes: vec![1, 2, 3],
+        };
+        let fake = Rc::new(Fake {
+            image: Some(image.clone()),
+            ..Fake::default()
+        });
+        assert_eq!(read_image(), None);
+        during(fake, || {
+            assert_eq!(read_image(), Some(image));
+            assert_eq!(read_image(), None, "a picture is pasted once");
+            assert_eq!(read(), None, "and is no text");
+        });
+        assert_eq!(read_image(), None);
     }
 
     #[test]
@@ -202,6 +279,19 @@ mod tests {
         assert!(!copied());
         assert_eq!(*fake.offered.borrow(), ["first"]);
         assert_eq!(fake.reads.get(), 1);
+    }
+
+    #[test]
+    fn a_rich_copy_writes_its_html_and_its_words_to_the_event_once() {
+        let fake = Rc::new(Fake::default());
+        assert_eq!(write_rich("<b>x</b>", "x"), None);
+        during(fake.clone(), || {
+            assert_eq!(write_rich("<b>first</b>", "first"), Some(true));
+            assert_eq!(write("second"), Some(true));
+            assert!(copied());
+        });
+        assert_eq!(*fake.offered_html.borrow(), ["<b>first</b>"]);
+        assert_eq!(*fake.offered.borrow(), ["first"]);
     }
 
     #[test]

@@ -22,6 +22,9 @@ struct Param {
     place_in: Option<String>,
     description: Option<String>,
     choices: Option<syn::Expr>,
+    /// The argument's name where it differs from the field's (`name =
+    /// "pageSize"`): a contract its callers already speak.
+    name: Option<String>,
 }
 
 /// A parameter's leading flag.
@@ -72,32 +75,32 @@ impl syn::parse::Parse for Param {
             }
             input.parse::<syn::Token![,]>()?;
         }
-        let key: syn::Ident = input.parse()?;
-        input.parse::<syn::Token![=]>()?;
-        if key == "place" {
-            param.flag = Flag::Place;
-            param.place_in = Some(input.parse::<syn::LitStr>()?.value());
-            return Ok(param);
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            input.parse::<syn::Token![=]>()?;
+            if key == "place" {
+                param.flag = Flag::Place;
+                param.place_in = Some(input.parse::<syn::LitStr>()?.value());
+            } else if key == "name" {
+                param.name = Some(input.parse::<syn::LitStr>()?.value());
+            } else if key == "choices" {
+                param.choices = Some(input.parse()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "expected `choices = ...`, `place = \"field\"` or `name = \"argument\"`",
+                ));
+            }
+            if !input.is_empty() {
+                input.parse::<syn::Token![,]>()?;
+            }
         }
-        if key != "choices" {
-            return Err(syn::Error::new(
-                key.span(),
-                "expected `choices = ...` or `place = \"field\"`",
-            ));
-        }
-        param.choices = Some(input.parse()?);
         Ok(param)
     }
 }
 
-struct EnumOptions {
-    operation: String,
-    device_only: bool,
-}
-
-fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
+fn enum_operation(input: &DeriveInput) -> syn::Result<String> {
     let mut operation = None;
-    let mut device_only = false;
     for attr in input
         .attrs
         .iter()
@@ -107,23 +110,16 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
             if meta.path.is_ident("operation") {
                 operation = Some(meta.value()?.parse::<syn::LitStr>()?.value());
                 Ok(())
-            } else if meta.path.is_ident("device_only") {
-                device_only = true;
-                Ok(())
             } else {
-                Err(meta.error("expected `operation = \"...\"` or `device_only`"))
+                Err(meta.error("expected `operation = \"...\"`"))
             }
         })?;
     }
-    let operation = operation.ok_or_else(|| {
+    operation.ok_or_else(|| {
         syn::Error::new(
             input.ident.span(),
             "name the effects' operation type: `#[effect(operation = \"app.effects\")]`",
         )
-    })?;
-    Ok(EnumOptions {
-        operation,
-        device_only,
     })
 }
 
@@ -144,11 +140,16 @@ struct VariantOptions {
     destructive: bool,
     privileged: bool,
     sensitive: bool,
-    /// `device_only` (or `device_only = true`) marks this effect device-only;
-    /// `device_only = false` exempts it from a vocabulary marked so.
-    device_only: Option<bool>,
+    /// `own_device`: the effect's whole scope is the invoking person's own
+    /// device, touching nothing shared and no one else.
+    own_device: bool,
+    /// `attended`: the effect needs its person attending (a chooser, a
+    /// credential, something only they may see): anyone acting for them is
+    /// always asked first.
+    attended: bool,
     risk: Option<syn::Path>,
-    programmatic: bool,
+    /// `audience = "agents"` or `"people"`: who listings offer it to.
+    audience: Option<syn::Ident>,
     untrusted: bool,
     /// `opens_path` declares the effect opens the file its `path` names;
     /// `opens_path = "csv,tsv"` limits it to those extensions.
@@ -164,6 +165,15 @@ struct VariantOptions {
     /// output_mb = N, gpu)`: a content transform the system may run on the
     /// invoker's best-placed device as the package's catalogue entrypoint.
     offload: Option<OffloadOption>,
+    /// `host_render`: a host answers it in a render service of its own,
+    /// never in the record's confined app worker.
+    host_render: bool,
+    /// `tag = <expr>`, repeatable: further contract tags, each a
+    /// `&'static str` constant.
+    tags: Vec<syn::Expr>,
+    /// `outside_with = "param"`: a read that reaches outside the record only
+    /// when that parameter is given.
+    outside_with: Option<String>,
 }
 
 /// An effect's `offload(...)` option, as written.
@@ -247,16 +257,14 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.privileged = true;
             } else if meta.path.is_ident("sensitive") {
                 options.sensitive = true;
-            } else if meta.path.is_ident("device_only") {
-                options.device_only = Some(if meta.input.peek(syn::Token![=]) {
-                    meta.value()?.parse::<syn::LitBool>()?.value
-                } else {
-                    true
-                });
+            } else if meta.path.is_ident("own_device") {
+                options.own_device = true;
+            } else if meta.path.is_ident("attended") {
+                options.attended = true;
             } else if meta.path.is_ident("risk") {
                 options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
-            } else if meta.path.is_ident("programmatic") {
-                options.programmatic = true;
+            } else if meta.path.is_ident("audience") {
+                options.audience = Some(crate::audience_option(&meta)?);
             } else if meta.path.is_ident("untrusted") {
                 options.untrusted = true;
             } else if meta.path.is_ident("opens_path") {
@@ -281,12 +289,18 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.item = Some(meta.value()?.parse::<syn::Ident>()?.to_string());
             } else if meta.path.is_ident("offload") {
                 options.offload = Some(offload_option(&meta)?);
+            } else if meta.path.is_ident("host_render") {
+                options.host_render = true;
+            } else if meta.path.is_ident("tag") {
+                options.tags.push(meta.value()?.parse::<syn::Expr>()?);
+            } else if meta.path.is_ident("outside_with") {
+                options.outside_with = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, `content`, \
-                     `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `risk`, `programmatic`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
-                     `item = field`, `offload(...)` or `kind`",
+                     `destructive`, `privileged`, `sensitive`, `idempotent`, \
+                     `own_device`, `attended`, `risk`, `audience`, `untrusted`, `opens_path`, `participant`, `edit`, `member`, \
+                     `item = field`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
                 ));
             }
             Ok(())
@@ -320,10 +334,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             "an effect vocabulary names at least one effect",
         ));
     }
-    let EnumOptions {
-        operation,
-        device_only: all_device_only,
-    } = enum_options(input)?;
+    let operation = enum_operation(input)?;
     let any_arguments = data
         .variants
         .iter()
@@ -422,7 +433,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     &<#ty as #krate::JsonSchema>::json_schema()
                 ));
             }
-            let param = field.to_string();
+            let param = described.name.clone().unwrap_or_else(|| field.to_string());
             let description = described
                 .description
                 .clone()
@@ -485,7 +496,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             }
         };
         let idempotent = options.idempotent;
-        let device_only = options.device_only.unwrap_or(all_device_only);
+        let own_device = options.own_device;
+        let attended = options.attended;
         let risk_of = if let Some(classify) = &options.risk {
             quote! {
                 ::std::option::Option::Some(
@@ -501,7 +513,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(::std::option::Option::None)
         };
         let row = options.row;
-        let programmatic = options.programmatic;
+        let audience = options
+            .audience
+            .clone()
+            .unwrap_or_else(|| syn::Ident::new("Everyone", variant.span()));
         let untrusted = options.untrusted;
         let opens = options.opens_path.as_ref().map_or_else(
             || quote!(::core::option::Option::None),
@@ -532,11 +547,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         };
         let offload = match &options.offload {
             None => quote!(::core::option::Option::None),
-            Some(_) if !reads || device_only || !options.content => {
+            Some(_) if !reads || !options.content => {
                 return Err(syn::Error::new(
                     variant.span(),
                     "an `offload` effect is a content transform any device may run: declare it \
-                     `content` and `kind = \"read\"`, and not `device_only`",
+                     `content` and `kind = \"read\"`",
                 ));
             }
             Some(OffloadOption {
@@ -564,6 +579,24 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         } else {
             quote!(Effect)
         };
+        // Each one a constant, as the row it lands in is.
+        let host_render = options
+            .host_render
+            .then(|| quote!(#krate::__private::HOST_RENDER_TAG))
+            .into_iter();
+        let declared = &options.tags;
+        let tags = quote!(&[#(#host_render,)* #(#declared),*]);
+        let outside_with = match &options.outside_with {
+            None => quote!(::core::option::Option::None),
+            Some(_) if !reads => {
+                return Err(syn::Error::new(
+                    variant.span(),
+                    "`outside_with` names what makes a read reach outside: declare it \
+                     `kind = \"read\"`",
+                ));
+            }
+            Some(param) => quote!(::core::option::Option::Some(#param)),
+        };
         let params: Vec<Tokens> = params.collect();
         let params_fn = if params.is_empty() {
             quote!(#krate::effect::no_params)
@@ -587,9 +620,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 risk: #krate::__private::RiskLevel::#risk,
                 idempotent: #idempotent,
                 action_kind: #krate::__private::ActionKind::#action_kind,
-                device_only: #device_only,
+                own_device: #own_device,
+                attended: #attended,
                 risk_of: #risk_of,
-                programmatic: #programmatic,
+                audience: #krate::__private::Audience::#audience,
                 untrusted: #untrusted,
                 opens: #opens,
                 participant: #participant,
@@ -597,11 +631,18 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 member: #member,
                 item: #item,
                 offload: #offload,
+                tags: #tags,
+                outside_with: #outside_with,
             }
         });
 
         let field_idents: Vec<_> = fields.iter().map(|(field, _, _)| field.clone()).collect();
-        let field_names: Vec<String> = field_idents.iter().map(ToString::to_string).collect();
+        let field_names: Vec<String> = fields
+            .iter()
+            .map(|(field, _, described)| {
+                described.name.clone().unwrap_or_else(|| field.to_string())
+            })
+            .collect();
         let pattern = if matches!(variant.fields, Fields::Unit) {
             quote!(Self::#ident)
         } else {
@@ -665,16 +706,18 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
     } else {
         quote!(_arguments)
     };
+    let row_count = decls.len();
+    let rows = decls.into_iter().map(|row| name_self(row, name));
     Ok(quote! {
         impl #krate::Effect for #name {
             const OPERATION: &'static str = #operation;
 
             fn declarations() -> ::std::vec::Vec<#krate::effect::EffectDecl> {
-                #krate::effect::EffectDecl::of_rows(Self::__EFFECT_ROWS)
+                #krate::effect::EffectDecl::of_rows(Self::__effect_rows())
             }
 
             fn declaration(id: &str) -> ::core::option::Option<#krate::effect::EffectDecl> {
-                #krate::effect::EffectDecl::find_row(Self::__EFFECT_ROWS, id)
+                #krate::effect::EffectDecl::find_row(Self::__effect_rows(), id)
             }
 
             fn id(&self) -> &'static str {
@@ -707,10 +750,37 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         impl #name {
             #(#consts)*
 
-            /// Every effect's declaration as a constant, read by one
-            /// function for every vocabulary.
+            /// Every effect's declaration, read by one function for every
+            /// vocabulary. A `static` rather than a `const`, so the table has
+            /// one address and is never built at a use site: a large app's
+            /// rows outgrow what may sit on the stack.
             #[doc(hidden)]
-            pub const __EFFECT_ROWS: &'static [#krate::effect::EffectRow] = &[#(#decls),*];
+            pub fn __effect_rows() -> &'static [#krate::effect::EffectRow] {
+                static ROWS: [#krate::effect::EffectRow; #row_count] = [#(#rows),*];
+                &ROWS
+            }
         }
     })
+}
+
+/// The rows live in a `static` inside a function, which cannot see the
+/// impl's `Self`: every `Self` in a row (the derive's own or one an app wrote
+/// in an attribute expression) names the enum instead. The derive rejects
+/// generic enums, so the bare name is the whole type.
+fn name_self(tokens: Tokens, name: &syn::Ident) -> Tokens {
+    use proc_macro2::{Group, TokenTree};
+    tokens
+        .into_iter()
+        .map(|tree| match tree {
+            TokenTree::Ident(ident) if ident == "Self" => {
+                TokenTree::Ident(syn::Ident::new(&name.to_string(), ident.span()))
+            }
+            TokenTree::Group(group) => {
+                let mut renamed = Group::new(group.delimiter(), name_self(group.stream(), name));
+                renamed.set_span(group.span());
+                TokenTree::Group(renamed)
+            }
+            other => other,
+        })
+        .collect()
 }

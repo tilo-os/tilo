@@ -74,11 +74,12 @@ pub fn now() -> Instant {
     Instant::now()
 }
 
-/// Per-thread monotonic scopes for tests of input work and due deadlines.
-/// Wall time and other threads continue to use their ordinary clocks.
+/// Per-thread clock scopes for tests: the monotonic clock for input work
+/// and due deadlines, the wall clock for what a capture pins. Other threads
+/// continue to use their ordinary clocks.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing {
-    use super::Instant;
+    use super::{Instant, SystemTime};
     use std::cell::Cell;
 
     thread_local! {
@@ -105,11 +106,98 @@ pub mod testing {
         let _restore = Restore(MONOTONIC.with(|clock| clock.replace(Some(at))));
         operation()
     }
+
+    struct RestoreWall(u64);
+
+    impl Drop for RestoreWall {
+        fn drop(&mut self) {
+            super::FROZEN_HERE_MS.with(|here| here.set(self.0));
+        }
+    }
+
+    thread_local! {
+        static FOLLOWED: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicU64>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// The wall time pinned on the [`SharedWall`] this thread follows, in
+    /// milliseconds; `0` while it runs or the thread follows none.
+    pub(super) fn followed_ms() -> u64 {
+        FOLLOWED.with(|followed| {
+            followed
+                .borrow()
+                .as_ref()
+                .map_or(0, |wall| wall.load(std::sync::atomic::Ordering::Relaxed))
+        })
+    }
+
+    /// A wall clock a test pins and releases for threads it owns, such as a
+    /// runtime's workers that answer on its behalf: each follows it from
+    /// [`SharedWall::follow`] on. Threads that follow none keep their own
+    /// clock, so the other tests of the process are left alone.
+    #[derive(Clone, Debug, Default)]
+    pub struct SharedWall(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+    impl SharedWall {
+        /// This thread reads this clock from now on: the pinned time while
+        /// pinned, its ordinary clock otherwise. A pin of
+        /// [`with_wall`] on the thread wins over it.
+        pub fn follow(&self) {
+            FOLLOWED.with(|followed| *followed.borrow_mut() = Some(self.0.clone()));
+        }
+
+        /// Every thread following this clock reads `at` until
+        /// [`Self::release`].
+        pub fn pin(&self, at: SystemTime) {
+            self.0
+                .store(super::wall_ms(at), std::sync::atomic::Ordering::Relaxed);
+        }
+
+        /// The threads following this clock read their ordinary clock again.
+        pub fn release(&self) {
+            self.0.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Run `operation` with the wall clock pinned to `at` on this thread
+    /// alone, as [`super::freeze_wall`] pins it for a capture. Other threads
+    /// (the other tests of one process) keep their own clock: a test of the
+    /// pinned clock must not stop every notice and indicator beside it.
+    /// Nested scopes and unwinding restore the previous reading.
+    pub fn with_wall<T>(at: SystemTime, operation: impl FnOnce() -> T) -> T {
+        let ms = super::wall_ms(at);
+        let _restore = RestoreWall(super::FROZEN_HERE_MS.with(|here| here.replace(ms)));
+        operation()
+    }
 }
 
 #[cfg(test)]
 mod scoped_monotonic_tests {
     use super::*;
+
+    #[test]
+    fn a_shared_wall_pins_the_threads_following_it_until_released() {
+        // A time no other test of this crate pins process-wide.
+        const PINNED: u64 = 123_456;
+        let wall = testing::SharedWall::default();
+        let follower = {
+            let wall = wall.clone();
+            move || {
+                wall.follow();
+                unix_now()
+            }
+        };
+        assert_ne!(std::thread::spawn(follower.clone()).join().unwrap(), PINNED);
+        wall.pin(UNIX_EPOCH + Duration::from_secs(PINNED));
+        assert_eq!(std::thread::spawn(follower.clone()).join().unwrap(), PINNED);
+        assert_ne!(
+            unix_now(),
+            PINNED,
+            "a thread following none keeps its clock"
+        );
+        wall.release();
+        assert_ne!(std::thread::spawn(follower).join().unwrap(), PINNED);
+    }
 
     #[test]
     fn scoped_time_is_thread_local_nested_and_restored_after_unwind() {
@@ -128,6 +216,51 @@ mod scoped_monotonic_tests {
         });
         assert!(now() < at);
     }
+
+    #[test]
+    fn scoped_wall_time_is_thread_local_nested_and_restored_after_unwind() {
+        let at = UNIX_EPOCH + Duration::from_secs(4_000_000_000);
+        testing::with_wall(at, || {
+            assert_eq!(wall(), at);
+            let later = at + Duration::from_secs(3);
+            testing::with_wall(later, || assert_eq!(wall(), later));
+            assert_eq!(wall(), at);
+            assert!(std::thread::spawn(wall).join().unwrap() < at);
+            let panicked = std::panic::catch_unwind(|| {
+                testing::with_wall(later, || panic!("unwind the clock scope"));
+            });
+            assert!(panicked.is_err());
+            assert_eq!(wall(), at);
+        });
+        assert!(wall() < at);
+    }
+
+    #[test]
+    fn two_threads_holding_different_wall_times_at_once_each_read_their_own() {
+        let first = UNIX_EPOCH + Duration::from_secs(4_000_000_000);
+        let second = UNIX_EPOCH + Duration::from_secs(4_100_000_000);
+        // Both holds are in force together: each thread reads its time
+        // while the other holds a different one, then again after the
+        // other's hold ended.
+        let together = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let hold = |at: SystemTime, other: SystemTime| {
+            let together = std::sync::Arc::clone(&together);
+            std::thread::spawn(move || {
+                testing::with_wall(at, || {
+                    together.wait();
+                    assert_eq!(wall(), at);
+                    assert_ne!(wall(), other);
+                    together.wait();
+                });
+                together.wait();
+                assert!(wall() < first, "the hold ended with its scope");
+            })
+        };
+        let threads = [hold(first, second), hold(second, first)];
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    }
 }
 
 /// Wall time pinned by [`freeze_wall`], in milliseconds since the Unix epoch;
@@ -145,9 +278,24 @@ thread_local! {
 /// clock runs.
 fn frozen_ms() -> u64 {
     match FROZEN_HERE_MS.with(std::cell::Cell::get) {
-        0 => FROZEN_WALL_MS.load(Ordering::Relaxed),
+        0 => match followed_ms() {
+            0 => FROZEN_WALL_MS.load(Ordering::Relaxed),
+            followed => followed,
+        },
         here => here,
     }
+}
+
+/// The wall time of the test clock this thread follows
+/// ([`testing::SharedWall`]); `0` when none is pinned.
+#[cfg(any(test, feature = "test-support"))]
+fn followed_ms() -> u64 {
+    testing::followed_ms()
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+const fn followed_ms() -> u64 {
+    0
 }
 
 /// The current wall-clock time, for timestamps shown to people or persisted.
@@ -172,17 +320,54 @@ pub fn wall() -> SystemTime {
 /// pins another time later, so tests sharing one process each keep the
 /// time they chose; other threads read the last time pinned anywhere.
 pub fn freeze_wall(at: SystemTime) {
-    let ms = at
-        .duration_since(UNIX_EPOCH)
-        .map_or(1, |since| saturating_u64(since.as_millis()).max(1));
+    let ms = wall_ms(at);
     FROZEN_WALL_MS.store(ms, Ordering::Relaxed);
     FROZEN_HERE_MS.with(|here| here.set(ms));
+}
+
+/// `at` as a pinned reading: milliseconds since the Unix epoch, never `0`
+/// (which means the clock runs).
+fn wall_ms(at: SystemTime) -> u64 {
+    at.duration_since(UNIX_EPOCH)
+        .map_or(1, |since| saturating_u64(since.as_millis()).max(1))
 }
 
 /// Whether [`freeze_wall`] pinned the wall clock.
 #[must_use]
 pub fn wall_frozen() -> bool {
     frozen_ms() != 0
+}
+
+/// Whether this device's clock is synchronised with a time source, when the
+/// platform can say: `Some(true)` synchronised, `Some(false)` known not to be,
+/// `None` when nothing here knows. A device whose clock is minutes out produces
+/// codes nothing accepts, and the machine is the only place that can tell.
+///
+/// It answers for the platform, not for a feature: every surface that shows
+/// time-sensitive data asks the same question.
+#[must_use]
+pub fn is_synchronised() -> Option<bool> {
+    #[cfg(all(target_os = "linux", not(target_family = "wasm")))]
+    {
+        // systemd answers for the session's clock; without it (a container, a
+        // non-systemd session) nothing knows, which is not the same as "no".
+        let output = std::process::Command::new("timedatectl")
+            .args(["show", "-p", "NTPSynchronized", "--value"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        match String::from_utf8_lossy(&output.stdout).trim() {
+            "yes" => Some(true),
+            "no" => Some(false),
+            _ => None,
+        }
+    }
+    #[cfg(not(all(target_os = "linux", not(target_family = "wasm"))))]
+    {
+        None
+    }
 }
 
 /// The IANA name of the local time zone, when the system names one: `$TZ`
@@ -347,48 +532,63 @@ impl Clock for ManualClock {
 mod tests {
     use super::*;
 
+    // `freeze_wall` pins the process-wide wall clock as well, which every
+    // other test sharing the process would read: the tests that call it run
+    // in a process of their own.
+
     #[test]
     fn a_thread_keeps_the_wall_time_it_pinned_when_another_pins_another() {
-        let first = UNIX_EPOCH + Duration::from_secs(1_000);
-        let second = UNIX_EPOCH + Duration::from_secs(2_000);
-        let pinned = std::sync::Barrier::new(2);
-        std::thread::scope(|scope| {
-            let early = scope.spawn(|| {
-                freeze_wall(first);
-                pinned.wait();
-                pinned.wait();
-                wall()
-            });
-            let late = scope.spawn(|| {
-                pinned.wait();
-                freeze_wall(second);
-                pinned.wait();
-                wall()
-            });
-            assert_eq!(
-                early.join().ok(),
-                Some(first),
-                "the first thread keeps its own time"
-            );
-            assert_eq!(late.join().ok(), Some(second));
-        });
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "a_thread_keeps_the_wall_time_it_pinned_when_another_pins_another",
+            || {
+                let first = UNIX_EPOCH + Duration::from_secs(1_000);
+                let second = UNIX_EPOCH + Duration::from_secs(2_000);
+                let pinned = std::sync::Barrier::new(2);
+                std::thread::scope(|scope| {
+                    let early = scope.spawn(|| {
+                        freeze_wall(first);
+                        pinned.wait();
+                        pinned.wait();
+                        wall()
+                    });
+                    let late = scope.spawn(|| {
+                        pinned.wait();
+                        freeze_wall(second);
+                        pinned.wait();
+                        wall()
+                    });
+                    assert_eq!(
+                        early.join().ok(),
+                        Some(first),
+                        "the first thread keeps its own time"
+                    );
+                    assert_eq!(late.join().ok(), Some(second));
+                });
+            },
+        );
     }
 
     #[test]
     fn a_frozen_wall_clock_holds_while_the_monotonic_clock_runs() {
-        let at = UNIX_EPOCH + Duration::from_secs(1_782_816_120);
-        let before = now();
-        freeze_wall(at);
-        assert!(wall_frozen());
-        assert_eq!(wall(), at);
-        assert_eq!(unix_now(), 1_782_816_120);
-        assert_eq!(wall(), at, "it stays put");
-        assert!(now() >= before, "the monotonic clock is not frozen");
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "a_frozen_wall_clock_holds_while_the_monotonic_clock_runs",
+            || {
+                let at = UNIX_EPOCH + Duration::from_secs(1_782_816_120);
+                let before = now();
+                freeze_wall(at);
+                assert!(wall_frozen());
+                assert_eq!(wall(), at);
+                assert_eq!(unix_now(), 1_782_816_120);
+                assert_eq!(wall(), at, "it stays put");
+                assert!(now() >= before, "the monotonic clock is not frozen");
+            },
+        );
     }
 
     #[test]
     fn clocks_agree_on_units_move_only_as_told_and_never_backwards() {
-        // Phase `wall_clock_units_agree`.
         {
             let secs = unix_now();
             let ms = unix_now_ms();
@@ -398,7 +598,6 @@ mod tests {
             assert!(ns / 1_000_000 >= ms);
             assert_eq!(unix_now_i64(), i64::try_from(unix_now()).unwrap());
         }
-        // Phase `test_clocks_hold_and_move_as_told`.
         {
             assert_eq!(FixedClock(7).now_ms(), 7);
             let clock = ManualClock::new(10);
@@ -411,7 +610,6 @@ mod tests {
             clock.advance(10);
             assert_eq!(clock.now_ms(), u64::MAX);
         }
-        // Phase `monotonic_clock_never_moves_backwards`.
         {
             let first = MonotonicClock.now_ms();
             assert!(MonotonicClock.now_ms() >= first);

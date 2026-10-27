@@ -1,0 +1,944 @@
+use std::sync::{Arc, Mutex};
+
+use account_custody::OAuthCloud;
+use account_custody::icloud::{
+    ICloudAuth, ICloudAuthError, ICloudChallenge, ICloudHeaders, ICloudSessionState, ICloudSignIn,
+};
+use test_http::{Reply, Responder};
+use zeroize::Zeroizing;
+
+use super::*;
+
+/// Plays the system browser: records every URL and, when `follow` is set,
+/// walks the redirects back to the loopback listener.
+struct FakeBrowser {
+    opened: Mutex<Vec<String>>,
+    follow: bool,
+}
+
+impl FakeBrowser {
+    fn new(follow: bool) -> Arc<Self> {
+        Arc::new(Self {
+            opened: Mutex::new(Vec::new()),
+            follow,
+        })
+    }
+}
+
+impl BrowserOpener for FakeBrowser {
+    fn open(&self, url: &str) -> ui::portal::LaunchChannel {
+        self.opened.lock().unwrap().push(url.to_string());
+        if self.follow {
+            let url = url.to_string();
+            std::thread::spawn(move || {
+                let _ = tilo_oauth::fake::browse(&url);
+            });
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _ = sender.send(ui::portal::LaunchOutcome::Opened);
+        receiver
+    }
+}
+
+#[test]
+fn live_second_account_refusal_restores_already_published_metadata() {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    let record = app.person::<accounts::person::PersonAccounts>().unwrap();
+    let (_dir, root) = scratch_root();
+    let root = root.with_person(record.clone());
+    let mut existing = accounts::Account::new("a-drive", "google-drive");
+    existing.config = serde_json::json!({"kept": true});
+    let mut original = accounts::AccountStore::new();
+    original.upsert(existing.clone());
+    root.save_store(&original).unwrap();
+    let old_secret = accounts::Secret::password("old-credential");
+    let mut vault = root.vault();
+    vault.put(&existing.id, &old_secret);
+    vault.try_save().unwrap();
+    existing.display_name = "Updated before refusal".into();
+    let invalid = accounts::Account::new("z-mail", "");
+    let replacement = accounts::Secret::password("replacement");
+    let error = AccountsPane::commit_accounts(
+        &root,
+        vec![
+            (existing, Some(&replacement)),
+            (invalid, Some(&replacement)),
+        ],
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("an account needs an id and a type"),
+        "{error}"
+    );
+    assert_eq!(
+        record.get().store().get(&"a-drive".into()),
+        original.get(&"a-drive".into())
+    );
+    assert_eq!(record.get().store().len(), 1);
+    assert_eq!(root.vault().get(&"a-drive".into()), Some(old_secret));
+    assert!(root.vault().get(&"z-mail".into()).is_none());
+    assert!(!root.mutation_pending());
+}
+
+#[test]
+fn live_pair_projection_failure_restores_person_metadata_and_keeps_recovery_intent() {
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    let record = app.person::<accounts::person::PersonAccounts>().unwrap();
+    let (dir, root) = scratch_root();
+    let root = root.with_person(record.clone());
+    let first = accounts::Account::new("drive", "google-drive");
+    let second = accounts::Account::new("ada@example.org", "email");
+    // The live record accepts both edits; only its device projection fails.
+    std::fs::create_dir_all(dir.path().join("tilo/accounts/store.json")).unwrap();
+    let secret = accounts::Secret::password("sealed-credential");
+    let error =
+        AccountsPane::commit_accounts(&root, vec![(first, Some(&secret)), (second, Some(&secret))])
+            .unwrap_err();
+    assert!(error.contains("metadata rollback also failed"), "{error}");
+    assert!(
+        record.get().store().is_empty(),
+        "published live metadata must be restored even when projection is still blocked"
+    );
+    assert!(root.vault().get(&"drive".into()).is_none());
+    assert!(root.vault().get(&"ada@example.org".into()).is_none());
+    assert!(root.mutation_pending());
+    std::fs::remove_dir(dir.path().join("tilo/accounts/store.json")).unwrap();
+    root.recover_mutation().unwrap();
+    assert!(!root.mutation_pending());
+    assert!(record.get().store().is_empty());
+    assert!(accounts::AccountStore::load_in(&dir.path().join("tilo")).is_empty());
+}
+
+#[test]
+fn published_google_mail_reauth_uses_browser_and_preserves_the_mailbox() {
+    for identity in ["ada@example.org", "other@example.org"] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = AccountRoot::at(dir.path());
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+        let record = app.person::<accounts::person::PersonAccounts>().unwrap();
+        let root = root.with_person(record);
+        let mut account = accounts::Account::new("stable-mail-id", "email");
+        account.set_config(&accounts::email::AccountConfig {
+            email: "ada@example.org".into(),
+            imap_host: "imap.gmail.com".into(),
+            auth: accounts::email::AuthMethod::OAuth,
+            ..Default::default()
+        });
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account.clone());
+        root.save_store(&store).unwrap();
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let gmail = Responder::start(vec![
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(format!(r#"{{"emailAddress":"{identity}"}}"#)),
+        ]);
+        let browser = FakeBrowser::new(true);
+        let mut clients = account_custody::ClientTable::defaults().clone();
+        // Gmail reauthentication must work even when Drive is disabled in this build.
+        clients.google.scopes.files.clear();
+        let pane = AccountsPane::in_root(root.clone())
+            .with_custodian(
+                root.custodian()
+                    .with_client_table(clients)
+                    .with_issuer_endpoints(account_custody::OAuthIssuer::Google, oauth.provider())
+                    .with_gmail_profile_endpoint(format!("{}/profile", gmail.url())),
+            )
+            .with_browser_opener(browser.clone());
+        app.surface::<crate::SettingsApp, _>(|settings| {
+            *crate::panes::accounts::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut() = pane;
+        })
+        .unwrap();
+        app.settle();
+        app.call_on(
+            "settings.account:stable-mail-id",
+            "sign-in-again",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        app.call_on("settings.root", "save-account-form", serde_json::json!({}))
+            .unwrap();
+        app.surface::<crate::SettingsApp, _>(|settings| {
+            let shared = crate::panes::accounts::area(settings).unwrap().model();
+            let mut pane = shared.borrow_mut();
+            assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+            if identity == "ada@example.org" {
+                assert!(
+                    !pane.sign_in_open(),
+                    "{:?}",
+                    pane.sign_in_message_for_test()
+                );
+            } else {
+                assert!(
+                    pane.sign_in_message_for_test()
+                        .unwrap()
+                        .contains("different mailbox")
+                );
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            root.store().len(),
+            1,
+            "standalone mail reauth must not create Drive"
+        );
+        assert_eq!(
+            root.store().get(&account.id).unwrap().config["email"],
+            "ada@example.org"
+        );
+        assert_eq!(
+            root.vault().get(&account.id).is_some(),
+            identity == "ada@example.org"
+        );
+        let urls = browser.opened.lock().unwrap();
+        assert!(urls[0].contains("mail.google.com"));
+        assert!(!urls[0].contains("auth%2Fdrive"));
+        drop(urls);
+    }
+}
+
+#[test]
+fn connected_account_files_handoff_is_typed_and_matches_files_resource() {
+    use accounts::cloud_types::{FilesMode, set_files_mode};
+    use ui::tilo_actions::remote::ApplicationLaunch;
+    for mode in [FilesMode::Sync, FilesMode::Import] {
+        let (_scratch, root) = scratch_root();
+        let id = accounts::AccountId::from("drive:ada@example.org");
+        let mut account = accounts::Account::new(id.clone(), "google-drive");
+        account.display_name = "Ada’s Drive".into();
+        account.config = serde_json::json!({"identity": "ada@example.org"});
+        set_files_mode(&mut account.config, mode);
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account.clone());
+        root.save_store(&store).unwrap();
+        let pane = AccountsPane::in_root(root.clone());
+        let view = pane.dir.views_of(AccountKind::GoogleDrive).remove(0);
+        let spec = pane.files_handoff(&view).expect("connected Files account");
+        assert_eq!(view.summary, "ada@example.org");
+        let mut details = Vec::new();
+        assert!(pane.files_button(&view, &mut details).is_some());
+        assert!(details.contains(&t(if mode == FilesMode::Import {
+            "accounts-files-configured-import"
+        } else {
+            "accounts-files-configured-sync"
+        })));
+        assert_eq!(
+            spec.label,
+            t(if mode == FilesMode::Import {
+                "accounts-choose-import-files"
+            } else {
+                "accounts-browse-files"
+            })
+        );
+        let encoded = spec.build_args([]).unwrap();
+        let launch: ApplicationLaunch = serde_json::from_slice(&encoded.payload).unwrap();
+        assert!(launch.valid());
+        assert_eq!(
+            launch.target("workspace-a"),
+            ui::tilo_actions::remote::application_action_target(
+                "workspace-a",
+                "so.tilo.file-explorer",
+                file_explorer::remote_accounts::resource_id(&id),
+                "open-remote-account",
+            )
+        );
+        assert!(matches!(
+            launch.argument(),
+            ui::tilo_actions::remote::InvokeArgument::None
+        ));
+        let profile = tempfile::tempdir().unwrap();
+        let area = AccountsArea::new(&PaneCx::in_file(profile.path().join("settings.json")))
+            .with_account_root(root.clone());
+        let _ = area.model.set(Rc::new(std::cell::RefCell::new(pane)));
+        let row = area
+            .rows()
+            .into_iter()
+            .find(|row| row.id() == format!("settings.account:{id}"))
+            .unwrap()
+            .into_resource();
+        let published = row
+            .actions
+            .iter()
+            .find(|action| action.id == "open-files")
+            .unwrap();
+        assert_eq!(published.build_args([]).unwrap(), encoded);
+        let mut labels = Vec::new();
+        let composed = super::tests::lay_out(&area.model().borrow());
+        crate::host::testing::labels_of(composed.as_ref(), "Button", &mut labels);
+        assert!(labels.contains(&spec.label));
+        account.enabled = false;
+        store.upsert(account.clone());
+        root.save_store(&store).unwrap();
+        let pane = AccountsPane::in_root(root.clone());
+        assert!(
+            pane.files_handoff(&pane.dir.views_of(AccountKind::GoogleDrive)[0])
+                .is_none()
+        );
+        account.enabled = true;
+        account.config["files_mode"] = "unsupported".into();
+        store.upsert(account);
+        root.save_store(&store).unwrap();
+        let pane = AccountsPane::in_root(root);
+        assert!(
+            pane.files_handoff(&pane.dir.views_of(AccountKind::GoogleDrive)[0])
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn published_service_choices_use_the_same_sign_in_form() {
+    let (_dir, root) = scratch_root();
+    let mut app = ui::framework::testing::TestApp::<crate::resource::SettingsShell>::new().unwrap();
+    let mut pane = AccountsPane::in_root(root.clone());
+    command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
+    app.surface::<crate::SettingsApp, _>(|settings| {
+        *crate::panes::accounts::area(settings)
+            .unwrap()
+            .model()
+            .borrow_mut() = pane;
+    })
+    .unwrap();
+    app.settle();
+    app.call_on(
+        "settings.root",
+        "select-account-services",
+        serde_json::json!({
+            "files": false, "mail": true, "files_mode": "import",
+        }),
+    )
+    .unwrap();
+    app.surface::<crate::SettingsApp, _>(|settings| {
+        let shared = crate::panes::accounts::area(settings).unwrap().model();
+        let mut pane = shared.borrow_mut();
+        assert!(pane.sign_in_open());
+        assert!(
+            pane.select_account_services(false, true, "unknown")
+                .is_err()
+        );
+        assert!(
+            root.store().is_empty(),
+            "selection does not perform sign-in"
+        );
+    })
+    .unwrap();
+}
+
+fn scratch_root() -> (tempfile::TempDir, AccountRoot) {
+    let dir = tempfile::tempdir().expect("scratch config root");
+    let root = AccountRoot::at(dir.path().join("tilo"));
+    (dir, root)
+}
+
+fn pane(
+    root: &AccountRoot,
+    custodian: account_custody::Custodian,
+    browser: Arc<FakeBrowser>,
+) -> AccountsPane {
+    AccountsPane::in_root(root.clone())
+        .with_custodian(custodian)
+        .with_browser_opener(browser)
+}
+
+fn command(pane: &mut AccountsPane, command: AccountViewCommand) {
+    pane.command(command);
+    let _ = pane.poll();
+}
+
+fn only_account(root: &AccountRoot, type_id: &str) -> accounts::Account {
+    let store = root.store();
+    let list = store.list(&accounts::AccountTypeId::from(type_id));
+    assert_eq!(list.len(), 1, "exactly one {type_id} account");
+    list[0].clone()
+}
+
+#[test]
+fn oauth_sign_in_through_the_pane_seals_the_grant() {
+    let (_dir, root) = scratch_root();
+    let server = tilo_oauth::fake::FakeAuthorizationServer::start();
+    let custodian =
+        root.custodian()
+            .with_provider(OAuthCloud::GoogleDrive, server.provider(), "drive-client");
+    let browser = FakeBrowser::new(true);
+    let mut pane = pane(&root, custodian, Arc::clone(&browser));
+
+    command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
+    assert!(pane.sign_in_open());
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(
+        PaneModel::busy(&pane),
+        "the pane keeps polling while the browser is out"
+    );
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
+    assert!(
+        !pane.sign_in_open(),
+        "{:?}",
+        pane.sign_in_message_for_test()
+    );
+
+    let opened = browser.opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1);
+    assert!(opened[0].starts_with(&format!("{}/authorize?", server.url())));
+    let account = only_account(&root, account_custody::providers::GOOGLE_DRIVE_TYPE);
+    assert_eq!(account.display_name, "Google Drive");
+    let store_json = serde_json::to_string(&root.store()).unwrap();
+    assert!(
+        !store_json.contains("refresh-"),
+        "no token in account metadata"
+    );
+    let secret = root.vault().get(&account.id).expect("sealed grant");
+    assert!(secret.password.is_empty());
+    assert!(
+        secret
+            .token
+            .as_deref()
+            .is_some_and(|grant| grant.contains("refresh-"))
+    );
+    assert_eq!(pane.directory().views_of(AccountKind::GoogleDrive).len(), 1);
+}
+
+/// Drive configuration is local metadata; only OAuth and Gmail need fake HTTP servers.
+fn google_service_sign_in(
+    root: &AccountRoot,
+    files: bool,
+    mail: bool,
+    mode: accounts::cloud_types::FilesMode,
+) -> Arc<FakeBrowser> {
+    let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+    let gmail = Responder::handle(|request| {
+        assert_eq!(request.target, "/gmail/v1/users/me/profile");
+        assert!(
+            request
+                .header("Authorization")
+                .unwrap()
+                .starts_with("Bearer ")
+        );
+        Some(
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(r#"{"emailAddress":"ada@example.org"}"#),
+        )
+    });
+    let custodian = root
+        .custodian()
+        .with_issuer_endpoints(account_custody::OAuthIssuer::Google, oauth.provider())
+        .with_gmail_profile_endpoint(format!("{}/gmail/v1/users/me/profile", gmail.url()));
+    let browser = FakeBrowser::new(true);
+    let mut pane = pane(root, custodian, browser.clone());
+    command(&mut pane, AccountViewCommand::Add(AccountKind::GoogleDrive));
+    pane.sign_in
+        .as_mut()
+        .unwrap()
+        .select_services(files, mail, mode)
+        .unwrap();
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()));
+    assert!(
+        !pane.sign_in_open(),
+        "{:?}",
+        pane.sign_in_message_for_test()
+    );
+    let urls = browser.opened.lock().unwrap();
+    assert_eq!(urls.len(), 1);
+    assert_eq!(urls[0].contains("auth%2Fdrive"), files);
+    assert_eq!(urls[0].contains("mail.google.com"), mail);
+    drop(urls);
+    let metadata = serde_json::to_string(&root.store()).unwrap();
+    assert!(!metadata.contains("refresh-"));
+    for account in root.store().all() {
+        let secret = root.vault().get(&account.id).expect("sealed Google grant");
+        assert!(secret.password.is_empty());
+        assert!(
+            secret
+                .token
+                .as_deref()
+                .is_some_and(|token| token.contains("refresh-"))
+        );
+    }
+    browser
+}
+
+#[test]
+fn google_files_only_selection_saves_only_drive() {
+    let (_dir, root) = scratch_root();
+    google_service_sign_in(&root, true, false, accounts::cloud_types::FilesMode::Sync);
+    assert_eq!(root.store().len(), 1);
+    let drive = only_account(&root, accounts::cloud_types::GOOGLE_DRIVE);
+    assert_eq!(
+        accounts::cloud_types::files_mode(&drive),
+        Some(accounts::cloud_types::FilesMode::Sync)
+    );
+    assert!(
+        drive
+            .config
+            .get(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY)
+            .is_none()
+    );
+}
+
+#[test]
+fn google_mail_only_selection_saves_only_mail() {
+    let (_dir, root) = scratch_root();
+    google_service_sign_in(&root, false, true, accounts::cloud_types::FilesMode::Sync);
+    assert_eq!(root.store().len(), 1);
+    let mail = only_account(&root, "email");
+    assert_eq!(mail.config["email"], "ada@example.org");
+    assert_eq!(mail.config["imap_host"], "imap.gmail.com");
+    assert_eq!(mail.config["smtp_host"], "smtp.gmail.com");
+    assert_eq!(mail.config["smtp_port"], 587);
+    assert_eq!(
+        mail.config_as::<accounts::email::AccountConfig>()
+            .unwrap()
+            .auth,
+        accounts::email::AuthMethod::OAuth
+    );
+}
+
+#[test]
+fn google_both_selection_links_drive_to_mail() {
+    let (_dir, root) = scratch_root();
+    google_service_sign_in(&root, true, true, accounts::cloud_types::FilesMode::Sync);
+    assert_eq!(root.store().len(), 2);
+    let drive = only_account(&root, accounts::cloud_types::GOOGLE_DRIVE);
+    let mail = only_account(&root, "email");
+    assert_eq!(
+        drive.config[accounts::cloud_types::MAIL_ACCOUNT_ID_KEY],
+        mail.id.as_str()
+    );
+    assert_eq!(mail.config["email"], "ada@example.org");
+    assert_eq!(root.vault().get(&drive.id), root.vault().get(&mail.id));
+}
+
+#[test]
+fn google_import_selection_persists_import_metadata() {
+    let (_dir, root) = scratch_root();
+    google_service_sign_in(&root, true, false, accounts::cloud_types::FilesMode::Import);
+    assert_eq!(root.store().len(), 1);
+    let drive = only_account(&root, accounts::cloud_types::GOOGLE_DRIVE);
+    assert_eq!(
+        accounts::cloud_types::files_mode(&drive),
+        Some(accounts::cloud_types::FilesMode::Import)
+    );
+    assert!(
+        drive
+            .config
+            .get(accounts::cloud_types::MOUNT_CONFIG_KEY)
+            .is_some_and(serde_json::Value::is_object)
+    );
+}
+
+#[test]
+fn google_mail_selection_cannot_replace_a_separately_connected_grant() {
+    for files in [true, false] {
+        let (_dir, root) = scratch_root();
+        let mut existing = accounts::Account::new("stable-opaque-mail-id", "email");
+        existing.display_name = "Personal inbox".into();
+        existing.set_config(&accounts::email::AccountConfig {
+            email: "Ada@Example.org".into(),
+            display_name: "Personal inbox".into(),
+            ..Default::default()
+        });
+        existing.config["custom_setting"] = "kept".into();
+        let mut store = accounts::AccountStore::new();
+        store.upsert(existing.clone());
+        root.save_store(&store).unwrap();
+        let mut vault = root.vault();
+        vault.put(&existing.id, &accounts::Secret::password("old-password"));
+        vault.try_save().unwrap();
+
+        let mut mail = existing.clone();
+        mail.config["email"] = "ada@example.org".into();
+        let completed = super::cloud_signin::Completed {
+            kind: if files {
+                AccountKind::GoogleDrive
+            } else {
+                AccountKind::Mail
+            },
+            existing_id: None,
+            display_name: "Google".into(),
+            config: if files {
+                serde_json::json!({})
+            } else {
+                mail.config.clone()
+            },
+            secret: accounts::Secret::password("replacement"),
+            mail: files.then_some(mail),
+        };
+        assert!(
+            AccountsPane::save_signed_in(&root, &completed)
+                .unwrap_err()
+                .contains("already connected")
+        );
+        assert_eq!(root.store().len(), 1);
+        let mail = only_account(&root, "email");
+        assert_eq!(mail.id, existing.id);
+        assert_eq!(mail.config["custom_setting"], "kept");
+        assert_eq!(mail.config["display_name"], "Personal inbox");
+        assert_eq!(mail.config["email"], "Ada@Example.org");
+        assert_eq!(
+            root.vault().get(&existing.id).unwrap().password,
+            "old-password"
+        );
+        assert!(root.vault().get(&"ada@example.org".into()).is_none());
+    }
+}
+
+#[test]
+fn disconnecting_linked_mail_retains_files_and_its_grant() {
+    let (_dir, root) = scratch_root();
+    let mut files = accounts::Account::new("files", "google-drive");
+    files.config = serde_json::json!({"mail_account_id": "mail", "files_mode": "sync"});
+    let mail = accounts::Account::new("mail", "email");
+    let mut store = root.store();
+    store.upsert(files.clone());
+    store.upsert(mail.clone());
+    root.save_store(&store).unwrap();
+    let secret = accounts::Secret::password("files-grant");
+    let mut vault = root.vault();
+    vault.put(&files.id, &secret);
+    vault.put(&mail.id, &accounts::Secret::password("mail-grant"));
+    vault.try_save().unwrap();
+    let mut pane = pane(&root, root.custodian(), FakeBrowser::new(false));
+    pane.remove("mail").unwrap();
+    let store = root.store();
+    assert_eq!(store.len(), 1);
+    let retained = store.get(&files.id).unwrap();
+    assert!(
+        retained
+            .config
+            .get(accounts::cloud_types::MAIL_ACCOUNT_ID_KEY)
+            .is_none()
+    );
+    assert_eq!(
+        accounts::cloud_types::files_mode(retained),
+        Some(accounts::cloud_types::FilesMode::Sync)
+    );
+    assert_eq!(root.vault().get(&files.id), Some(secret));
+    assert!(root.vault().get(&mail.id).is_none());
+}
+
+#[test]
+fn a_forged_redirect_saves_nothing() {
+    let (_dir, root) = scratch_root();
+    let server = tilo_oauth::fake::FakeAuthorizationServer::start();
+    server.forge_state("forged");
+    let custodian =
+        root.custodian()
+            .with_provider(OAuthCloud::Dropbox, server.provider(), "dropbox-client");
+    let mut pane = pane(&root, custodian, FakeBrowser::new(true));
+    command(&mut pane, AccountViewCommand::Add(AccountKind::Dropbox));
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
+    assert!(pane.sign_in_open(), "the flow stays open to try again");
+    assert!(
+        pane.sign_in_message_for_test()
+            .is_some_and(|message| message.contains("did not match")),
+        "{:?}",
+        pane.sign_in_message_for_test()
+    );
+    assert!(root.store().is_empty());
+}
+
+#[test]
+fn a_provider_without_a_client_id_explains_instead_of_starting() {
+    if OAuthCloud::Dropbox.client_id().resolve().is_some() {
+        // This build or environment provides one; the flow is live.
+        return;
+    }
+    let (_dir, root) = scratch_root();
+    let browser = FakeBrowser::new(false);
+    // A build whose registration table has no Dropbox app key.
+    let custodian = root
+        .custodian()
+        .with_client_table(account_custody::ClientTable::default());
+    let mut pane = pane(&root, custodian, Arc::clone(&browser));
+    command(&mut pane, AccountViewCommand::Add(AccountKind::Dropbox));
+    command(&mut pane, AccountViewCommand::Submit);
+    let message = pane
+        .sign_in_message_for_test()
+        .unwrap_or_default()
+        .to_string();
+    assert!(message.contains("not configured"), "{message}");
+    assert!(
+        message.contains("TILO_OAUTH_DROPBOX_CLIENT_ID"),
+        "{message}"
+    );
+    assert!(!PaneModel::busy(&pane), "nothing was started");
+    assert!(browser.opened.lock().unwrap().is_empty());
+}
+
+fn fake_nextcloud() -> Responder {
+    let base = Arc::new(Mutex::new(String::new()));
+    let seen = Arc::clone(&base);
+    let responder = Responder::handle(move |request| {
+        let base = seen.lock().unwrap().clone();
+        Some(match (request.method.as_str(), request.target.as_str()) {
+            ("POST", "/index.php/login/v2") => Reply::status(200).body(
+                serde_json::json!({
+                    "poll": {"token": "poll-token", "endpoint": format!("{base}/login/v2/poll")},
+                    "login": format!("{base}/login/v2/flow/xyz"),
+                })
+                .to_string(),
+            ),
+            ("POST", "/login/v2/poll") => Reply::status(200).body(
+                serde_json::json!({
+                    "server": base,
+                    "loginName": "ada",
+                    "appPassword": "minted-app-password",
+                })
+                .to_string(),
+            ),
+            _ => Reply::status(404),
+        })
+    });
+    *base.lock().unwrap() = responder.url();
+    responder
+}
+
+#[test]
+fn nextcloud_connects_through_login_flow_v2_without_a_typed_password() {
+    let (_dir, root) = scratch_root();
+    let server = fake_nextcloud();
+    let browser = FakeBrowser::new(false);
+    let mut pane = pane(&root, root.custodian(), Arc::clone(&browser));
+    command(&mut pane, AccountViewCommand::Add(AccountKind::Nextcloud));
+    assert!(
+        pane.sign_in_open(),
+        "Nextcloud opens the sign-in flow, not a password form"
+    );
+    assert!(!pane.form_open());
+    pane.set_sign_in_fields_for_test("Home cloud", &server.url(), "", "");
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
+    assert!(
+        !pane.sign_in_open(),
+        "{:?}",
+        pane.sign_in_message_for_test()
+    );
+
+    assert_eq!(
+        browser.opened.lock().unwrap().clone(),
+        vec![format!("{}/login/v2/flow/xyz", server.url())]
+    );
+    let account = only_account(&root, crate::accounts::NEXTCLOUD_TYPE);
+    assert_eq!(account.display_name, "Home cloud");
+    assert_eq!(account.config["username"], "ada");
+    assert_eq!(account.config["server_url"], server.url());
+    assert_eq!(account.config["app_password"], true);
+    assert_eq!(account.config["use_files"], true);
+    assert_eq!(
+        root.vault().get(&account.id).map(|secret| secret.password),
+        Some("minted-app-password".into())
+    );
+    assert_eq!(pane.directory().views_of(AccountKind::Nextcloud).len(), 1);
+}
+
+#[derive(Default)]
+struct FakeICloud {
+    adp: bool,
+}
+
+impl ICloudAuth for FakeICloud {
+    fn sign_in(&self, apple_id: &str, password: &str) -> Result<ICloudSignIn, ICloudAuthError> {
+        if self.adp {
+            return Err(ICloudAuthError::AdvancedDataProtection);
+        }
+        if password != "apple-password" {
+            return Err(ICloudAuthError::InvalidCredentials);
+        }
+        Ok(ICloudSignIn::NeedsCode(ICloudChallenge(Zeroizing::new(
+            apple_id.to_string(),
+        ))))
+    }
+
+    fn verify_code(
+        &self,
+        challenge: &ICloudChallenge,
+        code: &str,
+    ) -> Result<ICloudSessionState, ICloudAuthError> {
+        if code == "123456" {
+            Ok(ICloudSessionState(Zeroizing::new(format!(
+                "trust:{}",
+                challenge.0.as_str()
+            ))))
+        } else {
+            Err(ICloudAuthError::InvalidCode)
+        }
+    }
+
+    fn resume(
+        &self,
+        session: &ICloudSessionState,
+    ) -> Result<(ICloudSessionState, ICloudHeaders), ICloudAuthError> {
+        Ok((
+            session.clone(),
+            ICloudHeaders {
+                headers: Vec::new(),
+                expires_unix: None,
+            },
+        ))
+    }
+}
+
+#[test]
+fn icloud_signs_in_with_a_verification_code_and_never_stores_the_password() {
+    let (_dir, root) = scratch_root();
+    let custodian = root
+        .custodian()
+        .with_icloud(Arc::new(FakeICloud::default()));
+    let mut pane = pane(&root, custodian, FakeBrowser::new(false));
+    command(&mut pane, AccountViewCommand::Add(AccountKind::ICloudDrive));
+    pane.set_sign_in_fields_for_test("", "", "ada@icloud.com", "apple-password");
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
+    assert!(pane.sign_in_awaiting_code_for_test());
+
+    pane.set_sign_in_code_for_test("000000");
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
+    assert!(
+        pane.sign_in_message_for_test()
+            .is_some_and(|message| message.contains("incorrect")),
+    );
+    assert!(
+        pane.sign_in_awaiting_code_for_test(),
+        "a wrong code can be corrected without starting over"
+    );
+    pane.set_sign_in_code_for_test("123 456");
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
+    assert!(
+        !pane.sign_in_open(),
+        "{:?}",
+        pane.sign_in_message_for_test()
+    );
+
+    let account = only_account(&root, account_custody::providers::ICLOUD_DRIVE_TYPE);
+    assert_eq!(account.config["identity"], "ada@icloud.com");
+    let secret = root.vault().get(&account.id).unwrap();
+    assert!(secret.password.is_empty());
+    let grant = secret.token.unwrap_or_default();
+    assert!(grant.contains("trust:ada@icloud.com"));
+    assert!(!grant.contains("apple-password"));
+}
+
+#[test]
+fn advanced_data_protection_is_explained() {
+    let (_dir, root) = scratch_root();
+    let custodian = root
+        .custodian()
+        .with_icloud(Arc::new(FakeICloud { adp: true }));
+    let mut pane = pane(&root, custodian, FakeBrowser::new(false));
+    command(&mut pane, AccountViewCommand::Add(AccountKind::ICloudDrive));
+    pane.set_sign_in_fields_for_test("", "", "ada@icloud.com", "apple-password");
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(
+        pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
+        "the sign-in step never reported back within the hang bound"
+    );
+    let message = pane.sign_in_message_for_test().unwrap_or_default();
+    assert!(message.contains("Advanced Data Protection"), "{message}");
+    assert!(
+        message.contains("Access iCloud Data on the Web"),
+        "{message}"
+    );
+    assert!(root.store().is_empty());
+}
+
+#[test]
+fn icloud_without_a_provider_is_not_available_rather_than_broken() {
+    let (_dir, root) = scratch_root();
+    assert!(
+        root.custodian().icloud().is_available(),
+        "Settings signs in to iCloud through the iCloud provider"
+    );
+    // A custodian that was given no iCloud sign-in.
+    let custodian =
+        account_custody::Custodian::for_root(root.explicit().map(std::path::Path::to_path_buf));
+    let mut pane = pane(&root, custodian, FakeBrowser::new(false));
+    command(&mut pane, AccountViewCommand::Add(AccountKind::ICloudDrive));
+    command(&mut pane, AccountViewCommand::Submit);
+    assert!(
+        pane.sign_in_message_for_test()
+            .is_some_and(|message| message.contains("not available")),
+    );
+    assert!(!PaneModel::busy(&pane));
+}
+
+#[test]
+fn icloud_rows_are_marked_best_effort_and_offer_reauthentication() {
+    fn collect(widget: &dyn Widget, texts: &mut Vec<String>) {
+        if let Some(node) = widget.accessibility() {
+            texts.extend(node.name);
+            texts.extend(node.value);
+        }
+        // A row's marks after its name, and its menu's entries.
+        if let Some(row) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())
+        {
+            texts.extend(row.tag_labels().into_iter().map(str::to_owned));
+        }
+        if let Some(menu) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::RowMenu>())
+        {
+            texts.extend(menu.labels().into_iter().map(str::to_owned));
+        }
+        for child in widget.children() {
+            collect(child, texts);
+        }
+    }
+
+    let (_dir, root) = scratch_root();
+    let id = accounts::AccountId::from("icloud-drive-1");
+    let mut account =
+        accounts::Account::new(id.clone(), account_custody::providers::ICLOUD_DRIVE_TYPE);
+    account.display_name = "My iCloud".into();
+    account.config = serde_json::json!({"identity": "ada@icloud.com"});
+    let mut store = accounts::AccountStore::new();
+    store.upsert(account);
+    root.save_store(&store).unwrap();
+    root.sync_reporter(id).needs_authentication().unwrap();
+
+    let pane = AccountsPane::in_root(root);
+    let theme = ui::Theme::dark();
+    let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+    let mut node_map = std::collections::HashMap::new();
+    let mut composed = pane.build_composition();
+    let _ = composed.build_layout(&mut taffy, &theme, &mut node_map);
+
+    let mut texts = Vec::new();
+    collect(composed.as_ref(), &mut texts);
+    assert!(
+        texts.iter().any(|text| text == "Re-authenticate — Files"),
+        "{texts:?}"
+    );
+    assert!(texts.iter().any(|text| text == "Best effort"), "{texts:?}");
+    assert!(
+        !texts.iter().any(|text| text == "Edit"),
+        "cloud storage accounts have no password form to edit"
+    );
+}

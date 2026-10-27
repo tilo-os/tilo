@@ -979,7 +979,6 @@ mod tests {
 
     #[test]
     fn prefix_state_and_c_mappings_are_managed_without_following_links() {
-        // Phase `state_and_prefix_are_separate_and_q_is_managed`.
         {
             let directory = TempDir::new().unwrap();
             let store = CapsuleStore::new(directory.path()).unwrap();
@@ -996,7 +995,6 @@ mod tests {
             );
             assert!(!store.prefix_path(&state.id).join("state.json").exists());
         }
-        // Phase `missing_c_mapping_is_repaired_without_changing_prefix_content`.
         {
             let directory = TempDir::new().unwrap();
             let store = CapsuleStore::new(directory.path()).unwrap();
@@ -1014,7 +1012,6 @@ mod tests {
                 "retained"
             );
         }
-        // Phase `replaced_c_mapping_is_rejected_without_overwriting_it`.
         {
             for replacement in ["symlink", "file", "directory"] {
                 let directory = TempDir::new().unwrap();
@@ -1040,7 +1037,6 @@ mod tests {
                 }
             }
         }
-        // Phase `symlinked_c_directory_is_rejected_without_touching_its_target`.
         {
             let directory = TempDir::new().unwrap();
             let outside = TempDir::new().unwrap();
@@ -1057,7 +1053,6 @@ mod tests {
             );
             assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 1);
         }
-        // Phase `executable_cannot_escape_prefix`.
         {
             let program = CapsuleProgram {
                 id: "bad".to_string(),
@@ -1076,7 +1071,6 @@ mod tests {
 
     #[test]
     fn capsule_state_saves_migrations_and_installers_are_exact() {
-        // Phase `recipe_changes_need_explicit_migration`.
         {
             let directory = TempDir::new().unwrap();
             let store = CapsuleStore::new(directory.path()).unwrap();
@@ -1088,7 +1082,6 @@ mod tests {
                 Err(CapsuleError::RecipeChanged(_))
             ));
         }
-        // Phase `symlinked_capsule_directory_is_rejected_before_state_or_prefix_access`.
         {
             let root = TempDir::new().unwrap();
             let outside = TempDir::new().unwrap();
@@ -1103,7 +1096,6 @@ mod tests {
                 "managed path preparation must not follow the attacker symlink"
             );
         }
-        // Phase `saving_replaces_a_state_symlink_without_touching_its_target`.
         {
             let root = TempDir::new().unwrap();
             let outside = root.path().join("outside.json");
@@ -1127,7 +1119,6 @@ mod tests {
             );
             assert!(store.load(&state.id).unwrap().is_some());
         }
-        // Phase `staged_installer_must_match_the_bytes_that_were_inspected`.
         {
             let directory = TempDir::new().unwrap();
             let store = CapsuleStore::new(directory.path()).unwrap();

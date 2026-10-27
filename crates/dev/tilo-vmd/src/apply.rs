@@ -37,7 +37,6 @@ pub fn control_socket(slot: &str) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub slot: String,
-    /// The system unit that runs it.
     pub unit: String,
     pub user: String,
     /// Units besides `unit` and the user manager that run the session's
@@ -207,7 +206,7 @@ pub trait Apply {
     /// PNG of the session's live scene.
     fn shot(&mut self, session: &Session) -> Result<Vec<u8>, DaemonError>;
     /// Capabilities and `SELinux` domain of the running session process,
-    /// or `None` when it is not running.
+    /// or `None` when it is not running as the slot user (yet).
     fn session_process(&mut self, session: &Session) -> Option<SessionProcess>;
     /// The main process of the running session unit, whose mount
     /// namespace has the slot's layers over `/usr`.
@@ -827,7 +826,6 @@ pub struct RecordingApply {
     pub cohort_selections: std::collections::VecDeque<crate::SelectedApps>,
     /// Runtime namespace supplied by cohort fixtures.
     pub cohort_runtime_root: Option<PathBuf>,
-    /// The machine's own session, when it has one.
     pub device: Option<DeviceSession>,
     /// Notices published for the owner's desktop, by name.
     pub notices: BTreeMap<String, String>,
@@ -1367,7 +1365,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn apply_scope_decides_swap_refresh_and_session_policy() {
-        // Phase `swap_policy_follows_scope`.
         {
             let user = record("a", SlotKind::Headless);
             let base = generation(
@@ -1437,7 +1434,6 @@ mod tests {
             assert_eq!(policy(&vm, &kernel, &fs2).unwrap().0, Policy::Reboot);
             assert_eq!(policy(&vm, &kernel, &kernel).unwrap().0, Policy::NoRestart);
         }
-        // Phase `scope_misuse_is_refused`.
         {
             let user = record("a", SlotKind::Headful);
             let vm = record("vm", SlotKind::Vm);
@@ -1454,7 +1450,6 @@ mod tests {
             assert!(check_scope(&user, "shell", &shell).is_ok());
             assert!(check_scope(&vm, "fs", &fs).is_ok());
         }
-        // Phase `app_only_change_keeps_session`.
         {
             let mut apply = RecordingApply::default();
             let mut slot = record("a", SlotKind::Headless);
@@ -1476,7 +1471,6 @@ mod tests {
             );
             assert!(matches!(actions.last(), Some(Action::Deferred { .. })));
         }
-        // Phase `vm_slot_refreshes_sysext_and_restarts_units`.
         {
             let mut apply = RecordingApply::default();
             let mut vm = record("vm", SlotKind::Vm);
@@ -1596,7 +1590,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn session_lifecycle_matches_greetd_and_cleans_up() {
-        // Phase `parity_matches_a_greetd_session`.
         {
             let greetd = SessionProcess {
                 cap_amb: 0,
@@ -1626,7 +1619,6 @@ mod tests {
                 "{problem}"
             );
         }
-        // Phase `session_restart_restarts_user_manager_between_logout_and_login`.
         {
             let mut apply = RecordingApply::default();
             let mut slot = record("a", SlotKind::Headless);
@@ -1668,7 +1660,6 @@ mod tests {
                 ));
             }
         }
-        // Phase `the_device_session_restarts_through_its_own_unit_as_its_account`.
         {
             let mut apply = RecordingApply::with_device("quickuser");
             let mut device = record("device", SlotKind::Device);
@@ -1719,11 +1710,9 @@ mod tests {
                 session.control_socket,
                 PathBuf::from("/run/user/1000/tilo-session/test-control.sock")
             );
-            // Without the session found, the slot has none.
             device.device = None;
             assert_eq!(device.session(), None);
         }
-        // Phase `the_owners_login_merges_system_wide_and_restarts_its_desktop_in_place`.
         {
             let mut apply = RecordingApply::with_login("quickuser");
             let mut device = record("device", SlotKind::Device);
@@ -1808,7 +1797,6 @@ mod tests {
                     .is_empty()
             );
         }
-        // Phase `headful_ensures_its_seat_on_every_activation`.
         {
             let mut apply = RecordingApply::default();
             let mut slot = record("b", SlotKind::Headful);
@@ -1847,7 +1835,6 @@ mod tests {
             )];
             assert!(seat.contains("TILO_VM_BACKEND=drm XDG_SEAT=seat-b"));
         }
-        // Phase `deactivate_cleans_up`.
         {
             let mut apply = RecordingApply::default();
             let mut slot = record("b", SlotKind::Headful);

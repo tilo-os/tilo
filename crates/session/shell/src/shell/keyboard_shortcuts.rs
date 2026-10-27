@@ -43,9 +43,7 @@ use crate::shell::i18n::{t, t_args};
 pub const APP_ID: &str = "so.tilo.settings";
 /// The resource carrying the catalogue-wide actions.
 pub const RESOURCE: &str = "keyboard-shortcuts";
-/// Kind of [`RESOURCE`].
 pub const RESOURCE_KIND: &str = "settings.keyboard-shortcuts";
-/// Kind of each shortcut's resource.
 pub const ENTRY_KIND: &str = "settings.keyboard-shortcut";
 /// Every shortcut, as JSON.
 pub const LIST_ACTION: &str = "list";
@@ -58,7 +56,6 @@ pub const RESET_ACTION: &str = "reset";
 
 const ENTRY_PREFIX: &str = "keyboard-shortcut:";
 
-/// The resource id of shortcut `id`.
 #[must_use]
 pub fn entry_resource(id: &str) -> String {
     format!("{ENTRY_PREFIX}{id}")
@@ -132,7 +129,6 @@ fn contract(kind: ActionKind, result: Value) -> ActionContract {
     ActionContract {
         kind,
         retry: RetryPolicy::Idempotent,
-        reversible: kind != ActionKind::Read,
         result: ResultSpec::Json { schema: result },
         tags: vec![
             "configuration".into(),
@@ -293,7 +289,6 @@ pub fn descriptors(
     out
 }
 
-/// The descriptor at `address` under `config`, when one is published there.
 #[must_use]
 pub fn descriptor_at(config: &ShortcutConfig, address: &ActionAddress) -> Option<ActionDescriptor> {
     descriptors(config)
@@ -593,7 +588,6 @@ mod tests {
         let terminal = row(ShortcutAction::OpenTerminal.id());
         assert_eq!(terminal["defaults"], json!(["Ctrl+Alt+T"]));
         assert_eq!(terminal["default_labels"], json!(["Strg+Alt+T"]));
-        // The canonical form is what `rebind` reads back.
         let chord = terminal["chords"][0].as_str().unwrap_or_default();
         assert_eq!(
             KeyChord::parse(chord),

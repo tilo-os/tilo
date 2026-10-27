@@ -28,6 +28,7 @@ fn tab(id: u64, title: &str, app_id: &str) -> Tab {
             label: title.into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 
@@ -64,7 +65,7 @@ fn desktop() -> WorkspaceTree {
 
 /// The laptop's published snapshot, focused on Notes.
 fn laptop_focused_on_notes(tree: &WorkspaceTree, laptop: &DeviceId) -> PersonalContinuity {
-    let room = tree.desktop.workspaces[0].room;
+    let room = tree.desktop.workspaces[0].room();
     let stamp = ContinuityStamp {
         counter: 12,
         device: laptop.clone(),

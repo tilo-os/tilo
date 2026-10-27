@@ -19,8 +19,16 @@
 //!
 //! Cost: one `open` and one `flock` per tree, with nothing to wait for
 //! unless a removal of that very tree is under way.
+//!
+//! Releasing the leases records a use of the payload tree
+//! ([`package_store::lease::record_close`]), and of the tree an update
+//! replaced it with while the app was open: the app is closing, so the size
+//! sweep orders it by when it was last open, not by when it was opened. An
+//! app still open is never evicted, so nothing records while it runs; a
+//! timer for that would start a thread before the GPU probe, which forks
+//! only while the launcher is single-threaded.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use advisory_lock::FileLock;
 use runtime_bundle::gc::BundleRoot;
@@ -28,7 +36,7 @@ use runtime_bundle::gc::BundleRoot;
 use crate::manifest::ManifestView;
 use crate::run::{RunError, RunOptions};
 
-/// Where [`LaunchLeases::take_observed`] has got to, for a test that
+/// Where `LaunchLeases::take_observed` has got to, for a test that
 /// interleaves an update with a launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -42,7 +50,23 @@ pub enum Stage {
 #[derive(Debug)]
 #[must_use = "a launch holds its trees until its sandbox exits"]
 pub struct LaunchLeases {
-    _held: Vec<FileLock>,
+    /// The payload tree's lease, when the tree is the user's store's.
+    payload: Option<FileLock>,
+    /// The app the payload tree is a build of, and where that tree is.
+    app: String,
+    payload_root: PathBuf,
+    _runtimes: Vec<FileLock>,
+}
+
+impl Drop for LaunchLeases {
+    fn drop(&mut self) {
+        if let Some(lease) = &self.payload
+            && let Err(error) =
+                package_store::lease::record_close(lease, &self.app, &self.payload_root)
+        {
+            tracing::debug!(%error, "could not record the app's use at close");
+        }
+    }
 }
 
 impl LaunchLeases {
@@ -70,10 +94,8 @@ impl LaunchLeases {
         opts: &RunOptions,
         observe: &mut dyn FnMut(Stage),
     ) -> Result<Self, RunError> {
+        let payload = hold_payload(payload_root)?;
         let mut held = Vec::new();
-        if let Some(lease) = hold_payload(payload_root)? {
-            held.push(lease);
-        }
         if !payload_root.is_dir() {
             return Err(RunError::PackageChanged {
                 package: manifest.package_id.clone(),
@@ -94,7 +116,12 @@ impl LaunchLeases {
             }
         }
         observe(Stage::RuntimesHeld);
-        Ok(Self { _held: held })
+        Ok(Self {
+            payload,
+            app: manifest.package_id.clone(),
+            payload_root: payload_root.to_path_buf(),
+            _runtimes: held,
+        })
     }
 }
 
@@ -118,10 +145,6 @@ const RESELECTIONS: usize = 3;
 /// Look `package` up in the installed set and hold its payload tree. An
 /// update that removed the tree between the lookup and the hold makes it
 /// look again, so the launch opens the build that replaced it.
-///
-/// # Errors
-///
-/// Returns the catalogue's error, or one from taking the lease.
 pub fn find_installed_held(
     package: &str,
 ) -> Result<Option<(package_store::InstalledPackage, Option<FileLock>)>, String> {
@@ -448,7 +471,6 @@ type = "gui"
                 // chose, on that build's runtime, both whole.
                 assert_eq!(opened, Opened::Mounted("1.0.0".into()), "{at:?}");
             }
-            // With the launch gone, the next collection takes what it held.
             fx.collect();
             assert!(
                 !fx.runtimes().join(OLD_RUNTIME).exists(),
@@ -460,6 +482,88 @@ type = "gui"
                 .count();
             assert_eq!(trees, 2, "{at:?}: only v2's tree and record are left");
         }
+    }
+
+    /// An app opened weeks ago and closed now counts as used now: the size
+    /// sweep must not take it for one nobody opened since.
+    #[test]
+    fn closing_an_app_records_its_use() {
+        const OPENED: u64 = 1_000;
+        let fx = fixture();
+        let row = package_store::find_installed(APP).unwrap().unwrap();
+        let manifest = read_manifest(&row.manifest_path).unwrap();
+        let leases = LaunchLeases::take(&manifest, &row.payload_root, &fx.opts).unwrap();
+        let at_open = std::time::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(OPENED))
+            .unwrap();
+        leases
+            .payload
+            .as_ref()
+            .expect("a tree of the user's store is held")
+            .file()
+            .set_modified(at_open)
+            .unwrap();
+        fx.store
+            .update_row(APP, |row| row.last_used = OPENED)
+            .unwrap();
+        let last_used = || {
+            let registry = fx.store.registry().unwrap();
+            fx.store.last_used(registry.find(APP).unwrap())
+        };
+        assert_eq!(last_used(), OPENED, "open, its only use is the open");
+        let closing = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        drop(leases);
+        assert!(
+            last_used() >= closing,
+            "the close is a use: {} < {closing}",
+            last_used()
+        );
+    }
+
+    /// An app opened weeks ago, updated while it stayed open and closed now
+    /// counts as used now too: the update replaced the tree its launch held,
+    /// and the replaced tree's lease leaves with that tree.
+    #[test]
+    fn closing_an_app_updated_while_open_records_its_use() {
+        const OPENED: u64 = 1_000;
+        let fx = fixture();
+        let row = package_store::find_installed(APP).unwrap().unwrap();
+        let manifest = read_manifest(&row.manifest_path).unwrap();
+        let leases = LaunchLeases::take(&manifest, &row.payload_root, &fx.opts).unwrap();
+        let at_open = std::time::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(OPENED))
+            .unwrap();
+        leases
+            .payload
+            .as_ref()
+            .expect("a tree of the user's store is held")
+            .file()
+            .set_modified(at_open)
+            .unwrap();
+        fx.store
+            .update_row(APP, |row| row.last_used = OPENED)
+            .unwrap();
+        fx.update();
+        let last_used = || {
+            let registry = fx.store.registry().unwrap();
+            let row = registry.find(APP).unwrap();
+            assert_eq!(row.version, "2.0.0");
+            fx.store.last_used(row)
+        };
+        assert_eq!(last_used(), OPENED, "an update is not a use");
+        let closing = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        drop(leases);
+        assert!(
+            last_used() >= closing,
+            "the close is a use of the app as it is installed now: {} < {closing}",
+            last_used()
+        );
     }
 
     #[test]

@@ -23,7 +23,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["settings", "clipboard"]
+optional = ["files.open", "settings", "clipboard"]
 
 [resources]
 kinds = ["themes.studio"]
@@ -56,8 +56,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
+collab = "optional@10"
+tilo-fs = "optional@10"
 
 [entrypoint]
 bin             = "bin/themes"

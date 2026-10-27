@@ -263,20 +263,17 @@ fn restyling_changes_only_the_named_styles() {
     );
 }
 
+/// Deleting an element changes only the deck, so Undo takes it back and it
+/// applies at once.
 #[test]
-fn delete_element_is_destructive_and_needs_confirmation() {
+fn delete_element_is_undoable_and_applies_at_once() {
     let mut app = seeded();
     let slide = deck(&app).slides[1].clone();
     let target = slide.elements[0].id.clone();
     let args = json!({});
     let item = actions::element_resource_id(&slide.id, &target);
-    assert!(matches!(
-        app.call_on(&item, "delete-element", args.clone()),
-        Err(DoorError::ConfirmationRequired)
-    ));
-    assert!(deck(&app).slides[1].element(&target).is_some());
-    app.call_confirmed_on(&item, "delete-element", args)
-        .expect("a confirmed delete applies");
+    app.call_on(&item, "delete-element", args)
+        .expect("an undoable delete applies at once");
     assert!(deck(&app).slides[1].element(&target).is_none());
 }
 
@@ -349,13 +346,11 @@ fn apply_takes_any_deck_action_as_json() {
         deck(&app).slides[1].background,
         crate::model::Background::Deep
     );
-    // A destructive value asks for confirmation through `apply` as well.
+    // A destructive value through `apply` is undoable too: it applies.
     let element = deck(&app).slides[1].elements[0].id.clone();
     let delete = actions::delete_element_action(&slide, &element);
-    assert!(matches!(
-        app.call("apply", json!({ "action": delete })),
-        Err(DoorError::ConfirmationRequired)
-    ));
+    app.call("apply", json!({ "action": delete }))
+        .expect("an undoable delete applies at once");
 }
 
 #[test]
@@ -388,8 +383,8 @@ fn add_slide_writes_its_title_and_body_in_one_step() {
     assert_eq!(texts(before + 1), ["Agenda", "Goals\nTimeline\nBudget"]);
     assert_eq!(
         texts(before + 2),
-        ["New slide", "Add your content…"],
-        "no arguments: the template"
+        ["", ""],
+        "no arguments: the template, whose empty boxes prompt for words"
     );
     assert!(
         app.call("add-slide", json!({"layout": "sideways"}))
@@ -398,7 +393,6 @@ fn add_slide_writes_its_title_and_body_in_one_step() {
     );
 }
 
-/// An agent's changes read back as the app's own sentences.
 #[test]
 fn an_agents_changes_read_as_sentences() {
     use ui::tilo_actions::{ActionInvoker, ActorKind};

@@ -175,6 +175,9 @@ impl PointerHandler for WinitState {
                         .lock()
                         .unwrap()
                         .latest_button_serial = serial;
+                    if matches!(kind, PointerEventKind::Press { .. }) {
+                        window.record_press(seat, serial);
+                    }
 
                     let button = wayland_button_to_winit(button);
                     let state = if matches!(kind, PointerEventKind::Press { .. }) {

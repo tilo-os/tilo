@@ -48,7 +48,8 @@ fn actual_delivery_holder_preserves_distinct_host_device_and_checks_every_real_r
     let (mut peer, key, _, device, now) = crate::admission_tests::seeded();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "text", "second record").unwrap();
-    peer.publish_document("z.app", "tab:2", doc.save(), &key, now)
+    peer.publication_mut()
+        .publish_document("z.app", "tab:2", doc.save(), &key, now)
         .unwrap();
     let mut host = peer.authority().clone();
     host.device_label = "actual distinct host label".into();
@@ -144,6 +145,7 @@ fn actual_delivery_holder_denies_current_expired_and_revoked_members() {
                     protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                     cert: Box::new(peer.authority().clone()),
                     revocations: vec![entry],
+                    successions: Vec::new(),
                 },
                 now,
             )
@@ -236,7 +238,8 @@ fn actual_delivery_holder_uses_verified_metadata_and_ignores_document_heads() {
     changed
         .put(ROOT, "value", "different body and heads")
         .unwrap();
-    peer.publish_document("test.app", "tab:1", changed.save(), &key, now)
+    peer.publication_mut()
+        .publish_document("test.app", "tab:1", changed.save(), &key, now)
         .unwrap();
     assert_eq!(expected(&peer, peer.authority(), &device, now), original);
     let mut enrollment = Vec::new();

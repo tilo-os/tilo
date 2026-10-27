@@ -24,7 +24,7 @@ fn fixture_tagged(
 ) {
     let mut workspace = Workspace::new(WorkspaceId(52), "Synthetic execution presence");
     workspace.set_owner("a1".repeat(32));
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
@@ -194,24 +194,28 @@ async fn an_untrusted_contract_marks_every_observation_of_its_invocation() {
     }
 }
 
-/// A device-only action runs for the person at the device, never for an
-/// agent no certified local admission handed the session: one acting for
-/// that same person, admitted any other way, is refused before the app
-/// hears of it.
+/// An attended action asks the person before it runs for an agent acting
+/// for them: without the person's confirmation it is refused before the app
+/// hears of it, while the person at the device runs it.
 #[test]
-fn a_device_only_action_refuses_an_agent_admitted_elsewhere() {
-    let (state, person, mut app) = fixture_tagged(vec![tilo_actions::LOCAL_DEVICE_ONLY.to_owned()]);
+fn an_attended_action_waits_for_the_persons_confirmation_before_an_agent_runs_it() {
+    let (state, person, mut app) = fixture_tagged(vec![tilo_actions::ATTENDED_TAG.to_owned()]);
     let room = person.room().unwrap().to_owned();
-    let agent = Caller::local_agent("elsewhere")
+    let agent = Caller::local_agent("scribe")
         .acting_for("a1".repeat(32))
         .in_room(room)
         .in_new_execution();
-    let refused = state
+    let asked = state
         .action_invoke(&agent, None, None, &request())
         .poll_ready();
     assert!(
-        matches!(&refused, PendingPoll::Ready(Err(_))),
-        "an agent admitted elsewhere is refused: {refused:?}"
+        matches!(
+            &asked,
+            PendingPoll::Ready(Err(
+                tilo_actions::remote::ActionHostError::ConfirmationRequired
+            ))
+        ),
+        "the agent waits for the person: {asked:?}"
     );
     assert!(app.try_recv().is_err(), "the app never hears of it");
     assert!(matches!(
@@ -482,12 +486,18 @@ async fn cancellation_is_a_request_until_the_application_confirms_it() {
         .poll_ready();
     let delivered = app.try_recv().unwrap();
     events.try_recv().unwrap();
-    assert!(state.action_cancel(&caller, &request.invocation).is_ok());
+    assert!(
+        crate::collab_broker_capnp::answered(state.action_cancel(&caller, &request.invocation))
+            .is_ok()
+    );
     assert_eq!(
         events.try_recv().unwrap().status,
         ExecutionStatus::CancellationRequested
     );
-    assert!(state.action_cancel(&caller, &request.invocation).is_ok());
+    assert!(
+        crate::collab_broker_capnp::answered(state.action_cancel(&caller, &request.invocation))
+            .is_ok()
+    );
     assert!(
         events.try_recv().is_err(),
         "a repeated cancel does not create another activity"
@@ -619,7 +629,7 @@ fn continuation_fixture() -> (
     use crate::test_support::{Grants as _, KindSet, Role, Subject, TreePath};
     let mut workspace = Workspace::new(WorkspaceId(53), "Effect continuation");
     workspace.set_owner("a1".repeat(32));
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     workspace.admit_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), "so.tilo.test", KindSet::ALL);
     workspace.admit("b2".repeat(32), Role::Editor);
@@ -788,6 +798,8 @@ fn an_invocation_id_two_callers_share_continues_neither() {
                 },
                 None,
             )
+            .unwrap()
+            .start_blocking(&state)
             .unwrap();
         caller
     };
@@ -876,9 +888,10 @@ fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
             .is_none()
     );
     assert!(
-        state
-            .action_cancel(&retained, &scoped_request.invocation)
-            .is_err()
+        crate::collab_broker_capnp::answered(
+            state.action_cancel(&retained, &scoped_request.invocation)
+        )
+        .is_err()
     );
     assert!(
         state
@@ -914,9 +927,10 @@ fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
             .is_some()
     );
     assert!(
-        state
-            .action_cancel(&legacy, &legacy_request.invocation)
-            .is_ok()
+        crate::collab_broker_capnp::answered(
+            state.action_cancel(&legacy, &legacy_request.invocation)
+        )
+        .is_ok()
     );
 }
 
@@ -956,7 +970,7 @@ impl ActionHost for CountedDoor {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
         self.door.cancel(caller, id)
     }
 }
@@ -998,6 +1012,7 @@ fn export_shortcut() -> tilo_automation::Shortcut {
                 appearance: None,
             },
         )],
+        step_timeout_secs: None,
         output: None,
         grant: vec![policy::Rule::new(
             policy::TreePath::root()
@@ -1012,8 +1027,10 @@ fn export_shortcut() -> tilo_automation::Shortcut {
 }
 
 /// A shortcut step that runs in the background is observed once per change
-/// it makes, not once per poll interval for as long as it runs.
-#[tokio::test]
+/// it makes, not once per poll interval for as long as it runs. The clock is
+/// paused: the pauses between changes are the test's, so a poller would be
+/// counted on every run, however loaded the host.
+#[tokio::test(start_paused = true)]
 async fn shortcut_step_observes_once_per_change() {
     const PROGRESS_UPDATES: u64 = 3;
     // The look for an earlier invocation, one wake for the admission itself,
@@ -1025,6 +1042,8 @@ async fn shortcut_step_observes_once_per_change() {
     let hooks = NoPolling(crate::automation::DoorHooks::new(
         None,
         tokio::runtime::Handle::current(),
+        crate::automation::RunningRuns::default(),
+        tilo_automation::RunId::new(),
     ));
     let running = tokio::spawn({
         let state = Arc::clone(&state);

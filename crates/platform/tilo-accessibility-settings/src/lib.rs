@@ -57,10 +57,8 @@ macro_rules! accessibility_settings {
             pub large_cursor: bool,
             /// Pointer size in logical pixels (the compositor's cursor theme size).
             pub cursor_size: u32,
-            /// Run the screen reader.
             $(#[$readonly])*
             pub screen_reader: bool,
-            /// When the on-screen keyboard runs.
             pub on_screen_keyboard: OnScreenKeyboard,
             /// Latch modifier keys so chords can be typed one key at a time.
             pub sticky_keys: bool,
@@ -308,11 +306,6 @@ macro_rules! accessibility_settings {
             /// The offered pointer size closest to `size`.
             pub fn cursor_size_label(size: u32) -> &'static str {
                 $crate::__private::closest_label(Self::CURSOR_SIZES, size)
-            }
-
-            /// Map a cursor-size label back to its pixel size, if recognised.
-            pub fn cursor_size_px(label: &str) -> Option<u32> {
-                $crate::__private::labelled(Self::CURSOR_SIZES, label)
             }
         }
 

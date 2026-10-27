@@ -162,7 +162,6 @@ mod external_moderation_rpc_tests {
                 Some(argument),
                 tilo_actions::InvocationId::new(),
             );
-            // Simulate the trusted host sheet answering these exact bytes.
             let witness = self.state.witness_confirmation(&binding).unwrap();
             let token = self
                 .state
@@ -194,6 +193,8 @@ mod external_moderation_rpc_tests {
                     },
                     Some(origin),
                 )
+                .unwrap()
+                .start_blocking(&self.state)
                 .unwrap();
             job.id
         }
@@ -209,6 +210,60 @@ mod external_moderation_rpc_tests {
             )
             .await
             .0
+        }
+
+        /// A connection the shell launched for the Store app, joined to the
+        /// Store's record the way a packaged app joins its own route.
+        async fn launched(
+            &self,
+            peer: u64,
+        ) -> (
+            runtime_collab::CollabClient,
+            Vec<u8>,
+            signed_worker::Connection,
+        ) {
+            let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+            std::io::Write::write_all(&mut client, &launcher::services::COLLAB_LAUNCH_MAGIC)
+                .unwrap();
+            let handoff = serde_json::to_vec(&serde_json::json!({
+                "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
+                "app_id": self.route.app_id,
+                "workspace_id": self.route.cluster_id,
+            }))
+            .unwrap();
+            std::io::Write::write_all(
+                &mut client,
+                &launcher::services::COLLAB_LAUNCH_FRAMING
+                    .encode(&handoff)
+                    .unwrap(),
+            )
+            .unwrap();
+            let (rpc, server, client) = signed_worker::rpc_pair(
+                self.state.clone(),
+                peer,
+                server,
+                client,
+                None,
+                self.directories.clone(),
+            );
+            let presentation = signed_worker::presentation(
+                &self.route.cluster_id,
+                &self.original.cert,
+                &self.original.key,
+            );
+            let handle = rpc
+                .join_channel(&self.route.channel_key(), &presentation)
+                .await
+                .unwrap();
+            (
+                rpc,
+                presentation,
+                signed_worker::Connection {
+                    handle,
+                    server,
+                    client,
+                },
+            )
         }
     }
 
@@ -542,7 +597,6 @@ mod external_moderation_rpc_tests {
                             .expect("unconfirmed or changed operation must be refused");
                         assert!(error.contains("confirmation"), "{altered}: {error}");
                     }
-                    // A fresh answer for exactly these bytes reaches the host gate.
                     room.invoke(980, &offered.resource, action, &exact);
                     let id = stream.read().await.unwrap().invocation_uuid;
                     let request = Request {
@@ -909,44 +963,7 @@ mod external_moderation_rpc_tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let room = Room::new(true);
-                let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
-                std::io::Write::write_all(&mut client, &launcher::services::COLLAB_LAUNCH_MAGIC)
-                    .unwrap();
-                let handoff = serde_json::to_vec(&serde_json::json!({
-                    "protocol": launcher::services::COLLAB_LAUNCH_PROTOCOL_VERSION,
-                    "app_id": room.route.app_id,
-                    "workspace_id": room.route.cluster_id,
-                }))
-                .unwrap();
-                std::io::Write::write_all(
-                    &mut client,
-                    &launcher::services::COLLAB_LAUNCH_FRAMING
-                        .encode(&handoff)
-                        .unwrap(),
-                )
-                .unwrap();
-                let (rpc, server, client) = signed_worker::rpc_pair(
-                    room.state.clone(),
-                    973,
-                    server,
-                    client,
-                    None,
-                    room.directories.clone(),
-                );
-                let presentation = signed_worker::presentation(
-                    &room.route.cluster_id,
-                    &room.original.cert,
-                    &room.original.key,
-                );
-                let handle = rpc
-                    .join_channel(&room.route.channel_key(), &presentation)
-                    .await
-                    .unwrap();
-                let target = signed_worker::Connection {
-                    handle,
-                    server,
-                    client,
-                };
+                let (rpc, presentation, target) = room.launched(973).await;
                 let descriptor = descriptor("submit-report");
                 target
                     .handle
@@ -976,7 +993,8 @@ mod external_moderation_rpc_tests {
                     .join_channel(&foreign_route.channel_key(), &presentation)
                     .await
                     .unwrap();
-                refused(&foreign, &request, id, "mismatch").await;
+                // The foreign record is its own route hold, never handed this invocation.
+                refused(&foreign, &request, id, "no retained target invocation").await;
                 let mut replacement = descriptor;
                 replacement.resource = "replacement-store-resource".into();
                 target
@@ -986,6 +1004,73 @@ mod external_moderation_rpc_tests {
                     .unwrap();
                 refused(&target.handle, &request, id, "publication retired").await;
                 room.state.remove_connection(973);
+                assert!(
+                    target
+                        .handle
+                        .external_moderation(&request, id)
+                        .await
+                        .is_err()
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn external_moderation_rpc_holds_a_launched_app_to_the_same_execution_frontier() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let room = Room::new(true);
+                let (_rpc, _presentation, target) = room.launched(974).await;
+                assert!(
+                    room.state
+                        .host_workers
+                        .lock()
+                        .unwrap()
+                        .get(974, &room.route)
+                        .is_some_and(|admitted| admitted.worker_registration.is_some()),
+                    "the launched Store is the registered worker of its own route"
+                );
+                let descriptor = descriptor("submit-report");
+                target
+                    .handle
+                    .publish_actions(&room.route.app_id, std::slice::from_ref(&descriptor))
+                    .await
+                    .unwrap();
+                let stream = target.handle.subscribe_stable_invocations().await.unwrap();
+                let operation = operation(false);
+                let wire = room.invoke(
+                    974,
+                    &descriptor.resource,
+                    "submit-report",
+                    &argument(&operation),
+                );
+                let delivered = stream.read().await.unwrap();
+                assert_eq!(delivered.id, wire);
+                let id = delivered.invocation_uuid;
+                let request = Request {
+                    protocol: PROTOCOL.into(),
+                    invocation: uuid::Uuid::from_bytes(id).to_string(),
+                    operation,
+                };
+                refused(&target.handle, &request, id, "HTTPS").await;
+                let host = room
+                    .state
+                    .journal
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .host();
+                let cancelled = target
+                    .handle
+                    .cancel_durable_published_invocation(host.as_bytes(), &id)
+                    .await
+                    .unwrap();
+                assert!(cancelled.result.unwrap().cancellation_requested);
+                refused(&target.handle, &request, id, "retired or cancelled").await;
+                room.state.remove_connection(974);
                 assert!(
                     target
                         .handle

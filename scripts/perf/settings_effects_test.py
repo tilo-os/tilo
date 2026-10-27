@@ -5,16 +5,17 @@ from settings_effects import ALL_CATEGORIES, Z_CATEGORIES, validate_settings_typ
 
 class SettingsEffectsTests(unittest.TestCase):
     def fixture(self):
-        a=dict(app='so.tilo.settings',search_id='settings.search',ready=True,
-          local_search_text='',synchronized_search_query='',search_widget_text='',search_caret_byte=0,
-          search_focused=True,search_rect=[20,10,780,45],root_rect=[0,0,800,600],selected_category='network',
+        def search(text,focused=True):
+            return dict(open=True,focused=focused,text=text,caret_byte=len(text) if focused else None,rect=[744,6,772,34])
+        a=dict(app='so.tilo.settings',ready=True,search_query='',window_search=search(''),
+          root_rect=[0,0,800,600],selected_category='network',
           rendered_result_count=len(ALL_CATEGORIES),rendered_category_ids=list(ALL_CATEGORIES),narrow=False,sidebar_open=True,
           document_root='Root',document_actor='ab12',document_witness_kind='effective_heads_on_disposable_clone',
           effective_document_heads=['a'*64],original_pending_ops=3)
-        b=dict(a,local_search_text='z',search_widget_text='z',search_caret_byte=1)
-        c=dict(b,synchronized_search_query='z',rendered_result_count=len(Z_CATEGORIES),rendered_category_ids=list(Z_CATEGORIES))
-        d=dict(c,local_search_text='',search_widget_text='',search_caret_byte=0)
-        scenario=dict(warmup_steps=1,steps=[dict(kind='click',x=100,y=50),dict(kind='character',value='z'),dict(kind='key',key='backspace')])
+        b=dict(a,window_search=search('z'))
+        c=dict(b,search_query='z',rendered_result_count=len(Z_CATEGORIES),rendered_category_ids=list(Z_CATEGORIES))
+        d=dict(c,window_search=search(''))
+        scenario=dict(warmup_steps=1,steps=[dict(kind='click',x=1516,y=40),dict(kind='character',value='z'),dict(kind='key',key='backspace')])
         effects=[dict(id=0,before=a,after=a),dict(id=1,before=a,after=b),dict(id=2,before=c,after=d)]
         frames=[dict(cpu_frame_id=10,input_ids=[0],state=a),dict(cpu_frame_id=11,input_ids=[1],state=c),dict(cpu_frame_id=12,input_ids=[2],state=a)]
         return scenario,copy.deepcopy(effects),copy.deepcopy(frames)
@@ -23,7 +24,7 @@ class SettingsEffectsTests(unittest.TestCase):
     def test_fixture_contract_matches_current_production_catalogue(self):
         from pathlib import Path
         import re
-        source=(Path(__file__).resolve().parents[2]/'apps/settings/src/categories.rs').read_text()
+        source=(Path(__file__).resolve().parents[2]/'apps/settings-core/src/categories.rs').read_text()
         category_source=source.split('impl Category {',1)[1]
         slugs=dict(re.findall(r'Category::(\w+)\s*=>\s*"([^"\n]*)"',category_source.split('pub fn slug(',1)[1].split('#[cfg(test)]',1)[0]))
         order=re.findall(r'Category::(\w+)',category_source.split('pub const ALL:',1)[1].split('];',1)[0])
@@ -77,6 +78,17 @@ class SettingsEffectsTests(unittest.TestCase):
             with self.subTest(app=app),self.assertRaises(ValueError):
                 validate_settings_typing(s,self.lines(broken))
 
+    def test_find_opens_the_window_search_for_the_workload(self):
+        s,e,f=self.fixture()
+        s['steps'][0]=dict(kind='find')
+        closed=copy.deepcopy(e[0]['before']);closed['window_search'].update(open=False,focused=False,caret_byte=None)
+        e[0]['before']=closed
+        self.assertEqual(validate_settings_typing(s,self.lines(e)),2)
+        with self.subTest(case='find that leaves the field without the keyboard'):
+            broken=copy.deepcopy(e);broken[0]['after']=copy.deepcopy(closed)
+            broken[1]['before']=copy.deepcopy(closed)
+            with self.assertRaises(ValueError):validate_settings_typing(s,self.lines(broken))
+
     def test_exact_and_coalesced_transitions_validate_through_postdraw(self):
         with self.subTest(phase='exact transition and postdraw'):
             s,e,f=self.fixture()
@@ -93,8 +105,10 @@ class SettingsEffectsTests(unittest.TestCase):
 
     def test_wrong_incomplete_or_misplaced_typing_evidence_fails(self):
         with self.subTest(phase='malformed and wrong state'):
-            for k,v in [('ready',False),('app','other'),('search_focused',False),('search_caret_byte',0),('local_search_text','x'),('search_widget_text','x'),('effective_document_heads',['b'*64]),('document_actor','bc'),('original_pending_ops',4),('selected_category','about'),('narrow',True),('root_rect',[0,0,0,1])]:
-                s,e,f=self.fixture();e[1]['after'][k]=v
+            for k,v in [('ready',False),('app','other'),('window_search.focused',False),('window_search.caret_byte',0),('window_search.text','x'),('window_search.open',False),('effective_document_heads',['b'*64]),('document_actor','bc'),('original_pending_ops',4),('selected_category','about'),('narrow',True),('root_rect',[0,0,0,1])]:
+                s,e,f=self.fixture();target=e[1]['after']
+                if k.startswith('window_search.'):target=target['window_search'];k=k.split('.',1)[1]
+                target[k]=v
                 with self.subTest(key=k),self.assertRaises(ValueError):validate_settings_typing(s,self.lines(e))
         with self.subTest(phase='exact results not just narrowing'):
             for ids in [['appearance'],['appearance','time_date','accessibility'],['appearance','accessibility','about']]:
@@ -119,8 +133,10 @@ class SettingsEffectsTests(unittest.TestCase):
             s,e,f=self.fixture()
             for frames in [[],f[:-1],f[::-1],f+f[:1]]:
                 with self.assertRaises(ValueError):validate_settings_frame_states(s,self.lines(e,frames))
-            for k,v in [('synchronized_search_query',''),('search_caret_byte',0),('effective_document_heads',['b'*64]),('original_pending_ops',4)]:
-                broken=copy.deepcopy(f);broken[1]['state'][k]=v
+            for k,v in [('search_query',''),('window_search.caret_byte',0),('effective_document_heads',['b'*64]),('original_pending_ops',4)]:
+                broken=copy.deepcopy(f);target=broken[1]['state']
+                if k.startswith('window_search.'):target=target['window_search'];k=k.split('.',1)[1]
+                target[k]=v
                 with self.assertRaises(ValueError):validate_settings_frame_states(s,self.lines(e,broken))
 
 

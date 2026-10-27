@@ -261,8 +261,6 @@ call! {
     DeviceActions => serde_json::Value,
 }
 
-// ---- requests ---------------------------------------------------------------
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub protocol: u32,
@@ -560,8 +558,6 @@ pub struct Awake {
     pub off: bool,
 }
 
-// ---- shared vocabulary ------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SlotKind {
@@ -663,6 +659,61 @@ pub fn system_interfaces(text: &str) -> BTreeMap<String, u32> {
         .unwrap_or_default()
 }
 
+/// What a `system-interfaces.toml` declares, as this code reads it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Declaration {
+    /// There is no declaration: nothing is judged against one.
+    Absent,
+    /// There is one, but not in the form this code reads: written for
+    /// another version of the system (on 2026-10-22 a shell layer's
+    /// one-version-per-interface declaration met an image whose app host
+    /// read lists of versions).
+    Unreadable { detail: String },
+    /// Each interface's one version.
+    Versions { versions: BTreeMap<String, u32> },
+}
+
+impl Declaration {
+    /// The declaration in `text`, a `system-interfaces.toml`.
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        #[derive(Deserialize)]
+        struct File {
+            interfaces: BTreeMap<String, u32>,
+        }
+        match toml::from_str::<File>(text) {
+            Ok(file) => Self::Versions {
+                versions: file.interfaces,
+            },
+            Err(error) => Self::Unreadable {
+                detail: error.message().to_owned(),
+            },
+        }
+    }
+
+    /// The declaration at `path`; [`Self::Absent`] when there is no file.
+    #[must_use]
+    pub fn read(path: &std::path::Path) -> Self {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Self::parse(&text),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self::Absent,
+            Err(error) => Self::Unreadable {
+                detail: error.to_string(),
+            },
+        }
+    }
+
+    /// The versions, when this is a declaration this code reads.
+    #[must_use]
+    pub fn versions(&self) -> Option<&BTreeMap<String, u32>> {
+        match self {
+            Self::Versions { versions } => Some(versions),
+            Self::Absent | Self::Unreadable { .. } => None,
+        }
+    }
+}
+
 fn local() -> String {
     "local".into()
 }
@@ -722,7 +773,6 @@ pub struct BaseInfo {
     /// `toolchain`, `target` and `cargo_lock_hash` instead.
     #[serde(default)]
     pub builder_image_digest: Option<String>,
-    /// `rustc --version` of the image's toolchain.
     #[serde(default)]
     pub toolchain: Option<String>,
     /// Rust target triple of the image's toolchain (`rustc -vV`'s host).
@@ -845,8 +895,6 @@ pub enum Action {
         entry: String,
     },
 }
-
-// ---- results ----------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HelloResult {
@@ -1095,7 +1143,6 @@ pub struct HeldLayer {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotLayers {
     pub slot: String,
-    /// The generation it was on.
     pub generation: u64,
     /// The components that generation had swapped in, by name.
     pub components: Vec<String>,
@@ -1343,8 +1390,6 @@ pub struct AppInstallResult {
     pub output: String,
 }
 
-// ---- streaming jobs ---------------------------------------------------------
-
 /// What `tilo-vmd build` builds from the synced tree `SRC_DIR/<worktree>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1425,7 +1470,6 @@ pub struct JobLine {
 pub const JOB_LINE_PREFIX: &str = "tilo-vmd-job: ";
 
 impl JobLine {
-    /// The last job line in `stdout`.
     pub fn find(stdout: &str) -> Option<Self> {
         stdout
             .lines()
@@ -1516,7 +1560,6 @@ mod tests {
         // A client that sends no outputs gets the single default connector.
         let bare: SlotCreate = serde_json::from_str(r#"{"name":"a","kind":"headful"}"#).unwrap();
         assert!(bare.outputs.is_empty());
-        // Nor a test identity.
         assert!(!bare.identity);
     }
 
@@ -1619,7 +1662,6 @@ mod tests {
         assert!(serde_json::from_value::<Request>(injected).is_err());
     }
 
-    /// Slot names fit user names and base info reads what the dev image writes.
     #[test]
     fn slot_names_and_base_info_match_what_the_image_writes() {
         // Phase: slot_names_fit_user_names.

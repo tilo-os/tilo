@@ -61,6 +61,16 @@ pub const WORKER_NOT_ADMITTED: &str = "worker_not_admitted";
 /// A worker loses its jobs with its session to the relay, so nothing can
 /// still be running one once the relay is back.
 pub const RELAY_RESTARTED: &str = "relay_restarted";
+/// Why the relay refused a job before it began: its worker has no
+/// advertisement here (it never advertised, or its session ended).
+pub const WORKER_UNADVERTISED: &str = "worker_unadvertised";
+/// ... its worker's last advertisement expired before the job arrived.
+pub const WORKER_ADVERTISEMENT_EXPIRED: &str = "worker_advertisement_expired";
+/// ... its worker cannot run it (the app, an accelerator, its capacity) or
+/// the job itself is not admissible.
+pub const WORKER_INELIGIBLE: &str = "worker_ineligible";
+/// ... its id names another job already.
+pub const JOB_ID_CONFLICT: &str = "job_id_conflict";
 /// The placement reason when moving a job's inputs to every eligible
 /// worker would take longer than running the job where it was asked.
 pub const INPUTS_HEAVIER_THAN_GAIN: &str = "inputs_heavier_than_gain";
@@ -264,6 +274,10 @@ pub enum ComputeTransportError {
     InvalidAdvertisement,
     #[error("compute worker is unavailable or ineligible")]
     WorkerUnavailable,
+    #[error("compute worker has no advertisement on this relay")]
+    WorkerUnadvertised,
+    #[error("compute worker's advertisement expired")]
+    AdvertisementExpired,
     #[error("compute update metadata exceeds its bound")]
     MetadataTooLarge,
     #[error("compute update is not valid for the current lifecycle")]
@@ -274,6 +288,26 @@ pub enum ComputeTransportError {
     UnknownJob,
     #[error("compute store: {0}")]
     Store(#[from] StoreError),
+}
+
+impl ComputeTransportError {
+    /// The code a requester's job is refused with, for an error that refuses
+    /// one job rather than ending the requester's session: a forged route
+    /// or a store failure is not a refusal.
+    #[must_use]
+    pub const fn refusal_code(&self) -> Option<&'static str> {
+        match self {
+            Self::WorkerUnadvertised => Some(WORKER_UNADVERTISED),
+            Self::AdvertisementExpired => Some(WORKER_ADVERTISEMENT_EXPIRED),
+            Self::WorkerUnavailable | Self::InvalidAdvertisement => Some(WORKER_INELIGIBLE),
+            Self::ReplayConflict => Some(JOB_ID_CONFLICT),
+            Self::RouteMismatch
+            | Self::MetadataTooLarge
+            | Self::InvalidLifecycle
+            | Self::UnknownJob
+            | Self::Store(_) => None,
+        }
+    }
 }
 
 /// A worker's relay-to-worker round trip, smoothed across observations.
@@ -542,7 +576,6 @@ impl Refused {
 /// Placement weighed against moving the inputs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WeighedPlacement {
-    /// Run it on this worker.
     Worker(Placement),
     /// Run it where it was asked: moving the inputs to every eligible
     /// worker takes longer than the run there took.
@@ -653,11 +686,6 @@ struct ComputeSubscriber {
 
 impl ComputeTransportState {
     /// Publish or refresh an authenticated worker advertisement.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the advertisement is malformed, expired, or does
-    /// not belong to the authenticated worker and workspace.
     pub fn advertise(
         &mut self,
         authenticated_worker: DeviceKey,
@@ -704,11 +732,6 @@ impl ComputeTransportState {
     /// advertising in this workspace, by the same eligibility rule
     /// [`Self::accept_request`] admits by. An advertisement that no longer
     /// validates (expired, or never fresh) counts as offline.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NoEligibleWorker`], with each advertised worker's reason,
-    /// when none can take the job.
     pub fn place(
         &self,
         needs: &ComputeRequirements<'_>,
@@ -1098,10 +1121,6 @@ impl ComputeTransportState {
     ///
     /// Blocking: it scans the workspace's job records, so it runs off the
     /// async runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first store or routing failure.
     pub fn fail_worker_jobs(
         &mut self,
         store: &WorkspaceStore,
@@ -1138,10 +1157,6 @@ impl ComputeTransportState {
     ///
     /// Blocking: it scans the workspace's job records and the queues of
     /// their requesters.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first store or routing failure.
     pub fn fail_unfinished_jobs(
         &mut self,
         store: &WorkspaceStore,
@@ -1271,11 +1286,6 @@ impl ComputeTransportState {
     }
 
     /// Validate and durably claim a new compute request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for forged or conflicting routes, unavailable workers,
-    /// invalid job specifications, or durable-store failures.
     pub fn accept_request(
         &self,
         authenticated_requester: DeviceKey,
@@ -1290,7 +1300,10 @@ impl ComputeTransportState {
         let worker = self
             .workers
             .get(&spec.worker)
-            .ok_or(ComputeTransportError::WorkerUnavailable)?;
+            .ok_or(ComputeTransportError::WorkerUnadvertised)?;
+        if now_ms >= worker.expires_at_ms {
+            return Err(ComputeTransportError::AdvertisementExpired);
+        }
         worker.validate(spec.worker, now_ms)?;
         admit_compute_job(
             spec,
@@ -1313,11 +1326,6 @@ impl ComputeTransportState {
     }
 
     /// Record a cancellation request for an existing job.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the requester does not own the route, the job is
-    /// unknown, its binding is inconsistent, or durable persistence fails.
     pub fn accept_cancel(
         &self,
         authenticated_requester: DeviceKey,
@@ -1342,11 +1350,6 @@ impl ComputeTransportState {
     }
 
     /// Apply a non-terminal lifecycle update from the job's bound worker.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for forged routes, invalid lifecycle transitions,
-    /// oversized metadata, unknown jobs, or durable-store failures.
     pub fn accept_status(
         &self,
         authenticated_worker: DeviceKey,
@@ -1371,11 +1374,6 @@ impl ComputeTransportState {
 
     /// Apply a terminal result from the job's bound worker. A completed job
     /// teaches placement which of its inputs the worker held.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for forged routes, non-terminal or invalid lifecycle
-    /// transitions, oversized metadata, unknown jobs, or store failures.
     pub fn accept_result(
         &mut self,
         authenticated_worker: DeviceKey,
@@ -1625,7 +1623,6 @@ mod tests {
             "nothing advertised, nothing placed"
         );
 
-        // A busy worker on battery and an idle one on external power.
         let mut laptop = advertisement(false);
         laptop.worker = [5; 32];
         laptop.power = PowerAvailability::Battery(60);
@@ -1772,7 +1769,6 @@ mod tests {
             state.place_weighed(&needs.requirements(), Some(&light), 200).unwrap(),
             WeighedPlacement::Worker(placement) if placement.worker == [2; 32]
         ));
-        // Without a weight, placement is unchanged.
         assert!(matches!(
             state.place_weighed(&needs.requirements(), None, 200).unwrap(),
             WeighedPlacement::Worker(placement) if placement.worker == [2; 32]
@@ -1794,7 +1790,6 @@ mod tests {
         assert_eq!(placement.worker, [5; 32]);
         assert_eq!(placement.rank.power, crate::placement::PowerClass::Battery);
 
-        // A reattached worker's rate is unknown again.
         let (sender, _receiver) = mpsc::channel(1);
         let (disconnect, _disconnected) = mpsc::channel(1);
         state.attach([2; 32], sender, disconnect, None);
@@ -2217,14 +2212,18 @@ mod tests {
     /// the photographs held restores placement on the worker.
     #[test]
     fn a_worker_kept_local_on_a_stale_fetch_is_tried_again() {
-        for (rate, synced) in [(LOOPBACK, 45), (PHONE_UPLINK, 45)] {
+        // Each batch run on the worker writes its job's durable records, so
+        // the day ends soon after the last try that matters: every batch
+        // placed after it repeats the same decision at the same disk cost,
+        // which on a loaded machine's slow fsyncs is minutes, not coverage.
+        for (rate, synced, last) in [(LOOPBACK, 45, 100), (PHONE_UPLINK, 45, 300)] {
             let mut day = ThumbnailDay::new(rate, Some(synced));
             // Within the window the batch stays, however much it forwent.
             let early = day.decide(1..=9);
             assert_eq!((early.local, early.worker), (9, 0), "{early:?}");
             assert!(early.reprobes.is_empty(), "{early:?}");
 
-            let late = day.decide(10..=300);
+            let late = day.decide(10..=last);
             let first = late.reprobes[0];
             if rate == LOOPBACK {
                 // 2.9 s of fetching is covered by seven batches; the window,
@@ -2241,10 +2240,10 @@ mod tests {
             let restored = *late.reprobes.last().unwrap();
             assert!(restored >= synced);
             // Every batch after the try that found them held runs there.
-            assert_eq!(late.worker, 300_u64.saturating_sub(restored), "{late:?}");
+            assert_eq!(late.worker, last.saturating_sub(restored), "{late:?}");
             assert_eq!(
                 late.local,
-                291_u64
+                last.saturating_sub(9)
                     .saturating_sub(u64::try_from(late.reprobes.len()).unwrap())
                     .saturating_sub(late.worker),
                 "{late:?}"
@@ -2416,7 +2415,6 @@ mod tests {
                 },
             )
             .unwrap();
-        // A second job, still Pending, and another worker's job.
         let mut pending = spec();
         pending.job_id = [10; 16];
         state
@@ -2543,8 +2541,6 @@ mod tests {
                 },
             )
             .unwrap();
-        // A second job, still Pending, its request still queued to the
-        // worker.
         let mut pending = spec();
         pending.job_id = [10; 16];
         state
@@ -2765,7 +2761,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn compute_transport_binds_requests_routes_and_results() {
-        // Phase `request_binding_survives_restart_and_replay_is_idempotent`.
         {
             let root = tempfile::tempdir().unwrap();
             let (state, store) = admitted(root.path());
@@ -2794,7 +2789,6 @@ mod tests {
                 Err(ComputeTransportError::ReplayConflict)
             ));
         }
-        // Phase `forged_route_and_stale_or_ineligible_worker_are_rejected`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = open_store(root.path());
@@ -2808,7 +2802,7 @@ mod tests {
             ));
             assert!(matches!(
                 state.accept_request([1; 32], 7, 10_000, &store, &spec()),
-                Err(ComputeTransportError::InvalidAdvertisement)
+                Err(ComputeTransportError::AdvertisementExpired)
             ));
 
             let mut gpu_job = spec();
@@ -2821,10 +2815,9 @@ mod tests {
             state.remove_worker(&[2; 32]);
             assert!(matches!(
                 state.accept_request([1; 32], 7, 200, &store, &spec()),
-                Err(ComputeTransportError::WorkerUnavailable)
+                Err(ComputeTransportError::WorkerUnadvertised)
             ));
         }
-        // Phase `cancellation_is_durable_idempotent_and_route_bound`.
         {
             let root = tempfile::tempdir().unwrap();
             let (state, store) = admitted(root.path());
@@ -2848,7 +2841,6 @@ mod tests {
                 Err(ComputeTransportError::RouteMismatch)
             ));
         }
-        // Phase `status_result_are_monotonic_bounded_and_worker_bound`.
         {
             let root = tempfile::tempdir().unwrap();
             let (mut state, store) = admitted(root.path());
@@ -2896,7 +2888,6 @@ mod tests {
                 ComputeRouteOutcome::Duplicate
             );
         }
-        // Phase `partitioned_route_queues_on_dedicated_protocol_and_live_route_does_not`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = open_store(root.path());

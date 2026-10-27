@@ -1,4 +1,3 @@
-//! A replica without the channel key keeps sealed writes as their record.
 use super::*;
 use crate::admission_tests::seeded;
 use crate::{InputDisposition, TransportOrigin, peer_handle};
@@ -19,7 +18,11 @@ fn host() -> (StatePeer, SigningKey, SigningKey, SystemTime) {
     )
     .unwrap();
     receiver.select_admission_v5().unwrap();
-    for message in native.bootstrap_messages(&a, now).unwrap() {
+    for message in native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap()
+    {
         receiver.receive_from(origin(&a), message, now).unwrap();
     }
     (receiver, a, b, now)
@@ -176,7 +179,10 @@ fn a_plaintext_write_after_a_sealed_one_is_refused_as_a_downgrade() {
     host.receive_from(origin(&b), sealed(&host, &b, 1, b"sealed"), now)
         .unwrap();
     let mut restored = restore(&host, now).unwrap();
-    let plaintext = restored.publish_incremental(APP, RECORD, Vec::new(), &a, now);
+    let plaintext =
+        restored
+            .publication_mut()
+            .publish_incremental(APP, RECORD, Vec::new(), &a, now);
     assert!(plaintext.is_err(), "the record stays encrypted");
 }
 
@@ -198,6 +204,7 @@ fn a_revoked_author_cannot_add_sealed_history() {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(host.authority().clone()),
             revocations: vec![revocation],
+            successions: Vec::new(),
         },
         now,
     )
@@ -371,6 +378,7 @@ fn the_key_holder_admits_the_opened_plaintext_and_keeps_the_record_encrypted() {
 
     assert!(
         restored
+            .publication_mut()
             .publish_incremental(APP, RECORD, Vec::new(), &a, now)
             .is_err(),
         "a plaintext write to the encrypted record is a downgrade"
@@ -447,6 +455,7 @@ fn the_key_holder_never_opens_a_write_that_fails_its_checks() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(revoked.authority().clone()),
                 revocations: vec![revocation],
+                successions: Vec::new(),
             },
             now,
         )

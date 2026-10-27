@@ -6,9 +6,12 @@ use std::{
     rc::Rc,
 };
 
-use crate::feedback::{Composer, Consent, DeliveryState, Subject};
+use crate::feedback::{Composer, Consent, DeliveryState, PickedReport, Subject};
 use crate::i18n::EmbeddedCatalog;
 use crate::prelude::*;
+
+#[path = "feedback_composer_report.rs"]
+mod report;
 
 static CATALOG: EmbeddedCatalog =
     EmbeddedCatalog::new("en-US", &[("en-US", include_str!("feedback_composer.ftl"))]);
@@ -19,7 +22,19 @@ pub struct FeedbackServices {
     controller: Rc<RefCell<Composer>>,
     presentation: Rc<RefCell<Option<Presentation>>>,
     mounted: Rc<Cell<bool>>,
+    /// The model the host lends for reviewing reports, if any, and what
+    /// the review calls it.
+    models: Rc<RefCell<(crate::models::Models, String)>>,
+    pass: report::Pass,
+    /// Since when the report on its way waits for its destination's receipt.
+    awaiting: Rc<Cell<Option<crate::time::Instant>>>,
 }
+
+/// How soon a report waiting for its receipt is first looked at again: the
+/// destination may still be taking in its picture.
+const RECEIPT_CHECK_FIRST: crate::time::Duration = crate::time::Duration::from_secs(1);
+/// The longest a waiting report goes without being looked at again.
+const RECEIPT_CHECK_LAST: crate::time::Duration = crate::time::Duration::from_secs(10);
 
 /// What the one mounted composer shows of the controller's state.
 #[derive(Clone)]
@@ -29,13 +44,27 @@ struct Presentation {
     shown: LocalState<String>,
     fields: LocalState<Vec<crate::feedback::ContextField>>,
     pixels: LocalState<Option<Vec<u8>>>,
+    /// What each picked part is called, while reporting picks.
+    picks: LocalState<Option<Vec<String>>>,
+    review: LocalState<Option<report::ReviewShown>>,
+    /// A note per picked part, by its place.
+    notes: Rc<Vec<LocalState<String>>>,
+    /// What the report sheet shows of the composer: made with the composer
+    /// window, so the desktop's own code reaches it only through this.
+    report: Rc<ReportShown>,
 }
+
+/// The picks' titles and the review, as the report sheet shows them.
+type ReportShown = dyn Fn(&Composer) -> (Option<Vec<String>>, Option<report::ReviewShown>);
 
 impl Presentation {
     /// Show the controller's current review and subject: a review the
     /// controller discarded must not stay on screen as what would be sent.
     fn show(&self, composer: &Composer) {
         self.subject.set(composer.subject().cloned());
+        let (picks, review) = (self.report)(composer);
+        self.picks.set(picks);
+        self.review.set(review);
         if let Some(review) = composer.preview() {
             let feedback = review.feedback();
             self.shown.set(feedback.text.clone());
@@ -52,13 +81,33 @@ impl Presentation {
 
 impl FeedbackServices {
     /// Private outbox writes need a wake independently of the ephemeral draft.
-    /// Transport retries remain explicit; only pending local persistence polls.
+    /// Pending local persistence polls; a report waiting for its receipt is
+    /// looked at again, less often the longer it waits, so a receipt that
+    /// arrives later is read and the destination is asked again.
     #[must_use]
     pub fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        if self.pass.try_borrow().is_ok_and(|pass| pass.is_some()) {
+            return crate::time::now().checked_add(crate::time::Duration::from_millis(50));
+        }
         let controller = self.controller.try_borrow().ok()?;
-        match controller.state().ok()? {
+        let state = controller.state().ok()?;
+        if state != Some(DeliveryState::AwaitingReceipt) {
+            self.awaiting.set(None);
+        }
+        match state {
             Some(DeliveryState::Saving) => {
                 crate::time::now().checked_add(crate::time::Duration::from_millis(100))
+            }
+            Some(DeliveryState::AwaitingReceipt) => {
+                let now = crate::time::now();
+                let since = self.awaiting.get().unwrap_or(now);
+                self.awaiting.set(Some(since));
+                let delay = now
+                    .saturating_duration_since(since)
+                    .checked_div(4)
+                    .unwrap_or_default()
+                    .clamp(RECEIPT_CHECK_FIRST, RECEIPT_CHECK_LAST);
+                now.checked_add(delay)
             }
             _ => None,
         }
@@ -70,7 +119,40 @@ impl FeedbackServices {
             controller,
             presentation: Rc::default(),
             mounted: Rc::default(),
+            models: Rc::default(),
+            pass: Rc::default(),
+            awaiting: Rc::default(),
         }
+    }
+
+    /// Lend the model that looks over reports before they are sent, as the
+    /// host's settings chose it, and what the review calls it to the
+    /// reporter: the provider and model ("Anthropic claude-haiku-5-5").
+    pub fn set_models(&self, models: crate::models::Models, name: impl Into<String>) {
+        *self.models.borrow_mut() = (models, name.into());
+    }
+
+    /// Start a report about what the person picked; the composer opens on
+    /// it.
+    ///
+    /// # Errors
+    /// Refuses while the controller is busy in an effect.
+    pub fn begin_report(&self, picked: PickedReport) -> Result<(), crate::feedback::Error> {
+        let mut controller = self
+            .controller
+            .try_borrow_mut()
+            .map_err(|_| crate::feedback::Error::Invalid("composer busy"))?;
+        controller.begin_report(picked);
+        self.pass.borrow_mut().take();
+        if let Ok(presentation) = self.presentation.try_borrow()
+            && let Some(presentation) = presentation.as_ref()
+        {
+            for note in presentation.notes.iter() {
+                note.set(String::new());
+            }
+            presentation.show(&controller);
+        }
+        Ok(())
     }
 
     /// Name the window the next report is about, as the desktop chose it
@@ -99,6 +181,7 @@ impl FeedbackServices {
     /// # Errors
     /// Reports a busy controller or the actual storage/transport failure.
     pub fn pump(&self) -> Result<(), crate::feedback::Error> {
+        self.poll_model();
         let result = self
             .controller
             .try_borrow_mut()
@@ -114,6 +197,28 @@ impl FeedbackServices {
             }
         }
         result
+    }
+}
+
+impl FeedbackServices {
+    /// Lay a model's answer over the review once it is in.
+    fn poll_model(&self) {
+        let (Ok(mut pass), Ok(mut controller)) =
+            (self.pass.try_borrow_mut(), self.controller.try_borrow_mut())
+        else {
+            return;
+        };
+        let Some(running) = pass.as_mut() else {
+            return;
+        };
+        if running(&mut controller) {
+            *pass = None;
+            if let Ok(presentation) = self.presentation.try_borrow()
+                && let Some(presentation) = presentation.as_ref()
+            {
+                presentation.show(&controller);
+            }
+        }
     }
 }
 
@@ -142,6 +247,9 @@ pub struct FeedbackDraft {
     pub include_context: bool,
     /// Whether a single masked app screenshot is included.
     pub include_screenshot: bool,
+    /// "This was slow": a report about picked parts carries the last
+    /// frame timings.
+    pub slow: bool,
 }
 
 impl FeedbackDraft {
@@ -157,7 +265,7 @@ impl FeedbackDraft {
 impl FeedbackDraft {}
 
 #[derive(Clone, Debug, Effect)]
-#[effect(operation = "feedback.compose", device_only)]
+#[effect(operation = "feedback.compose")]
 pub enum FeedbackEffect {
     /// Inspect exactly what will leave this device.
     Review,
@@ -176,6 +284,11 @@ pub enum FeedbackEffect {
     },
     /// Remove the screenshot from the review.
     RemoveScreenshot,
+    /// Show a span the review hid, or hide it again.
+    Toggle {
+        #[param("Which hidden span, by its place in the review")]
+        index: usize,
+    },
 }
 
 /// Mounted inside desktop chrome, never as an overlapping application window.
@@ -265,70 +378,89 @@ impl ResourceApp for FeedbackComposer {
             shown: LocalState::new(String::new()),
             fields: LocalState::new(Vec::new()),
             pixels: LocalState::new(None),
+            picks: LocalState::new(None),
+            review: LocalState::new(None),
+            notes: Rc::new(
+                (0..crate::feedback::report::MAX_PICKS)
+                    .map(|_| LocalState::new(String::new()))
+                    .collect(),
+            ),
+            report: Rc::new(|composer: &Composer| {
+                (report::titles(composer), report::ReviewShown::of(composer))
+            }),
         };
         let screenshots = install_effects(cx, &presentation);
-        let subject = about(cx, &presentation.subject);
-        let fields_view = reviewed_fields(cx, &presentation.fields);
-        let preview = cx.switch(&presentation.shown, |_, shown| {
-            Box::new(
-                Text::new("feedback-reviewed-text")
-                    .with_arg("value", shown.clone())
-                    .with_id("feedback-preview"),
-            )
-        });
-        let picture = cx.switch(&presentation.pixels, |_, png| {
-            png.as_ref()
-                .and_then(|bytes| crate::widget::Image::from_encoded(bytes).ok())
-                .map_or_else(
-                    || Box::new(group()) as Element,
-                    |image| Box::new(image.with_alt("feedback-screenshot-preview")) as Element,
-                )
-        });
-        let mut choices = crate::column![
-            Text::new("feedback-title"),
-            cx.input(FeedbackDraft::paths().issue)
-                .with_id("feedback-issue")
-                .with_placeholder("feedback-describe")
-                .multiline(true),
-        ]
-        .push(subject);
-        // A host that cannot capture is never offered the attachment.
-        if screenshots {
-            choices = choices.push(Box::new(cx.checkbox(
-                "feedback-screenshot",
-                FeedbackDraft::paths().include_screenshot,
-            )));
-        }
-        let mut sending = group().push(picture);
-        if screenshots {
-            sending = sending.push(Box::new(cx.effect_button(
-                "feedback-remove-screenshot",
-                &FeedbackEffect::RemoveScreenshot,
-            )));
-        }
-        let sending = sending
-            .push(Box::new(
-                cx.effect_button("feedback-submit", &FeedbackEffect::Submit),
-            ))
-            .push(Box::new(
-                Text::from_state(&presentation.status, Clone::clone)
-                    .with_id("feedback-status")
-                    .with_live(crate::a11y::Politeness::Polite),
-            ))
-            .push(Box::new(
-                cx.effect_button("feedback-retry", &FeedbackEffect::Retry),
-            ));
-        Box::new(
-            choices
-                .push(Box::new(Text::new("feedback-privacy")))
-                .push(Box::new(
-                    cx.effect_button("feedback-review", &FeedbackEffect::Review),
-                ))
-                .push(preview)
-                .push(fields_view)
-                .push(Box::new(sending)),
-        )
+        let shown = presentation.clone();
+        cx.switch(&presentation.picks, move |part, picks| match picks {
+            Some(titles) => report::sheet(part, &shown, titles),
+            None => typed(part, &shown, screenshots),
+        })
     }
+}
+
+/// The composer for a report typed out rather than picked.
+fn typed(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation, screenshots: bool) -> Element {
+    let subject = about(cx, &presentation.subject);
+    let fields_view = reviewed_fields(cx, &presentation.fields);
+    let preview = cx.switch(&presentation.shown, |_, shown| {
+        Box::new(
+            Text::new("feedback-reviewed-text")
+                .with_arg("value", shown.clone())
+                .with_id("feedback-preview"),
+        )
+    });
+    let picture = cx.switch(&presentation.pixels, |_, png| {
+        png.as_ref()
+            .and_then(|bytes| crate::widget::Image::from_encoded(bytes).ok())
+            .map_or_else(
+                || Box::new(group()) as Element,
+                |image| Box::new(image.with_alt("feedback-screenshot-preview")) as Element,
+            )
+    });
+    let mut choices = crate::column![
+        Text::new("feedback-title"),
+        cx.input(FeedbackDraft::paths().issue)
+            .with_id("feedback-issue")
+            .with_placeholder("feedback-describe")
+            .multiline(true),
+    ]
+    .push(subject);
+    // A host that cannot capture is never offered the attachment.
+    if screenshots {
+        choices = choices.push(Box::new(cx.checkbox(
+            "feedback-screenshot",
+            FeedbackDraft::paths().include_screenshot,
+        )));
+    }
+    let mut sending = group().push(picture);
+    if screenshots {
+        sending = sending.push(Box::new(cx.effect_button(
+            "feedback-remove-screenshot",
+            &FeedbackEffect::RemoveScreenshot,
+        )));
+    }
+    let sending = sending
+        .push(Box::new(
+            cx.effect_button("feedback-submit", &FeedbackEffect::Submit),
+        ))
+        .push(Box::new(
+            Text::from_state(&presentation.status, Clone::clone)
+                .with_id("feedback-status")
+                .with_live(crate::a11y::Politeness::Polite),
+        ))
+        .push(Box::new(
+            cx.effect_button("feedback-retry", &FeedbackEffect::Retry),
+        ));
+    Box::new(
+        choices
+            .push(Box::new(Text::new("feedback-privacy")))
+            .push(Box::new(
+                cx.effect_button("feedback-review", &FeedbackEffect::Review),
+            ))
+            .push(preview)
+            .push(fields_view)
+            .push(Box::new(sending)),
+    )
 }
 
 /// What the report is about, and the choice to include it; nothing while
@@ -411,13 +543,13 @@ fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> b
         let _lease = &lease;
         let Some(services) = &services else {
             shown.status.set("feedback-unconfigured".to_owned());
-            return Err("feedback-unconfigured".to_owned());
+            return Err(said("feedback-unconfigured"));
         };
         let draft = effect_cx.live().with(Clone::clone);
         let mut composer = services
             .controller
             .try_borrow_mut()
-            .map_err(|_| "feedback-busy".to_owned())?;
+            .map_err(|_| said("feedback-busy"))?;
         // Context is only offered while there is a window to describe; the
         // review shows exactly what is attached either way. A screenshot the
         // host cannot take is refused rather than dropped.
@@ -425,20 +557,41 @@ fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> b
             context: draft.include_context && composer.subject().is_some(),
             screenshot: draft.include_screenshot,
         };
-        let result = match effect {
-            FeedbackEffect::Review => composer.review(&draft.issue, consent),
-            FeedbackEffect::Submit => {
+        // A report about picked parts reads the notes beside each part.
+        let picked = composer.picked().map(|draft| draft.picks.len());
+        let words = picked.map(|picks| report::words(&draft, &shown, picks));
+        let result = match (effect, &words) {
+            (FeedbackEffect::Review, Some(words)) => {
+                let reviewed = composer.review_report(words);
+                if reviewed.is_ok() {
+                    let (models, name) = services.models.borrow().clone();
+                    *services.pass.borrow_mut() =
+                        report::ModelPass::start(&models, &name, &mut composer, words).map(
+                            |mut pass| {
+                                Box::new(move |composer: &mut Composer| pass.poll(composer))
+                                    as Box<report::PassPoll>
+                            },
+                        );
+                }
+                reviewed
+            }
+            (FeedbackEffect::Review, None) => composer.review(&draft.issue, consent),
+            (FeedbackEffect::Submit, _) => {
                 let id = effect_cx
                     .invocation()
-                    .ok_or_else(|| "feedback-busy".to_owned())?
+                    .ok_or_else(|| said("feedback-busy"))?
                     .0
                     .simple()
                     .to_string();
-                composer.submit(id, &draft.issue, consent)
+                match &words {
+                    Some(words) => composer.submit_report(id, words),
+                    None => composer.submit(id, &draft.issue, consent),
+                }
             }
-            FeedbackEffect::Retry => composer.pump(),
-            FeedbackEffect::Redact { key, start, end } => composer.hide(&key, start, end),
-            FeedbackEffect::RemoveScreenshot => composer.remove_screenshot(),
+            (FeedbackEffect::Retry, _) => composer.pump(),
+            (FeedbackEffect::Redact { key, start, end }, _) => composer.hide(&key, start, end),
+            (FeedbackEffect::RemoveScreenshot, _) => composer.remove_screenshot(),
+            (FeedbackEffect::Toggle { index }, _) => composer.toggle_redaction(index),
         };
         shown.show(&composer);
         let key = if let Err(error) = &result {
@@ -446,17 +599,27 @@ fn install_effects(cx: &ViewCx<FeedbackDraft>, presentation: &Presentation) -> b
         } else {
             match composer
                 .state()
-                .map_err(|_| "feedback-retry-needed".to_owned())?
+                .map_err(|_| said("feedback-retry-needed"))?
             {
                 None => "feedback-reviewed",
                 Some(state) => delivery_label(&state),
             }
         };
         shown.status.set(key.to_owned());
-        result.map_err(|_| key.to_owned())?;
+        result.map_err(|error| {
+            // The person reads what to do; the log keeps why, which names
+            // no content of the report.
+            tracing::warn!(%error, "a feedback action did not run");
+            said(key)
+        })?;
         Ok(Effected::done())
     });
     screenshots
+}
+
+/// Why an action did not run, as the person reads it where it is said.
+fn said(key: &str) -> String {
+    ui_core::i18n::I18nManager::lookup(key, None)
 }
 
 fn error_label(error: &crate::feedback::Error) -> &'static str {
@@ -624,7 +787,11 @@ mod tests {
         services.pump().expect("durable approval sends");
         frame.relayout();
         assert_eq!(transport.borrow().submissions.len(), 1);
-        assert!(services.next_wake_deadline().is_none());
+        // Waiting for the receipt, the composer looks again on its own.
+        let again = services.next_wake_deadline().expect("receipt wake");
+        let now = crate::time::now();
+        assert!(again >= now.checked_add(RECEIPT_CHECK_FIRST / 2).unwrap());
+        assert!(again <= now.checked_add(RECEIPT_CHECK_LAST).unwrap());
         assert!(
             frame
                 .inspection_json()
@@ -637,6 +804,29 @@ mod tests {
                 .expect("inspection")
                 .contains("Feedback received")
         );
+        // The receipt arrives later; the wake reads it with no click.
+        let submission = transport.borrow().submissions[0].clone();
+        transport.borrow_mut().receipt = Some(Receipt {
+            id: submission.id.clone(),
+            digest: submission.digest().expect("digest"),
+            destination: submission.destination,
+            report: "chat.message:m_feedback_later".into(),
+        });
+        services.pump().expect("receipt wake");
+        for write in storage.drain() {
+            storage
+                .acknowledge(write.revision, Ok(()))
+                .expect("host commit");
+        }
+        services.pump().expect("receipt kept");
+        frame.relayout();
+        assert!(
+            frame
+                .inspection_json()
+                .expect("inspection")
+                .contains("Feedback received")
+        );
+        assert!(services.next_wake_deadline().is_none());
     }
 
     #[test]
@@ -727,10 +917,7 @@ mod tests {
             })
         );
         services
-            .about(Some(Subject {
-                app: "so.tilo.books".into(),
-                name: "Books".into(),
-            }))
+            .about(Some(Subject::of_app("so.tilo.books", "Books")))
             .expect("the desktop names the window feedback is about");
         assert_literal_second_review(&mut frame, &transport);
         frame.close_components();
@@ -792,5 +979,198 @@ mod tests {
             .map(|field| field.value.as_str())
             .collect();
         assert_eq!(context, ["App: Books (so.tilo.books)", "feedback-privacy"]);
+    }
+
+    /// A composer reporting one picked chat row, its message by someone here.
+    fn picked_services(transport: &Rc<RefCell<Transport>>) -> FeedbackServices {
+        use crate::feedback::report::{Area, Pick, PickedText, ReportDraft, TextKind};
+        let controller = Rc::new(RefCell::new(
+            Composer::new(
+                Destination {
+                    room: "lounge".into(),
+                    provider: "record:so.tilo.chat:".into(),
+                    channel: "c_feedback".into(),
+                },
+                Outbox::open(
+                    Rc::new(MemoryStore::new()),
+                    StorageKey::package("feedback-outbox"),
+                )
+                .expect("private outbox"),
+                Box::new(Host(Rc::clone(transport))),
+            )
+            .expect("admitted destination"),
+        ));
+        let services = FeedbackServices::new(controller);
+        let pick = Pick {
+            app: "so.tilo.chat".into(),
+            app_name: "Chat".into(),
+            build: Some("abc123".into()),
+            path: "Chat[0]/Row[1]".into(),
+            role: "ListItem".into(),
+            kind: None,
+            caption: "A message in Chat".into(),
+            label: None,
+            record: None,
+            area: Area {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 20.0,
+            },
+            texts: vec![
+                PickedText {
+                    kind: TextKind::Content,
+                    text: "Thanks Ada Lovelace".into(),
+                    area: None,
+                },
+                PickedText {
+                    kind: TextKind::Interface,
+                    text: "Reply".into(),
+                    area: None,
+                },
+            ],
+        };
+        services
+            .begin_report(PickedReport {
+                draft: ReportDraft {
+                    picks: vec![pick],
+                    names: vec!["Ada Lovelace".into()],
+                    ..ReportDraft::default()
+                },
+                crops: Vec::new(),
+            })
+            .expect("report begins");
+        services
+    }
+
+    #[test]
+    fn a_picked_report_shows_exactly_what_is_sent_and_toggles_hidden_spans() {
+        let transport = Rc::new(RefCell::new(Transport::default()));
+        let services = picked_services(&transport);
+        let component = prepare(Some(services), "device", "guest", 42).expect("private composer");
+        let mut frame = FrameHarness::from_component(
+            component,
+            (720, 900),
+            ComponentRunnerInputs::from_native_process(),
+        )
+        .expect("production component");
+        frame.relayout();
+        let sheet = frame.inspection_json().expect("inspection");
+        assert!(sheet.contains("Report a problem"), "the report sheet shows");
+        assert!(sheet.contains("1. A message in Chat"), "{sheet}");
+        describe(&mut frame, "The row is cut off").expect("summary");
+        call(&mut frame, "review", &json!({})).expect("review");
+        frame.relayout();
+        let preview = frame.inspection();
+        let shown = find(&preview.root)
+            .and_then(|node| node.semantics.as_ref())
+            .and_then(|node| node.name.clone())
+            .expect("the outgoing report is shown");
+        assert!(shown.contains("The row is cut off"), "{shown}");
+        assert!(shown.contains("Reply"), "{shown}");
+        assert!(!shown.contains("Ada"), "content is hidden: {shown}");
+        call(&mut frame, "toggle", &json!({"index": 0})).expect("show the message");
+        frame.relayout();
+        let preview = frame.inspection();
+        let shown = find(&preview.root)
+            .and_then(|node| node.semantics.as_ref())
+            .and_then(|node| node.name.clone())
+            .expect("the outgoing report is shown");
+        assert!(shown.contains("Thanks \u{2039}name\u{203A}"), "{shown}");
+        assert!(
+            frame
+                .inspection_json()
+                .expect("inspection")
+                .contains("Checked on this device by rules"),
+            "with no model, the review says the rules checked it"
+        );
+        call(&mut frame, "submit", &json!({})).expect("send");
+        let sent = transport.borrow();
+        let submission = sent.submissions.first().expect("sent");
+        assert_eq!(submission.feedback.selections.len(), 1);
+        assert!(
+            !serde_json::to_string(submission)
+                .unwrap()
+                .contains("Lovelace")
+        );
+    }
+
+    /// A model the host lends looks over the review: it is asked the model
+    /// view alone, and the review says by name which model checked it.
+    #[test]
+    fn a_lent_model_reviews_the_model_view_and_the_review_names_it() {
+        use crate::models::{
+            CompletionFuture, Content, Message, ModelBackend, ModelRequest, ModelResponse, Role,
+            StopReason, Usage,
+        };
+        struct Reviewer(Rc<RefCell<Vec<String>>>);
+        impl ModelBackend for Reviewer {
+            fn complete<'a>(&'a self, request: &'a ModelRequest) -> CompletionFuture<'a> {
+                let asked: String = request
+                    .messages
+                    .iter()
+                    .flat_map(|message| &message.content)
+                    .filter_map(|content| match content {
+                        Content::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let index = asked
+                    .lines()
+                    .find_map(|line| line.strip_suffix("] Reply")?.strip_prefix('['))
+                    .unwrap_or("0")
+                    .to_owned();
+                self.0.borrow_mut().push(asked);
+                Box::pin(async move {
+                    Ok(ModelResponse {
+                        message: Message::text(
+                            Role::Assistant,
+                            format!("{{\"hide\":[{{\"text\":{index},\"quote\":\"Reply\"}}]}}"),
+                        ),
+                        stop_reason: StopReason::EndTurn,
+                        usage: Usage::default(),
+                    })
+                })
+            }
+        }
+        let transport = Rc::new(RefCell::new(Transport::default()));
+        let services = picked_services(&transport);
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        services.set_models(
+            crate::models::Models::new(Rc::new(Reviewer(Rc::clone(&asked)))),
+            "Anthropic claude-haiku-5-5",
+        );
+        let component =
+            prepare(Some(services.clone()), "device", "guest", 42).expect("private composer");
+        let mut frame = FrameHarness::from_component(
+            component,
+            (720, 900),
+            ComponentRunnerInputs::from_native_process(),
+        )
+        .expect("production component");
+        frame.relayout();
+        describe(&mut frame, "Ada Lovelace says the row is cut off").expect("summary");
+        call(&mut frame, "review", &json!({})).expect("review");
+        services
+            .pump()
+            .expect("the model's answer is laid over the review");
+        frame.relayout();
+        let asked = asked.borrow();
+        assert_eq!(asked.len(), 1, "one pass per review");
+        assert!(
+            !asked[0].contains("Lovelace") && !asked[0].contains("Thanks"),
+            "the model sees placeholders for personal values: {}",
+            asked[0]
+        );
+        let sheet = frame.inspection_json().expect("inspection");
+        assert!(
+            sheet.contains("Checked by rules and Anthropic claude-haiku-5-5, which hid more."),
+            "{sheet}"
+        );
+        call(&mut frame, "submit", &json!({})).expect("send");
+        let sent = transport.borrow();
+        let submission = serde_json::to_string(sent.submissions.first().expect("sent")).unwrap();
+        assert!(!submission.contains("Reply"), "the model's span is hidden");
+        assert!(!submission.contains("Lovelace"), "the floor stands");
     }
 }

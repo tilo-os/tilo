@@ -26,6 +26,17 @@ All services move together, from one commit: the web client and the room
 protocol change together, so they are never pinned from different revisions.
 A service whose build is the one it runs already keeps its pin. A revision
 that cannot be observed is a failure, not a skip.
+
+--qualification names the manifest that says what was qualified against this
+release, and the deploy is held to every identity in it: each service's digest,
+the guest the release publishes (digest and the commit it was built from), the
+AMI, the backend and template revision, and the browser runtime release. A
+manifest of any other release is refused, and so is one whose bytes are not the
+manifest digest it names. Enabling a gated feature needs an observation of the
+running release: a manifest that only observed this commit's source is refused
+unless --allow-source says the deploy is not enabling one. The manifest is kept
+beside the plan under its digest, so what a deploy was qualified by can be
+checked afterwards.
 """
 
 from __future__ import annotations
@@ -82,8 +93,6 @@ class PromotionError(Exception):
 class Superseded(Exception):
     """The target runs a newer build already: a later run deployed it."""
 
-
-# --- The deploy target ------------------------------------------------------
 
 @dataclasses.dataclass(frozen=True)
 class Service:
@@ -155,8 +164,6 @@ def load_target(text: str, source: str) -> Target:
     return Target(tuple(services), rollout, timeout, settle)
 
 
-# --- HTTP ------------------------------------------------------------------
-
 @dataclasses.dataclass(frozen=True)
 class Response:
     status: int
@@ -199,8 +206,6 @@ def urllib_transport(method: str, url: str, headers: Mapping[str, str], body: by
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise PromotionError(f"{method} {url}: {error}") from error
 
-
-# --- Registry --------------------------------------------------------------
 
 @dataclasses.dataclass(frozen=True)
 class Image:
@@ -309,8 +314,6 @@ class Registry:
         return Image(service.name, digest, built, platform, built)
 
 
-# --- Git -------------------------------------------------------------------
-
 class Git:
     def __init__(self, root: Path):
         self.root = root
@@ -381,8 +384,6 @@ class Git:
             merged.append((short, f"{match.group(1)} ({match.group(2)})" if match else subject))
         return merged
 
-
-# --- Choosing and checking the images ------------------------------------
 
 def load_receipt(path: Path, target: Target) -> tuple[Service, Image] | None:
     """A digest receipt written by t's publishing checks, or None for an image the target
@@ -520,8 +521,6 @@ def resolve_current(registry: Registry, digests: Mapping[str, str], target: Targ
     return current
 
 
-# --- The plan ----------------------------------------------------------------
-
 @dataclasses.dataclass
 class Plan:
     revision: str
@@ -534,6 +533,8 @@ class Plan:
     since: str | None
     files: dict[str, tuple[str, str]]  # path -> (old text, new text)
     target: Target
+    # The manifest the release was qualified against, when the deploy was held to one.
+    qualification: Qualification | None = None
 
     @property
     def changed(self) -> bool:
@@ -589,11 +590,196 @@ class Plan:
             "current": {name: dataclasses.asdict(pin) for name, pin in self.current.items()},
             "rollout": {"enabled": self.target.rollout, "timeoutSecs": self.target.timeout,
                         "settleSecs": self.target.settle},
+            "qualification": (None if self.qualification is None else
+                              {"manifest": self.qualification.manifest,
+                               "path": str(self.qualification.path),
+                               "sourceRevision": self.qualification.source_revision,
+                               "observation": self.qualification.observation}),
         }
 
 
 def _short(revision: str | None) -> str:
     return revision[:12] if revision else "revision unknown"
+
+
+# What a qualification can rest on, strongest first. Turning on a gated feature needs an
+# observation of the running release; a source-only fixture says what the code should do,
+# never what the release about to be deployed does.
+QUALIFICATION_OBSERVATIONS = ("native", "live", "source")
+QUALIFICATION_EVIDENCE = ("native", "live")
+
+# The fields each identity in a qualification manifest carries. An identity is normative
+# evidence, so an unknown field is refused rather than ignored: a manifest that names a part
+# of the release nobody checks has not qualified it.
+QUALIFICATION_IDENTITIES = {
+    "guest": {"digest": DIGEST, "sourceRevision": COMMIT},
+    "ami": {"id": re.compile(r"ami-[0-9a-f]{8,17}"), "type": re.compile(r"[a-z0-9][a-z0-9.-]{0,63}")},
+    "backend": {"revision": COMMIT},
+    "template": {"revision": COMMIT},
+    "browserRuntime": {"version": re.compile(r"[0-9A-Za-z][0-9A-Za-z._+-]{0,31}")},
+}
+QUALIFICATION_SERVICES = ("room-service", "web-entry")
+
+
+class Qualification:
+    """What was qualified against one release, and how.
+
+    A deploy moves a target's services together, so the evidence that says the release works
+    has to be about the same parts of it: the guest a deployment boots -- its digest and the
+    commit it was built from -- the AMI, the backend and template revision, the browser
+    runtime release, and the limits the run was accepted for. `sourceRevision` is the
+    repository commit the evidence is about. `services` names, per service, the image digest
+    the evidence covered, so a deploy of any other image is not qualified by it.
+
+    `manifest` is the digest of the manifest's own bytes, every field above `manifest` aside,
+    so editing one field cannot go unnoticed and the file can be kept and compared under the
+    name the deploy refers to.
+    """
+
+    def __init__(self, path: Path, document: Mapping):
+        self.path = path
+        self.document = document
+
+    @property
+    def source_revision(self) -> str:
+        return self.document["sourceRevision"]
+
+    @property
+    def observation(self) -> str:
+        return self.document["observation"]
+
+    @property
+    def manifest(self) -> str:
+        return self.document["manifest"]
+
+    def check(self, service: Service, image: Image) -> None:
+        """The manifest qualified this service's exact release, or this is an error.
+
+        Three identities have to agree, and they are three different claims: the service's own
+        digest is the image being deployed; the guest digest and the commit the guest was
+        built from are the run the evidence came from. A manifest that names this build but
+        another guest has measured something else.
+        """
+        qualified = self.document["services"].get(service.name, "")
+        if qualified != image.digest:
+            raise PromotionError(
+                f"{self.path}: qualified {service.name} at {qualified or 'no digest'}, not at "
+                f"{image.digest}; a release deploys with the evidence of that release")
+        guest = self.document["identities"]["guest"]
+        if guest["sourceRevision"] != image.revision:
+            raise PromotionError(
+                f"{self.path}: qualified {image.reference(service)} from {guest['sourceRevision']} "
+                f"(guest {guest['digest']}), not from {image.revision}")
+
+
+def manifest_digest(document: Mapping) -> str:
+    """The digest a qualification manifest is kept and referred to under."""
+    body = {key: value for key, value in document.items() if key != "manifest"}
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _check_identity(path: Path, name: str, identity, fields: Mapping) -> None:
+    if not isinstance(identity, dict) or set(identity) != set(fields):
+        raise PromotionError(f"{path}: the {name} identity names "
+                             f"{sorted(identity) if isinstance(identity, dict) else repr(identity)}, "
+                             f"not {sorted(fields)}")
+    for field, pattern in fields.items():
+        if not isinstance(identity[field], str) or not pattern.fullmatch(identity[field]):
+            raise PromotionError(f"{path}: the {name} identity's {field} {identity[field]!r} is not one")
+
+
+def load_qualification(path: Path) -> Qualification:
+    """A qualification manifest, read and held to the shape every deploy compares against."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise PromotionError(f"{path}: {error}") from error
+    if not isinstance(document, dict):
+        raise PromotionError(f"{path}: a qualification manifest is a JSON object")
+    needed = ("identities", "services", "limits", "sourceRevision", "observation", "manifest")
+    missing = [key for key in needed if key not in document]
+    if missing:
+        raise PromotionError(f"{path}: the qualification manifest has no {', '.join(missing)}")
+    if set(document) - set(needed):
+        raise PromotionError(f"{path}: the qualification manifest names "
+                             f"{sorted(set(document) - set(needed))}, which no deploy reads")
+    if not COMMIT.fullmatch(document["sourceRevision"]):
+        raise PromotionError(f"{path}: sourceRevision is not a full commit")
+    if document["observation"] not in QUALIFICATION_OBSERVATIONS:
+        raise PromotionError(f"{path}: observation is {document['observation']!r}, not one of "
+                             f"{', '.join(QUALIFICATION_OBSERVATIONS)}")
+    identities = document["identities"]
+    if not isinstance(identities, dict) or set(identities) != set(QUALIFICATION_IDENTITIES):
+        raise PromotionError(f"{path}: the manifest names "
+                             f"{sorted(identities) if isinstance(identities, dict) else repr(identities)}, "
+                             f"not {sorted(QUALIFICATION_IDENTITIES)}")
+    for name, fields in QUALIFICATION_IDENTITIES.items():
+        _check_identity(path, name, identities[name], fields)
+    services = document["services"]
+    if not isinstance(services, dict) or not services:
+        raise PromotionError(f"{path}: the qualification manifest qualified no service")
+    for name, digest in services.items():
+        if name not in QUALIFICATION_SERVICES:
+            raise PromotionError(f"{path}: {name!r} is not a service a deploy runs")
+        if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
+            raise PromotionError(f"{path}: the qualified {name} digest {digest!r} is not one")
+    limits = document["limits"]
+    if not isinstance(limits, dict) or not limits:
+        raise PromotionError(f"{path}: the qualification manifest names no limit")
+    for name, limit in limits.items():
+        if not isinstance(limit, dict) or set(limit) != {"value", "unit"}:
+            raise PromotionError(f"{path}: the {name} limit is not a value and its unit")
+        if not isinstance(limit["value"], int) or isinstance(limit["value"], bool) or limit["value"] < 0:
+            raise PromotionError(f"{path}: the {name} limit is not a count")
+        if not isinstance(limit["unit"], str) or not limit["unit"].isidentifier():
+            raise PromotionError(f"{path}: the {name} limit's unit {limit['unit']!r} is not a unit")
+    if document["manifest"] != manifest_digest(document):
+        raise PromotionError(f"{path}: its bytes hash to {manifest_digest(document)}, "
+                             f"not the {document['manifest']} it names")
+    return Qualification(path, document)
+
+
+# The guest a deployment boots, published and pinned like any other product: the release's
+# `sha-<commit>` tag holds the guest that release builds, so the evidence can name the exact
+# one without trusting the manifest to say which release it belongs to.
+GUEST_IMAGE = "registry.tilo.so/tilo/legacy-guest"
+
+
+def guest_of(registry: Registry, revision: str, tag: str) -> str:
+    """The digest of the guest this release publishes."""
+    return registry.image(Service("legacy-guest", GUEST_IMAGE, "", ""), tag.format(commit=revision)).digest
+
+
+def gate_qualification(qualification: Qualification, images: Mapping[str, Image],
+                       target: Target, guest: str, allow_source: bool) -> None:
+    """Hold the evidence to the release about to be deployed, and to what it rests on.
+
+    A manifest qualifies the release it names and no other: every service's exact digest and
+    the commit the guest was built from are compared before anything is deployed. Turning on
+    a gated feature needs an observation of the running release, so a source-only fixture
+    cannot get there whatever else it names.
+    """
+    for name, image in images.items():
+        qualification.check(target.service(name), image)
+    qualified = qualification.document["identities"]["guest"]
+    if qualified["digest"] != guest:
+        raise PromotionError(
+            f"{qualification.path}: qualified guest {qualified['digest']}, but "
+            f"{next(iter(images.values())).revision} publishes {guest}; the evidence "
+            "is for a guest this release does not boot")
+    if qualification.observation in QUALIFICATION_EVIDENCE or allow_source:
+        return
+    raise PromotionError(
+        f"{qualification.path}: it observed {qualification.source_revision} from source only; "
+        f"enabling a gated feature needs a {', '.join(QUALIFICATION_EVIDENCE)} observation of the release")
+
+
+def write_qualification(qualification: Qualification, out: Path) -> Path:
+    """Keep the manifest under the digest the deploy names it by, beside the plan."""
+    kept = out / f"{qualification.manifest.split(':', 1)[1]}.qualification.json"
+    kept.write_text(json.dumps(qualification.document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return kept
 
 
 def build_plan(registry: Registry, git: Git, head_ref: str, revision: str | None,
@@ -642,8 +828,6 @@ def build_plan(registry: Registry, git: Git, head_ref: str, revision: str | None
         files[service.manifest] = (old[0], new)
     return Plan(chosen, images, dict(current), moves, pulls, commits, oldest if ahead else None, files, target)
 
-
-# --- The target repository through the Forgejo API --------------------------
 
 class Forge:
     def __init__(self, transport: Transport, token: str, repo: str, base: str = FORGE):
@@ -723,11 +907,15 @@ def plan_from(args, source: Source, registry: Registry, git: Git) -> Plan:
     unsigned = [name for name, image in receipts.items() if image.signed is not True]
     if args.require_signed and unsigned:
         raise PromotionError("deploys run signed stable releases; unsigned: " + ", ".join(unsigned))
-    return build_plan(registry, git, args.head, args.revision, receipts, current, source.texts, target,
+    plan = build_plan(registry, git, args.head, args.revision, receipts, current, source.texts, target,
                       args.allow_rollback)
+    if args.qualification:
+        qualification = load_qualification(Path(args.qualification))
+        guest = guest_of(registry, plan.revision, target.tag)
+        gate_qualification(qualification, plan.images, target, guest, args.allow_source)
+        plan = dataclasses.replace(plan, qualification=qualification)
+    return plan
 
-
-# --- Watching a rollout ---------------------------------------------------------
 
 def probe(transport: Transport, service: Service, expected: str | None, strict: bool = True) -> str | None:
     """None when the service answers healthy with the expected build, else what is wrong.
@@ -778,8 +966,6 @@ def watch(transport: Transport, target: Target, expected: Mapping[str, str | Non
             return "; ".join(problems) or "never healthy for long enough"
         sleep(PROBE_INTERVAL)
 
-
-# --- Command line --------------------------------------------------------------
 
 def command_plan(args, registry: Registry, git: Git, transport: Transport, **_) -> int:
     source = read_source(args, transport)
@@ -865,6 +1051,8 @@ def write_outputs(plan: Plan, out: str | None) -> None:
         (directory / "plan.json").write_text(json.dumps(plan.document(), indent=2) + "\n", encoding="utf-8")
         (directory / "message.txt").write_text(plan.message(), encoding="utf-8")
         (directory / "infra.diff").write_text(plan.diff(), encoding="utf-8")
+        if plan.qualification is not None:
+            write_qualification(plan.qualification, directory)
     print(plan.message())
     print(plan.diff())
 
@@ -888,6 +1076,10 @@ def parser() -> argparse.ArgumentParser:
         each.add_argument("--allow-rollback", action="store_true", help="allow deploying an older revision")
         each.add_argument("--tag", default="sha-{commit}",
                           help="the tag a commit's images are published under (main's: dev-{commit})")
+        each.add_argument("--qualification", help="the qualification manifest of the release this deploys "
+                                                  "(required to enable a gated feature)")
+        each.add_argument("--allow-source", action="store_true",
+                          help="accept a manifest that only observed this commit's source, not the release")
         each.add_argument("--out", help="directory for plan.json, message.txt and infra.diff")
     commands.choices["plan"].add_argument("--apply", action="store_true", help="edit the --infra checkout")
     commands.choices["deploy"].add_argument("--dry-run", action="store_true", help="stop before committing")

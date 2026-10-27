@@ -1,4 +1,3 @@
-//! The activity pane's own tests, over a causal test room.
 use super::*;
 
 #[cfg(test)]
@@ -24,170 +23,6 @@ mod tests {
     use automerge::transaction::{CommitOptions, Transactable};
     use collab_types::caps::{Access, CapOverride, Scope, Subject};
     use tilo_automerge::ApplyIncoming as _;
-
-    #[derive(Clone)]
-    struct NativeTree(WorkspaceTree);
-    impl std::ops::Deref for NativeTree {
-        type Target = tilo_desktop_model::DesktopTree;
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
-    impl std::ops::DerefMut for NativeTree {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            &mut self.0
-        }
-    }
-    impl crate::activity::ActivityTree for NativeTree {
-        fn document(&self) -> &automerge::AutoCommit {
-            &self.0.doc
-        }
-        fn document_mut(&mut self) -> &mut automerge::AutoCommit {
-            &mut self.0.doc
-        }
-        fn resync_activity_cache(&mut self) -> Result<(), String> {
-            self.0.resync_cache_from_doc();
-            Ok(())
-        }
-        fn native_manual_tasks(&self, _: WorkspaceId) -> bool {
-            true
-        }
-    }
-
-    #[test]
-    fn native_manual_draft_defers_owner_write_and_closes_only_after_completion() {
-        let mut tree = NativeTree(WorkspaceTree::bootstrap_default());
-        let mut pane = native_pane();
-        pane.open_task_composer(&tree);
-        pane.task_draft = "Review mapped receipt".into();
-        tree.0
-            .doc
-            .put(automerge::ROOT, "pending_projection_edit", true)
-            .unwrap();
-        let blocked = pane.create_task_from_draft(&mut tree);
-        assert!(blocked.task_refused);
-        assert!(blocked.create_native_manual.is_none());
-        assert!(!blocked.task_changed);
-        assert!(pane.task_compose_open);
-        assert_eq!(pane.task_draft, "Review mapped receipt");
-        tree.0.doc.commit();
-        let outcome = pane.create_task_from_draft(&mut tree);
-        assert!(outcome.handled);
-        assert!(!outcome.task_changed);
-        let draft = outcome.create_native_manual.unwrap();
-        assert_eq!(draft.workspace, tree.active);
-        assert_eq!(
-            draft.room,
-            tree.active_workspace().unwrap().room.to_string()
-        );
-        assert_eq!(draft.title, "Review mapped receipt");
-        assert!(tree.active_workspace().unwrap().tasks.is_empty());
-        assert!(pane.task_compose_open);
-        assert_eq!(pane.task_draft, "Review mapped receipt");
-        let workspace = tree.active;
-        let id = tree
-            .0
-            .create_workspace_task(
-                workspace,
-                draft.title,
-                draft.actor,
-                None,
-                WorkspaceTaskRoute::Manual,
-                None,
-            )
-            .unwrap();
-        pane.complete_native_manual_task(id.clone(), &mut tree);
-        assert!(!pane.task_compose_open);
-        assert_eq!(pane.selected_task.as_deref(), Some(id.as_str()));
-    }
-
-    #[test]
-    fn native_managed_draft_defers_without_cache_fallback_or_premature_completion() {
-        let mut tree = NativeTree(WorkspaceTree::bootstrap_default());
-        let mut pane = native_pane();
-        pane.open_task_composer(&tree);
-        pane.task_draft = "Inspect operator evidence".into();
-        for route in [WorkspaceTaskRoute::Model, WorkspaceTaskRoute::RulesOnly] {
-            pane.task_route = route;
-            pane.task_agent = None;
-            let missing = pane.create_task_from_draft(&mut tree);
-            assert!(missing.task_refused);
-            assert!(missing.create_native_managed.is_none());
-            assert!(pane.task_compose_open);
-            pane.task_agent = Some("scribe".into());
-            let outcome = pane.create_task_from_draft(&mut tree);
-            assert!(outcome.create_native_manual.is_none());
-            assert!(!outcome.task_changed);
-            let request = outcome.create_native_managed.unwrap();
-            assert_eq!(request.assigned_agent, "scribe");
-            assert_eq!(request.route, route);
-            assert_eq!(request.person_draft.title, "Inspect operator evidence");
-            assert_eq!(
-                request.person_draft.room,
-                tree.active_workspace().unwrap().room.to_string()
-            );
-            assert!(tree.active_workspace().unwrap().tasks.is_empty());
-            assert!(pane.task_compose_open);
-            assert!(pane.selected_task.is_none());
-        }
-        tree.0
-            .doc
-            .put(automerge::ROOT, "pending_projection_edit", true)
-            .unwrap();
-        let blocked = pane.create_task_from_draft(&mut tree);
-        assert!(blocked.task_refused);
-        assert!(blocked.create_native_managed.is_none());
-        assert!(pane.task_compose_open);
-        assert_eq!(pane.task_draft, "Inspect operator evidence");
-        assert!(tree.active_workspace().unwrap().tasks.is_empty());
-    }
-
-    /// HIG §9.5 rest edges: the sheet's Panel border on its Panel ground,
-    /// and the derived edge of every card class the sheet paints (lift-floor
-    /// chips and group cards, the base-filled replay canvas) must register
-    /// on every shipped palette, measured as the composite over the fill.
-    #[test]
-    fn sheet_and_card_edges_register_on_every_palette() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let colors = &theme.tokens.colors;
-            let ground = ui::chrome::shell::panel_ground(&theme);
-            let probes = [
-                // Outside high contrast the panel is a floating surface: its
-                // hairline is quieter by design, the level and shadow
-                // separating it too.
-                (
-                    "panel border",
-                    ui::chrome::shell::panel_border(&theme),
-                    ground,
-                    if colors.palette.high_contrast {
-                        ui::tokens::colors::HAIRLINE_MIN_DELTA
-                    } else {
-                        ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
-                    },
-                ),
-                (
-                    "lift-floor chip",
-                    ui::surface::edge_on(colors.lift(PILL_FLOOR_LIFT_T)),
-                    colors.lift(PILL_FLOOR_LIFT_T),
-                    ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                ),
-                (
-                    "replay canvas",
-                    ui::surface::edge_on(colors.surfaces.base),
-                    colors.surfaces.base,
-                    ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                ),
-            ];
-            for (what, edge, fill, minimum) in probes {
-                let delta = ui::surface::edge_delta(edge, fill);
-                assert!(
-                    delta >= minimum,
-                    "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
-                    theme.name
-                );
-            }
-        }
-    }
 
     /// A plausible half-hour: owner, one grant, one revoke, one rename,
     /// one window opened.
@@ -286,8 +121,6 @@ mod tests {
             );
         }
 
-        // What the incremental refreshes derived is what one refresh of the
-        // whole history derives.
         let mut fresh = native_pane();
         fresh.refresh(&mut tree);
         assert_eq!(
@@ -344,7 +177,6 @@ mod tests {
         }
         assert_eq!(renamed(&pane), 1, "the rename is still in Activity");
         assert_eq!(pane.derived.len(), rows, "no switch became a row");
-        // A pane reading the whole document from scratch agrees.
         let mut fresh = native_pane();
         fresh.refresh(&mut tree);
         assert_eq!(renamed(&fresh), 1);
@@ -493,14 +325,13 @@ mod tests {
         // Legacy timeline tests exercise the granular surface explicitly;
         // production opens on the outcome-first Catch up tab.
         pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(tree);
         pane
     }
 
     fn agent_task_fixture() -> (WorkspaceTree, RecordStore, RoomActivityPane, RecordId) {
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let records = RecordStore::in_memory();
         let record = RecordId::for_file("campaign-brief.tilo-doc");
         let checkout = ui::RecordCheckout::new(record.clone(), ui::RecordKind::new("document"));
@@ -563,7 +394,6 @@ mod tests {
 
         let mut pane = native_pane();
         pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.authors_mut().register(
             &agent_hex,
             ui::widget::HistoryAuthor::new("Quill", 210.0, "agent"),
@@ -586,7 +416,6 @@ mod tests {
             })
             .expect("affected history entry");
         pane.timeline.set_selection(Some((selected, selected)));
-        pane.explorer_pane = ExplorerPane::Details;
         (tree, records, pane, record)
     }
 
@@ -620,7 +449,7 @@ mod tests {
         }
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "body", "Hallo").unwrap();
         let context = ui::tilo_actions::ActionContext::for_resource(
@@ -676,7 +505,7 @@ mod tests {
         }
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.active_workspace().expect("workspace").room;
+        let room = tree.desktop.active_workspace().expect("workspace").room();
         let record = RecordId::for_file("campaign-brief.tilo-doc");
         let kind = ui::RecordKind::new("document");
         let agent = ActorId::from(b"writing-agent".as_slice());
@@ -799,40 +628,14 @@ mod tests {
             ),
             "Browse exposes a first-class agent-task lens"
         );
-
-        let a11y = pane.accessibility_snapshot();
-        let review = a11y
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Agent task review"))
-            .expect("agent task has a semantic review group");
-        let description = review.description.as_deref().unwrap_or_default();
-        assert!(description.contains("Ada"));
-        assert!(description.contains("Quill"));
-        assert!(description.contains("pricing table"));
-        assert!(description.contains("Rewrite the launch story"));
     }
 
     #[test]
     fn agent_task_undo_is_one_keyboard_reachable_safe_action() {
         let (mut tree, records, mut pane, record) = agent_task_fixture();
-        paint(&mut pane);
+        show_summary(&mut pane);
         assert!(pane.can_undo_agent_run());
-        assert!(
-            pane.focus_order()
-                .contains(&ActivityFocus::Detail(DetailAction::UndoTask))
-        );
-        pane.keyboard_focus = Some(ActivityFocus::Detail(DetailAction::UndoTask));
-        let outcome = pane.handle_event_with_records(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-            Some(&records),
-        );
+        let outcome = pane.apply_detail_action(DetailAction::UndoTask, &mut tree, Some(&records));
         assert!(outcome.reverted);
         assert!(!outcome.undo_partial);
         assert_eq!(
@@ -851,13 +654,49 @@ mod tests {
     }
 
     #[test]
+    fn a_window_someone_opened_is_listed_in_history_but_is_not_news() {
+        let (mut tree, workspace, _) = busy_room();
+        let host = Rc::new(crate::activity::testing::TestHost::default());
+        let mut pane = RoomActivityPane::new();
+        pane.set_host(host);
+        pane.load_frontiers();
+        pane.refresh(&mut tree);
+        let reader = tree.doc.get_actor().clone();
+        tree.doc.set_actor(ActorId::from(b"ada-device".as_slice()));
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            91_101,
+            "Budget".to_string(),
+            b"{}".to_vec(),
+        ));
+        tilo_resource::history::commit_stamped(&mut tree.doc);
+        tree.doc.set_actor(reader);
+        pane.refresh(&mut tree);
+        assert!(
+            pane.entries()
+                .iter()
+                .any(|entry| entry.summary == "Opened Budget"),
+            "History lists the window opened: {:?}",
+            pane.entries()
+                .iter()
+                .map(|entry| &entry.summary)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            pane.glance_signal(workspace.raw()).1,
+            0,
+            "opening a window is nobody's news"
+        );
+        pane.begin_view(workspace.raw());
+        assert!(pane.digest().briefs.is_empty());
+    }
+
+    #[test]
     fn a_workspace_first_seen_on_this_device_has_nothing_new() {
         let (mut tree, workspace, user) = busy_room();
         let host = Rc::new(crate::activity::testing::TestHost::default());
         let mut pane = RoomActivityPane::new();
         pane.set_host(host.clone());
         pane.load_frontiers();
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(&mut tree);
         let (headline, unread, _) = pane.glance_signal(workspace.raw());
         assert_eq!(
@@ -887,7 +726,6 @@ mod tests {
         let mut next_session = RoomActivityPane::new();
         next_session.set_host(host);
         next_session.load_frontiers();
-        next_session.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         next_session.refresh(&mut tree);
         assert_eq!(
             next_session.glance_signal(workspace.raw()).1,
@@ -900,7 +738,6 @@ mod tests {
     fn closing_unpainted_catch_up_keeps_unseen_work_pending() {
         let (mut tree, workspace, _) = peers_busy_room();
         let mut pane = native_pane();
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(&mut tree);
         let unread = pane.glance_signal(workspace.raw()).1;
         assert!(unread > 0);
@@ -923,7 +760,6 @@ mod tests {
         let (mut tree, workspace, _) = peers_busy_room();
         let before = tree.doc.get_heads();
         let mut pane = native_pane();
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(&mut tree);
         assert_eq!(pane.view(), ActivityView::CatchUp);
 
@@ -931,7 +767,7 @@ mod tests {
         assert!(unread_before > 0);
         pane.begin_view(workspace.raw());
         assert!(!pane.digest().briefs.is_empty());
-        paint(&mut pane);
+        show_summary(&mut pane);
         pane.finish_view(workspace.raw());
         let (_, unread_after, _) = pane.glance_signal(workspace.raw());
         assert_eq!(unread_after, 0);
@@ -943,36 +779,74 @@ mod tests {
     }
 
     #[test]
-    fn offscreen_catch_up_cards_do_not_become_seen() {
+    fn every_catch_up_card_cites_exactly_the_changes_it_summarises() {
         let (mut tree, workspace, _) = peers_busy_room();
         let mut pane = native_pane();
-        pane.layout_window(Rect::new(1600.0, 0.0, 2400.0, 900.0));
-        pane.set_review_clip(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.begin_view(workspace.raw());
         pane.refresh(&mut tree);
-        let unread = pane.glance_signal(workspace.raw()).1;
-        assert!(unread > 0);
-        paint(&mut pane);
+        show_summary(&mut pane);
+        let digest = pane.digest().clone();
         assert!(
-            !pane.brief_rects.is_empty(),
-            "the tile must contain summaries"
+            !digest.briefs.is_empty(),
+            "the seeded session leaves work for Catch Up to stand for"
         );
-        pane.finish_view(workspace.raw());
-        pane.refresh(&mut tree);
-        assert_eq!(pane.glance_signal(workspace.raw()).1, unread);
+        // A card is one work session: the evidence it cites is the changes
+        // it opens onto, and the count it states is that many.
+        for brief in &digest.briefs {
+            assert!(
+                !brief.title.trim().is_empty(),
+                "a card says what came of the session"
+            );
+            assert!(
+                !brief.entry_ids.is_empty(),
+                "a card stands for the changes that made it: {brief:?}"
+            );
+            assert_eq!(
+                brief.actions.len(),
+                brief.entry_ids.len(),
+                "every cited change is one sub-action of its card"
+            );
+            assert_eq!(
+                brief.changes,
+                brief.entry_ids.len(),
+                "the count the card states is the count of rows it opens"
+            );
+            assert!(
+                brief
+                    .actions
+                    .iter()
+                    .all(|action| !action.summary.trim().is_empty()
+                        && !action.author.name.trim().is_empty()),
+                "a sub-action says what was done and who did it: {:?}",
+                brief.actions
+            );
+        }
+        // And no change is cited by two cards, so opening one cannot show
+        // work another one already owns.
+        for (at, brief) in digest.briefs.iter().enumerate() {
+            for id in &brief.entry_ids {
+                assert_eq!(
+                    digest
+                        .briefs
+                        .iter()
+                        .filter(|other| other.entry_ids.contains(id))
+                        .count(),
+                    1,
+                    "change {id:?} is cited only by the card at {at}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn refreshed_catch_up_preserves_focus_and_does_not_acknowledge_late_work() {
+    fn refreshed_catch_up_keeps_the_open_session_and_does_not_acknowledge_late_work() {
         let (mut tree, workspace, user) = peers_busy_room();
         let mut pane = native_pane();
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.begin_view(workspace.raw());
         pane.refresh(&mut tree);
-        paint(&mut pane);
-        let index = pane.brief_rects.first().unwrap().0;
+        show_summary(&mut pane);
+        let index = 0;
         let anchor = pane.digest.briefs[index].entry_ids[0];
-        pane.keyboard_focus = Some(ActivityFocus::Brief(index));
         pane.expanded_brief = Some(index);
         let reader = tree.doc.get_actor().clone();
         tree.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
@@ -989,11 +863,10 @@ mod tests {
         tree.seed_doc_from_cache();
         tree.doc.set_actor(reader);
         pane.refresh(&mut tree);
-        let Some(ActivityFocus::Brief(focused)) = pane.keyboard_focus else {
-            panic!("the reviewed session must retain focus");
+        let Some(expanded) = pane.expanded_brief else {
+            panic!("the opened session stays open");
         };
-        assert!(pane.digest.briefs[focused].entry_ids.contains(&anchor));
-        assert_eq!(pane.expanded_brief, Some(focused));
+        assert!(pane.digest.briefs[expanded].entry_ids.contains(&anchor));
         pane.finish_view(workspace.raw());
         pane.refresh(&mut tree);
         assert!(
@@ -1029,7 +902,7 @@ mod tests {
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
         assert_eq!(pane.glance_signal(workspace).1, 1);
-        paint(&mut pane);
+        show_summary(&mut pane);
         pane.apply_selection_history_action(ACTIVITY_ACKNOWLEDGE, &mut tree, Some(&records));
         assert_eq!(pane.glance_signal(workspace).1, 0);
         assert!(
@@ -1044,10 +917,10 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_persists_only_the_painted_page_and_keeps_waiting_tasks() {
+    fn catch_up_persists_only_what_the_app_showed() {
         let (mut tree, workspace, _) = peers_busy_room();
         let records = RecordStore::in_memory();
-        let room_id = tree.active_workspace().expect("room").room;
+        let room_id = tree.active_workspace().expect("room").room();
         let room = room_id.to_string();
         for n in 0..12 {
             let id = RecordId::for_file(format!("result-{n}.note"));
@@ -1074,37 +947,28 @@ mod tests {
                 .or_default()
                 .insert(id.to_string(), kind.to_string());
         }
-        let task = tree
-            .create_workspace_task(
-                workspace,
-                "Review draft",
-                "local",
-                None,
-                WorkspaceTaskRoute::Manual,
-                None,
-            )
-            .unwrap();
-        assert!(tree.set_workspace_task_status(
-            workspace,
-            &task,
-            WorkspaceTaskStatus::Waiting,
-            "local"
-        ));
         let host = Rc::new(crate::activity::testing::TestHost::default());
         let mut pane = RoomActivityPane::new();
         pane.set_host(host.clone());
-        pane.layout(Rect::new(0.0, 0.0, 800.0, 580.0));
         pane.begin_view(workspace.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
         pane.persistent_frontiers = true;
         let before = pane.glance_signal(workspace.raw()).1;
         assert!(before >= 12);
-        paint(&mut pane);
+        // The app said it showed the first session only.
+        let first = pane.serve_summary().briefs.remove(0).entries;
+        pane.mark_viewed(
+            workspace.raw(),
+            &tilo_actions::remote::workspace_activity::Viewed {
+                entries: first,
+                later: true,
+            },
+        );
         let shown = pane.viewed_changes.get(&workspace.raw()).unwrap().len();
         assert!(
             shown > 0 && shown < before,
-            "fixture must have a hidden page"
+            "the fixture has more than the app showed"
         );
         let heads = tree.doc.get_heads();
         assert!(
@@ -1116,19 +980,12 @@ mod tests {
             heads,
             "review is private viewer state"
         );
-        assert_eq!(
-            tree.active_workspace().unwrap().tasks[0].status,
-            WorkspaceTaskStatus::Waiting
-        );
         let mut next = RoomActivityPane::new();
         next.set_host(host);
         next.load_frontiers();
         next.refresh(&mut tree);
         next.refresh_records(&mut tree, &records);
         assert_eq!(next.glance_signal(workspace.raw()).1, before - shown);
-        next.apply_selection_history_action(ACTIVITY_TASKS, &mut tree, Some(&records));
-        assert_eq!(next.view(), ActivityView::Tasks);
-        assert_eq!(next.tasks[0].status, WorkspaceTaskStatus::Waiting);
     }
 
     #[test]
@@ -1170,7 +1027,7 @@ mod tests {
         pane.refresh_records(&mut tree, &records);
 
         // Departure follows an actually reviewed page, not an indexed head.
-        paint(&mut pane);
+        show_summary(&mut pane);
         pane.finish_view(home.raw());
 
         pane.observe_workspace(elsewhere.raw());
@@ -1221,474 +1078,6 @@ mod tests {
     }
 
     #[test]
-    fn task_center_creates_manual_work_without_a_model() {
-        let (mut tree, workspace, _) = busy_room();
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Tasks);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.refresh(&mut tree);
-        pane.open_task_composer(&tree);
-        pane.task_draft = "Check the launch copy".into();
-
-        let outcome = pane.create_task_from_draft(&mut tree);
-
-        assert!(outcome.task_changed);
-        let task = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == workspace)
-            .and_then(|workspace| workspace.tasks.first())
-            .expect("task is stored on the workspace");
-        assert_eq!(task.route, WorkspaceTaskRoute::Manual);
-        assert!(task.assigned_agent.is_none());
-        assert_eq!(task.status, WorkspaceTaskStatus::Queued);
-        assert!(!pane.task_compose_open);
-    }
-
-    #[test]
-    fn task_center_attaches_the_resource_selected_in_explore() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        let resource_entry = HistoryEntry {
-            id: HistoryEntryId([71; 16]),
-            author: ui::widget::HistoryAuthor::new("ada", 10.0, "Ada"),
-            entry_kind: EntryKind::Details,
-            artifact_kind: ArtifactKind::File,
-            timestamp: SystemTime::UNIX_EPOCH,
-            summary: "Edited launch brief".into(),
-            text_delta: None,
-            diff_payload: None,
-            redaction: None,
-            context: Some(
-                ui::tilo_actions::ActionContext::for_resource(
-                    "document:launch-brief",
-                    "document",
-                    "Launch brief",
-                )
-                .with_app("org.tilo.Writer", "Writer"),
-            ),
-        };
-        pane.timeline_mut().set_entries(vec![resource_entry]);
-        let resource_row = 0;
-        pane.timeline_mut()
-            .set_selection(Some((resource_row, resource_row)));
-        let expected = pane
-            .selection_detail()
-            .and_then(|detail| detail.resources.first().cloned())
-            .expect("selected action has a resource");
-
-        pane.set_view(ActivityView::Tasks);
-        pane.open_task_composer(&tree);
-
-        let attached = pane.task_attachment.as_ref().expect("resource is attached");
-        assert_eq!(attached.id, expected.id);
-        assert_eq!(attached.app_id, expected.app_id);
-    }
-
-    #[test]
-    fn task_accessibility_exposes_route_status_and_audit() {
-        let (mut tree, workspace, _) = busy_room();
-        tree.create_workspace_task(
-            workspace,
-            "Prepare screenshots",
-            "ada",
-            Some("studio-agent".into()),
-            WorkspaceTaskRoute::RulesOnly,
-            None,
-        )
-        .unwrap();
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Tasks);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.refresh(&mut tree);
-        let snapshot = pane.accessibility_snapshot();
-        let debug = format!("{snapshot:?}");
-        assert!(debug.contains("Prepare screenshots"));
-        assert!(debug.contains("rules only"));
-        assert!(debug.contains("1 audit events"));
-    }
-
-    #[test]
-    fn task_center_resolves_creator_without_cursor_color_and_preserves_identity() {
-        let (mut tree, workspace, _) = busy_room();
-        let creator = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd";
-        tree.workspaces
-            .iter_mut()
-            .find(|room| room.id == workspace)
-            .unwrap()
-            .collaborators
-            .push(tilo_desktop_model::Collaborator::new(
-                creator,
-                "Ada Lovelace",
-            ));
-        tree.seed_doc_from_cache();
-        tree.create_workspace_task(
-            workspace,
-            "Review receipt",
-            creator,
-            None,
-            WorkspaceTaskRoute::Manual,
-            None,
-        )
-        .unwrap();
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Tasks);
-        pane.refresh(&mut tree);
-        let task = pane.tasks.first().unwrap();
-        let creator_label = pane.task_creator_label(task);
-        assert_eq!(creator_label, "Ada Lovelace");
-        assert!(task_assignee_label(task, &creator_label).contains("Ada Lovelace"));
-        let snapshot = format!("{:?}", pane.accessibility_snapshot());
-        assert!(snapshot.contains("Unassigned · created by Ada Lovelace"));
-        assert_eq!(task.created_by, creator);
-        assert_eq!(task.audit.first().unwrap().actor, creator);
-        let mut unidentified = task.clone();
-        unidentified.created_by =
-            "0123456789012345678901234567890123456789012345678901234567890123".into();
-        assert_eq!(
-            pane.task_creator_label(&unidentified),
-            "Unknown collaborator · 01234567"
-        );
-        unidentified.created_by = pane.local_user();
-        assert_eq!(
-            pane.task_creator_label(&unidentified),
-            pane.local_user(),
-            "the reader is named like anyone else, never \"You\""
-        );
-    }
-
-    #[test]
-    fn task_center_presents_agent_principals_without_leaking_wire_ids() {
-        let event_time = SystemTime::UNIX_EPOCH
-            .checked_add(Duration::from_secs(42))
-            .expect("fixture time");
-        let task = WorkspaceTask {
-            id: "task:review".into(),
-            title: "Review launch copy".into(),
-            created_by: "ada".into(),
-            assigned_agent: Some("agent:scribe".into()),
-            route: WorkspaceTaskRoute::RulesOnly,
-            status: WorkspaceTaskStatus::InProgress,
-            resource: None,
-            subject: None,
-            created_at: 42,
-            updated_at: 42,
-            audit: vec![
-                tilo_desktop_model::WorkspaceTaskAuditEvent::new(42, "agent:scribe", "report", [])
-                    .noting("Reviewed section 2"),
-            ],
-        };
-
-        let byline = task_assignee_label(&task, "ada");
-        let audit = task_audit_line(&task.audit[0], event_time, event_time);
-        let accessible = task_accessibility_description(&task, event_time, "ada");
-
-        assert_eq!(byline, "Agent · scribe");
-        assert!(
-            audit.starts_with("scribe · Agent · Reported progress: Reviewed section 2"),
-            "{audit}"
-        );
-        assert!(accessible.contains("Agent · scribe"));
-        assert!(accessible.contains("scribe · Agent"));
-        for rendered in [&byline, &audit, &accessible] {
-            assert!(
-                !rendered.contains("agent:"),
-                "wire principal leaked into visible copy: {rendered}"
-            );
-        }
-    }
-
-    #[test]
-    fn only_manual_tasks_offer_a_human_started_transition() {
-        let (mut tree, workspace, _) = busy_room();
-        let manual_id = tree
-            .create_workspace_task(
-                workspace,
-                "Review the brief",
-                "ada",
-                None,
-                WorkspaceTaskRoute::Manual,
-                None,
-            )
-            .expect("manual task is created");
-        let automated_id = tree
-            .create_workspace_task(
-                workspace,
-                "Prepare screenshots",
-                "ada",
-                Some("studio-agent".into()),
-                WorkspaceTaskRoute::RulesOnly,
-                None,
-            )
-            .expect("automated task is created");
-        let tasks = &tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == workspace)
-            .expect("workspace remains available")
-            .tasks;
-        let manual = tasks
-            .iter()
-            .find(|task| task.id == manual_id)
-            .expect("manual task is stored");
-        let automated = tasks
-            .iter()
-            .find(|task| task.id == automated_id)
-            .expect("automated task is stored");
-
-        assert!(task_actions(manual).contains(&TaskAction::Start));
-        assert!(!task_actions(automated).contains(&TaskAction::Start));
-        let mut pane = native_pane();
-        pane.task_room = "room".into();
-        assert!(
-            !pane
-                .task_actions_for(automated)
-                .contains(&TaskAction::Launch),
-            "membership without a live task subscription must not enable Launch"
-        );
-        assert!(
-            pane.task_actions_for(automated)
-                .contains(&TaskAction::StartAgent),
-            "offline work offers a managed agent start, never a fake task run"
-        );
-        assert_eq!(
-            pane.task_execution_notice(automated).as_deref(),
-            Some("The agent runtime is not connected, so this task has not started.")
-        );
-    }
-
-    #[test]
-    fn automated_task_cannot_be_marked_running_without_a_runtime_run() {
-        let (mut tree, workspace, _) = busy_room();
-        let task_id = tree
-            .create_workspace_task(
-                workspace,
-                "Prepare screenshots",
-                "ada",
-                Some("studio-agent".into()),
-                WorkspaceTaskRoute::Model,
-                None,
-            )
-            .expect("task is created");
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Tasks);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.refresh(&mut tree);
-        pane.selected_task = Some(task_id.clone());
-
-        let outcome = pane.apply_task_action(TaskAction::Start, &mut tree);
-
-        assert!(!outcome.task_changed);
-        let task = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|candidate| candidate.id == workspace)
-            .and_then(|workspace| workspace.tasks.iter().find(|task| task.id == task_id))
-            .expect("task remains stored");
-        assert_eq!(task.status, WorkspaceTaskStatus::Queued);
-        assert_eq!(task.audit.len(), 1, "no synthetic start audit was added");
-    }
-
-    /// Records each dispatch and whether the test held the tree for it.
-    #[derive(Default)]
-    struct DispatchHost {
-        tree_held: Rc<Cell<bool>>,
-        dispatched: RefCell<Vec<(String, String, bool)>>,
-        refusal: Option<String>,
-    }
-    impl ActivityHost for DispatchHost {
-        fn local_user(&self) -> String {
-            "ada".into()
-        }
-        fn mutations_available(&self) -> bool {
-            true
-        }
-        fn all_workspaces_available(&self) -> bool {
-            true
-        }
-        fn agent_is_live(&self, _room: &str, _agent: &str) -> bool {
-            true
-        }
-        fn dispatch_task(&self, room: &str, task: &str) -> Result<(), String> {
-            self.dispatched
-                .borrow_mut()
-                .push((room.into(), task.into(), self.tree_held.get()));
-            self.refusal.clone().map_or(Ok(()), Err)
-        }
-    }
-
-    fn launchable_task(host: Rc<DispatchHost>) -> (WorkspaceTree, RoomActivityPane, String) {
-        let (mut tree, workspace, _) = busy_room();
-        let task_id = tree
-            .create_workspace_task(
-                workspace,
-                "Prepare screenshots",
-                "ada",
-                Some("studio-agent".into()),
-                WorkspaceTaskRoute::RulesOnly,
-                None,
-            )
-            .expect("task is created");
-        let mut pane = RoomActivityPane::new();
-        pane.set_host(host);
-        pane.set_view(ActivityView::Tasks);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.refresh(&mut tree);
-        pane.selected_task = Some(task_id.clone());
-        (tree, pane, task_id)
-    }
-
-    /// The broker that runs a task checks the room's authority against the
-    /// workspace tree. The shell holds that tree for writing while the pane
-    /// handles the click, so dispatching from inside the handler stopped the
-    /// compositor. Launch now only asks; the dispatch runs once the caller
-    /// has let go of the tree.
-    #[test]
-    fn launching_a_task_dispatches_only_after_the_tree_is_released() {
-        let host = Rc::new(DispatchHost::default());
-        let (mut tree, mut pane, task_id) = launchable_task(Rc::clone(&host));
-        let task = pane
-            .tasks
-            .iter()
-            .find(|task| task.id == task_id)
-            .cloned()
-            .expect("task is projected");
-        assert!(pane.task_actions_for(&task).contains(&TaskAction::Launch));
-
-        host.tree_held.set(true);
-        let outcome = pane.apply_task_action(TaskAction::Launch, &mut tree);
-        host.tree_held.set(false);
-
-        assert!(
-            host.dispatched.borrow().is_empty(),
-            "nothing dispatched while the tree is held"
-        );
-        let request = outcome.dispatch_task.expect("Launch asks for a dispatch");
-        assert_eq!(request.task_id, task_id);
-        assert_eq!(request.assigned_agent.as_deref(), Some("studio-agent"));
-        assert!(outcome.handled);
-        assert!(pane.dispatch_task(request), "the live agent took the run");
-        assert_eq!(
-            host.dispatched.borrow().as_slice(),
-            [(pane.task_room.clone(), task_id, false)]
-        );
-    }
-
-    #[test]
-    fn a_refused_dispatch_offers_the_agent_start_again_with_its_reason() {
-        let host = Rc::new(DispatchHost {
-            refusal: Some("the assigned agent is not live and task-capable".into()),
-            ..DispatchHost::default()
-        });
-        let (mut tree, mut pane, _) = launchable_task(Rc::clone(&host));
-        let request = pane
-            .apply_task_action(TaskAction::Launch, &mut tree)
-            .dispatch_task
-            .expect("Launch asks for a dispatch");
-        let room = request.room.clone();
-
-        assert!(!pane.dispatch_task(request));
-        assert!(matches!(
-            pane.agent_startup.get(&(room, "studio-agent".into())),
-            Some(AgentStartup::Failed { detail }) if detail.contains("not live")
-        ));
-    }
-
-    #[test]
-    fn offline_agent_start_is_deduplicated_and_failure_becomes_retry() {
-        let (mut tree, workspace, _) = busy_room();
-        let task_id = tree
-            .create_workspace_task(
-                workspace,
-                "Prepare screenshots",
-                "ada",
-                Some("studio-agent".into()),
-                WorkspaceTaskRoute::RulesOnly,
-                None,
-            )
-            .expect("task is created");
-        let mut pane = native_pane();
-        pane.refresh(&mut tree);
-        let task = pane
-            .tasks
-            .iter()
-            .find(|task| task.id == task_id)
-            .cloned()
-            .expect("task is projected");
-        assert!(
-            pane.task_actions_for(&task)
-                .contains(&TaskAction::StartAgent)
-        );
-
-        pane.agent_startup.insert(
-            (pane.task_room.clone(), "studio-agent".into()),
-            AgentStartup::Starting {
-                since: Instant::now(),
-            },
-        );
-        assert!(
-            !pane
-                .task_actions_for(&task)
-                .contains(&TaskAction::StartAgent),
-            "one pending managed launch suppresses another start click"
-        );
-
-        assert!(pane.observe_agent_launch_event(&AgentLaunchEvent {
-            managed_agent_id: Some("studio-agent".into()),
-            managed_workspace_id: Some(pane.task_room.clone()),
-            kind: AgentLaunchEventKind::SpawnFailed {
-                detail: "launcher unavailable".into(),
-            },
-        }));
-        assert!(
-            pane.task_actions_for(&task)
-                .contains(&TaskAction::StartAgent)
-        );
-        assert_eq!(
-            pane.task_action_label(TaskAction::StartAgent, &task),
-            "Retry agent"
-        );
-        assert_eq!(task.status, WorkspaceTaskStatus::Queued);
-    }
-
-    #[test]
-    fn explore_expands_to_three_columns_only_when_the_viewport_can_hold_them() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        pane.refresh(&mut tree);
-        assert!(pane.sheet.width() >= 900.0);
-        assert!(pane.timeline.rect().width() < pane.sheet.width() - 400.0);
-
-        pane.layout(Rect::new(0.0, 0.0, 700.0, 900.0));
-        assert!(pane.sheet.width() < 900.0);
-        assert!(pane.timeline.rect().width() > pane.sheet.width() - 40.0);
-    }
-
-    #[test]
-    fn narrow_explorer_pushes_between_timeline_browse_and_details() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 700.0, 800.0));
-        paint(&mut pane);
-        assert_eq!(pane.explorer_pane_rects.len(), 3);
-
-        pane.explorer_pane = ExplorerPane::Browse;
-        paint(&mut pane);
-        assert!(!pane.lens_rects.is_empty());
-
-        pane.timeline.set_selection(Some((0, 0)));
-        pane.explorer_pane = ExplorerPane::Details;
-        paint(&mut pane);
-        assert!(!pane.detail_action_rects.is_empty());
-    }
-
-    #[test]
     fn rows_come_from_the_rooms_own_change_graph() {
         let (mut tree, _, _) = busy_room();
         let pane = pane_over(&mut tree);
@@ -1720,41 +1109,7 @@ mod tests {
                     && !s.contains("Recorded workspace")
                     && !s.contains("Created the workspace")
             }),
-            "setup bookkeeping and a plain open are not changes: {summaries:?}"
-        );
-    }
-
-    #[test]
-    fn explore_filters_sit_on_one_labelled_row() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
-        assert!(pane.shows_chip_rows());
-        let period_y = pane
-            .period_rects
-            .first()
-            .map(|(_, rect)| rect.y0)
-            .expect("time chips");
-        let people_y = pane
-            .author_rects
-            .first()
-            .map(|(_, rect)| rect.y0)
-            .expect("people chips");
-        assert!(
-            (period_y - people_y).abs() < 1.0,
-            "Time and People share one row, got period {period_y} people {people_y}"
-        );
-        let titles: Vec<String> = (0..pane.timeline.row_count())
-            .filter_map(|i| pane.timeline.group_title_at_row(i).map(str::to_string))
-            .collect();
-        assert!(
-            titles.iter().any(|title| title == "Today"
-                || title == "Yesterday"
-                || title == "This week"
-                || title == "Earlier"),
-            "Explore groups sit under calendar headings: {titles:?}"
+            "setup bookkeeping, with the windows a workspace is made with, is not a change: {summaries:?}"
         );
     }
 
@@ -1763,8 +1118,7 @@ mod tests {
         let (mut tree, _, _) = busy_room();
         let mut pane = pane_over(&mut tree);
         pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
+        show_summary(&mut pane);
         let idx = (0..pane.timeline.row_count())
             .find(|&i| pane.timeline.row_entry(i).is_some())
             .expect("a change row");
@@ -1781,9 +1135,31 @@ mod tests {
             ids.contains(&HISTORY_COMPARE) && ids.contains(&HISTORY_RESTORE),
             "selected row must offer compare and restore, got {ids:?}"
         );
-        // Compare is an action, not a click-only chip.
+        // Compare is an action, not a click-only chip: invoking it
+        // materialises the exact two sides of the selected change, so the
+        // diff the person sees comes from the history layer, not a click.
+        assert!(!pane.has_comparison(), "nothing is compared before Compare");
         let compared = pane.apply_selection_history_action(HISTORY_COMPARE, &mut tree, None);
-        assert!(compared.compared || compared.handled || !ids.is_empty());
+        assert!(compared.compared, "Compare reports the comparison it made");
+        assert!(
+            pane.has_comparison(),
+            "the compared row leaves a materialised comparison behind"
+        );
+        let comparison = pane.comparison().expect("the comparison Compare made");
+        assert_eq!(
+            comparison.entries.len(),
+            1,
+            "one selected change compares one change: {:?}",
+            comparison.entries
+        );
+        assert!(
+            !comparison.before_document.is_empty() && !comparison.after_document.is_empty(),
+            "both sides are full snapshots a resource renderer can load"
+        );
+        assert_ne!(
+            comparison.before_document, comparison.after_document,
+            "a change that changed nothing would compare identical sides"
+        );
     }
 
     #[test]
@@ -1812,7 +1188,6 @@ mod tests {
             context: Some(context),
         });
         pane.apply_deep_link(ActivityDeepLink {
-            task_id: None,
             author: None,
             group_id: None,
             entry_id: Some(*id.as_bytes()),
@@ -2198,7 +1573,6 @@ mod tests {
         pane.refresh(&mut tree);
         assert!(pane.entries().len() > versions_before);
 
-        // Revert to the version the mistake was made on top of.
         let target = pane.entries()[versions_before - 1].id;
         assert!(
             pane.revert_to(&mut tree, &target),
@@ -2302,55 +1676,6 @@ mod tests {
     }
 
     #[test]
-    fn the_sheet_is_a_side_panel_when_wide_and_full_bleed_when_narrow() {
-        let mut pane = native_pane();
-
-        pane.layout(Rect::new(0.0, 0.0, 1920.0, 1080.0));
-        let wide = pane.rect();
-        assert!(
-            wide.width() <= SHEET_MAX_W,
-            "a 1920 px viewport must not get a 700 px sheet: {}",
-            wide.width()
-        );
-        assert!(
-            wide.x0 > 1920.0 * 0.5,
-            "the sheet is anchored right, leaving the room visible behind it"
-        );
-
-        pane.layout(Rect::new(0.0, 0.0, 640.0, 480.0));
-        let narrow = pane.rect();
-        assert!(
-            narrow.width() > 640.0 * 0.9,
-            "under {FULL_BLEED_UNDER} px the sheet takes the viewport: {}",
-            narrow.width()
-        );
-        assert!(narrow.x0 < 32.0, "full bleed starts at the left inset");
-    }
-
-    #[test]
-    fn a_short_viewport_drops_the_chip_rows_before_the_row_list() {
-        let mut pane = native_pane();
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1280.0, 720.0));
-        assert!(
-            pane.shows_chip_rows(),
-            "a normal viewport affords the filters"
-        );
-        let tall_rows = pane.timeline().rect().height();
-
-        pane.layout(Rect::new(0.0, 0.0, 1280.0, 220.0));
-        assert!(
-            !pane.shows_chip_rows(),
-            "a 220 px viewport must spend its height on rows, not chips"
-        );
-        assert!(
-            pane.timeline().rect().height() > 0.0,
-            "the row list survives even when the filters do not"
-        );
-        assert!(tall_rows > pane.timeline().rect().height());
-    }
-
-    #[test]
     fn contributors_are_only_people_who_actually_did_something() {
         let (mut tree, _, _) = busy_room();
         tree.desktop
@@ -2386,7 +1711,6 @@ mod tests {
     fn catch_up_leaves_out_the_readers_own_work() {
         let (mut tree, workspace, _) = busy_room();
         let mut pane = native_pane();
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         pane.refresh(&mut tree);
         assert_eq!(pane.view(), ActivityView::CatchUp);
         assert!(
@@ -2434,11 +1758,7 @@ mod tests {
             "causal forks must expose a changing real layout: {tab_counts:?}"
         );
         pane.set_view(ActivityView::Replay);
-        paint(&mut pane);
-        let order = pane.focus_order();
-        assert!(order.contains(&ActivityFocus::ReplayBack));
-        assert!(order.contains(&ActivityFocus::ReplayPlay));
-        assert!(order.contains(&ActivityFocus::ReplayForward));
+        assert_eq!(pane.serve_replay().frames.len(), pane.replay_frames.len());
 
         let mut presence = PresenceCtx::empty();
         let ada = ui::permissions::UserId("ada".into());
@@ -2455,22 +1775,7 @@ mod tests {
             .and_then(|frame| frame.pointers.first())
             .expect("session presence is retained against the durable checkpoint");
         assert_eq!(pointer.name, "Ada");
-        assert_eq!(pointer.point, (420.0, 260.0));
         assert!(pointer.desktop_space);
-    }
-
-    #[test]
-    fn narrow_history_keeps_both_scope_choices_visible() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.layout(Rect::new(0.0, 0.0, 380.0, 640.0));
-        paint(&mut pane);
-        assert_eq!(pane.scope_rects.len(), 2);
-        assert!(
-            pane.scope_rects
-                .iter()
-                .all(|(_, rect)| { rect.area() > 0.0 && pane.sheet.contains(rect.center()) })
-        );
     }
 
     #[test]
@@ -2587,7 +1892,6 @@ mod tests {
         assert_eq!(ranges[0].end, Some(end));
 
         let mut fresh = native_pane();
-        fresh.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
         fresh.refresh(&mut tree);
         let titles: Vec<&str> = (0..fresh.timeline().row_count())
             .filter_map(|i| fresh.timeline().group_title_at_row(i))
@@ -2643,7 +1947,6 @@ mod tests {
             .clone();
         let changes_before = pane.entries().len();
 
-        // An empty label is the request to take the name off.
         assert!(pane.apply_name(
             &mut tree,
             &GroupNameRequest {
@@ -2791,751 +2094,25 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
-    // Naming, driven the way a person drives it: real `WindowEvent`s into
-    // `handle_event`, read back out of the **room document**, not the
-    // widget — proving the whole chain, not just `apply_name`.
-    // -----------------------------------------------------------------
-
-    use ui::synthetic_input::cursor_moved;
-
-    use ui::synthetic_input::mouse_press;
-
-    fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            logical_key,
-            None,
-            winit::event::ElementState::Pressed,
-        ))
-    }
-
-    /// Paint the sheet so the rects the click handler reads off the last frame
-    /// are populated exactly as they are live.
-    fn paint(pane: &mut RoomActivityPane) {
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
-    }
-
-    /// Click at `p`: move there first so the hover latches, the way a pointer
-    /// does.
-    fn click_at(
-        pane: &mut RoomActivityPane,
-        tree: &mut WorkspaceTree,
-        p: Point,
-    ) -> RoomActivityOutcome {
-        let m = Modifiers::default();
-        pane.handle_event(&cursor_moved(p.x, p.y), 1.0, &m, Some(p), tree);
-        pane.handle_event(&mouse_press(), 1.0, &m, Some(p), tree)
-    }
-
-    fn type_into(pane: &mut RoomActivityPane, tree: &mut WorkspaceTree, text: &str) {
-        let m = Modifiers::default();
-        for ch in text.chars() {
-            let ev = if ch == ' ' {
-                key_press(winit::keyboard::Key::Named(
-                    winit::keyboard::NamedKey::Space,
-                ))
-            } else {
-                key_press(winit::keyboard::Key::Character(ch.to_string().into()))
-            };
-            pane.handle_event(&ev, 1.0, &m, None, tree);
-        }
-    }
-
-    /// The first line of the pane that is a band header.
-    fn first_band(pane: &RoomActivityPane) -> usize {
-        (0..pane.timeline().row_count())
-            .find(|i| {
-                pane.timeline().group_at_row(*i).is_some() && !pane.timeline().is_day_heading_at(*i)
-            })
-            .expect("the room's history produces at least one band")
-    }
-
-    #[test]
-    fn clicking_name_typing_and_pressing_enter_puts_the_name_in_the_room_document() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        paint(&mut pane);
-
-        let band = first_band(&pane);
-        let (name_chip, _) = pane
-            .timeline()
-            .group_chip_rects(band)
-            .expect("a band header carries a [Name] chip");
-        let entries = pane.entries().to_vec();
-        // What the band under the pointer covers, read before the gesture so the
-        // assertion is against the range the user pointed at rather than whatever
-        // came back. Rows are in display order and groups in causal order, so the
-        // band is found by the key the row carries, not by position.
-        let (first, last) = {
-            let key = pane.timeline().group_at_row(band).unwrap().0.to_string();
-            let mut flat: Vec<&ui::HistoryGroup> = Vec::new();
-            for g in pane.timeline().groups() {
-                g.walk(&mut flat);
-            }
-            let g = flat
-                .iter()
-                .find(|g| g.key == key)
-                .expect("the band the header belongs to");
-            (g.first_entry, g.last_entry)
+    /// The app shows what is new and says so ([`wire::MARK_VIEWED`]), to be
+    /// counted seen once the person stops reading.
+    fn show_summary(pane: &mut RoomActivityPane) {
+        let Some(workspace) = pane.last_active else {
+            return;
         };
-
-        let out = click_at(&mut pane, &mut tree, name_chip.center());
-        assert!(out.handled, "the chip took the click");
-        assert!(
-            pane.wants_keyboard(),
-            "the field is up and owns the keyboard, so the sheet's Escape does not close it"
-        );
-        assert_eq!(pane.timeline().naming_buffer(), Some(""));
-
-        type_into(&mut pane, &mut tree, "Set up the room");
-        assert_eq!(pane.timeline().naming_buffer(), Some("Set up the room"));
-
-        let out = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        assert!(out.named, "the pane reports a document write");
-        assert!(!pane.wants_keyboard(), "the field is gone");
-
-        // The name is in the room document, over the range the band covered.
-        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
-        assert_eq!(ranges.len(), 1, "one name, from one gesture: {ranges:?}");
-        assert_eq!(ranges[0].label, "Set up the room");
-        assert_eq!(ranges[0].start, first);
-        assert_eq!(ranges[0].end, Some(last));
-        assert!(
-            entries.iter().any(|e| e.id == first),
-            "the range addresses changes this room actually has"
-        );
-
-        // And it is the document's, not the widget's: a pane that never saw the
-        // gesture reads the same band off the same tree.
-        let mut fresh = native_pane();
-        fresh.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        fresh.refresh(&mut tree);
-        let titles: Vec<&str> = (0..fresh.timeline().row_count())
-            .filter_map(|i| fresh.timeline().group_title_at_row(i))
-            .collect();
-        assert!(
-            titles.contains(&"Set up the room"),
-            "the band is not on screen for the next person to open the pane: {titles:?}"
-        );
-    }
-
-    #[test]
-    fn escape_in_the_name_field_writes_nothing_to_the_room_document() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        paint(&mut pane);
-        let heads_before = tree.doc.get_heads();
-
-        let band = first_band(&pane);
-        let (name_chip, _) = pane.timeline().group_chip_rects(band).unwrap();
-        click_at(&mut pane, &mut tree, name_chip.center());
-        type_into(&mut pane, &mut tree, "never mind");
-        assert!(pane.wants_keyboard());
-
-        let out = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Escape,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        assert!(!out.named);
-        assert!(!pane.wants_keyboard(), "the field is gone");
-        assert!(
-            ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new()).is_empty(),
-            "Escape wrote a name anyway"
-        );
-        assert_eq!(
-            tree.doc.get_heads(),
-            heads_before,
-            "abandoning a name must not commit anything at all"
-        );
-    }
-
-    #[test]
-    fn clicking_a_band_header_collapses_and_expands_it() {
-        // The disclosure is a click on the header itself, and it must not be
-        // confused with the chips that sit on the same row.
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        paint(&mut pane);
-
-        let band = first_band(&pane);
-        let (key, expanded) = {
-            let (k, e) = pane.timeline().group_at_row(band).unwrap();
-            (k.to_string(), e)
-        };
-        let header = pane.timeline().row_rect(band).expect("the header lays out");
-        let (name_chip, _) = pane.timeline().group_chip_rects(band).unwrap();
-        // Somewhere on the header that is not a chip: next to the disclosure
-        // triangle.
-        let on_header = Point::new(header.x0 + 60.0, header.center().y);
-        assert!(
-            !name_chip.contains(on_header),
-            "the fixture aims off the chips"
-        );
-
-        let lines_before = pane.timeline().row_count();
-        let out = click_at(&mut pane, &mut tree, on_header);
-        assert!(out.handled);
-        assert!(!out.named, "toggling a band is not a document write");
-        assert_eq!(
-            pane.timeline().group_at_row(band).map(|(_, e)| e),
-            Some(!expanded),
-            "the click did not toggle the band"
-        );
-        let lines_after = pane.timeline().row_count();
-        assert_ne!(
-            lines_before, lines_after,
-            "the band's changes neither appeared nor went away"
-        );
-
-        // And back, addressing the same band by the same key.
-        click_at(&mut pane, &mut tree, on_header);
-        assert_eq!(
-            pane.timeline().group_at_row(band).map(|(_, e)| e),
-            Some(expanded)
-        );
-        assert_eq!(pane.timeline().row_count(), lines_before);
-        assert_eq!(
-            pane.timeline().group_at_row(band).map(|(k, _)| k),
-            Some(key.as_str()),
-            "the band moved under the toggle"
-        );
-    }
-
-    #[test]
-    fn keyboard_traverses_wraps_and_activates_modal_controls() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        paint(&mut pane);
-        let modifiers = Modifiers::default();
-
-        let home = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Home)),
-            1.0,
-            &modifiers,
-            None,
-            &mut tree,
-        );
-        assert!(home.handled);
-        assert_eq!(
-            pane.focused_control_label().as_deref(),
-            Some("This workspace")
-        );
-
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::ArrowRight,
-            )),
-            1.0,
-            &modifiers,
-            None,
-            &mut tree,
-        );
-        assert_eq!(
-            pane.focused_control_label().as_deref(),
-            Some("All workspaces")
-        );
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &modifiers,
-            None,
-            &mut tree,
-        );
-        assert_eq!(pane.scope(), RoomScope::AllWorkspaces);
-
-        // End addresses the last rendered control; Tab wraps within this
-        // modal instead of leaking keyboard focus into the desktop beneath it.
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
-            1.0,
-            &modifiers,
-            None,
-            &mut tree,
-        );
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab)),
-            1.0,
-            &modifiers,
-            None,
-            &mut tree,
-        );
-        assert_eq!(
-            pane.focused_control_label().as_deref(),
-            Some("This workspace")
-        );
-    }
-
-    #[test]
-    fn catch_up_outcomes_expand_from_the_keyboard() {
-        let (mut tree, _, _) = peers_busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::CatchUp);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
-        assert!(
-            !pane.brief_rects.is_empty(),
-            "fixture has catch-up outcomes"
-        );
-
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        let focused = pane.focused_control_label().expect("last outcome focused");
-        let last = pane.brief_rects.last().expect("last outcome").0;
-        assert_eq!(focused, pane.digest.briefs[last].title);
-
-        let out = pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Space,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        assert!(out.handled);
-        assert_eq!(pane.expanded_brief, Some(last));
-    }
-
-    #[test]
-    fn explorer_lenses_and_detail_actions_are_in_the_keyboard_focus_order() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
-        assert!(!pane.lens_rects.is_empty());
-
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        let label = pane
-            .focused_control_label()
-            .expect("last explorer control focused");
-        assert!(
-            pane.lens_rects.iter().any(|(lens, _)| match lens {
-                LensSelection::All => label == "Everything",
-                LensSelection::AgentTasks => label == "Agent tasks",
-                LensSelection::App(value)
-                | LensSelection::ResourceKind(value)
-                | LensSelection::Resource(value)
-                | LensSelection::WorkGroup(value) => value == &label,
-                LensSelection::Facet(key, value) => format!("{key}: {value}") == label,
-                LensSelection::Unclassified => label == "Unclassified",
-            }) || pane
-                .detail_action_rects
-                .iter()
-                .any(|(action, _)| pane.detail_action_label(*action) == label),
-            "focused control is a rendered explorer control: {label}"
-        );
-        assert!(
-            pane.handle_event(
-                &key_press(winit::keyboard::Key::Named(
-                    winit::keyboard::NamedKey::Enter,
-                )),
-                1.0,
-                &Modifiers::default(),
-                None,
-                &mut tree,
-            )
-            .handled
-        );
-    }
-
-    #[test]
-    fn accessibility_snapshot_matches_visible_focus_selection_and_disclosure() {
-        let (mut tree, _, _) = peers_busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::CatchUp);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::End)),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-
-        let snapshot = pane.accessibility_snapshot();
-        assert_eq!(snapshot.role, ui::a11y::Role::Window);
-        assert!(!snapshot.state.modal);
-        assert!(
-            !snapshot
-                .children
-                .iter()
-                .any(|node| node.role == ui::a11y::Role::Tab),
-            "the friendly recap does not expose full-history mode tabs"
-        );
-        let focused = snapshot
-            .children
-            .iter()
-            .find(|node| node.state.focused)
-            .expect("one control carries semantic focus");
-        assert_eq!(focused.name, pane.focused_control_label());
-        assert_eq!(focused.state.expanded, Some(true));
-        assert!(
-            snapshot
-                .children
-                .iter()
-                .take(pane.focus_order().len())
-                .all(|node| node.state.focusable)
-        );
-        assert!(
-            !snapshot.children.iter().any(|node| {
-                node.role == ui::a11y::Role::List && node.name.as_deref() == Some("History entries")
-            }),
-            "the hidden Explorer timeline is not exposed from Catch up"
-        );
-        pane.set_view(ActivityView::Explore);
-        let snapshot = pane.accessibility_snapshot();
-        assert!(snapshot.children.iter().any(|node| {
-            node.role == ui::a11y::Role::List && node.name.as_deref() == Some("History entries")
-        }));
-    }
-
-    /// The header band equals the authored 80 px at 100 % and grows with the
-    /// text scale so the title, subtitle and "Latest" lines have their own
-    /// room; every row under it moves down with it, and a `draw` at a new
-    /// scale lays the sheet out again before placing anything.
-    #[test]
-    fn header_band_follows_the_text_scale_and_relayouts_on_draw() {
-        let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let mut pane = native_pane();
-        pane.layout(viewport);
-        assert!(
-            (pane.header_h() - HEADER_H).abs() < 1e-9,
-            "1× keeps the authored band"
-        );
-        let rows_at_1x = pane.timeline.get_rect().y0;
-
-        let large = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &large,
-            &PresenceCtx::default(),
-        );
-        let expected = HEADER_TOP + pane.title_line_h() + 2.0 * pane.sub_line_h() + HEADER_BOTTOM;
-        assert!(pane.header_h() > HEADER_H);
-        assert!((pane.header_h() - expected).abs() < 1e-9);
-        assert!(
-            pane.timeline.get_rect().y0 > rows_at_1x,
-            "the rows under the header moved down with it after the relayout"
-        );
-    }
-
-    /// HIG §9.3: a chosen pill is a lift with its hairline, never an accent
-    /// fill, and it moves further from the sheet's ground than an idle one
-    /// on every shipped palette — including high contrast, where `lift`
-    /// falls back to a derived step.
-    #[test]
-    fn selector_pills_are_lifted_and_ordered_on_every_palette() {
-        use ui::a11y::relative_luminance;
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let ground = relative_luminance(theme.tokens.colors.surfaces.base);
-            let active =
-                ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
-            let idle = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
-            assert_ne!(
-                active.fill, theme.tokens.colors.intent.accent,
-                "{}: not an accent wash",
-                theme.name
-            );
-            assert!(
-                active.border.is_some(),
-                "{}: the chosen pill carries its hairline",
-                theme.name
-            );
-            assert!(
-                (relative_luminance(active.fill) - ground).abs()
-                    > (relative_luminance(idle) - ground).abs(),
-                "{}: chosen must lift further than idle",
-                theme.name
-            );
-        }
-    }
-
-    /// The catch-up card's lines are placed by the same metrics that size
-    /// the card, so at 200 % each line starts below the previous one ends
-    /// and the affordance stays inside the card.
-    #[test]
-    fn brief_card_lines_never_overlap_at_large_text() {
-        let large = Theme::dark().with_text_scale(2.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let m = BriefCardMetrics::new(&mut tr, &large);
-        for (title_lines, actions) in [(1, 0), (2, 0), (1, 3), (2, 2)] {
-            let byline = m.byline_top(title_lines);
-            let provenance = m.provenance_top(title_lines);
-            let affordance = m.affordance_top(title_lines, actions);
-            assert!(byline >= m.pad + small_count_to_f64(title_lines) * m.title_lh);
-            assert!(provenance >= byline + m.line_lh);
-            assert!(affordance >= provenance + m.line_lh);
-            if actions > 0 {
-                assert!(
-                    affordance
-                        >= m.actions_top(title_lines) + small_count_to_f64(actions) * m.line_lh
-                );
-            }
-            assert!(m.height(title_lines, actions) >= affordance + m.line_lh);
-        }
-        let one = BriefCardMetrics::new(&mut TextRenderer::new(), &Theme::dark());
-        assert!(m.height(1, 0) > one.height(1, 0), "200 % grows the card");
-    }
-
-    #[test]
-    fn chips_are_full_pointer_targets_that_publish_their_bounds() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
-        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
-        paint(&mut pane);
-        assert!(
-            pane.shows_chip_rows(),
-            "the tall sheet shows period and author rows"
-        );
-        let targets: Vec<Rect> = pane
-            .view_rects
-            .iter()
-            .map(|(_, rect)| *rect)
-            .chain(pane.scope_rects.iter().map(|(_, rect)| *rect))
-            .chain(pane.period_rects.iter().map(|(_, rect)| *rect))
-            .chain(pane.author_rects.iter().map(|(_, rect)| *rect))
-            .collect();
-        assert!(
-            targets.len() >= 4 + 2 + 2,
-            "view, scope, period and author chips are laid out"
-        );
-        for rect in &targets {
-            assert!(
-                rect.height() >= MIN_TARGET - f64::EPSILON
-                    && rect.width() >= MIN_TARGET - f64::EPSILON,
-                "every chip is at least one pointer target: {rect:?}"
-            );
-        }
-        for (i, a) in targets.iter().enumerate() {
-            for b in &targets[..i] {
-                let overlap = a.intersect(*b);
-                assert!(
-                    overlap.width() <= 0.0 || overlap.height() <= 0.0,
-                    "{a:?} overlaps {b:?}"
-                );
-            }
-        }
-        let snapshot = pane.accessibility_snapshot();
-        assert_eq!(
-            snapshot.bounds.map(ui::AccessBounds::to_rect),
-            Some(pane.rect())
-        );
-        // The chip families laid out above, by the labels the tree speaks.
-        let chip_names: Vec<String> = ActivityView::ALL
-            .iter()
-            .map(|view| view.label())
-            .chain(RoomScope::ALL.iter().map(|scope| scope.label()))
-            .chain(Period::ALL.iter().map(|period| period.label()))
-            .collect();
-        // Only the chips are checked: the timeline list and controls the
-        // current view does not paint publish no rect, and rightly so.
-        let mut published = 0;
-        for node in snapshot.children.iter().take(pane.focus_order().len()) {
-            let Some(name) = node.name.as_deref() else {
-                continue;
-            };
-            if !chip_names.iter().any(|chip| chip == name) {
-                continue;
-            }
-            let rect = node.bounds.map_or_else(
-                || panic!("{name:?} publishes its hit rect"),
-                ui::AccessBounds::to_rect,
-            );
-            assert!(
-                targets.contains(&rect),
-                "{name:?} publishes the rect the pointer hits"
-            );
-            published += 1;
-        }
-        assert!(
-            published >= 4 + 2 + 2,
-            "every laid-out chip is in the tree with bounds"
-        );
-    }
-
-    #[test]
-    fn renaming_through_the_chip_replaces_the_name_rather_than_adding_a_band() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        paint(&mut pane);
-
-        // Name it once, through the gesture.
-        let band = first_band(&pane);
-        let (chip, _) = pane.timeline().group_chip_rects(band).unwrap();
-        click_at(&mut pane, &mut tree, chip.center());
-        type_into(&mut pane, &mut tree, "First try");
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-        let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())[0]
-            .id
-            .clone();
-
-        // Now rename it. The field seeds from the existing name, and the write
-        // has to land on the record that already exists.
-        paint(&mut pane);
-        let band = (0..pane.timeline().row_count())
-            .find(|i| pane.timeline().group_title_at_row(*i) == Some("First try"))
-            .expect("the named band is on screen");
-        let (chip, _) = pane.timeline().group_chip_rects(band).unwrap();
-        click_at(&mut pane, &mut tree, chip.center());
-        assert_eq!(
-            pane.timeline().naming_buffer(),
-            Some("First try"),
-            "a rename starts from the name that is there"
-        );
-        type_into(&mut pane, &mut tree, " again");
-        pane.handle_event(
-            &key_press(winit::keyboard::Key::Named(
-                winit::keyboard::NamedKey::Enter,
-            )),
-            1.0,
-            &Modifiers::default(),
-            None,
-            &mut tree,
-        );
-
-        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
-        assert_eq!(
-            ranges.len(),
-            1,
-            "a rename must not leave two bands: {ranges:?}"
-        );
-        assert_eq!(
-            ranges[0].id, record,
-            "it addressed the record it already had"
-        );
-        assert_eq!(ranges[0].label, "First try again");
-    }
-
-    #[test]
-    fn overflow_controls_make_every_filter_page_keyboard_reachable() {
-        let (mut tree, _, _) = busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::Explore);
-        pane.contributors = (0..12).map(|i| format!("Contributor {i}")).collect();
-        for i in 0..18 {
-            pane.facet_index
-                .apps
-                .insert(format!("Application {i}"), i + 1);
-        }
-        pane.layout(Rect::new(0.0, 0.0, 1000.0, 520.0));
-        paint(&mut pane);
-
-        assert!(
-            pane.author_more_rect.is_some(),
-            "contributors expose a More control"
-        );
-        assert!(
-            pane.lens_more_rect.is_some(),
-            "short browse panel exposes a More control"
-        );
-        assert!(pane.focus_order().contains(&ActivityFocus::MorePeople));
-        assert!(pane.focus_order().contains(&ActivityFocus::MoreLenses));
-        let first_people = pane.author_rects.clone();
-        pane.advance_people();
-        paint(&mut pane);
-        assert_ne!(
-            first_people, pane.author_rects,
-            "More people advances the page"
-        );
-        let first_lenses = pane.lens_rects.clone();
-        pane.advance_lenses();
-        paint(&mut pane);
-        assert_ne!(
-            first_lenses, pane.lens_rects,
-            "More lenses advances the page"
-        );
-        assert!(
-            pane.lens_rects
-                .iter()
-                .all(|(_, rect)| rect.y1 <= pane.sheet.y1)
-        );
-    }
-
-    #[test]
-    fn short_catch_up_has_a_more_outcomes_affordance() {
-        let (mut tree, _, _) = peers_busy_room();
-        let mut pane = pane_over(&mut tree);
-        pane.set_view(ActivityView::CatchUp);
-        let first = pane
-            .digest
+        let entries = pane
+            .serve_summary()
             .briefs
-            .first()
-            .cloned()
-            .expect("fixture outcome");
-        while pane.digest.briefs.len() < 5 {
-            pane.digest.briefs.push(first.clone());
-        }
-        pane.layout(Rect::new(0.0, 0.0, 1000.0, 390.0));
-        paint(&mut pane);
-        assert!(
-            pane.brief_more_rect.is_some(),
-            "outcomes are paged, not silently clipped"
+            .into_iter()
+            .flat_map(|brief| brief.entries)
+            .collect();
+        pane.mark_viewed(
+            workspace,
+            &tilo_actions::remote::workspace_activity::Viewed {
+                entries,
+                later: true,
+            },
         );
-        assert!(pane.focus_order().contains(&ActivityFocus::MoreBriefs));
-        let before = pane.brief_rects.clone();
-        pane.advance_briefs();
-        paint(&mut pane);
-        assert_ne!(before, pane.brief_rects);
     }
 
     #[test]
@@ -3817,7 +2394,6 @@ mod tests {
         let mut pane = native_pane();
         pane.refresh(&mut tree);
 
-        // A collaborator's device on the same room, kept in sync by hand.
         let mut peer = tree.clone();
         peer.doc.set_actor(ActorId::from(b"bea-device".as_slice()));
         let receipt = || {
@@ -3866,7 +2442,6 @@ mod tests {
                 }
                 1 => {
                     next_tab += 1;
-                    // Home has a window group to open the tab in.
                     tree.set_active(home);
                     assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
                         next_tab,
@@ -3926,7 +2501,6 @@ mod tests {
                 ui::I18nManager::revision()
             );
 
-            // What a pane that reads the whole log once derives.
             let mut fresh = native_pane();
             let mut fresh_tree = tree.clone();
             fresh.refresh(&mut fresh_tree);
@@ -3956,7 +2530,6 @@ mod tests {
                 frames(&fresh),
                 "step {step} ({kind}): replay"
             );
-            // Undo and restore address a row by the document's heads at it.
             for (entry, _) in &pane.derived {
                 assert_eq!(
                     pane.history_log.heads_for_entry(&entry.id),
@@ -3978,7 +2551,6 @@ mod tests {
 #[cfg(test)]
 mod resume_card_tests {
     use super::*;
-    use crate::activity::testing::TestTree as WorkspaceTree;
     use ui::tilo_actions::ActionContext;
     use ui::widget::history::HistoryAuthor;
 
@@ -4015,144 +2587,52 @@ mod resume_card_tests {
             "an unknown local identity resumes nothing"
         );
     }
-
-    #[test]
-    fn resume_card_click_opens_the_exact_resource() {
-        let mut pane = RoomActivityPane::new();
-        pane.resume_rect = Rect::new(10.0, 10.0, 200.0, 70.0);
-        pane.resume_target = Some(ui::HistoryResourceTarget {
-            app_id: Some("so.tilo.sheets".into()),
-            app_label: Some("Sheets".into()),
-            id: "finance:q2".into(),
-            kind: "sheet".into(),
-            label: "Q2 finance report".into(),
-        });
-        let mut tree = WorkspaceTree::bootstrap_default();
-        let outcome = pane
-            .handle_catchup_click(Point::new(40.0, 30.0), &mut tree)
-            .expect("resume card handles its click");
-        assert_eq!(outcome.open_target, pane.resume_target);
-    }
 }
 
 #[cfg(test)]
-mod task_review_tests {
+mod tasks_link_tests {
     use super::*;
+    use crate::activity::TaskRunDocument;
     use crate::activity::testing::TestTree as WorkspaceTree;
-    struct ReviewHost {
-        snapshot: RefCell<crate::activity::TaskReviewSnapshot>,
-        submitted: RefCell<Vec<crate::activity::TaskReviewRequest>>,
-        mutations: std::cell::Cell<bool>,
-        launched: RefCell<Vec<String>>,
+    #[derive(Default)]
+    struct UndoHost {
+        undos: RefCell<Vec<TaskRunUndo>>,
+        ended: RefCell<Option<Result<Vec<TaskRunDocument>, String>>>,
     }
-    impl ActivityHost for ReviewHost {
+    impl ActivityHost for UndoHost {
         fn local_user(&self) -> String {
             "local".into()
         }
         fn mutations_available(&self) -> bool {
-            self.mutations.get()
-        }
-        fn launch_agent(
-            &self,
-            agent: &str,
-            _workspace: &tilo_desktop_model::Workspace,
-        ) -> Result<(), String> {
-            self.launched.borrow_mut().push(agent.into());
-            Ok(())
-        }
-        fn task_review_required(&self, _room: &str) -> bool {
             true
         }
-        fn task_review_snapshot(
-            &self,
-            room: &str,
-        ) -> Option<Result<std::sync::Arc<crate::activity::TaskReviewSnapshot>, String>> {
-            let snapshot = self.snapshot.borrow();
-            Some(if snapshot.room == room {
-                Ok(std::sync::Arc::new(snapshot.clone()))
-            } else {
-                Err("room unavailable".into())
-            })
-        }
-        fn submit_task_review(
-            &self,
-            request: crate::activity::TaskReviewRequest,
-        ) -> Result<(), String> {
-            self.submitted.borrow_mut().push(request);
+        fn undo_task_run(&self, undo: TaskRunUndo) -> Result<(), String> {
+            self.undos.borrow_mut().push(undo);
             Ok(())
         }
+        fn poll_task_run_undo(
+            &self,
+            _invocation: uuid::Uuid,
+        ) -> Option<Result<Vec<TaskRunDocument>, String>> {
+            self.ended.borrow_mut().take()
+        }
     }
-    fn review_fixture() -> (WorkspaceTree, RoomActivityPane, Rc<ReviewHost>) {
-        use tilo_desktop_model::{WorkspaceTaskActiveRun, WorkspaceTaskControl};
+    fn fixture() -> (WorkspaceTree, RoomActivityPane, Rc<UndoHost>) {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let active = tree.active;
-        let id = tree
-            .create_workspace_task(
-                active,
-                "Review release notes",
-                "local",
-                Some("scribe".into()),
-                WorkspaceTaskRoute::Model,
-                None,
-            )
-            .unwrap();
-        let task = tree.active_workspace().unwrap().tasks[0].clone();
-        let room = tree.active_workspace().unwrap().room.to_string();
-        let host = Rc::new(ReviewHost {
-            snapshot: RefCell::new(crate::activity::TaskReviewSnapshot {
-                room,
-                generation: 7,
-                sampled_at_secs: 100,
-                actor: "local".into(),
-                writable: true,
-                tasks: vec![task],
-                controls: std::collections::BTreeMap::from([(
-                    id.clone(),
-                    WorkspaceTaskControl {
-                        run_epoch: 3,
-                        active_run: Some(WorkspaceTaskActiveRun {
-                            agent_id: "scribe".into(),
-                            epoch: 3,
-                            started_at: 100,
-                            applied_direction_revision: 0,
-                            approval: None,
-                        }),
-                        ..Default::default()
-                    },
-                )]),
-            }),
-            submitted: RefCell::default(),
-            mutations: std::cell::Cell::new(false),
-            launched: RefCell::default(),
-        });
+        let host = Rc::new(UndoHost::default());
         let mut pane = RoomActivityPane::new();
         pane.set_host(host.clone());
         pane.refresh(&mut tree);
-        pane.set_view(ActivityView::Tasks);
-        pane.selected_task = Some(id);
+        pane.set_view(ActivityView::Explore);
         (tree, pane, host)
     }
-    /// Once an agent's run of a task ended and history recorded what it
-    /// changed under the task, Task Center offers to undo it as one, and
-    /// that asks the host to undo the task's run in each changed document.
-    #[test]
-    fn an_ended_runs_task_offers_to_undo_it_as_one() {
-        let (mut tree, mut pane, host) = review_fixture();
-        host.mutations.set(true);
-        let id = pane.selected_task.clone().unwrap();
-        host.snapshot
-            .borrow_mut()
-            .controls
-            .get_mut(&id)
-            .unwrap()
-            .active_run = None;
-        pane.refresh(&mut tree);
-        let task = tree.active_workspace().unwrap().tasks[0].clone();
-        assert!(
-            !pane.task_actions_for(&task).contains(&TaskAction::UndoTask),
-            "nothing recorded, nothing to undo"
-        );
 
+    /// Once an agent's run of a task recorded what it changed under the
+    /// task, undoing it asks the host to undo the run in each changed
+    /// document, and tells how that ended.
+    #[test]
+    fn an_agent_runs_task_is_undone_by_the_host_as_one() {
+        let (mut tree, mut pane, host) = fixture();
         let change = ui::history_source::entry_id_from_hash(&"ab".repeat(32));
         let doc = tree.document_mut();
         let key = ui::record_run_with_details(
@@ -4170,931 +2650,146 @@ mod task_review_tests {
             }],
         )
         .unwrap();
-        assert!(ui::history_source::runs::set_run_task(doc, &key, &id));
+        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
         doc.commit();
         pane.refresh_records(&mut tree, &RecordStore::in_memory());
-        assert!(pane.task_actions_for(&task).contains(&TaskAction::UndoTask));
 
-        assert!(
-            pane.apply_task_action(TaskAction::UndoTask, &mut tree)
-                .handled
-        );
-        let submitted = host.submitted.borrow();
+        assert!(pane.undo_task_run("task:1"));
+        let undo = host.undos.borrow().last().cloned().unwrap();
+        assert_eq!(undo.task_id, "task:1");
         assert_eq!(
-            submitted.last().map(|request| &request.command),
-            Some(&crate::activity::TaskReviewCommand::UndoRun {
-                task_id: id.clone(),
-                steps: vec![(
-                    "so.tilo.notes".to_owned(),
-                    "file:/notes/release.note".to_owned()
-                )],
-            })
-        );
-    }
-
-    #[test]
-    fn header_title_uses_current_viewport_and_scope_on_the_first_frame() {
-        for theme in [
-            Theme::light(),
-            Theme::dark(),
-            Theme::high_contrast().with_text_scale(2.0),
-        ] {
-            let (_, mut pane, _) = review_fixture();
-            pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
-            paint_header_fixture(&mut pane, &Theme::light());
-            for (width, height) in [(1600.0, 900.0), (560.0, 560.0), (1600.0, 900.0)] {
-                pane.layout_window(Rect::new(0.0, 0.0, width, height));
-                paint_header_fixture(&mut pane, &theme);
-                assert_eq!(
-                    *pane.painted_title.borrow(),
-                    t("activity-title-tasks"),
-                    "the first frame after move/resize/scale change must retain orientation"
-                );
-                let first = pane.painted_title.borrow().clone();
-                paint_header_fixture(&mut pane, &theme);
-                assert_eq!(*pane.painted_title.borrow(), first);
-            }
-            pane.set_view(ActivityView::CatchUp);
-            paint_header_fixture(&mut pane, &theme);
-            assert!(pane.scope_rects.is_empty());
-            assert_eq!(*pane.painted_title.borrow(), t("activity-title-catch-up"));
-        }
-    }
-
-    fn paint_header_fixture(pane: &mut RoomActivityPane, theme: &Theme) -> Scene {
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        text.set_text_scale(theme.text_scale);
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            theme,
-            &PresenceCtx::empty(),
-        );
-        scene
-    }
-
-    #[test]
-    fn activity_header_render_matrix() {
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/activity-header-renders");
-        std::fs::create_dir_all(&output).unwrap();
-        for (name, theme) in [
-            ("light", Theme::light()),
-            ("dark", Theme::dark()),
-            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
-        ] {
-            for (size, width, height) in [("normal", 1600, 900), ("compact", 560, 560)] {
-                let (mut tree, mut pane, host) = review_fixture();
-                host.snapshot.borrow_mut().sampled_at_secs =
-                    i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
-                pane.refresh(&mut tree);
-                pane.layout_window(Rect::new(-560.0, 0.0, 0.0, 560.0));
-                paint_header_fixture(&mut pane, &Theme::light());
-                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
-                let scene = paint_header_fixture(&mut pane, &theme);
-                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
-                renderer.render_png(
-                    &scene,
-                    theme.tokens.colors.surfaces.content,
-                    output.join(format!("{name}-{size}.png")),
-                );
-            }
-        }
-    }
-
-    /// Three reviewed tasks: the one in progress was approved, carries an
-    /// instruction and reports executing; the others wait their turn.
-    fn crowded_review_fixture() -> (WorkspaceTree, RoomActivityPane, Rc<ReviewHost>) {
-        use tilo_desktop_model::{
-            WorkspaceTaskApproval, WorkspaceTaskDirection, WorkspaceTaskExecution,
-            WorkspaceTaskExecutionPhase,
-        };
-        let (mut tree, mut pane, host) = review_fixture();
-        let now = i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
-        let active = tree.active;
-        for title in [
-            "Replace the parenthesis with a real link found by web search",
-            "Summarise this week's meeting notes for the team",
-        ] {
-            tree.create_workspace_task(
-                active,
-                title,
-                "local",
-                Some("scribe".into()),
-                WorkspaceTaskRoute::Model,
-                None,
-            )
-            .unwrap();
-        }
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.sampled_at_secs = now;
-            snapshot.tasks = tree.active_workspace().unwrap().tasks.clone();
-            for (index, task) in snapshot.tasks.iter_mut().enumerate() {
-                task.status = if index == 0 {
-                    WorkspaceTaskStatus::InProgress
-                } else {
-                    WorkspaceTaskStatus::Queued
-                };
-                task.updated_at = now.saturating_sub(i64::try_from(index).unwrap());
-            }
-            let first = snapshot.tasks[0].id.clone();
-            let control = snapshot
-                .controls
-                .remove(&pane.selected_task.clone().unwrap());
-            let mut control = control.unwrap();
-            if let Some(run) = control.active_run.as_mut() {
-                run.approval = Some(WorkspaceTaskApproval {
-                    person: "local".into(),
-                    device: [0; 32],
-                    approved_at: now.saturating_sub(120),
-                    instruction_revision: 0,
-                });
-            }
-            control.execution = Some(WorkspaceTaskExecution {
-                run_epoch: 3,
-                sequence: 1,
-                phase: WorkspaceTaskExecutionPhase::Executing,
-                updated_at: now.saturating_sub(30),
-            });
-            control
-                .directions
-                .push(WorkspaceTaskDirection::owner_admitted(
-                    1,
-                    uuid::Uuid::nil(),
-                    "local".into(),
-                    "Use the https address".into(),
-                    now.saturating_sub(60),
-                ));
-            snapshot.controls.insert(first.clone(), control);
-            let rest: Vec<String> = snapshot
-                .tasks
-                .iter()
-                .skip(1)
-                .map(|task| task.id.clone())
-                .collect();
-            for id in rest {
-                snapshot
-                    .controls
-                    .insert(id, tilo_desktop_model::WorkspaceTaskControl::default());
-            }
-            pane.selected_task = Some(first);
-        }
-        pane.refresh(&mut tree);
-        (tree, pane, host)
-    }
-
-    fn review_action_rect(pane: &RoomActivityPane, action: TaskAction) -> Option<Rect> {
-        pane.task_action_rects
-            .iter()
-            .find_map(|(candidate, rect)| (*candidate == action).then_some(*rect))
-    }
-
-    #[test]
-    fn review_paging_keeps_previous_left_and_next_right() {
-        let (mut tree, mut pane, _) = crowded_review_fixture();
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
-        paint_header_fixture(&mut pane, &Theme::dark());
-        assert!(review_action_rect(&pane, TaskAction::PreviousTasks).is_none());
-        let next_first = review_action_rect(&pane, TaskAction::NextTasks).unwrap();
-        pane.apply_task_action(TaskAction::NextTasks, &mut tree);
-        paint_header_fixture(&mut pane, &Theme::dark());
-        let previous = review_action_rect(&pane, TaskAction::PreviousTasks).unwrap();
-        let next = review_action_rect(&pane, TaskAction::NextTasks).unwrap();
-        assert_eq!(next, next_first, "Next stays where it was");
-        assert!(previous.x1 < next.x0, "Previous sits left of Next");
-        pane.apply_task_action(TaskAction::NextTasks, &mut tree);
-        paint_header_fixture(&mut pane, &Theme::dark());
-        assert!(review_action_rect(&pane, TaskAction::NextTasks).is_none());
-        assert_eq!(
-            review_action_rect(&pane, TaskAction::PreviousTasks),
-            Some(previous),
-            "Previous keeps its place when Next is gone"
-        );
-    }
-
-    #[test]
-    fn review_counters_wait_behind_details() {
-        let (mut tree, mut pane, _) = crowded_review_fixture();
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
-        let task_height = |pane: &mut RoomActivityPane| {
-            paint_header_fixture(pane, &Theme::dark());
-            pane.task_rects[0].1.height()
-        };
-        let collapsed = task_height(&mut pane);
-        assert!(!pane.review_details);
-        assert!(review_action_rect(&pane, TaskAction::Details).is_some());
-        pane.apply_task_action(TaskAction::Details, &mut tree);
-        assert!(pane.review_details);
-        assert!(
-            task_height(&mut pane) > collapsed,
-            "details add the run counters under the task"
+            undo.room,
+            tree.active_workspace().unwrap().room().to_string()
         );
         assert_eq!(
-            pane.access_control(&ActivityFocus::TaskAction(TaskAction::Details))
-                .unwrap()
-                .expanded,
-            Some(true)
+            undo.steps,
+            vec![(
+                "so.tilo.notes".to_owned(),
+                "file:/notes/release.note".to_owned()
+            )]
         );
-    }
+        assert!(pane.undo_task_run("task:1"));
+        assert_eq!(host.undos.borrow().len(), 1, "one undo at a time");
 
-    #[test]
-    fn task_center_has_no_workspace_scope_toggle() {
-        let (_, mut pane, _) = crowded_review_fixture();
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
-        paint_header_fixture(&mut pane, &Theme::dark());
-        assert!(
-            pane.scope_rects.is_empty(),
-            "tasks always belong to the active workspace"
-        );
-    }
-
-    #[test]
-    fn task_center_render_matrix() {
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/task-center-renders");
-        std::fs::create_dir_all(&output).unwrap();
-        for locale in ["en-US", "de-DE"] {
-            let _ = t("activity-title-tasks");
-            ui::i18n::I18nManager::set_locale(locale);
-            for (name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
-                for details in [false, true] {
-                    let (mut tree, mut pane, _) = crowded_review_fixture();
-                    pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
-                    if details {
-                        pane.apply_task_action(TaskAction::Details, &mut tree);
-                    }
-                    let scene = paint_header_fixture(&mut pane, &theme);
-                    let mut renderer = ui::offscreen::OffscreenRenderer::new(640, 640);
-                    let suffix = if details { "-details" } else { "" };
-                    renderer.render_png(
-                        &scene,
-                        theme.tokens.colors.surfaces.content,
-                        output.join(format!("{locale}-{name}{suffix}.png")),
-                    );
-                }
-            }
-        }
-        ui::i18n::I18nManager::set_locale("en-US");
-    }
-
-    #[test]
-    fn review_retry_is_offered_for_waiting_tasks_only() {
-        let (mut tree, mut pane, host) = review_fixture();
-        let id = pane.selected_task.clone().unwrap();
-        for status in [
-            WorkspaceTaskStatus::Waiting,
-            WorkspaceTaskStatus::Done,
-            WorkspaceTaskStatus::Cancelled,
-        ] {
-            {
-                let mut snapshot = host.snapshot.borrow_mut();
-                snapshot.tasks[0].status = status;
-                snapshot.controls.get_mut(&id).unwrap().active_run = None;
-            }
-            pane.refresh(&mut tree);
-            let actions = pane.task_actions_for(&pane.tasks[0]);
-            assert_eq!(
-                actions.contains(&TaskAction::RetryRun),
-                status == WorkspaceTaskStatus::Waiting
-            );
-            assert!(!actions.contains(&TaskAction::Steer));
-            if status.is_finished() {
-                assert!(!actions.contains(&TaskAction::CancelRun));
-            }
-        }
-    }
-    #[test]
-    fn an_approved_run_offers_to_start_its_offline_agent() {
-        let (mut tree, mut pane, host) = review_fixture();
-        host.mutations.set(true);
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.tasks[0].status = WorkspaceTaskStatus::InProgress;
-        }
+        host.ended.replace(Some(Ok(vec![TaskRunDocument {
+            app: "so.tilo.notes".into(),
+            record: "file:/notes/release.note".into(),
+        }])));
         pane.refresh(&mut tree);
-        assert!(
-            pane.task_actions_for(&pane.tasks[0])
-                .contains(&TaskAction::StartAgent),
-            "an approved run reaches no one until its agent is running"
-        );
-        pane.apply_task_action(TaskAction::StartAgent, &mut tree);
-        assert_eq!(*host.launched.borrow(), ["scribe"]);
-        assert!(
-            !pane
-                .task_actions_for(&pane.tasks[0])
-                .contains(&TaskAction::StartAgent),
-            "a starting agent is not offered a second start"
-        );
-        host.snapshot.borrow_mut().tasks[0].status = WorkspaceTaskStatus::Done;
-        pane.agent_startup.clear();
-        pane.refresh(&mut tree);
-        assert!(
-            !pane
-                .task_actions_for(&pane.tasks[0])
-                .contains(&TaskAction::StartAgent),
-            "a finished task has no run to start an agent for"
-        );
-    }
-    #[test]
-    fn queued_run_approval_uses_exact_frontier_and_shared_keyboard_controls() {
-        use crate::activity::TaskReviewCommand;
-        let (mut tree, mut pane, host) = review_fixture();
-        let id = pane.selected_task.clone().unwrap();
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
-            snapshot.controls.get_mut(&id).unwrap().active_run = None;
-        }
-        pane.refresh(&mut tree);
-        assert!(
-            pane.task_actions_for(&pane.tasks[0])
-                .contains(&TaskAction::ApproveRun)
-        );
-        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
-            let theme = theme.with_text_scale(2.0);
-            pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
-            pane.draw(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            assert!(
-                pane.focus_order()
-                    .contains(&ActivityFocus::TaskAction(TaskAction::ApproveRun))
-            );
-            let rect = pane
-                .task_action_rects
-                .iter()
-                .find(|(action, _)| *action == TaskAction::ApproveRun)
-                .unwrap()
-                .1;
-            assert_eq!(rect.intersect(pane.sheet), rect);
-            assert!(
-                pane.accessibility_snapshot()
-                    .children
-                    .iter()
-                    .any(|node| node.name.as_deref()
-                        == Some(TaskAction::ApproveRun.label().as_str()))
-            );
-        }
-        pane.apply_task_action(TaskAction::ApproveRun, &mut tree);
-        assert!(
-            matches!(&host.submitted.borrow()[0].command, TaskReviewCommand::Approve {task_id,run_epoch:3,after_revision:0,..} if task_id==&id)
-        );
-        assert!(
-            pane.review_pending.is_some(),
-            "approval must await its durable receipt"
-        );
-    }
-    #[test]
-    fn approval_keeps_the_painted_frontier_when_a_new_run_is_unseen() {
-        use crate::activity::TaskReviewCommand;
-        let (mut tree, mut pane, host) = review_fixture();
-        let id = pane.selected_task.clone().unwrap();
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.tasks[0].status = WorkspaceTaskStatus::Queued;
-            snapshot.controls.get_mut(&id).unwrap().active_run = None;
-        }
-        pane.refresh(&mut tree);
-        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::light(),
-            &PresenceCtx::empty(),
-        );
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.controls.get_mut(&id).unwrap().run_epoch = 4;
-        }
-        pane.refresh(&mut tree);
-        pane.apply_task_action(TaskAction::ApproveRun, &mut tree);
-        assert!(
-            matches!(
-                &host.submitted.borrow()[0].command,
-                TaskReviewCommand::Approve {
-                    run_epoch: 3,
-                    after_revision: 0,
-                    ..
-                }
-            ),
-            "refreshing unseen state must not approve its new run frontier"
-        );
-    }
-
-    #[test]
-    fn steering_draft_keeps_observed_run_and_revision_after_refresh() {
-        use crate::activity::TaskReviewCommand;
-        let (mut tree, mut pane, host) = review_fixture();
-        pane.apply_task_action(TaskAction::Steer, &mut tree);
-        pane.direction
-            .as_mut()
-            .unwrap()
-            .input
-            .set_text("Keep compatibility examples");
-        let id = pane.selected_task.clone().unwrap();
-        host.snapshot
-            .borrow_mut()
-            .controls
-            .get_mut(&id)
-            .unwrap()
-            .run_epoch = 4;
-        pane.refresh(&mut tree);
-        pane.apply_task_action(TaskAction::SendDirection, &mut tree);
-        assert!(
-            matches!(&host.submitted.borrow()[0].command,TaskReviewCommand::Steer {run_epoch:3,after_revision:0,text,..} if text=="Keep compatibility examples")
-        );
-        assert!(
-            pane.direction.is_some(),
-            "queued admission must retain the draft until a durable receipt"
-        );
-    }
-    #[test]
-    fn switching_workspace_clears_steering_draft_and_keeps_new_room_private() {
-        let (mut tree, mut pane, host) = review_fixture();
-        pane.apply_task_action(TaskAction::Steer, &mut tree);
-        pane.direction
-            .as_mut()
-            .unwrap()
-            .input
-            .set_text("Private project direction");
-        tree.append_empty_workspace("Personal");
-        tree.active = tree.workspaces.last().unwrap().id;
-        pane.refresh(&mut tree);
-        assert!(pane.direction.is_none());
-        assert!(pane.tasks.is_empty());
-        assert!(host.submitted.borrow().is_empty());
-    }
-    #[test]
-    fn native_review_form_and_controls_fit_large_text_and_have_keyboard_targets() {
-        let (_tree, mut pane, _host) = review_fixture();
-        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
-            let theme = theme.with_text_scale(2.0);
-            pane.layout_window(Rect::new(0.0, 0.0, 900.0, 900.0));
-            let mut scene = Scene::new();
-            let mut text = TextRenderer::new();
-            pane.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            assert!(
-                pane.task_action_rects
-                    .iter()
-                    .any(|(action, _)| *action == TaskAction::Steer)
-            );
-            pane.apply_review_action(TaskAction::Steer);
-            pane.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            assert!(pane.focus_order().contains(&ActivityFocus::DirectionField));
-            for (_, rect) in &pane.task_action_rects {
-                assert_eq!(rect.intersect(pane.sheet), *rect);
-            }
-            assert!(
-                pane.task_action_rects
-                    .iter()
-                    .any(|(action, _)| *action == TaskAction::SendDirection)
-            );
-            assert!(
-                pane.accessibility_snapshot()
-                    .children
-                    .iter()
-                    .any(|node| node.role == ui::a11y::Role::TextInput)
-            );
-            pane.direction = None;
-        }
-    }
-    #[test]
-    fn deleting_the_focused_task_does_not_retarget_its_controls() {
-        let (mut tree, mut pane, host) = review_fixture();
-        let task_id = pane.selected_task.clone().unwrap();
-        pane.keyboard_focus = Some(ActivityFocus::TaskAction(TaskAction::CancelRun));
-        host.snapshot.borrow_mut().tasks.clear();
-        pane.refresh(&mut tree);
-        assert_eq!(pane.requested_review_task, Some(task_id));
-        assert_eq!(pane.selected_task, None);
+        assert!(pane.undo_pending.is_none());
         assert_eq!(
-            pane.keyboard_focus,
-            Some(ActivityFocus::View(ActivityView::Tasks))
+            pane.agent_undo_notice
+                .as_ref()
+                .map(|(_, notice)| notice.clone()),
+            Some(t("activity-undo-task-done"))
         );
-        pane.apply_task_action(TaskAction::CancelRun, &mut tree);
-        assert!(host.submitted.borrow().is_empty());
+        assert!(pane.unreverted.is_empty(), "every record came back");
     }
 
-    fn draft_descriptor(
-        label: &str,
-        params: Vec<tilo_actions::ActionParam>,
-    ) -> tilo_actions::ActionDescriptor {
-        tilo_actions::ActionDescriptor {
-            semantic_identity: None,
-            address: tilo_actions::ActionAddress::new("inbox", "do"),
-            resource_kind: "mail.mailbox".into(),
-            resource_label: "Inbox".into(),
-            action_label: label.into(),
-            description: None,
-            locus: tilo_actions::ExecutionLocus::ClientLocal,
-            kind: tilo_actions::OperationKind::Document,
-            contract: tilo_actions::ActionContract::default(),
-            input: tilo_actions::InputSpec::None,
-            params,
-            view: None,
-        }
-    }
-
-    /// A Mail message to send, as the owner records it.
-    fn mail_confirmation() -> tilo_desktop_model::WorkspaceTaskConfirmation {
-        use tilo_actions::{ActionParam, ParamType};
-        let descriptor = draft_descriptor(
-            "Send message",
-            vec![
-                ActionParam::required("account", ParamType::Text, "From"),
-                ActionParam::required("message", ParamType::Object, "The message"),
+    /// Each record of the run can be undone on its own from the task view:
+    /// the host is asked for the task, in that one document only.
+    #[test]
+    fn one_record_of_a_run_is_undone_alone() {
+        let (mut tree, mut pane, host) = fixture();
+        let change = ui::history_source::entry_id_from_hash(&"ab".repeat(32));
+        let doc = tree.document_mut();
+        let key = ui::record_run_with_details(
+            doc,
+            "Review release notes",
+            Some("agent:scribe"),
+            Some("local"),
+            None,
+            None,
+            &[
+                ui::RunStep {
+                    app: "so.tilo.notes".into(),
+                    record: "file:/notes/release.note".into(),
+                    run: ui::ChangeRun::new(change, change),
+                    what: Vec::new(),
+                },
+                ui::RunStep {
+                    app: "so.tilo.sheets".into(),
+                    record: "file:/sheets/budget.tilo-sheet".into(),
+                    run: ui::ChangeRun::new(change, change),
+                    what: Vec::new(),
+                },
             ],
-        );
-        let arguments = serde_json::json!({
-            "account": "quinten@example.org",
-            "message": {
-                "to": "bob@example.org",
-                "cc": "",
-                "subject": "Note X: release checklist",
-                "body": "Hi Bob,\n\nhere is the release checklist we talked about. It covers the image build, the store listing and the announcement.\n\nThanks!",
-                "attachments": [{"name": "checklist.pdf"}, {"name": "notes.md"}, {"name": "screenshot.png"}]
-            }
-        });
-        confirmation_of(
-            &descriptor,
-            &arguments,
-            tilo_actions::RiskLevel::Destructive,
-            tilo_action_policy::ActionKind::Outside,
         )
-    }
+        .unwrap();
+        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
+        doc.commit();
+        pane.refresh_records(&mut tree, &RecordStore::in_memory());
 
-    /// Files' permanent deletion, drafted generically.
-    fn files_confirmation() -> tilo_desktop_model::WorkspaceTaskConfirmation {
-        use tilo_actions::{ActionParam, ParamType};
-        let descriptor = draft_descriptor(
-            "Delete permanently",
-            vec![
-                ActionParam::required("paths", ParamType::Array, "Files"),
-                ActionParam::optional("keep_versions", ParamType::Boolean, "Keep versions"),
-            ],
-        );
-        let mut confirmation = confirmation_of(
-            &descriptor,
-            &serde_json::json!({
-                "paths": ["/home/quinten/Trash/report-draft.pdf", "/home/quinten/Trash/old-notes.md", "/home/quinten/Trash/scan.png", "/home/quinten/Trash/budget.ods"],
-                "keep_versions": false
-            }),
-            tilo_actions::RiskLevel::Destructive,
-            tilo_action_policy::ActionKind::Outside,
-        );
-        confirmation.draft.resource_label = "Trash".into();
-        confirmation
-    }
-
-    fn confirmation_of(
-        descriptor: &tilo_actions::ActionDescriptor,
-        arguments: &serde_json::Value,
-        risk: tilo_actions::RiskLevel,
-        kind: tilo_action_policy::ActionKind,
-    ) -> tilo_desktop_model::WorkspaceTaskConfirmation {
-        let arguments = arguments.as_object().unwrap();
-        let digest = tilo_actions::draft::arguments_digest(arguments);
-        tilo_desktop_model::WorkspaceTaskConfirmation {
-            id: tilo_desktop_model::WorkspaceTaskConfirmation::id_for("inbox", "do", &digest),
-            asking: uuid::Uuid::from_u128(1),
-            run_epoch: 3,
-            agent_id: "scribe".into(),
-            app: "so.tilo.mail".into(),
-            resource_kind: "mail.mailbox".into(),
-            resource: "inbox".into(),
-            action: "do".into(),
-            kind,
-            risk,
-            draft: tilo_actions::Draft::render(descriptor, arguments),
-            arguments_digest: digest,
-            requested_at: 100,
-            state: tilo_desktop_model::WorkspaceTaskConfirmationState::Waiting,
-        }
-    }
-
-    fn paused_fixture(
-        confirmation: tilo_desktop_model::WorkspaceTaskConfirmation,
-    ) -> (WorkspaceTree, RoomActivityPane, Rc<ReviewHost>) {
-        let (mut tree, mut pane, host) = review_fixture();
-        let id = pane.selected_task.clone().unwrap();
-        {
-            let mut snapshot = host.snapshot.borrow_mut();
-            snapshot.tasks[0].status = WorkspaceTaskStatus::InProgress;
-            snapshot.tasks[0].title = "Send note X by mail to Bob".into();
-            snapshot.controls.get_mut(&id).unwrap().confirmation = Some(confirmation);
-        }
-        // The person here manages the workspace, and its roster names the
-        // agent.
-        tree.adopt_ownerless_workspaces(&"local".to_owned());
-        if let Some(workspace) = tree.desktop.active_workspace_mut() {
-            workspace
-                .collaborators
-                .push(tilo_desktop_model::Collaborator {
-                    id: "scribe".into(),
-                    name: "Scribe".into(),
-                    ..Default::default()
-                });
-        }
-        pane.refresh(&mut tree);
-        (tree, pane, host)
-    }
-
-    #[test]
-    fn the_card_names_the_agent_and_offers_always_allow_only_to_who_may_grant() {
-        let (mut tree, mut pane, _host) = paused_fixture(mail_confirmation());
-        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
-        paint(&mut pane, &Theme::light());
-        assert_eq!(pane.agent_label("scribe"), "Scribe");
-        assert_eq!(pane.take_confirmation_notices()[0].agent, "Scribe");
-        assert!(
-            pane.task_action_rects
-                .iter()
-                .any(|(action, _)| *action == TaskAction::AlwaysAllow)
-        );
-        pane.explicit_local_user = Some("visitor".into());
-        pane.refresh(&mut tree);
-        paint(&mut pane, &Theme::light());
-        assert!(
-            !pane
-                .task_action_rects
-                .iter()
-                .any(|(action, _)| *action == TaskAction::AlwaysAllow),
-            "someone who may not change agent access is not offered it"
-        );
-    }
-
-    #[test]
-    fn a_card_taller_than_the_sheet_scrolls_to_its_buttons() {
-        let (mut tree, mut pane, _host) = paused_fixture(mail_confirmation());
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        pane.layout_window(Rect::new(0.0, 0.0, 560.0, 640.0));
-        paint(&mut pane, &theme);
-        let viewport = pane.review_scroll.viewport.unwrap();
-        assert!(
-            pane.review_scroll.content > viewport.height(),
-            "the card overflows"
-        );
-        let confirm = |pane: &RoomActivityPane| {
-            pane.task_action_rects
-                .iter()
-                .find_map(|(action, rect)| (*action == TaskAction::ConfirmDraft).then_some(*rect))
-                .unwrap()
-        };
-        assert!(
-            confirm(&pane).y0 > viewport.y1,
-            "Confirm starts below the fold"
-        );
-        let wheel = WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -100.0),
-            phase: winit::event::TouchPhase::Moved,
-        };
-        let outcome = pane.handle_event(
-            &wheel,
-            1.0,
-            &Modifiers::default(),
-            Some(viewport.center()),
-            &mut tree,
-        );
-        assert!(outcome.handled);
-        paint(&mut pane, &theme);
-        let last = pane
-            .task_action_rects
-            .iter()
-            .map(|(_, rect)| rect.y1)
-            .fold(f64::MIN, f64::max);
-        assert!(
-            last > viewport.y0 && last <= viewport.y1,
-            "scrolled to the end, the last button is in view"
-        );
-        // Keyboard focus brings a control back into view by itself.
-        pane.review_scroll.offset = 0.0;
-        pane.keyboard_focus = Some(ActivityFocus::TaskAction(TaskAction::ConfirmDraft));
-        paint(&mut pane, &theme);
-        paint(&mut pane, &theme);
-        assert!(viewport.contains(confirm(&pane).center()));
-    }
-
-    fn paint(pane: &mut RoomActivityPane, theme: &Theme) -> Scene {
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        text.set_text_scale(theme.text_scale);
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            theme,
-            &PresenceCtx::empty(),
-        );
-        scene
-    }
-
-    fn submitted_answer(host: &ReviewHost) -> crate::activity::TaskReviewCommand {
-        host.submitted.borrow().last().unwrap().command.clone()
-    }
-
-    #[test]
-    fn a_paused_run_shows_its_card_first_and_notifies_once() {
-        let (mut tree, mut pane, _host) = paused_fixture(mail_confirmation());
-        assert!(pane.task_needs_person(&pane.tasks[0]));
-        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
-        paint(&mut pane, &Theme::light());
-        let painted: Vec<TaskAction> = pane
-            .task_action_rects
-            .iter()
-            .map(|(action, _)| *action)
-            .collect();
-        for action in [
-            TaskAction::ConfirmDraft,
-            TaskAction::EditDraft,
-            TaskAction::DeclineDraft,
-            TaskAction::AlwaysAllow,
-        ] {
-            assert!(painted.contains(&action), "{action:?} is on the card");
-            assert!(
-                pane.focus_order()
-                    .contains(&ActivityFocus::TaskAction(action))
-            );
-        }
-        let notices = pane.take_confirmation_notices();
-        assert_eq!(notices.len(), 1);
-        assert_eq!(notices[0].action, "Send message");
-        pane.refresh(&mut tree);
-        assert!(pane.take_confirmation_notices().is_empty(), "noticed once");
-    }
-
-    #[test]
-    fn confirming_as_drafted_sends_no_edits() {
-        use tilo_desktop_model::WorkspaceTaskConfirmationAnswer;
-        let confirmation = mail_confirmation();
-        let (mut tree, mut pane, host) = paused_fixture(confirmation.clone());
-        pane.apply_task_action(TaskAction::ConfirmDraft, &mut tree);
-        assert_eq!(
-            submitted_answer(&host),
-            crate::activity::TaskReviewCommand::AnswerConfirmation {
-                task_id: pane.selected_task.clone().unwrap(),
-                run_epoch: 3,
-                confirmation_id: confirmation.id,
-                answer: WorkspaceTaskConfirmationAnswer::Confirm { edits: Vec::new() },
-            }
-        );
-    }
-
-    #[test]
-    fn editing_sends_only_the_changed_fields() {
-        use tilo_desktop_model::WorkspaceTaskConfirmationAnswer;
-        let (mut tree, mut pane, host) = paused_fixture(mail_confirmation());
-        pane.apply_task_action(TaskAction::EditDraft, &mut tree);
-        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
-        paint(&mut pane, &Theme::dark());
-        let review = pane.confirmation.as_mut().unwrap();
-        let to = review
-            .fields
-            .iter_mut()
-            .find(|field| field.path == ["message", "to"])
-            .expect("recipients are editable");
-        to.input.set_text("carol@example.org");
-        assert!(pane.focus_order().contains(&ActivityFocus::ConfirmField(0)));
-        pane.apply_task_action(TaskAction::ConfirmDraft, &mut tree);
-        let crate::activity::TaskReviewCommand::AnswerConfirmation {
-            answer: WorkspaceTaskConfirmationAnswer::Confirm { edits },
-            ..
-        } = submitted_answer(&host)
-        else {
-            panic!("a confirmation")
-        };
-        assert_eq!(
-            edits,
-            vec![tilo_actions::DraftEdit {
-                path: vec!["message".into(), "to".into()],
-                text: "carol@example.org".into(),
-            }]
-        );
-    }
-
-    #[test]
-    fn declining_carries_the_reason() {
-        use tilo_desktop_model::WorkspaceTaskConfirmationAnswer;
-        let (mut tree, mut pane, host) = paused_fixture(files_confirmation());
-        pane.apply_task_action(TaskAction::DeclineDraft, &mut tree);
-        assert_eq!(pane.keyboard_focus, Some(ActivityFocus::DeclineReason));
-        pane.confirmation
-            .as_mut()
-            .unwrap()
-            .reason
-            .set_text("Keep the budget sheet");
-        pane.apply_task_action(TaskAction::SendDecline, &mut tree);
-        assert!(matches!(
-            submitted_answer(&host),
-            crate::activity::TaskReviewCommand::AnswerConfirmation {
-                answer: WorkspaceTaskConfirmationAnswer::Decline { reason: Some(reason) },
-                ..
-            } if reason == "Keep the budget sheet"
+        assert!(pane.undo_task_record(
+            "task:1",
+            "so.tilo.sheets",
+            "file:/sheets/budget.tilo-sheet"
         ));
-    }
-
-    #[test]
-    fn always_allowing_names_the_draft_it_confirms() {
-        let confirmation = files_confirmation();
-        let (mut tree, mut pane, host) = paused_fixture(confirmation.clone());
-        pane.apply_task_action(TaskAction::AlwaysAllow, &mut tree);
+        let undo = host.undos.borrow().last().cloned().unwrap();
+        assert_eq!(undo.task_id, "task:1");
         assert_eq!(
-            submitted_answer(&host),
-            crate::activity::TaskReviewCommand::AlwaysAllow {
-                task_id: pane.selected_task.clone().unwrap(),
-                run_epoch: 3,
-                confirmation_id: confirmation.id,
-                edits: Vec::new(),
-            }
+            undo.steps,
+            vec![(
+                "so.tilo.sheets".to_owned(),
+                "file:/sheets/budget.tilo-sheet".to_owned()
+            )],
+            "only the record the person picked is undone"
         );
     }
 
+    /// A record the host did not undo is named, not dropped: the task view
+    /// says what did not come back.
     #[test]
-    fn an_answered_draft_offers_no_second_answer() {
-        let mut confirmation = mail_confirmation();
-        confirmation.state = tilo_desktop_model::WorkspaceTaskConfirmationState::Confirmed {
-            person: "local".into(),
-            at: 101,
-            edits: Vec::new(),
-        };
-        let (mut tree, mut pane, host) = paused_fixture(confirmation);
-        assert!(!pane.task_needs_person(&pane.tasks[0]));
-        pane.layout_window(Rect::new(0.0, 0.0, 900.0, 1000.0));
-        paint(&mut pane, &Theme::light());
+    fn a_record_undo_did_not_reach_is_reported() {
+        let (mut tree, mut pane, host) = fixture();
+        let change = ui::history_source::entry_id_from_hash(&"cd".repeat(32));
+        let doc = tree.document_mut();
+        let key = ui::record_run_with_details(
+            doc,
+            "Review release notes",
+            Some("agent:scribe"),
+            Some("local"),
+            None,
+            None,
+            &[
+                ui::RunStep {
+                    app: "so.tilo.notes".into(),
+                    record: "file:/notes/release.note".into(),
+                    run: ui::ChangeRun::new(change, change),
+                    what: Vec::new(),
+                },
+                ui::RunStep {
+                    app: "so.tilo.sheets".into(),
+                    record: "file:/sheets/budget.tilo-sheet".into(),
+                    run: ui::ChangeRun::new(change, change),
+                    what: Vec::new(),
+                },
+            ],
+        )
+        .unwrap();
+        assert!(ui::history_source::runs::set_run_task(doc, &key, "task:1"));
+        doc.commit();
+        pane.refresh_records(&mut tree, &RecordStore::in_memory());
+
+        assert!(pane.undo_task_run("task:1"));
+        // The host reached only the notes document.
+        host.ended.replace(Some(Ok(vec![TaskRunDocument {
+            app: "so.tilo.notes".into(),
+            record: "file:/notes/release.note".into(),
+        }])));
+        pane.poll_undo();
+        assert_eq!(
+            pane.agent_undo_notice
+                .as_ref()
+                .map(|(_, notice)| notice.clone()),
+            Some(t("activity-undo-task-partial-records"))
+        );
+        assert_eq!(pane.unreverted.len(), 1, "the sheets record is named");
         assert!(
-            !pane
-                .task_action_rects
-                .iter()
-                .any(|(action, _)| *action == TaskAction::ConfirmDraft)
+            pane.unreverted[0].contains("so.tilo.sheets"),
+            "the record's app is said: {:?}",
+            pane.unreverted
         );
-        pane.apply_task_action(TaskAction::ConfirmDraft, &mut tree);
-        assert!(host.submitted.borrow().is_empty());
-    }
-
-    /// Renders the card for review; written under the target directory.
-    #[test]
-    fn confirmation_card_render_matrix() {
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/confirmation-card-renders");
-        std::fs::create_dir_all(&output).unwrap();
-        for (name, theme) in [
-            ("light", Theme::light()),
-            ("dark", Theme::dark()),
-            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
-        ] {
-            for (draft, confirmation) in [
-                ("message", mail_confirmation()),
-                ("fields", files_confirmation()),
-            ] {
-                for mode in ["review", "edit", "decline"] {
-                    let (mut tree, mut pane, host) = paused_fixture(confirmation.clone());
-                    host.snapshot.borrow_mut().sampled_at_secs =
-                        i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
-                    pane.refresh(&mut tree);
-                    match mode {
-                        "edit" => {
-                            pane.apply_task_action(TaskAction::EditDraft, &mut tree);
-                        }
-                        "decline" => {
-                            pane.apply_task_action(TaskAction::DeclineDraft, &mut tree);
-                        }
-                        _ => {}
-                    }
-                    let (width, height) = (760, 1000);
-                    pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
-                    paint(&mut pane, &theme);
-                    let scene = paint(&mut pane, &theme);
-                    let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
-                    renderer.render_png(
-                        &scene,
-                        theme.tokens.colors.surfaces.content,
-                        output.join(format!("{name}-{draft}-{mode}.png")),
-                    );
-                }
-            }
-        }
     }
 }
 
@@ -5128,17 +2823,6 @@ mod morning_source_tests {
         pane.set_host(Rc::new(VisitorHost));
         pane.refresh(&mut tree);
         pane.set_view(ActivityView::CatchUp);
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
-        let theme = Theme::light();
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
         assert!(
             !pane.digest().briefs.is_empty(),
             "the change itself stays visible"
@@ -5157,21 +2841,15 @@ mod morning_source_tests {
                 );
             }
         }
-        for focus in pane.focus_order() {
-            let label = pane.focus_label(&focus).unwrap_or_default();
-            assert!(
-                !label.contains(record),
-                "an identifier reached a visitor: {label:?}"
-            );
-        }
-        assert!(pane.morning_rects.is_empty());
-        let mut scene = Scene::new();
-        let y = pane.draw_morning_sources(&mut scene, Affine::IDENTITY, &mut text, &theme, 120.0);
+        let served = serde_json::to_string(&pane.serve_summary()).unwrap();
         assert!(
-            (y - 120.0).abs() < f64::EPSILON,
-            "an unavailable morning section must take no space"
+            !served.contains(record),
+            "an identifier reached a visitor: {served}"
         );
-        assert!(scene.encoding().is_empty(), "nor paint anything");
+        assert!(
+            pane.chosen_morning_sources().is_empty(),
+            "a visitor has no morning sources"
+        );
     }
 
     fn fixture() -> (TestTree, RoomActivityPane) {
@@ -5259,7 +2937,7 @@ mod morning_source_tests {
         assert_eq!(pane.chosen_morning_sources().len(), 1);
         assert_eq!(pane.seen_frontiers, before);
         let key = pane.chosen_morning_sources()[0].key();
-        let room = tree.workspaces[0].room;
+        let room = tree.workspaces[0].room();
         let mut restarted = RoomActivityPane::new();
         restarted.set_host(host.clone());
         restarted.load_frontiers();
@@ -5271,7 +2949,7 @@ mod morning_source_tests {
             None,
         );
         assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
-        tree.workspaces[0].room = tilo_desktop_model::RoomId::new();
+        tree.workspaces[0] = same_id_in(&tree.workspaces[0], tilo_desktop_model::RoomId::new());
         restarted.refresh(&mut tree);
         assert!(
             restarted.chosen_morning_sources().is_empty(),
@@ -5296,7 +2974,7 @@ mod morning_source_tests {
                 .open_target
                 .is_none()
         );
-        tree.workspaces[0].room = room;
+        tree.workspaces[0] = same_id_in(&tree.workspaces[0], room);
         restarted.refresh(&mut tree);
         assert_eq!(restarted.chosen_morning_sources().len(), 1);
         restarted.set_scope(RoomScope::AllWorkspaces, &tree);
@@ -5325,7 +3003,7 @@ mod morning_source_tests {
         assert!(host.0.borrow()[&tree.active.raw()].sources.is_empty());
     }
     #[test]
-    fn morning_source_choices_are_bounded_and_noisy_activity_preserves_focus() {
+    fn morning_source_choices_are_bounded_and_noisy_activity_keeps_the_choice() {
         let (mut tree, mut pane) = fixture();
         for index in 0..200_u64 {
             tree.doc
@@ -5368,17 +3046,13 @@ mod morning_source_tests {
             pane.morning_evidence(&key).unwrap().1,
             SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_209)
         );
-        pane.keyboard_focus = Some(ActivityFocus::Morning(key.clone(), false));
         pane.refresh(&mut tree);
         assert_eq!(
             pane.chosen_morning_sources().len(),
             1,
             "repeated updates group into one chosen source"
         );
-        assert_eq!(
-            pane.keyboard_focus,
-            Some(ActivityFocus::Morning(key, false))
-        );
+        assert_eq!(pane.chosen_morning_sources()[0].key(), key);
         for index in 1..=8 {
             let id = format!("weather.location:fixture-{index}");
             let context = tilo_actions::ActionContext::for_resource(&id, "location", &id)
@@ -5417,138 +3091,134 @@ mod morning_source_tests {
         assert_eq!(pane.chosen_morning_sources().len(), 8);
     }
 
-    #[test]
-    fn morning_source_long_resource_names_keep_freshness_and_navigation_visible() {
-        let (mut tree, mut pane) = fixture();
-        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
-        let key = pane.chosen_morning_sources()[0].key();
-        let title = "A very long authorized resource name ".repeat(100);
-        let context = tilo_actions::ActionContext::for_resource(
-            "weather.location:fixture",
-            "location",
-            title,
+    fn run_source(
+        pane: &mut RoomActivityPane,
+        tree: &mut TestTree,
+        key: &str,
+        command: tilo_actions::remote::workspace_activity::SourceCommand,
+    ) {
+        let request = tilo_actions::remote::workspace_activity::SourceRequest {
+            key: key.into(),
+            command,
+        };
+        let arguments = serde_json::to_value(request)
+            .unwrap()
+            .as_object()
+            .cloned()
+            .expect("a request is an object");
+        pane.serve_action(
+            tilo_actions::remote::workspace_activity::SOURCE,
+            &arguments,
+            tree,
+            None,
         )
-        .with_app("so.tilo.weather", "Weather")
-        .with_described(crate::activity::testing::verb("Update"));
-        tree.doc
-            .put(automerge::ROOT, "name", "Long resource label")
-            .unwrap();
-        tree.doc.commit_with(
-            CommitOptions::default()
-                .with_time(1_800_000_300)
-                .with_message(context.change_message().unwrap()),
-        );
-        pane.refresh(&mut tree);
-        pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_600));
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        text.set_text_scale(theme.text_scale);
-        pane.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        let focus = ActivityFocus::Morning(key, false);
-        assert!(
-            pane.focus_order().contains(&focus),
-            "long names must not push the source controls outside the viewport"
-        );
-        let accessible = pane.access_control(&focus).unwrap();
-        assert!(accessible.description.contains("5 min ago"));
-        assert!(accessible.description.contains("may be out of date"));
+        .expect("a chosen source runs its command");
     }
 
     #[test]
-    fn morning_source_native_render_and_keyboard_matrix() {
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/morning-source-renders");
-        std::fs::create_dir_all(&output).unwrap();
-        for (name, theme) in [
-            ("light", Theme::light()),
-            ("dark", Theme::dark()),
-            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
+    fn morning_payload_commands_reach_only_this_room_and_change_no_history() {
+        use tilo_actions::remote::workspace_activity::SourceCommand;
+        let (mut tree, mut pane) = fixture();
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        let host = Rc::new(PayloadHost::default());
+        pane.set_host(host.clone());
+        let key = pane.chosen_morning_sources()[0].key();
+        let heads = tree.doc.get_heads();
+        let seen = pane.seen_frontiers.clone();
+        let summary = pane.serve_summary();
+        let source = summary
+            .sources
+            .iter()
+            .find(|source| source.key == key)
+            .expect("the chosen source is served");
+        assert!(source.refreshable);
+        for evidence in [
+            "12°C",
+            "Synthetic chosen weather provider",
+            "2026-10-11T08:05:00Z",
+            "Last cached observation",
         ] {
-            for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
-                let (mut tree, mut pane) = fixture();
-                pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_300));
-                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
-                let key = pane.chosen_morning_sources()[0].key();
-                pane.set_view(ActivityView::CatchUp);
-                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
-                let mut scene = Scene::new();
-                let mut text = TextRenderer::new();
-                text.set_text_scale(theme.text_scale);
-                pane.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &PresenceCtx::empty(),
-                );
-                let focus = ActivityFocus::Morning(key.clone(), false);
-                assert!(
-                    pane.focus_order().contains(&focus),
-                    "chosen source must remain reachable at {name}/{size}"
-                );
-                let rectangle = pane.rect_for_focus(&focus).unwrap();
-                assert!(rectangle.y1 <= f64::from(height));
-                let accessible = pane.access_control(&focus).unwrap();
-                assert!(accessible.description.contains("Weather"));
-                assert!(accessible.description.contains("5 min ago"));
-                assert!(accessible.description.contains("may be out of date"));
-                pane.keyboard_focus = Some(focus.clone());
-                let outcome = pane.activate_focus(&mut tree, None);
-                assert_eq!(outcome.open_target.unwrap().id, "weather.location:fixture");
-                assert_eq!(
-                    pane.keyboard_focus,
-                    Some(focus),
-                    "opening must preserve logical focus"
-                );
-                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
-                renderer.render_png(
-                    &scene,
-                    theme.tokens.colors.surfaces.content,
-                    output.join(format!("{name}-{size}.png")),
-                );
-                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
-                pane.set_view(ActivityView::Explore);
-                pane.explorer_pane = ExplorerPane::Details;
-                let mut scene = Scene::new();
-                pane.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &PresenceCtx::empty(),
-                );
-                assert!(
-                    pane.focus_order()
-                        .contains(&ActivityFocus::Detail(DetailAction::MorningSource)),
-                    "the source choice must be a keyboard control at {name}/{size}"
-                );
-                for (_, rect) in &pane.detail_action_rects {
-                    assert!(
-                        rect.height()
-                            >= ui::widget::ButtonFace::height(
-                                ui::widget::ControlSize::Regular,
-                                &theme
-                            ),
-                        "source/history controls must use the shared minimum height at {name}/{size}"
-                    );
-                    assert!(rect.y1 <= f64::from(height));
-                }
-                renderer.render_png(
-                    &scene,
-                    theme.tokens.colors.surfaces.content,
-                    output.join(format!("{name}-{size}-choose.png")),
-                );
-            }
+            assert!(source.text.contains(evidence), "{evidence} is served");
         }
+        for command in [SourceCommand::Refresh, SourceCommand::DraftRefresh] {
+            run_source(&mut pane, &mut tree, &key, command);
+        }
+        assert_eq!(host.commands.borrow().len(), 2);
+        assert!(
+            host.commands
+                .borrow()
+                .iter()
+                .all(|(room, _, _)| *room == pane.room)
+        );
+        let foreign = uuid::Uuid::new_v4().to_string();
+        pane.apply_selection_history_action(
+            &format!("{}{foreign}.{key}", super::MorningCommand::Refresh.prefix()),
+            &mut tree,
+            None,
+        );
+        assert_eq!(
+            host.commands.borrow().len(),
+            2,
+            "queued foreign command is inert"
+        );
+        assert_eq!(tree.doc.get_heads(), heads);
+        assert_eq!(pane.seen_frontiers, seen);
     }
+
+    #[test]
+    fn morning_payload_paging_keeps_large_sources_and_removed_evidence_reachable() {
+        use tilo_actions::remote::workspace_activity::SourceCommand;
+        let (mut tree, mut pane) = fixture();
+        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
+        let host = Rc::new(PayloadHost {
+            noisy: true,
+            ..Default::default()
+        });
+        pane.set_host(host.clone());
+        for index in 1..crate::activity::morning::MAX_SOURCES {
+            let room = pane.room.clone();
+            pane.morning_sources
+                .get_mut(&pane.morning_workspace)
+                .unwrap()
+                .toggle(
+                    &room,
+                    super::MorningSource {
+                        app: "so.tilo.weather".into(),
+                        resource: format!("deleted:{index}"),
+                    },
+                );
+        }
+        let heads = tree.doc.get_heads();
+        let seen = pane.seen_frontiers.clone();
+        let keys: Vec<String> = pane
+            .serve_summary()
+            .sources
+            .iter()
+            .map(|source| source.key.clone())
+            .collect();
+        assert_eq!(
+            keys.len(),
+            crate::activity::morning::MAX_SOURCES,
+            "every source is served, removed evidence too"
+        );
+        for key in &keys {
+            run_source(&mut pane, &mut tree, key, SourceCommand::NextSource);
+        }
+        assert_eq!(pane.morning_source_offset, 0, "paging wraps around");
+        assert!(
+            host.commands.borrow().is_empty(),
+            "paging invokes no provider"
+        );
+        run_source(&mut pane, &mut tree, &keys[1], SourceCommand::Remove);
+        assert_eq!(
+            pane.chosen_morning_sources().len(),
+            crate::activity::morning::MAX_SOURCES - 1,
+            "a source whose evidence is gone can still be removed"
+        );
+        assert_eq!(tree.doc.get_heads(), heads);
+        assert_eq!(pane.seen_frontiers, seen);
+    }
+
     #[derive(Default)]
     struct PayloadHost {
         commands: RefCell<Vec<(String, super::MorningSource, super::MorningCommand)>>,
@@ -5591,165 +3261,6 @@ mod morning_source_tests {
             Ok(())
         }
     }
-    #[test]
-    fn morning_payload_pager_keeps_large_sources_and_removed_evidence_reachable() {
-        let (mut tree, mut pane) = fixture();
-        pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
-        let host = Rc::new(PayloadHost {
-            noisy: true,
-            ..Default::default()
-        });
-        pane.set_host(host.clone());
-        let first = pane.chosen_morning_sources()[0].key();
-        for index in 1..crate::activity::morning::MAX_SOURCES {
-            let room = pane.task_room.clone();
-            pane.morning_sources
-                .get_mut(&pane.morning_workspace)
-                .unwrap()
-                .toggle(
-                    &room,
-                    super::MorningSource {
-                        app: "so.tilo.weather".into(),
-                        resource: format!("deleted:{index}"),
-                    },
-                );
-        }
-        pane.set_view(ActivityView::CatchUp);
-        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 900.0));
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        let mut text = TextRenderer::new();
-        text.set_text_scale(theme.text_scale);
-        let heads = tree.doc.get_heads();
-        let seen = pane.seen_frontiers.clone();
-        for index in 0..crate::activity::morning::MAX_SOURCES {
-            let mut scene = Scene::new();
-            pane.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            let key = pane.chosen_morning_sources()[index].key();
-            let focus =
-                ActivityFocus::MorningCommand(key.clone(), super::MorningCommand::NextSource);
-            assert!(
-                pane.focus_order().contains(&focus),
-                "source {index} remains reachable"
-            );
-            assert!(
-                pane.focus_order()
-                    .contains(&ActivityFocus::Morning(key, true)),
-                "even unavailable sources can be removed"
-            );
-            pane.keyboard_focus = Some(focus);
-            pane.activate_focus(&mut tree, None);
-        }
-        assert_eq!(pane.morning_source_offset, 0);
-        assert_eq!(
-            pane.keyboard_focus,
-            Some(ActivityFocus::MorningCommand(
-                first,
-                super::MorningCommand::NextSource
-            ))
-        );
-        assert!(
-            host.commands.borrow().is_empty(),
-            "paging invokes no provider"
-        );
-        assert_eq!(tree.doc.get_heads(), heads);
-        assert_eq!(pane.seen_frontiers, seen);
-    }
-    #[test]
-    fn morning_payload_native_matrix_keeps_semantic_controls_and_review_boundary() {
-        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target/morning-payload-renders");
-        std::fs::create_dir_all(&output).unwrap();
-        for (name, theme) in [
-            ("light", Theme::light()),
-            ("dark", Theme::dark()),
-            ("hc200", Theme::high_contrast().with_text_scale(2.0)),
-        ] {
-            for (size, width, height) in [("normal", 1600, 1000), ("compact", 640, 900)] {
-                let (mut tree, mut pane) = fixture();
-                pane.apply_selection_history_action(MORNING_SOURCE, &mut tree, None);
-                let host = Rc::new(PayloadHost::default());
-                pane.set_host(host.clone());
-                let key = pane.chosen_morning_sources()[0].key();
-                let heads = tree.doc.get_heads();
-                let seen = pane.seen_frontiers.clone();
-                pane.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_300));
-                pane.set_view(ActivityView::CatchUp);
-                pane.layout_window(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
-                let mut scene = Scene::new();
-                let mut text = TextRenderer::new();
-                text.set_text_scale(theme.text_scale);
-                pane.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &PresenceCtx::empty(),
-                );
-                for command in [
-                    super::MorningCommand::Refresh,
-                    super::MorningCommand::DraftRefresh,
-                ] {
-                    let focus = ActivityFocus::MorningCommand(key.clone(), command);
-                    assert!(
-                        pane.focus_order().contains(&focus),
-                        "command visible at {name}/{size}"
-                    );
-                    if command == super::MorningCommand::Refresh {
-                        assert_eq!(
-                            pane.access_control(&focus).unwrap().description,
-                            t("activity-morning-refresh"),
-                            "an immediate refresh must not be described as an inert draft"
-                        );
-                    }
-                    pane.keyboard_focus = Some(focus);
-                    pane.activate_focus(&mut tree, None);
-                }
-                assert_eq!(host.commands.borrow().len(), 2);
-                assert!(
-                    host.commands
-                        .borrow()
-                        .iter()
-                        .all(|(room, _, _)| *room == pane.task_room)
-                );
-                let accessible = pane
-                    .access_control(&ActivityFocus::Morning(key.clone(), false))
-                    .unwrap();
-                assert!(accessible.description.contains("12°C"));
-                assert!(
-                    accessible
-                        .description
-                        .contains("Synthetic chosen weather provider")
-                );
-                assert!(accessible.description.contains("2026-10-11T08:05:00Z"));
-                assert!(accessible.description.contains("Last cached observation"));
-                let foreign = uuid::Uuid::new_v4().to_string();
-                pane.apply_selection_history_action(
-                    &format!("{}{foreign}.{key}", super::MorningCommand::Refresh.prefix()),
-                    &mut tree,
-                    None,
-                );
-                assert_eq!(
-                    host.commands.borrow().len(),
-                    2,
-                    "queued foreign command is inert"
-                );
-                assert_eq!(tree.doc.get_heads(), heads);
-                assert_eq!(pane.seen_frontiers, seen);
-                let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
-                renderer.render_png(
-                    &scene,
-                    theme.tokens.colors.surfaces.content,
-                    output.join(format!("{name}-{size}.png")),
-                );
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -5771,4 +3282,19 @@ mod reader_tests {
         let other = ui::widget::history::HistoryAuthor::new("Ada", 10.0, "c3d4");
         assert!(!author_is_local(&other, "quinten"));
     }
+}
+
+/// A workspace of `room` under `workspace`'s id, with its windows and its
+/// grants rehomed: what a device holds when one id has named two rooms (a
+/// workspace never changes its room).
+fn same_id_in(
+    workspace: &tilo_desktop_model::Workspace,
+    room: tilo_desktop_model::RoomId,
+) -> tilo_desktop_model::Workspace {
+    let mut other =
+        tilo_desktop_model::Workspace::in_room(workspace.id, room, workspace.name.clone());
+    other.strips.clone_from(&workspace.strips);
+    other.policy = workspace.policy.clone();
+    other.policy.rehome(room.to_string());
+    other
 }

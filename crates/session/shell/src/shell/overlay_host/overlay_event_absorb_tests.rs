@@ -19,6 +19,8 @@ use winit::keyboard::{Key, NamedKey};
 
 #[path = "notification_header_tests.rs"]
 mod notification_header_tests;
+#[path = "overlay_event_absorb_tests/palette_click_tests.rs"]
+mod palette_click_tests;
 #[path = "overlay_event_absorb_tests/picker_scroll_tests.rs"]
 mod picker_scroll_tests;
 #[path = "overlay_event_absorb_tests/quick_settings_controls_tests.rs"]
@@ -110,10 +112,6 @@ impl crate::shell::search::SearchProvider for DirectoryPaletteFixtureProvider {
         &KINDS
     }
 
-    fn available_in_active_app_scope(&self) -> bool {
-        true
-    }
-
     fn query(
         &self,
         context: crate::shell::search::SearchContext<'_>,
@@ -156,11 +154,7 @@ impl crate::shell::search::SearchProvider for AppSourceFilterFixtureProvider {
     }
 
     fn resource_kinds(&self) -> &[crate::shell::search::ResourceKind] {
-        const KINDS: [crate::shell::search::ResourceKind; 2] = [
-            crate::shell::search::ResourceKind::Application,
-            crate::shell::search::ResourceKind::HostApplication,
-        ];
-        &KINDS
+        &[crate::shell::search::ResourceKind::Application]
     }
 
     fn query(
@@ -180,17 +174,18 @@ impl crate::shell::search::SearchProvider for AppSourceFilterFixtureProvider {
                 100,
                 |_, _, _| {},
             ));
-        }
-        if context.wanted.contains(&ResourceKind::HostApplication) {
-            rows.push(SearchResult::nullary(
-                ResourceKind::HostApplication,
-                self.id(),
-                "fixture-host-app",
-                "Open Host fixture",
-                Some("Not sandboxed · System".into()),
-                100,
-                |_, _, _| {},
-            ));
+            rows.push(
+                SearchResult::nullary(
+                    ResourceKind::Application,
+                    self.id(),
+                    "fixture-host-app",
+                    "Open Host fixture",
+                    None,
+                    100,
+                    |_, _, _| {},
+                )
+                .with_facts(["System".to_owned()]),
+            );
         }
         rows
     }
@@ -802,7 +797,6 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         );
 
         let large = Theme::dark().with_text_scale(2.0);
-        // The palette's filter rows grow with the text scale it lays out at.
         let row_h = row_h * f64::from(large.text_scale);
         let (_, lh) = tr.measure_style("Ag", None, &SearchFilters::filter_label_style(&large));
         let at_large = SearchFilters::filter_control_height(&large, &mut tr, row_h);
@@ -1129,7 +1123,6 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             idle.fill.components[3], 0.0,
             "an idle chip has no body of its own"
         );
-        // The ink the painter picks for each state clears the fill it sits on.
         let ground = ui::chrome::shell::panel_ground(&theme);
         let chosen_ink = colors.ink_on(
             chosen.fill,
@@ -1145,7 +1138,6 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             contrast_ratio(chosen_ink, chosen.fill) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST
         );
         assert!(contrast_ratio(idle_ink, ground) >= ui::tokens::colors::ON_FILL_MIN_CONTRAST);
-        // And the same holds on the light and high-contrast presets.
         for theme in [Theme::light(), Theme::high_contrast()] {
             let colors = &theme.tokens.colors;
             let chosen =
@@ -1464,11 +1456,7 @@ fn palette_chips_filter_without_dismissing_and_enter_activates_the_selection() {
         );
     }
 
-    /// A new-window picker deliberately begins with both launch sources so
-    /// either kind of program can be opened. Selecting Host Apps from that
-    /// state must replace the source selection, not toggle host rows off and
-    /// leave Applications lit (the live picker regression this covers).
-    fn host_apps_chip_exclusively_filters_a_new_window_picker() {
+    fn a_new_window_picker_lists_every_kind_of_app_under_one_apps_chip() {
         use crate::shell::search::ResourceKind;
 
         let mut h = build_harness();
@@ -1478,49 +1466,35 @@ fn palette_chips_filter_without_dismissing_and_enter_activates_the_selection() {
         h.host.active_kind_filter = app_kind_filter();
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
+        h.host.palette.set_query("Open");
+        let doc = AutoCommit::new();
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
         settle(&mut h, 1600.0, 900.0);
 
-        let host_chip = h
+        assert_eq!(h.host.active_kind_filter, vec![ResourceKind::Application]);
+        let app_chips = h
             .host
             .search_filters
             .kinds()
-            .position(|kind| *kind == ResourceKind::HostApplication)
-            .expect("the picker's band offers Host Apps");
-        if h.host
-            .search_filters
-            .search_chip_rects
-            .get(host_chip)
-            .is_some_and(|rect| rect.area() <= 0.0)
-        {
-            h.host.search_filters.more_open = true;
-            settle(&mut h, 1600.0, 900.0);
-        }
-        paint_then_click(&mut h, |host| {
-            host.search_filters.search_chip_rects[host_chip].center()
-        });
-
-        assert_eq!(
-            h.host.active_kind_filter,
-            vec![ResourceKind::HostApplication]
-        );
-        assert!(
-            h.host.search_results.iter().any(|row| {
-                row.provider_id == "app-source-filter-fixture" && row.id == "fixture-host-app"
-            }),
-            "the selected Host Apps source must reach the production palette query"
-        );
-        assert!(
-            h.host
-                .search_results
-                .iter()
-                .all(|row| row.kind == ResourceKind::HostApplication),
-            "Host Apps must not leave Tilo application rows visible: {:?}",
-            h.host
-                .search_results
-                .iter()
-                .map(|row| (&row.title, &row.kind))
-                .collect::<Vec<_>>()
-        );
+            .filter(|kind| **kind == ResourceKind::Application)
+            .count();
+        assert_eq!(app_chips, 1);
+        let ids: Vec<&str> = h
+            .host
+            .search_results
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect();
+        assert!(ids.contains(&"fixture-tilo-app") && ids.contains(&"fixture-host-app"));
+        let groups: std::collections::BTreeSet<Option<String>> = h
+            .host
+            .palette
+            .visible_entries()
+            .iter()
+            .map(|entry| entry.group.clone())
+            .collect();
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        assert_eq!(groups.first(), Some(&Some("Apps".to_owned())));
     }
 
     fn app_search_arrows_and_enter_activate_the_visibly_selected_row() {
@@ -1530,7 +1504,7 @@ fn palette_chips_filter_without_dismissing_and_enter_activates_the_selection() {
         h.host
             .search_registry
             .register(Rc::new(AppSourceFilterFixtureProvider));
-        h.host.active_kind_filter = vec![ResourceKind::Application, ResourceKind::HostApplication];
+        h.host.active_kind_filter = vec![ResourceKind::Application];
         h.host.set_palette_visible(true);
         h.host.set_palette_focus(true);
         h.host.force_palette_settled();
@@ -1604,7 +1578,7 @@ fn palette_chips_filter_without_dismissing_and_enter_activates_the_selection() {
     }
 
     clicking_a_kind_chip_filters_without_dismissing_the_palette();
-    host_apps_chip_exclusively_filters_a_new_window_picker();
+    a_new_window_picker_lists_every_kind_of_app_under_one_apps_chip();
     app_search_arrows_and_enter_activate_the_visibly_selected_row();
     backspace_leaves_a_resource_scope_named_in_the_token();
 }
@@ -2423,7 +2397,6 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
                 );
             }
         }
-        // The notification history, with more records than fit.
         let mut harness = build_harness_sized(vw, vh);
         open_notification_history(&mut harness, 18, vw, vh);
         settle_with_theme(&mut harness, vw, vh, &theme);
@@ -2451,8 +2424,6 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
         let mut harness = build_harness_sized(vw, vh);
         {
             let mut st = harness.chrome.borrow_mut();
-            // Dismissed toasts retire into the history through the
-            // same path a real dismissal takes.
             for index in 0..3 {
                 let id = st.push_notification_full(tilo_desktop::notifications::Notification::new(
                     format!("Backup {index} finished"),
@@ -2494,7 +2465,6 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
             "{theme_name}: a history that fits ends on the panel padding, not a pager band: {:?}",
             layout.panel()
         );
-        // The palette over the desktop.
         let mut harness = directory_palette_fixture(vw, vh);
         settle_with_theme(&mut harness, vw, vh, &theme);
         let scene = paint_scene(&mut harness, &theme);
@@ -2539,6 +2509,29 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
 
     workspace_lens_leaves_wide_workspace_visible_and_interactive();
     workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
+}
+
+#[test]
+fn the_shortcut_guide_done_button_is_as_wide_as_its_label_at_large_text() {
+    let (vw, vh) = (1600.0, 900.0);
+    for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
+        let mut h = build_harness_sized(vw, vh);
+        h.chrome.borrow_mut().overlays.shortcut_help = true;
+        settle_with_theme(&mut h, vw, vh, &theme);
+        let done = h.host.shortcut_help_done_rect();
+        let label = crate::shell::i18n::t("guide-done");
+        let needed = ui::widget::ButtonFace::new(Rect::ZERO, &label)
+            .role(ui::widget::ButtonRole::Primary)
+            .intrinsic_width(&mut TextRenderer::new(), &theme);
+        assert!(
+            done.width() + 0.5 >= needed,
+            "Done is {} wide, its label needs {needed} (text scale {})",
+            done.width(),
+            theme.text_scale
+        );
+        let panel = h.host.shortcut_help_panel_rect();
+        assert!(done.x1 <= panel.x1 - 16.0 && done.x0 > panel.x0);
+    }
 }
 
 #[test]
@@ -2736,12 +2729,18 @@ fn anchored_overlays_stay_inside_the_window_at_every_size() {
         ] {
             let mut menu = super::tab_menu::TabMenuLayer::default();
             menu.open(
-                super::tab_menu::TabMenuTarget {
+                super::tab_menu::MenuSubject::Window(super::tab_menu::TabMenuTarget {
                     strip: crate::shell::state::StripId::new(),
                     group: 7001,
                     tab: 0xa1,
-                },
-                3,
+                }),
+                crate::shell::window_menu::window_menu_rows(
+                    &crate::shell::window_menu::WindowMenuFacts {
+                        tab_count: 3,
+                        ..Default::default()
+                    },
+                    &settings_store::hardware::ShortcutConfig::default(),
+                ),
                 at,
                 "Files".into(),
                 window,
@@ -3725,8 +3724,8 @@ fn capture_banner_pointer_state(
     assert!(path.is_file(), "the banner capture must exist");
 }
 
-fn banner_pointer_capture_variants() -> [(&'static str, Theme, f64, u32); 6] {
-    [
+fn banner_pointer_capture_variants() -> Vec<(&'static str, Theme, f64, u32)> {
+    vec![
         ("dark", Theme::dark(), 640.0, 440),
         ("light", Theme::light(), 640.0, 440),
         ("large-text", Theme::dark().with_text_scale(2.0), 640.0, 440),
@@ -3757,56 +3756,61 @@ fn notification_banner_pointer_feedback_matches_shared_close_face() {
     std::fs::create_dir_all(&out).unwrap();
     let mut missing_feedback = Vec::new();
     for (name, theme, viewport, width) in banner_pointer_capture_variants() {
-        let theme = theme.with_reduce_motion(true);
-        let mut h = build_harness_sized(viewport, 540.0);
-        h.chrome.borrow_mut().push_notification_full(
-            tilo_desktop::notifications::Notification::new(
-                "Backup failed",
-                "Try again from Search.",
-            )
-            .with_app_name("Files")
-            .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
-        );
-        settle_with_theme(&mut h, viewport, 540.0, &theme);
-        let card = h.host.notification_stack.rect();
-        assert!(card.area() > 0.0);
-        let hit = ui::widget::toast::paint_card(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            card,
-            &ui::widget::toast::ToastCard::new(
-                "Backup failed",
-                ui::widget::toast::ToastKind::Error,
-            )
-            .body("Try again from Search.")
-            .caption("Files")
-            .closable(true),
-        );
-        let idle = out.join(format!("{name}-idle.png"));
-        capture_banner_pointer_state(&mut h, &theme, width, &idle);
-        pump(&mut h, &cursor_moved_at(hit.close_rect.center()));
-        let hover = out.join(format!("{name}-hover.png"));
-        capture_banner_pointer_state(&mut h, &theme, width, &hover);
-        if std::fs::read(&idle).unwrap() == std::fs::read(&hover).unwrap() {
-            missing_feedback.push(name);
-        }
-        assert!(pump(&mut h, &left_button_pressed()));
-        assert_eq!(h.chrome.borrow().notifications().len(), 1);
-        capture_banner_pointer_state(
-            &mut h,
-            &theme,
-            width,
-            &out.join(format!("{name}-pressed.png")),
-        );
-        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
-        assert!(pump(&mut h, &left_button_released()));
-        assert_eq!(
-            h.chrome.borrow().notifications().len(),
-            1,
-            "cancelled close gestures retain the error"
-        );
+        // The banner's own clock stands still: rendering the captures is
+        // slow on a busy machine, and an error banner left alone for its
+        // dwell would leave before the press this test makes on it.
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
+            let theme = theme.with_reduce_motion(true);
+            let mut h = build_harness_sized(viewport, 540.0);
+            h.chrome.borrow_mut().push_notification_full(
+                tilo_desktop::notifications::Notification::new(
+                    "Backup failed",
+                    "Try again from Search.",
+                )
+                .with_app_name("Files")
+                .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
+            );
+            settle_with_theme(&mut h, viewport, 540.0, &theme);
+            let card = h.host.notification_stack.rect();
+            assert!(card.area() > 0.0);
+            let hit = ui::widget::toast::paint_card(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                card,
+                &ui::widget::toast::ToastCard::new(
+                    "Backup failed",
+                    ui::widget::toast::ToastKind::Error,
+                )
+                .body("Try again from Search.")
+                .caption("Files")
+                .closable(true),
+            );
+            let idle = out.join(format!("{name}-idle.png"));
+            capture_banner_pointer_state(&mut h, &theme, width, &idle);
+            pump(&mut h, &cursor_moved_at(hit.close_rect.center()));
+            let hover = out.join(format!("{name}-hover.png"));
+            capture_banner_pointer_state(&mut h, &theme, width, &hover);
+            if std::fs::read(&idle).unwrap() == std::fs::read(&hover).unwrap() {
+                missing_feedback.push(name);
+            }
+            assert!(pump(&mut h, &left_button_pressed()));
+            assert_eq!(h.chrome.borrow().notifications().len(), 1);
+            capture_banner_pointer_state(
+                &mut h,
+                &theme,
+                width,
+                &out.join(format!("{name}-pressed.png")),
+            );
+            assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+            assert!(pump(&mut h, &left_button_released()));
+            assert_eq!(
+                h.chrome.borrow().notifications().len(),
+                1,
+                "cancelled close gestures retain the error"
+            );
+        });
     }
     assert!(
         missing_feedback.is_empty(),
@@ -3835,7 +3839,6 @@ fn notification_banner_lost_release_does_not_capture_a_fresh_content_click() {
             pump(&mut h, &WindowEvent::Focused(false));
             pump(&mut h, &WindowEvent::Focused(true));
         }
-        // The old release is absent. A fresh click belongs to content.
         pump(&mut h, &cursor_moved_at(Point::new(8.0, 400.0)));
         h.log.borrow_mut().clear();
         pump(&mut h, &left_button_pressed());
@@ -3974,7 +3977,6 @@ fn radio_details_use_native_keyboard_pointer_and_action_routes() {
             h.host.force_quick_settings_settled();
             settle(&mut h, 1000.0, 980.0);
             open_radio_details_in_harness(&mut h, input, name, target, action_id);
-            // The list opens in place on the root page.
             assert_eq!(
                 h.chrome.borrow().quick_settings.section,
                 Some(section),
@@ -4122,4 +4124,77 @@ fn radio_details_lost_release_does_not_capture_a_fresh_content_click() {
             );
         }
     }
+}
+
+/// The guide's rows are rebind targets for the pointer and the keyboard, so
+/// a reader gets them too: one button per row and the Done, and activating
+/// one starts the same rebind the pointer starts.
+#[test]
+fn a_reader_reaches_every_guide_row_and_its_done() {
+    let (vw, vh) = (1600.0, 900.0);
+    let mut h = build_harness_sized(vw, vh);
+    h.chrome.borrow_mut().overlays.shortcut_help = true;
+    settle(&mut h, vw, vh);
+
+    let semantics = h.host.accessibility().expect("shell semantics");
+    let guide = semantics
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some(&crate::shell::i18n::t("guide-a11y-name")))
+        .expect("the guide is published");
+    assert_eq!(
+        guide.children.len(),
+        h.host.shortcut_binding_rects.len() + 1,
+        "one button per rebindable row, plus Done"
+    );
+
+    // The first row is where it is drawn, and activating it starts the
+    // rebind exactly as a click on that row does.
+    let (action, rect) = h.host.shortcut_binding_rects[0];
+    let row = guide
+        .children
+        .iter()
+        .find(|node| node.semantic_key.as_deref() == Some("guide:chord:0"))
+        .expect("the first row is published");
+    assert_eq!(
+        row.bounds.map(ui::a11y::AccessBounds::to_rect),
+        Some(rect),
+        "a reader's row is the painted one"
+    );
+    assert!(
+        row.description
+            .as_deref()
+            .is_some_and(|description| description.contains('+') || !description.is_empty()),
+        "the row says which chord it holds"
+    );
+    assert!(h.host.perform_semantic_action(
+        "guide:chord:0",
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+        &automerge::ROOT,
+    ));
+    assert_eq!(h.host.shortcut_rebind, Some(action));
+
+    // Done leaves the guide, as pressing it does.
+    let done = guide
+        .children
+        .iter()
+        .find(|node| node.semantic_key.as_deref() == Some("guide:done"))
+        .expect("Done is published");
+    assert_eq!(
+        done.name.as_deref(),
+        Some(crate::shell::i18n::t("guide-done").as_str())
+    );
+    assert_eq!(
+        done.bounds.map(ui::a11y::AccessBounds::to_rect),
+        Some(h.host.shortcut_help_done_rect())
+    );
+    assert!(h.host.perform_semantic_action(
+        "guide:done",
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+        &automerge::ROOT,
+    ));
+    assert!(!h.chrome.borrow().overlays.shortcut_help, "Done closes it");
+    assert_eq!(h.host.shortcut_rebind, None, "and abandons the rebind");
 }

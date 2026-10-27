@@ -579,7 +579,6 @@ fn contributor_and_date_filters_select_and_intersect() {
         });
         assert_eq!(timeline.visible_len(), 0, "nothing happened then");
 
-        // The full span holds everything.
         timeline.set_filter(HistoryFilter {
             time_range: Some((at(T0 - HOUR), at(T0 + 10 * HOUR))),
             ..Default::default()
@@ -967,7 +966,7 @@ fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
         rows,
         [
             (
-                "claude · Agent, for you".to_owned(),
+                "claude · Software, for you".to_owned(),
                 AuthorRelation::Software
             ),
             ("ada".to_owned(), AuthorRelation::Person),
@@ -1002,7 +1001,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
     authors.set_reader("quinten");
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     let author = &entries.last().unwrap().author;
-    assert_eq!(author.name, "claude · Agent, for ada");
+    assert_eq!(author.name, "claude · Software, for ada");
     assert_eq!(author.relation, AuthorRelation::Software);
     assert_eq!(
         author.attribution,
@@ -1039,7 +1038,7 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
         .with_authors(authors.clone())
         .entries(&mut doc);
     let author = &entries.last().unwrap().author;
-    assert_eq!(author.name, "Scribe · Agent, for Ada");
+    assert_eq!(author.name, "Scribe · Software, for Ada");
     assert_eq!(author.relation, AuthorRelation::Software);
     assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
     assert_eq!(
@@ -1057,8 +1056,45 @@ fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
     let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
     assert_eq!(
         entries.last().unwrap().author.name,
-        "Scribe · Agent, for you"
+        "Scribe · Software, for you"
     );
+}
+
+/// A change taken in a task is attributed to that task: there are no
+/// separate agents, so history names the person through the task the change
+/// was made in, and the task's id and label stay on the row as data.
+#[test]
+fn a_change_taken_in_a_task_is_named_by_the_task() {
+    use crate::widget::history::AuthorRelation;
+    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "x").unwrap();
+    let context = ActionContext::default()
+        .with_group(
+            "11111111-1111-4111-8111-111111111111",
+            "Prepare Q3 financials",
+            "task",
+        )
+        .with_invoker(
+            ActionInvoker::actor("agent:claude")
+                .with_kind(ActorKind::Agent)
+                .acting_for("ada"),
+        );
+    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    let mut authors = AuthorDirectory::new();
+    authors.set_reader("quinten");
+    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+    let entry = entries.last().expect("the change");
+    assert_eq!(entry.author.name, "ada via task ‘Prepare Q3 financials’");
+    assert_eq!(entry.author.relation, AuthorRelation::Software);
+    let group = entry
+        .context
+        .as_ref()
+        .and_then(|context| context.group.as_ref())
+        .expect("the task the change was taken in");
+    assert_eq!(group.kind, "task");
+    assert_eq!(group.label, "Prepare Q3 financials");
+    assert_eq!(group.id, "11111111-1111-4111-8111-111111111111");
 }
 
 // N. A long-lived reader reads each change once and says what a fresh read says
@@ -1293,4 +1329,59 @@ fn passed_over_changes_make_no_row_and_take_no_place_in_the_window() {
     let mut scratch = HistoryLog::default();
     let (fresh, _) = read_since(&viewer, &mut doc, &mut scratch);
     assert_eq!(fresh, rows);
+}
+
+#[test]
+fn typing_in_one_field_is_one_change_until_the_person_stops() {
+    use tilo_actions::{ActionContext, ActionId, Did, EditOp, FieldEdit, PathStep, Scalar};
+    let typed = |row: &str, text: &str| ActionContext {
+        what: Some(Did::Edit(FieldEdit {
+            ty: "plot-fn".into(),
+            field: "expr".into(),
+            path: vec![
+                PathStep::Field("funcs".into()),
+                PathStep::Item(row.into()),
+                PathStep::Field("expr".into()),
+            ],
+            op: EditOp::Replace,
+            old: None,
+            new: Some(Scalar::text(text)),
+            args: std::collections::BTreeMap::new(),
+        })),
+        gesture: Some(ActionId::new()),
+        ..ActionContext::default()
+    };
+    let mut doc = AutoCommit::new();
+    doc.set_actor(ActorId::from(b"typist".as_slice()));
+    let type_at = |doc: &mut AutoCommit, row: &str, text: &str, secs: i64| {
+        doc.put(ROOT, row, text).unwrap();
+        doc.commit_with(
+            CommitOptions::default()
+                .with_time(secs)
+                .with_message(typed(row, text).change_message().unwrap()),
+        );
+    };
+    for (secs, text) in [(100, "sin"), (101, "sin("), (102, "sin(x"), (103, "sin(x)")] {
+        type_at(&mut doc, "a", text, secs);
+    }
+    type_at(&mut doc, "b", "x", 104);
+    type_at(&mut doc, "b", "x/2", 105);
+    type_at(&mut doc, "a", "sin(x)+1", 105 + 60);
+
+    let rows = HistorySource::new().entries(&mut doc);
+    let formulas: Vec<String> = rows
+        .iter()
+        .filter_map(|row| match row.context.as_ref()?.what.as_ref()? {
+            Did::Edit(edit) => edit.new.as_ref()?.as_str().map(str::to_owned),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(formulas, ["sin(x)", "x/2", "sin(x)+1"], "{rows:?}");
+
+    let first = rows
+        .iter()
+        .find(|row| row.timestamp == timestamp_from_ms(103_000))
+        .expect("the first row is as of its last keystroke");
+    let changes = revert::changes_of_entries(&mut doc, &[first.id]);
+    assert_eq!(changes.len(), 4, "restoring the row takes back all of it");
 }

@@ -28,7 +28,6 @@ use std::path::{Component, Path, PathBuf};
 /// The mounts of every mount namespace this process can see.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Mounts {
-    /// Each mount's root, as path components.
     roots: BTreeSet<Vec<OsString>>,
     /// Each mount's mount point, as the mounting process sees it.
     points: BTreeSet<PathBuf>,
@@ -38,10 +37,6 @@ impl Mounts {
     /// Read `<proc>/<pid>/mountinfo` for every process under `proc_root`.
     /// A process that exits while it is read, or whose table this user may
     /// not read, is skipped: its mounts are another user's.
-    ///
-    /// # Errors
-    ///
-    /// Returns the error from listing `proc_root` itself.
     pub fn scan_proc(proc_root: &Path) -> io::Result<Self> {
         let mut mounts = Self::default();
         let mut seen_namespaces = BTreeSet::new();
@@ -111,7 +106,6 @@ impl Mounts {
 /// What the running apps hold, or that it cannot be known.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InUse {
-    /// The mount table was read.
     Known(Mounts),
     /// The mount table could not be read: everything counts as in use.
     Unknown(String),
@@ -201,7 +195,6 @@ mod tests {
     fn a_sandbox_mount_table_names_the_trees_it_binds() {
         let mut mounts = Mounts::default();
         mounts.add_mountinfo(SANDBOX);
-        // The home seen by this process may differ by a prefix.
         assert!(mounts.holds(Path::new(
             "/home/you/.local/share/tilo-runtime/2026.07+native.ab"
         )));

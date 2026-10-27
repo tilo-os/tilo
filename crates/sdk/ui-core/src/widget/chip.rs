@@ -53,17 +53,22 @@ const TINT_EDGE: f32 = 0.38;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ChipStyle {
     /// The quiet pill: the raised tier with its derived edge and primary
-    /// ink. A selected chip is a lift of its ground.
+    /// ink. A selected chip is the accent washed in, with an accent edge.
     #[default]
     Neutral,
     /// A tone washed into the body and drawn as the edge, with neutral ink
     /// measured on the washed body.
     Tinted(Tone),
     /// Something that wants your attention (an unread count, a mention,
-    /// something live): the one filled pill, in your colour
+    /// something live): a filled pill in your colour
     /// (`intent.you`) with ink measured on it, the same mark as a sidebar's
     /// unread count. Never danger red: red is an error or a failure.
     Live,
+    /// What you picked, numbered in the order you picked it: the accent
+    /// fill with its own label colour (`intent.accent`, `intent.on_accent`),
+    /// as a primary action's, so the number is the selection's colour and
+    /// reads white in every theme.
+    Accent,
 }
 
 /// The resolved colours of one pill.
@@ -83,11 +88,19 @@ impl ChipStyle {
         let colors = &theme.tokens.colors;
         match self {
             Self::Neutral => {
-                let state = crate::chrome::SelectionState::new(selected, hovered, false);
-                let tier = crate::chrome::selection_tier_on(theme, state, ground);
                 let raised = colors.surfaces.raised;
                 let (fill, edge) = if selected {
-                    (tier.fill, None)
+                    // Chosen: the accent washed into the body and drawn as
+                    // the edge, clearly apart from the idle chips beside it
+                    // in every theme.
+                    let accent = colors.intent.accent_ink;
+                    let fill = mix8(ground, accent, TINT_FILL);
+                    let fill = if hovered {
+                        colors.lift_on(fill, 0.5)
+                    } else {
+                        fill
+                    };
+                    (fill, Some(mix8(ground, accent, TINT_EDGE)))
                 } else if hovered {
                     (
                         colors.lift_on(raised, 0.5),
@@ -115,6 +128,12 @@ impl ChipStyle {
                     lead: colors.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
                 }
             }
+            Self::Accent => ChipColors {
+                fill: colors.intent.accent,
+                edge: None,
+                ink: colors.intent.on_accent,
+                lead: colors.intent.on_accent,
+            },
             Self::Live => {
                 let fill = colors.intent.you;
                 let ink = colors.on_surface_at(fill, ON_FILL_MIN_CONTRAST).ink;
@@ -588,6 +607,10 @@ pub struct Chip {
     style: ChipStyle,
     toggled: bool,
     removed: bool,
+    /// Told the new selection each time a person flips a selectable chip.
+    on_toggle: Option<Box<dyn FnMut(bool)>>,
+    /// Told each time a person presses the "×".
+    on_remove: Option<Box<dyn FnMut()>>,
     rect: Rect,
     x_rect: Rect,
     last_cursor: Point,
@@ -615,9 +638,14 @@ pub struct Chip {
 
 impl Chip {
     pub fn new(label: impl Into<String>) -> Self {
+        Self::new_owned(label.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(label: String) -> Self {
         static STOCK: std::sync::LazyLock<PillMetrics> =
             std::sync::LazyLock::new(|| PillMetrics::of(&Theme::dark(), TextRole::Label));
-        let label = label.into();
         Self {
             activation: Activation::new(label.clone()),
             tooltip: None,
@@ -631,6 +659,8 @@ impl Chip {
             style: ChipStyle::Neutral,
             toggled: false,
             removed: false,
+            on_toggle: None,
+            on_remove: None,
             rect: Rect::ZERO,
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
@@ -734,6 +764,22 @@ impl Chip {
         self
     }
 
+    /// Show the chip as standing for what is applied now (a menu chip whose
+    /// filter has a choice), without making a press flip it: its press stays
+    /// its activation, which opens the menu.
+    #[must_use]
+    pub fn current(mut self, on: bool) -> Self {
+        self.selected = on;
+        self
+    }
+
+    /// Whether the chip is drawn in the selected treatment: a toggle that is
+    /// on, a menu chip standing for a choice applied now
+    /// ([`Self::current`]), or any chip while it is pressed.
+    fn shows_chosen(&self) -> bool {
+        self.selected || self.activation.state.pressed
+    }
+
     /// Show a trailing "×" that removes the chip when clicked.
     #[must_use]
     pub fn removable(mut self) -> Self {
@@ -765,6 +811,43 @@ impl Chip {
         self.selected = on;
     }
 
+    /// Run `f` with the new selection whenever a person flips the chip
+    /// (implies [`selectable`](Self::selectable)): a host that keeps its
+    /// filters elsewhere hears of each change without draining.
+    #[must_use]
+    pub fn on_toggle(mut self, f: impl FnMut(bool) + 'static) -> Self {
+        self.selectable = true;
+        self.on_toggle = Some(Box::new(f));
+        self
+    }
+
+    /// Run `f` whenever a person presses the "×" (implies
+    /// [`removable`](Self::removable)).
+    #[must_use]
+    pub fn on_remove(mut self, f: impl FnMut() + 'static) -> Self {
+        self.removable = true;
+        self.on_remove = Some(Box::new(f));
+        self
+    }
+
+    /// The selection was flipped by a person.
+    fn flipped(&mut self) {
+        self.selected = !self.selected;
+        self.toggled = true;
+        let selected = self.selected;
+        if let Some(on_toggle) = self.on_toggle.as_mut() {
+            on_toggle(selected);
+        }
+    }
+
+    /// The "×" was pressed.
+    fn remove_pressed(&mut self) {
+        self.removed = true;
+        if let Some(on_remove) = self.on_remove.as_mut() {
+            on_remove();
+        }
+    }
+
     /// Drain the "selection toggled" signal (fires once per click on the body
     /// of a selectable chip). Read `is_selected()` for the new value.
     pub fn take_toggled(&mut self) -> bool {
@@ -789,8 +872,7 @@ impl Chip {
     /// Press the body: toggle a filter, or run the bound activation.
     fn press(&mut self) -> bool {
         if self.selectable {
-            self.selected = !self.selected;
-            self.toggled = true;
+            self.flipped();
             return true;
         }
         self.activation.activate()
@@ -948,14 +1030,13 @@ impl Widget for Chip {
         // `cursor_shape` test, so feedback and behaviour agree in the bands
         // above and below the glyph.
         let remove_hovered = self.remove_hit_rect().contains(self.last_cursor);
-        let pressed = self.activation.state.pressed;
         paint_pill(
             &PillPaint {
                 rect: self.rect,
                 label: &self.label,
                 lead: self.lead,
                 style: self.style,
-                selected: (self.selectable && self.selected) || pressed,
+                selected: self.shows_chosen(),
                 hovered: self.pressable() && self.hovered && !remove_hovered,
                 remove: self.removable.then_some(remove_hovered),
                 menu: self.menu,
@@ -992,12 +1073,11 @@ impl Widget for Chip {
                 let over_body = self.hit_rect().contains(self.last_cursor);
                 match state {
                     ElementState::Pressed if over_x => {
-                        self.removed = true;
+                        self.remove_pressed();
                         *ctx.handled = true;
                     }
                     ElementState::Pressed if self.selectable && over_body => {
-                        self.selected = !self.selected;
-                        self.toggled = true;
+                        self.flipped();
                         *ctx.focus_target = Some(ctx.node_id);
                         *ctx.handled = true;
                     }
@@ -1308,12 +1388,36 @@ mod tests {
             assert_eq!(live.fill, theme.tokens.colors.intent.you);
             assert_ne!(live.fill, theme.tokens.colors.semantic.danger);
             assert!(crate::a11y::contrast_ratio(live.ink, live.fill) >= ON_FILL_MIN_CONTRAST);
+            // A numbered pick is the accent with its own label, as a
+            // primary action's: never ink measured onto a lighter fill.
+            let picked = ChipStyle::Accent.colors(&theme, ground, false, false);
+            assert_eq!(picked.fill, theme.tokens.colors.intent.accent);
+            assert_eq!(picked.ink, theme.tokens.colors.intent.on_accent);
+            assert!(crate::a11y::contrast_ratio(picked.ink, picked.fill) >= ON_FILL_MIN_CONTRAST);
             let neutral = ChipStyle::Neutral.colors(&theme, ground, false, false);
             assert_eq!(neutral.fill, theme.tokens.colors.surfaces.raised);
+            // A chosen chip is the design system's selected treatment, the
+            // accent as wash and edge, unmistakable beside idle ones.
             let chosen = ChipStyle::Neutral.colors(&theme, ground, true, false);
-            assert_ne!(chosen.fill, neutral.fill, "a selected chip is lifted");
-            assert_eq!(chosen.edge, None);
+            assert_ne!(chosen.fill, neutral.fill, "a selected chip is tinted");
+            assert!(chosen.edge.is_some() && chosen.edge != neutral.edge);
+            assert!(
+                crate::a11y::contrast_ratio(chosen.ink, chosen.fill) >= SMALL_TEXT_MIN_CONTRAST
+            );
         }
+    }
+
+    #[test]
+    fn a_menu_chip_with_a_choice_is_drawn_chosen() {
+        let chosen = Chip::new("Book: Tideglass")
+            .menu()
+            .current(true)
+            .removable();
+        assert!(chosen.shows_chosen());
+        let idle = Chip::new("Author").menu().current(false);
+        assert!(!idle.shows_chosen());
+        assert!(Chip::new("Liked").selected(true).shows_chosen());
+        assert!(!Chip::new("Liked").selected(false).shows_chosen());
     }
 
     fn draw(w: &mut dyn Widget) {
@@ -1458,7 +1562,6 @@ mod activation_tests {
             &automerge::ROOT,
         ));
         assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
-        // A pointer click runs it too.
         let mut harness = crate::headless::FrameHarness::new(
             crate::State::new(),
             Box::new(crate::widget::Row::new().push(Box::new(chip))),

@@ -1,4 +1,3 @@
-//! Durable native replay yields between actual signed owner admissions.
 use super::*;
 use crate::network::actor::{HostIdentity, native_ingress};
 use ed25519_dalek::SigningKey;
@@ -60,7 +59,7 @@ fn native_replay_yields_between_signed_admissions_without_reordering_control() {
         })
         .unwrap();
     assert_eq!(
-        net.event_rx.lock().unwrap().len(),
+        queued(&net),
         1,
         "durable replay must yield after one native admission"
     );
@@ -72,7 +71,7 @@ fn native_replay_yields_between_signed_admissions_without_reordering_control() {
     assert_eq!(net.inbound_documents.lock().unwrap().len(), 1);
     net.tick();
     assert_eq!(net.peer_departures().len(), 1);
-    assert_eq!(net.event_rx.lock().unwrap().len(), 0);
+    assert_eq!(queued(&net), 0);
     // The first document can change continuity. Reconnect under its actual
     // current pin rather than proving only that stale input is rejected.
     net.event_tx
@@ -95,11 +94,21 @@ fn native_replay_yields_between_signed_admissions_without_reordering_control() {
         0,
         "an unchanged signed replay must not schedule recovery reconciliation"
     );
-    assert_eq!(net.event_rx.lock().unwrap().len(), 1);
+    assert_eq!(queued(&net), 1);
     assert_eq!(net.peer_departures().len(), 1);
     net.tick();
     assert_eq!(net.peer_departures().len(), 2);
-    assert_eq!(net.event_rx.lock().unwrap().len(), 0);
+    assert_eq!(queued(&net), 0);
+}
+
+/// The events still to handle: those queued, and the one a batch of
+/// admissions carried over ahead of them.
+fn queued(net: &ShellNetwork) -> usize {
+    net.event_rx
+        .lock()
+        .unwrap()
+        .len()
+        .saturating_add(usize::from(net.native_admission.carries()))
 }
 
 fn take_native_publications(commands: &mut mpsc::Receiver<NetCmd>) -> usize {
@@ -122,7 +131,7 @@ fn signed_input(
         .with_current(room, |view| {
             Ok((
                 view.device().clone(),
-                view.transport_hint().clone(),
+                view.transport_hint()?.clone(),
                 view.continuity(),
             ))
         })

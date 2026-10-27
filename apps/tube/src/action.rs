@@ -31,9 +31,8 @@ pub enum Action {
     /// Fraction of the current video's duration, in `[0, 1]`.
     Seek(f64),
     TogglePlay,
-    /// Skip to `to` seconds, offered for a `Show`-mode segment the playhead
-    /// is currently inside.
-    SkipSegment(f64),
+    /// Ask for the open video's stream again after no source played it.
+    RetryPlayback,
     SubmitSearch,
     Share(VideoId),
     /// A change to the shared library, submitted as it is through the
@@ -101,7 +100,6 @@ impl SettingFlag {
         }
     }
 
-    /// Whether it is on in `settings`.
     pub fn get(self, settings: &Settings) -> bool {
         match self {
             SettingFlag::SponsorBlock => settings.sponsorblock_enabled,

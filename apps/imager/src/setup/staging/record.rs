@@ -161,7 +161,6 @@ impl Record {
         self.state(step) == Some(StepState::Done)
     }
 
-    /// A string field of a step's detail.
     pub fn detail_str(&self, step: Step, key: &str) -> Option<&str> {
         self.step(step)?.detail.get(key)?.as_str()
     }
@@ -500,6 +499,7 @@ impl RecordStore {
     ) -> Result<Vec<u8>, String> {
         let artifact = super::prepared_setup::PreparedArtifact {
             browser: None,
+            tpm_handoff: None,
             source_path: self
                 .prepared_path(id)?
                 .to_str()
@@ -529,6 +529,9 @@ impl RecordStore {
             secure::ensure_dir(public, true)?;
             let mut display = record.clone();
             display.migration = None;
+            // The TPM sidecar is public but its receiver identity and sealed
+            // blobs need not be mirrored to the world-readable status file.
+            display.profile.remove("tpm_handoff");
             let display_bytes =
                 serde_json::to_vec_pretty(&display).map_err(|error| error.to_string())?;
             write_atomic(public, &name, &display_bytes, true)
@@ -767,7 +770,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn staging_records_track_steps_persist_atomically_and_reject_foreign_owners() {
-        // Phase `state_machine_tracks_one_entry_per_step_and_merges_detail`.
         {
             let mut r = sample_record("op-1");
             assert_eq!(r.status(), RecordStatus::InProgress);
@@ -795,7 +797,6 @@ mod tests {
             assert_eq!(r.status(), RecordStatus::Removed);
         }
 
-        // Phase `store_round_trips_atomically_and_mirrors_publicly`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let store = RecordStore::at(tmp.path());
@@ -836,7 +837,6 @@ mod tests {
             assert_eq!(store.load("missing-op").unwrap(), None);
         }
 
-        // Phase `removed_records_are_not_pending_and_corrupt_ones_fail_listing`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let store = RecordStore::at(tmp.path());
@@ -860,7 +860,6 @@ mod tests {
             assert!(store.load("../etc").is_err());
         }
 
-        // Phase `privileged_store_rejects_records_not_owned_by_root`.
         #[cfg(unix)]
         {
             let tmp = tempfile::tempdir().unwrap();

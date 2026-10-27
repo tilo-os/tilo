@@ -29,7 +29,11 @@ topbar-watching-description = { $count } { $count ->
        *[other] Personen schauen
     } zu, ohne teilzunehmen
 topbar-tilo-menu = Tilo-Menü
+# A running application's icon in the bar, when the item that named it is gone.
+topbar-app-tray-item = Laufende Anwendung
+topbar-app-tray-unread = { $count } ungelesen
 topbar-open-quick-settings = Schnelleinstellungen öffnen
+topbar-open-notifications = Benachrichtigungen
 topbar-bell = { $unread ->
     [0] Mitteilungen
     [one] Mitteilungen, 1 ungelesen
@@ -40,7 +44,7 @@ topbar-bell-silenced = { $unread ->
     [one] Mitteilungen stummgeschaltet, 1 ungelesen
    *[other] Mitteilungen stummgeschaltet, { $unread } ungelesen
 }
-topbar-show-collaborators = Mitwirkende anzeigen
+topbar-show-collaborators = Alle hier
 topbar-viewer-can-control = kann { $targets } steuern
 topbar-viewer-view-only = sieht nur { $targets }
 topbar-viewer-entry = { $name } ({ $kind ->
@@ -52,6 +56,12 @@ topbar-collaborators-visible = Bildschirm sichtbar für { $viewers }. Mitwirkend
 topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
 topbar-invite = Einladen
+topbar-waved-at-you = { $name } hat dir zugewunken
+topbar-arrived-one = { $name } ist da
+topbar-arrived-more = { $name } und { $count ->
+    [one] eine weitere Person
+   *[other] { $count } weitere
+} sind da
 topbar-clock-resume = Fortsetzen
 topbar-clock-pause = Pausieren
 topbar-clock-lap = Runde
@@ -70,38 +80,45 @@ topbar-clock-add-one-minute = Eine Minute hinzufügen
 topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
-topbar-strips = Leisten in diesem Arbeitsbereich
-topbar-strip-go = Zu { $name } wechseln, { $count ->
-    [0] niemand dort
-    [one] eine Person dort
-   *[other] { $count } Personen dort
-}
 topbar-strip-name = Leisten zeigen, gerade { $strip }
-topbar-strip-add = Leiste hinzufügen
-topbar-strips-more-label = +{ $count }
-topbar-strips-more = { $count ->
-    [one] Eine weitere Leiste
-   *[other] { $count } weitere Leisten
-}, zu { $name } wechseln
-topbar-strip-name-placeholder = Leiste benennen
 topbar-workspace-name-placeholder = Arbeitsbereich benennen
-topbar-workspace-menu = { $workspace }: Arbeitsbereiche, Übersicht und Schreibtische
-topbar-profile = { $name }: dein Profil
+topbar-workspace-menu = { $workspace }: Arbeitsbereiche, Übersicht und Leisten
+topbar-profile = { $name } (du): dein Profil
+topbar-face-agent = { $name }, Agent
+topbar-faces-more = { $count } weitere
 workspace-menu-hosted-by = Gehostet von { $host }
 workspace-menu-rename = Arbeitsbereich umbenennen
 workspace-menu-overview = Übersicht
-workspace-menu-new-desk = Neuer Schreibtisch
+workspace-menu-new-strip = Neue Leiste
 profile-card = Dein Profil
+profile-card-of = Profil von { $name }
+profile-id = ID
+profile-copy-id = ID kopieren
+profile-status-own-words = In eigenen Worten
+profile-status-automatic = Automatisch aus dem, was die Person tut
+profile-message = Nachricht
+profile-follow = Folgen
+profile-stop-following = Nicht mehr folgen
+profile-photo-change = Bild ändern
+profile-photo-remove = Bild entfernen
 profile-name = Dein Name
 profile-name-placeholder = Dein Name
 profile-name-hint = So sehen dich alle hier
+profile-watching-hint = Du schaust zu. Niemand hier sieht dich
 profile-add-your-name = Deinen Namen hinzufügen
 profile-section-identity = Deine Identität
 profile-section-devices = Geräte
 profile-section-linked = Verknüpfte Konten
-profile-link = { $service }-Konto verknüpfen
+profile-link = Mit { $service } verbinden
 profile-unlink = Trennen
-profile-copy = Kopieren
+profile-linked-as = Verknüpft als { $account }
+profile-linked-to = Verknüpft mit { $handle } auf { $service }
+profile-link-offer = { $service } { $account } mit { $name } verknüpfen?
+profile-link-offer-why = Was du in { $service } schreibst, erscheint hier als du, und dort ebenso.
+profile-link-accept = Verknüpfen
+profile-link-decline = Abbrechen
+profile-connecting = { $service } wird geöffnet…
+profile-looking = Deine { $service }-Verknüpfung wird geprüft…
 profile-sharing = Teilen, woran du arbeitest
 profile-sharing-auto = Automatisch
 profile-sharing-manual = Eigene Worte
@@ -120,6 +137,12 @@ profile-visibility-nothing = Nichts
 profile-visibility-where-detail = Dein Gesicht, dein Fenster und dein Zeiger
 profile-visibility-here-detail = Dein Gesicht, nie dein Fenster oder dein Zeiger
 profile-visibility-nothing-detail = Du erscheinst nicht und siehst auch die Zeiger der anderen nicht
+profile-control-hints = Bedienhinweise zeigen
+control-hint-open = Alles öffnen
+control-hint-move = Zum Verschieben ziehen
+control-hint-resize = Größe per Ziehen ändern
+control-hint-pan = Seitwärts scrollen
+control-hint-pan-touch = Links oder rechts wischen
 
 # Arbeitsbereichsaktivität
 a11y-shell-workspace-activity = Aktivität im Arbeitsbereich
@@ -134,10 +157,6 @@ a11y-shell-activity-boundary-newer-description = Diese Grenze neu ziehen, indem 
 a11y-shell-activity-boundary-older-description = Diese Grenze neu ziehen, indem eine Aktion in die ältere Arbeitssitzung wandert
 a11y-shell-activity-more-sessions = Weitere Arbeitssitzungen
 a11y-shell-activity-more-sessions-description = Weitere Arbeitssitzungen anzeigen
-a11y-shell-activity-new-task = Neue Aufgabe
-a11y-shell-activity-new-task-description = Eine Aufgabe im Arbeitsbereich erstellen, ohne ein Modell zu benötigen
-a11y-shell-activity-create-task = Aufgabe erstellen
-a11y-shell-activity-cancel-task = Erstellen der Aufgabe abbrechen
 a11y-shell-activity-everything = Alles
 a11y-shell-activity-agent-tasks = Agent-Aufgaben
 a11y-shell-activity-unclassified = Nicht zugeordnet
@@ -150,18 +169,13 @@ a11y-shell-activity-pause-replay = Wiedergabe pausieren
 a11y-shell-activity-play-replay = Wiedergabe abspielen
 a11y-shell-activity-history-scope = Verlaufsumfang
 a11y-shell-activity-history-view = Verlaufsansicht
+a11y-shell-activity-open-tasks-description = Öffnet die App Aufgaben mit den Aufgaben dieses Arbeitsbereichs
 a11y-shell-activity-time-range = Zeitraum
 a11y-shell-activity-person-filter = Personenfilter
 a11y-shell-activity-brief-description = { $detail }; zuletzt geändert { $when }; { $count } { $count ->
         [one] Änderung
        *[other] Änderungen
     } von { $authors }
-a11y-shell-activity-task-unassigned = nicht zugewiesen
-a11y-shell-activity-task-assigned-agent = einem Agenten zugewiesen
-a11y-shell-activity-task-no-resource = keine angehängte Ressource
-a11y-shell-activity-task-route = Ausführungsweg der Aufgabe
-a11y-shell-activity-task-composer-action = Aktion zum Erstellen der Aufgabe
-a11y-shell-activity-task-action = Aktion für die ausgewählte Aufgabe
 a11y-shell-activity-history-lens = Verlaufsansicht
 a11y-shell-activity-undo-task-description = Jeden betroffenen Eintrag dieser Agent-Aufgabe rückgängig machen; spätere Änderungen anderer bleiben erhalten
 a11y-shell-activity-history-action = Aktion für den ausgewählten Verlauf
@@ -170,11 +184,9 @@ a11y-shell-activity-timeline-description = Verlaufseinträge; mit den Pfeiltaste
 a11y-shell-activity-checkpoints-description = Durch die Zwischenstände des Arbeitsbereichs gehen
 a11y-shell-activity-replay-description = Die Wiedergabe des Arbeitsbereichs abspielen oder pausieren
 a11y-shell-activity-view-catch-up = Eine Zusammenfassung der Ergebnisse, seit dieses Gerät den Arbeitsbereich zuletzt angesehen hat
-a11y-shell-activity-view-tasks = Dauerhafte Aufgaben im Arbeitsbereich mit Ressourcenlinks, Ausführungswegen und Prüfprotokollen
 a11y-shell-activity-view-explore = Der vollständige Verlauf des Arbeitsbereichs mit Filtern und Herkunft
 a11y-shell-activity-view-replay = Eine kausale Wiedergabe der Anordnung und der Aktivität der Beteiligten
 a11y-shell-activity-entry-author = Von { $author }
-a11y-shell-activity-tasks = Aufgaben im Arbeitsbereich
 a11y-shell-activity-selected-detail = Details zum ausgewählten Verlauf
 a11y-shell-activity-selected-detail-description = { $title }; { $count } { $count ->
         [one] Aktion
@@ -184,17 +196,12 @@ a11y-shell-activity-agent-run-description = Anweisung: { $instruction }; zugewie
 a11y-shell-activity-reason-not-recorded = nicht erfasst
 a11y-shell-activity-agent-step = { $app } in { $record }: { $summary }
 a11y-shell-activity-agent-review = Prüfung der Agent-Aufgabe
-a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; { $count } { $count ->
-        [one] Prüfereignis
-       *[other] Prüfereignisse
-    }
-a11y-shell-activity-task-latest = zuletzt: { $latest }
 activity-view-catch-up = Neues
 activity-view-tasks = Aufgaben
 activity-view-explore = Verlauf
 activity-view-replay = Wiedergabe
 activity-title-catch-up = Während du weg warst
-activity-title-tasks = Aufgabenzentrale
+activity-title-whats-new = Neues
 activity-title-explore = Arbeitsbereich-Aktivität
 activity-title-replay = Arbeitsbereich wiedergeben
 activity-workspace-fallback = Dieser Arbeitsbereich
@@ -265,17 +272,21 @@ activity-replay-checkpoints-unavailable = { $count } { $count ->
 activity-latest = Zuletzt · { $headline }
 activity-history-pending = Der Verlauf wartet auf laufende Bearbeitungen
 activity-caught-up = Du bist auf dem neuesten Stand
+activity-history-gone = Diese Änderungen sind nicht mehr im Verlauf.
+activity-served-personal-only = Das kann nur die Person an diesem Gerät.
+activity-served-read-only = Dieser Desktop zeigt den Verlauf, kann ihn aber nicht ändern.
+activity-served-unavailable = Der Verlauf dieses Arbeitsbereichs wird hier nicht aufbewahrt.
 activity-summary-on-device = Zusammenfassung auf dem Gerät
 activity-session-move-newer = 1 Aktion neuer
 activity-session-move-older = 1 Aktion älter
 activity-more-sessions = Weitere Arbeitssitzungen…
 activity-first-sessions = Erste Arbeitssitzungen…
 activity-brief-underlying = { $count } { $count ->
-        [one] zugrunde liegende Aktion
-       *[other] zugrunde liegende Aktionen
+        [one] Schritt
+       *[other] Schritte
     }
 activity-brief-open-explorer = Diese Arbeitssitzung im Verlauf öffnen
-activity-brief-show-affected = Betroffene Ressourcen und Aktionen anzeigen
+activity-brief-show-affected = Jeden Schritt zeigen
 activity-browse-by = Durchsuchen nach
 activity-more-lenses = Weitere Ansichten…
 activity-first-lenses = Erste Ansichten…
@@ -284,7 +295,7 @@ activity-lens-agent-tasks = Agent-Aufgaben  { $count }
 activity-lens-unclassified = Nicht zugeordnet  { $count }
 activity-provenance = Herkunft
 activity-select-prompt = Wähle eine Arbeitssitzung oder einen Bereich von Aktionen
-activity-select-hint = Sieh, wer beteiligt war, welche Ressourcen betroffen sind, und vergleiche genau vorher und nachher.
+activity-select-hint = Sieh, wer es war, was es betraf, und vergleiche vorher und nachher.
 activity-detail-open = Öffnen
 activity-detail-open-app = App öffnen
 activity-detail-compare = Vergleichen
@@ -340,8 +351,13 @@ activity-affected-records = Betroffene Einträge
 activity-undo-task-needs-open = Öffne alle betroffenen Dokumente, um diese Aufgabe gemeinsam rückgängig zu machen.
 activity-undo-task-needs-documents = Nichts geändert. Öffne zuerst alle betroffenen Dokumente.
 activity-undo-task-partial = Aufgabe teilweise rückgängig gemacht; spätere Bearbeitungen anderer wurden behalten.
+activity-undo-task-partial-records = Aufgabe rückgängig gemacht, außer den unten genannten Einträgen.
+activity-undo-task-record-left = { $record } in { $app } wurde nicht rückgängig gemacht.
+activity-detail-undo-step = Diesen Schritt rückgängig
 activity-undo-task-done = Ganze Aufgabe als neuer Verlaufseintrag rückgängig gemacht.
 activity-undo-task-gone = Die Auswirkungen der Aufgabe waren bereits entfernt.
+activity-undo-task-refused = Die Aufgabe konnte nicht rückgängig gemacht werden. { $detail }
+activity-undo-task-unavailable = Aufgaben können hier nicht rückgängig gemacht werden.
 activity-removed-workspace = ein entfernter Arbeitsbereich
 activity-receipt-completed = Abgeschlossen
 activity-receipt-failed = Fehlgeschlagen
@@ -357,36 +373,6 @@ activity-replay-no-workspace = Der Arbeitsbereich existierte zu diesem Prüfpunk
 activity-replay-empty-window = Leeres Fenster
 activity-replay-layout-not-recorded = Fenstergrößen und ausgewählte Tabs wurden nicht aufgezeichnet
 activity-presence-trail = Anwesenheitsverlauf
-activity-tasks-subtitle = { $workspace } · { $active ->
-        [0] nichts offen
-        [one] 1 offene Aufgabe
-       *[other] { $active } offene Aufgaben
-    }
-activity-tasks-tagline = Was Personen und Agenten in diesem Arbeitsbereich erledigen
-activity-tasks-pending = Aufgaben warten auf laufende Bearbeitungen
-activity-tasks-empty = Noch keine Aufgaben
-activity-tasks-empty-hint = Lege hier eine an oder bitte in einer beliebigen App einen Agenten darum.
-activity-task-new = + Neue Aufgabe
-activity-task-queue = Warteschlange des Arbeitsbereichs
-activity-task-composer-title = Arbeit anlegen, ohne den Schreibtisch zu verlassen
-activity-task-placeholder = Was muss erledigt werden?
-activity-task-executor-manual = Erledigt von dir oder einer anderen Person
-activity-task-executor-none = Kein Agent verfügbar. Die Aufgabe bleibt unzugewiesen.
-activity-task-executor-agent = Agent: { $agent }
-activity-task-no-attachment = Keine Ressource angehängt. Die Aufgabe gilt für den ganzen Arbeitsbereich.
-activity-task-attached = Angehängt: { $resource } in { $app }
-activity-task-attached-workspace = Arbeitsbereich
-activity-task-cancel-compose = Abbrechen
-activity-task-create = Anlegen
-activity-task-open-resource = Ressource öffnen
-activity-task-start-agent = Agent starten
-activity-task-launch-agent = Agent ausführen
-activity-task-mark-started = Als begonnen markieren
-activity-task-mark-done = Als erledigt markieren
-activity-task-cancel = Aufgabe abbrechen
-activity-task-retry-agent = Agent erneut versuchen
-activity-task-audit-trail = Prüfprotokoll
-activity-task-audit-noted = { $what }: { $note }
 workspace-create-task = { $manual ->
     [true] Aufgabe „{ $title }“ zum Selbermachen angelegt
    *[false] Aufgabe „{ $title }“ angelegt
@@ -413,28 +399,6 @@ workspace-set-status = { $status ->
     [done] Aufgabe als erledigt markiert
    *[cancelled] Aufgabe abgebrochen
 }
-activity-task-unassigned-by = Nicht zugewiesen · angelegt von { $creator }
-activity-task-agent-badge = Agent · { $name }
-activity-task-status-queued = In der Warteschlange
-activity-task-status-in-progress = In Arbeit
-activity-task-status-waiting = Wartet
-activity-task-status-done = Erledigt
-activity-task-status-cancelled = Abgebrochen
-activity-task-route-manual = Manuell · kein Modell
-activity-task-route-rules-only = Agent · nur Regeln
-activity-task-route-model = Agent · mit Modell
-activity-task-notice-no-agent = Kein aktivierter Agent ist zugewiesen, deshalb hat diese Aufgabe nicht begonnen.
-activity-task-notice-ready = Agent verbunden und bereit für diese Aufgabe.
-activity-task-notice-starting = Verwalteter Agent startet. Er wartet auf sein Broker-Abonnement.
-activity-task-notice-offline = Agent offline · { $detail }
-activity-task-notice-no-runtime = Die Agent-Laufzeit ist nicht verbunden, deshalb hat diese Aufgabe nicht begonnen.
-activity-agent-connect-timeout = Der Agent hat sich nicht mit dem Arbeitsbereich verbunden. Versuche es erneut, um eine neue verwaltete Sitzung zu starten.
-activity-agent-stopped = Der verwaltete Agent wurde vor dem Verbinden beendet.
-activity-agent-exited = Der Starter des verwalteten Agents wurde mit Status { $code } beendet.
-activity-agent-dispatch-failed = Aufgabe konnte nicht an den Agent übergeben werden
-activity-agent-dispatch-unavailable = Übergabe an Agents ist nicht verfügbar
-activity-agent-launch-unavailable = Agents können nicht gestartet werden
-
 # Ereignisse im Arbeitsbereich-Verlauf
 activity-event-removed-workspaces = { $count } { $count ->
         [one] Arbeitsbereich
@@ -545,6 +509,8 @@ search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspac
 search-window-move-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich verschieben
 search-window-copy-tab-to = „{ $tab }“ in einen anderen Arbeitsbereich kopieren
 search-window-group-untitled = Unbenanntes Fenster
+search-window-nth = { $nth } von { $count }
+search-window-placeholder = { $searched } durchsuchen…
 search-window-close-group = Fenstergruppe „{ $group }“ schließen
 search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · { $count ->
     [one] 1 Tab
@@ -647,6 +613,29 @@ workspace-settings-tab-privacy-security = Datenschutz & Sicherheit
 workspace-settings-tab-privacy = Datenschutz
 workspace-settings-tab-apps-files = Apps & Dateien
 workspace-settings-tab-apps = Apps
+workspace-settings-tab-emoji = Emoji
+workspace-settings-emoji-count = { $count ->
+    [0] Eigene Emoji dieses Arbeitsbereichs
+    [one] 1 Emoji dieses Arbeitsbereichs
+   *[other] { $count } Emoji dieses Arbeitsbereichs
+}
+workspace-settings-emoji-help = Schreibe :Name: in einer beliebigen App dieses Arbeitsbereichs oder wähle eines bei den Emoji einer Reaktion.
+workspace-settings-emoji-add = Emoji hinzufügen
+workspace-settings-emoji-empty-title = Dieser Arbeitsbereich hat noch keine eigenen Emoji
+workspace-settings-emoji-empty-detail = Wähle „Emoji hinzufügen“ und ein Bild: Sein Dateiname wird der Name des Emoji.
+workspace-settings-emoji-empty-detail-viewer = Wer diesen Arbeitsbereich bearbeiten darf, kann welche hinzufügen.
+workspace-settings-emoji-unavailable = Die Emoji dieses Arbeitsbereichs sind auf diesem Gerät nicht verfügbar.
+workspace-settings-emoji-editors-add = Nur wer diesen Arbeitsbereich bearbeiten darf, kann Emoji hinzufügen.
+workspace-settings-emoji-added-by = Hinzugefügt von { $name }
+workspace-settings-emoji-added-by-you = Von dir hinzugefügt
+workspace-settings-emoji-remove = :{ $name }: entfernen
+workspace-settings-emoji-not-chosen = Es wurde kein Bild ausgewählt
+workspace-settings-emoji-not-added = { $file } wurde nicht als Emoji hinzugefügt
+workspace-settings-emoji-not-removed = :{ $name }: wurde nicht entfernt
+workspace-settings-emoji-tools-loading = Die Bildwerkzeuge werden noch geladen. Versuche es gleich noch einmal.
+workspace-settings-emoji-not-a-picture = Nur PNG-, JPEG- und WebP-Bilder können Emoji werden.
+workspace-settings-emoji-too-detailed = Das Bild ist zu detailreich, um in Emoji-Größe scharf zu bleiben. Versuche ein einfacheres.
+workspace-settings-emoji-no-name = Sein Dateiname enthält keine Buchstaben oder Ziffern, nach denen ein Emoji heißen könnte.
 workspace-settings-role-owner = Eigentümer
 workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Bearbeiter
@@ -768,20 +757,20 @@ workspace-settings-members-count = { $count ->
    *[other] { $count } Personen teilen diesen Arbeitsbereich
 }
 workspace-settings-members-help = Wer entfernt wird, erhält keine Synchronisierung und Änderungen mehr; bereits heruntergeladene Kopien bleiben bei der Person.
-workspace-settings-ownership = Eigentum
+workspace-settings-ownership-cancel-short = Übertragung abbrechen
+workspace-settings-ownership-transfer = Eigentum übertragen
 workspace-settings-you-manage = Von dir verwaltet
 workspace-settings-view-only = Nur ansehen
 workspace-settings-members-empty-title = Sonst ist niemand in diesem Arbeitsbereich
 workspace-settings-members-empty-detail = Erstelle im Tab „Allgemein“ eine signierte Einladung, um jemanden hinzuzufügen.
 workspace-settings-people-header = Personen
 workspace-settings-ownership-offered = { $owner } hat dir das Eigentum angeboten. Sieh dir den Arbeitsbereich an und nimm ausdrücklich an, bevor das Angebot abläuft.
-workspace-settings-ownership-waiting = Warte darauf, dass { $recipient } das Eigentum ausdrücklich annimmt. Bis dahin kannst du abbrechen.
+workspace-settings-ownership-waiting = Warten, bis { $recipient } das Eigentum annimmt.
 workspace-settings-ownership-pending = Die Eigentumsübertragung an { $recipient } wartet auf die Annahme durch diese Person.
 workspace-settings-you = Du
-workspace-settings-member-detail = { $count ->
-    [0] { $role } · keine zusätzlichen Berechtigungen
-    [one] { $role } · 1 zusätzliche Berechtigung
-   *[other] { $role } · { $count } zusätzliche Berechtigungen
+workspace-settings-member-extra = { $count ->
+    [one] 1 zusätzliche Berechtigung
+   *[other] { $count } zusätzliche Berechtigungen
 }
 workspace-settings-remove = Entfernen
 workspace-settings-owner-only = Nur der Eigentümer des Arbeitsbereichs kann Berechtigungen ändern.
@@ -836,6 +825,11 @@ workspace-settings-agent-access-default = Standard
 workspace-settings-agent-access-reset = Standard verwenden
 workspace-settings-agent-access-always = Immer erlaubt · { $count }
 workspace-settings-agent-access-stop = Wieder fragen
+workspace-settings-agent-model = Modell
+workspace-settings-agent-model-default = Der Standard: { $model }
+workspace-settings-agent-model-none = Kein Modell in den Einstellungen gewählt
+workspace-settings-agent-model-use = Verwenden
+workspace-settings-agent-model-in-use = In Verwendung
 workspace-settings-agent-access-empty = Noch keine Apps in diesem Arbeitsbereich.
 workspace-settings-answer-allow = Erlauben
 workspace-settings-answer-ask = Erst fragen
@@ -899,15 +893,12 @@ workspace-settings-keep-permission = Berechtigung behalten
 workspace-settings-revoke-permission = Berechtigung entziehen
 workspace-settings-revoke-permission-detail = Dadurch wird die ausgewählte Berechtigung sofort entfernt.
 workspace-settings-workspace-fallback = Arbeitsbereich
-workspace-settings-identity-caption = Arbeitsbereich · { $role }
 workspace-settings-current-workspace = Aktueller Arbeitsbereich
-workspace-settings-role-policy-line = { $role } · Einstellungen und Richtlinien bleiben bei diesem Arbeitsbereich
 workspace-settings-identity-title = Identität des Arbeitsbereichs
 workspace-settings-identity-description = Dieser Name erscheint in der oberen Leiste, in Einladungen und in geteilten Aktivitäten.
 workspace-settings-rename-admin-only = Nur Administratoren des Arbeitsbereichs können ihn umbenennen.
-workspace-settings-invite-hint = Wähle eine Person und eine Rolle. Die Einladung ist signiert und gilt eine Stunde.
-workspace-settings-invite-admin-only = Nur verwaltende Administratoren können Einladungen in den Arbeitsbereich erstellen.
-workspace-settings-invite-create = Erstellen
+workspace-settings-invite-admin-only = Nur Administratoren dieses Arbeitsbereichs können Personen einladen.
+workspace-settings-invite-create = Einladung erstellen
 workspace-settings-devices-title = Deine Geräte
 workspace-settings-devices-local = Fensteranordnung und Bedienelemente bleiben auf jedem Gerät.
 workspace-settings-public-title = Öffentlich
@@ -924,8 +915,13 @@ workspace-settings-device-hidden = Ausgeblendet
 workspace-settings-move-earlier = Nach oben
 workspace-settings-move-later = Nach unten
 workspace-settings-delete = Workspace löschen
+workspace-settings-delete-description = Entfernt ihn von diesem Gerät und deinen anderen Geräten.
+workspace-settings-delete-action = Löschen
+workspace-settings-archived-title = Archivierte Workspaces
+workspace-settings-archived-restore = Wiederherstellen
+workspace-settings-archived-delete = Löschen
 workspace-settings-invite-title = Personen einladen
-workspace-settings-invite-description = Einladungen binden Arbeitsbereich, Rolle der empfangenden Person, Ablauf und die Identität dieses Geräts.
+workspace-settings-invite-description = Wähle eine Person und was sie hier tun darf. Jede Einladung gilt eine Stunde.
 workspace-settings-glance-title = Auf einen Blick
 workspace-settings-stat-members = { $count ->
     [one] Mitglied
@@ -962,7 +958,8 @@ a11y-shell-workspace-activity-description = Gruppierte Ergebnisse prüfen und se
 
 # Empty-workspace launchpad
 launchpad-title = Gemeinsam etwas schaffen
-launchpad-description = Wähle eine gemeinsame Unterhaltung, Notizen, Aufgaben, einen Anruf, eine Einladung oder die Aktivität im Arbeitsbereich.
+launchpad-title-private = Etwas anfangen
+launchpad-description = Wähle eine Unterhaltung, Notizen, Aufgaben, einen Anruf, eine Einladung oder die Aktivität im Arbeitsbereich.
 launchpad-open-app = App öffnen
 launchpad-discuss = Besprechen
 launchpad-notes = Notizen
@@ -976,6 +973,10 @@ launchpad-tasks-detail = Die Aufgabenliste im Kalender öffnen
 launchpad-meet-detail = Mit diesem Arbeitsbereich im Chat sprechen
 launchpad-invite-detail = Jemanden in diesen Arbeitsbereich holen
 launchpad-activity-detail = Sehen, was sich geändert hat und warum
+launchpad-discuss-detail-private = Die Unterhaltung dieses Arbeitsbereichs öffnen
+launchpad-notes-detail-private = Ideen aufschreiben
+launchpad-meet-detail-private = Jemanden im Chat anrufen
+launchpad-invite-detail-private = Gemeinsam mit jemandem daran arbeiten
 
 # Empty-workspace launchpad: the keyboard hint under the cards
 launchpad-keyboard-hint = Pfeiltasten bewegen, Eingabe öffnet, Super+N zeigt alle Apps
@@ -986,14 +987,27 @@ launchpad-keyboard-hint = Pfeiltasten bewegen, Eingabe öffnet, Super+N zeigt al
 people-panel-agent-tag = Agent
 people-panel-bot-tag = Bot
 people-panel-viewing = Sieht sich { $title } an
+people-panel-in-app = In { $app }
 people-panel-here-count = { $count ->
-    [one] 1 hier
-   *[other] { $count } hier
+    [0] Nur du
+    [one] Du und 1 weitere Person
+   *[other] Du und { $count } weitere
 }
-people-panel-here-watching = { $count } hier, { $watching } schauen zu
+people-panel-here-watching = { $count ->
+    [0] Nur du
+    [one] Du und 1 weitere Person
+   *[other] Du und { $count } weitere
+}, { $watching } schauen zu
+people-panel-here-spectating = { $count ->
+    [0] Niemand hier
+    [one] 1 Person hier
+   *[other] { $count } Personen hier
+}, { $watching } schauen zu, du auch
 people-panel-section-people = Personen
 people-panel-section-agents = Agenten
+people-panel-section-devices = Deine Geräte
 people-panel-wave = Winken
+people-panel-waved = Gewunken
 people-panel-join = Beitreten
 people-panel-in-call = Im Kanal { $channel }
 people-panel-in-a-call = Im Anruf
@@ -1001,9 +1015,10 @@ people-panel-focusing = Konzentriert
 people-panel-away = Abwesend
 people-panel-idle = Inaktiv
 people-panel-empty = Gerade ist niemand sonst hier
-people-panel-changes = Ihre Änderungen ansehen
+people-panel-changes = Ihre Änderungen
 people-panel-invite-people = Personen einladen
 a11y-shell-wave = { $name } zuwinken
+a11y-shell-waved = Du hast { $name } zugewunken
 a11y-shell-wave-description = Ihr Gesicht zeigt, dass du gewunken hast
 a11y-shell-join-call = { $name }s Anruf beitreten
 a11y-shell-join-call-description = Tritt dem Sprachkanal bei, in dem sie sind
@@ -1012,7 +1027,35 @@ a11y-shell-people-changes-description = Den Verlauf bei ihren Änderungen öffne
 a11y-shell-people-change-description = Den Verlauf bei dieser Änderung öffnen
 people-panel-follow = Folgen
 people-panel-stop-following = Beenden
-launchpad-subtitle = Wähle, wie du anfangen möchtest. Was du hier machst, teilen alle in diesem Arbeitsbereich.
+
+# The people overlay: the roster pinned out of the bar, floating over windows
+people-panel-pin = Auf dem Bildschirm halten
+a11y-people-pin = Wer hier ist, auf dem Bildschirm halten
+a11y-people-overlay = Wer hier ist
+people-overlay-title = { $count ->
+    [0] Nur du
+    [one] 1 hier
+   *[other] { $count } hier
+}
+people-overlay-unpin = Zurück in die Leiste
+people-overlay-follow-name = { $name } folgen
+people-overlay-doing-nothing = Hier
+people-overlay-screen-private = { $name } behält für sich, wo { $name } gerade ist
+people-overlay-empty-desk = Auf dem Bildschirm von { $name } ist nichts offen
+people-overlay-message-placeholder = Nachricht an { $name }
+people-overlay-message-you = Du
+people-overlay-send = Senden
+people-overlay-own-status = Was du gerade machst
+people-overlay-own-status-placeholder = Woran arbeitest du?
+people-overlay-own-status-clear = Leeren, was du gerade machst
+people-overlay-no-messages = Sag { $name } Hallo
+people-overlay-messages-unavailable = Direktnachrichten mit dieser Person sind gerade nicht verfügbar
+people-overlay-message-failed = Die Nachricht an { $name } ging nicht raus: { $reason }
+a11y-people-follow = { $name } folgen
+a11y-people-stop-following = { $name } nicht mehr folgen
+launchpad-subtitle = Wähle, wie du anfängst. Alle in diesem Arbeitsbereich sehen, was du hier machst.
+launchpad-subtitle-private = Wähle, wie du anfängst. Nur du siehst, was du hier machst, bis du jemanden einlädst.
+launchpad-subtitle-public = Wähle, wie du anfängst. Dieser Arbeitsbereich ist öffentlich: Alle, die beitreten, sehen, was du hier machst.
 
 # The emoji picker (Super+. by default)
 emoji-picker-title = Emoji
@@ -1069,11 +1112,8 @@ browser-welcome-hint-mac = Pfeiltasten bewegen, Eingabe öffnet, ⌘K findet jed
 overview-panel-title = Übersicht
 overview-panel-you-are-here = Du bist hier
 overview-panel-windows = Fenster hier
+overview-strip-empty = Keine Fenster
 overview-panel-no-windows = Noch keine Fenster
-overview-panel-more-windows = { $count ->
-    [one] und 1 weiteres Fenster
-   *[other] und { $count } weitere Fenster
-}
 overview-panel-window-count = { $count ->
     [one] 1 Fenster
    *[other] { $count } Fenster
@@ -1081,13 +1121,22 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Wechseln zu
 overview-panel-new-workspace = Neuer Arbeitsbereich
 browser-new-workspace-name = Arbeitsbereich { $number }
+room-notice-joined = { $name } ist dazugekommen
+room-notice-renamed = { $name } hat den Arbeitsbereich in { $workspace } umbenannt
+browser-app-crashed = { $app } funktionierte nicht mehr und wurde geschlossen, damit der Rest des Desktops weiterläuft. Schließe dieses Fenster oder öffne { $app } erneut.
+browser-app-crashed-reopen = Erneut öffnen
 
 # Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
 tilo-menu-about = Über diesen Computer
+tilo-menu-about-browser = Über Tilo
 tilo-menu-feedback = Feedback geben…
 tilo-about-title = Über diesen Computer
+tilo-about-title-browser = Über Tilo
 tilo-about-lead = Das ist Tilo, ein Betriebssystem.
-tilo-about-body-browser = Was du gerade benutzt, läuft in deinem Browser. Tilo kommt bald nativ auf Computer.
+tilo-about-body-browser = Du benutzt Tilo in deinem Browser. Bald läuft es auch direkt auf deinem eigenen Computer.
+tilo-about-version = Version { $version }
+tilo-about-link-get = Tilo holen
+tilo-about-link-home = tilo.so
 tilo-about-body-native = Es läuft direkt hier, auf diesem Computer.
 tilo-about-link-notify = Benachrichtigt werden
 tilo-about-link-source = Quellcode
@@ -1095,17 +1144,8 @@ tilo-about-link-community = Community
 
 notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
-activity-catch-up-goals = Aufgaben im Arbeitsbereich: { $done } abgeschlossen, { $unfinished } offen · aktualisiert { $when }
-activity-catch-up-review-description = Prüfe wartende Aufgaben, Ziele und die Arbeit von Agenten in diesem Arbeitsbereich. Das Lesen der Aktivitäten schließt keine Aufgabe ab.
-activity-catch-up-review-goals = Ziele und die Arbeit von Agenten prüfen
-activity-acknowledge-viewed = Gesehene Aktivitäten bestätigen
-activity-acknowledge-description = Markiere nur die angezeigten Zusammenfassungen als gelesen. Verborgene Änderungen und wartende Aufgaben bleiben offen.
-activity-catch-up-needs-review = Deine Prüfung ist nötig · { $count ->
-    [one] eine wartende Aufgabe
-   *[other] { $count } wartende Aufgaben
-    }
-activity-catch-up-waiting-detail = { $task } · { $who }
-
+activity-acknowledge-viewed = Als gesehen markieren
+activity-acknowledge-description = Markiert die hier gezeigten Änderungen als gesehen. Wartende Aufgaben bleiben offen.
 notification-alarm-snoozed = Um 5 Minuten verschoben. Verwirf diesen Eintrag, um die ausstehende Erinnerung abzubrechen.
 notification-alarm-dismiss = Verwerfen
 notification-alarm-snooze = In 5 Minuten erneut erinnern
@@ -1113,96 +1153,6 @@ notification-alarm-action-failed = Dieser Wecker konnte nicht geändert werden
 notification-alarm-action-title = { $action }: { $title }
 notification-alarm-action-subtitle = Für dieses Weckereignis
 notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
-
-activity-task-review-unavailable = Der Arbeitsbereich ist gerade nicht erreichbar, daher lassen sich Aufgaben nicht ändern. Ihr Verlauf bleibt lesbar.
-activity-task-review-history = Änderungen ansehen
-activity-task-steer = Anweisungen ändern
-activity-task-cancel-run = Aufgabe abbrechen
-activity-task-retry-run = Erneut versuchen
-activity-task-direction-send = Anweisungen senden
-activity-task-direction-close = Zurück zur Aufgabe
-activity-task-direction-label = Anweisungen für den Agenten
-activity-task-direction-placeholder = Beschreibe, was der Agent ändern soll
-activity-task-direction-observation = Sag dem Agenten, was er anders machen soll. Er folgt deinen Anweisungen ab seinem nächsten Schritt, und alle in diesem Arbeitsbereich können sie sehen.
-activity-task-review-waiting = Warte auf die Antwort des Agenten.
-activity-task-review-refused = Nicht gespeichert. Dein Entwurf bleibt erhalten. { $detail }
-
-activity-confirm-waiting = Wartet auf deine Bestätigung
-activity-task-step-searching = Sucht im Web…
-activity-task-step-reading = Liest { $app }…
-activity-task-step-editing = Bearbeitet { $app }…
-activity-task-step-exploring = Schaut, was { $app } kann…
-activity-confirm-confirmed = Bestätigt
-activity-confirm-declined = Abgelehnt
-activity-confirm-risk-sends = Sendet nach außen
-activity-confirm-risk-deletes = Nicht rückgängig zu machen
-activity-confirm-risk-privileged = Ändert Zugriffe
-activity-confirm-risk-sensitive = Teilt private Daten
-activity-confirm-risk-changes = Ändert deine Arbeit
-activity-confirm-risk-reads = Liest deine Arbeit
-activity-confirm-meta = { $agent } fragt zuerst · { $resource }
-activity-confirm-withheld = Verborgen
-activity-confirm-yes = Ja
-activity-confirm-no = Nein
-activity-confirm-list = { $count }: { $items }
-activity-confirm-list-label = { $label } ({ $count })
-activity-confirm-more = { $count } weitere
-activity-confirm-to = An
-activity-confirm-cc = Cc
-activity-confirm-bcc = Bcc
-activity-confirm-subject = Betreff
-activity-confirm-body = Nachricht
-activity-confirm-attachments = Anhänge
-activity-confirm-confirm = Erlauben
-activity-confirm-edit = Bearbeiten
-activity-confirm-discard = Änderungen verwerfen
-activity-confirm-decline = Ablehnen
-activity-confirm-send-decline = Aktion ablehnen
-activity-confirm-back = Zurück
-activity-confirm-always = Immer erlauben
-activity-confirm-always-note = „Immer erlauben“ ändert den Agentenzugriff dieses Arbeitsbereichs und funktioniert deshalb nur auf dem Gerät, das den Arbeitsbereich verwaltet. Du kannst es in den Arbeitsbereichseinstellungen unter Agenten zurücknehmen.
-activity-confirm-reason-label = Grund für den Agenten (optional)
-activity-confirm-reason-placeholder = Sag, was stattdessen passieren soll
-activity-confirm-field-description = Vor dem Bestätigen ändern
-activity-confirm-on-its-way = Deine Antwort ist auf dem Weg zum Agenten.
-activity-confirm-notice-title = { $agent } fragt zuerst: { $action }
-activity-confirm-notice-body = { $task }
-activity-confirm-notice-gist = { $task } · { $gist }
-activity-confirm-notice-review = Ansehen
-
-activity-task-next = Nächste Aufgabe
-activity-task-previous = Vorherige Aufgabe
-activity-task-review-source = Stand beim Arbeitsbereich, Version { $generation } · abgerufen { $time }
-activity-task-review-status = { $status ->
-        [queued] { $agent } hat noch nicht angefangen
-        [in-progress] { $agent } arbeitet daran
-        [waiting] { $agent } hat angehalten, ohne fertig zu werden
-        [done] { $agent } ist damit fertig
-       *[cancelled] Abgebrochen
-    }
-activity-task-review-frontier = Lauf { $epoch } · { $revision ->
-        [one] 1 Anweisung gesendet
-       *[other] { $revision } Anweisungen gesendet
-    } · { $applied } vom Agenten übernommen
-activity-task-review-direction = { $author }: „{ $text }“
-activity-task-review-missing = Diese Aufgabe ist in diesem Arbeitsbereich nicht mehr verfügbar.
-
-activity-task-review-status-unassigned = { $status ->
-        [done] Erledigt
-        [cancelled] Abgebrochen
-       *[other] Noch arbeitet niemand daran
-    }
-activity-task-review-status-asking = { $agent } wartet auf deine Antwort
-activity-task-details = Details
-activity-task-hide-details = Details ausblenden
-activity-task-position = { $index } von { $count }
-activity-task-run-approved-by-you = Von dir freigegeben · { $time }
-activity-task-approve-run = Freigeben
-activity-task-run-approved = Freigegeben von { $person } · { $time }
-activity-task-awaiting-acceptance = Wartet darauf, dass der Agent die Aufgabe übernimmt. Er ist vielleicht offline.
-activity-task-run-accepted = Der Agent hat die Aufgabe übernommen · zuletzt { $time }
-activity-task-run-planning = Der Agent plant die Schritte · zuletzt { $time }
-activity-task-run-executing = Der Agent nimmt Änderungen vor · zuletzt { $time }
 
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
@@ -1227,8 +1177,6 @@ activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichs
 
 activity-morning-next = Nächste ausgewählte Quelle
 
-emoji-picker-hint-insert = Einfügen
-emoji-picker-hint-close = Schließen
 emoji-picker-hint-tone = Hautton wählen
 
 workspace-settings-hint-close = Schließen
@@ -1237,3 +1185,72 @@ workspace-settings-hint-cancel = Abbrechen
 workspace-settings-hint-choose = Auswählen
 
 workspace-settings-hint-apply = Übernehmen
+
+# Jemand anderes hat ein Fenster außer Sicht geöffnet: der Hinweis am Rand
+desktop-window-opened-elsewhere = { $person } hat { $app } geöffnet
+# Strip switcher: the strip ribbon grown into labels, one per strip of the workspace.
+strip-switcher-a11y = Leisten
+strip-switcher-unnamed = Leiste { $number }
+strip-switcher-new-strip = Neue Leiste
+strip-switcher-rename-named = { $name } umbenennen
+strip-switcher-name-placeholder = Name der Leiste
+strip-switcher-refused = Die Leiste konnte nicht geändert werden
+strip-switcher-remove-named = { $name } entfernen
+strip-switcher-rename = Umbenennen
+strip-switcher-remove = Entfernen
+
+## Ein Problem melden, indem man darauf zeigt
+feedback-report-problem = Problem melden…
+feedback-picker-hint = Klicke auf das, was nicht funktioniert. Umschalt-Klick oder Ziehen wählt mehr, Scrollen erweitert, Esc verlässt.
+feedback-picker-picked = { $count ->
+    [one] 1 Teil gewählt. Umschalt-Klick oder Ziehen wählt mehr.
+   *[other] { $count } Teile gewählt. Umschalt-Klick oder Ziehen wählt mehr.
+}
+feedback-picker-continue = Weiter
+feedback-picker-cancel = Abbrechen
+feedback-part-in = { $what } in { $app }
+feedback-part-named = „{ $name }“ ({ $role ->
+    [Button] Schaltfläche
+    [ToggleButton] Schaltfläche
+    [Link] Link
+    [Tab] Tab
+    [MenuItem] Menüeintrag
+    [Checkbox] Kästchen
+    [Switch] Schalter
+    [TextInput] Feld
+    [MultilineTextInput] Feld
+    [Heading] Überschrift
+   *[other] { $role }
+})
+feedback-part-role = { $role ->
+    [ListItem] Ein Listeneintrag
+    [Row] Eine Zeile
+    [Cell] Eine Zelle
+    [Button] Eine Schaltfläche
+    [ToggleButton] Eine Schaltfläche
+    [Link] Ein Link
+    [Image] Ein Bild
+    [TextInput] Ein Feld
+    [MultilineTextInput] Ein Feld
+    [StaticText] Ein Text
+    [Paragraph] Ein Absatz
+    [Heading] Eine Überschrift
+    [List] Eine Liste
+    [Group] Eine Gruppe
+    [Window] Ein Fenster
+    [Toolbar] Eine Werkzeugleiste
+    [Menu] Ein Menü
+    [MenuItem] Ein Menüeintrag
+    [Tab] Ein Tab
+   *[other] Ein Teil
+}
+
+# Der Ansicht einer Person folgen
+follow-label = Du folgst { $person }
+follow-stopped = Folgen beendet
+follow-stop = Beenden
+
+people-follows = Folgt { $person }
+people-follows-you = Folgt dir
+people-follows-where = { $place }, folgt { $person }
+people-follows-you-where = { $place }, folgt dir

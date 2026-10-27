@@ -42,6 +42,15 @@ impl MenuEntry {
         }
     }
 
+    /// A line of secondary text about the entries around it (why the one
+    /// above is unavailable): read, never chosen.
+    pub fn caption(text: impl Into<String>) -> Self {
+        Self {
+            item: MenuItem::Caption(text.into()),
+            run: None,
+        }
+    }
+
     /// A rule between groups of commands.
     pub fn separator() -> Self {
         Self {
@@ -77,23 +86,6 @@ impl MenuEntry {
     }
 }
 
-/// "Ask agent…" about what is selected under `content` right now, while a
-/// desktop agent can be asked. The selection is taken when the menu opens,
-/// so it is what the person saw selected when they asked.
-pub fn ask_agent_entry(content: &dyn Widget) -> Option<MenuEntry> {
-    if !crate::shared_selection::agent_host_available() {
-        return None;
-    }
-    let selection = crate::shared_selection::subtree_selection(content)?;
-    Some(
-        MenuEntry::new(
-            crate::i18n::I18nManager::lookup_plain("ask-agent-about-selection"),
-            move || crate::shared_selection::ask_agent(Some(selection.clone())),
-        )
-        .with_icon(crate::icons::Icon::Sparkles),
-    )
-}
-
 /// The entries a menu offers where it opens, at the pointer in window
 /// coordinates (`None` when the keyboard opened it).
 pub type MenuEntries = Box<dyn Fn(Option<Point>) -> Vec<MenuEntry>>;
@@ -103,7 +95,6 @@ pub type MenuEntries = Box<dyn Fn(Option<Point>) -> Vec<MenuEntry>>;
 /// keyboard opened the menu (`None`).
 pub type ContentMenuEntries = Box<dyn Fn(&dyn Widget, Option<Point>) -> Vec<MenuEntry>>;
 
-/// An element with a context menu.
 pub struct ContextMenuArea {
     content: Element,
     entries: ContentMenuEntries,
@@ -156,7 +147,6 @@ impl ContextMenuArea {
         self.content.as_mut()
     }
 
-    /// Whether the menu is showing.
     pub fn is_open(&self) -> bool {
         self.menu.is_open()
     }
@@ -169,20 +159,21 @@ impl ContextMenuArea {
     /// Open the menu at `at` (window coordinates) with what is offered
     /// there now; whether there was anything to offer.
     pub fn open_at(&mut self, at: Point, pointer: bool) -> bool {
-        let mut entries = (self.entries)(self.content.as_ref(), pointer.then_some(at));
-        if entries.iter().all(|entry| entry.run.is_none()) {
-            return false;
-        }
-        if let Some(entry) = ask_agent_entry(self.content.as_ref()) {
-            entries.push(MenuEntry::separator());
-            entries.push(entry);
-        }
+        let entries = (self.entries)(self.content.as_ref(), pointer.then_some(at));
+        let offered = entries.iter().any(|entry| entry.run.is_some());
         let mut menu = ContextMenu::new();
         self.runs.clear();
-        for entry in entries {
-            menu.push(entry.item);
-            self.runs.push(entry.run);
+        if offered {
+            for entry in entries {
+                menu.push(entry.item);
+                self.runs.push(entry.run);
+            }
         }
+        // What is selected in the content is what the menu acts on, so
+        // "Tell an agent…" attaches it.
+        menu.set_about(crate::shared_selection::subtree_selection(
+            self.content.as_ref(),
+        ));
         #[allow(
             clippy::cast_possible_truncation,
             reason = "window coordinates are far inside f32's range"
@@ -192,6 +183,10 @@ impl ContextMenuArea {
             Some(viewport) => menu.open_at_clamped(position, viewport),
             None => menu.open_at(position),
         }
+        // Nothing offered, and no agent to tell: no menu.
+        if menu.items().is_empty() {
+            return false;
+        }
         menu.focus_first_action();
         self.menu = menu;
         true
@@ -199,11 +194,15 @@ impl ContextMenuArea {
 
     /// Choose the entry at `index` as a click would.
     pub fn choose(&mut self, index: usize) {
-        self.menu.close();
         if let Some(Some(run)) = self.runs.get(index) {
+            self.menu.close();
             let run = Rc::clone(run);
             run();
+            return;
         }
+        // A row the menu adds itself ("Tell an agent…") runs its own.
+        self.menu.click_item(index);
+        self.menu.close();
     }
 
     /// Run the chosen entry, then let the content see the pointer where
@@ -244,7 +243,7 @@ impl ContextMenuArea {
 }
 
 /// Whether `widget` or anything inside it has the keyboard focus.
-fn focus_within(widget: &dyn Widget) -> bool {
+pub(super) fn focus_within(widget: &dyn Widget) -> bool {
     if widget.is_focused() {
         return true;
     }
@@ -395,6 +394,13 @@ impl super::Decorator for ContextMenuArea {
         if self.menu.is_open() {
             visitor(&self.menu);
         }
+    }
+
+    /// This area stands for its content's node, laid out under it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(self.content.as_ref());
+        visitor(&self.menu);
+        true
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {

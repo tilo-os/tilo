@@ -1,10 +1,10 @@
-//! The editor's controls: the toolbar and its drawers, formatting tools, panel
+//! The editor's controls: its drawers, formatting tools, panel
 //! fields, pickers and palettes, the context menu and the clipboard.
 
 use super::block_layout::line_spacing as block_line_spacing;
 use super::image_layout::{anchor as image_anchor, wrap as image_wrap};
 use super::text_runs::{char_font_family, char_font_size, char_highlight, parse_hex_rgb};
-use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, ToolEntry};
+use super::toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction};
 use crate::WpFormat;
 use crate::compact_swatch_palette::{PaletteChoice, PaletteKind, PaletteRequest};
 use crate::i18n::{arg, t, t_args};
@@ -15,19 +15,18 @@ use crate::text_offsets::char_to_byte;
 use crate::word_processor::Caret;
 use automerge::{AutoCommit, ObjId};
 use tilo_doc::snapshot::BlockView;
+use ui::clipboard_paste;
 use ui::richtext::FontFamily;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{SegmentedTouchGroup, SegmentedTouchResult};
-use ui::{PresenceCtx, clipboard_paste};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::accessibility::tool_action_id;
 use super::panels::swatch_names;
 use super::{CtxAction, NumField, PanelHit, WordProcessorWidget, block_layout, text_runs};
 
@@ -73,6 +72,46 @@ impl WordProcessorWidget {
         Some((char_to_byte(text, s), char_to_byte(text, e)))
     }
 
+    /// Move the caret one page on, or one page back, to the same place on
+    /// that sheet: the column it stands at, on the sheet above or below.
+    /// `extend` grows the selection instead of moving the caret alone.
+    pub(super) fn move_page(&mut self, forward: bool, extend: bool) {
+        let page = self.caret_page();
+        let target = if forward {
+            page + 1
+        } else {
+            page.saturating_sub(1)
+        };
+        if target == page || target >= self.pages.max(1) {
+            return;
+        }
+        // The same column, on the target sheet's first line: the page's own
+        // top, inside its text band.
+        let column = self.caret_screen_x();
+        let Some(top) = self
+            .laid
+            .iter()
+            .filter(|laid| laid.page == target)
+            .map(|laid| laid.y_top)
+            .reduce(f64::min)
+        else {
+            return;
+        };
+        let Some(column) = column else { return };
+        self.caret_from_pointer(Point::new(column, top + 1.0), extend);
+        self.lifecycle.dirty = true;
+    }
+
+    /// Where the caret draws this frame, on screen: its line's origin plus the
+    /// shaped layout's own caret geometry.
+    fn caret_screen_x(&self) -> Option<f64> {
+        let caret = &self.inner.caret;
+        let laid = self.laid.iter().find(|laid| laid.id == caret.block)?;
+        let (_, layout) = self.layout_cache.get(&laid.id)?;
+        let (x, _, _) = layout.caret_geometry(laid.caret_byte(caret.offset));
+        Some(laid.text_x + f64::from(x))
+    }
+
     pub(super) fn extend_or_clear(&mut self, shift: bool) {
         if shift {
             self.inner.set_anchor();
@@ -98,7 +137,7 @@ impl WordProcessorWidget {
         })
     }
 
-    fn current_block_style(&self) -> (String, Option<i64>) {
+    pub(super) fn current_block_style(&self) -> (String, Option<i64>) {
         let b = self.blocks.iter().find(|b| b.id == self.inner.caret.block);
         let kind = b.map_or_else(|| "paragraph".into(), |b| b.kind.clone());
         let level = b.and_then(|b| b.int_attr("level"));
@@ -150,17 +189,20 @@ impl WordProcessorWidget {
                     num::i64_of_f32((self.current_font_size() - 1.0).round().clamp(6.0, 200.0));
                 self.dispatch_set_mark_value(state, "size", crate::actions::MarkVal::Int(next));
             }
-            ToolAction::FontCycle => {
-                let name = match self.current_font().next() {
-                    FontFamily::Sans => "sans",
-                    FontFamily::Serif => "serif",
-                    FontFamily::Mono => "mono",
-                };
+            ToolAction::SetFont(family) => {
                 self.dispatch_set_mark_value(
                     state,
                     "font",
-                    crate::actions::MarkVal::Str(name.to_string()),
+                    crate::actions::MarkVal::Str(font_value(family).to_string()),
                 );
+            }
+            ToolAction::BulletList => {
+                self.dispatch_toggle_list(state, false);
+                self.refresh_blocks(state);
+            }
+            ToolAction::NumberedList => {
+                self.dispatch_toggle_list(state, true);
+                self.refresh_blocks(state);
             }
             ToolAction::InsertImage => self.request_image_insert(state),
             ToolAction::InsertTable => self.insert_table_via_action(state, 2, 2),
@@ -187,7 +229,6 @@ impl WordProcessorWidget {
                 }
             }
             ToolAction::InsertToc => self.generate_toc(state),
-            ToolAction::NewMenu => self.open_template_picker(),
             ToolAction::TextColorPalette => self.open_compact_swatch_palette(PaletteKind::Text),
             ToolAction::HighlightPalette => {
                 self.open_compact_swatch_palette(PaletteKind::Highlight);
@@ -215,12 +256,6 @@ impl WordProcessorWidget {
             _ => return,
         };
         self.edit_table_via_action(state, edit);
-    }
-
-    /// Open the toolbar's More menu, as a person choosing it would.
-    pub(super) fn open_toolbar_overflow(&mut self) {
-        self.tool_bar.open_overflow();
-        self.lifecycle.dirty = true;
     }
 
     /// Mutate the focused block's style in the live widget sheet (component-
@@ -259,13 +294,6 @@ impl WordProcessorWidget {
                 self.dispatch_apply_named_style(state, &id);
                 self.refresh_blocks(state);
                 self.lifecycle.dirty = true;
-            }
-            PanelHit::SetFont(font) => {
-                self.edit_focused_style(state, true, |st| st.font = font.into());
-            }
-            PanelHit::ToggleBold => self.edit_focused_style(state, true, |st| st.bold = !st.bold),
-            PanelHit::ToggleItalic => {
-                self.edit_focused_style(state, true, |st| st.italic = !st.italic);
             }
             // Direct paragraph formatting on the current paragraph(s), not the
             // named style — only the panel exposes these, not the toolbar.
@@ -427,8 +455,6 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    // ---- colour picker popover --------------------------------------------
-
     /// Open the shared [`ColorPicker`] seeded with the focused style's colour.
     pub(super) fn open_color_picker(&mut self) {
         let seed = self
@@ -481,7 +507,7 @@ impl WordProcessorWidget {
     pub(super) fn open_compact_swatch_palette(&mut self, kind: PaletteKind) {
         self.context_menu.close();
         self.style_menu.close();
-        self.template_picker.close();
+        self.file_menu.close();
         let (palette, title, clear_label): (&[[u8; 3]], String, String) = match kind {
             PaletteKind::Text => (
                 &STYLE_PALETTE,
@@ -495,17 +521,9 @@ impl WordProcessorWidget {
             ),
         };
         let labels = swatch_names(kind);
-        let command = match kind {
-            PaletteKind::Text => ToolAction::TextColorPalette,
-            PaletteKind::Highlight => ToolAction::HighlightPalette,
-        };
-        let anchor = self
-            .toolbar
-            .iter()
-            .find(|(action, _)| *action == command)
-            .map_or(self.pointer, |(_, rect)| {
-                Point::new(rect.x0, self.tool_band.y1)
-            });
+        // The command is the window bar's, above the editor: the grid opens
+        // at the top of the page, under the bar's trailing actions.
+        let anchor = Point::new(self.rect.x1, self.rect.y0);
         let current = match kind {
             PaletteKind::Text => self.current_text_color(),
             PaletteKind::Highlight => self.current_highlight_color(),
@@ -586,10 +604,25 @@ impl WordProcessorWidget {
         Some((b, pos))
     }
 
-    fn current_font(&self) -> FontFamily {
+    /// The font the selection is set in: its run's `font` mark, else its
+    /// paragraph style's family.
+    pub(super) fn current_font(&self) -> FontFamily {
         self.font_probe()
             .and_then(|(b, pos)| char_font_family(pos, &b.marks))
+            .or_else(|| {
+                self.focused_style_key()
+                    .map(|key| font_family_of(&self.sheet.get(&key).font))
+            })
             .unwrap_or_default()
+    }
+
+    /// Whether the caret's paragraph is a list of the kind `ordered` names
+    /// (numbered, else bulleted): the list buttons show on.
+    pub(super) fn list_active(&self, ordered: bool) -> bool {
+        self.blocks
+            .iter()
+            .find(|b| b.id == self.inner.caret.block)
+            .is_some_and(|b| b.kind == "list_item" && b.flag("ordered") == ordered)
     }
 
     /// The effective font size at the selection: the per-run `size` character
@@ -606,7 +639,7 @@ impl WordProcessorWidget {
             .map_or(16.5, |k| self.sheet.get(&k).size)
     }
 
-    pub(super) fn segmented_rects(&self) -> [Vec<Rect>; 3] {
+    pub(super) fn segmented_rects(&self) -> [Vec<Rect>; 2] {
         if self.modal_capture().is_some()
             || self.color_picker.is_open()
             || self.compact_swatch_palette.is_open()
@@ -632,12 +665,7 @@ impl WordProcessorWidget {
                 .then_some(*rect)
             })
             .collect();
-        let font = self
-            .panel_hits
-            .iter()
-            .filter_map(|(rect, hit)| matches!(hit, PanelHit::SetFont(_)).then_some(*rect))
-            .collect();
-        [align, placement, font]
+        [align, placement]
     }
 
     pub(super) fn handle_segmented_touch(
@@ -646,7 +674,7 @@ impl WordProcessorWidget {
         scale: f64,
         edits: &mut ui::widget::Edits<'_>,
     ) -> bool {
-        let [align, placement, font] = self.segmented_rects();
+        let [align, placement] = self.segmented_rects();
         let current = self.current_align();
         let selected_align = ["left", "center", "right", "justify"]
             .iter()
@@ -665,16 +693,9 @@ impl WordProcessorWidget {
                     _ => 0,
                 }
             });
-        let selected_font = self.focused_style_key().map_or(0, |key| {
-            ["sans", "serif", "mono"]
-                .iter()
-                .position(|value| *value == self.sheet.get(&key).font)
-                .unwrap_or(0)
-        });
         let groups = [
             SegmentedTouchGroup::new(0, &align, selected_align),
             SegmentedTouchGroup::new(1, &placement, selected_placement),
-            SegmentedTouchGroup::new(2, &font, selected_font),
         ];
         let result = self.segmented_touch.handle(touch, scale, &groups);
         if let SegmentedTouchResult::Selected { group, index } = result {
@@ -691,10 +712,6 @@ impl WordProcessorWidget {
                 ]
                 .get(index)
                 .cloned(),
-                2 => ["sans", "serif", "mono"]
-                    .get(index)
-                    .copied()
-                    .map(PanelHit::SetFont),
                 _ => None,
             };
             if let Some(hit) = hit {
@@ -800,8 +817,6 @@ impl WordProcessorWidget {
         self.inner.set_anchor();
         self.inner.move_end(state);
     }
-
-    // ---- right-click context menu ------------------------------------------
 
     /// Char span `(start, end)` of the word at char-offset `off` in `text`
     /// (whitespace-delimited, matching `WordProcessor::select_word`). `start ==
@@ -1017,8 +1032,6 @@ impl WordProcessorWidget {
         true
     }
 
-    // ---- paragraph-style management menu ----------------------------------
-
     /// The style id of the picker chip under `p` in the styles panel, if any.
     /// Reads the current frame's `panel_hits` (rebuilt every draw), so the chip
     /// rects are live at right-click time.
@@ -1061,41 +1074,36 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    // ---- new-from-template picker -----------------------------------------
-
-    pub(super) fn request_template(
+    /// Carry out a choice from the File menu: the file commands go through
+    /// the document's effects, as their shortcuts do; a template replaces the
+    /// document (the menu has already asked when there were words).
+    pub(super) fn apply_file_choice(
         &mut self,
         state: &mut ui::widget::Edits<'_>,
-        template: crate::Template,
+        choice: crate::file_menu::FileChoice,
     ) {
-        self.apply_template(state, template);
+        use crate::file_menu::FileChoice;
+        match choice {
+            FileChoice::Open => {
+                self.invoke_effect(&crate::effects::WordProcessorEffect::OpenDocument {
+                    path: None,
+                });
+            }
+            FileChoice::Save => {
+                self.invoke_effect(&crate::effects::WordProcessorEffect::Save { path: None });
+            }
+            FileChoice::SaveAs => {
+                self.invoke_effect(&crate::effects::WordProcessorEffect::SaveAs { path: None });
+            }
+            FileChoice::Template(template) => self.apply_template(state, template),
+        }
     }
 
-    /// Open the "New" picker under the New button (under the toolbar's
-    /// leading edge while New sits in the More menu).
-    pub(super) fn open_template_picker(&mut self) {
-        let gap = f64::from(self.desk_theme.tokens.spacing.s2);
-        let anchor = self
-            .toolbar
+    /// Whether the document has words a template would replace.
+    pub(super) fn has_words(&self) -> bool {
+        self.blocks
             .iter()
-            .find(|(action, _)| *action == ToolAction::NewMenu)
-            .map_or_else(
-                || {
-                    Rect::new(
-                        self.tool_band.x0,
-                        self.tool_band.y0,
-                        self.tool_band.x0,
-                        self.tool_band.y1,
-                    )
-                },
-                |(_, rect)| *rect,
-            );
-        let anchor = Rect::new(anchor.x0, anchor.y0 - gap, anchor.x1, anchor.y1 + gap);
-        self.template_picker
-            .set_text_scale(crate::num::f32_of_f64(self.text_scale));
-        self.template_picker
-            .open_anchored(anchor, self.floating_viewport());
-        self.lifecycle.dirty = true;
+            .any(|block| !block.text.trim().is_empty())
     }
 
     /// Where menus and pickers may float: the window less a small margin,
@@ -1117,6 +1125,7 @@ impl WordProcessorWidget {
     ) {
         self.replace_body_via_action(state, template.content());
         self.path = None;
+        self.kept = None;
         self.format = Some(WpFormat::Markdown);
         self.scroll_y = 0.0;
         self.refresh_blocks(state);
@@ -1153,9 +1162,14 @@ impl WordProcessorWidget {
             .iter()
             .map(|block| block.text.chars().count())
             .sum();
+        // The page comes last, and the readouts are drawn from the right, so
+        // it is the one that survives a band too narrow for all three: where
+        // you are matters more than how many words got you there, and a
+        // paginating document is the one place the page is the position.
         vec![
             t_args("status-words", &[arg("words", num::i64_of_usize(words))]),
             t_args("status-chars", &[arg("chars", num::i64_of_usize(chars))]),
+            self.page_readout(),
         ]
     }
 
@@ -1371,149 +1385,6 @@ impl WordProcessorWidget {
         }
     }
 
-    /// The toolbar's commands for this frame, grouped: New; bold, italic
-    /// and underline; type and colour; insertion (the table group turns into
-    /// table editing inside a cell); the rarer character formats; then, at
-    /// the trailing edge, the view toggles. Commands that do not fit go to the toolbar's More menu.
-    pub(super) fn toolbar_entries(&self) -> Vec<ToolEntry> {
-        let mut entries = vec![
-            ToolEntry::command(ToolAction::NewMenu, t("toolbar-new")),
-            ToolEntry::Separator,
-            ToolEntry::toggle(
-                ToolAction::Bold,
-                t("toolbar-bold"),
-                self.mark_active_in_selection("strong"),
-            ),
-            ToolEntry::toggle(
-                ToolAction::Italic,
-                t("toolbar-italic"),
-                self.mark_active_in_selection("em"),
-            ),
-            ToolEntry::toggle(
-                ToolAction::Underline,
-                t("toolbar-underline"),
-                self.mark_active_in_selection("underline"),
-            ),
-            ToolEntry::Separator,
-            ToolEntry::command(ToolAction::FontCycle, self.current_font().label()),
-            ToolEntry::command(ToolAction::FontSizeDec, t("toolbar-size-down")),
-            ToolEntry::command(ToolAction::FontSizeInc, t("toolbar-size-up")),
-            ToolEntry::command(ToolAction::TextColorPalette, t("toolbar-text-color")),
-            ToolEntry::command(ToolAction::HighlightPalette, t("toolbar-highlight")),
-            ToolEntry::Separator,
-        ];
-        if !self.selection_blocks_cached().is_empty() {
-            entries.push(ToolEntry::command(ToolAction::Hyperlink, t("toolbar-link")));
-        }
-        if self.current_block_style().0 == "cell" {
-            entries.extend([
-                ToolEntry::command(ToolAction::TableRowAdd, t("toolbar-row-add")),
-                ToolEntry::command(ToolAction::TableRowDel, t("toolbar-row-del")),
-                ToolEntry::command(ToolAction::TableColAdd, t("toolbar-col-add")),
-                ToolEntry::command(ToolAction::TableColDel, t("toolbar-col-del")),
-                ToolEntry::command(ToolAction::TableDelete, t("toolbar-table-delete")),
-            ]);
-        } else {
-            entries.push(ToolEntry::command(
-                ToolAction::InsertTable,
-                t("toolbar-table"),
-            ));
-        }
-        entries.extend([
-            ToolEntry::command(ToolAction::InsertImage, t("toolbar-image")),
-            ToolEntry::command(ToolAction::InsertToc, t("toolbar-toc")),
-            // The specialist character formats come after insertion, so a
-            // narrow or scaled toolbar moves them into More first.
-            ToolEntry::Separator,
-            ToolEntry::toggle(
-                ToolAction::Strike,
-                t("toolbar-strikethrough"),
-                self.mark_active_in_selection("strike"),
-            ),
-            ToolEntry::toggle(
-                ToolAction::Super,
-                t("toolbar-superscript"),
-                self.mark_active_in_selection("super"),
-            ),
-            ToolEntry::toggle(
-                ToolAction::Sub,
-                t("toolbar-subscript"),
-                self.mark_active_in_selection("sub"),
-            ),
-            ToolEntry::Spacer,
-            ToolEntry::toggle(
-                ToolAction::ToggleRuler,
-                t("toolbar-ruler"),
-                self.view.ruler_visible,
-            ),
-        ]);
-        entries
-    }
-
-    /// Bring the hosted toolbar in line with this frame's commands: rebuilt
-    /// when a command appears, goes or is renamed, otherwise only its toggles
-    /// are set, so hover, focus and an open More menu survive.
-    pub(super) fn sync_toolbar(&mut self) {
-        let entries = self.toolbar_entries();
-        let same = entries.len() == self.tool_entries.len()
-            && entries
-                .iter()
-                .zip(&self.tool_entries)
-                .all(|(a, b)| a.same_shape(b));
-        if same {
-            for (index, (now, before)) in entries.iter().zip(&self.tool_entries).enumerate() {
-                if let (
-                    ToolEntry::Command {
-                        active: Some(on), ..
-                    },
-                    ToolEntry::Command {
-                        active: Some(was), ..
-                    },
-                ) = (now, before)
-                    && on != was
-                {
-                    self.tool_bar.set_active(index, *on);
-                }
-            }
-        } else {
-            let mut bar = ui::widget::Toolbar::new(ui::widget::toolbar::Orientation::Horizontal);
-            for entry in &entries {
-                bar = match entry {
-                    ToolEntry::Command {
-                        action,
-                        label,
-                        active,
-                    } => {
-                        let fired = std::rc::Rc::clone(&self.tool_fired);
-                        let action = *action;
-                        let on_click = move || fired.set(Some(action));
-                        let command = match (action.icon(), active) {
-                            (Some(icon), Some(on)) => {
-                                bar.push_icon_toggle(icon, label, *on, on_click)
-                            }
-                            (Some(icon), None) => bar.push_icon(icon, label, on_click),
-                            (None, Some(on)) => bar.push_toggle(label, *on, on_click),
-                            (None, None) => bar.push_button(label, on_click),
-                        };
-                        let id = format!("word.toolbar.{}", tool_action_id(action));
-                        // Admission runs the control callback; settlement submits
-                        // document edits through their existing typed dispatcher.
-                        if action.edits_document() || action == ToolAction::InsertImage {
-                            command.with_effect(&id)
-                        } else {
-                            command.with_view(&id)
-                        }
-                    }
-                    ToolEntry::Separator => bar.push_separator(),
-                    ToolEntry::Spacer => bar.push_spacer(),
-                };
-            }
-            self.tool_bar = bar;
-            self.retained_tree_stale = true;
-        }
-        self.tool_entries = entries;
-    }
-
     /// Paint the outline and the inspector on their drawers: the region
     /// beside the page when docked, the floating material over a scrim when
     /// a drawer covers the page. The outline is drawn after `self.laid` is
@@ -1586,72 +1457,6 @@ impl WordProcessorWidget {
         self.inspector_drawer.resolve(column)
     }
 
-    /// The toolbar band's height: the window's header row.
-    pub(super) fn toolbar_band_height(theme: &Theme) -> f64 {
-        ui::chrome::HeaderRowFace::height(theme)
-    }
-
-    /// Lay out and paint the toolbar in its band `tb` (the band has no fill
-    /// of its own, only a hairline under it), then record each visible
-    /// command's rect for hit-testing and the accessibility tree.
-    pub(super) fn draw_toolbar(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        tb: Rect,
-    ) {
-        self.sync_toolbar();
-        ui::widget::toolbar::paint_band(scene, transform, theme, tb);
-        // The band is the window's header row: the outline's toggle at the
-        // leading corner, the window's History control (when offered) at the
-        // trailing one with the inspector's toggle before it, the commands
-        // between them.
-        let leading = self.outline_drawer.header(tb, theme);
-        let trailing =
-            self.inspector_drawer
-                .header_with_history(tb, theme, self.window_history.is_shown());
-        self.outline_toggle = self.outline_drawer.toggle_rect();
-        self.inspector_toggle = self.inspector_drawer.toggle_rect();
-        self.window_history_rect = trailing.history_rect();
-        self.outline_drawer
-            .paint_toggle(scene, transform, tr, theme);
-        self.inspector_drawer
-            .paint_toggle(scene, transform, tr, theme);
-        if let Some(button) = self.window_history.button_mut() {
-            button.apply_layout_external(self.window_history_rect);
-            let presence = PresenceCtx::empty();
-            Widget::draw(button, scene, transform, tr, theme, &presence);
-        }
-        let chip = leading.metrics().chip;
-        let y0 = tb.center().y - chip / 2.0;
-        let inner = Rect::new(
-            leading.actions.x0,
-            y0,
-            trailing.actions.x1.max(leading.actions.x0),
-            y0 + chip,
-        );
-        self.tool_bar.lay_out_in(inner, tr, theme);
-        let presence = PresenceCtx::empty();
-        presence.viewport.set(Some(self.floating_viewport()));
-        Widget::draw(&mut self.tool_bar, scene, transform, tr, theme, &presence);
-        self.toolbar.clear();
-        self.toolbar
-            .push((ToolAction::ToggleOutline, self.outline_toggle));
-        let mut target = 0usize;
-        for entry in self.tool_entries.iter().take(self.tool_bar.visible_count()) {
-            if let ToolEntry::Command { action, .. } = entry {
-                if let Some(rect) = self.tool_bar.synthetic_accessibility_rect(&[target]) {
-                    self.toolbar.push((*action, rect));
-                }
-                target += 1;
-            }
-        }
-        self.toolbar
-            .push((ToolAction::ToggleStyles, self.inspector_toggle));
-    }
-
     /// Hosted controls receive input first; the foreground Styles page
     /// consumes remaining text instead of editing the displaced document.
     pub(super) fn route_styles_page_key(
@@ -1697,122 +1502,11 @@ impl WordProcessorWidget {
         }
     }
 
-    /// Route an event to the toolbar: hover always, presses inside its band,
-    /// the release that completes one, and everything while its More menu is
-    /// open. A command it fires runs here. Returns whether the toolbar took
-    /// the event.
-    pub(super) fn route_toolbar_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        let pointer = match event {
-            WindowEvent::CursorMoved { position, .. } => Some(ctx.logical(position)),
-            _ => None,
-        };
-        // The window's History control and the drawers' toggles answer for
-        // their own places in the row.
-        if let Some(button) = self.window_history.button_mut() {
-            let mut handled = false;
-            button.handle_event(
-                event,
-                &mut ui::widget::EventCtx {
-                    handled: &mut handled,
-                    ..ctx.reborrow(ctx.path, ctx.node_id)
-                },
-            );
-            if button.needs_redraw() {
-                self.lifecycle.dirty = true;
-            }
-            if handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
-                *ctx.handled = true;
-                return true;
-            }
-        }
-        if matches!(
-            event,
-            WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. }
-        ) {
-            self.outline_drawer.handle_event(event, ctx);
-            self.inspector_drawer.handle_event(event, ctx);
-        }
-        let menu_open = self.tool_bar.is_overflow_open();
-        let in_band = pointer.unwrap_or(self.pointer);
-        let claims = menu_open
-            || match event {
-                WindowEvent::CursorMoved { .. } => true,
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } => self.tool_band.contains(in_band),
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                    ..
-                } => self.tool_bar.wants_pointer_capture(),
-                _ => false,
-            };
-        if !claims {
-            return false;
-        }
-        if !menu_open
-            && matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                }
-            )
-        {
-            let toggle = if self.outline_toggle.contains(in_band) {
-                Some(ToolAction::ToggleOutline)
-            } else if self.inspector_toggle.contains(in_band) {
-                Some(ToolAction::ToggleStyles)
-            } else {
-                None
-            };
-            if let Some(action) = toggle {
-                self.tool_clicked(&mut ctx.state, action);
-                *ctx.handled = true;
-                return true;
-            }
-        }
-        let mut handled = false;
-        Widget::handle_event(
-            &mut self.tool_bar,
-            event,
-            &mut ui::widget::EventCtx {
-                handled: &mut handled,
-                ..ctx.reborrow(ctx.path, ctx.node_id)
-            },
-        );
-        if handled
-            || (matches!(event, WindowEvent::CursorMoved { .. })
-                && (self.outline_toggle.contains(in_band)
-                    || self.inspector_toggle.contains(in_band)))
-        {
-            self.lifecycle.dirty = true;
-        }
-        if let Some(action) = self.tool_fired.take() {
-            self.tool_clicked(&mut ctx.state, action);
-        }
-        // Hover is shared with the rest of the editor; everything else the
-        // toolbar takes is its own.
-        if matches!(event, WindowEvent::CursorMoved { .. }) && !menu_open {
-            return false;
-        }
-        *ctx.handled = true;
-        true
-    }
-
-    /// Run a toolbar command chosen by pointer, keyboard or the More menu.
+    /// Run a command chosen in the window bar or through its semantic route.
     pub(super) fn tool_clicked(&mut self, state: &mut ui::widget::Edits<'_>, action: ToolAction) {
         self.apply_tool(state, action);
         self.refresh_blocks(state);
         self.lifecycle.dirty = true;
-        if action.edits_document() {}
     }
 
     /// The per-run `color` covering the font-probe position (just left of the
@@ -1825,4 +1519,31 @@ impl WordProcessorWidget {
             .and_then(|m| m.value.as_str())
             .and_then(parse_hex_rgb)
     }
+}
+
+/// The value a document's `font` mark stores for `family`.
+pub(super) fn font_value(family: FontFamily) -> &'static str {
+    match family {
+        FontFamily::Sans => "sans",
+        FontFamily::Serif => "serif",
+        FontFamily::Mono => "mono",
+    }
+}
+
+/// The family a stored font value names; anything else is sans.
+fn font_family_of(value: &str) -> FontFamily {
+    match value {
+        "serif" => FontFamily::Serif,
+        "mono" => FontFamily::Mono,
+        _ => FontFamily::Sans,
+    }
+}
+
+/// What the font picker calls `family`.
+pub(super) fn font_label(family: FontFamily) -> String {
+    t(match family {
+        FontFamily::Sans => "toolbar-font-sans",
+        FontFamily::Serif => "toolbar-font-serif",
+        FontFamily::Mono => "toolbar-font-mono",
+    })
 }

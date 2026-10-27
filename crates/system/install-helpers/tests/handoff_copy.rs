@@ -122,7 +122,7 @@ fn new_structural_directories_are_traversable_and_files_private() {
     let status = Command::new("sh")
         .arg("-c")
         .arg("umask 077 && exec \"$0\" \"$@\"")
-        .arg(env!("CARGO_BIN_EXE_tilo-install-handoff-copy"))
+        .arg(tilo_test_env::package_binary!("tilo-install-handoff-copy"))
         .arg(&source)
         .arg(&target)
         .status()
@@ -211,7 +211,7 @@ fn type_mismatches_refuse() {
 
 #[test]
 fn the_command_line_and_exit_statuses_are_the_scripts() {
-    let binary = env!("CARGO_BIN_EXE_tilo-install-handoff-copy");
+    let binary = tilo_test_env::package_binary!("tilo-install-handoff-copy");
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     let (source, target) = (root.join("source"), root.join("target"));
@@ -219,7 +219,7 @@ fn the_command_line_and_exit_statuses_are_the_scripts() {
         fs::create_dir(path).unwrap();
     }
     fs::write(source.join("file"), "x").unwrap();
-    let status = Command::new(binary)
+    let status = Command::new(&binary)
         .arg(&source)
         .arg(&target)
         .status()
@@ -227,7 +227,7 @@ fn the_command_line_and_exit_statuses_are_the_scripts() {
     assert_eq!(status.code(), Some(0));
     assert_eq!(fs::read_to_string(target.join("file")).unwrap(), "x");
 
-    let usage = Command::new(binary).arg(&source).output().unwrap();
+    let usage = Command::new(&binary).arg(&source).output().unwrap();
     assert_eq!(usage.status.code(), Some(2));
     assert!(
         String::from_utf8_lossy(&usage.stderr)

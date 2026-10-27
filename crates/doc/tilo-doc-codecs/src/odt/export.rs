@@ -1205,7 +1205,6 @@ fn render_list_run(
     close_lists(body, &mut depth, &mut item_open);
 }
 
-/// Close the open list item and every open list.
 fn close_lists(body: &mut String, depth: &mut i64, item_open: &mut bool) {
     if std::mem::take(item_open) {
         body.push_str("</text:list-item>");
@@ -1468,7 +1467,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn text_and_paragraph_formatting_roundtrips_through_odt() {
-        // Phase `export_import_roundtrips_model`.
         {
             let styles = r#"<style:style style:name="T1" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>"#;
             let body = concat!(
@@ -1493,7 +1491,6 @@ mod tests {
             let m2 = norm(&d2.materialize());
             assert_eq!(m1, m2, "model round-trips through .odt export then import");
         }
-        // Phase `paragraph_props_roundtrip`.
         {
             use tilo_doc::document::MarkValue;
             let mut d = Document::new();
@@ -1528,7 +1525,6 @@ mod tests {
                 b.marks
             );
         }
-        // Phase `highlight_super_and_line_spacing_roundtrip`.
         {
             use tilo_doc::document::MarkValue;
             // A run with `highlight` + a `super` run + a paragraph-level `line_spacing` attr must all survive the .odt export → import cycle.
@@ -1586,7 +1582,6 @@ mod tests {
                 b.attrs
             );
         }
-        // Phase `subscript_roundtrips_through_odt`.
         {
             use tilo_doc::document::MarkValue;
             // A `sub` run exports as `style:text-position="sub …"` and re-imports as `sub`.
@@ -1609,7 +1604,6 @@ mod tests {
                 b.marks
             );
         }
-        // Phase `text_color_roundtrips`.
         {
             use tilo_doc::document::MarkValue;
             let mut d = Document::new();
@@ -1684,7 +1678,6 @@ mod tests {
                 b.marks
             );
         }
-        // Phase `named_paragraph_style_roundtrips_through_odt`.
         {
             // A paragraph referencing a custom CRDT-native named style must export as a real ODF
             // `style:style` (family paragraph) + `text:style-name`, and re-import with it still applied.
@@ -1765,7 +1758,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn hyperlinks_and_cross_references_roundtrip_through_odt() {
-        // Phase `hyperlink_roundtrips`.
         {
             use tilo_doc::document::MarkValue;
             // A `link` mark exports as `text:a` and re-imports as the same mark+href.
@@ -1794,7 +1786,6 @@ mod tests {
             assert_eq!((link.start, link.end), (3, 7), "{:?}", b.marks);
             assert_eq!(link.value, MarkValue::Str("https://tilo.so/".into()));
         }
-        // Phase `bookmark_and_cross_reference_roundtrip`.
         {
             use tilo_doc::document::MarkValue;
             // A bookmark "intro" over a word + a cross-reference pointing at it must survive an `.odt` export+import with both names and ranges intact.
@@ -1864,7 +1855,6 @@ mod tests {
             );
             assert_eq!(link.value, MarkValue::Str("#intro".into()));
         }
-        // Phase `hyperlink_escapes_href`.
         {
             // An href with `&` must be attribute-escaped on export and unescaped on import.
             let mut d = Document::new();
@@ -1894,7 +1884,6 @@ mod tests {
                 tilo_doc::document::MarkValue::Str("https://x/?a=1&b=2".into())
             );
         }
-        // Phase `link_and_style_marks_nest_well`.
         {
             use tilo_doc::document::MarkValue;
             // A bold, coloured hyperlink: link (outer text:a) wraps the style spans.
@@ -1944,7 +1933,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn images_roundtrip_through_odt() {
-        // Phase `image_block_roundtrips_through_odt`.
         {
             let mut d = Document::new();
             let p1 = d.insert_block(None, "paragraph");
@@ -2030,7 +2018,6 @@ mod tests {
                 "image bytes survive the round-trip"
             );
         }
-        // Phase `image_positioning_roundtrips_through_odt`.
         {
             let mut d = Document::new();
             let p1 = d.insert_block(None, "paragraph");
@@ -2104,7 +2091,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn lists_roundtrip_through_odt() {
-        // Phase `nested_list_levels_roundtrip_through_odt`.
         {
             let mut d = Document::new();
             let item_a = d.insert_block(None, "list_item");
@@ -2149,7 +2135,6 @@ mod tests {
                 "levels round-trip through nested ODF lists"
             );
         }
-        // Phase `list_numbering_format_and_start_roundtrip_through_odt`.
         {
             // An upper-roman ordered list starting at 3 must survive export then re-import — fidelity
             // preservation: the editor renders decimal, but the numbering metadata must not be lost.
@@ -2227,7 +2212,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn document_properties_and_preserved_parts_roundtrip_through_odt() {
-        // Phase `document_properties_roundtrip_through_odt`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -2314,7 +2298,6 @@ mod tests {
                 "properties stable across a second round-trip"
             );
         }
-        // Phase `meta_xml_preserves_unmodeled_fields_and_updates_modeled`.
         {
             // An imported meta.xml with an unmodeled field (editing-cycles) plus an existing title: the unmodeled field survives and the title updates.
             let meta = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -2354,7 +2337,6 @@ mod tests {
                 "new keyword emitted: {meta_out}"
             );
         }
-        // Phase `no_meta_part_when_no_properties_and_none_imported`.
         {
             let mut d = Document::new();
             let p = d.insert_block(None, "paragraph");
@@ -2366,7 +2348,6 @@ mod tests {
                 "no metadata part synthesised for a doc with no properties"
             );
         }
-        // Phase `preserves_unmodeled_parts`.
         {
             let base = minimal_odt_styled("", "<text:p>hi</text:p>");
             let mut c = ZipPackage::read(&base).unwrap();
@@ -2409,7 +2390,6 @@ mod tests {
                 original_styles.as_slice(),
                 "segmented styles.xml re-emits byte-for-byte"
             );
-            // The part is stored as two addressable style atoms.
             let r = d.as_ref();
             assert!(
                 tilo_doc::model::preserved_atoms(r.doc, r.c, "odt/part/styles.xml").len() >= 2,
@@ -2428,7 +2408,6 @@ mod tests {
             import_odt(&odt, &mut a);
             let mut b = a.fork();
 
-            // The two style atoms have the SAME stable ids on both replicas.
             let (id_quote, quote_bytes) = atom_containing(&a, "QuoteFont");
             let (id_caption, caption_bytes) = atom_containing(&a, "CaptionFont");
             assert_eq!(
@@ -2465,7 +2444,6 @@ mod tests {
             a.merge(&mut b);
             b.merge(&mut a);
 
-            // Both replicas export an identical styles.xml that carries BOTH edits.
             for (d, who) in [(&a, "A"), (&b, "B")] {
                 let exported = export_odt(d);
                 let out = ZipPackage::read(&exported).unwrap();
@@ -2506,7 +2484,6 @@ mod tests {
 
     #[test]
     fn headers_and_footers_roundtrip_through_odt() {
-        // Phase `header_footer_with_page_number_roundtrip_through_odt`.
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::{FIELD_PAGE_NUMBER, FIELD_PLACEHOLDER, MARK_FIELD};
@@ -2583,7 +2560,6 @@ mod tests {
                 "footer stable across a second round-trip"
             );
         }
-        // Phase `header_footer_preserve_existing_master_page_content`.
         {
             // An imported styles.xml whose master-page references a page-layout must keep that
             // reference (+ any other master-page content) when the header/footer are re-emitted.
@@ -2620,7 +2596,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn notes_comments_and_tracked_changes_roundtrip_through_odt() {
-        // Phase `footnote_imports_from_inline_text_note`.
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::{FIELD_PLACEHOLDER, MARK_NOTE_REF};
@@ -2666,7 +2641,6 @@ mod tests {
             assert_eq!(note.blocks.len(), 1);
             assert_eq!(note.blocks[0].text, "the footnote text");
         }
-        // Phase `footnote_and_endnote_roundtrip_through_odt`.
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::MARK_NOTE_REF;
@@ -2759,7 +2733,6 @@ mod tests {
                 "notes stable across a second round-trip"
             );
         }
-        // Phase `comment_imports_from_inline_annotation`.
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::MARK_COMMENT;
@@ -2804,7 +2777,6 @@ mod tests {
             assert_eq!(comment.date, "2021-01-02T03:04:05");
             assert_eq!(comment.blocks[0].text, "note: fix");
         }
-        // Phase `comment_roundtrips_through_odt`.
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::MARK_COMMENT;
@@ -2894,7 +2866,6 @@ mod tests {
                 "comments stable across a second round-trip"
             );
         }
-        // Phase `tracked_changes_roundtrip_through_odt`.
         {
             use tilo_doc::document::MarkValue;
             use tilo_doc::schema::{MARK_DEL, MARK_INS};
@@ -3029,7 +3000,6 @@ mod tests {
 
     #[test]
     fn section_columns_roundtrip_through_odt() {
-        // Phase `columns_roundtrip_synthesised_styles`.
         {
             // A freshly-authored 2-column document (no styles.xml) must synthesise one carrying the page-layout `style:columns`, and re-import the count + gap.
             let mut d = Document::new();
@@ -3067,7 +3037,6 @@ mod tests {
                 "snapshot surfaces the column count"
             );
         }
-        // Phase `columns_preserve_existing_page_layout`.
         {
             // An imported styles.xml whose page-layout carries page-size/margins must keep them when `style:columns` is injected — only the columns change.
             let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -3106,7 +3075,6 @@ mod tests {
                 "column count survives alongside the page-layout"
             );
         }
-        // Phase `columns_replace_existing_style_columns`.
         {
             // A page-layout that already declares `style:columns` must have it replaced (not duplicated) by the document's setting.
             let styles_xml = r#"<?xml version="1.0" encoding="UTF-8"?>

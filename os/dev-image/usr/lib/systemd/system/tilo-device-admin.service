@@ -18,7 +18,7 @@ Type=exec
 EnvironmentFile=-/etc/tilo/device-admin.env
 # tilo-vmd runs as root, as it does over SSH.
 Environment=HOME=/root
-ExecStart=/usr/libexec/tilo-device-admin serve
+ExecStart=/usr/libexec/tilo/tilo-device-admin serve
 Restart=always
 RestartSec=5
 RuntimeDirectory=tilo-device-admin

@@ -157,12 +157,18 @@ pub fn apply(specs: &[OutputSpec], timeout: Duration) -> Result<String, String> 
                 && matches!(
                     t.state,
                     DisplayTransactionState::AwaitingConfirmation
+                        | DisplayTransactionState::Confirmed
                         | DisplayTransactionState::Rejected
                         | DisplayTransactionState::Reverted
                 )
         })
     })
     .ok_or("the compositor did not pick up the display change")?;
+    // A change that cannot darken a screen (a scale alone, or the layout the
+    // monitors already have) is kept at once, with nothing to confirm.
+    if transaction.state == DisplayTransactionState::Confirmed {
+        return Ok(format!("outputs set to {}", format_outputs(specs)));
+    }
     if transaction.state != DisplayTransactionState::AwaitingConfirmation {
         return Err(format!(
             "the compositor rejected the layout: {}",
@@ -282,5 +288,35 @@ mod tests {
         let mut labels = ["Virtual-10", "Virtual-2", "Virtual-1"];
         labels.sort_by_key(|l| connector_order(l));
         assert_eq!(labels, ["Virtual-1", "Virtual-2", "Virtual-10"]);
+    }
+
+    #[test]
+    fn a_change_the_compositor_keeps_at_once_is_applied() {
+        let _home = tilo_test_env::TestHome::new().unwrap();
+        let (publisher_pid, publisher_start_ticks) =
+            settings_store::hardware::publisher_identity().unwrap();
+        DisplayHardwareSnapshot {
+            publisher_pid,
+            publisher_start_ticks,
+            outputs: vec![vkms_output("Virtual-1")],
+            ..DisplayHardwareSnapshot::default()
+        }
+        .save()
+        .unwrap();
+        // The compositor's answer to the mode it already shows: kept, with
+        // nothing to confirm.
+        let compositor = std::thread::spawn(|| {
+            let mut transaction = tilo_test_env::wait_for("the staged display change", || {
+                DisplayTransaction::load().filter(|t| t.state == DisplayTransactionState::Requested)
+            });
+            transaction.state = DisplayTransactionState::Confirmed;
+            transaction.save().unwrap();
+        });
+        let applied = apply(
+            &parse_outputs("1024x768").unwrap(),
+            tilo_test_env::hang_bound(),
+        );
+        compositor.join().unwrap();
+        assert_eq!(applied, Ok("outputs set to 1024x768@1".to_owned()));
     }
 }

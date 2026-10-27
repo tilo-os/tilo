@@ -1007,7 +1007,6 @@ mod tests {
 
     #[test]
     fn pie_geometry_covers_a_turn_and_ignores_holes_and_invalid_values() {
-        // Case `sectors_cover_a_complete_turn`.
         {
             let sectors = chart().sectors_for_progress(1.0);
             assert_eq!(sectors.len(), 2);
@@ -1015,13 +1014,11 @@ mod tests {
             assert!((sweep - TAU).abs() < 1e-9);
         }
 
-        // Case `donut_hole_is_not_interactive`.
         {
             let chart = chart();
             assert_eq!(chart.hit_test(chart.rect.center()), None);
         }
 
-        // Case `invalid_values_do_not_poison_the_total`.
         {
             let chart = PieChart::new(vec![
                 PieSlice::new("negative", "Negative", -9.0, Color::WHITE),
@@ -1035,7 +1032,6 @@ mod tests {
 
     #[test]
     fn pie_inspection_and_tooltips_are_configurable_and_not_actions() {
-        // Case `inspect_only_slices_are_not_accessibility_actions`.
         {
             let chart = PieChart::new(vec![
                 PieSlice::new("files", "Files", 4.0, Color::WHITE).non_interactive(),
@@ -1047,7 +1043,6 @@ mod tests {
             assert!(!accessibility.children[0].state.focusable);
         }
 
-        // Case `tooltip_presentation_is_fully_configurable`.
         {
             let style = PieStyle {
                 tooltip: false,
@@ -1070,7 +1065,6 @@ mod tests {
 
     #[test]
     fn pie_updates_interpolate_by_stable_id_or_snap() {
-        // Case `stable_slice_ids_interpolate_and_reduced_motion_snaps`.
         {
             let mut chart = PieChart::new(vec![
                 PieSlice::new("a", "A", 3.0, Color::WHITE),
@@ -1100,7 +1094,6 @@ mod tests {
             assert!(!chart.needs_animation_frame());
         }
 
-        // Case `identical_updates_do_not_restart_motion_and_immediate_updates_snap`.
         {
             let slices = vec![PieSlice::new("a", "A", 1.0, Color::WHITE)];
             let mut chart = PieChart::new(slices.clone());
@@ -1144,7 +1137,6 @@ mod tests {
             (widths[0] - widths[1]).abs() < 0.5,
             "details share a column"
         );
-        // Without a fixed height the chart asks for room from its width.
         let natural = chart.natural_height(&mut text, &theme, 640.0);
         assert!(natural > 100.0 && natural < 640.0, "{natural}");
         assert_eq!(share_text(0.2, 100.0), "<1%");

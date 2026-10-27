@@ -3,6 +3,7 @@
 //! player on this device is the surface over it, with its effects and the
 //! live rows of what it shows.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::framework::{
@@ -49,7 +50,15 @@ impl ResourceApp for VideoPlayerShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Library>) -> Element {
-        cx.surface(PlayerApp::new(cx.mode()))
+        // The playhead is the player's, not the document's, so the player
+        // says what it is on and the view publishes those verbs: neither
+        // holds the other.
+        let playhead = Playhead::default();
+        let published = Rc::clone(&playhead);
+        cx.bind_declarations(move |_| published.borrow().clone());
+        let mut player = PlayerApp::new(cx.mode());
+        player.share_playhead(&playhead);
+        cx.surface(player)
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -109,12 +118,6 @@ impl ResourceSurface<Library, VideoEffect> for PlayerApp {
         self.effect_statuses()
     }
 
-    /// Edits bound to the playhead: bookmark the moment shown, add the open
-    /// video to the shared Watch later playlist.
-    fn bound_declarations(&self) -> Vec<ActionDecl<Library>> {
-        self.playhead_declarations()
-    }
-
     fn live_rows(&self) -> Vec<LiveRow> {
         actions::live_rows(&self.player_rows(), actions::CONTEXTUAL_CHILD_LIMIT)
     }
@@ -123,6 +126,11 @@ impl ResourceSurface<Library, VideoEffect> for PlayerApp {
         actions::live_row(&self.player_rows(), id)
     }
 }
+
+/// What the view publishes of the player's playhead: the shared library's
+/// verbs bound to the video open and the moment shown, which the player
+/// keeps current and the view reads when the published tree is read.
+pub(crate) type Playhead = Rc<RefCell<Vec<ActionDecl<Library>>>>;
 
 #[cfg(test)]
 mod tests {
@@ -166,15 +174,84 @@ mod tests {
         }
     }
 
+    /// Invoke `effect` on the library by its address, as a headless
+    /// drive's `invoke` step does: no coordinates, no click.
+    fn drive_invoke(
+        app: &mut TestApp<VideoPlayerShell>,
+        effect: &VideoEffect,
+    ) -> Result<(), ui::tilo_actions::DoorError> {
+        use ui::tilo_resource::{Effect as _, Resource as _};
+        let address = effect.address_on(Library::KIND);
+        app.harness()
+            .invoke_action(&address, &effect.arguments(), false, None)
+            .map(drop)
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in SCENARIOS {
+            let mut app = TestApp::<VideoPlayerShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                ui::framework::testing::unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_of_a_scenario_shows_the_library_and_seeks_by_address() {
+        let mut app = TestApp::<VideoPlayerShell>::drive("playing").unwrap();
+        drive_invoke(
+            &mut app,
+            &VideoEffect::ShowLibrary {
+                tab: "shared".into(),
+            },
+        )
+        .expect("the drive shows the library, as the L key does");
+        app.settle();
+        assert!(surface(&mut app, |player| player.library_visible()));
+        assert_eq!(
+            surface(&mut app, |player| player.library_tab_name()),
+            "shared"
+        );
+        // Seek reaches the player: it moves the open clip, or, on a machine
+        // without the system decoder, says a video must be open first. The
+        // test puts the playhead at two seconds itself and seeks back from
+        // there: a seek that did nothing would leave it at or past where it
+        // was. The scenario's own park at two seconds is no starting point:
+        // it comes before the decoder knows how long the clip is, so it can
+        // land at the start, and the clip then plays on from there.
+        let parked = drive_invoke(&mut app, &VideoEffect::Seek { seconds: 2.0 });
+        let before = surface(&mut app, |player| player.player().position_ms());
+        match parked.and_then(|()| drive_invoke(&mut app, &VideoEffect::Seek { seconds: 0.5 })) {
+            Ok(()) => {
+                let after = surface(&mut app, |player| player.player().position_ms());
+                assert!(
+                    (500..before).contains(&after),
+                    "the seek moved the playhead from {before} ms to 500 ms, not {after} ms"
+                );
+            }
+            Err(error) => assert_eq!(error.code(), "action_unavailable", "{error}"),
+        }
+    }
+
+    /// Press the window bar's sidebar toggle, as the desktop hands it over.
+    fn toggle_sidebar(app: &mut TestApp<VideoPlayerShell>) {
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
+        app.settle();
+    }
+
     #[test]
     fn library_controls_reach_the_player_through_the_door() {
         let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
-        activate(&mut app, "video-player.library");
+        toggle_sidebar(&mut app);
         assert!(surface(&mut app, |player| player.library_visible()));
         activate(&mut app, "video-player.library.tab.recent");
-        activate(&mut app, "video-player.library.close");
+        toggle_sidebar(&mut app);
         assert!(!surface(&mut app, |player| player.library_visible()));
-        activate(&mut app, "video-player.library");
+        toggle_sidebar(&mut app);
         assert_eq!(
             surface(&mut app, |player| player.library_tab_name()),
             "recent",
@@ -251,6 +328,41 @@ mod tests {
         }
     }
 
+    /// Deleting a playlist runs at once, since Undo takes it back: the host
+    /// asks nothing, and one Undo brings the playlist back with its videos.
+    #[test]
+    fn deleting_a_playlist_runs_at_once_and_one_undo_brings_it_back() {
+        let mut app = TestApp::<VideoPlayerShell>::new().unwrap();
+        app.invoke(Library::CREATE_PLAYLIST.with("Trip")).unwrap();
+        let trip = app.state().playlists.ids().next().unwrap().clone();
+        for (media_ref, title) in [("clip-1", "Harbour"), ("clip-2", "Lighthouse")] {
+            app.invoke(Library::ADD_TO_PLAYLIST.with(library::AddToPlaylist {
+                playlist: trip.clone(),
+                media_ref: media_ref.into(),
+                title: title.into(),
+            }))
+            .unwrap();
+        }
+
+        app.invoke(Library::DELETE_PLAYLIST.with(trip.clone()))
+            .expect("an undoable delete asks nothing");
+        assert!(app.asking().is_none(), "the host asks nothing");
+        assert!(app.state().playlists.is_empty(), "the delete lands at once");
+        assert!(app.state().items.is_empty(), "its videos went with it");
+
+        assert!(app.undo(), "the delete is one undo step");
+        let state = app.state();
+        assert_eq!(state.playlists.get(&trip).unwrap().name, "Trip");
+        assert_eq!(
+            state
+                .items_of(&trip)
+                .map(|(_, item)| item.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Harbour", "Lighthouse"],
+            "Undo brings its videos back too"
+        );
+    }
+
     #[test]
     fn everyone_with_the_video_open_watches_it_together() {
         let sample = std::path::Path::new(env!("OUT_DIR")).join("h264-aac.mp4");
@@ -261,10 +373,10 @@ mod tests {
         .expect("the video opens");
         let media_ref = surface(&mut app, |player| player.media_ref().map(str::to_owned))
             .expect("an open video has a shareable identity");
-        let deadline = ui::time::now() + std::time::Duration::from_secs(10);
-        while app.state().transport_for(&media_ref).is_none() && ui::time::now() < deadline {
+        tilo_test_env::wait_until("the video's transport is shared", || {
             app.settle();
-        }
+            app.state().transport_for(&media_ref).is_some()
+        });
         let said = app
             .state()
             .transport_for(&media_ref)

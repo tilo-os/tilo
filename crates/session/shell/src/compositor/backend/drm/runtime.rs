@@ -26,14 +26,17 @@ use tilo_clock::unix_now_ms;
 use smithay::backend::session::Session;
 use smithay::backend::session::libseat::{LibSeatSession, LibSeatSessionNotifier};
 use smithay::backend::udev::{UdevBackend, all_gpus};
-use smithay::input::keyboard::{Keysym, keysyms, xkb};
+use smithay::input::keyboard::xkb;
 use smithay::reexports::calloop::{EventLoop, LoopHandle};
 use smithay::reexports::input::Libinput;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
     ElementState, Modifiers, MouseButton, MouseScrollDelta, Touch, TouchPhase, WindowEvent,
 };
-use winit::keyboard::{Key, ModifiersState, NamedKey, NativeKey, PhysicalKey, SmolStr};
+use winit::keyboard::ModifiersState;
+#[cfg(test)]
+use winit::keyboard::{Key, NamedKey, NativeKey};
+#[cfg(test)]
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
 use super::access_keys::{
@@ -58,12 +61,20 @@ use super::scanout::{
 };
 use super::session::{SeatTick, SessionAction, SessionState};
 use super::topology;
+
+#[path = "runtime_keyboard.rs"]
+mod keyboard;
+#[path = "runtime_wake.rs"]
+mod wake;
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
     TabletPhase, TouchEvent as TiloTouchEvent,
 };
 use crate::shell::render::icc_lut::IccLut;
+pub use keyboard::KeyboardXkb;
+#[cfg(test)]
+use keyboard::{KeyOutcome, keyboard_input_event, keysym_to_winit_key, text_for};
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
 /// deterministic and unit-testable without a seat or keyboard device.
@@ -142,10 +153,19 @@ impl KeyRepeat {
 /// none. A key the loop read late still repeats on the person's timeline:
 /// held past the delay by the time it is read, it repeats at once.
 fn key_down_at(input_time_ns: Option<u64>, now: std::time::Instant) -> std::time::Instant {
+    let now_ns = crate::shell::network::fabric_monotonic_us().saturating_mul(1_000);
+    key_down_at_input_time(input_time_ns, now, now_ns)
+}
+
+/// [`key_down_at`], with the input clock read as `now_ns` at `now`.
+fn key_down_at_input_time(
+    input_time_ns: Option<u64>,
+    now: std::time::Instant,
+    now_ns: u64,
+) -> std::time::Instant {
     let Some(input_time_ns) = input_time_ns else {
         return now;
     };
-    let now_ns = crate::shell::network::fabric_monotonic_us().saturating_mul(1_000);
     let age = std::time::Duration::from_nanos(now_ns.saturating_sub(input_time_ns));
     now.checked_sub(age).unwrap_or(now)
 }
@@ -254,9 +274,9 @@ pub struct DrmDispatchState {
     connector_prober: Option<ConnectorProbeWorker>,
     /// Set by whoever owns the scanouts while an output's link is still
     /// changing (a nonblocking modeset or its vblank proof in flight,
-    /// [`super::output_link`]). Its completion arrives as a page-flip event
+    /// `super::output_link`). Its completion arrives as a page-flip event
     /// that only a presented frame reads, so while this is set each event
-    /// on a card asks the compositor for a frame ([`Self::watch_card`]).
+    /// on a card asks the compositor for a frame (`Self::watch_card`).
     pub kms_link_busy: Arc<std::sync::atomic::AtomicBool>,
     /// Connected outputs that could not be lit, and why. They stay dark,
     /// committed no more, until the connector reports another sink (or
@@ -289,6 +309,10 @@ pub struct DrmDispatchState {
     /// Every libinput device currently attached — libinput has no "list
     /// your devices" call, so keeping handles (cheap refcounted clones) is the only way to re-apply a changed setting to hardware already plugged in.
     pub devices: Vec<smithay::reexports::input::Device>,
+    /// The last wake ([`Self::note_wake`]) and when it happened, until the
+    /// first input event after it: the flight record says whether input
+    /// came back with the display.
+    input_wake: Option<(&'static str, std::time::Instant)>,
     /// Libinput's optional per-touch-device output binding, keyed by its
     /// short-lived device id. Connector names, rather than [`OutputId`]s,
     /// survive an output being unplugged and later reconnected; each touch
@@ -368,7 +392,7 @@ pub struct DrmDispatchState {
     /// Receiving end of the presenter's signalling reports.
     pub signal_reports: Option<Receiver<SignalReport>>,
     /// What each output's primary plane offers fullscreen clients, as the
-    /// presenter last learned it ([`super::client_scanout::ClientPlanes`]).
+    /// presenter last learned it (`super::client_scanout::ClientPlanes`).
     pub client_planes: super::client_scanout::ClientPlanes,
 }
 
@@ -739,7 +763,6 @@ pub struct LiveEntry {
     pub hdr_driver_ready: bool,
     /// HDR as the user configured it: SDR white in cd/m² when on.
     pub hdr_setting: Option<f32>,
-    /// The HDR request last sent to the scanout owner.
     pub hdr_requested: Option<HdrRequest>,
     /// The software dimming last sent to the scanout owner: the share of
     /// linear light the output lets through, `1.0` when undimmed (as a new
@@ -829,6 +852,10 @@ pub enum ScanoutCommand {
         output: OutputId,
         light: f32,
     },
+    /// Take this stage as failed in every output's next wake: the
+    /// test-control fault that proves the wake's recovery
+    /// ([`super::wake_check`]).
+    WakeFault(super::wake_check::WakeStage),
 }
 
 /// The ownership state for one card across a udev remove/re-add race.  This
@@ -1228,6 +1255,7 @@ impl DrmDispatchState {
             mouse_keys: MouseKeys::default(),
             physical_modifiers: ModifiersState::empty(),
             key_repeat: KeyRepeat::default(),
+            input_wake: None,
             devices: Vec::new(),
             touch_output_bindings: HashMap::new(),
             scale_override,
@@ -1294,7 +1322,6 @@ impl DrmDispatchState {
             entry.set_color_profile(profile);
         }
         scanouts.sort_by_key(|e| e.id.0);
-        // Start the pointer in the middle of the logical desktop.
         let placements = self.placements();
         let (lw, lh) = hotplug::combined_extent(
             &placements
@@ -1347,20 +1374,7 @@ impl DrmDispatchState {
                 .iter()
                 .map(|entry| (entry.config_key.as_str(), entry.scale)),
         );
-        let layout = self
-            .live
-            .iter()
-            .map(|entry| {
-                let (width, height) = logical_output_size(entry.size, entry.transform);
-                settings_store::hardware::LiveOutputPlacement {
-                    connector: entry.config_key.clone(),
-                    x: entry.position.0,
-                    y: entry.position.1,
-                    width,
-                    height,
-                }
-            })
-            .collect();
+        let layout = self.live_placements();
         if outputs != self.display_capabilities {
             self.display_capabilities.clone_from(&outputs);
             // A disabled connector appearing changes the heads external
@@ -1387,6 +1401,32 @@ impl DrmDispatchState {
         if let Err(error) = snapshot.save() {
             tracing::debug!(%error, "DRM display: could not publish capability snapshot");
         }
+    }
+
+    /// Each live output's rectangle in the logical desktop, the space the
+    /// shell lays out in and Settings arranges: where its position is
+    /// published for readers that match a display by where it sits (the
+    /// identify cards). Its scene rectangle would put every display beside
+    /// a scaled one somewhere the shell has no display, and its card would
+    /// lose its number and name.
+    fn live_placements(&self) -> Vec<settings_store::hardware::LiveOutputPlacement> {
+        self.live
+            .iter()
+            .map(|entry| {
+                let (width, height) = settings_store::hardware::logical_extent(
+                    entry.size,
+                    entry.scale,
+                    entry.transform,
+                );
+                settings_store::hardware::LiveOutputPlacement {
+                    connector: entry.config_key.clone(),
+                    x: entry.logical_position.0,
+                    y: entry.logical_position.1,
+                    width,
+                    height,
+                }
+            })
+            .collect()
     }
 
     /// Send a command to whoever owns the scanouts.  `false` means there is
@@ -1951,14 +1991,41 @@ impl DrmDispatchState {
     /// and bring the pointer and cursor planes back onto a live output.
     /// Called after any change to the connector set or display plan.
     fn relayout_outputs(&mut self) {
-        let config = settings_store::hardware::DisplayConfig::load_effective(&self.display_set);
-        self.relayout_with(&config);
+        let (config, last_shown) =
+            settings_store::hardware::DisplayConfig::load_effective_remembering(&self.display_set);
+        self.relayout_recalling(&config, &last_shown);
+    }
+
+    /// [`Self::relayout_with`], after an output `config` does not name that
+    /// keeps nothing yet — a monitor that just arrived in a set never
+    /// arranged before, or was lit at startup in one — takes the scale and
+    /// rotation its monitor was last shown at (`last_shown`), so a 1.25x
+    /// panel does not snap to its density's default the first time it is
+    /// docked. Once kept, a later scale override or set change governs it
+    /// like any survivor (see [`hotplug::retained_presentation`]).
+    fn relayout_recalling(
+        &mut self,
+        config: &settings_store::hardware::DisplayConfig,
+        last_shown: &BTreeMap<String, settings_store::hardware::MonitorLast>,
+    ) {
+        for entry in &mut self.live {
+            if entry.kept.is_none() && !config.outputs.contains_key(&entry.config_key) {
+                entry.kept = last_shown
+                    .get(&entry.config_key)
+                    .map(|last| hotplug::Presentation {
+                        scale: last.scale,
+                        transform: last.transform,
+                    });
+            }
+        }
+        self.relayout_with(config);
     }
 
     /// Lay out the live outputs from `config`. An output it does not
     /// mention — every output of a set never arranged before — is placed
     /// side by side, built-in panel first on the left and externals to its
-    /// right, at the scale its pixel density calls for.
+    /// right, at the scale and rotation it keeps (`LiveEntry::kept`) or,
+    /// keeping none, at the scale its pixel density calls for.
     fn relayout_with(&mut self, config: &settings_store::hardware::DisplayConfig) {
         self.live.sort_by_key(|l| {
             (
@@ -2189,7 +2256,7 @@ impl DrmDispatchState {
                 tracing::warn!(
                     connector = %key,
                     ?reason,
-                    "DRM display: the output could not be lit; it stays dark until it is replugged or the display settings change"
+                    "DRM display: the output could not be lit; it stays dark until it is replugged, the display settings change, the display wakes or the power key is pressed"
                 );
                 let mut record = LinkFailureRecord::of(snapshot, reason);
                 record.config_key.clone_from(&key);
@@ -2480,6 +2547,9 @@ impl DrmDispatchState {
             None => Vec::new(),
         };
         self.perform_all(actions);
+        // The machine was powered down: an output that could not be lit
+        // before sleep gets another attempt with the rest.
+        self.retry_failed_outputs("woke from sleep");
     }
 
     /// Run a whole sequence in order.
@@ -2516,19 +2586,35 @@ impl DrmDispatchState {
                     return;
                 }
             };
+        // libinput's device groups say which devices are one physical
+        // device (a tablet's pen and its pad). A group is named by the
+        // sysname of its first device in this snapshot.
+        let groups: Vec<_> = self
+            .devices
+            .iter()
+            .map(smithay::reexports::input::Device::device_group)
+            .collect();
         let snapshot = settings_store::hardware::InputHardwareSnapshot {
             publisher_pid,
             publisher_start_ticks,
             devices: self
                 .devices
                 .iter()
-                .map(|device| {
+                .zip(&groups)
+                .map(|(device, group)| {
                     let key = self
                         .keyboard_identities
                         .get(device.sysname())
                         .cloned()
                         .unwrap_or_else(|| libinput_device_key(device));
-                    input_device_snapshot(device, key)
+                    let mut snapshot = input_device_snapshot(device, key);
+                    snapshot.physical_device = groups
+                        .iter()
+                        .position(|other| other == group)
+                        .and_then(|first| self.devices.get(first))
+                        .map(|first| first.sysname().to_owned())
+                        .unwrap_or_default();
+                    snapshot
                 })
                 .collect(),
             active_keyboard: self.keyboard_device.clone(),
@@ -2870,7 +2956,7 @@ impl DrmDispatchState {
             let Some(kbd) = self.keyboard.as_mut() else {
                 return;
             };
-            kbd.process(keycode, pressed)
+            kbd.process_latched(keycode, pressed, self.sticky_latched)
         };
         if let Some(mods) = outcome.modifiers_changed {
             let actual = mods.state();
@@ -3249,6 +3335,7 @@ impl DrmDispatchState {
     /// reason as [`Self::handle_session_event`]; this one dwarfed the rest
     /// of the constructor at ~160 lines on its own.
     fn handle_libinput_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        self.note_input_after_wake(&event);
         match event {
             InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } => {
                 self.handle_libinput_device_event(event);
@@ -3649,11 +3736,19 @@ impl DrmDispatchState {
                     }
                     self.push(BackendEvent::TabletPadAdded(pad_description(&device)));
                 }
+                eprintln!(
+                    "tilo compositor: DRM input: device added name={:?} kind={:?}",
+                    device.name(),
+                    device_caps(&device).kind()
+                );
                 self.devices.push(device);
                 self.publish_input_snapshot();
             }
             InputEvent::DeviceRemoved { device } => {
-                tracing::info!(device = device.name(), "DRM input: device removed");
+                eprintln!(
+                    "tilo compositor: DRM input: device removed name={:?}",
+                    device.name()
+                );
                 // libinput cannot deliver a release after the keyboard that
                 // owned the key disappears. Never let a held editing key keep
                 // firing into whichever field receives focus next.
@@ -4294,6 +4389,24 @@ impl ScanoutEntry {
         self.scanout.set_software_dim(light);
     }
 
+    /// The dimming this output needs on its CPU copy, keeping its CPU
+    /// dimmer in step. An ICC profile describes the panel's SDR response;
+    /// while the output runs in HDR the PQ encode replaces it. Software
+    /// dimming the CRTC cannot carry is done on this copy too, before the
+    /// profile.
+    pub(super) fn sync_cpu_dim(&mut self, hdr: bool) -> Option<f32> {
+        let dim = self.final_pass_dim().filter(|_| !hdr);
+        if self
+            .cpu_dim
+            .as_ref()
+            .map(crate::shell::software_dim::CpuDim::light)
+            != dim
+        {
+            self.cpu_dim = dim.map(crate::shell::software_dim::CpuDim::new);
+        }
+        dim
+    }
+
     /// The dimming this output's final pass applies: only where the CRTC
     /// cannot dim it itself.
     pub fn final_pass_dim(&self) -> Option<f32> {
@@ -4405,7 +4518,6 @@ mod color_calibration_tests {
         std::fs::write(&path, panel.lut16_profile()).unwrap();
         let (transform, _) = color_calibration(path.to_str().unwrap())
             .expect("a readable profile yields the qcms transform and its LUT");
-        // The readback's transform is the one the profile defines.
         let colours = [[12_u8, 200, 90, 255], [255, 255, 255, 255], [0, 0, 0, 255]];
         let mut readback = colours.concat();
         let mut reference = colours.concat();
@@ -4893,6 +5005,20 @@ impl DrmRuntime {
 
     pub fn cancel_touch(&mut self) {
         self.dispatch.handle_direct_touch_cancel();
+    }
+
+    /// Draw the pointer at scene `(x, y)` without reporting a motion.
+    pub fn place_pointer(&mut self, x: f64, y: f64) {
+        self.dispatch.set_pointer_scene((x, y));
+    }
+
+    /// Translate evdev key `keycode` through the active layout, as a key of
+    /// the physical keyboard is, answering the events it makes.
+    pub fn translate_key(&mut self, keycode: u32, pressed: bool) -> Vec<BackendEvent> {
+        let start = self.dispatch.events.len();
+        self.dispatch
+            .process_keyboard_key(xkb::Keycode::new(keycode.saturating_add(8)), pressed);
+        self.dispatch.events.split_off(start)
     }
 
     /// Switch the physical keyboard to input source `index` at once.
@@ -5741,7 +5867,7 @@ fn mouse_wheel_event(source: AxisSource, dx: f64, dy: f64) -> WindowEvent {
 /// `MouseButton`. Preserve the browser navigation buttons: dropping them in
 /// the DRM adapter made a real mouse behave differently from the hosted
 /// backend and prevented Wayland clients from receiving back/forward clicks.
-fn map_mouse_button(code: u32) -> Option<MouseButton> {
+pub(crate) fn map_mouse_button(code: u32) -> Option<MouseButton> {
     match code {
         0x110 => Some(MouseButton::Left),
         0x111 => Some(MouseButton::Right),
@@ -5754,348 +5880,6 @@ fn map_mouse_button(code: u32) -> Option<MouseButton> {
     }
 }
 
-/// xkb keymap + state owned by the DRM backend, turning libinput keycodes
-/// into the winit `KeyboardInput` the chrome understands — the winit backend gets these from the OS, but bare-TTY libinput only reports raw keycodes.
-pub struct KeyboardXkb {
-    // Held for the lifetime of `state`. xkbcommon refcounts internally, but keeping ownership explicit makes the lifetime obvious (never read after construction, hence the underscore).
-    _context: xkb::Context,
-    keymap: xkb::Keymap,
-    state: xkb::State,
-    /// Last modifier mask we emitted — we only push `ModifiersChanged` when it actually flips, matching winit's behaviour.
-    mods: ModifiersState,
-    /// The layouts, variants and options this keymap was compiled from, so
-    /// a settings reload that only moves the active source switches groups
-    /// instead of recompiling and dropping held modifiers.
-    compiled: (String, String, String, Option<String>),
-}
-
-/// What translating one key event yields: an optional `KeyboardInput` (absent for keys with no logical mapping, e.g. bare modifiers) and an optional `ModifiersChanged` (present only when the mask flips).
-struct KeyOutcome {
-    input: Option<WindowEvent>,
-    modifiers_changed: Option<Modifiers>,
-}
-
-impl KeyboardXkb {
-    /// Compile the validated source list from the per-user settings file.
-    /// Returns `None` (caller logs) if the keymap can't build, degrading to
-    /// pointer-only at boot and preserving the old working map on hot reload.
-    pub fn new() -> Option<Self> {
-        let requested = KeyboardSettings::load();
-        Self::from_settings(&requested).or_else(|| {
-            tracing::warn!(
-                sources = ?requested.source_ids,
-                "DRM input: saved XKB sources failed at session start; falling back to US"
-            );
-            Self::from_settings(&KeyboardSettings::default())
-        })
-    }
-
-    pub fn from_settings(settings: &KeyboardSettings) -> Option<Self> {
-        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
-        let keymap = xkb::Keymap::new_from_names(
-            &context,
-            "",              // rules -> XKB_DEFAULT_RULES (normally evdev)
-            &settings.model, // explicit physical model
-            &settings.layouts,
-            &settings.variants,
-            settings.options.clone(),
-            xkb::KEYMAP_COMPILE_NO_FLAGS,
-        )?;
-        let mut state = xkb::State::new(&keymap);
-        let active = u32::try_from(settings.active_index).ok()?;
-        let _ = state.update_mask(0, 0, 0, 0, 0, active);
-        Some(Self {
-            _context: context,
-            keymap,
-            state,
-            mods: ModifiersState::empty(),
-            compiled: Self::keymap_names(settings),
-        })
-    }
-
-    fn keymap_names(settings: &KeyboardSettings) -> (String, String, String, Option<String>) {
-        (
-            settings.model.clone(),
-            settings.layouts.clone(),
-            settings.variants.clone(),
-            settings.options.clone(),
-        )
-    }
-
-    /// Whether `settings` compile to exactly this keymap.
-    fn compiles_to_same_keymap(&self, settings: &KeyboardSettings) -> bool {
-        self.compiled == Self::keymap_names(settings)
-    }
-
-    /// Switch to input source `index`, keeping every held and locked
-    /// modifier. An index past the configured sources is ignored.
-    pub fn set_active_layout(&mut self, index: usize) {
-        let Ok(group) = u32::try_from(index) else {
-            return;
-        };
-        if group >= self.keymap.num_layouts() {
-            return;
-        }
-        let depressed = self.state.serialize_mods(xkb::STATE_MODS_DEPRESSED);
-        let latched = self.state.serialize_mods(xkb::STATE_MODS_LATCHED);
-        let locked = self.state.serialize_mods(xkb::STATE_MODS_LOCKED);
-        let _ = self
-            .state
-            .update_mask(depressed, latched, locked, 0, 0, group);
-    }
-
-    /// The active input source, counting from 0.
-    pub fn active_layout(&self) -> usize {
-        usize::try_from(self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE)).unwrap_or(0)
-    }
-
-    fn key_repeats(&self, keycode: xkb::Keycode) -> bool {
-        self.keymap.key_repeats(keycode)
-    }
-
-    /// The evdev keycode that types `ch` without modifiers on the active
-    /// layout, if any key does.
-    fn keycode_for_char(&self, ch: char) -> Option<u32> {
-        let wanted = xkb::utf32_to_keysym(u32::from(ch.to_ascii_lowercase()));
-        let layout = self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE);
-        (self.keymap.min_keycode().raw()..=self.keymap.max_keycode().raw())
-            .find(|raw| {
-                self.keymap
-                    .key_get_syms_by_level(xkb::Keycode::new(*raw), layout, 0)
-                    .contains(&wanted)
-            })
-            .map(|raw| raw.saturating_sub(8))
-    }
-
-    /// Forget keys and modifiers which may have been released while input
-    /// delivery was suspended, while preserving the user's active layout.
-    fn reset_state(&mut self) {
-        let active_layout = self.state.serialize_layout(xkb::STATE_LAYOUT_EFFECTIVE);
-        self.state = xkb::State::new(&self.keymap);
-        let _ = self.state.update_mask(0, 0, 0, 0, 0, active_layout);
-        self.mods = ModifiersState::empty();
-    }
-
-    /// Produce the same repeated `KeyboardInput` winit emits without
-    /// mutating xkb's down/up state a second time.
-    fn repeat_event(&self, keycode: xkb::Keycode) -> WindowEvent {
-        let sym = self.state.key_get_one_sym(keycode);
-        let logical = keysym_to_winit_key(sym.raw());
-        let mut input = keyboard_input_event(
-            logical,
-            text_for(sym.key_char(), self.current_mods()),
-            true,
-            keycode.raw().saturating_sub(8),
-        );
-        if let WindowEvent::KeyboardInput { event, .. } = &mut input {
-            event.repeat = true;
-        }
-        input
-    }
-
-    /// Read the current effective Ctrl/Shift/Alt/Super state as a winit `ModifiersState`.
-    fn current_mods(&self) -> ModifiersState {
-        let eff = xkb::STATE_MODS_EFFECTIVE;
-        let mut m = ModifiersState::empty();
-        if self.state.mod_name_is_active(xkb::MOD_NAME_CTRL, eff) {
-            m |= ModifiersState::CONTROL;
-        }
-        if self.state.mod_name_is_active(xkb::MOD_NAME_SHIFT, eff) {
-            m |= ModifiersState::SHIFT;
-        }
-        if self.state.mod_name_is_active(xkb::MOD_NAME_ALT, eff) {
-            m |= ModifiersState::ALT;
-        }
-        if self.state.mod_name_is_active(xkb::MOD_NAME_LOGO, eff) {
-            m |= ModifiersState::SUPER;
-        }
-        m
-    }
-
-    /// Translate one key event. `keycode` already carries the +8 offset (see [`KeyboardKeyEvent::key_code`]).
-    fn process(&mut self, keycode: xkb::Keycode, pressed: bool) -> KeyOutcome {
-        let direction = if pressed {
-            xkb::KeyDirection::Down
-        } else {
-            xkb::KeyDirection::Up
-        };
-        let _ = self.state.update_key(keycode, direction);
-
-        // Resolve the symbol and UTF-8 text *after* xkb has incorporated the
-        // event. That is required for the key which changes the state itself:
-        // a Shift press must publish Shift, not the symbol from the previous
-        // level, and a printable press must use every modifier/layout latch
-        // effective for that key. Releases are not text-bearing in the
-        // consumers below, so resolving their post-release level is harmless.
-        let sym = self.state.key_get_one_sym(keycode);
-
-        let new_mods = self.current_mods();
-        let modifiers_changed = if new_mods == self.mods {
-            None
-        } else {
-            self.mods = new_mods;
-            Some(Modifiers::from(new_mods))
-        };
-
-        // Derive the logical key from the *keysym* (not UTF-8 output) so chords like Ctrl+K resolve to `Character("k")`, not the control character.
-        let logical = keysym_to_winit_key(sym.raw());
-        let text = text_for(sym.key_char(), new_mods);
-        let input = Some(keyboard_input_event(
-            logical,
-            text,
-            pressed,
-            keycode.raw().saturating_sub(8),
-        ));
-
-        KeyOutcome {
-            input,
-            modifiers_changed,
-        }
-    }
-}
-
-/// Map an xkb keysym to a winit logical [`Key`]: special keys become
-/// `Key::Named`, printable Unicode becomes `Key::Character`; bare modifiers and unmapped keys return `None` (carried by `ModifiersChanged` instead).
-fn keysym_to_winit_key(raw: u32) -> Key {
-    // Keep the function row intact. These are not printable keysyms, so they
-    // must be named explicitly rather than falling through to `key_char()`.
-    let function = match raw {
-        keysyms::KEY_F1 => Some(NamedKey::F1),
-        keysyms::KEY_F2 => Some(NamedKey::F2),
-        keysyms::KEY_F3 => Some(NamedKey::F3),
-        keysyms::KEY_F4 => Some(NamedKey::F4),
-        keysyms::KEY_F5 => Some(NamedKey::F5),
-        keysyms::KEY_F6 => Some(NamedKey::F6),
-        keysyms::KEY_F7 => Some(NamedKey::F7),
-        keysyms::KEY_F8 => Some(NamedKey::F8),
-        keysyms::KEY_F9 => Some(NamedKey::F9),
-        keysyms::KEY_F10 => Some(NamedKey::F10),
-        keysyms::KEY_F11 => Some(NamedKey::F11),
-        keysyms::KEY_F12 => Some(NamedKey::F12),
-        keysyms::KEY_F13 => Some(NamedKey::F13),
-        keysyms::KEY_F14 => Some(NamedKey::F14),
-        keysyms::KEY_F15 => Some(NamedKey::F15),
-        keysyms::KEY_F16 => Some(NamedKey::F16),
-        keysyms::KEY_F17 => Some(NamedKey::F17),
-        keysyms::KEY_F18 => Some(NamedKey::F18),
-        keysyms::KEY_F19 => Some(NamedKey::F19),
-        keysyms::KEY_F20 => Some(NamedKey::F20),
-        keysyms::KEY_F21 => Some(NamedKey::F21),
-        keysyms::KEY_F22 => Some(NamedKey::F22),
-        keysyms::KEY_F23 => Some(NamedKey::F23),
-        keysyms::KEY_F24 => Some(NamedKey::F24),
-        _ => None,
-    };
-    if let Some(function) = function {
-        return Key::Named(function);
-    }
-    let named = match raw {
-        keysyms::KEY_Return | keysyms::KEY_KP_Enter => Some(NamedKey::Enter),
-        keysyms::KEY_Escape => Some(NamedKey::Escape),
-        keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab => Some(NamedKey::Tab),
-        keysyms::KEY_BackSpace => Some(NamedKey::Backspace),
-        keysyms::KEY_Delete | keysyms::KEY_KP_Delete => Some(NamedKey::Delete),
-        keysyms::KEY_Left | keysyms::KEY_KP_Left => Some(NamedKey::ArrowLeft),
-        keysyms::KEY_Right | keysyms::KEY_KP_Right => Some(NamedKey::ArrowRight),
-        keysyms::KEY_Up | keysyms::KEY_KP_Up => Some(NamedKey::ArrowUp),
-        keysyms::KEY_Down | keysyms::KEY_KP_Down => Some(NamedKey::ArrowDown),
-        keysyms::KEY_Home | keysyms::KEY_KP_Home => Some(NamedKey::Home),
-        keysyms::KEY_End | keysyms::KEY_KP_End => Some(NamedKey::End),
-        keysyms::KEY_Page_Up | keysyms::KEY_KP_Page_Up => Some(NamedKey::PageUp),
-        keysyms::KEY_Page_Down | keysyms::KEY_KP_Page_Down => Some(NamedKey::PageDown),
-        keysyms::KEY_space => Some(NamedKey::Space),
-        keysyms::KEY_Caps_Lock => Some(NamedKey::CapsLock),
-        keysyms::KEY_Num_Lock => Some(NamedKey::NumLock),
-        keysyms::KEY_Scroll_Lock => Some(NamedKey::ScrollLock),
-        keysyms::KEY_Insert => Some(NamedKey::Insert),
-        keysyms::KEY_Menu => Some(NamedKey::ContextMenu),
-        keysyms::KEY_Multi_key => Some(NamedKey::Compose),
-        keysyms::KEY_ISO_Level3_Shift => Some(NamedKey::AltGraph),
-        keysyms::KEY_ISO_Next_Group => Some(NamedKey::GroupNext),
-        keysyms::KEY_ISO_Prev_Group => Some(NamedKey::GroupPrevious),
-        keysyms::KEY_Pause => Some(NamedKey::Pause),
-        keysyms::KEY_Help => Some(NamedKey::Help),
-        // The stock `pc` keymap turns Alt+Print into Sys_Req; it is still
-        // the Print Screen key, and Alt+Print is the focused-window capture.
-        keysyms::KEY_Print | keysyms::KEY_Sys_Req => Some(NamedKey::PrintScreen),
-        keysyms::KEY_Shift_L | keysyms::KEY_Shift_R => Some(NamedKey::Shift),
-        keysyms::KEY_Control_L | keysyms::KEY_Control_R => Some(NamedKey::Control),
-        keysyms::KEY_Alt_L | keysyms::KEY_Alt_R => Some(NamedKey::Alt),
-        keysyms::KEY_Super_L | keysyms::KEY_Super_R => Some(NamedKey::Super),
-        // The function row. Without these, media/brightness keys reach `key_char()` (no character for them) and the press is dropped before any handler sees it — why volume-up did nothing on real hardware.
-        keysyms::KEY_XF86AudioRaiseVolume => Some(NamedKey::AudioVolumeUp),
-        keysyms::KEY_XF86AudioLowerVolume => Some(NamedKey::AudioVolumeDown),
-        keysyms::KEY_XF86AudioMute => Some(NamedKey::AudioVolumeMute),
-        keysyms::KEY_XF86AudioMicMute => Some(NamedKey::MicrophoneVolumeMute),
-        keysyms::KEY_XF86MonBrightnessUp => Some(NamedKey::BrightnessUp),
-        keysyms::KEY_XF86MonBrightnessDown => Some(NamedKey::BrightnessDown),
-        keysyms::KEY_XF86AudioPlay => Some(NamedKey::MediaPlayPause),
-        keysyms::KEY_XF86AudioPause => Some(NamedKey::MediaPause),
-        keysyms::KEY_XF86AudioNext => Some(NamedKey::MediaTrackNext),
-        keysyms::KEY_XF86AudioPrev => Some(NamedKey::MediaTrackPrevious),
-        keysyms::KEY_XF86PowerOff => Some(NamedKey::Power),
-        keysyms::KEY_XF86AudioStop => Some(NamedKey::MediaStop),
-        // winit's own XKB table folds every sleep spelling into Standby and
-        // names the calculator key LaunchApplication2; the nested backend
-        // delivers those, so this one must too.
-        keysyms::KEY_XF86Sleep | keysyms::KEY_XF86Suspend | keysyms::KEY_XF86Standby => {
-            Some(NamedKey::Standby)
-        }
-        keysyms::KEY_XF86Calculator => Some(NamedKey::LaunchApplication2),
-        _ => None,
-    };
-    if let Some(n) = named {
-        return Key::Named(n);
-    }
-    // Printable character (handles layout + shift + caps via the keysym).
-    if let Some(c) = Keysym::new(raw).key_char()
-        && !c.is_control()
-    {
-        return Key::Character(SmolStr::new(c.to_string()));
-    }
-    // Never drop an otherwise valid physical key merely because this adapter
-    // does not have a named-key spelling for its keysym. The seat still must
-    // receive the raw keycode (IME/vendor keys included), and clients can
-    // interpret the xkb keymap they were sent. Returning an unidentified
-    // logical key preserves that protocol event while keeping it out of shell
-    // chord matching.
-    Key::Unidentified(NativeKey::Xkb(raw))
-}
-
-/// The typed text for a key event, or `None`. Suppressed under Ctrl/Super (chords, not text) and for control characters — matching winit, keeping control bytes out of text inputs.
-fn text_for(ch: Option<char>, mods: ModifiersState) -> Option<SmolStr> {
-    if mods.control_key() || mods.super_key() {
-        return None;
-    }
-    match ch {
-        Some(c) if !c.is_control() => Some(SmolStr::new(c.to_string())),
-        _ => None,
-    }
-}
-
-/// Build a `WindowEvent::KeyboardInput` from the evdev key `evdev_keycode`.
-fn keyboard_input_event(
-    logical_key: Key,
-    text: Option<SmolStr>,
-    pressed: bool,
-    evdev_keycode: u32,
-) -> WindowEvent {
-    let mut ev = ui::synthetic_input::key_event(
-        logical_key,
-        text,
-        if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        },
-    );
-    ev.physical_key = PhysicalKey::from_scancode(evdev_keycode);
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event: ev,
-        is_synthetic: false,
-    }
-}
 #[cfg(test)]
 mod libinput_drain_tests {
     use std::cell::Cell;
@@ -6530,6 +6314,35 @@ pub(super) mod tests {
         xkb_shift_event_itself_is_named_and_following_text_is_shifted();
         // Phase `xkb_alpha_key_produces_character_input` (defined above).
         xkb_alpha_key_produces_character_input();
+    }
+
+    #[test]
+    fn a_key_from_another_device_types_what_this_layout_puts_there() {
+        let settings = KeyboardSettings {
+            model: "pc105".into(),
+            source_ids: vec!["de".into()],
+            layouts: "de".into(),
+            variants: String::new(),
+            options: None,
+            active_index: 0,
+        };
+        let Some(mut keyboard) = KeyboardXkb::from_settings(&settings) else {
+            eprintln!("xkb keymap unavailable; skipping");
+            return;
+        };
+        // Shift, then the key a US keyboard labels Y: a German Z.
+        let shift = keyboard.translate(42, true);
+        assert!(matches!(
+            shift.first(),
+            Some(BackendEvent::ModifiersChanged(mods)) if mods.state().shift_key()
+        ));
+        let typed = keyboard.translate(21, true);
+        let [BackendEvent::Input(WindowEvent::KeyboardInput { event, .. })] = typed.as_slice()
+        else {
+            panic!("one key event, no modifier change: {typed:?}")
+        };
+        assert_eq!(event.logical_key, Key::Character("Z".into()));
+        assert_eq!(event.text.as_deref(), Some("Z"));
     }
 
     #[test]
@@ -7201,7 +7014,7 @@ pub(super) mod tests {
     }
 
     /// A dispatch state with a command channel attached, plus the receiving end so a test can assert on what was sent.
-    fn dispatch_with_channel() -> (DrmDispatchState, Receiver<ScanoutCommand>) {
+    pub(super) fn dispatch_with_channel() -> (DrmDispatchState, Receiver<ScanoutCommand>) {
         let (tx, rx) = channel();
         let state = DrmDispatchState {
             commands: Some(tx),
@@ -7442,7 +7255,9 @@ pub(super) mod tests {
             let in_flight = gate.lock().expect("hold a present in flight");
             let (released_tx, released_rx) = channel();
             let callback_gate = Arc::clone(&gate);
+            let (tid_tx, tid) = channel();
             let callback = std::thread::spawn(move || {
+                let _ = tid_tx.send(super::super::lock_wait::current_tid());
                 DrmDispatchState::with_presentations_quiesced(Some(&callback_gate), || {
                     released_tx
                         .send(())
@@ -7450,10 +7265,12 @@ pub(super) mod tests {
                 });
             });
 
+            super::super::lock_wait::wait_until_blocked_on_a_lock(
+                tilo_test_env::recv("the callback thread's id", &tid),
+                "the master release callback",
+            );
             assert!(
-                released_rx
-                    .recv_timeout(std::time::Duration::from_millis(20))
-                    .is_err(),
+                released_rx.try_recv().is_err(),
                 "master release must not run while a present still owns the gate"
             );
             drop(in_flight);
@@ -7571,11 +7388,11 @@ pub(super) mod tests {
     const IGPU: u64 = 0xe201;
     /// The discrete GPU's. Card ranking puts it first whenever it has more
     /// connected outputs, so its outputs are adopted (and numbered) first.
-    const DGPU: u64 = 0xe200;
+    pub(super) const DGPU: u64 = 0xe200;
 
     /// Adopt one output the way `adopt_builds` does: the id is interned
     /// from its card-scoped key, so a replug gets its old id back.
-    fn adopt_on(
+    pub(super) fn adopt_on(
         state: &mut DrmDispatchState,
         device: u64,
         connector: u32,
@@ -7756,6 +7573,33 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn published_placements_are_where_each_display_sits_in_the_logical_desktop() {
+        let state = docked_hidpi_laptop();
+        let placed: Vec<_> = state
+            .live_placements()
+            .into_iter()
+            .map(|placement| (placement.x, placement.y, placement.width, placement.height))
+            .collect();
+        // The 2x panel is 1280 logical pixels wide and the monitor starts
+        // where it ends, as the shell lays them out; not at the panel's
+        // 2560 physical pixels, where no display of the shell's sits.
+        assert_eq!(placed, vec![(0, 0, 1280, 800), (1280, 0, 1920, 1080)]);
+        let table = state.output_table();
+        for (placement, output) in placed.iter().zip(&table) {
+            let rect = output.logical_rect();
+            assert_eq!(
+                (
+                    f64::from(placement.0),
+                    f64::from(placement.1),
+                    f64::from(placement.2),
+                    f64::from(placement.3)
+                ),
+                (rect.x0, rect.y0, rect.width(), rect.height())
+            );
+        }
+    }
+
+    #[test]
     fn relative_motion_is_logical_and_crosses_a_mixed_scale_seam_on_the_same_row() {
         let mut state = docked_hidpi_laptop();
         state.set_pointer_logical((1270.0, 400.0));
@@ -7827,6 +7671,49 @@ pub(super) mod tests {
             state.relayout_with(&settings_store::hardware::DisplayConfig::default());
             assert_eq!(state.live[0].scale, 1.25);
             assert_eq!(state.output_table()[0].logical_size(), (1024, 640));
+        }
+        // Phase `a_monitor_lit_in_a_set_never_arranged_keeps_its_last_scale`.
+        {
+            // Two outputs arranged with the 1280x800 one at 1.25x; the
+            // session starts (or the monitor arrives) with only that one
+            // attached. Nothing live kept a scale, yet its monitor was last
+            // shown at 1.25x, and a virtual connector reports no size.
+            use settings_store::hardware::{
+                AttachedOutput, DisplayConfig, DisplayProfiles, DisplaySet, OutputConfig,
+            };
+            let attached = |connector| AttachedOutput {
+                connector,
+                connector_label: connector,
+                monitor: None,
+            };
+            let mut arranged = DisplayConfig::default();
+            arranged
+                .outputs
+                .insert("Virtual-3".into(), OutputConfig::default());
+            arranged
+                .outputs
+                .insert("Virtual-4".into(), OutputConfig::at_scale(1.25));
+            let mut profiles = DisplayProfiles::default();
+            profiles.remember(
+                &DisplaySet::of([attached("Virtual-3"), attached("Virtual-4")]),
+                &arranged,
+            );
+            let alone = DisplaySet::of([attached("Virtual-4")]);
+            let config = profiles.layout_for(&alone).unwrap_or_default();
+
+            let (mut state, _rx) = dispatch_with_channel();
+            state.live = vec![named(entry(1, 11, (1280, 800), None), "Virtual-4")];
+            state.relayout_recalling(&config, &profiles.last_shown_in(&alone));
+            assert_eq!(state.live[0].scale, 1.25);
+            assert_eq!(state.output_table()[0].logical_size(), (1024, 640));
+
+            // A layout saved for exactly this set still wins.
+            let mut chosen = DisplayConfig::default();
+            chosen
+                .outputs
+                .insert("Virtual-4".into(), OutputConfig::at_scale(2.0));
+            state.relayout_recalling(&chosen, &profiles.last_shown_in(&alone));
+            assert_eq!(state.live[0].scale, 2.0);
         }
         // Phase `synthesize_for_tests_publishes_its_outputs`.
         {
@@ -8489,16 +8376,15 @@ pub(super) mod tests {
         // Phase `a_key_read_late_repeats_from_when_it_went_down`.
         {
             let now = std::time::Instant::now();
-            let went_down_ns = crate::shell::network::fabric_monotonic_us()
-                .saturating_mul(1_000)
-                .saturating_sub(200_000_000);
-            let at = key_down_at(Some(went_down_ns), now);
-            let age = now.saturating_duration_since(at);
-            assert!(
-                age >= std::time::Duration::from_millis(199)
-                    && age <= std::time::Duration::from_millis(250),
-                "a key read 200 ms late counts its delay from the press, not the read ({age:?})"
+            let read_ns = 10_000_000_000_u64;
+            let went_down_ns = read_ns - 200_000_000;
+            let at = key_down_at_input_time(Some(went_down_ns), now, read_ns);
+            assert_eq!(
+                now.saturating_duration_since(at),
+                std::time::Duration::from_millis(200),
+                "a key read 200 ms late counts its delay from the press, not the read"
             );
+            assert_eq!(key_down_at_input_time(None, now, read_ns), now);
             assert_eq!(key_down_at(None, now), now);
         }
         // Phase `key_repeat_rate_zero_is_disabled_and_transient_loss_cancels`.
@@ -8617,7 +8503,16 @@ pub(super) mod tests {
                     _ => None,
                 })
                 .collect();
-            assert_eq!(shell, vec![GestureAction::SwitchStrip(-1)]);
+            assert_eq!(
+                shell,
+                vec![
+                    GestureAction::StripDeckUpdate {
+                        travel: -150.0,
+                        began: true,
+                    },
+                    GestureAction::StripDeckEnd { cancelled: false },
+                ]
+            );
             assert!(
                 !state
                     .events
@@ -8762,7 +8657,13 @@ pub(super) mod tests {
             assert!(
                 state.events.iter().any(|e| matches!(
                     e,
-                    BackendEvent::ShellGesture(GestureAction::SwitchStrip(1), _)
+                    BackendEvent::ShellGesture(
+                        GestureAction::StripDeckUpdate {
+                            travel: 150.0,
+                            began: true,
+                        },
+                        _
+                    )
                 )),
                 "the same preference that inverts scrolling inverts gestures"
             );
@@ -9183,7 +9084,7 @@ pub(super) mod tests {
         )));
     }
 
-    fn edid(serial: &str) -> settings_store::hardware::MonitorIdentity {
+    pub(super) fn edid(serial: &str) -> settings_store::hardware::MonitorIdentity {
         settings_store::hardware::MonitorIdentity {
             serial: serial.into(),
             ..settings_store::hardware::MonitorIdentity::default()

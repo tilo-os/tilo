@@ -52,6 +52,16 @@ pub enum Capability {
     /// sandbox's seccomp filter refuses `setns` even where it lets a job make
     /// namespaces.
     NamespaceEntry,
+    /// An emulated TPM and the tools that drive it: `swtpm`, `tpm2-tools` and
+    /// `cryptsetup` ([`crate::swtpm`]).
+    Swtpm,
+    /// The kernel's key retention service (`add_key`, `keyctl`), which
+    /// container seccomp profiles often refuse.
+    KernelKeyring,
+    /// TUN devices configured as the device VPN helper does: `/dev/net/tun`,
+    /// `ip` and `nft`, in user and network namespaces of the test's own
+    /// (`unshare --user --map-root-user --net`).
+    NetworkTunnel,
 }
 
 impl Capability {
@@ -70,6 +80,9 @@ impl Capability {
             Self::Chown => "TILO_REQUIRE_CHOWN",
             Self::UserNamespace => "TILO_REQUIRE_USERNS",
             Self::NamespaceEntry => "TILO_REQUIRE_SETNS",
+            Self::Swtpm => "TILO_REQUIRE_SWTPM",
+            Self::KernelKeyring => "TILO_REQUIRE_KEYRING",
+            Self::NetworkTunnel => "TILO_REQUIRE_TUN",
         }
     }
 
@@ -95,6 +108,9 @@ impl fmt::Display for Capability {
             Self::Chown => "giving files to another user",
             Self::UserNamespace => "user and mount namespaces",
             Self::NamespaceEntry => "entering namespaces (setns)",
+            Self::Swtpm => "an emulated TPM",
+            Self::KernelKeyring => "the kernel keyring",
+            Self::NetworkTunnel => "TUN devices with ip and nft",
         })
     }
 }
@@ -103,10 +119,6 @@ impl fmt::Display for Capability {
 /// tried on a scratch file there: being uid 0 is not enough without
 /// `CAP_CHOWN`, nor is `CAP_CHOWN` where the filesystem cannot represent `uid`
 /// (an idmapped mount maps only some users).
-///
-/// # Errors
-///
-/// Returns why the scratch file could not be made or given away.
 #[cfg(unix)]
 pub fn chown_to(uid: u32) -> std::io::Result<()> {
     let file = tempfile::NamedTempFile::new()?;
@@ -115,10 +127,6 @@ pub fn chown_to(uid: u32) -> std::io::Result<()> {
 
 /// Whether this process can give a file in the temporary directory to `uid`
 /// and then become that user, tried on a scratch file and a throwaway child.
-///
-/// # Errors
-///
-/// Returns why the chown or the identity switch failed.
 #[cfg(unix)]
 pub fn switch_identity(uid: u32) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt as _;
@@ -138,10 +146,6 @@ pub fn switch_identity(uid: u32) -> std::io::Result<()> {
 
 /// Whether this process can create a user namespace with the unprivileged
 /// mapping the fixtures use, tried on a throwaway `true`.
-///
-/// # Errors
-///
-/// Returns why `unshare` could not be started or exited non-zero.
 #[cfg(target_os = "linux")]
 pub fn user_namespace() -> std::io::Result<()> {
     namespace(
@@ -158,10 +162,6 @@ pub fn user_namespace() -> std::io::Result<()> {
 
 /// Whether this process can create a private mount namespace, trying `unshare`
 /// as the caller and then `sudo -n` for an unprivileged developer host.
-///
-/// # Errors
-///
-/// Returns why neither `unshare` nor `sudo -n unshare` succeeded.
 #[cfg(target_os = "linux")]
 pub fn mount_namespace() -> std::io::Result<()> {
     match namespace(
@@ -198,10 +198,6 @@ pub fn mount_namespace() -> std::io::Result<()> {
 
 /// Whether this process can start bubblewrap with a user namespace of its own,
 /// tried on the read-only root the bundle fixtures use.
-///
-/// # Errors
-///
-/// Returns why `bwrap` could not be started or exited non-zero.
 #[cfg(target_os = "linux")]
 pub fn bubblewrap() -> std::io::Result<()> {
     namespace(
@@ -276,10 +272,6 @@ pub trait Probe {
     type Value;
 
     /// Split the probe into its value or an optional detail message.
-    ///
-    /// # Errors
-    ///
-    /// Returns the detail (if any) when the capability is unavailable.
     fn into_probe(self) -> Result<Self::Value, Option<String>>;
 }
 

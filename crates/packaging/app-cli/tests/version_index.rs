@@ -196,7 +196,7 @@ fn serve(routes: &Routes, published: &Published) {
 }
 
 fn app(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_app"))
+    Command::new(tilo_test_env::package_binary!("app"))
         .args(args)
         .output()
         .unwrap()

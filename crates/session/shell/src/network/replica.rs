@@ -28,7 +28,6 @@ use std::time::{Duration, Instant};
 
 use crate::network::hub::TopicSubscriber;
 use crate::network::protocol::NeighbourMsg;
-#[cfg(test)]
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::WorkspaceTreeHandle;
 use crate::shell::state::{PeerOrigin, RoomId};
@@ -47,6 +46,9 @@ pub struct WorkspaceTreeReplica {
     pub id: u64,
     pub tree: WorkspaceTreeHandle,
     pub pending_outgoing: Arc<Mutex<Vec<NeighbourMsg>>>,
+    /// Only successfully validated, committed document heads; pending ops or
+    /// missing dependencies always bypass this exact-state cache.
+    sync_heads: Mutex<std::collections::HashMap<RoomId, Vec<automerge::ChangeHash>>>,
     /// Transport identity this replica's messages arrive under — only
     /// meaningful when driven through a [`Hub`]; live wiring calls
     /// [`Self::handle_from`] with the authenticated `PeerId` directly instead.
@@ -66,6 +68,10 @@ pub struct WorkspaceTreeReplica {
     /// The heads a peer's request named that this replica asked a room back
     /// for, and when (see [`PULL_BACK_REPEAT`]).
     pulled_back: std::collections::HashMap<RoomId, (Vec<automerge::ChangeHash>, Instant)>,
+    /// The senders this replica has taken part with in each room, by the
+    /// name the transport gave them. One not among them is new to the room:
+    /// only the room's governor answers it, from a fresh base.
+    known: std::collections::HashMap<RoomId, std::collections::HashSet<PeerOrigin>>,
 }
 
 /// How long a replica waits before asking a room back again for the same
@@ -80,10 +86,12 @@ impl WorkspaceTreeReplica {
             id,
             tree,
             pending_outgoing: Arc::new(Mutex::new(Vec::new())),
+            sync_heads: Mutex::default(),
             origin: PeerOrigin::hub(id),
             participants: std::collections::HashMap::new(),
             participants_epoch: Arc::default(),
             pulled_back: std::collections::HashMap::new(),
+            known: std::collections::HashMap::new(),
         }
     }
 
@@ -103,6 +111,7 @@ impl WorkspaceTreeReplica {
     /// Record that `from` has taken part in `room`'s document; a no-op for an
     /// origin with no peer id (in-process hub subscriber or local replay).
     fn note_participant(&mut self, room: RoomId, from: &PeerOrigin) {
+        self.known.entry(room).or_default().insert(from.clone());
         let Some(handle) = from.liveness_handle() else {
             return;
         };
@@ -135,23 +144,20 @@ impl WorkspaceTreeReplica {
     /// several rooms into one undifferentiated document.
     pub fn request_sync(&self) {
         let rooms = self.tree.read().rooms();
+        let active: std::collections::HashSet<_> = rooms.iter().copied().collect();
+        self.sync_heads
+            .lock_recover()
+            .retain(|room, _| active.contains(room));
         self.request_sync_of(&rooms);
     }
 
     /// [`Self::request_sync`] for `rooms` alone.
-    fn request_sync_of(&self, rooms: &[RoomId]) {
-        let mut tree = self.tree.write();
+    pub fn request_sync_of(&self, rooms: &[RoomId]) {
         let mut msgs = Vec::with_capacity(rooms.len());
         for &room in rooms {
-            if tree.requires_native_owner(room) {
-                tracing::debug!(
-                    target: "shell::network::replica",
-                    %room,
-                    "not requesting room replication: the room's native owner replicates it"
-                );
+            let Some(heads) = self.requested_room_heads(room) else {
                 continue;
-            }
-            let heads = tree.room_heads(room);
+            };
             // Structurally infallible (`ChangeHash` has no enum/float to fail on);
             // `unwrap_or_default()`'s `vec![]` fallback reads as "send everything in
             // this room" — wasteful, not corrupting, and can't widen past the room it names.
@@ -173,14 +179,61 @@ impl WorkspaceTreeReplica {
                 )),
             });
         }
-        drop(tree);
         self.pending_outgoing.lock_recover().extend(msgs);
+    }
+
+    /// What follows a peer's batch for `room_id` once
+    /// [`crate::shell::state::WorkspaceTree::merge_room_changes`] merged it, which needs no lock
+    /// on this replica: a caller off the compositor's loop merges first and
+    /// takes the replica only for this.
+    pub fn room_batch_merged(
+        &mut self,
+        room_id: RoomId,
+        sender: &PeerOrigin,
+        change_count: usize,
+        result: Result<bool, automerge::AutomergeError>,
+    ) {
+        if let Err(err) = result {
+            tracing::error!(
+                target: "shell::network::replica",
+                sender = %sender,
+                room = %room_id,
+                change_count,
+                ?err,
+                "WorkspaceTreeReplica::apply_room_changes failed; \
+                 peer-sync round produced no doc mutation (C-9)",
+            );
+            return;
+        }
+        // Recorded only once accepted — a refused document must not leave a participant behind it.
+        self.note_participant(room_id, sender);
+        // A batch whose predecessors never arrived (a push this
+        // machine missed) waits in the document unapplied. Ask the
+        // room for them now rather than at the next safety pull.
+        let missing = self.tree.read().room_missing_deps(room_id);
+        if !missing.is_empty() && self.pull_back_due(room_id, &missing) {
+            self.request_sync_of(&[room_id]);
+        }
     }
 
     /// Drain pending outbound messages so a test (or Hub-driver) can broadcast them; stable FIFO order.
     pub fn drain_outgoing(&self) -> Vec<NeighbourMsg> {
         std::mem::take(&mut *self.pending_outgoing.lock_recover())
     }
+}
+
+/// The room a `SyncResp` from `sender` names; `None`, logged, for one that
+/// names none.
+pub fn batch_room(sender: &PeerOrigin, room: &str) -> Option<RoomId> {
+    let room = RoomId::parse(room).filter(|r| !r.is_nil());
+    if room.is_none() {
+        tracing::warn!(
+            target: "shell::network::replica",
+            sender = %sender,
+            "SyncResp names no room; dropped",
+        );
+    }
+    room
 }
 
 impl TopicSubscriber for WorkspaceTreeReplica {
@@ -222,6 +275,22 @@ impl WorkspaceTreeReplica {
                 let since_heads: Vec<automerge::ChangeHash> =
                     serde_json::from_slice(since).unwrap_or_default();
                 let mut tree = self.tree.write();
+                let own = tree.is_own_device(sender);
+                let new = !own
+                    && !tree.is_room_authority(room_id, sender)
+                    && !self
+                        .known
+                        .get(&room_id)
+                        .is_some_and(|known| known.contains(sender));
+                if new && !tree.admit_room_participant(room_id) {
+                    return;
+                }
+                let archive = own
+                    .then(|| {
+                        tree.local_person
+                            .map(|person| (person, tree.room_archive(room_id).to_vec()))
+                    })
+                    .flatten();
                 let exported = tree.export_room_changes_since(room_id, &since_heads);
                 let behind = exported.is_some() && tree.room_lacks_any(room_id, &since_heads);
                 drop(tree);
@@ -240,55 +309,53 @@ impl WorkspaceTreeReplica {
                 if behind && self.pull_back_due(room_id, &since_heads) {
                     self.request_sync_of(&[room_id]);
                 }
-                if changes.is_empty() {
-                    return;
+                let mut outgoing = self.pending_outgoing.lock_recover();
+                if let Some((user_public_key, documents)) =
+                    archive.filter(|(_, documents)| !documents.is_empty())
+                {
+                    outgoing.push(NeighbourMsg::RoomArchive {
+                        user_public_key,
+                        room: room_id.to_string(),
+                        documents,
+                    });
                 }
-                self.pending_outgoing
-                    .lock_recover()
-                    .push(NeighbourMsg::SyncResp {
+                if !changes.is_empty() {
+                    outgoing.push(NeighbourMsg::SyncResp {
                         changes,
                         room: room_id.to_string(),
                     });
+                }
+            }
+            NeighbourMsg::RoomArchive {
+                room, documents, ..
+            } => {
+                let mut tree = self.tree.write();
+                if let Some(room_id) = RoomId::parse(room).filter(|room| !room.is_nil())
+                    && tree.is_own_device(sender)
+                {
+                    tree.keep_room_archive(room_id, documents);
+                }
             }
             NeighbourMsg::SyncResp { changes, room } => {
-                // Failures log via `tracing::error!` rather than propagate; the connection
-                // stays alive. `apply_room_changes` refuses a room we're not in before
-                // storing anything, then folds an accepted room into the shared tree.
-                let Some(room_id) = RoomId::parse(room).filter(|r| !r.is_nil()) else {
-                    tracing::warn!(
-                        target: "shell::network::replica",
-                        sender = %sender,
-                        "SyncResp names no room; dropped",
-                    );
+                let Some(room_id) = batch_room(sender, room) else {
                     return;
                 };
-                let result = self.tree.write().apply_room_changes(room_id, changes, from);
-                if let Err(err) = result {
-                    tracing::error!(
-                        target: "shell::network::replica",
-                        sender = %sender,
-                        room = %room_id,
-                        change_count = changes.len(),
-                        ?err,
-                        "WorkspaceTreeReplica::apply_room_changes failed; \
-                         peer-sync round produced no doc mutation (C-9)",
-                    );
-                    return;
-                }
-                // Recorded only once accepted — a refused document must not leave a participant behind it.
-                self.note_participant(room_id, sender);
-                // A batch whose predecessors never arrived (a push this
-                // machine missed) waits in the document unapplied. Ask the
-                // room for them now rather than at the next safety pull.
-                let missing = self.tree.read().room_missing_deps(room_id);
-                if !missing.is_empty() && self.pull_back_due(room_id, &missing) {
-                    self.request_sync_of(&[room_id]);
-                }
+                let result = crate::shell::state::WorkspaceTree::merge_room_changes(
+                    &self.tree, room_id, changes, from,
+                );
+                self.room_batch_merged(room_id, sender, changes.len(), result);
             }
             _ => {}
         }
     }
 }
+
+mod sync_heads;
+
+#[cfg(test)]
+mod cache_tests;
+#[cfg(test)]
+mod request_tests;
 
 #[cfg(test)]
 mod tests {
@@ -525,7 +592,7 @@ mod tests {
 
             // The guest: its own machine, its own workspace, its own room — until it accepts the invite.
             let mut guest_tree = WorkspaceTree::default();
-            let guest_ws = guest_tree.append_empty_workspace("My workspace");
+            guest_tree.append_empty_workspace("My workspace");
 
             let owner_key = iroh::SecretKey::generate();
             let owner_addr = iroh::EndpointAddr::new(owner_key.public())
@@ -542,8 +609,8 @@ mod tests {
                 3600,
             )
             .expect("the host issues an invite to room A");
-            let joined = accept_invite_into(&mut guest_tree, guest_ws, &token)
-                .expect("the guest accepts it");
+            let (guest_ws, joined) =
+                accept_invite_into(&mut guest_tree, &token).expect("the guest accepts it");
             assert_eq!(joined, room_a, "the invite names room A");
 
             // The host replica delivers under the identity its own invite named — a
@@ -576,8 +643,8 @@ mod tests {
             // And the guest gained no workspace it was not invited to.
             assert_eq!(
                 guest_handle.read().desktop.workspaces.len(),
-                1,
-                "the guest has one workspace — its own, now in room A",
+                2,
+                "the guest has its own workspace and room A's, nothing of room B",
             );
 
             // Positive control — without it, a guest that received nothing at all would satisfy every assertion above.
@@ -602,7 +669,7 @@ mod tests {
                     .find(|w| w.id == guest_ws)
                     .map(|w| w.name.clone()),
                 Some(ROOM_A_NAME.to_string()),
-                "the round must land in the guest's own workspace, not beside it",
+                "the round must land in room A's workspace, not beside it",
             );
             let _ = room_a;
         }
@@ -704,8 +771,7 @@ mod tests {
 
             // A guest whose own state says it governs room A, and which therefore projects its owner and grants into it.
             let mut guest = WorkspaceTree::default();
-            let guest_ws = guest.append_empty_workspace("Mine");
-            assert!(guest.set_room(guest_ws, room_a), "the guest joins room A");
+            let guest_ws = guest.join_room("Mine", room_a).expect("joins the room");
             guest
                 .room_authority
                 .insert(room_a, crate::shell::state::RoomAuthority::Local);
@@ -815,11 +881,9 @@ mod tests {
             let room_a = host_tree.room_of(a).expect("room A");
 
             let mut guest_tree = WorkspaceTree::default();
-            let guest_ws = guest_tree.append_empty_workspace("Placeholder");
-            assert!(
-                guest_tree.set_room(guest_ws, room_a),
-                "the guest joins room A"
-            );
+            let guest_ws = guest_tree
+                .join_room("Placeholder", room_a)
+                .expect("joins the room");
             // The invite names the host (hub 1) as room A's governor.
             assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
@@ -898,8 +962,7 @@ mod tests {
             let authority_key = iroh::SecretKey::generate();
             let guest = |name: &str| {
                 let mut tree = WorkspaceTree::default();
-                let workspace = tree.append_empty_workspace(name);
-                assert!(tree.set_room(workspace, room));
+                let workspace = tree.join_room(name, room).expect("joins the room");
                 // Each accepted the authority's invite, which pins it.
                 assert!(tree.pin_room_authority(room, PeerOrigin::peer(&authority_key.public())));
                 (tree.shared(), workspace)
@@ -982,11 +1045,9 @@ mod tests {
             let room_a = host_tree.room_of(a).expect("room A");
 
             let mut guest_tree = WorkspaceTree::default();
-            let guest_ws = guest_tree.append_empty_workspace("Placeholder");
-            assert!(
-                guest_tree.set_room(guest_ws, room_a),
-                "the guest joins room A"
-            );
+            guest_tree
+                .join_room("Placeholder", room_a)
+                .expect("joins the room");
             // The invite names the host (hub 1) as room A's governor.
             assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
@@ -1022,8 +1083,9 @@ mod tests {
             let (host_tree, a, _b) = host_with_two_rooms();
             let room_a = host_tree.room_of(a).expect("room A");
             let mut guest_tree = WorkspaceTree::default();
-            let guest_ws = guest_tree.append_empty_workspace("Placeholder");
-            assert!(guest_tree.set_room(guest_ws, room_a));
+            guest_tree
+                .join_room("Placeholder", room_a)
+                .expect("joins the room");
             assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
             let tree_a = host_tree.shared();
@@ -1053,8 +1115,9 @@ mod tests {
         let (host_tree, a, _b) = host_with_two_rooms();
         let room = host_tree.room_of(a).expect("room A");
         let mut guest_tree = WorkspaceTree::default();
-        let guest_ws = guest_tree.append_empty_workspace("Placeholder");
-        assert!(guest_tree.set_room(guest_ws, room));
+        let guest_ws = guest_tree
+            .join_room("Placeholder", room)
+            .expect("joins the room");
         assert!(guest_tree.pin_room_authority(room, PeerOrigin::hub(1)));
         let host = host_tree.shared();
         let guest = guest_tree.shared();
@@ -1407,7 +1470,7 @@ mod tests {
                     .workspaces
                     .iter()
                     .find(|w| w.name == "New")
-                    .map(|w| w.room)
+                    .map(crate::shell::state::Workspace::room)
                     .expect("the chrome's append mints a room")
             };
 
@@ -1421,6 +1484,346 @@ mod tests {
                 "shell-side add_workspace must produce automerge changes the \
                  peer-sync replica can ship to peers in that room (audit C-3: \
                  shared WorkspaceTreeHandle ties subsystems together)",
+            );
+        }
+    }
+
+    /// A title no other fixture string contains, so finding it anywhere in
+    /// the bytes a peer received means the window reached that peer.
+    const WITHDRAWN_TITLE: &str = "ssh prod-db secret";
+    const HOST_SALT: u16 = 0xCAFE;
+    const HOST_PERSON: [u8; 32] = [0x5E; 32];
+
+    #[derive(Clone, Copy, Debug)]
+    enum Withdrawal {
+        Closed,
+        LayoutTurnedPersonal,
+    }
+
+    /// Change columns may be compressed, so each change is decoded as well
+    /// as the raw bytes searched.
+    fn history_carries(doc: &mut automerge::AutoCommit, title: &str) -> bool {
+        doc.get_changes(&[])
+            .iter()
+            .any(|change| format!("{:?}", change.decode()).contains(title))
+    }
+
+    fn received_carries(messages: &[NeighbourMsg], title: &str) -> bool {
+        let needle = title.as_bytes();
+        let carries = |bytes: &[u8]| {
+            bytes.windows(needle.len()).any(|window| window == needle)
+                || automerge::Change::try_from(bytes)
+                    .is_ok_and(|change| format!("{:?}", change.decode()).contains(title))
+                || automerge::AutoCommit::load(bytes)
+                    .is_ok_and(|mut doc| history_carries(&mut doc, title))
+        };
+        messages.iter().any(|message| {
+            let wire = postcard::to_allocvec(message).expect("a neighbour message encodes");
+            carries(&wire)
+                || match message {
+                    NeighbourMsg::SyncResp { changes, .. } => {
+                        changes.iter().any(|bytes| carries(bytes))
+                    }
+                    NeighbourMsg::RoomArchive { documents, .. } => {
+                        documents.iter().any(|bytes| carries(bytes))
+                    }
+                    _ => false,
+                }
+        })
+    }
+
+    fn deliver(
+        from: &WorkspaceTreeReplica,
+        to: &mut WorkspaceTreeReplica,
+        id: u64,
+    ) -> Vec<NeighbourMsg> {
+        let sent = from.drain_outgoing();
+        for msg in &sent {
+            to.handle_from(&PeerOrigin::hub(id), msg);
+        }
+        sent
+    }
+
+    /// Room A, governed by the host (replica 1), where member B (replica 2)
+    /// was given a window titled [`WITHDRAWN_TITLE`] that was then withdrawn.
+    struct Withdrawn {
+        room: RoomId,
+        host: WorkspaceTreeHandle,
+        host_rep: WorkspaceTreeReplica,
+        member: WorkspaceTreeHandle,
+        member_rep: WorkspaceTreeReplica,
+    }
+
+    fn shared_then_withdrawn(withdrawal: Withdrawal) -> Withdrawn {
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
+        };
+        let (mut host_tree, a, _) = host_with_two_rooms();
+        let room = host_tree.room_of(a).expect("room A");
+        host_tree.set_salt_override(HOST_SALT);
+        host_tree.local_person = Some(HOST_PERSON);
+        let own = |counter: u64| {
+            (u64::from(HOST_SALT) << crate::shell::state::PEER_ID_SALT_SHIFT) | counter
+        };
+        let tab = own(3);
+        host_tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == a)
+            .expect("room A's workspace")
+            .strips = vec![Strip {
+            id: StripId::from(own(1)),
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: own(2),
+                tabs: vec![Tab {
+                    id: tab,
+                    title: WITHDRAWN_TITLE.into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Terminal,
+                        label: WITHDRAWN_TITLE.into(),
+                    },
+                    app_title: None,
+                }],
+                active_tab: tab,
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            }],
+        }];
+        host_tree.sync_room_doc(room);
+        let host = host_tree.shared();
+        let mut host_rep = WorkspaceTreeReplica::new(1, host.clone());
+
+        let mut member_tree = WorkspaceTree::default();
+        member_tree
+            .join_room("Placeholder", room)
+            .expect("B joins the room");
+        assert!(member_tree.pin_room_authority(room, PeerOrigin::hub(1)));
+        let member = member_tree.shared();
+        let mut member_rep = WorkspaceTreeReplica::new(2, member.clone());
+        member_rep.request_sync();
+        deliver(&member_rep, &mut host_rep, 2);
+        let to_member = deliver(&host_rep, &mut member_rep, 1);
+        assert!(
+            received_carries(&to_member, WITHDRAWN_TITLE),
+            "{withdrawal:?}: B is given the window while it is shared"
+        );
+
+        {
+            let mut tree = host.write();
+            match withdrawal {
+                Withdrawal::Closed => {
+                    tree.desktop
+                        .workspaces
+                        .iter_mut()
+                        .find(|w| w.id == a)
+                        .expect("room A's workspace")
+                        .strips
+                        .clear();
+                }
+                Withdrawal::LayoutTurnedPersonal => {
+                    let doc = tree.room_docs.get_mut(&room).expect("room A's document");
+                    automerge::transaction::Transactable::put(
+                        doc,
+                        ROOT,
+                        tilo_desktop_model::projection::ROOM_LAYOUT_KEY,
+                        tilo_desktop_model::projection::RoomLayout::Personal.id(),
+                    )
+                    .expect("the governor writes the room's layout scope");
+                    doc.commit();
+                }
+            }
+            tree.sync_room_doc(room);
+        }
+        member_rep.request_sync();
+        deliver(&member_rep, &mut host_rep, 2);
+        deliver(&host_rep, &mut member_rep, 1);
+        assert!(
+            tilo_desktop_model::projection::contents_of(
+                host.read().room_docs.get(&room).expect("room A's document")
+            )
+            .iter()
+            .flat_map(|strip| &strip.groups)
+            .flat_map(|group| &group.tabs)
+            .all(|shown| shown.title != WITHDRAWN_TITLE),
+            "{withdrawal:?}: the room no longer holds the window"
+        );
+        Withdrawn {
+            room,
+            host,
+            host_rep,
+            member,
+            member_rep,
+        }
+    }
+
+    /// A device that joins `room` as replica `id`, another device of the
+    /// host's person when `own`.
+    fn joining(
+        room: &Withdrawn,
+        id: u64,
+        own: bool,
+    ) -> (WorkspaceTreeHandle, WorkspaceTreeReplica) {
+        let mut tree = WorkspaceTree::default();
+        tree.join_room("Placeholder", room.room)
+            .expect("the device joins the room");
+        assert!(tree.pin_room_authority(room.room, PeerOrigin::hub(1)));
+        if own {
+            tree.local_person = Some(HOST_PERSON);
+            tree.authenticated_persons
+                .insert(PeerOrigin::hub(1), HOST_PERSON);
+            room.host
+                .write()
+                .authenticated_persons
+                .insert(PeerOrigin::hub(id), HOST_PERSON);
+        }
+        let handle = tree.shared();
+        let replica = WorkspaceTreeReplica::new(id, handle.clone());
+        (handle, replica)
+    }
+
+    /// `joiner` (replica `id`) asks every member for the room; what they
+    /// answered, which `joiner` took in.
+    fn ask_everyone(
+        room: &mut Withdrawn,
+        joiner: &mut WorkspaceTreeReplica,
+        id: u64,
+    ) -> Vec<NeighbourMsg> {
+        joiner.request_sync();
+        let asks = joiner.drain_outgoing();
+        assert!(
+            !asks.is_empty(),
+            "the device asks the room for its document"
+        );
+        for ask in &asks {
+            room.host_rep.handle_from(&PeerOrigin::hub(id), ask);
+            room.member_rep.handle_from(&PeerOrigin::hub(id), ask);
+        }
+        let mut received = room.host_rep.drain_outgoing();
+        received.extend(room.member_rep.drain_outgoing());
+        for msg in &received {
+            joiner.handle_from(&PeerOrigin::hub(1), msg);
+        }
+        received
+    }
+
+    #[test]
+    fn a_later_member_never_receives_a_window_withdrawn_before_it_joined() {
+        for withdrawal in [Withdrawal::Closed, Withdrawal::LayoutTurnedPersonal] {
+            let mut room = shared_then_withdrawn(withdrawal);
+            let (joiner, mut joiner_rep) = joining(&room, 3, false);
+            let received = ask_everyone(&mut room, &mut joiner_rep, 3);
+            assert!(
+                received
+                    .iter()
+                    .any(|msg| matches!(msg, NeighbourMsg::SyncResp { .. })),
+                "{withdrawal:?}: C is given the room"
+            );
+            assert_eq!(
+                joiner
+                    .read()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|w| w.room() == room.room)
+                    .expect("C's workspace of the room")
+                    .name,
+                ROOM_A_NAME,
+                "{withdrawal:?}: C holds the room as it stands"
+            );
+            assert!(
+                !received_carries(&received, WITHDRAWN_TITLE),
+                "{withdrawal:?}: in any byte C received"
+            );
+            let mut joiner = joiner.write();
+            assert!(
+                !history_carries(
+                    joiner
+                        .room_docs
+                        .get_mut(&room.room)
+                        .expect("C's room document"),
+                    WITHDRAWN_TITLE
+                ),
+                "{withdrawal:?}: in C's room document's history"
+            );
+            assert!(
+                !joiner.room_archive(room.room).iter().any(|saved| {
+                    automerge::AutoCommit::load(saved)
+                        .is_ok_and(|mut doc| history_carries(&mut doc, WITHDRAWN_TITLE))
+                }),
+                "{withdrawal:?}: in what C archived"
+            );
+            drop(joiner);
+        }
+    }
+
+    #[test]
+    fn a_member_who_was_given_a_window_keeps_it_archived_once_a_later_member_joins() {
+        for withdrawal in [Withdrawal::Closed, Withdrawal::LayoutTurnedPersonal] {
+            let mut room = shared_then_withdrawn(withdrawal);
+            let (_, mut joiner_rep) = joining(&room, 3, false);
+            ask_everyone(&mut room, &mut joiner_rep, 3);
+
+            room.member_rep.request_sync();
+            deliver(&room.member_rep, &mut room.host_rep, 2);
+            deliver(&room.host_rep, &mut room.member_rep, 1);
+            let mut member = room.member.write();
+            assert!(
+                !history_carries(
+                    member
+                        .room_docs
+                        .get_mut(&room.room)
+                        .expect("B's room document"),
+                    WITHDRAWN_TITLE
+                ),
+                "{withdrawal:?}: B builds on the room's new base"
+            );
+            assert!(
+                member.room_archive(room.room).iter().any(|saved| {
+                    automerge::AutoCommit::load(saved)
+                        .is_ok_and(|mut doc| history_carries(&mut doc, WITHDRAWN_TITLE))
+                }),
+                "{withdrawal:?}: B keeps the room's history from before C joined"
+            );
+            drop(member);
+        }
+    }
+
+    #[test]
+    fn the_persons_own_new_device_is_given_the_rooms_whole_history() {
+        for withdrawal in [Withdrawal::Closed, Withdrawal::LayoutTurnedPersonal] {
+            let mut room = shared_then_withdrawn(withdrawal);
+            let (_, mut joiner_rep) = joining(&room, 3, false);
+            ask_everyone(&mut room, &mut joiner_rep, 3);
+            let heads = room
+                .host
+                .write()
+                .room_docs
+                .get_mut(&room.room)
+                .expect("room A's document")
+                .get_heads();
+
+            let (own, mut own_rep) = joining(&room, 4, true);
+            let received = ask_everyone(&mut room, &mut own_rep, 4);
+            assert!(received_carries(&received, WITHDRAWN_TITLE));
+            assert!(
+                own.read().room_archive(room.room).iter().any(|saved| {
+                    automerge::AutoCommit::load(saved)
+                        .is_ok_and(|mut doc| history_carries(&mut doc, WITHDRAWN_TITLE))
+                }),
+                "{withdrawal:?}: the device holds the room's history from before C joined"
+            );
+            assert_eq!(
+                room.host
+                    .write()
+                    .room_docs
+                    .get_mut(&room.room)
+                    .expect("room A's document")
+                    .get_heads(),
+                heads,
+                "{withdrawal:?}: the person's own device is no new member"
             );
         }
     }

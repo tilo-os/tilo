@@ -36,11 +36,12 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             if (REPO / shared).exists():
                 (root / shared).symlink_to(REPO / shared)
         (root / "os/scripts").mkdir(parents=True)
+        (root / "os/image").mkdir(parents=True)
         (root / "os/usr").symlink_to(REPO / "os/usr")
         (root / "os/dev").symlink_to(REPO / "os/dev")
         (root / "os/kernel").symlink_to(REPO / "os/kernel")
         for name in ("os/Containerfile", "os/components.toml", "os/scripts/install-components.py",
-                     "os/scripts/build-thin-apps.sh"):
+                     "os/scripts/build-thin-apps.sh", "os/image/compile.sh"):
             shutil.copy(REPO / name, root / name)
         return root
 
@@ -62,7 +63,7 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             root = self.fixture()
             self.edit(root / "os/Containerfile", "COPY --from=component-files /image/windows/ /\n",
                       "COPY --from=component-files /image/windows/ /\n"
-                      "COPY --from=builder /out/tilo-example /usr/libexec/tilo-example\n")
+                      "COPY --from=apps-payload /out/tilo-example /usr/libexec/tilo-example\n")
             line = next(n for n, text in enumerate((root / "os/Containerfile").read_text().splitlines(), 1)
                         if "tilo-example" in text)
             errors = check.audit(root)
@@ -78,10 +79,10 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             errors = "\n".join(check.audit(root))
             self.assertIn("ships cargo bin 'tilo-cryptoo'", errors)
             self.assertIn("os/components.toml:", errors)
-        with self.subTest(phase='builder bin missing from manifest fails'):
+        with self.subTest(phase='compiled bin missing from manifest fails'):
             root = self.fixture()
-            self.edit(root / "os/Containerfile", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-new ")
-            self.assertIn("compiles --bin tilo-new", "\n".join(check.audit(root)))
+            self.edit(root / "os/image/compile.sh", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-new ")
+            self.assertIn("builds --bin tilo-new", "\n".join(check.audit(root)))
         with self.subTest(phase='boot component needs existing scenario'):
             root = self.fixture()
             manifest = root / "os/components.toml"
@@ -106,10 +107,10 @@ class ComponentManifestPolicyTests(unittest.TestCase):
                 "/image/usr/share/tilo/font-catalogs", "/image/elsewhere"))
             self.assertIn("direct file /usr/share/tilo/font-catalogs/ (component 'apps+runtime') is never copied",
                           "\n".join(check.audit(root)))
-        with self.subTest(phase='a runtime publisher key travels from the builder with its runtime'):
+        with self.subTest(phase='a runtime publisher key travels from the packing stage with its runtime'):
             root = self.fixture()
             self.edit(root / "os/Containerfile",
-                      "--mount=type=bind,from=builder,source=/out/runtime-bundle-publisher.hex,",
+                      "--mount=type=bind,from=apps-payload,source=/out/runtime-bundle-publisher.hex,",
                       "--mount=type=bind,from=native-builder-payload,source=/out/runtime-bundle-publisher.hex,")
             self.assertIn("direct file /usr/share/tilo/runtime-bundle-publisher.hex (component 'apps+runtime') "
                           "is never copied", "\n".join(check.audit(root)))
@@ -130,7 +131,7 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             self.edit(root / "os/Containerfile",
                       "--mount=type=bind,from=native-builder-payload,source=/usr/share/tilo-apps,"
                       "target=/run/tilo-apps-built,ro",
-                      "--mount=type=bind,from=builder,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro")
+                      "--mount=type=bind,from=apps-payload,source=/usr/share/tilo-apps,target=/run/tilo-apps-built,ro")
             self.assertIn("copy the seeded store whole", "\n".join(check.audit(root)))
         with self.subTest(phase='unapplied layer fails'):
             root = self.fixture()
@@ -219,7 +220,7 @@ class InstallerTests(unittest.TestCase):
                     notice = layer / "desktop-binaries/usr/share/licenses/tilo-speech-worker/LICENSE"
                     self.assertEqual(notice.read_bytes(), (REPO / license_source).read_bytes())
                     self.assertEqual(notice.stat().st_mode & 0o777, 0o644)
-                    self.assertTrue((layer / "desktop-binaries/usr/bin/tilo-speech-worker").is_file())
+                    self.assertTrue((layer / "desktop-binaries/usr/libexec/tilo/tilo-speech-worker").is_file())
 
     def test_shell_layer_requires_and_installs_its_exact_startup_wrapper(self):
         copies = [pair
@@ -356,7 +357,12 @@ class InstallerTests(unittest.TestCase):
                 root = Path(temporary)
                 out = self.build_outputs(root)
                 image = root / "image"
-                status = self.run_installer("--from", str(out), "--dest", str(image), "--by-layer", "--all")
+                # The pinned Cosign is an external asset the image build is given; its
+                # verification has a test of its own.
+                cosign = root / "cosign"
+                cosign.write_bytes(b"\x7fELF cosign fixture")
+                with mock.patch.object(installer, "native_cosign", return_value=cosign):
+                    status = self.run_installer("--from", str(out), "--dest", str(image), "--by-layer", "--all")
                 self.assertEqual(status, 0)
                 manifest = installer.load_manifest(REPO / "os/components.toml")
                 expected = {f"{e.layer}{e.to}" for e in manifest.files()
@@ -395,11 +401,13 @@ class InstallerTests(unittest.TestCase):
                 status = self.run_installer("--from", str(out), "--dest", str(image),
                                             "vm-cli")
                 self.assertEqual(status, 0)
-                binary = image / "usr/bin/tilo-vm"
+                binary = image / "usr/libexec/tilo/tilo-vm"
                 self.assertEqual(binary.read_bytes(), b"\x7fELFtilo-vm")
                 self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
                 self.assertEqual({p.relative_to(image).as_posix() for p in image.rglob("*")
-                                  if p.is_file()}, {"usr/bin/tilo-vm"})
+                                  if p.is_file()}, {"usr/libexec/tilo/tilo-vm"})
+                # `tilo device` drives it; the old name is a link to tilo.
+                self.assertEqual(os.readlink(image / "usr/bin/tilo-vm"), "tilo")
         with self.subTest(phase='dev cargo plan adds dev features'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             dev = installer.select_components(manifest, [], False, True)

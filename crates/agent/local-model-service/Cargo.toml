@@ -79,6 +79,13 @@ path = "src/main.rs"
 [dependencies]
 tilo-paths.workspace = true
 agent-provider-config = { path = "../provider-config" }
+# The person's Hugging Face token, read from the device vault Settings
+# stores it in.
+accounts = { path = "../../system/accounts" }
+# Renewing a Hugging Face sign-in stored there, and signing in by device
+# code from the command line.
+account-custody = { path = "../../system/account-custody", default-features = false, features = ["hugging-face"] }
+tilo-oauth = { path = "../../system/tilo-oauth" }
 system-extension = { path = "../../system/system-extension" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
@@ -87,6 +94,7 @@ serde.workspace = true
 serde_json.workspace = true
 wire-frame = { path = "../../system/wire-frame" }
 sha2.workspace = true
+sha1 = "0.11"
 hex.workspace = true
 getrandom.workspace = true
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
@@ -105,6 +113,7 @@ workspace-hack = { version = "0.1" }
 [dev-dependencies]
 wasmi = { version = "=1.1.0", default-features = false, features = ["std", "simd"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [build-dependencies]
 cc = "=1.2.56"
@@ -115,3 +124,5 @@ workspace = true
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }
+# Hands the model file a person chose to the service as a descriptor.
+runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }

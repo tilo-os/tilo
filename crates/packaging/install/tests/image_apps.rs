@@ -99,7 +99,7 @@ impl Machine {
     }
 
     fn command(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_tilo-install"));
+        let mut c = Command::new(tilo_test_env::package_binary!("tilo-install"));
         c.env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.root.path().join("home"))

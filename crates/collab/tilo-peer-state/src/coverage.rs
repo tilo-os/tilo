@@ -131,10 +131,6 @@ pub(crate) fn route_values(doc: &AutoCommit) -> Result<BTreeMap<String, Vec<u8>>
     Ok(crate::governed_routes::route_bytes(doc, LAYOUT)?.unwrap_or_default())
 }
 /// The coverage rows recorded in `doc`.
-///
-/// # Errors
-///
-/// Returns an error if a row is malformed.
 pub fn entries(doc: &AutoCommit) -> Result<BTreeMap<String, Coverage>, String> {
     let mut rows = BTreeMap::new();
     for (key, bytes) in route_values(doc)? {
@@ -219,10 +215,6 @@ pub(crate) fn put_all(doc: &mut AutoCommit, coverages: Vec<Coverage>) -> Result<
     Ok(())
 }
 /// Check that `after` never regresses a coverage row of `before`.
-///
-/// # Errors
-///
-/// Returns an error if a row is removed or regresses.
 pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), String> {
     let old = before.map(entries).transpose()?.unwrap_or_default();
     let new = entries(after)?;

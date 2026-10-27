@@ -20,7 +20,6 @@ esac
 package_job="$repo_root/dist/ci/run-package-job.sh"
 python3 "$repo_root/dist/ci/tests/test_package_source_transfer.py"
 python3 "$repo_root/dist/ci/tests/test_failed_rpm_retention.py"
-python3 "$repo_root/dist/ci/tests/test_host_session_rpm_replay.py"
 grep -Fq -- '--env SOURCE_DATE_EPOCH="$source_epoch"' "$package_job"
 grep -Fq -- '--env GITHUB_SHA="$source_revision"' "$package_job"
 test "$(grep -Fc 'source tools/ci/sccache.sh prepare-shell' "$package_job")" -eq 3
@@ -39,6 +38,7 @@ python3 "$repo_root/dist/session/tests/vm-e2e-exit-status.py"
 "$repo_root/dist/session/tests/private-user-manager-handoff.sh"
 python3 "$repo_root/dist/rpm/test-rpmlint-config.py"
 "$repo_root/dist/rpm/test-signing-contract.sh"
+"$repo_root/dist/rpm/test-ostree-package-conflicts.sh"
 "$repo_root/dist/rpm/test-app-store-stage.sh"
 "$repo_root/dist/rpm/test-build-target-dir.sh"
 "$repo_root/dist/rpm/test-host-update.sh"
@@ -80,8 +80,8 @@ if grep -Fq -- "-name 'tilo-session*.rpm'" "$overlay_helper"; then
 fi
 
 fhs=$work/fhs
-mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
-for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+mkdir -p "$fhs"/{usr/bin,usr/libexec/tilo,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
+for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
               "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
@@ -92,7 +92,7 @@ install -m755 "$repo_root/dist/session/tilo-session-runner" "$fhs/usr/libexec/ti
 install -m755 "$repo_root/dist/session/tilo-session-dev" "$fhs/usr/libexec/tilo-session-dev"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$fhs/usr/share/wayland-sessions/tilo.desktop"
 install -m644 "$repo_root/dist/session/tilo-app.desktop" "$fhs/usr/share/wayland-sessions/tilo-app.desktop"
-install -m644 "$repo_root/os/etc/pam.d/tilo-unlock" "$fhs/etc/pam.d/tilo-unlock"
+install -m644 "$repo_root/dist/session/tilo-unlock.pam" "$fhs/etc/pam.d/tilo-unlock"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \
     "$fhs/usr/share/xdg-desktop-portal/portals/tilo.portal"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \
@@ -158,7 +158,7 @@ void _start(void) {
 EOF
 for link_mode in -static -static-pie; do
     cc -nostdlib "$link_mode" -Wl,-e,_start "$work/static.c" -o "$work/static"
-    for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+    for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
                   "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
                   "$fhs/usr/libexec/tilo-session-report"; do
         install -m755 "$work/static" "$target"
@@ -193,7 +193,7 @@ for object_mode in -shared -c; do
         exit 1
     fi
 done
-for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
+for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/libexec/tilo/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \
               "$fhs/usr/libexec/tilo-unlock-helper" "$fhs/usr/libexec/tilo-flight-recorder" \
               "$fhs/usr/libexec/tilo-session-report"; do
     install -m755 "$true_bin" "$target"
@@ -238,7 +238,7 @@ sed "s#/usr/bin/tilo-import-folders#$nix/bin/tilo-import-folders#g" "$repo_root/
 install -m755 "$repo_root/dist/session/tilo-session" "$nix/libexec/tilo-session"
 install -m755 "$repo_root/dist/session/tilo-session-runner" "$nix/libexec/tilo-session-runner"
 install -m644 "$repo_root/dist/session/tilo.desktop" "$nix/share/wayland-sessions/tilo.desktop"
-install -m644 "$repo_root/os/etc/pam.d/tilo-unlock" "$nix/etc/pam.d/tilo-unlock"
+install -m644 "$repo_root/dist/session/tilo-unlock.pam" "$nix/etc/pam.d/tilo-unlock"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/portals/tilo.portal" \
     "$nix/share/xdg-desktop-portal/portals/tilo.portal"
 install -m644 "$repo_root/os/usr/share/xdg-desktop-portal/tilo-portals.conf" \

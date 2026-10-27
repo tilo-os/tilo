@@ -175,7 +175,7 @@ as_root vm_c "set -eu
   if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
     firewall-cmd --add-port=3340/tcp >/dev/null
   fi
-  systemd-run --unit=tilo-reach-relay /usr/bin/tilo-device-admin relay --listen 0.0.0.0:3340 >/dev/null" \
+  systemd-run --unit=tilo-reach-relay /usr/libexec/tilo/tilo-device-admin relay --listen 0.0.0.0:3340 >/dev/null" \
   || die "VM C could not start the relay"
 for each in vm_a vm_b; do
   for attempt in $(seq 1 60); do
@@ -204,7 +204,7 @@ join() {
     --label $label --capability own --out ~/reach/$label.cert && base64 -w0 ~/reach/$label.cert")"
   "$each" ssh "install -d -m 0700 \$HOME/.config/tilo $identity_dir && base64 -d > /tmp/member.cert" <<<"$cert"
   printf '%s\n' "$TILO_PASS" \
-    | "$each" ssh "sudo -S -p '' tilo-enroll install-cert --identity-dir $identity_dir --cert /tmp/member.cert" >/dev/null \
+    | "$each" ssh "sudo -S -p '' tilo-enroll install-cert --identity-dir $identity_dir --person-uid \$(id -u) --cert /tmp/member.cert" >/dev/null \
     || die "$each could not install its certificate"
   printf '%s\n' "$device"
 }

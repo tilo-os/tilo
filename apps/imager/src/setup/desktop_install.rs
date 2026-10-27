@@ -1033,7 +1033,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn install_refuses_untrusted_artifacts_and_identity_before_mutation() {
-        // Phase `refusal_never_invokes_package_manager`.
         {
             for case in [
                 "unknown",
@@ -1099,7 +1098,6 @@ mod tests {
             }
         }
 
-        // Phase `production_catalog_refuses_local_artifact`.
         {
             let mut backend = Recording::new();
             let request =
@@ -1118,7 +1116,6 @@ mod tests {
             assert_eq!(backend.installs, 0);
         }
 
-        // Phase `package_identity_must_match_catalog_before_mutation`.
         {
             let release = release();
             assert!(
@@ -1142,7 +1139,6 @@ mod tests {
             }
         }
 
-        // Phase `fixed_pacman_policy_refuses_default_yes_key_imports_and_replacements`.
         {
             let (_, args) = native::install_command(
                 PackageManager::Pacman,
@@ -1162,10 +1158,8 @@ mod tests {
             );
         }
     }
-    /// Pinned staging inputs.
     #[test]
     fn pinned_staging_accepts_only_regular_nonsymlink_files() {
-        // Phase `pinned_staging_rejects_symlinks_and_special_files`.
         {
             use std::os::unix::fs::symlink;
             let temp = tempfile::tempdir().unwrap();
@@ -1180,7 +1174,6 @@ mod tests {
             assert_eq!(std::fs::read(&staged.path).unwrap(), b"package");
         }
 
-        // Phase `pinned_input_accepts_only_regular_nonsymlink_files`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("input");
@@ -1201,7 +1194,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn install_verification_survives_lost_channels_and_never_fakes_success() {
-        // Phase `install_finishes_verification_after_lost_progress_channel`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("input");
@@ -1242,7 +1234,6 @@ mod tests {
             );
         }
 
-        // Phase `final_probe_happens_after_package_metadata_and_no_failure_becomes_success`.
         {
             for changed in [true, false] {
                 let temp = tempfile::tempdir().unwrap();
@@ -1282,7 +1273,6 @@ mod tests {
             }
         }
 
-        // Phase `a_lost_diagnostic_channel_still_verifies_but_never_completes`.
         {
             let temp = tempfile::tempdir().unwrap();
             let input = temp.path().join("input");
@@ -1319,7 +1309,6 @@ mod tests {
             assert!(!complete);
         }
 
-        // Phase `capture_error_keeps_begun_transaction_pipes_alive_through_terminal_work`.
         {
             let temp = tempfile::tempdir().unwrap();
             let marker = temp.path().join("terminal-work-completed");
@@ -1351,14 +1340,12 @@ mod tests {
         }
     }
 
-    /// Fixed native adapters, process recording and installed contract.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn native_commands_use_fixed_adapters_and_verify_the_installed_contract() {
-        // Phase `native_commands_use_fixed_adapters_and_exact_staged_argument`.
         {
             let path = Path::new("/var/tmp/private/package with spaces.rpm");
             let (program, args) = native::install_command(PackageManager::Dnf, path);
@@ -1399,7 +1386,6 @@ mod tests {
             );
         }
 
-        // Phase `installed_contract_rejects_wrong_exec_or_missing_wrapper_flags`.
         {
             assert!(
                 native::validate_session(
@@ -1437,7 +1423,6 @@ mod tests {
             );
         }
 
-        // Phase `recording_process_captures_terminal_status_without_shell_interpolation`.
         {
             let result =
                 native::run_command("/usr/bin/printf", &["%s".into(), "a;$(false)".into()], true)
@@ -1542,10 +1527,8 @@ mod tests {
         assert_eq!(outcome.session_entry, Path::new(SESSION_ENTRY));
         println!("Native package transaction verified; graphical login remains UNPROVED.");
     }
-    /// Diagnostics privacy.
     #[test]
     fn native_diagnostics_stay_private_on_success_and_failure() {
-        // Phase `native_diagnostics_stay_private_and_do_not_leak_credentials_to_failure`.
         {
             use std::os::unix::fs::PermissionsExt;
             let temp = tempfile::tempdir().unwrap();
@@ -1572,7 +1555,6 @@ mod tests {
             );
         }
 
-        // Phase `successful_transaction_preserves_only_private_diagnostics`.
         {
             let temp = tempfile::tempdir().unwrap();
             let input = temp.path().join("input");

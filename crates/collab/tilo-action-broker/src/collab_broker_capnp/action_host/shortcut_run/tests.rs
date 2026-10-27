@@ -68,11 +68,21 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn new() -> Self {
+        Self::with_shortcuts(&[])
+    }
+
+    /// A fixture whose workspace also saves `extra`, appended to the ones
+    /// every scenario has.
+    fn with_extra(extra: tilo_automation::Shortcut) -> Self {
+        Self::with_shortcuts(&[extra])
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario, end to end, reads as one test"
     )]
-    fn new() -> Self {
+    fn with_shortcuts(extra: &[tilo_automation::Shortcut]) -> Self {
         let scratch = tempfile::tempdir().unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment
@@ -101,7 +111,7 @@ impl Fixture {
             crate::collab_broker_capnp::principal_id_for_root(certificate.user_public_key);
         let mut workspace = Workspace::new(WorkspaceId(9), "Shortcuts");
         workspace.set_owner(principal.clone());
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         workspace.shortcuts.push(
             serde_json::from_value(serde_json::json!({
                 "id": "echo", "name": "Echo", "steps": [], "output": {"literal": "done"},
@@ -144,6 +154,7 @@ impl Fixture {
             }
             workspace.shortcuts.push(shortcut);
         }
+        workspace.shortcuts.extend_from_slice(extra);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge) = CapnpBrokerState::new_configured(
@@ -222,7 +233,7 @@ impl Fixture {
         reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
     )]
     async fn finish(&self) {
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tilo_test_env::within("the shortcut completes", async {
             while !self
                 .state
                 .action_observe(&self.caller, &self.request.invocation)
@@ -231,8 +242,7 @@ impl Fixture {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .expect("the shortcut completes");
+        .await;
     }
 }
 
@@ -319,13 +329,12 @@ async fn direct_palette_keyboard_and_unattended_runs_cross_signed_barriers() {
         let evidence = record.admission.as_ref().expect("direct run is signed");
         crate::action_evidence::verify(evidence.public_receipt(), &evidence.public_receipt().facts)
             .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tilo_test_env::within("the shortcut run", async {
             while !fixture.state.has_finished_shortcut_runs() {
                 tokio::task::yield_now().await;
             }
         })
-        .await
-        .unwrap();
+        .await;
         let finished = fixture.state.take_finished_shortcut_runs();
         assert_eq!(finished.len(), 1);
         let expected = trigger
@@ -589,6 +598,184 @@ async fn propagated_custody_does_not_bypass_the_shortcut_grant() {
         finished[0].report.outcome,
         tilo_automation::RunOutcome::Failed { .. }
     ));
+}
+
+/// A shortcut that runs the fixture's "denied" shortcut, whose run it cannot
+/// do: the step fails, and every wait after it is a step that will never
+/// finish, which is where a stop reaches a run.
+fn waiting_shortcut() -> tilo_automation::Shortcut {
+    tilo_automation::Shortcut {
+        id: "waiting".into(),
+        name: "Waiting".into(),
+        inputs: Vec::new(),
+        steps: vec![run_echo(), ask_a_person()],
+        step_timeout_secs: None,
+        output: None,
+        grant: vec![tilo_automation::action_rule(
+            SHORTCUTS_APP_ID,
+            tilo_automation::SHORTCUT_RESOURCE_KIND,
+            None,
+            "run",
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+        )],
+        triggers: Vec::new(),
+        saved_by: None,
+    }
+}
+
+/// The one step [`waiting_shortcut`] ends at: asking a person a question no
+/// unattended run may answer, so the run is at that step when a stop lands.
+fn ask_a_person() -> tilo_automation::Step {
+    tilo_automation::Step::new(
+        "ask",
+        tilo_automation::StepKind::Ask {
+            param: tilo_actions::ActionParam::required(
+                "which",
+                tilo_actions::ParamType::Text,
+                "Which one?",
+            ),
+        },
+    )
+}
+
+fn run_echo() -> tilo_automation::Step {
+    tilo_automation::Step::new(
+        "first",
+        tilo_automation::StepKind::Invoke {
+            action: tilo_actions::ActionKey::new(
+                SHORTCUTS_APP_ID,
+                tilo_automation::SHORTCUT_RESOURCE_KIND,
+                "run",
+            ),
+            resource: tilo_automation::Selector::Fixed(tilo_automation::shortcut_resource_id(
+                "echo",
+            )),
+            args: std::collections::BTreeMap::default(),
+            appearance: None,
+        },
+    )
+}
+
+/// Whether a finished run is waiting, without taking it.
+#[allow(
+    clippy::future_not_send,
+    reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
+)]
+async fn wait_for_finished(fixture: &Fixture) {
+    tilo_test_env::within("the shortcut finishes", async {
+        while !fixture.state.has_finished_shortcut_runs() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
+#[tokio::test(flavor = "current_thread")]
+async fn a_stopped_run_ends_as_cancelled_keeping_the_steps_it_reached() {
+    let fixture = Fixture::with_extra(waiting_shortcut());
+    let room = fixture.caller.room().unwrap();
+    fixture
+        .state
+        .start_interactive_shortcut_run(&fixture.caller, room, "waiting", serde_json::Map::new())
+        .unwrap();
+    // "waiting" goes as soon as it is started; the child it runs joins it.
+    tilo_test_env::within("the run starts", async {
+        while fixture.state.running_shortcut_runs(room).is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let stopped = fixture.state.stop_shortcut_runs(
+        room,
+        &automation::StopRequest::Shortcut("waiting".into()),
+        "asked",
+    );
+    assert_eq!(
+        stopped
+            .iter()
+            .map(|run| run.shortcut.as_str())
+            .collect::<Vec<_>>(),
+        vec!["waiting"],
+        "the stop names the run going: {stopped:?}"
+    );
+    assert_eq!(stopped[0].name, "Waiting", "and what to call it");
+    assert_eq!(stopped[0].stopped.as_deref(), Some("asked"));
+    assert!(
+        fixture
+            .state
+            .stop_shortcut_runs(
+                room,
+                &automation::StopRequest::Shortcut("waiting".into()),
+                "asked"
+            )
+            .is_empty(),
+        "a run is told to stop once, not again"
+    );
+    let mut reported = None;
+    tilo_test_env::within("the stopped run ends", async {
+        loop {
+            if let Some(finished) = fixture
+                .state
+                .take_finished_shortcut_runs()
+                .into_iter()
+                .find(|run| run.report.shortcut == "waiting")
+            {
+                reported = Some(finished);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let reported = reported.expect("the stopped run still reports");
+    assert_eq!(reported.report.shortcut, "waiting");
+    assert!(
+        matches!(
+            reported.report.outcome,
+            tilo_automation::RunOutcome::Cancelled { .. }
+        ),
+        "a stopped run is cancelled, not failed: {:?}",
+        reported.report
+    );
+    assert!(
+        fixture.state.running_shortcut_runs(room).is_empty(),
+        "a stopped run is no longer going"
+    );
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the test keeps its fixture and guards alive through its assertions"
+)]
+#[tokio::test(flavor = "current_thread")]
+async fn stopping_a_shortcut_that_is_not_running_stops_nothing_and_is_no_error() {
+    let fixture = Fixture::new();
+    let room = fixture.caller.room().unwrap();
+    let stopped = fixture.state.stop_shortcut_runs(
+        room,
+        &automation::StopRequest::Shortcut("echo".into()),
+        "asked",
+    );
+    assert!(stopped.is_empty());
+    // The same command after a run finished is what somebody wanted anyway:
+    // nothing is going, and nothing complains.
+    let fixture = Fixture::new();
+    fixture.invoke().await.unwrap();
+    fixture.finish().await;
+    wait_for_finished(&fixture).await;
+    let _ = fixture.state.take_finished_shortcut_runs();
+    let room = fixture.caller.room().unwrap();
+    assert!(
+        fixture
+            .state
+            .stop_shortcut_runs(room, &automation::StopRequest::All, "asked")
+            .is_empty()
+    );
 }
 
 #[allow(

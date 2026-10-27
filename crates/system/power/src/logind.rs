@@ -59,10 +59,6 @@ impl LogindManager {
 
     /// `Manager.CanSuspend()` → `"yes"` / `"no"` / `"na"` / `"challenge"`. Used to decide whether
     /// a suspend request is even worth issuing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `CanSuspend` call fails.
     pub async fn can_suspend(&self) -> zbus::Result<String> {
         self.proxy.call("CanSuspend", &()).await
     }
@@ -71,11 +67,6 @@ impl LogindManager {
     /// means "do it without a polkit prompt" (the session user is authorized). The real,
     /// irreversible-looking call; the caller must have consulted policy and the inhibitor
     /// registry first.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `Suspend` call fails (e.g. refused by policykit, or logind is
-    /// unreachable).
     pub async fn suspend(&self, interactive: bool) -> zbus::Result<()> {
         self.proxy.call("Suspend", &(interactive)).await
     }
@@ -86,11 +77,6 @@ impl LogindManager {
     /// * `mode` — `"block"` (veto) or `"delay"` (up to `InhibitDelayMaxSec`, for cleanup before proceeding).
     ///
     /// The returned [`LogindInhibitor`] holds the fd open; drop it to release.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `Inhibit` call fails (e.g. an invalid `what`/`mode`, or logind
-    /// is unreachable).
     pub async fn inhibit(
         &self,
         what: &str,
@@ -107,10 +93,6 @@ impl LogindManager {
 
     /// `Manager.ListInhibitors()` → `(what, who, why, mode, uid, pid)` rows. Used by tests to
     /// prove an [`Self::inhibit`] lock actually landed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `ListInhibitors` call fails.
     pub async fn list_inhibitors(
         &self,
     ) -> zbus::Result<Vec<(String, String, String, String, u32, u32)>> {
@@ -119,10 +101,6 @@ impl LogindManager {
 
     /// Subscribe to `PrepareForSleep(bool)` — `true` just before the system sleeps, `false` just
     /// after it resumes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if subscribing to the `PrepareForSleep` signal fails.
     pub async fn receive_prepare_for_sleep(
         &self,
     ) -> zbus::Result<zbus::proxy::SignalStream<'static>> {
@@ -213,19 +191,18 @@ mod tests {
                 "our inhibitor should be listed while held"
             );
 
-            // Releasing the fd removes it.
             drop(holder);
-            // logind updates asynchronously; retry briefly.
-            let mut gone = false;
-            for _ in 0..20 {
-                let listed = m.list_inhibitors().await.expect("ListInhibitors");
-                if !listed.iter().any(|(_w, _who, w, _m, _u, _p)| w == &why) {
-                    gone = true;
-                    break;
+            // logind updates asynchronously.
+            tilo_test_env::within("the inhibitor to leave logind's list", async {
+                loop {
+                    let listed = m.list_inhibitors().await.expect("ListInhibitors");
+                    if !listed.iter().any(|(_w, _who, w, _m, _u, _p)| w == &why) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            }
-            assert!(gone, "inhibitor should disappear after the fd is dropped");
+            })
+            .await;
         }
         // Phase `delegate_handled_keys_takes_a_block_lock`.
         async fn delegate_handled_keys_takes_a_block_lock() {

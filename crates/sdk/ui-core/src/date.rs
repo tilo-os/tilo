@@ -110,7 +110,6 @@ mod tests {
 
     #[test]
     fn civil_date_arithmetic_matches_the_calendar_and_saturates() {
-        // Case `round_trips_across_eras`.
         {
             for days in -800_000..=800_000 {
                 let (y, m, d) = civil_from_days(days);
@@ -118,7 +117,6 @@ mod tests {
             }
         }
 
-        // Case `known_anchors`.
         {
             assert_eq!(days_from_civil(1970, 1, 1), 0);
             assert_eq!(days_from_civil(2000, 1, 1), 10_957);
@@ -128,7 +126,6 @@ mod tests {
             assert_eq!(civil_from_days(-719_468), (0, 3, 1));
         }
 
-        // Case `weekday_known_dates`.
         {
             assert_eq!(weekday(days_from_civil(1970, 1, 1)), 4);
             assert_eq!(weekday(days_from_civil(2000, 1, 1)), 6);
@@ -140,7 +137,6 @@ mod tests {
             assert!(weekday(i64::MIN) < 7 && weekday(i64::MAX) < 7);
         }
 
-        // Case `days_in_month_matches_the_calendar`.
         {
             for year in 1_590..2_410 {
                 for month in 1..=12 {
@@ -158,7 +154,6 @@ mod tests {
             assert_eq!(days_in_month(-4, 2), 29);
         }
 
-        // Case `absurd_inputs_saturate_instead_of_wrapping`.
         {
             assert!(days_from_civil(i64::MAX, 12, 31) >= days_from_civil(200_000, 1, 1));
             assert!(days_from_civil(i64::MIN, 1, 1) <= days_from_civil(-200_000, 1, 1));

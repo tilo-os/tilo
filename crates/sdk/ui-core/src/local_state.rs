@@ -674,7 +674,6 @@ mod tests {
 
     #[test]
     fn local_state_shares_value_and_revision_across_clones_threads_and_bindings() {
-        // Case `clones_share_typed_value_and_revision`.
         {
             let state = LocalState::new(vec![1, 2]);
             let clone = state.clone();
@@ -690,7 +689,6 @@ mod tests {
             assert_eq!(clone.revision(), 2);
         }
 
-        // Case `text_sink_accepts_text_input_callback_shape`.
         {
             let state = LocalState::new(String::new());
             let mut sink = state.text_sink();
@@ -698,7 +696,6 @@ mod tests {
             assert_eq!(state.get(), "漢字");
         }
 
-        // Case `widget_binding_polls_and_publishes_without_echoing_its_own_write`.
         {
             let state = LocalState::new(String::from("one"));
             let (initial, mut binding) = LocalBinding::new(&state);
@@ -714,7 +711,6 @@ mod tests {
             assert_eq!(binding.poll(), None, "a widget does not echo its own write");
         }
 
-        // Case `local_state_can_cross_a_worker_thread`.
         {
             let state = LocalState::new(String::from("loading"));
             let worker = state.clone();
@@ -725,7 +721,6 @@ mod tests {
             assert_eq!(state.revision(), 1);
         }
 
-        // Case `background_writer_wakes_once_after_each_completed_mutation`.
         {
             let (scope, rx) = bound_scope();
             let state = {
@@ -741,7 +736,6 @@ mod tests {
             assert_eq!(rx.try_iter().count(), 2);
         }
 
-        // Case `writer_publication_before_binding_flushes_one_pending_event`.
         {
             let mut scope = WakeScope::new();
             let state = {
@@ -769,7 +763,6 @@ mod tests {
 
     #[test]
     fn latest_task_and_request_reject_stale_or_cancelled_completions() {
-        // Case `latest_task_rejects_an_older_completion`.
         {
             let task = LatestTask::new(0);
             let state = task.state();
@@ -784,7 +777,6 @@ mod tests {
             assert_eq!(state.get(), 20);
         }
 
-        // Case `latest_task_cancel_prevents_a_late_worker_overwrite`.
         {
             let task = LatestTask::new("idle");
             let state = task.state();
@@ -797,7 +789,6 @@ mod tests {
             assert_eq!(state.get(), "cancelled");
         }
 
-        // Case `latest_request_drains_only_the_current_completion`.
         {
             let mut request = LatestRequest::new();
             let first = request.begin();
@@ -813,7 +804,6 @@ mod tests {
             assert_eq!(request.try_take(), None);
         }
 
-        // Case `latest_request_cancel_rejects_late_work`.
         {
             let mut request = LatestRequest::new();
             let completion = request.begin();
@@ -829,7 +819,6 @@ mod tests {
 
     #[test]
     fn exhausted_revisions_and_generations_are_never_reissued() {
-        // Case `exhausted_local_state_revision_leaves_value_and_callback_untouched`.
         {
             let state = LocalState::new(String::from("before"));
             state.inner.revision.store(u64::MAX, Ordering::Release);
@@ -845,7 +834,6 @@ mod tests {
             assert_eq!(state.revision(), u64::MAX);
         }
 
-        // Case `exhausted_latest_request_never_reissues_a_completion_generation`.
         {
             let mut request = LatestRequest::<()>::new();
             request.generation.store(u64::MAX - 1, Ordering::Release);
@@ -864,7 +852,6 @@ mod tests {
             assert!(!stale.complete(()));
         }
 
-        // Case `exhausted_latest_task_does_not_publish_a_new_run`.
         {
             let task = LatestTask::new("idle");
             let state = task.state();
@@ -882,7 +869,6 @@ mod tests {
             assert_eq!(state.get(), "cancelled");
         }
 
-        // Case `closed_zero_generation_fallbacks_are_permanently_stale`.
         {
             let mut scope = WakeScope::new();
             let (task, mut request) = {
@@ -904,7 +890,6 @@ mod tests {
 
     #[test]
     fn writers_tasks_and_requests_keep_the_state_creation_owner() {
-        // Case `writer_keeps_creation_owner_when_requested_under_another_scope`.
         {
             let (mut a, a_rx) = bound_scope();
             let (b, b_rx) = bound_scope();
@@ -930,7 +915,6 @@ mod tests {
             assert!(b.accepts(&b_rx.try_recv().unwrap()));
         }
 
-        // Case `task_begin_under_another_scope_keeps_the_state_creation_owner`.
         {
             let (a, a_rx) = bound_scope();
             let (b, b_rx) = bound_scope();
@@ -952,7 +936,6 @@ mod tests {
             assert_eq!(task.state().get(), 2);
         }
 
-        // Case `request_begin_keeps_owner_and_closed_inbox_discards_queued_result`.
         {
             let (mut a, a_rx) = bound_scope();
             let (b, b_rx) = bound_scope();
@@ -978,7 +961,6 @@ mod tests {
             assert!(!a.accepts(&event));
         }
 
-        // Case `update_may_publish_second_state_and_close_its_scope`.
         {
             let (mut scope, rx) = bound_scope();
             let (first, second) = {
@@ -1000,7 +982,6 @@ mod tests {
 
     #[test]
     fn closing_the_state_rejects_later_publications_and_work() {
-        // Case `closed_state_rejects_direct_writer_and_binding_publications`.
         {
             let (mut scope, rx) = bound_scope();
             let state = {
@@ -1020,7 +1001,6 @@ mod tests {
             assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
         }
 
-        // Case `authorized_update_can_finish_after_nonblocking_close`.
         {
             let (mut scope, rx) = bound_scope();
             let state = {
@@ -1038,7 +1018,6 @@ mod tests {
                 })
             });
             tilo_test_env::recv("the mutation callback to start", &entered_rx);
-            // If close waits for the mutation callback, the hang-bounded wait fails the test.
             scope.close();
             let replacement_scope = WakeScope::new();
             let replacement = {
@@ -1054,7 +1033,6 @@ mod tests {
             assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
         }
 
-        // Case `close_rejects_task_and_request_without_explicit_cancel`.
         {
             let (mut scope, rx) = bound_scope();
             let (task, mut request) = {
@@ -1076,7 +1054,6 @@ mod tests {
             assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
         }
 
-        // Case `dropped_owner_leaves_all_retained_capabilities_closed`.
         {
             let (state, task, mut request, task_completion, request_completion) = {
                 let scope = WakeScope::new();
@@ -1098,7 +1075,6 @@ mod tests {
 
     #[test]
     fn spawned_work_runs_off_the_ui_thread_and_wakes_after_unlocking() {
-        // Case `task_wake_sink_runs_after_generation_lock_is_released`.
         {
             let mut scope = WakeScope::new();
             let task = {
@@ -1115,7 +1091,6 @@ mod tests {
             assert_eq!(task.state().get(), 3);
         }
 
-        // Case `spawned_work_never_runs_on_the_ui_thread`.
         {
             on_ui_thread(|scope, wakes| {
                 let ui_thread = std::thread::current().id();
@@ -1140,7 +1115,7 @@ mod tests {
                 assert!(request.try_take().is_none());
                 release.send(()).unwrap();
 
-                let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+                let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 assert!(scope.accepts(&event));
                 let (ran_on, name, ran_on_ui) = request.try_take().unwrap();
                 assert_ne!(ran_on, ui_thread);
@@ -1155,7 +1130,6 @@ mod tests {
             });
         }
 
-        // Case `spawned_results_wake_the_event_loop_and_stale_runs_are_aborted`.
         {
             on_ui_thread(|scope, wakes| {
                 let mut request = LatestRequest::new();
@@ -1169,12 +1143,16 @@ mod tests {
                     let _ = hold.await;
                     "stale"
                 }));
-                started_rx.recv_timeout(WAKE_DEADLINE).unwrap();
+                started_rx
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .unwrap();
                 // A newer request supersedes the parked one: it is aborted, and
                 // only the newer result reaches the UI.
                 assert!(request.spawn(async { "fresh" }));
-                dropped_rx.recv_timeout(WAKE_DEADLINE).unwrap();
-                let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+                dropped_rx
+                    .recv_timeout(tilo_test_env::hang_bound())
+                    .unwrap();
+                let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 assert!(scope.accepts(&event));
                 assert_eq!(request.try_take(), Some("fresh"));
 
@@ -1188,7 +1166,7 @@ mod tests {
                 // The running state is published before the future runs.
                 assert_eq!(state.get(), "loading");
                 release.send(()).unwrap();
-                let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
+                let event = wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 assert!(scope.accepts(&event));
                 assert_eq!(state.get(), "loaded");
             });
@@ -1211,8 +1189,6 @@ mod tests {
             .join()
             .unwrap();
     }
-
-    const WAKE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
     struct DropSignal(Sender<()>);
 

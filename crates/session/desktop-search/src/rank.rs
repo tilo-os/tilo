@@ -14,6 +14,8 @@ pub fn application_fields(
     category: Option<&str>,
     description: Option<&str>,
 ) -> Vec<(String, FieldWeight)> {
+    #[cfg(test)]
+    FIELD_BUILDS.with(|builds| builds.set(builds.get().saturating_add(1)));
     let keywords = crate::availability::keywords_for(package_id);
     ui::search::system::application_search_fields(
         name,
@@ -23,6 +25,12 @@ pub fn application_fields(
         crate::availability::names_for(package_id).iter().copied(),
         keywords.iter().copied(),
     )
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Apps whose searchable text this thread has built.
+    pub static FIELD_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Every row's rank on the provider scale, on the source's own `ranker`: the
@@ -63,24 +71,25 @@ pub fn window_match_score(needle: &str, names: &[&str]) -> Option<i32> {
     rank_fields(needle, &fields)
 }
 
-/// The shared ranker over an app-published action: its label names it, the
-/// resource it acts on narrows it, its id and owning app identify it.
-pub fn action_match_score(
-    needle: &str,
-    action_label: &str,
-    resource_label: &str,
-    action_id: &str,
-    app_id: &str,
-) -> Option<i32> {
+/// The shared ranker over an app-published action, by what a person reads
+/// on its row: its label names it, the resource it acts on narrows it. Its
+/// id and its resource's kind are names for code: an item's kind is the
+/// collection's field (`so.tilo.chat.messages`), so matching it would offer
+/// every action on every message for "messages".
+pub fn action_match_score(needle: &str, action_label: &str, resource_label: &str) -> Option<i32> {
     rank_fields(
         needle,
         &[
             (action_label, FieldWeight::TITLE),
             (resource_label, FieldWeight::SUBTITLE),
-            (action_id, FieldWeight::IDENTITY),
-            (app_id, FieldWeight::METADATA),
         ],
     )
+}
+
+/// The shared ranker over an action on one item of a record: the item's
+/// name finds it, and its actions come with it.
+pub fn item_action_match_score(needle: &str, item_label: &str) -> Option<i32> {
+    rank_fields(needle, &[(item_label, FieldWeight::TITLE)])
 }
 
 #[cfg(test)]

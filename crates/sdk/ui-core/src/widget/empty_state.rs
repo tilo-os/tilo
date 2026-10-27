@@ -14,8 +14,8 @@
 //! - an optional primary **action**, s4 under the text.
 //!
 //! An error state ([`EmptyState::error`]) tints its icon with the danger
-//! status colour and bounds its message to one elided line; assistive
-//! technology still reads the whole message.
+//! status colour. Its message wraps to its full text like any other: what
+//! went wrong and what to do about it is never cut off mid-sentence.
 //!
 //! What went wrong technically (an error code, what a service answered) is
 //! not the person's message: [`EmptyState::with_details`] keeps it behind a
@@ -26,7 +26,7 @@
 //! "just works". The action is surfaced through the toolkit's drain channel
 //! ([`EmptyState::take_action`]) rather than a callback, matching the
 //! CRDT-native input model used by [`super::ContextMenu`] /
-//! [`super::TriStateControl`].
+//! `TriStateControl`.
 
 use crate::widget::{AppModel, ModelPath};
 use std::cell::RefCell;
@@ -78,7 +78,6 @@ struct Fit {
     total: f64,
 }
 
-/// Paints an empty state's illustration into the square it is given.
 pub type Illustration<'a> = &'a dyn Fn(&mut PaintCtx<'_>, Rect);
 
 /// What an empty state shows: optional icon or illustration, title,
@@ -91,8 +90,7 @@ pub struct EmptyStateContent<'a> {
     pub title: &'a str,
     pub message: Option<&'a str>,
     pub action_label: Option<&'a str>,
-    /// Something failed: the icon takes the danger colour and the message
-    /// is bounded to one line.
+    /// Something failed: the icon takes the danger colour.
     pub error: bool,
 }
 
@@ -122,6 +120,37 @@ impl<'a> EmptyStateContent<'a> {
         }
     }
 
+    /// The accessibility of a state painted with [`EmptyState::paint`]: a
+    /// group over `rect` named by the title and described by the message,
+    /// and its action as a button where it was drawn (`action`, the rect
+    /// `paint` returned), answering `action_target`. A widget that paints
+    /// an empty state itself adds this node, so what is drawn is also there
+    /// for assistive technology and agents.
+    pub fn access_node(
+        &self,
+        rect: Rect,
+        action: Option<Rect>,
+        action_target: &str,
+    ) -> crate::a11y::AccessNode {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        let mut node = AccessNode::new(Role::Group)
+            .with_name(self.title)
+            .with_bounds(rect);
+        if let Some(message) = self.message {
+            node = node.with_description(message);
+        }
+        if let (Some(label), Some(action)) = (self.action_label, action) {
+            node = node.with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_name(label)
+                    .with_bounds(action)
+                    .with_state(AccessState::new().focusable(true))
+                    .with_action_target(action_target),
+            ]);
+        }
+        node
+    }
+
     fn parts(&self) -> Parts {
         Parts {
             icon: self.icon.is_some() || self.illustration.is_some(),
@@ -144,7 +173,6 @@ struct StackStyle {
     pad_y: f64,
     min_button: f64,
     glyph: f64,
-    /// The technical detail's text, under its disclosure.
     details: TextStyle,
     /// The height of the "Details" disclosure control.
     details_toggle: f64,
@@ -235,12 +263,7 @@ impl StackStyle {
         let (_, title_h) =
             text_renderer.measure_style(content.title, Some(inner_width), &self.title);
         let (_, msg_h) = content.message.map_or((0.0, 0.0), |value| {
-            if content.error {
-                // An error detail is one bounded line.
-                text_renderer.measure_style("Ag", None, &self.message)
-            } else {
-                text_renderer.measure_style(value, Some(inner_width), &self.message)
-            }
+            text_renderer.measure_style(value, Some(inner_width), &self.message)
         });
         let (action_w, action_h) = content.action_label.map_or((0.0, 0.0), |value| {
             text_renderer.measure_style(value, Some(inner_width), &self.action)
@@ -531,26 +554,13 @@ fn paint_empty_state(
     );
 
     if let (Some(msg), Some(y)) = (content.message, message_y) {
-        if content.error {
-            let line = ctx
-                .text
-                .elide_to_width_style(msg, metrics.inner_width, &style.message);
-            ctx.text(
-                &line,
-                &style.message,
-                theme.text_dim,
-                Point::new(text_x, y),
-                Some(metrics.inner_width),
-            );
-        } else {
-            ctx.text(
-                msg,
-                &style.message,
-                theme.text_dim,
-                Point::new(text_x, y),
-                Some(metrics.inner_width),
-            );
-        }
+        ctx.text(
+            msg,
+            &style.message,
+            theme.text_dim,
+            Point::new(text_x, y),
+            Some(metrics.inner_width),
+        );
     }
 
     if let (Some(label), Some(action_rect)) = (content.action_label, action) {
@@ -559,6 +569,11 @@ fn paint_empty_state(
             .hovered(action_rect.contains(hover))
             .focused(action_focused);
         crate::widget::Button::paint(ctx.scene, transform, ctx.text, theme, &face);
+        note_painted_action(
+            content,
+            transform.transform_rect_bbox(rect),
+            transform.transform_rect_bbox(action_rect),
+        );
         // An empty-state action is often the only route out of a first-use
         // screen: keep the normal, high-visibility focus treatment.
         if action_focused {
@@ -574,12 +589,256 @@ fn paint_empty_state(
     action
 }
 
+thread_local! {
+    /// One list per open [`record_painted_actions`], innermost last.
+    static PAINTED: RefCell<Vec<Vec<PaintedAction>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Most painted actions one recording keeps: a recorder nobody drains
+/// stays bounded.
+const MAX_PAINTED: usize = 256;
+
+/// An empty-state action as it was painted with [`EmptyState::paint`]:
+/// the state it belongs to and where both stand, through the paint
+/// transform they were drawn with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaintedAction {
+    /// The action button's label.
+    pub label: String,
+    /// The action button.
+    pub rect: Rect,
+    /// The empty state's title.
+    pub title: String,
+    /// The empty state's message, when it has one.
+    pub message: Option<String>,
+    /// The whole empty state.
+    pub area: Rect,
+}
+
+/// Keep every empty-state action painted on this thread from now on, until
+/// the matching [`take_painted_actions`] hands them over. Recordings nest:
+/// what an inner one takes is also kept by the one around it.
+///
+/// An app that paints an empty state itself draws its action as pixels;
+/// its host records them so the action is also described in the
+/// accessibility tree, and a check that every action drawn is described
+/// compares the two.
+pub fn record_painted_actions() {
+    PAINTED.with(|painted| painted.borrow_mut().push(Vec::new()));
+}
+
+/// The empty-state actions painted since the matching
+/// [`record_painted_actions`], ending that recording.
+#[must_use]
+pub fn take_painted_actions() -> Vec<PaintedAction> {
+    PAINTED.with(|painted| {
+        let mut painted = painted.borrow_mut();
+        let taken = painted.pop().unwrap_or_default();
+        if let Some(outer) = painted.last_mut() {
+            let room = MAX_PAINTED.saturating_sub(outer.len());
+            outer.extend(taken.iter().take(room).cloned());
+        }
+        taken
+    })
+}
+
+fn note_painted_action(content: &EmptyStateContent<'_>, area: Rect, rect: Rect) {
+    PAINTED.with(|painted| {
+        if let Some(painted) = painted.borrow_mut().last_mut()
+            && painted.len() < MAX_PAINTED
+            && let Some(label) = content.action_label
+        {
+            painted.push(PaintedAction {
+                label: label.to_owned(),
+                rect,
+                title: content.title.to_owned(),
+                message: content.message.map(str::to_owned),
+                area,
+            });
+        }
+    });
+}
+
+/// The prefix of a painted empty-state action's target in the
+/// accessibility tree; the rest is its place in [`PaintedEmptyStates`].
+const PAINTED_TARGET: &str = "tilo.painted-empty-state:";
+
+/// Whether `target` names a painted empty state's action
+/// ([`PaintedEmptyStates`]): no widget handles it, an activation presses
+/// where it is drawn.
+pub(crate) fn is_painted_target(target: &str) -> bool {
+    target.starts_with(PAINTED_TARGET)
+}
+
+/// The empty states a host's content painted itself with
+/// [`EmptyState::paint`], described for it: each becomes a group named by
+/// its title with its action as a button where it was drawn, unless the
+/// content describes that button already. Activating the button clicks
+/// where it is drawn, exactly as a pointer would, so the content's own
+/// hit test runs it.
+///
+/// A host keeps one per content it draws: [`Self::draw`] around the
+/// content's paint, [`Self::describe`] over its accessibility and
+/// [`Self::action_rect`] for where an activation lands.
+#[derive(Debug, Default)]
+pub struct PaintedEmptyStates {
+    painted: Vec<PaintedAction>,
+}
+
+impl PaintedEmptyStates {
+    /// Whether the last draw painted no empty state: [`Self::describe`]
+    /// then returns the content's node as it is.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.painted.is_empty()
+    }
+
+    /// Run `draw`, keeping the empty-state actions it paints in the space
+    /// `transform` maps from: the content's own coordinates.
+    pub fn draw(&mut self, transform: Affine, draw: impl FnOnce()) {
+        record_painted_actions();
+        draw();
+        let painted = take_painted_actions();
+        let into_content = transform.inverse();
+        self.painted = painted
+            .into_iter()
+            .map(|action| PaintedAction {
+                rect: into_content.transform_rect_bbox(action.rect),
+                area: into_content.transform_rect_bbox(action.area),
+                ..action
+            })
+            .collect();
+    }
+
+    /// `node`, the content's own accessibility, with each painted state
+    /// whose action neither it nor a widget inside `content` describes.
+    #[must_use]
+    pub fn describe(
+        &self,
+        node: Option<crate::a11y::AccessNode>,
+        content: &dyn crate::widget::Widget,
+    ) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        if self.painted.is_empty() {
+            return node;
+        }
+        let mut node = node;
+        // A content that names a painted action's button without saying
+        // where it is gets the place it is drawn, so the button stands
+        // there in the tree and not over the whole content.
+        if let Some(node) = &mut node {
+            self.place_unplaced_buttons(node);
+        }
+        let mut described = Vec::new();
+        if let Some(node) = &node {
+            buttons_in(node, &mut described);
+        }
+        content.for_each_child(&mut |child| buttons_under(child, &mut described));
+        // A group joins the content's own children, so it is addressed as
+        // they are: keyed beside keyed controls, by position otherwise.
+        let keyed = node
+            .as_ref()
+            .is_some_and(|node| node.children.iter().any(|child| child.key.is_some()));
+        let missing = self
+            .painted
+            .iter()
+            .enumerate()
+            .filter(|(_, action)| {
+                !described.iter().any(|(label, bounds)| {
+                    *label == action.label
+                        && bounds
+                            .is_none_or(|bounds: Rect| bounds.intersect(action.rect).area() > 0.0)
+                })
+            })
+            .map(|(index, action)| {
+                let mut group = AccessNode::new(Role::Group)
+                    .with_name(action.title.clone())
+                    .with_bounds(action.area);
+                if let Some(message) = &action.message {
+                    group = group.with_description(message.clone());
+                }
+                if keyed {
+                    group = group.with_hashed_key(format!("{PAINTED_TARGET}{index}"));
+                }
+                group.with_children(vec![
+                    AccessNode::new(Role::Button)
+                        .with_name(action.label.clone())
+                        .with_bounds(action.rect)
+                        .with_action_target(format!("{PAINTED_TARGET}{index}")),
+                ])
+            })
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return node;
+        }
+        let mut node = node.unwrap_or_else(|| AccessNode::new(Role::Generic));
+        node.children.extend(missing);
+        Some(node)
+    }
+
+    /// Give each button in `node` that is named like a painted action and
+    /// has no bounds of its own the place that action is drawn.
+    fn place_unplaced_buttons(&self, node: &mut crate::a11y::AccessNode) {
+        if node.role == crate::a11y::Role::Button
+            && node.bounds.is_none()
+            && let Some(name) = &node.name
+            && let Some(action) = self.painted.iter().find(|action| action.label == *name)
+        {
+            node.bounds = Some(action.rect.into());
+        }
+        for child in &mut node.children {
+            self.place_unplaced_buttons(child);
+        }
+    }
+
+    /// Where the painted action at `path` beneath `described` (what
+    /// [`Self::describe`] returned) is drawn; `None` for any other node.
+    #[must_use]
+    pub fn action_rect(&self, described: &crate::a11y::AccessNode, path: &[usize]) -> Option<Rect> {
+        let mut node = described;
+        for &index in path {
+            node = node.children.get(index)?;
+        }
+        let index = node
+            .action_target
+            .as_deref()?
+            .strip_prefix(PAINTED_TARGET)?
+            .parse::<usize>()
+            .ok()?;
+        self.painted.get(index).map(|action| action.rect)
+    }
+}
+
+/// The buttons `node` and its synthetic children describe.
+fn buttons_in(node: &crate::a11y::AccessNode, out: &mut Vec<(String, Option<Rect>)>) {
+    if node.role == crate::a11y::Role::Button
+        && let Some(name) = &node.name
+    {
+        out.push((
+            name.clone(),
+            node.bounds.map(crate::a11y::AccessBounds::to_rect),
+        ));
+    }
+    for child in &node.children {
+        buttons_in(child, out);
+    }
+}
+
+/// The buttons `widget` and every widget inside it describe.
+fn buttons_under(widget: &dyn crate::widget::Widget, out: &mut Vec<(String, Option<Rect>)>) {
+    if let Some(node) = widget.accessibility() {
+        buttons_in(&node, out);
+    }
+    widget.for_each_child(&mut |child| buttons_under(child, out));
+}
+
 /// What the action does when it is activated.
 #[derive(Clone)]
 enum Handler {
     Binding(tilo_actions::ActionBinding<()>),
     View(Rc<RefCell<Box<dyn FnMut()>>>),
     Effect(Rc<RefCell<Box<dyn FnMut()>>>),
+    OwnDeviceEffect(Rc<RefCell<Box<dyn FnMut()>>>),
 }
 
 /// A centered empty-state placeholder: hero icon + title + message + action.
@@ -619,7 +878,6 @@ pub struct EmptyState {
     layout_dirty: bool,
     /// The technical detail behind the "Details" disclosure.
     details: Option<String>,
-    /// Whether the disclosure is open.
     details_open: bool,
     /// Where the disclosure control was drawn (empty without details).
     details_rect: Rect,
@@ -651,11 +909,17 @@ impl EmptyState {
     /// message and action label are resolved through the i18n layer, like
     /// [`Text`](crate::widget::Text).
     pub fn new(title: impl Into<String>) -> Self {
+        Self::new_owned(title.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(title: String) -> Self {
         let mut state = Self {
             icon: None,
             illustration: None,
             error: false,
-            title: title.into(),
+            title,
             message: None,
             action_label: None,
             action_id: None,
@@ -725,7 +989,6 @@ impl EmptyState {
         }
     }
 
-    /// Whether the "Details" disclosure is open.
     #[must_use]
     pub fn details_open(&self) -> bool {
         self.details_open
@@ -917,6 +1180,15 @@ impl EmptyState {
         self
     }
 
+    /// Publish the action as an effect on the person's own device alone
+    /// that runs `f`, like [`super::Button::on_own_device_effect`].
+    #[must_use]
+    pub fn on_own_device_effect(mut self, f: impl FnMut() + 'static) -> Self {
+        self.handler = Some(Handler::OwnDeviceEffect(Rc::new(RefCell::new(Box::new(f)))));
+        self.rebuild_engine();
+        self
+    }
+
     /// The control id the action is published, addressed and tested by:
     /// [`Self::with_action_id`], or one derived from the title.
     pub fn action_control_id(&self) -> String {
@@ -939,6 +1211,7 @@ impl EmptyState {
             Handler::Binding(binding) => button.on_action(binding),
             Handler::View(f) => button.on_view(move || (f.borrow_mut())()),
             Handler::Effect(f) => button.on_effect(move || (f.borrow_mut())()),
+            Handler::OwnDeviceEffect(f) => button.on_own_device_effect(move || (f.borrow_mut())()),
         });
     }
 
@@ -1032,6 +1305,25 @@ impl EmptyState {
         self.rect = rect;
     }
 
+    /// Where [`Self::paint`] draws `content`'s action inside `rect`, for
+    /// hit-testing it between paints; `None` with no action or no room.
+    #[must_use]
+    pub fn action_rect_in(
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        content: &EmptyStateContent<'_>,
+    ) -> Option<Rect> {
+        if rect.width() <= 0.0
+            || rect.height() <= 0.0
+            || content.action_label.is_none()
+            || crate::room_sync::waiting().is_some()
+        {
+            return None;
+        }
+        place(text, theme, rect, content, false).action
+    }
+
     /// Immediate-mode paint of an empty state centered inside `rect`, for the
     /// many apps that render straight to a `Scene` instead of building a
     /// widget tree. Returns the action's rect when `action_label` is visible
@@ -1084,7 +1376,8 @@ impl EmptyState {
 impl Widget for EmptyState {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
@@ -1349,25 +1642,6 @@ impl Widget for EmptyState {
             && self.perform_action(action, &[], state, path)
     }
 
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        match &mut self.engine {
-            Some(engine) => engine.start_operation(op, doc, path),
-            None => Ok(None),
-        }
-    }
-
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.engine
-            .as_ref()
-            .map(Widget::resource_operation_handlers)
-            .unwrap_or_default()
-    }
-
     fn name(&self) -> &'static str {
         "EmptyState"
     }
@@ -1386,7 +1660,7 @@ impl Widget for EmptyState {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+        use crate::a11y::{AccessNode, AccessState, Politeness, Role};
         // The empty state is a labelled group; the title is its accessible
         // name and the message its description so a screen reader announces
         // both without the caller wiring anything.
@@ -1396,6 +1670,12 @@ impl Widget for EmptyState {
         }
         if self.spinner.is_some() {
             node = node.with_state(AccessState::new().busy(true));
+        }
+        // A failure is announced at once; a wait when the reader is free.
+        if self.error {
+            node = node.with_live(Politeness::Assertive);
+        } else if self.spinner.is_some() {
+            node = node.with_live(Politeness::Polite);
         }
         let mut children = Vec::new();
         if let Some(action) = &self.resolved.2 {
@@ -1408,6 +1688,7 @@ impl Widget for EmptyState {
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name(action.clone())
+                    .with_bounds(self.action_rect)
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -1424,6 +1705,7 @@ impl Widget for EmptyState {
                 AccessNode::new(Role::Button)
                     .with_name(crate::i18n!("empty-state-details"))
                     .with_description(details.clone())
+                    .with_bounds(self.details_rect)
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -1457,6 +1739,27 @@ impl Widget for EmptyState {
         } else {
             false
         }
+    }
+}
+
+impl crate::widget::ResourceOperations for EmptyState {
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        match &mut self.engine {
+            Some(engine) => crate::widget::start_operation(&mut *engine, op, doc, path),
+            None => Ok(None),
+        }
+    }
+
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.engine
+            .as_ref()
+            .map(crate::widget::resource_operation_handlers)
+            .unwrap_or_default()
     }
 }
 
@@ -1821,7 +2124,6 @@ mod tests {
             let mut es = EmptyState::new("Nothing here").with_action("Add");
             lay_out(&mut es, 600.0, 400.0);
             let _ = draw(&mut es);
-            // Top-left corner is well outside the centered pill.
             dispatch(&mut es, &cursor(Point::new(2.0, 2.0)));
             assert!(
                 !dispatch(&mut es, &mouse_press()),
@@ -2090,6 +2392,17 @@ mod tests {
             let action = scroll.children()[0]
                 .synthetic_accessibility_rect(&[0])
                 .expect("retained action geometry");
+            let node = scroll.children()[0]
+                .accessibility()
+                .expect("a described state");
+            assert_eq!(
+                node.children
+                    .first()
+                    .and_then(|button| button.bounds)
+                    .map(crate::a11y::AccessBounds::to_rect),
+                Some(action),
+                "the action is described where it is drawn"
+            );
             assert!(
                 scroll.content_viewport_rect().contains(action.center()),
                 "the scrolled action is visible: {action:?}"
@@ -2194,6 +2507,14 @@ mod tests {
             assert_eq!(node.role, Role::Group);
             assert_eq!(node.name.as_deref(), Some("No results"));
             assert_eq!(node.description.as_deref(), Some("Try another search"));
+            assert_eq!(node.live, None, "a quiet empty state is not a live region");
+            let failed = EmptyState::error("Couldn't open Music", "Permission denied");
+            let node = Widget::accessibility(&failed).expect("an error exposes a11y");
+            assert_eq!(node.live, Some(crate::a11y::Politeness::Assertive));
+            let waiting = EmptyState::new("Opening folder").busy();
+            let node = Widget::accessibility(&waiting).expect("a wait exposes a11y");
+            assert_eq!(node.live, Some(crate::a11y::Politeness::Polite));
+            assert!(node.state.busy);
         }
 
         draws_something_visible();
@@ -2235,41 +2556,44 @@ mod tests {
         );
     }
 
+    /// At a phone's width an error says all of what happened and what to
+    /// do: its message wraps like any other, never cut off with an ellipsis.
     #[test]
-    fn errors_use_the_danger_tone_and_one_bounded_line() {
+    fn errors_use_the_danger_tone_and_wrap_their_whole_message_at_420_px() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let detail = "The file ends before its cross-reference table. ".repeat(6);
+        let detail = "Couldn't read the selected files. Check permissions and try again.";
         let content = EmptyStateContent {
             icon: Some(Icon::FileText),
-            message: Some(detail.as_str()),
+            message: Some(detail),
             error: true,
-            ..EmptyStateContent::new("Can't open this document")
+            ..EmptyStateContent::new("Couldn't open the files")
         };
         let style = StackStyle::resolved(&theme, false);
-        let error = style.measure(&mut text, 360.0, &content);
+        let error = style.measure(&mut text, 420.0, &content);
         let plain = style.measure(
             &mut text,
-            360.0,
+            420.0,
             &EmptyStateContent {
                 error: false,
                 ..content
             },
         );
+        let (_, line) = text.measure_style("Ag", None, &style.message);
         assert!(
-            error.msg_h < plain.msg_h,
-            "the detail is bounded to one line"
+            error.msg_h > f64::from(line) * 1.5,
+            "the whole message wraps onto more lines than one"
+        );
+        assert!(
+            (error.msg_h - plain.msg_h).abs() < f64::EPSILON,
+            "an error wraps exactly like any other message"
         );
         assert_eq!(error.text_gap, f64::from(theme.tokens.spacing.s3));
         assert_eq!(error.gap, f64::from(theme.tokens.spacing.s4));
 
-        let state = EmptyState::error("Can't open this document", detail.clone());
+        let state = EmptyState::error("Couldn't open the files", detail);
         let node = Widget::accessibility(&state).unwrap();
-        assert_eq!(
-            node.description.as_deref(),
-            Some(detail.as_str()),
-            "full text"
-        );
+        assert_eq!(node.description.as_deref(), Some(detail), "full text");
 
         // The glyph is the danger colour, not an accent or the inverted fill.
         let mut scene = Scene::new();
@@ -2445,7 +2769,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[test]
     fn an_empty_state_in_a_room_that_never_synced_says_so_and_offers_nothing_of_the_apps() {
         use crate::room_sync::{RoomSync, RoomSyncState};
@@ -2502,6 +2825,50 @@ mod tests {
         assert!(
             paint(&mut scene).is_some(),
             "a room with no host is the app's"
+        );
+    }
+
+    #[test]
+    fn a_painted_state_is_addressed_as_the_controls_beside_it_are() {
+        use crate::a11y::{AccessNode, Role};
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        let content = EmptyStateContent {
+            action_label: Some("Choose camera"),
+            ..EmptyStateContent::new("Camera unavailable")
+        };
+        let mut painted = PaintedEmptyStates::default();
+        painted.draw(Affine::IDENTITY, || {
+            EmptyState::paint(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                Rect::new(0.0, 0.0, 500.0, 400.0),
+                &content,
+                Point::new(-1.0, -1.0),
+            );
+        });
+        let host = EmptyState::new("host");
+        let control = || AccessNode::new(Role::Button).with_name("Take photo");
+
+        let keyed = AccessNode::new(Role::Window)
+            .with_children(vec![control().with_action_target("camera.shutter")]);
+        let keyed = painted.describe(Some(keyed), &host).unwrap();
+        assert_eq!(
+            keyed.children.len(),
+            2,
+            "the painted state joins the controls"
+        );
+        assert!(
+            keyed.children.iter().all(|child| child.key.is_some()),
+            "beside keyed controls it is keyed too"
+        );
+
+        let positional = AccessNode::new(Role::Window).with_children(vec![control()]);
+        let positional = painted.describe(Some(positional), &host).unwrap();
+        assert_eq!(positional.children.len(), 2);
+        assert!(
+            positional.children.iter().all(|child| child.key.is_none()),
+            "beside position-addressed controls it is addressed by position"
         );
     }
 }

@@ -93,7 +93,7 @@ impl CapnpBrokerState {
             caller,
             origin,
             HostActionAdmission {
-                room: &authority.0.room.to_string(),
+                room: &authority.0.room().to_string(),
                 app_id: action.0,
                 descriptor: action.1,
                 request: input.0,
@@ -112,7 +112,7 @@ impl CapnpBrokerState {
     ) -> Result<bool, ActionHostError> {
         let (workspace, actor, _) = authority;
         let (request, argument) = input;
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let witnessed = self.consume_answer(
             request.confirmation.as_ref(),
             &self.witness_binding(actor.id(), &room, request),
@@ -261,7 +261,7 @@ impl CapnpBrokerState {
             _ => {}
         }
         if spend {
-            self.spend_once_grants(&workspace.room.to_string(), &charged);
+            self.spend_once_grants(&workspace.room().to_string(), &charged);
         }
         Ok(())
     }
@@ -312,7 +312,7 @@ impl CapnpBrokerState {
             caller,
             origin,
             HostActionAdmission {
-                room: &authority.0.room.to_string(),
+                room: &authority.0.room().to_string(),
                 app_id: tilo_automation::SHORTCUTS_APP_ID,
                 descriptor: &descriptor,
                 request,
@@ -320,7 +320,7 @@ impl CapnpBrokerState {
         )?;
         #[cfg(test)]
         tests::at_effect_barrier();
-        let room = authority.0.room.to_string();
+        let room = authority.0.room().to_string();
         let (plan, actor) = self.framework_effect_ready(&admitted, || {
             let (workspace, actor, _) = self.current_framework_authority(caller, origin, &room)?;
             // Replan on the current document: a valid old plan can overwrite a
@@ -365,6 +365,14 @@ impl CapnpBrokerState {
         })?;
         let result = match plan {
             crate::automation::LibraryPlan::Answer(output) => Ok(output),
+            crate::automation::LibraryPlan::Stop(stop) => {
+                let stopped = self.ended_runs.running.running.stop(
+                    &room,
+                    &stop,
+                    "asked for from the shortcuts library",
+                );
+                Ok(crate::automation::stopped_output(&stopped))
+            }
             crate::automation::LibraryPlan::Change { change, output } => library
                 .store(&crate::services::ShortcutLibraryRequest {
                     room: &room,
@@ -422,7 +430,7 @@ impl CapnpBrokerState {
                 return Err(ActionHostError::NotPermitted);
             }
             let (workspace, actor, now) =
-                self.current_framework_authority(caller, origin, &authority.0.room.to_string())?;
+                self.current_framework_authority(caller, origin, &authority.0.room().to_string())?;
             self.framework_policy(
                 (&workspace, &actor, now),
                 (service.app_id(), &fresh),
@@ -478,7 +486,7 @@ impl CapnpBrokerState {
         let witnessed = owner_action
             && self.consume_answer(
                 request.confirmation.as_ref(),
-                &self.witness_binding(authority.1.id(), &authority.0.room.to_string(), request),
+                &self.witness_binding(authority.1.id(), &authority.0.room().to_string(), request),
             );
         if owner_action && !witnessed && request.confirmation != Some(Confirmation::Confirmed) {
             return Err(ActionHostError::ConfirmationRequired);
@@ -512,7 +520,7 @@ impl CapnpBrokerState {
             caller,
             origin,
             HostActionAdmission {
-                room: &authority.0.room.to_string(),
+                room: &authority.0.room().to_string(),
                 app_id: service.app_id(),
                 descriptor: &descriptor,
                 request,
@@ -527,7 +535,7 @@ impl CapnpBrokerState {
             }
             _ => serde_json::json!({}),
         };
-        let room = authority.0.room.to_string();
+        let room = authority.0.room().to_string();
         let actor = self.framework_effect_ready(&admitted, || {
             let (workspace, _, _) = self.current_framework_authority(caller, origin, &room)?;
             let fresh = governance_descriptor(service.as_ref(), &workspace, &descriptor.address)

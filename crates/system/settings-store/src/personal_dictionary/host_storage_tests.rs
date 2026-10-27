@@ -1,11 +1,10 @@
-//! Exercise the startup wrapper over the real session/host-view storage path.
 use super::{Host, Service};
 use crate::{ConditionalUpdate, DisplayUpdate, SessionPaths, SessionSettings, SettingsSource};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
 fn fixture() -> (tempfile::TempDir, Arc<SessionSettings>, Host) {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::test_dir();
     let session = Arc::new(
         SessionSettings::open(SessionPaths::beside(directory.path().join("settings.json")))
             .unwrap(),

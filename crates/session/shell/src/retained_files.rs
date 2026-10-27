@@ -34,9 +34,8 @@ fn read_private(path: &Path) -> io::Result<Vec<u8>> {
         libc::O_RDONLY,
     )?;
     let meta = file.metadata()?;
-    // SAFETY: geteuid reads process credentials.
     if !meta.is_file()
-        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.uid() != rustix::process::geteuid().as_raw()
         || meta.mode() & 0o077 != 0
         || meta.len() > BOUND
     {
@@ -592,7 +591,7 @@ impl Session {
                 .workspaces
                 .iter_mut()
                 .find(|ws| ws.id == workspace)
-            && tilo_identity_host::broker::trusted_current_device_public(&ws.room.to_string())
+            && tilo_identity_host::broker::trusted_current_device_public(&ws.room().to_string())
                 .is_ok_and(|identity| Some(identity.user_root_public_key) == expected_key)
         {
             let ids = ws.grant_app(
@@ -618,9 +617,10 @@ impl Session {
                 .iter()
                 .find(|ws| ws.id == claim.workspace)
             {
-                let identity =
-                    tilo_identity_host::broker::trusted_current_device_public(&ws.room.to_string())
-                        .ok();
+                let identity = tilo_identity_host::broker::trusted_current_device_public(
+                    &ws.room().to_string(),
+                )
+                .ok();
                 let live = identity.is_some_and(|identity| {
                     Some(identity.user_root_public_key) == expected_key
                         && !claim.ids.is_empty()
@@ -640,7 +640,7 @@ impl Session {
                             })
                         })
                 });
-                projections.push((ws.room, live));
+                projections.push((ws.room(), live));
             }
         }
         if changed {
@@ -736,7 +736,7 @@ mod tests {
             &identity,
             "Source owner",
             [20, 30, 40],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         runtime_identity::set_active_identity(&identity, "primary").unwrap();
@@ -765,6 +765,7 @@ mod tests {
     }
     #[test]
     fn composite_review_keeps_rw_queued_until_same_staging_cleanup_finishes() {
+        use launcher::retained_view::installed_copy::CopyOwnerEvent;
         let mut env = tilo_test_env::ScopedEnv::new();
         let (home, old_path) = fixture(Some("access-read-write"), false, &mut env);
         let source = uuid::Uuid::new_v4().to_string();
@@ -795,7 +796,6 @@ mod tests {
         assert_eq!(copy.operation, stage);
         assert!(migration.take_access_request().is_none());
         assert!(migration.invoke("continue", None).is_err());
-        use launcher::retained_view::installed_copy::CopyOwnerEvent;
         copy.events
             .send(CopyOwnerEvent::Complete {
                 operation: stage.clone(),

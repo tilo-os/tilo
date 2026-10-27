@@ -259,7 +259,6 @@ mod tests {
     /// The participant-independent schema every view publishes.
     fn schema_tree() -> Vec<Resource> {
         let mut schema = tree("", false, true);
-        // The schema's go-to lives on the caret resource kind.
         schema.push(
             Resource::new("doc.caret", "fixture.caret", "Caret").with_action(
                 ActionSpec::immediate_encoded(

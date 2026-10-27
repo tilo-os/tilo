@@ -94,11 +94,6 @@ impl PublicationError {
     ///
     /// The retained native file and parent handles are reused. No rename is
     /// issued. Other states return this error unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns `self` unchanged for other states, or with the new native error
-    /// when the commit fails again.
     pub fn retry_commit(mut self) -> Result<(), Self> {
         let Some(guard) = self.pending_commit.as_ref() else {
             return Err(self);

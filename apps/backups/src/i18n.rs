@@ -47,7 +47,7 @@ mod tests {
 
     #[test]
     fn counted_strings_choose_their_plural_form() {
-        assert_eq!(t("backups-health-ok"), "All backups healthy");
+        assert_eq!(t("backups-health-ok"), "No failed backups");
         let one = counted("backups-health-attention", 1, "");
         let two = counted("backups-health-attention", 2, "");
         assert!(one.contains("One backup needs"), "{one}");

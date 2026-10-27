@@ -49,18 +49,12 @@ pub struct DictationMicrophone(super::audio_capture::AudioCapture);
 
 impl DictationMicrophone {
     /// Request 16 kHz mono S16LE from the current `PipeWire` microphone.
-    ///
-    /// # Errors
-    /// Fails on denied/unavailable source access or failed process startup.
     pub fn start() -> Result<Self, String> {
         super::audio_capture::AudioCapture::start_dictation_microphone().map(Self)
     }
 
     /// Drain complete samples. Queue overflow is a fatal discontinuity, never
     /// a silent gap from which a recognizer could manufacture missing words.
-    ///
-    /// # Errors
-    /// Fails when the microphone process exits or any audio chunk was lost.
     pub fn drain(&mut self) -> Result<Vec<u8>, String> {
         self.0.drain(true)
     }
@@ -182,10 +176,6 @@ impl State {
     /// lend the compositor an in-process input method using the existing private
     /// credential. An existing OSK or composing IME retains ownership.
     /// Pump `advance_dictation_preparation` until ready before recording.
-    ///
-    /// # Errors
-    /// Fails on absent focus or an unavailable trusted connection. Starting
-    /// while another request is preparing or recording returns `Busy`.
     pub fn prepare_dictation(&mut self, now: Instant) -> Result<SessionId, DictationError> {
         if self.text_commit.dictation.session.is_some()
             || self.text_commit.dictation.preparation.is_some()
@@ -239,10 +229,6 @@ impl State {
 
     /// Pump activation without blocking; `true` means recording may begin.
     /// A late tick cannot prepare a successor or redirect a canceled request.
-    ///
-    /// # Errors
-    /// Fails on cancellation, focus loss, timeout, sensitive fields or a failed
-    /// input-method connection. Matching failed requests release their lease.
     pub fn advance_dictation_preparation(
         &mut self,
         id: SessionId,
@@ -423,10 +409,6 @@ impl State {
     /// Commit the latest corrected hypothesis once, using native UTF-8 text.
     /// Empty recognition ends the session without sending a protocol edit.
     /// Dictated text never enters the emoji picker's recents.
-    ///
-    /// # Errors
-    /// Returns a failure if the request expired or its original edit target
-    /// changed. Failure cancels the current session and inserts nothing.
     pub fn finish_dictation(&mut self, id: SessionId, now: Instant) -> Result<(), DictationError> {
         self.validate_dictation(id, now)?;
         let session = self
@@ -559,6 +541,17 @@ impl State {
             self.text_commit.dictation.recovery = None;
             self.text_commit.dictation.last_failure = Some(runtime::RuntimeError::TimedOut);
         }
+    }
+
+    /// Whether the focused field offers acknowledged edits: an app's field
+    /// over the private text input, or one of the shell's own fields whose
+    /// widget asks for them.
+    fn field_offers_acknowledged_edits(
+        &self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> bool {
+        self.private_text_input.identity(&surface.id()).is_some()
+            || (self.shell_field_active && self.text_commit.dictation.native_field_deferred)
     }
 
     pub(crate) fn set_native_dictation_deferred(&mut self, required: bool) {
@@ -815,8 +808,6 @@ impl State {
     /// Begin local recognition only after the trusted desktop has obtained
     /// explicit microphone consent and prepared this original edit target.
     /// Neither model readiness nor an untrusted action request is consent.
-    /// # Errors
-    /// Fails closed on a changed field, another actor or unavailable worker.
     pub fn start_authorized_dictation(
         &mut self,
         id: SessionId,
@@ -1100,11 +1091,16 @@ impl State {
                 let content = self.text_fields.content_type(field);
                 target = if content.is_sensitive() {
                     Err(DictationError::SensitiveField)
-                } else if content.purpose == u32::from(ContentPurpose::Terminal) {
-                    // Terminal purpose does not identify an inner program's edit,
-                    // command or secret mode. Neither a caret nor a private
-                    // receipt supplies that contract. Refuse speech before capture
-                    // and on every revalidation; ordinary keyboard IME is separate.
+                } else if content.purpose == u32::from(ContentPurpose::Terminal)
+                    && !self.field_offers_acknowledged_edits(surface)
+                {
+                    // Terminal purpose alone does not identify an inner
+                    // program's edit, command or secret mode, and a caret does
+                    // not supply that contract. Only a field that offers
+                    // acknowledged edits does: a native editor prompt confirms
+                    // each edit against its own lease. Refuse speech before
+                    // capture and on every revalidation otherwise; ordinary
+                    // keyboard IME is separate.
                     Err(DictationError::UnsupportedField)
                 } else {
                     self.text_fields

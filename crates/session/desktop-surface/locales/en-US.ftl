@@ -17,7 +17,11 @@ topbar-watching-description = { $count } { $count ->
        *[other] people
     } watching without joining
 topbar-tilo-menu = Tilo menu
+# A running application's icon in the bar, when the item that named it is gone.
+topbar-app-tray-item = Running application
+topbar-app-tray-unread = { $count } unread
 topbar-open-quick-settings = Open quick settings
+topbar-open-notifications = Notifications
 topbar-bell = { $unread ->
     [0] Notifications
     [one] Notifications, 1 unread
@@ -28,7 +32,7 @@ topbar-bell-silenced = { $unread ->
     [one] Notifications silenced, 1 unread
    *[other] Notifications silenced, { $unread } unread
 }
-topbar-show-collaborators = Show collaborators
+topbar-show-collaborators = Everyone here
 topbar-viewer-can-control = can control { $targets }
 topbar-viewer-view-only = view only { $targets }
 topbar-viewer-entry = { $name } ({ $kind ->
@@ -40,6 +44,12 @@ topbar-collaborators-visible = Screen visible to { $viewers }. Show collaborator
 topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
 topbar-invite = Invite
+topbar-waved-at-you = { $name } waved at you
+topbar-arrived-one = { $name } is here
+topbar-arrived-more = { $name } and { $count ->
+    [one] one other
+   *[other] { $count } others
+} are here
 topbar-clock-resume = Resume
 topbar-clock-pause = Pause
 topbar-clock-lap = Lap
@@ -58,38 +68,45 @@ topbar-clock-add-one-minute = Add one minute
 topbar-workspace-position = Workspace { $position } of { $total }
 topbar-desktop-navigation = Desktop navigation
 topbar-display-navigation = Display navigation
-topbar-strips = Strips in this workspace
-topbar-strip-go = Go to { $name }, { $count ->
-    [0] nobody there
-    [one] one person there
-   *[other] { $count } people there
-}
 topbar-strip-name = Show strips, now on { $strip }
-topbar-strip-add = Add a strip
-topbar-strips-more-label = +{ $count }
-topbar-strips-more = { $count ->
-    [one] One more strip
-   *[other] { $count } more strips
-}, go to { $name }
-topbar-strip-name-placeholder = Name the strip
 topbar-workspace-name-placeholder = Name the workspace
-topbar-workspace-menu = { $workspace }: workspaces, overview and desks
-topbar-profile = { $name }: your profile
+topbar-workspace-menu = { $workspace }: workspaces, overview and strips
+topbar-profile = { $name } (you): your profile
+topbar-face-agent = { $name }, agent
+topbar-faces-more = { $count } more
 workspace-menu-hosted-by = Hosted by { $host }
 workspace-menu-rename = Rename workspace
 workspace-menu-overview = Overview
-workspace-menu-new-desk = New desk
+workspace-menu-new-strip = New strip
 profile-card = Your profile
+profile-card-of = { $name }’s profile
+profile-id = ID
+profile-copy-id = Copy ID
+profile-status-own-words = In their own words
+profile-status-automatic = Written automatically from what they do
+profile-message = Message
+profile-follow = Follow
+profile-stop-following = Stop following
+profile-photo-change = Change picture
+profile-photo-remove = Remove picture
 profile-name = Your name
 profile-name-placeholder = Your name
 profile-name-hint = How everyone here sees you
+profile-watching-hint = You’re watching. Nobody here sees you
 profile-add-your-name = Add your name
 profile-section-identity = Your identity
 profile-section-devices = Devices
 profile-section-linked = Linked accounts
-profile-link = Link { $service } account
+profile-link = Connect { $service }
 profile-unlink = Unlink
-profile-copy = Copy
+profile-linked-as = Linked as { $account }
+profile-linked-to = Linked to { $handle } on { $service }
+profile-link-offer = Link { $service } { $account } to { $name }?
+profile-link-offer-why = What you write in { $service } will show as you here, and as you there.
+profile-link-accept = Link
+profile-link-decline = Cancel
+profile-connecting = Opening { $service }…
+profile-looking = Checking your { $service } link…
 profile-sharing = Share what you're doing
 profile-sharing-auto = Automatically
 profile-sharing-manual = My words
@@ -108,6 +125,12 @@ profile-visibility-nothing = Nothing
 profile-visibility-where-detail = Your face, the window you're in and your pointer
 profile-visibility-here-detail = Your face, never which window or your pointer
 profile-visibility-nothing-detail = You don't appear, and you don't see others' pointers
+profile-control-hints = Show control hints
+control-hint-open = Open anything
+control-hint-move = Drag to move
+control-hint-resize = Drag to resize
+control-hint-pan = Scroll sideways
+control-hint-pan-touch = Swipe left or right
 
 # Workspace activity
 a11y-shell-workspace-activity = Workspace activity
@@ -122,10 +145,6 @@ a11y-shell-activity-boundary-newer-description = Redraw this boundary by moving 
 a11y-shell-activity-boundary-older-description = Redraw this boundary by moving one action into the older work session
 a11y-shell-activity-more-sessions = More work sessions
 a11y-shell-activity-more-sessions-description = Show more work sessions
-a11y-shell-activity-new-task = New task
-a11y-shell-activity-new-task-description = Create a workspace task without requiring a model
-a11y-shell-activity-create-task = Create task
-a11y-shell-activity-cancel-task = Cancel task creation
 a11y-shell-activity-everything = Everything
 a11y-shell-activity-agent-tasks = Agent tasks
 a11y-shell-activity-unclassified = Unclassified
@@ -138,18 +157,13 @@ a11y-shell-activity-pause-replay = Pause replay
 a11y-shell-activity-play-replay = Play replay
 a11y-shell-activity-history-scope = History scope
 a11y-shell-activity-history-view = History view
+a11y-shell-activity-open-tasks-description = Opens the Tasks app, where this workspace's tasks are
 a11y-shell-activity-time-range = Time range
 a11y-shell-activity-person-filter = Person filter
 a11y-shell-activity-brief-description = { $detail }; last changed { $when }; { $count } { $count ->
         [one] change
        *[other] changes
     } by { $authors }
-a11y-shell-activity-task-unassigned = unassigned
-a11y-shell-activity-task-assigned-agent = assigned to an agent
-a11y-shell-activity-task-no-resource = no attached resource
-a11y-shell-activity-task-route = Task execution route
-a11y-shell-activity-task-composer-action = Task composer action
-a11y-shell-activity-task-action = Selected task action
 a11y-shell-activity-history-lens = History lens
 a11y-shell-activity-undo-task-description = Undo every affected record in this agent task; later collaborator edits are kept
 a11y-shell-activity-history-action = Selected history action
@@ -158,11 +172,9 @@ a11y-shell-activity-timeline-description = History entries; use arrow keys to na
 a11y-shell-activity-checkpoints-description = Move through workspace checkpoints
 a11y-shell-activity-replay-description = Play or pause the workspace replay
 a11y-shell-activity-view-catch-up = A summary of outcomes since this device last viewed the workspace
-a11y-shell-activity-view-tasks = Durable workspace tasks with resource links, execution routes, and audit trails
 a11y-shell-activity-view-explore = The complete workspace history with filters and provenance
 a11y-shell-activity-view-replay = A causal replay of workspace layout and participant activity
 a11y-shell-activity-entry-author = By { $author }
-a11y-shell-activity-tasks = Workspace tasks
 a11y-shell-activity-selected-detail = Selected history detail
 a11y-shell-activity-selected-detail-description = { $title }; { $count } { $count ->
         [one] action
@@ -172,14 +184,12 @@ a11y-shell-activity-agent-run-description = Instruction: { $instruction }; assig
 a11y-shell-activity-reason-not-recorded = not recorded
 a11y-shell-activity-agent-step = { $app } in { $record }: { $summary }
 a11y-shell-activity-agent-review = Agent task review
-a11y-shell-activity-task-description = { $status }; { $route }; { $assignee }; { $count } audit events
-a11y-shell-activity-task-latest = latest: { $latest }
 activity-view-catch-up = What's new
 activity-view-tasks = Tasks
 activity-view-explore = History
 activity-view-replay = Replay
 activity-title-catch-up = While you were away
-activity-title-tasks = Task Center
+activity-title-whats-new = What's new
 activity-title-explore = Workspace activity
 activity-title-replay = Replay workspace
 activity-workspace-fallback = This workspace
@@ -250,17 +260,21 @@ activity-replay-checkpoints-unavailable = { $count } { $count ->
 activity-latest = Latest · { $headline }
 activity-history-pending = History is waiting for current edits to finish
 activity-caught-up = You're caught up
+activity-history-gone = These changes are no longer in the history.
+activity-served-personal-only = Only the person at this device can do this.
+activity-served-read-only = This desktop shows the history but can't change it.
+activity-served-unavailable = This workspace's history isn't kept here.
 activity-summary-on-device = On-device summary
 activity-session-move-newer = 1 action newer
 activity-session-move-older = 1 action older
 activity-more-sessions = More work sessions…
 activity-first-sessions = First work sessions…
-activity-brief-underlying = { $count } underlying { $count ->
-        [one] action
-       *[other] actions
+activity-brief-underlying = { $count } { $count ->
+        [one] step
+       *[other] steps
     }
 activity-brief-open-explorer = Open this work session in History
-activity-brief-show-affected = Show affected resources and actions
+activity-brief-show-affected = Show each step
 activity-browse-by = Browse by
 activity-more-lenses = More lenses…
 activity-first-lenses = First lenses…
@@ -269,7 +283,7 @@ activity-lens-agent-tasks = Agent tasks  { $count }
 activity-lens-unclassified = Unclassified  { $count }
 activity-provenance = Provenance
 activity-select-prompt = Select a work session or a range of actions
-activity-select-hint = See who was involved, affected resources, and an exact before-and-after comparison.
+activity-select-hint = See who did it, what it touched, and compare before and after.
 activity-detail-open = Open
 activity-detail-open-app = Open app
 activity-detail-compare = Compare
@@ -325,8 +339,13 @@ activity-affected-records = Affected records
 activity-undo-task-needs-open = Open every affected document to undo this task together.
 activity-undo-task-needs-documents = Nothing changed. Open every affected document first.
 activity-undo-task-partial = Task partly undone; later collaborator edits were kept.
+activity-undo-task-partial-records = Task undone, except for records listed below.
+activity-undo-task-record-left = { $record } in { $app } was not undone.
+activity-detail-undo-step = Undo this step
 activity-undo-task-done = Whole task undone as a new history entry.
 activity-undo-task-gone = The task's effects were already gone.
+activity-undo-task-refused = Couldn't undo the task. { $detail }
+activity-undo-task-unavailable = Undoing a task is unavailable here.
 activity-removed-workspace = a removed workspace
 activity-receipt-completed = Completed
 activity-receipt-failed = Failed
@@ -342,36 +361,6 @@ activity-replay-no-workspace = The workspace did not exist at this checkpoint
 activity-replay-empty-window = Empty window
 activity-replay-layout-not-recorded = Window sizes and selected tabs were not recorded
 activity-presence-trail = Presence trail
-activity-tasks-subtitle = { $workspace } · { $active ->
-        [0] nothing open
-        [one] 1 open task
-       *[other] { $active } open tasks
-    }
-activity-tasks-tagline = What people and agents are doing in this workspace
-activity-tasks-pending = Tasks are waiting for current edits to finish
-activity-tasks-empty = No tasks yet
-activity-tasks-empty-hint = Create one here, or ask an agent from any app.
-activity-task-new = + New task
-activity-task-queue = Workspace queue
-activity-task-composer-title = Create work without leaving the desktop
-activity-task-placeholder = What needs doing?
-activity-task-executor-manual = Done by you or another collaborator
-activity-task-executor-none = No agent available. The task stays unassigned.
-activity-task-executor-agent = Agent: { $agent }
-activity-task-no-attachment = No resource attached. The task stays workspace-wide.
-activity-task-attached = Attached: { $resource } in { $app }
-activity-task-attached-workspace = Workspace
-activity-task-cancel-compose = Cancel
-activity-task-create = Create
-activity-task-open-resource = Open resource
-activity-task-start-agent = Start agent
-activity-task-launch-agent = Launch agent
-activity-task-mark-started = Mark started
-activity-task-mark-done = Mark done
-activity-task-cancel = Cancel task
-activity-task-retry-agent = Retry agent
-activity-task-audit-trail = Audit trail
-activity-task-audit-noted = { $what }: { $note }
 workspace-create-task = { $manual ->
     [true] Created the task “{ $title }” to do by hand
    *[false] Created the task “{ $title }”
@@ -398,28 +387,6 @@ workspace-set-status = { $status ->
     [done] Marked the task done
    *[cancelled] Cancelled the task
 }
-activity-task-unassigned-by = Unassigned · created by { $creator }
-activity-task-agent-badge = Agent · { $name }
-activity-task-status-queued = Queued
-activity-task-status-in-progress = In progress
-activity-task-status-waiting = Waiting
-activity-task-status-done = Done
-activity-task-status-cancelled = Cancelled
-activity-task-route-manual = Manual · no model
-activity-task-route-rules-only = Agent · rules only
-activity-task-route-model = Agent · model assisted
-activity-task-notice-no-agent = No enabled workspace agent is assigned, so this task has not started.
-activity-task-notice-ready = Agent connected and ready to run this task.
-activity-task-notice-starting = Starting the managed agent. Waiting for its broker subscription.
-activity-task-notice-offline = Agent offline · { $detail }
-activity-task-notice-no-runtime = The agent runtime is not connected, so this task has not started.
-activity-agent-connect-timeout = The agent did not connect to the workspace. Retry to start a new managed session.
-activity-agent-stopped = The managed agent stopped before connecting.
-activity-agent-exited = The managed agent launcher exited with status { $code }.
-activity-agent-dispatch-failed = agent task dispatch failed
-activity-agent-dispatch-unavailable = agent task dispatch is unavailable
-activity-agent-launch-unavailable = agent launching is unavailable
-
 # Workspace history events
 activity-event-removed-workspaces = Removed { $count } { $count ->
         [one] workspace
@@ -524,6 +491,8 @@ search-window-copy-tab = Copy tab “{ $tab }” to workspace “{ $workspace }�
 search-window-move-tab-to = Move “{ $tab }” to another workspace
 search-window-copy-tab-to = Copy “{ $tab }” to another workspace
 search-window-group-untitled = Untitled window
+search-window-nth = { $nth } of { $count }
+search-window-placeholder = Search { $searched }…
 search-window-close-group = Close window group “{ $group }”
 search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · { $count ->
     [one] 1 tab
@@ -626,6 +595,29 @@ workspace-settings-tab-privacy-security = Privacy & Security
 workspace-settings-tab-privacy = Privacy
 workspace-settings-tab-apps-files = Apps & Files
 workspace-settings-tab-apps = Apps
+workspace-settings-tab-emoji = Emoji
+workspace-settings-emoji-count = { $count ->
+    [0] This workspace's own emoji
+    [one] 1 emoji of this workspace
+   *[other] { $count } emoji of this workspace
+}
+workspace-settings-emoji-help = Write :name: in any app of this workspace, or pick one from a reaction's emoji.
+workspace-settings-emoji-add = Add emoji
+workspace-settings-emoji-empty-title = This workspace has no emoji of its own yet
+workspace-settings-emoji-empty-detail = Choose Add emoji and pick a picture: its file name becomes the emoji's name.
+workspace-settings-emoji-empty-detail-viewer = Anyone who may edit this workspace can add them.
+workspace-settings-emoji-unavailable = This workspace's emoji are not available on this device.
+workspace-settings-emoji-editors-add = Only people who may edit this workspace can add emoji.
+workspace-settings-emoji-added-by = Added by { $name }
+workspace-settings-emoji-added-by-you = Added by you
+workspace-settings-emoji-remove = Remove :{ $name }:
+workspace-settings-emoji-not-chosen = No picture was chosen
+workspace-settings-emoji-not-added = { $file } was not added as an emoji
+workspace-settings-emoji-not-removed = :{ $name }: was not removed
+workspace-settings-emoji-tools-loading = The picture tools are still loading. Try again in a moment.
+workspace-settings-emoji-not-a-picture = Only PNG, JPEG and WebP pictures can become emoji.
+workspace-settings-emoji-too-detailed = The picture is too detailed to stay sharp at emoji size. Try a simpler one.
+workspace-settings-emoji-no-name = Its file name has no letters or digits to name an emoji by.
 workspace-settings-role-owner = Owner
 workspace-settings-role-moderator = Moderator
 workspace-settings-role-editor = Editor
@@ -747,20 +739,20 @@ workspace-settings-members-count = { $count ->
    *[other] { $count } people share this workspace
 }
 workspace-settings-members-help = Removing someone blocks future sync and edits; copies already downloaded stay with them.
-workspace-settings-ownership = Ownership
+workspace-settings-ownership-cancel-short = Cancel transfer
+workspace-settings-ownership-transfer = Transfer ownership
 workspace-settings-you-manage = You manage
 workspace-settings-view-only = View only
 workspace-settings-members-empty-title = No one else is in this workspace
 workspace-settings-members-empty-detail = Create a signed invite from the General tab to add someone.
 workspace-settings-people-header = People
 workspace-settings-ownership-offered = { $owner } offered you ownership. Review the workspace and explicitly accept before the offer expires.
-workspace-settings-ownership-waiting = Waiting for { $recipient } to explicitly accept ownership. You can cancel until acceptance.
+workspace-settings-ownership-waiting = Waiting for { $recipient } to accept ownership.
 workspace-settings-ownership-pending = Ownership transfer to { $recipient } is awaiting that person's acceptance.
 workspace-settings-you = You
-workspace-settings-member-detail = { $count ->
-    [0] { $role } · no extra permissions
-    [one] { $role } · 1 extra permission
-   *[other] { $role } · { $count } extra permissions
+workspace-settings-member-extra = { $count ->
+    [one] 1 extra permission
+   *[other] { $count } extra permissions
 }
 workspace-settings-remove = Remove
 workspace-settings-owner-only = Only the workspace owner can change permissions.
@@ -815,6 +807,11 @@ workspace-settings-agent-access-default = default
 workspace-settings-agent-access-reset = Use defaults
 workspace-settings-agent-access-always = Always allowed · { $count }
 workspace-settings-agent-access-stop = Ask again
+workspace-settings-agent-model = Model
+workspace-settings-agent-model-default = The default: { $model }
+workspace-settings-agent-model-none = No model chosen in Settings
+workspace-settings-agent-model-use = Use
+workspace-settings-agent-model-in-use = In use
 workspace-settings-agent-access-empty = No apps in this workspace yet.
 workspace-settings-answer-allow = Allow
 workspace-settings-answer-ask = Ask first
@@ -878,15 +875,12 @@ workspace-settings-keep-permission = Keep permission
 workspace-settings-revoke-permission = Revoke permission
 workspace-settings-revoke-permission-detail = This removes the selected capability immediately.
 workspace-settings-workspace-fallback = Workspace
-workspace-settings-identity-caption = Workspace · { $role }
 workspace-settings-current-workspace = Current workspace
-workspace-settings-role-policy-line = { $role } · Settings and policy stay with this workspace
 workspace-settings-identity-title = Workspace identity
 workspace-settings-identity-description = This name appears in the top bar, invites, and shared activity.
 workspace-settings-rename-admin-only = Only a workspace administrator can rename this workspace.
-workspace-settings-invite-hint = Choose a person and a role. The invite is signed and lasts one hour.
-workspace-settings-invite-admin-only = Only a governing administrator can create workspace invites.
-workspace-settings-invite-create = Create
+workspace-settings-invite-admin-only = Only an administrator of this workspace can invite people.
+workspace-settings-invite-create = Create invite
 workspace-settings-devices-title = Your devices
 workspace-settings-devices-local = Your window layout and controls stay on each device.
 workspace-settings-device-here = { $device } (this device)
@@ -895,6 +889,11 @@ workspace-settings-device-hidden = Kept off
 workspace-settings-move-earlier = Move up
 workspace-settings-move-later = Move down
 workspace-settings-delete = Delete workspace
+workspace-settings-delete-description = Removes it from this device and your other devices.
+workspace-settings-delete-action = Delete
+workspace-settings-archived-title = Archived workspaces
+workspace-settings-archived-restore = Restore
+workspace-settings-archived-delete = Delete
 workspace-settings-public-title = Public
 workspace-settings-public-asking = Asking this workspace's host…
 workspace-settings-public-on = Anyone can find it in its host's directory and join.
@@ -904,7 +903,7 @@ workspace-settings-public-switch-off = Private
 workspace-settings-public-role = People who join: { $role }
 workspace-settings-public-describe = Description…
 workspace-settings-invite-title = Invite people
-workspace-settings-invite-description = Invites bind the workspace, recipient role, expiry and this device's identity.
+workspace-settings-invite-description = Choose a person and what they can do here. Each invite works for one hour.
 workspace-settings-glance-title = At a glance
 workspace-settings-stat-members = { $count ->
     [one] member
@@ -941,7 +940,8 @@ a11y-shell-workspace-activity-description = Review grouped outcomes and what hap
 
 # Empty-workspace launchpad
 launchpad-title = Make something together
-launchpad-description = Choose a shared conversation, notes, tasks, a call, an invitation, or workspace activity.
+launchpad-title-private = Start something
+launchpad-description = Choose a conversation, notes, tasks, a call, an invitation, or workspace activity.
 launchpad-open-app = Open an app
 launchpad-discuss = Discuss
 launchpad-notes = Notes
@@ -955,6 +955,10 @@ launchpad-tasks-detail = Open the to-do list in Calendar
 launchpad-meet-detail = Talk with this workspace in Chat
 launchpad-invite-detail = Bring someone into this workspace
 launchpad-activity-detail = See what changed and why
+launchpad-discuss-detail-private = Open this workspace's conversation
+launchpad-notes-detail-private = Write ideas down
+launchpad-meet-detail-private = Call someone from Chat
+launchpad-invite-detail-private = Work on this with someone
 
 # Empty-workspace launchpad: the keyboard hint under the cards
 launchpad-keyboard-hint = Arrow keys move, Enter opens, Super+N shows every app
@@ -965,14 +969,27 @@ launchpad-keyboard-hint = Arrow keys move, Enter opens, Super+N shows every app
 people-panel-agent-tag = Agent
 people-panel-bot-tag = Bot
 people-panel-viewing = Viewing { $title }
+people-panel-in-app = In { $app }
 people-panel-here-count = { $count ->
-    [one] 1 here
-   *[other] { $count } here
+    [0] Just you
+    [one] You and 1 other
+   *[other] You and { $count } others
 }
-people-panel-here-watching = { $count } here, { $watching } watching
+people-panel-here-watching = { $count ->
+    [0] Just you
+    [one] You and 1 other
+   *[other] You and { $count } others
+}, { $watching } watching
+people-panel-here-spectating = { $count ->
+    [0] Nobody here
+    [one] 1 person here
+   *[other] { $count } people here
+}, { $watching } watching, you among them
 people-panel-section-people = People
 people-panel-section-agents = Agents
+people-panel-section-devices = Your devices
 people-panel-wave = Wave
+people-panel-waved = Waved
 people-panel-join = Join
 people-panel-in-call = In { $channel }
 people-panel-in-a-call = In a call
@@ -980,9 +997,10 @@ people-panel-focusing = Focusing
 people-panel-away = Away
 people-panel-idle = Idle
 people-panel-empty = Nobody else is here right now
-people-panel-changes = See their changes
+people-panel-changes = Their changes
 people-panel-invite-people = Invite people
 a11y-shell-wave = Wave at { $name }
+a11y-shell-waved = You waved at { $name }
 a11y-shell-wave-description = Their face shows you waved
 a11y-shell-join-call = Join { $name }’s call
 a11y-shell-join-call-description = Joins the voice channel they are in
@@ -991,7 +1009,35 @@ a11y-shell-people-changes-description = Open History at their changes
 a11y-shell-people-change-description = Open History at this change
 people-panel-follow = Follow
 people-panel-stop-following = Stop
-launchpad-subtitle = Pick a way to start. What you make here is shared with everyone in this workspace.
+
+# The people overlay: the roster pinned out of the bar, floating over windows
+people-panel-pin = Keep on screen
+a11y-people-pin = Keep who is here on screen
+a11y-people-overlay = Who is here
+people-overlay-title = { $count ->
+    [0] Just you
+    [one] 1 here
+   *[other] { $count } here
+}
+people-overlay-unpin = Put back in the bar
+people-overlay-follow-name = Follow { $name }
+people-overlay-doing-nothing = Here
+people-overlay-screen-private = { $name } keeps where they are to themselves
+people-overlay-empty-desk = Nothing open on { $name }’s screen
+people-overlay-message-placeholder = Message { $name }
+people-overlay-message-you = You
+people-overlay-send = Send
+people-overlay-own-status = What you're doing
+people-overlay-own-status-placeholder = What are you working on?
+people-overlay-own-status-clear = Clear what you're doing
+people-overlay-no-messages = Say hello to { $name }
+people-overlay-messages-unavailable = Direct messages with this person are not available right now
+people-overlay-message-failed = The message to { $name } did not go: { $reason }
+a11y-people-follow = Follow { $name }
+a11y-people-stop-following = Stop following { $name }
+launchpad-subtitle = Pick a way to start. Everyone in this workspace sees what you make here.
+launchpad-subtitle-private = Pick a way to start. Only you see what you make here until you invite someone.
+launchpad-subtitle-public = Pick a way to start. This workspace is public: anyone who joins sees what you make here.
 
 # The emoji picker (Super+. by default)
 emoji-picker-title = Emoji
@@ -1048,11 +1094,8 @@ browser-welcome-hint-mac = Arrow keys move, Enter opens, ⌘K finds any app
 overview-panel-title = Overview
 overview-panel-you-are-here = You are here
 overview-panel-windows = Windows here
+overview-strip-empty = No windows
 overview-panel-no-windows = No windows yet
-overview-panel-more-windows = { $count ->
-    [one] and 1 more window
-   *[other] and { $count } more windows
-}
 overview-panel-window-count = { $count ->
     [one] 1 window
    *[other] { $count } windows
@@ -1060,30 +1103,30 @@ overview-panel-window-count = { $count ->
 overview-panel-go-to = Go to
 overview-panel-new-workspace = New workspace
 browser-new-workspace-name = Workspace { $number }
+room-notice-joined = { $name } joined
+room-notice-renamed = { $name } renamed the workspace to { $workspace }
+browser-app-crashed = { $app } stopped working, so it was closed to keep the rest of the desktop running. Close this window, or open { $app } again.
+browser-app-crashed-reopen = Reopen
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
 tilo-menu-about = About this computer
+tilo-menu-about-browser = About Tilo
 tilo-menu-feedback = Give feedback…
 tilo-about-title = About this computer
+tilo-about-title-browser = About Tilo
 tilo-about-lead = This is Tilo, an operating system.
-tilo-about-body-browser = What you're using right now runs in your browser. Tilo is coming natively to computers.
+tilo-about-body-browser = You're using Tilo in your browser. It's coming to run on your own computer, too.
+tilo-about-version = Version { $version }
+tilo-about-link-get = Get Tilo
+tilo-about-link-home = tilo.so
 tilo-about-body-native = It runs right here, on this computer.
 tilo-about-link-notify = Get notified
 tilo-about-link-source = Source code
 tilo-about-link-community = Community
 
 notification-preview-hidden = Notification preview hidden
-activity-catch-up-goals = Workspace tasks: { $done } completed, { $unfinished } unfinished · updated { $when }
-activity-catch-up-review-description = Review this workspace's waiting tasks, goals and agent work. Reading activity does not resolve a task.
-activity-catch-up-review-goals = Review goals and agent work
-activity-acknowledge-viewed = Acknowledge viewed activity
-activity-acknowledge-description = Mark only the displayed summaries as read. Keep hidden changes and waiting tasks pending.
-activity-catch-up-needs-review = Needs your review · { $count ->
-    [one] one waiting task
-   *[other] { $count } waiting tasks
-    }
-activity-catch-up-waiting-detail = { $task } · { $who }
-
+activity-acknowledge-viewed = Mark as seen
+activity-acknowledge-description = Marks the changes shown here as seen. Waiting tasks stay open.
 notification-alarm-snoozed = Snoozed for 5 minutes. Dismiss this entry to cancel the pending snooze.
 notification-alarm-dismiss = Dismiss
 notification-alarm-snooze = Snooze for 5 minutes
@@ -1091,96 +1134,6 @@ notification-alarm-action-failed = Could not change this alarm
 notification-alarm-action-title = { $action }: { $title }
 notification-alarm-action-subtitle = For this alarm occurrence
 notification-alarm-action-retry = Keep this notification and try again.
-
-activity-task-review-unavailable = Can't reach the workspace owner right now, so tasks can't be changed. Their history is still readable.
-activity-task-review-history = See changes
-activity-task-steer = Change instructions
-activity-task-cancel-run = Cancel task
-activity-task-retry-run = Try again
-activity-task-direction-send = Send instructions
-activity-task-direction-close = Back to task
-activity-task-direction-label = Instructions for the agent
-activity-task-direction-placeholder = Describe the change you want the agent to make
-activity-task-direction-observation = Tell the agent what to do differently. It follows your instructions from its next step, and everyone in this workspace can see them.
-activity-task-review-waiting = Waiting for the agent's response.
-activity-task-review-refused = Couldn't save. Your draft is kept. { $detail }
-
-activity-confirm-waiting = Waiting for your confirmation
-activity-task-step-searching = Searching the web…
-activity-task-step-reading = Reading { $app }…
-activity-task-step-editing = Editing { $app }…
-activity-task-step-exploring = Looking at what { $app } can do…
-activity-confirm-confirmed = Confirmed
-activity-confirm-declined = Declined
-activity-confirm-risk-sends = Sends outside
-activity-confirm-risk-deletes = Can't be undone
-activity-confirm-risk-privileged = Changes access
-activity-confirm-risk-sensitive = Shares private data
-activity-confirm-risk-changes = Changes your work
-activity-confirm-risk-reads = Reads your work
-activity-confirm-meta = { $agent } asks first · { $resource }
-activity-confirm-withheld = Hidden
-activity-confirm-yes = Yes
-activity-confirm-no = No
-activity-confirm-list = { $count }: { $items }
-activity-confirm-list-label = { $label } ({ $count })
-activity-confirm-more = { $count } more
-activity-confirm-to = To
-activity-confirm-cc = Cc
-activity-confirm-bcc = Bcc
-activity-confirm-subject = Subject
-activity-confirm-body = Message
-activity-confirm-attachments = Attachments
-activity-confirm-confirm = Allow
-activity-confirm-edit = Edit
-activity-confirm-discard = Discard changes
-activity-confirm-decline = Decline
-activity-confirm-send-decline = Decline action
-activity-confirm-back = Back
-activity-confirm-always = Always allow this
-activity-confirm-always-note = “Always allow this” changes this workspace’s agent access, so it works only on the device that manages the workspace. You can undo it in Workspace Settings, under Agents.
-activity-confirm-reason-label = Reason for the agent (optional)
-activity-confirm-reason-placeholder = Say what to do instead
-activity-confirm-field-description = Change this before confirming
-activity-confirm-on-its-way = Your answer is on its way to the agent.
-activity-confirm-notice-title = { $agent } asks first: { $action }
-activity-confirm-notice-body = { $task }
-activity-confirm-notice-gist = { $task } · { $gist }
-activity-confirm-notice-review = Review
-
-activity-task-next = Next task
-activity-task-previous = Previous task
-activity-task-review-source = Workspace owner's copy, version { $generation } · checked { $time }
-activity-task-review-status = { $status ->
-        [queued] { $agent } hasn't started yet
-        [in-progress] { $agent } is working on it
-        [waiting] { $agent } stopped before finishing
-        [done] { $agent } finished this
-       *[cancelled] Cancelled
-    }
-activity-task-review-frontier = Run { $epoch } · { $revision ->
-        [one] 1 instruction sent
-       *[other] { $revision } instructions sent
-    } · { $applied } applied by the agent
-activity-task-review-direction = { $author }: “{ $text }”
-activity-task-review-missing = This task is no longer available in this workspace.
-
-activity-task-review-status-unassigned = { $status ->
-        [done] Done
-        [cancelled] Cancelled
-       *[other] Nobody is working on this yet
-    }
-activity-task-review-status-asking = { $agent } is waiting for your answer
-activity-task-details = Details
-activity-task-hide-details = Hide details
-activity-task-position = { $index } of { $count }
-activity-task-run-approved-by-you = You approved this · { $time }
-activity-task-approve-run = Approve
-activity-task-run-approved = Approved by { $person } · { $time }
-activity-task-awaiting-acceptance = Waiting for the agent to pick this up. It may be offline.
-activity-task-run-accepted = The agent picked this up · last update { $time }
-activity-task-run-planning = The agent is planning the steps · last update { $time }
-activity-task-run-executing = The agent is making changes · last update { $time }
 
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
@@ -1205,8 +1158,6 @@ activity-morning-recorded = { $source } · last recorded workspace activity: { $
 
 activity-morning-next = Next chosen source
 
-emoji-picker-hint-insert = Insert
-emoji-picker-hint-close = Close
 emoji-picker-hint-tone = Pick a skin tone
 
 workspace-settings-hint-close = Close
@@ -1215,3 +1166,76 @@ workspace-settings-hint-cancel = Cancel
 workspace-settings-hint-choose = Choose
 
 workspace-settings-hint-apply = Apply
+
+# Someone else opened a window out of sight: the hint at the strip's edge
+desktop-window-opened-elsewhere = { $person } opened { $app }
+# Strip switcher: the strip ribbon grown into labels, one per strip of the workspace.
+strip-switcher-a11y = Strips
+strip-switcher-unnamed = Strip { $number }
+strip-switcher-new-strip = New strip
+strip-switcher-rename-named = Rename { $name }
+strip-switcher-name-placeholder = Strip name
+strip-switcher-refused = Couldn't change the strip
+strip-switcher-remove-named = Remove { $name }
+strip-switcher-rename = Rename
+strip-switcher-remove = Remove
+
+## Reporting a problem by pointing at it
+feedback-report-problem = Report a problem…
+feedback-picker-hint = Click what isn’t working. Shift-click or drag to pick more, scroll to widen, Esc to leave.
+feedback-picker-picked = { $count ->
+    [one] 1 part picked. Shift-click or drag to pick more.
+   *[other] { $count } parts picked. Shift-click or drag to pick more.
+}
+feedback-picker-continue = Continue
+feedback-picker-cancel = Cancel
+# What a picked part is called while picking and in the review: what it is,
+# then in which app ("Message in Chat", "The “Send message” button in Chat").
+feedback-part-in = { $what } in { $app }
+# A part the app names with its own words, by its role.
+feedback-part-named = The “{ $name }” { $role ->
+    [Button] button
+    [ToggleButton] button
+    [Link] link
+    [Tab] tab
+    [MenuItem] menu item
+    [Checkbox] checkbox
+    [Switch] switch
+    [TextInput] field
+    [MultilineTextInput] field
+    [Heading] heading
+   *[other] { $role }
+}
+# A part known only by its role, as assistive technology names it.
+feedback-part-role = { $role ->
+    [ListItem] A list item
+    [Row] A row
+    [Cell] A cell
+    [Button] A button
+    [ToggleButton] A button
+    [Link] A link
+    [Image] A picture
+    [TextInput] A field
+    [MultilineTextInput] A field
+    [StaticText] A text
+    [Paragraph] A paragraph
+    [Heading] A heading
+    [List] A list
+    [Group] A group
+    [Window] A window
+    [Toolbar] A toolbar
+    [Menu] A menu
+    [MenuItem] A menu item
+    [Tab] A tab
+   *[other] A part
+}
+
+# Following someone's view
+follow-label = Following { $person }
+follow-stopped = Stopped following
+follow-stop = Stop
+
+people-follows = Following { $person }
+people-follows-you = Following you
+people-follows-where = { $place }, following { $person }
+people-follows-you-where = { $place }, following you

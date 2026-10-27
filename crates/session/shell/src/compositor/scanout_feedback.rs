@@ -184,7 +184,6 @@ pub struct ScanoutFeedback {
     /// The feedback last built for a plane — `None` when the plane scans out
     /// nothing importable — reused while the offer stays the same.
     built: Option<(Arc<ScanoutPlane>, Option<DmabufFeedback>)>,
-    /// The surface that has a scanout feedback, and that feedback.
     offered: Option<(WlSurface, DmabufFeedback)>,
 }
 
@@ -397,7 +396,6 @@ mod tests {
         assert!(scanout_opaque(Fourcc::Abgr8888, true));
         assert!(!scanout_opaque(Fourcc::Argb8888, false));
         assert!(!scanout_opaque(Fourcc::Abgr8888, false));
-        // HDR swapchains composite through the HDR path.
         assert!(!scanout_opaque(Fourcc::Xrgb2101010, true));
         assert!(!scanout_opaque(Fourcc::Xbgr16161616f, true));
     }

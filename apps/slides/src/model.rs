@@ -14,7 +14,10 @@
 // `.parse()`/`?` handling through every call site for no behavioural
 // benefit, so the name collision is accepted here rather than exempted
 // call-by-call.
-#![allow(clippy::should_implement_trait)]
+#![allow(
+    clippy::should_implement_trait,
+    reason = "the infallible from_str parsers fall back to a default; FromStr would force a Result through every call site"
+)]
 
 use serde::{Deserialize, Serialize};
 use ui::paint::with_alpha;
@@ -623,10 +626,56 @@ impl PaletteKind {
     }
 }
 
+/// A deck's light or dark look: its surfaces and inks. Document content,
+/// stored with the deck, so it looks the same on every screen, in Present
+/// and in a saved file, whatever the reader's own UI theme.
+#[derive(Model, Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeckLook {
+    /// Light surfaces, dark ink: what a new deck starts with.
+    #[default]
+    Light,
+    /// Dark surfaces, light ink.
+    Dark,
+}
+
+impl DeckLook {
+    pub const ALL: [DeckLook; 2] = [DeckLook::Light, DeckLook::Dark];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DeckLook::Light => "light",
+            DeckLook::Dark => "dark",
+        }
+    }
+    pub fn from_str(s: &str) -> DeckLook {
+        match s {
+            "dark" => DeckLook::Dark,
+            _ => DeckLook::Light,
+        }
+    }
+    /// The look's name, in the reader's language.
+    #[must_use]
+    pub fn label(self) -> String {
+        crate::strings::tr(match self {
+            DeckLook::Light => "slides-look-light",
+            DeckLook::Dark => "slides-look-dark",
+        })
+    }
+    /// The colour tokens the deck's colours come from.
+    #[must_use]
+    pub fn colors(self) -> ui::tokens::Colors {
+        match self {
+            DeckLook::Light => ui::tokens::Colors::light(),
+            DeckLook::Dark => ui::tokens::Colors::dark(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Deck {
     pub title: String,
     pub palette: PaletteKind,
+    pub look: DeckLook,
     pub slides: Vec<Slide>,
 }
 
@@ -636,8 +685,9 @@ impl Deck {
     }
 }
 
-/// A palette resolved against the live [`Theme`](ui::theme::Theme). Holds
-/// concrete colours so the renderer never re-derives them per element.
+/// A palette resolved for the deck's own [`DeckLook`], never the reader's UI
+/// theme. Holds concrete colours so the renderer never re-derives them per
+/// element.
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub accent: Color,
@@ -655,6 +705,9 @@ pub struct Palette {
     pub info: Color,
     /// The status colour of an image that could not be loaded.
     pub failed: Color,
+    /// The look these colours were resolved for: the deck's words lay out
+    /// and paint against it ([`crate::render::words_theme`]).
+    pub look: DeckLook,
     /// The `text` and `text-dim` inks for each slide background, in
     /// [`Background::ALL`] order. See [`Palette::on`].
     inks: [(Color, Color); 3],
@@ -672,9 +725,10 @@ static DECK_HUES: std::sync::LazyLock<ui::tokens::colors::PresencePalette> =
     std::sync::LazyLock::new(|| ui::tokens::Colors::light().presence);
 
 impl Palette {
-    /// Build the resolved palette for `kind` against `theme`.
-    pub fn resolve(kind: PaletteKind, theme: &ui::theme::Theme) -> Palette {
-        let c = &theme.tokens.colors;
+    /// Build the resolved palette for `kind` in the deck's `look`.
+    pub fn resolve(kind: PaletteKind, look: DeckLook) -> Palette {
+        let colors = look.colors();
+        let c = &colors;
         let hue = |h: PresenceHue| DECK_HUES.hue(h);
         let accent = match kind {
             PaletteKind::Indigo => hue(PresenceHue::Blue),
@@ -708,11 +762,12 @@ impl Palette {
             danger: hue(PresenceHue::Red),
             info: hue(PresenceHue::Violet),
             failed: c.semantic.danger,
+            look,
             inks: [(c.text_primary, c.text_dim); 3],
         };
-        // The theme's text colours are chosen for the theme's own surfaces;
+        // The look's text colours are chosen for the look's own surfaces;
         // a slide background can be the opposite (the fixed deep tone under
-        // the light theme's near-black text measured 1.05:1). Resolve the
+        // the light look's near-black text measured 1.05:1). Resolve the
         // `text` and `text-dim` roles per background instead: the theme's
         // ink wherever it clears WCAG AA on that background, otherwise the
         // legible ink for it, and a dim ink that is a softened version of
@@ -733,8 +788,8 @@ impl Palette {
     /// This palette as it resolves on a slide with background `bg`: the
     /// `text` and `text-dim` roles become the inks that contrast with that
     /// background, so text styled with a theme text role stays legible when
-    /// its slide switches to the accent or deep treatment, in either OS
-    /// theme. Every other role is unchanged.
+    /// its slide switches to the accent or deep treatment, in either look.
+    /// Every other role is unchanged.
     #[must_use]
     pub fn on(&self, bg: Background) -> Palette {
         let index = Background::ALL
@@ -757,8 +812,7 @@ impl Palette {
     /// for `"none"` so callers can skip the fill/stroke entirely.
     ///
     /// Two kinds of value are accepted: a named theme *role* (`"accent"`,
-    /// `"surface"`, …), resolved against the live palette so the deck tracks
-    /// the OS theme; or a literal `#RRGGBB` / `#RRGGBBAA` hex chosen with the
+    /// `"surface"`, …), resolved against the deck's palette and look; or a literal `#RRGGBB` / `#RRGGBBAA` hex chosen with the
     /// inspector colour picker, which resolves to that exact colour regardless
     /// of theme. Hex is what lets a user pick an arbitrary fill and what a
     /// `LibreOffice` `.odp` round-trips faithfully.
@@ -870,6 +924,7 @@ pub fn starter_deck() -> Deck {
     Deck {
         title: "Untitled deck".into(),
         palette: PaletteKind::Indigo,
+        look: DeckLook::default(),
         slides: vec![s],
     }
 }
@@ -884,6 +939,7 @@ pub fn seed_deck() -> Deck {
     Deck {
         title: "Riverside Park — concept review".into(),
         palette: PaletteKind::Indigo,
+        look: DeckLook::default(),
         slides: vec![
             seed_slide_cover(),
             seed_slide_goals(),
@@ -961,14 +1017,26 @@ fn seed_slide_goals() -> Slide {
             e.radius = 4.0;
         }),
     );
-    s.add(Element::text(
-        "• Reconnect the waterfront path\n\n• Add shade, seating and lighting\n\n• Protect the existing wetland\n\n• Keep the budget under review",
-        96.0,
-        210.0,
-        720.0,
-        440.0,
-        34.0,
-    ));
+    // The goals are a bulleted list, as a person makes one in the editor.
+    s.add(
+        Element::text("", 96.0, 210.0, 720.0, 440.0, 34.0).with(|e| {
+            e.set_blocks(
+                [
+                    "Reconnect the waterfront path",
+                    "Add shade, seating and lighting",
+                    "Protect the existing wetland",
+                    "Keep the budget under review",
+                ]
+                .into_iter()
+                .map(|goal| {
+                    let mut item = BlockContent::paragraph("", goal);
+                    item.kind = ui::widget::BlockKind::Bullet { indent: 0 };
+                    item
+                })
+                .collect(),
+            );
+        }),
+    );
     // A small decorative figure block on the right.
     s.add(
         Element::shape(ElementKind::Rect, 880.0, 230.0, 300.0, 300.0).with(|e| {
@@ -1167,17 +1235,14 @@ mod tests {
     /// Seed deck, z increments, kind/align round-trips and palette role fallback.
     #[test]
     fn deck_model_seeds_orders_and_round_trips_kinds() {
-        // Case `seed_deck_has_designed_slides`.
         {
             let d = seed_deck();
             assert_eq!(d.slides.len(), 5);
-            // Every slide has at least one element.
             for s in &d.slides {
                 assert!(!s.elements.is_empty(), "slide {:?} empty", s.layout);
             }
         }
 
-        // Case `add_element_increments_z`.
         {
             let mut s = Slide::new(Layout::Blank);
             let a = s.add(Element::shape(ElementKind::Rect, 0.0, 0.0, 10.0, 10.0));
@@ -1185,7 +1250,6 @@ mod tests {
             assert!(s.element(&a).unwrap().z < s.element(&b).unwrap().z);
         }
 
-        // Case `kind_and_align_round_trip`.
         {
             for k in [
                 ElementKind::Text,
@@ -1201,10 +1265,8 @@ mod tests {
             }
         }
 
-        // Case `palette_resolves_none_role`.
         {
-            let theme = ui::theme::Theme::dark();
-            let p = Palette::resolve(PaletteKind::Indigo, &theme);
+            let p = Palette::resolve(PaletteKind::Indigo, DeckLook::Dark);
             assert!(p.resolve_role("none").is_none());
             assert!(p.resolve_role("accent").is_some());
         }
@@ -1212,7 +1274,7 @@ mod tests {
 
     /// Every text element a template or a layout's starting content creates
     /// stays legible on every slide background, under every accent palette,
-    /// in the light and the dark OS theme: WCAG AA, 4.5:1 for body text and
+    /// in the light and the dark look: WCAG AA, 4.5:1 for body text and
     /// 3:1 for large titles — measured on the colour the renderer draws.
     #[test]
     fn template_text_contrasts_with_every_background_in_both_themes() {
@@ -1241,12 +1303,10 @@ mod tests {
         );
 
         let mut failures = Vec::new();
-        for (theme_name, theme) in [
-            ("light", ui::theme::Theme::light()),
-            ("dark", ui::theme::Theme::dark()),
-        ] {
+        for look in DeckLook::ALL {
+            let theme_name = look.as_str();
             for kind in PaletteKind::ALL {
-                let palette = Palette::resolve(kind, &theme);
+                let palette = Palette::resolve(kind, look);
                 for background in Background::ALL {
                     let on = palette.on(background);
                     let ground = on.slide_bg(background);
@@ -1271,10 +1331,10 @@ mod tests {
     }
 
     /// The case that was reported: text in the theme's text role on a slide
-    /// switched to the deep background, in the light theme.
+    /// switched to the deep background, in the light look.
     #[test]
-    fn theme_text_on_a_deep_slide_is_light_in_the_light_theme() {
-        let palette = Palette::resolve(PaletteKind::Indigo, &ui::theme::Theme::light());
+    fn theme_text_on_a_deep_slide_is_light_in_the_light_look() {
+        let palette = Palette::resolve(PaletteKind::Indigo, DeckLook::Light);
         let deep = palette.slide_bg(Background::Deep);
         assert!(ui::color::contrast_ratio(palette.text, deep) < 1.5);
         let on = palette.on(Background::Deep);
@@ -1282,7 +1342,6 @@ mod tests {
             let ink = on.resolve_role(role).unwrap();
             assert!(ui::color::contrast_ratio(ink, deep) >= 4.5, "{role}");
         }
-        // The surface keeps the theme's own text colours.
         let surface = palette.on(Background::Surface);
         assert_eq!(surface.text, palette.text);
         assert_eq!(surface.text_dim, palette.text_dim);

@@ -1,6 +1,3 @@
-//! `tilo.history` through the same resolution, permission filter and dispatch
-//! every published invocation takes.
-
 use super::*;
 use crate::collaboration::CollabEvent;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
@@ -413,7 +410,7 @@ fn history_list_returns_an_agents_change_as_the_agents_for_its_person() {
     app.collaboration.manager = local;
     let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
     let newest = &listing["entries"][0];
-    assert_eq!(newest["author"], "Scribe · Agent, for ada", "{listing}");
+    assert_eq!(newest["author"], "Scribe · Software, for ada", "{listing}");
     assert_eq!(
         newest["attribution"],
         json!({
@@ -476,7 +473,7 @@ fn history_list_names_a_verified_agents_own_key_change_and_no_other() {
     });
     let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
     let agent = &listing["entries"][scribe_row];
-    assert_eq!(agent["author"], "Scribe · Agent, for Ada", "{listing}");
+    assert_eq!(agent["author"], "Scribe · Software, for Ada", "{listing}");
     assert_eq!(
         agent["attribution"],
         json!({

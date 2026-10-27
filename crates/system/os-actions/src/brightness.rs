@@ -38,7 +38,6 @@ pub enum BrightnessTarget {
     Software,
 }
 
-/// One monitor whose brightness can be set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MonitorBrightness {
     /// Raw DRM connector label, e.g. `DP-2`.
@@ -106,6 +105,7 @@ fn monitors_in(drm: &Path, backlight: &Path, dev: &Path) -> Vec<MonitorBrightnes
         .filter(|(_, path)| {
             fs::read_to_string(path.join("status")).is_ok_and(|s| s.trim() == "connected")
         })
+        .filter(|(_, path)| !on_virtual_card(path))
         .collect();
     connectors.sort_by(|a, b| {
         is_builtin_connector(&b.0)
@@ -138,6 +138,15 @@ fn monitors_in(drm: &Path, backlight: &Path, dev: &Path) -> Vec<MonitorBrightnes
             }
         })
         .collect()
+}
+
+/// Whether a connector belongs to a software-only card on the faux bus
+/// (`vkms`, as a development VM's seat sets up): it reports "connected" but
+/// no person looks at it. A VM's own virtio GPU sits on its virtio bus and
+/// is not one of these.
+fn on_virtual_card(connector: &Path) -> bool {
+    fs::canonicalize(connector.join("device/device"))
+        .is_ok_and(|card| card.components().any(|part| part.as_os_str() == "faux"))
 }
 
 /// The I²C adapter a connector carries: the `ddc` link most drivers set,
@@ -200,10 +209,6 @@ impl BrightnessTarget {
     }
 
     /// Current brightness as a `0.0..=1.0` fraction.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the monitor could not be read.
     pub fn get(&self) -> Result<f32, String> {
         self.read().map(|reading| reading.level)
     }
@@ -212,10 +217,6 @@ impl BrightnessTarget {
     /// monitor whose `maximum` is known is written without reading it
     /// first. Software dimming is the compositor's to apply, so it is a
     /// no-op here.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the monitor could not be written.
     pub fn set_with_maximum(&self, pct: f32, maximum: Option<u16>) -> Result<(), String> {
         let pct = pct.clamp(0.0, 100.0);
         match self {
@@ -232,10 +233,6 @@ impl BrightnessTarget {
     }
 
     /// Set brightness to `pct` percent, clamped to `[0, 100]`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the monitor could not be written.
     pub fn set(&self, pct: f32) -> Result<(), String> {
         self.set_with_maximum(pct, None)
     }
@@ -443,6 +440,29 @@ struct Shared {
     /// Every controllable monitor with its last known level.
     monitors: Vec<Entry>,
     memory: Memory,
+    /// What the session's compositor shows, once it has said so.
+    session: Option<SessionDisplays>,
+}
+
+/// The displays the session shows, as its compositor declares them
+/// ([`BrightnessService::show_only`]). A connector the kernel reports as
+/// connected is not necessarily one of them: a virtual card set up for
+/// another seat (a development VM's `Virtual-1`) or a second GPU's port
+/// shows nothing of this session, so it gets no brightness control.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionDisplays {
+    /// DRM connector labels (`eDP-1`, `DP-2`) of the displays shown.
+    pub connectors: Vec<String>,
+    /// Whether the compositor can dim a display in software. Without it, a
+    /// display with neither a backlight nor DDC/CI has no brightness
+    /// control at all.
+    pub software_dim: bool,
+}
+
+impl SessionDisplays {
+    fn shows(&self, connector: &str) -> bool {
+        self.connectors.iter().any(|shown| shown == connector)
+    }
 }
 
 impl Shared {
@@ -630,6 +650,7 @@ impl BrightnessService {
         let shared = Arc::new(Mutex::new(Shared {
             monitors: Vec::new(),
             memory,
+            session: None,
         }));
         let (tx, rx) = channel();
         let generation = Arc::new(AtomicU64::new(0));
@@ -683,6 +704,14 @@ impl BrightnessService {
         if let Some(tx) = &self.tx {
             let _ = tx.send(Request::Rescan);
         }
+    }
+
+    /// Limit the monitors to the displays the session shows, and re-discover
+    /// them. The compositor calls this whenever its outputs change; until it
+    /// has, every connected monitor is listed.
+    pub fn show_only(&self, displays: SessionDisplays) {
+        self.lock().session = Some(displays);
+        self.rescan();
     }
 
     /// Call `on_change` (from any thread) whenever a software-dimmed level
@@ -782,6 +811,7 @@ impl BrightnessService {
             };
             writer.send(entry.monitor.target.clone(), pct, entry.maximum);
             drop(writers);
+            notify(&self.generation, &self.on_change);
         }
         if self.memory_path.is_some()
             && let Some(tx) = &self.tx
@@ -855,6 +885,82 @@ impl BrightnessService {
         if let Err(error) = spawned {
             tracing::warn!(target: "tilo::display", %error, "brightness memory follower did not start");
         }
+    }
+
+    /// Take what the kernel holds for every backlit panel whose writer is
+    /// idle: another program, a firmware hotkey or a light sensor moved it.
+    /// A level set here while the panel was being read wins. Returns whether
+    /// a level changed.
+    pub fn reload_backlights(&self) -> bool {
+        let backlights: Vec<(String, BrightnessTarget, f32)> = self
+            .lock()
+            .monitors
+            .iter()
+            .filter(|entry| matches!(entry.monitor.target, BrightnessTarget::Backlight(_)))
+            .map(|entry| {
+                (
+                    entry.monitor.connector.clone(),
+                    entry.monitor.target.clone(),
+                    entry.level,
+                )
+            })
+            .collect();
+        let mut changed = false;
+        for (connector, target, before) in backlights {
+            if !self.writer_idle(&connector) {
+                continue;
+            }
+            let Ok(reading) = (self.read)(&target) else {
+                continue;
+            };
+            let mut shared = self.lock();
+            if let Some(entry) = shared
+                .monitors
+                .iter_mut()
+                .find(|entry| entry.monitor.connector == connector)
+                && entry.level.to_bits() == before.to_bits()
+                && (reading.level - before).abs() > f32::EPSILON
+            {
+                entry.level = reading.level;
+                changed = true;
+            }
+        }
+        if changed {
+            notify(&self.generation, &self.on_change);
+        }
+        changed
+    }
+
+    /// Follow the kernel's backlight events on a thread that sleeps on the
+    /// uevent socket: a level change is read back, a backlight that comes or
+    /// goes rescans. The compositor calls this once.
+    pub fn follow_backlight(&'static self) {
+        let spawned = std::thread::Builder::new()
+            .name("tilo-backlight-events".into())
+            .spawn(move || {
+                let followed = crate::backlight_events::follow(|event| match event {
+                    crate::backlight_events::BacklightEvent::Level => {
+                        self.reload_backlights();
+                    }
+                    crate::backlight_events::BacklightEvent::Devices => self.rescan(),
+                });
+                if let Err(error) = followed {
+                    tracing::warn!(target: "tilo::display", %error, "backlight changes not followed");
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(target: "tilo::display", %error, "backlight follower did not start");
+        }
+    }
+
+    fn writer_idle(&self, connector: &str) -> bool {
+        self.writers
+            .lock_recover()
+            .get(connector)
+            .is_none_or(|writer| {
+                let state = writer.state.0.lock_recover();
+                state.pending.is_none() && !state.busy
+            })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
@@ -967,11 +1073,24 @@ fn probe(
     probing: &Mutex<()>,
 ) -> bool {
     let _probing = probing.lock_recover();
-    let discovered = discover();
-    let (known, memory) = {
+    let (known, memory, session) = {
         let shared = shared.lock_recover();
-        (shared.monitors.clone(), shared.memory.clone())
+        (
+            shared.monitors.clone(),
+            shared.memory.clone(),
+            shared.session.clone(),
+        )
     };
+    // Only what the session shows is controllable: a connector of another
+    // seat's card, though connected, is nobody's display here.
+    let discovered: Vec<MonitorBrightness> = discover()
+        .into_iter()
+        .filter(|monitor| {
+            session
+                .as_ref()
+                .is_none_or(|session| session.shows(&monitor.connector))
+        })
+        .collect();
     let mut next = Vec::with_capacity(discovered.len());
     for monitor in discovered {
         if let Some(entry) = known.iter().find(|entry| {
@@ -1015,7 +1134,26 @@ fn probe(
         };
         next.push(entry);
     }
+    // Software dimming needs a compositor that can do it; without one such a
+    // display has no brightness control, so no slider.
+    if session
+        .as_ref()
+        .is_some_and(|session| !session.software_dim)
+    {
+        next.retain(|entry| entry.monitor.target != BrightnessTarget::Software);
+    }
     let mut shared = shared.lock_recover();
+    // A monitor known before the probe keeps its live entry: a level set
+    // while the probe read the bus (outside the lock) is newer than the
+    // snapshot this probe started from, and must not be put back.
+    for entry in &mut next {
+        if let Some(live) = shared.monitors.iter().find(|live| {
+            live.monitor.connector == entry.monitor.connector
+                && live.monitor.edid == entry.monitor.edid
+        }) {
+            entry.clone_from(live);
+        }
+    }
     let changed = shared.monitors.len() != next.len()
         || shared
             .monitors
@@ -1062,6 +1200,19 @@ mod tests {
             fs::write(dir.join("brightness"), "10\n").unwrap();
             fs::write(dir.join("max_brightness"), "100\n").unwrap();
         }
+        /// A vkms card on the faux bus, as a development VM's seat sets
+        /// up, with its connectors reporting "connected".
+        fn faux_card(&self, card: &str, connectors: &[&str]) {
+            let device = self.path("devices/faux/seat-apps-fast-3");
+            fs::create_dir_all(&device).unwrap();
+            let card_dir = self.path("drm").join(card);
+            fs::create_dir_all(&card_dir).unwrap();
+            std::os::unix::fs::symlink(&device, card_dir.join("device")).unwrap();
+            for name in connectors {
+                let dir = self.connector(&format!("{card}-{name}"), "connected");
+                std::os::unix::fs::symlink(&card_dir, dir.join("device")).unwrap();
+            }
+        }
         fn monitors(&self) -> Vec<MonitorBrightness> {
             monitors_in(
                 &self.path("drm"),
@@ -1092,9 +1243,9 @@ mod tests {
         fs::create_dir_all(dp.join("i2c-9")).unwrap();
         fs::create_dir_all(dp.join("power")).unwrap();
         tree.connector("card0-DP-3", "disconnected");
-        // A connected port without any I²C adapter is dimmed in software.
         tree.connector("card0-Virtual-1", "connected");
         fs::create_dir_all(tree.path("drm/card0")).unwrap();
+        tree.faux_card("card1", &["Virtual-1"]);
 
         assert_eq!(
             tree.monitors(),
@@ -1261,7 +1412,143 @@ mod tests {
         service.when_idle(Box::new(move || {
             let _ = done.send(());
         }));
-        told.recv_timeout(Duration::from_secs(30)).unwrap();
+        tilo_test_env::recv("the brightness service to go idle", &told);
+    }
+
+    #[test]
+    fn a_backlight_moved_elsewhere_is_read_back_and_announced() {
+        let panel = MonitorBrightness {
+            connector: "eDP-1".into(),
+            target: BrightnessTarget::Backlight(PathBuf::from("/sys/class/backlight/panel")),
+            edid: None,
+        };
+        let kernel = Arc::new(Mutex::new(0.5_f32));
+        let (read_from, written_to) = (Arc::clone(&kernel), Arc::clone(&kernel));
+        let service = BrightnessService::spawn(
+            Arc::new(move || vec![panel.clone()]),
+            Arc::new(move |_: &BrightnessTarget| -> Result<Reading, String> {
+                Ok(Reading {
+                    level: *read_from.lock().unwrap(),
+                    maximum: None,
+                })
+            }),
+            Arc::new(
+                move |_: &BrightnessTarget, pct: f32, _: Option<u16>| -> Result<(), String> {
+                    *written_to.lock().unwrap() = pct / 100.0;
+                    Ok(())
+                },
+            ),
+            |_| {},
+            None,
+        );
+        service.rescan_blocking();
+        let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&told);
+        service.on_change(Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        let level = |service: &BrightnessService| service.levels()[0].level;
+
+        assert!(!service.reload_backlights(), "nothing moved");
+        assert_eq!(told.load(Ordering::SeqCst), 0);
+
+        // A firmware hotkey or another program sets the panel.
+        *kernel.lock().unwrap() = 0.8;
+        assert!(service.reload_backlights());
+        assert_eq!(level(&service), 0.8);
+        assert_eq!(told.load(Ordering::SeqCst), 1);
+
+        // A level set here is announced too, and its own event reads back
+        // what was written.
+        assert!(service.set("eDP-1", 30.0));
+        assert_eq!(told.load(Ordering::SeqCst), 2);
+        idle(&service);
+        assert!(!service.reload_backlights());
+        assert_eq!(level(&service), 0.3);
+    }
+
+    #[test]
+    fn only_the_displays_the_session_shows_get_a_brightness_control() {
+        let panel = MonitorBrightness {
+            connector: "eDP-1".into(),
+            target: BrightnessTarget::Backlight(PathBuf::from("/sys/class/backlight/panel")),
+            edid: None,
+        };
+        let mut hub_monitor = ddc_monitor("DP-2");
+        hub_monitor.target = BrightnessTarget::Software;
+        let mut seat_card = ddc_monitor("Virtual-1");
+        seat_card.target = BrightnessTarget::Software;
+        let connectors = |levels: Vec<MonitorLevel>| -> Vec<String> {
+            levels.into_iter().map(|level| level.connector).collect()
+        };
+
+        let (service, _) = fake_service(vec![panel, hub_monitor, seat_card]);
+        service.show_only(SessionDisplays {
+            connectors: vec!["eDP-1".into(), "DP-2".into()],
+            software_dim: true,
+        });
+        assert_eq!(connectors(service.rescan_blocking()), ["eDP-1", "DP-2"]);
+        assert_eq!(service.software_levels().len(), 1, "only DP-2 is dimmed");
+
+        // A compositor that cannot dim in software leaves DP-2 without a
+        // control of any kind.
+        service.show_only(SessionDisplays {
+            connectors: vec!["eDP-1".into(), "DP-2".into()],
+            software_dim: false,
+        });
+        assert_eq!(connectors(service.rescan_blocking()), ["eDP-1"]);
+    }
+
+    #[test]
+    fn a_virtual_card_on_the_faux_bus_is_nobodys_display() {
+        let tree = Tree::new();
+        tree.backlight("dp_aux_backlight");
+        tree.faux_card("card0", &["Virtual-1"]);
+        tree.connector("card1-eDP-1", "connected");
+        tree.connector("card1-DP-2", "connected");
+        let connectors: Vec<String> = tree
+            .monitors()
+            .into_iter()
+            .map(|monitor| monitor.connector)
+            .collect();
+        assert_eq!(connectors, ["eDP-1", "DP-2"]);
+    }
+
+    /// A level set while a rescan reads the bus survives the rescan: the
+    /// probe works from a snapshot outside the lock and must not put a known
+    /// monitor's older level back when it commits.
+    #[test]
+    fn a_level_set_during_a_rescan_is_not_reverted() {
+        let mut software = ddc_monitor("DP-9");
+        software.target = BrightnessTarget::Software;
+        // The second discovery (the rescan) waits until the test has set a
+        // level, as a slow bus would hold it.
+        let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (entered_tx, released) = (Mutex::new(entered_tx), Mutex::new(released));
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let service = BrightnessService::spawn(
+            Arc::new(move || {
+                if calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    let _ = entered_tx.lock().unwrap().send(());
+                    let _ = released.lock().unwrap().recv();
+                }
+                vec![software.clone()]
+            }),
+            Arc::new(|_: &BrightnessTarget| -> Result<Reading, String> { Err("no bus".into()) }),
+            Arc::new(
+                |_: &BrightnessTarget, _: f32, _: Option<u16>| -> Result<(), String> { Ok(()) },
+            ),
+            |_| {},
+            None,
+        );
+        service.rescan_blocking();
+        service.rescan();
+        tilo_test_env::recv("the rescan to reach the bus", &entered);
+        assert!(service.set("DP-9", 40.0));
+        release.send(()).unwrap();
+        idle(&service);
+        assert_eq!(service.software_levels(), vec![("DP-9".into(), 0.4)]);
     }
 
     #[test]
@@ -1343,7 +1630,6 @@ mod tests {
                 level: Some(0.3),
             })
         );
-        // The software-dimmed monitor comes back on another port at its level.
         broken.connector = "DP-3".into();
         let fake = fake_service_at(vec![broken], Some(path));
         fake.service.rescan_blocking();
@@ -1368,15 +1654,37 @@ mod tests {
         assert!(!fake.service.reload_memory(), "nothing new the second time");
     }
 
-    /// The fake I²C bus: a monitor that takes 80 ms per write and records
-    /// every frame on the wire.
+    /// Holds a monitor's bus mid-write until the test lets it go.
+    #[derive(Default)]
+    struct Gate {
+        open: Mutex<bool>,
+        opened: std::sync::Condvar,
+    }
+
+    impl Gate {
+        fn pass(&self) {
+            let open = self.open.lock().unwrap();
+            drop(self.opened.wait_while(open, |open| !*open).unwrap());
+        }
+
+        fn open(&self) {
+            *self.open.lock().unwrap() = true;
+            self.opened.notify_all();
+        }
+    }
+
+    /// The fake I²C bus: a monitor whose writes wait at its gate, if it
+    /// has one, and that records every frame on the wire.
     struct SlowBus {
         frames: Arc<Mutex<Vec<Vec<u8>>>>,
+        gate: Option<Arc<Gate>>,
     }
 
     impl ddc::I2cTransport for SlowBus {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<()> {
-            std::thread::sleep(Duration::from_millis(80));
+            if let Some(gate) = &self.gate {
+                gate.pass();
+            }
             self.frames.lock().unwrap().push(bytes.to_vec());
             Ok(())
         }
@@ -1386,10 +1694,10 @@ mod tests {
         fn pause(&mut self, _duration: Duration) {}
     }
 
-    /// A held brightness key on a slow DDC/CI monitor: the cache moves at
-    /// once, the bus sees a handful of writes rather than one per press,
-    /// never two at a time, and ends on the last value; a second monitor's
-    /// write is not held up behind the first's queue.
+    /// A held brightness key on a DDC/CI monitor whose bus is stuck mid-write:
+    /// the cache moves at once, the bus sees a handful of writes rather than
+    /// one per press, never two at a time, and ends on the last value; a
+    /// second monitor's write is not held up behind the first's queue.
     #[test]
     fn ddc_writes_coalesce_to_the_newest_value_one_at_a_time_per_monitor() {
         /// The writes one monitor's bus received, in order.
@@ -1397,10 +1705,13 @@ mod tests {
         let buses: Arc<Mutex<BTreeMap<String, BusWrites>>> = Arc::new(Mutex::new(BTreeMap::new()));
         let in_flight = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
         let overlapped = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (wire, flight, overlap) = (
+        // DP-1's bus holds every write until the presses are done.
+        let dp1_gate = Arc::new(Gate::default());
+        let (wire, flight, overlap, gate) = (
             Arc::clone(&buses),
             Arc::clone(&in_flight),
             Arc::clone(&overlapped),
+            Arc::clone(&dp1_gate),
         );
         let service = BrightnessService::spawn(
             Arc::new(|| vec![ddc_monitor("DP-1"), ddc_monitor("DP-2")]),
@@ -1431,7 +1742,8 @@ mod tests {
                         overlap.store(true, Ordering::SeqCst);
                     }
                     let frames = Arc::clone(wire.lock().unwrap().entry(name.clone()).or_default());
-                    let mut bus = SlowBus { frames };
+                    let gate = (name == "/dev/DP-1").then(|| Arc::clone(&gate));
+                    let mut bus = SlowBus { frames, gate };
                     let raw = ddc_raw(pct, maximum.expect("the scale is cached"));
                     let result = ddc::set_vcp(&mut bus, ddc::VCP_BRIGHTNESS, raw)
                         .map_err(|error| error.to_string());
@@ -1445,7 +1757,8 @@ mod tests {
             None,
         );
         service.rescan_blocking();
-        let started = Instant::now();
+        // Every press returns while DP-1's bus is held: a press that waited
+        // on the bus would never return.
         for press in 1..=20u8 {
             assert!(service.set("DP-1", f32::from(press) * 5.0));
             let level = service.levels()[0].level;
@@ -1454,24 +1767,16 @@ mod tests {
                 "the cache moves with every press: {level} after press {press}"
             );
         }
-        assert!(
-            started.elapsed() < Duration::from_millis(80),
-            "setting never waits on the bus"
-        );
+        // DP-2 is written while DP-1's bus is still held.
         assert!(service.set("DP-2", 10.0));
-        let second_started = Instant::now();
-        let dp2 = loop {
-            if let Some(frames) = buses.lock().unwrap().get("/dev/DP-2")
-                && !frames.lock().unwrap().is_empty()
-            {
-                break second_started.elapsed();
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        assert!(
-            dp2 < Duration::from_millis(400),
-            "the second monitor is not queued behind the first ({dp2:?})"
-        );
+        tilo_test_env::wait_until("DP-2's write, while DP-1's bus is held", || {
+            buses
+                .lock()
+                .unwrap()
+                .get("/dev/DP-2")
+                .is_some_and(|frames| !frames.lock().unwrap().is_empty())
+        });
+        dp1_gate.open();
         idle(&service);
         let dp1 = buses.lock().unwrap().get("/dev/DP-1").cloned().unwrap();
         let frames = dp1.lock().unwrap().clone();

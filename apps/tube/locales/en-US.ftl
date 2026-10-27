@@ -12,7 +12,6 @@ tube-nav-settings = Settings
 tube-nav-name = Tube
 
 ## Header row and navigation
-tube-connecting = Connecting
 tube-clear-history = Clear history
 
 ## Counts and facts
@@ -47,9 +46,13 @@ tube-replies = { $count ->
 tube-home-error = Home couldn't refresh
 tube-offline-title = You're offline
 tube-offline-message = Reconnect to load videos. Your queue and history are still here.
+tube-unreached-title = Videos can't load here
+tube-sources-no-relay = The video sources don't let web pages read them, and this site has no fetch proxy to relay them. Your queue and history are still here.
+tube-sources-failed = No video source answered. Your queue and history are still here.
 tube-home-empty-title = Nothing to show yet
 tube-home-empty-message = Search for a video to start watching.
 tube-search = Search
+tube-search-for = Search YouTube for “{ $query }”
 tube-trending-empty-title = Nothing trending yet
 tube-trending-empty-message = Popular videos show here once the catalogue loads.
 tube-subscriptions-empty-title = No subscriptions yet
@@ -76,6 +79,17 @@ tube-subscribed = Subscribed
 ## Watch page
 tube-video-missing = This video isn't available
 tube-resolution = Resolution
+tube-quality-now = Quality, playing { $quality }
+tube-playback-speed = Playback speed
+tube-speed-value = { $rate }×
+tube-captions = Captions
+tube-captions-named = Captions, { $why }
+tube-captions-off = Off
+tube-captions-automatic = { $track } (auto-generated)
+tube-captions-loading = loading…
+tube-captions-not-offered = not offered by this video
+tube-captions-unavailable = could not be loaded
+tube-resume-at = Resume at { $time }
 tube-skip-segment = Skip { $segment }
 tube-like = Like
 tube-like-count = Like, { $likes }
@@ -156,6 +170,12 @@ tube-notice-link-copied = Link copied: { $url }
 tube-notice-video-gone = That video is no longer available
 tube-notice-creator-gone = That creator is no longer available
 tube-notice-playlist-gone = That playlist is no longer available
+tube-unplayable = This video won't play here right now
+tube-unplayable-youtube-said = YouTube refused to play it: "{ $reason }"
+tube-unplayable-no-source = None of Tube's sources had a stream for it.
+tube-try-again = Try again
+tube-live-in-app = Live streams play in the Tilo app for now
+tube-notice-playback-limit = Playback limit reached on this host. Try again later.
 tube-notice-no-downloads = Tube can't save videos for offline viewing
 tube-notice-pairing-busy = Device pairing is busy or unavailable
 tube-notice-sync-busy = Device sync is busy or unavailable

@@ -1,4 +1,3 @@
-//! File text operations exercised through the mounted app's public door.
 use automerge::transaction::Transactable as _;
 use serde_json::{Value, json};
 use ui::framework::testing::TestApp;

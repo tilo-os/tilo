@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-"""Native link menu targets, white page background and oversized-link safety."""
+"""Native link menu targets, white page background, oversized-link safety, and a
+tab hidden, closed or shut down over its open menu."""
 import os, http.server, json, queue, struct, subprocess, sys, tempfile, threading, time
+# How long a wait on the host may take before it counts as hung: the
+# shared hang bound (tools/tests/hang.py), so a loaded runner is not a failure.
+HANG_BOUND=float(os.environ.get('TILO_TEST_HANG_BOUND_SECS','120'))
 class Page(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         body = ("<title>"+self.path+"</title><body style='height:9000px'>needle needle needle "+
@@ -14,8 +18,10 @@ class Page(http.server.BaseHTTPRequestHandler):
 server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Page)
 threading.Thread(target=server.serve_forever,daemon=True).start()
 with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
-    p=subprocess.Popen([sys.argv[1],'--profile='+profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=None if os.environ.get("TILO_TABS_DEBUG") else subprocess.DEVNULL)
+    log=None if os.environ.get("TILO_TABS_DEBUG") else tempfile.TemporaryFile()
+    p=subprocess.Popen([sys.argv[1],'--profile='+profile],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=log)
     events=queue.Queue()
+    seen=[]
     def exact(n):
         data=b''
         while len(data)<n:
@@ -37,13 +43,15 @@ with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
     threading.Thread(target=read,daemon=True).start()
     def send(**d):
         b=b'\1'+json.dumps(d).encode(); p.stdin.write(struct.pack('<I',len(b))+b); p.stdin.flush()
-    def until(predicate,timeout=60):
+    def until(predicate,timeout=HANG_BOUND):
         end=time.monotonic()+timeout
         while time.monotonic()<end:
-            e=events.get(timeout=max(.01,end-time.monotonic()))
-            if isinstance(e,Exception): raise e
+            try: e=events.get(timeout=max(.01,end-time.monotonic()))
+            except queue.Empty: break
+            if isinstance(e,Exception): raise AssertionError(f'{e!r}; the host exited with {p.poll()}; saw {seen[-20:]}')
+            if e['event']!='frame': seen.append(e)
             if predicate(e): return e
-        raise AssertionError('event timeout')
+        raise AssertionError(f'event timeout; saw {seen[-20:]}')
     base='http://127.0.0.1:'+str(server.server_port)
     try:
         until(lambda e:e['event']=='ready')
@@ -55,19 +63,54 @@ with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
         assert frame['pixel']==[255,255,255,255], frame
         send(op='mouse_button',button='right',down=True,x=20,y=65)
         send(op='mouse_button',button='right',down=False,x=20,y=65)
-        menu=until(lambda e:e['event']=='context_menu',timeout=5)
-        assert {26501,26502}.issubset({item['id'] for item in menu['items']}), menu
+        menu=until(lambda e:e['event']=='context_menu')
+        assert {26501,26502}.issubset({item.get('id') for item in menu['items']}), menu  # separators have none
         send(op='context_action',id=menu['id'],command=26501)
         until(lambda e:e['event']=='open_tab' and e['url']==base+'/modifier')
+        # An oversized link has no menu: the next menu is the one of the
+        # link right-clicked after it, which the page hears of in order.
         send(op='mouse_button',button='right',down=True,x=20,y=105)
         send(op='mouse_button',button='right',down=False,x=20,y=105)
+        send(op='mouse_button',button='right',down=True,x=20,y=65)
+        send(op='mouse_button',button='right',down=False,x=20,y=65)
+        menu=until(lambda e:e['event']=='context_menu')
+        assert menu['link']==base+'/modifier', menu
+        send(op='context_action',id=menu['id'],command=0)
+        until(lambda e:e['event']=='context_closed' and e['id']==menu['id'])
         send(op='zoom',level=1)
-        def still_alive(event):
-            assert event['event'] != 'context_menu', event
-            return event['event']=='zoom'
-        until(still_alive,timeout=5)
-        send(op='shutdown'); assert p.wait(timeout=15)==0
+        until(lambda e:e['event']=='zoom')
+        # A tab closed with its menu still open: the host answers the menu,
+        # and its other tab goes on.
+        send(op='create_tab',tab=2)
+        send(op='navigate',tab=2,url=base+'/two')
+        until(lambda e:e['event']=='title' and e.get('tab')==2 and e['title'].startswith('/two|'))
+        # A tab hidden over its open menu: the host answers the menu, and
+        # the tab shown instead paints.
+        send(op='mouse_button',button='right',down=True,x=300,y=300)
+        send(op='mouse_button',button='right',down=False,x=300,y=300)
+        until(lambda e:e['event']=='context_menu' and e.get('tab',1)==1)
+        send(op='visibility',tab=1,visible=False)
+        send(op='visibility',tab=2,visible=True)
+        until(lambda e:e['event']=='frame' and e['tab']==2)
+        send(op='mouse_button',tab=2,button='right',down=True,x=300,y=300)
+        send(op='mouse_button',tab=2,button='right',down=False,x=300,y=300)
+        until(lambda e:e['event']=='context_menu' and e.get('tab')==2)
+        send(op='close_tab',tab=2)
+        until(lambda e:e['event']=='closed' and e.get('tab')==2)
+        send(op='visibility',tab=1,visible=True)
+        send(op='zoom',tab=1,level=0)
+        until(lambda e:e['event']=='zoom' and e.get('tab',1)==1)
+        assert p.poll() is None, f'the host exited with {p.returncode}'
+        # Closed with a menu still open (a window closed over it): the host
+        # answers the menu and exits cleanly.
+        send(op='mouse_button',button='right',down=True,x=300,y=300)
+        send(op='mouse_button',button='right',down=False,x=300,y=300)
+        until(lambda e:e['event']=='context_menu')
+        send(op='shutdown'); code=p.wait(timeout=HANG_BOUND); assert code==0, f'the host exited with {code}'
         print('PASS: native link context target and action')
     finally:
         if p.poll() is None: p.kill();p.wait()
+        if log:
+            log.seek(0); said=log.read().decode(errors='replace')
+            if said: print(said[-20000:])
 server.shutdown()

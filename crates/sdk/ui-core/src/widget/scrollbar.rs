@@ -79,8 +79,6 @@ const LIGHT_REST_TOWARD_GROUND: f32 = 0.35;
 
 /// How long an overlay bar stays fully visible after the last scroll.
 pub(crate) const BAR_HOLD_MS: u64 = 900;
-/// How long it then takes to fade out.
-pub(crate) const BAR_FADE_MS: u64 = 320;
 
 /// The idle fade of an overlay scroll bar: fully visible for a moment after
 /// scrolling, then fading out, unless something holds it (the pointer near
@@ -163,7 +161,7 @@ impl BarFade {
     fn idle_fade(last_activity: Option<crate::time::Instant>) -> crate::animation::IdleFade {
         crate::animation::IdleFade::new(
             crate::time::Duration::from_millis(BAR_HOLD_MS),
-            crate::time::Duration::from_millis(BAR_FADE_MS),
+            crate::animation::CHROME_FADE,
         )
         .woken_at(last_activity)
     }
@@ -182,6 +180,25 @@ pub struct TrackMark {
     /// What the mark means: `Tone::Neutral` for a search hit, a status
     /// tone for a diagnostic, a presence tone for a collaborator.
     pub tone: crate::widget::Tone,
+}
+
+/// Paint a scrollbar thumb in `thumb`, pill-shaped, for a host that draws
+/// its own scrolled surface and places the thumb itself.
+pub fn paint_thumb(
+    scene: &mut vello::Scene,
+    transform: vello::kurbo::Affine,
+    thumb: Rect,
+    theme: &Theme,
+    active: bool,
+) {
+    let radius = thumb.width().min(thumb.height()) / 2.0;
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        thumb_color(theme, active),
+        None,
+        &vello::kurbo::RoundedRect::from_rect(thumb, radius),
+    );
 }
 
 /// The track's fill behind an expanded bar, derived against the base surface.
@@ -217,6 +234,84 @@ pub fn horizontal_track(rect: Rect, gutter: f64) -> Rect {
         rect.x1 - margin,
         rect.y1 - margin,
     )
+}
+
+/// The rounded corners of the surface a scroll owner sits in (the window),
+/// as the owner sees them in its own coordinates. The theme says the
+/// surface in the coordinates of the scene being drawn
+/// ([`Theme::surface`]); an owner learns where it lands where it draws
+/// ([`Self::seen`]) and passes its tracks through [`Self::clear`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SurfaceCorners(Option<crate::theme::SurfaceShape>);
+
+impl SurfaceCorners {
+    /// The corners of `theme`'s surface for an owner drawing with
+    /// `transform` (through every cache being recorded around it).
+    #[must_use]
+    pub fn seen(theme: &Theme, transform: vello::kurbo::Affine) -> Self {
+        let on_screen = crate::scroll_copy::on_screen(transform);
+        Self(
+            theme
+                .surface
+                .filter(crate::theme::SurfaceShape::is_rounded)
+                .map(|surface| surface.seen_through(on_screen)),
+        )
+    }
+
+    /// The corners of `surface`, already in the owner's coordinates.
+    #[must_use]
+    pub fn of(surface: Option<crate::theme::SurfaceShape>) -> Self {
+        Self(surface)
+    }
+
+    /// `track` kept out of the rounded corners: see [`clear_of_corners`].
+    #[must_use]
+    pub fn clear(&self, track: Rect, vertical: bool) -> Rect {
+        clear_of_corners(track, vertical, self.0.as_ref())
+    }
+}
+
+/// `track`, a bar's track, with its ends kept out of the rounded corners of
+/// `surface` (in the same coordinates). A vertical track that runs along a
+/// side with a rounded corner stops that corner's radius short of the top
+/// or bottom edge; a horizontal track along the bottom or top stops a
+/// corner's radius short of the side. A square corner, a track away from
+/// the corners, or no surface leaves it as it is, running to the edge.
+#[must_use]
+pub fn clear_of_corners(
+    track: Rect,
+    vertical: bool,
+    surface: Option<&crate::theme::SurfaceShape>,
+) -> Rect {
+    let Some(surface) = surface else {
+        return track;
+    };
+    let b = surface.bounds;
+    let r = surface.radii;
+    let mut t = track;
+    if vertical {
+        // How far a corner on the track's side reaches along it.
+        let reach = |left: f64, right: f64| {
+            let left = if t.x0 < b.x0 + left { left } else { 0.0 };
+            let right = if t.x1 > b.x1 - right { right } else { 0.0 };
+            left.max(right)
+        };
+        let top = reach(r.top_left, r.top_right);
+        let bottom = reach(r.bottom_left, r.bottom_right);
+        t.y0 = t.y0.max(b.y0 + top);
+        t.y1 = t.y1.min(b.y1 - bottom).max(t.y0);
+    } else {
+        let reach = |top: f64, bottom: f64| {
+            let top = if t.y0 < b.y0 + top { top } else { 0.0 };
+            let bottom = if t.y1 > b.y1 - bottom { bottom } else { 0.0 };
+            top.max(bottom)
+        };
+        let left = reach(r.top_left, r.bottom_left);
+        let right = reach(r.top_right, r.bottom_right);
+        t.x0 = t.x0.max(b.x0 + left);
+        t.x1 = t.x1.min(b.x1 - right).max(t.x0);
+    }
+    t
 }
 
 /// The scroll geometry along one axis, all lengths in logical px.
@@ -418,8 +513,6 @@ impl Scrollbar {
         }
     }
 
-    // --- axis helpers --------------------------------------------------
-
     fn axis_len(&self, r: Rect) -> f64 {
         if self.vertical { r.height() } else { r.width() }
     }
@@ -432,8 +525,6 @@ impl Scrollbar {
     fn cursor_axis(&self, p: Point) -> f64 {
         if self.vertical { p.y } else { p.x }
     }
-
-    // --- geometry ------------------------------------------------------
 
     /// The thumb rect within `track` for the given `metrics`, or `None`
     /// when there's no meaningful content to represent. The owner is
@@ -460,8 +551,6 @@ impl Scrollbar {
             Rect::new(lo, track.y0, lo + thumb_len, track.y1)
         })
     }
-
-    // --- interaction ---------------------------------------------------
 
     /// Set the hover state directly; returns `true` when it changed (so the
     /// owner can schedule a redraw only on an edge).
@@ -579,6 +668,78 @@ mod tests {
         assert!((track.height() - thumb).abs() < 1e-9);
     }
 
+    #[test]
+    fn a_track_keeps_out_of_rounded_corners_and_reaches_square_ones() {
+        use crate::theme::SurfaceShape;
+        let window = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let vertical = Rect::new(390.0, 2.0, 398.0, 298.0);
+        let horizontal = Rect::new(2.0, 290.0, 380.0, 298.0);
+        let rounded = SurfaceShape::rounded(window, 12.0);
+        assert_eq!(
+            clear_of_corners(vertical, true, Some(&rounded)),
+            Rect::new(390.0, 12.0, 398.0, 288.0),
+            "a vertical bar stops a radius short of the top and the bottom"
+        );
+        assert_eq!(
+            clear_of_corners(horizontal, false, Some(&rounded)),
+            Rect::new(12.0, 290.0, 380.0, 298.0),
+            "a horizontal bar stops a radius short of the side it reaches"
+        );
+        for square in [Some(SurfaceShape::rounded(window, 0.0)), None] {
+            assert_eq!(clear_of_corners(vertical, true, square.as_ref()), vertical);
+            assert_eq!(
+                clear_of_corners(horizontal, false, square.as_ref()),
+                horizontal
+            );
+        }
+        // A bar away from the window's corners (a sidebar's, a list's in
+        // the middle of the window) is not shortened.
+        let inner = Rect::new(200.0, 40.0, 208.0, 250.0);
+        assert_eq!(clear_of_corners(inner, true, Some(&rounded)), inner);
+        // Only the corners that are rounded count: a window square at the
+        // bottom keeps its bar running to the bottom edge.
+        let top_only = SurfaceShape {
+            bounds: window,
+            radii: vello::kurbo::RoundedRectRadii::new(12.0, 12.0, 0.0, 0.0),
+        };
+        assert_eq!(
+            clear_of_corners(vertical, true, Some(&top_only)),
+            Rect::new(390.0, 12.0, 398.0, 298.0)
+        );
+    }
+
+    /// The theme says the surface in scene coordinates; an owner drawing at
+    /// a scale or an offset sees it in its own.
+    #[test]
+    fn corners_are_seen_in_the_owners_coordinates() {
+        use crate::theme::SurfaceShape;
+        let mut theme = Theme::dark();
+        assert_eq!(
+            SurfaceCorners::seen(&theme, vello::kurbo::Affine::IDENTITY),
+            SurfaceCorners::default(),
+            "no surface said: nothing to keep out of"
+        );
+        theme.surface = Some(SurfaceShape::rounded(
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            24.0,
+        ));
+        let seen = SurfaceCorners::seen(&theme, vello::kurbo::Affine::scale(2.0));
+        let track = Rect::new(392.0, 0.0, 400.0, 300.0);
+        assert_eq!(
+            seen.clear(track, true),
+            Rect::new(392.0, 12.0, 400.0, 288.0)
+        );
+        theme.surface = Some(SurfaceShape::rounded(
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            0.0,
+        ));
+        assert_eq!(
+            SurfaceCorners::seen(&theme, vello::kurbo::Affine::IDENTITY),
+            SurfaceCorners::default(),
+            "a square surface has no corners to keep out of"
+        );
+    }
+
     /// A 300-px-tall vertical track spanning x∈[92,100], y∈[0,300].
     fn v_track() -> Rect {
         Rect::new(92.0, 0.0, 100.0, 300.0)
@@ -617,7 +778,6 @@ mod tests {
 
     #[test]
     fn thumb_geometry_follows_content_ratio_offset_and_axis() {
-        // Case `thumb_shrinks_as_content_grows`.
         {
             let bar = Scrollbar::vertical();
             let short = bar
@@ -635,7 +795,6 @@ mod tests {
             );
         }
 
-        // Case `thumb_clamped_to_minimum`.
         {
             let bar = Scrollbar::vertical();
             let thumb = bar
@@ -644,7 +803,6 @@ mod tests {
             assert!(thumb.height() >= MIN_THUMB_LEN - 1e-6);
         }
 
-        // Case `thumb_tracks_offset_top_to_bottom`.
         {
             let bar = Scrollbar::vertical();
             let m0 = ScrollMetrics::new(1200.0, 300.0, 0.0);
@@ -656,7 +814,6 @@ mod tests {
             assert!((bottom.y1 - 300.0).abs() < 1e-3, "got {}", bottom.y1);
         }
 
-        // Case `horizontal_axis_uses_x`.
         {
             let mut bar = Scrollbar::horizontal();
             let track = Rect::new(0.0, 92.0, 300.0, 100.0);
@@ -678,7 +835,6 @@ mod tests {
 
     #[test]
     fn thumb_and_track_presses_drag_and_page_within_bounds() {
-        // Case `press_thumb_begins_drag_and_move_updates_offset`.
         {
             let mut bar = Scrollbar::vertical();
             let m = ScrollMetrics::new(1200.0, 300.0, 0.0); // max_scroll = 900
@@ -695,7 +851,6 @@ mod tests {
             assert!(!bar.is_dragging());
         }
 
-        // Case `drag_offset_clamped_at_ends`.
         {
             let mut bar = Scrollbar::vertical();
             let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
@@ -714,7 +869,6 @@ mod tests {
             assert!((off - 0.0).abs() < 1e-6, "clamped to 0: {off}");
         }
 
-        // Case `press_track_below_thumb_pages_down`.
         {
             let mut bar = Scrollbar::vertical();
             let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
@@ -732,7 +886,6 @@ mod tests {
             assert!(!bar.is_dragging(), "track click is not a drag");
         }
 
-        // Case `press_track_above_thumb_pages_up_clamped`.
         {
             let mut bar = Scrollbar::vertical();
             // Already at top → paging up clamps to 0.
@@ -749,7 +902,6 @@ mod tests {
             let _ = thumb; // silence unused in the top branch
         }
 
-        // Case `hover_edge_detection`.
         {
             let mut bar = Scrollbar::vertical();
             let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
@@ -766,7 +918,6 @@ mod tests {
             assert!(!bar.is_hovered());
         }
 
-        // Case `press_misses_when_content_fits`.
         {
             let mut bar = Scrollbar::vertical();
             // content fits viewport → max_scroll 0, thumb fills the track.

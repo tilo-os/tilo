@@ -3,10 +3,10 @@
 #
 # - Release / apps fails when the dylib it has just built is over a budget
 #   below plus every raise under raises/.
-# - Perf / scheduled (footprint group) fails when the newest published
+# - t's perf-footprint (the performance run) fails when the newest published
 #   so.tilo.runtime is over one, and records the four numbers as
 #   footprint.runtime.<metric>.<arch>.
-# - CI / fast quality fails when a budget grows without a raise file new in
+# - t's `changes` check fails when a budget grows without a raise file new in
 #   the same change.
 #
 # The metrics, all read from the ELF file:

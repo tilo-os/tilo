@@ -2,7 +2,7 @@
 //! managed Windows appliance.
 //!
 //! The window is a retained [`NavShell`]: the overview lists the apps and the
-//! appliance, the content shows the selection. Controls queue an [`Intent`];
+//! appliance, the content shows the selection. Controls queue an `Intent`;
 //! the app applies intents against the selected model in one ordered place
 //! and swaps the columns when what they show changes.
 use crate::actions;
@@ -34,34 +34,43 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 fn installer_pick_request() -> PickRequest {
-    PickRequest::open("Add a Windows application", "Install")
-        .thread_name("tilo-windows-installer-picker")
-        .filter(
-            FileFilter::new("Windows applications")
-                .glob("*.exe")
-                .glob("*.msi")
-                .mimetype("application/vnd.microsoft.portable-executable")
-                .mimetype("application/x-msi"),
-        )
-        .all_files()
+    PickRequest::open(
+        &strings::t("windows-pick-app-title"),
+        &strings::t("windows-pick-app-confirm"),
+    )
+    .thread_name("tilo-windows-installer-picker")
+    .filter(
+        FileFilter::new(&strings::t("windows-pick-app-filter"))
+            .glob("*.exe")
+            .glob("*.msi")
+            .mimetype("application/vnd.microsoft.portable-executable")
+            .mimetype("application/x-msi"),
+    )
+    .all_files()
 }
 
 fn windows_iso_pick_request() -> PickRequest {
-    PickRequest::open("Choose Windows installation media", "Use this ISO")
-        .thread_name("tilo-windows-iso-picker")
-        .filter(
-            FileFilter::new("Windows installation media")
-                .glob("*.iso")
-                .mimetype("application/x-cd-image")
-                .mimetype("application/x-iso9660-image"),
-        )
-        .all_files()
+    PickRequest::open(
+        &strings::t("windows-pick-iso-title"),
+        &strings::t("windows-pick-iso-confirm"),
+    )
+    .thread_name("tilo-windows-iso-picker")
+    .filter(
+        FileFilter::new(&strings::t("windows-pick-iso-filter"))
+            .glob("*.iso")
+            .mimetype("application/x-cd-image")
+            .mimetype("application/x-iso9660-image"),
+    )
+    .all_files()
 }
 
 fn windows_document_pick_request() -> PickRequest {
-    PickRequest::open("Open a file in Windows", "Open read-only")
-        .thread_name("tilo-windows-document-picker")
-        .all_files()
+    PickRequest::open(
+        &strings::t("windows-pick-file-title"),
+        &strings::t("windows-pick-file-confirm"),
+    )
+    .thread_name("tilo-windows-document-picker")
+    .all_files()
 }
 
 /// What the content column shows.
@@ -214,7 +223,7 @@ fn appliance_summary(status: &ApplianceStatus, checked: bool) -> String {
     if !checked {
         strings::t("windows-appliance-checking-short")
     } else if status.is_provisioned() {
-        status.summary_label().to_owned()
+        status.summary_label()
     } else {
         strings::t("windows-appliance-not-set-up")
     }
@@ -350,7 +359,6 @@ impl WindowsApp {
                 break;
             }
         }
-        // Show, and compare against, what the service runs now.
         let catalogue = self.provider.borrow_mut().catalogue();
         self.reported_routes.report(&catalogue);
         self.catalogue = catalogue;
@@ -668,7 +676,10 @@ impl WindowsApp {
     }
     fn picker_failed(&mut self, error: &str, what: &str) {
         self.finish_resource_operation(Err(error.to_owned()));
-        self.notice = Some(Notice::error(format!("Could not open the {what}: {error}")));
+        self.notice = Some(Notice::error(strings::format_all(
+            "windows-error-open",
+            &[("what", what.to_owned()), ("error", error.to_owned())],
+        )));
     }
     fn picker_disconnected(&mut self) {
         self.finish_resource_operation(Err(strings::t("windows-picker-disconnected")));
@@ -1150,7 +1161,7 @@ impl WindowsApp {
                     .find(|app| app.capsule == id)
                     .cloned()
             })
-            .ok_or_else(|| "Windows application is no longer available".to_string())?;
+            .ok_or_else(|| strings::t("windows-error-app-gone"))?;
         match type_id {
             "windows.launch" if app.launch_available => {
                 if app.route == Route::Vm {
@@ -1186,7 +1197,7 @@ impl WindowsApp {
             "windows.delete-data" if app.can_delete_data => {
                 self.provider.borrow_mut().delete_data(&app.capsule)?;
             }
-            _ => return Err("Windows operation is no longer available".into()),
+            _ => return Err(strings::t("windows-error-operation-gone")),
         }
         self.notice = Some(Notice::info(strings::t("windows-operation-requested")));
         Ok(true)
@@ -1201,8 +1212,6 @@ impl WindowsApp {
         self.invoke_application_operation(type_id, payload)
     }
 }
-
-// --- view --------------------------------------------------------------------
 
 impl WindowsApp {
     fn appliance_busy(&self) -> bool {
@@ -1325,8 +1334,8 @@ impl WindowsApp {
                 .enumerate()
                 .map(|(index, app)| -> Element {
                     let mut row = ListRow::new(format!("windows-app-{}", app.id), &app.name)
-                        .secondary(app.status.label())
-                        .badge(app.route.label())
+                        .secondary(strings::t(app.status.label_key()))
+                        .badge(strings::t(app.route.button_key()))
                         .selected(self.page == Page::App && index == self.selected)
                         .on_view(self.intents.sender(Intent::SelectApp(index)));
                     // Every app row carries a status dot, so the route
@@ -1584,7 +1593,7 @@ impl WindowsApp {
             }
             open_with.push(Box::new(row(choice)));
         } else {
-            open_with.push(Box::new(body(app.route.label())));
+            open_with.push(Box::new(body(&strings::t(app.route.button_key()))));
             if let Some(reason) = &app.route_override_unavailable_reason {
                 open_with.push(Box::new(caption(reason)));
             }
@@ -1627,7 +1636,7 @@ impl WindowsApp {
             access.push(Box::new(PropertyList::new(reach).shared_column(&facts)));
         }
         let boundary = if app.fallback_detail.trim().is_empty() {
-            app.route.security_summary()
+            &strings::t(app.route.security_key())
         } else {
             app.fallback_detail.as_str()
         };
@@ -1639,13 +1648,16 @@ impl WindowsApp {
         if !recovering {
             about.push(Property::new(
                 strings::t("windows-status"),
-                app.status.label(),
+                strings::t(app.status.label_key()),
             ));
         }
         about.extend([
             Property::new(strings::t("windows-publisher"), &app.publisher),
             Property::new(strings::t("windows-source"), &app.catalogue_source),
-            Property::new(strings::t("windows-compatibility"), app.confidence.label()),
+            Property::new(
+                strings::t("windows-compatibility"),
+                strings::t(app.confidence.label_key()),
+            ),
             Property::new(strings::t("windows-runner"), &app.runner),
         ]);
         if let Some(detail) = app.installation_detail.as_ref().filter(|_| !recovering) {
@@ -1811,7 +1823,7 @@ impl WindowsApp {
             return;
         }
 
-        page.head.push(Box::new(body(status.status_statement())));
+        page.head.push(Box::new(body(&status.status_statement())));
         page.head.push(Box::new(PropertyList::new(vec![
             Property::new(
                 strings::t("windows-activation-status"),
@@ -1824,7 +1836,7 @@ impl WindowsApp {
             .with_kind(TextKind::Numeric),
         ])));
         if let Some(detail) = status.license_detail() {
-            page.head.push(Box::new(caption(detail)));
+            page.head.push(Box::new(caption(&detail)));
         }
 
         let power: Vec<Element> = [
@@ -2054,6 +2066,15 @@ impl ui::widget::Decorator for WindowsApp {
         }
     }
 
+    /// The app stands for the shell's node, laid out under it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.shell);
+        if let Some(dialog) = &self.dialog {
+            visitor(dialog);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut children = self.shell.children_mut();
         if let Some(dialog) = self.dialog.as_mut().filter(|dialog| dialog.is_open()) {
@@ -2173,7 +2194,6 @@ mod tests {
         ui::framework::ResourceSurface::present(&mut app, &overridden);
         assert_eq!(route(&app), Some(Route::Proton), "the override is carried");
 
-        // The service reverting it on its own is brought back.
         app.provider
             .borrow_mut()
             .reset_route_override("adobe-reader")
@@ -2181,7 +2201,6 @@ mod tests {
         app.refresh();
         assert_eq!(route(&app), Some(Route::Proton));
 
-        // Clearing the override resets the service.
         ui::framework::ResourceSurface::present(
             &mut app,
             &Rc::new(crate::resource::Windows::default()),
@@ -2294,7 +2313,6 @@ mod tests {
 
     #[test]
     fn portal_pickers_hand_open_descriptors_to_the_right_target() {
-        // Case `installer_portal_handoff_uses_its_open_descriptor_and_display_name`.
         {
             let installed = Arc::new(Mutex::new(None));
             let provider = RecordingProvider {
@@ -2332,7 +2350,6 @@ mod tests {
                 ))
             );
         }
-        // Case `vm_document_picker_hands_the_open_descriptor_to_the_selected_publication`.
         {
             let opened_document = Arc::new(Mutex::new(None));
             let provider = RecordingProvider {
@@ -2376,7 +2393,6 @@ mod tests {
                 Some((entry_id, b"portal document bytes".to_vec()))
             );
         }
-        // Case `pickers_use_the_shared_portal_and_their_filters`.
         {
             let request = installer_pick_request();
             assert_eq!(request.title(), "Add a Windows application");
@@ -2398,7 +2414,6 @@ mod tests {
 
     #[test]
     fn manager_state_is_honest_and_routes_are_stable() {
-        // Case `route_edits_reach_the_shared_document`.
         {
             let mut app =
                 ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide"))
@@ -2412,11 +2427,9 @@ mod tests {
             app.settle();
             assert_eq!(app.state().route(&first), Some(Route::Vm));
         }
-        // Case `an_unconnected_manager_does_not_claim_fixture_apps_are_installed`.
         {
             assert!(WindowsApp::new().catalogue.apps.is_empty());
         }
-        // Case `controls_have_stable_automation_ids`.
         {
             let app = WindowsApp::new_offline();
             assert_eq!(Widget::test_id(&app), Some("windows-app"));
@@ -2439,8 +2452,36 @@ mod tests {
     }
 
     #[test]
+    fn the_window_bar_names_the_shown_app_and_adds_one() {
+        let mut app =
+            ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide")).unwrap();
+        app.harness().present_in_window_bar();
+        app.settle();
+        let shown = crate::provider::SampleProvider::new().catalogue().apps[0]
+            .name
+            .clone();
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        assert_eq!(bar.location.map(|location| location.label), Some(shown));
+        let actions: Vec<&str> = bar
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect();
+        assert_eq!(actions, ["Add Windows app"]);
+        let controls: Vec<String> = app
+            .harness()
+            .controls()
+            .into_iter()
+            .filter_map(|control| control.name)
+            .collect();
+        assert!(
+            !controls.iter().any(|name| name == "Add Windows app"),
+            "the window draws no header of its own: {controls:?}"
+        );
+    }
+
+    #[test]
     fn destructive_and_escalating_actions_require_explicit_confirmation() {
-        // Case `deleting_private_data_requires_the_dialog_confirmation`.
         {
             let mut app = WindowsApp::new_offline();
             let capsule = app.catalogue.apps[0].capsule.clone();
@@ -2467,7 +2508,6 @@ mod tests {
                     .any(|item| item.capsule == capsule)
             );
         }
-        // Case `cancelling_the_delete_dialog_keeps_the_app`.
         {
             let mut app = WindowsApp::new_offline_scenario("confirm-delete");
             assert!(app.dialog_open());
@@ -2476,7 +2516,6 @@ mod tests {
             assert!(!app.dialog_open());
             assert_eq!(app.catalogue.apps.len(), 3);
         }
-        // Case `escalation_to_the_shared_windows_appliance_is_confirmed_in_a_dialog`.
         {
             let mut app = WindowsApp::new_offline();
             let capsule = app.catalogue.apps[0].capsule.clone();
@@ -2498,7 +2537,6 @@ mod tests {
             );
             assert!(!app.catalogue.apps[0].can_escalate_install_to_vm);
         }
-        // Case `changing_selection_drops_the_previous_apps_confirmation`.
         {
             let mut app = WindowsApp::new_offline();
             apply(&mut app, Intent::Uninstall);
@@ -2517,7 +2555,6 @@ mod tests {
 
     #[test]
     fn navigation_follows_the_selection() {
-        // Case `selecting_a_row_shows_its_page_and_keeps_the_selection_on_back`.
         {
             let mut app = WindowsApp::new_offline();
             apply(&mut app, Intent::SelectApp(1));
@@ -2531,7 +2568,6 @@ mod tests {
                 "the app selection survives a visit to Windows"
             );
         }
-        // Case `accessibility_selects_catalogue_rows_by_id`.
         {
             let mut app = WindowsApp::new_offline();
             assert!(Widget::perform_semantic_action(
@@ -2550,7 +2586,6 @@ mod tests {
                 &automerge::ROOT,
             ));
         }
-        // Case `a_freshly_inspected_installer_asks_where_it_goes`.
         {
             let mut provider = SampleProvider::new();
             provider.seed_install_confirmation();
@@ -2563,7 +2598,6 @@ mod tests {
             assert!(ids.contains(&"windows-confirm-capsule-install".to_owned()));
             assert!(ids.contains(&"windows-confirm-vm-install".to_owned()));
         }
-        // Case `platform_search_finds_apps_by_name_and_opens_them`.
         {
             let mut app = ui::prelude::TestApp::<crate::resource::WindowsShell>::new().unwrap();
             app.with_surface::<WindowsApp, _>(|surface| {
@@ -2597,7 +2631,6 @@ mod tests {
 
     #[test]
     fn failures_and_the_appliance_explain_themselves() {
-        // Case `failed_setup_offers_recovery_and_disables_launch`.
         {
             let app = WindowsApp::new_offline_scenario("error");
             let failed = app.selected_app().expect("failed sample application");
@@ -2607,7 +2640,6 @@ mod tests {
             assert!(ids.contains(&"windows-retry-install".to_owned()));
             assert!(ids.contains(&"windows-escalate-install-to-vm".to_owned()));
         }
-        // Case `a_missing_appliance_offers_set_up_and_hides_the_raw_error`.
         {
             let mut app = WindowsApp::new_offline_scenario("appliance-setup");
             let ids_before = ids(&app);
@@ -2617,7 +2649,6 @@ mod tests {
             apply(&mut app, Intent::ToggleApplianceDetails);
             assert!(app.appliance_details);
         }
-        // Case `a_running_appliance_offers_only_the_power_actions_it_allows`.
         {
             let app = WindowsApp::new_offline_scenario("appliance");
             let ids = ids(&app);

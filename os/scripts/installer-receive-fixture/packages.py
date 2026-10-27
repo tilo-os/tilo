@@ -119,7 +119,7 @@ def sdk(candidate, log, deadline):
             and all(isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value)
                     for value in (publisher, root_hash)), 'candidate runtime identity is invalid')
     root = candidate / 'host/share/tilo-imager/capture/runtime' / version
-    bounded_command(['/usr/bin/tilo-runtime-bundle', 'verify', str(root),
+    bounded_command(['/usr/libexec/tilo/tilo-runtime-bundle', 'verify', str(root),
                      '--require-publisher', publisher, '--require-signature',
                      '--require-arch', platform.machine()], deadline, log)
     bundle = tomllib.loads(read(root / 'bundle.toml', 8 * 1024 * 1024).decode())
@@ -204,9 +204,9 @@ def install(candidate, user_profile, private_log, deadline):
     with tempfile.TemporaryDirectory(prefix='tilo-native-packages-', dir=user_profile) as temporary:
         work = Path(temporary)
         signer = work / 'operator-signing-key.json'
-        bounded_command(['/usr/bin/tilo-app-package', 'keygen', '--out', str(signer)], deadline, private_log)
+        bounded_command(['/usr/libexec/tilo/tilo-app-package', 'keygen', '--out', str(signer)], deadline, private_log)
         signer.chmod(0o600)
-        publisher = bounded_command(['/usr/bin/tilo-runtime-bundle', 'key', 'pubkey', '--identity', str(signer)],
+        publisher = bounded_command(['/usr/libexec/tilo/tilo-runtime-bundle', 'key', 'pubkey', '--identity', str(signer)],
                                     deadline, private_log).decode().strip()
         require(re.fullmatch('[0-9a-f]{64}', publisher), 'actual operator app publisher is invalid')
         # Use the canonical runtime package producer, then retain its unchanged
@@ -222,12 +222,12 @@ def install(candidate, user_profile, private_log, deadline):
         runtime_manifest = work / 'runtime-manifest.toml'
         runtime_manifest.write_bytes(archive_metadata(thin)['manifest.toml'])
         full_runtime = work / 'runtime.tapp'
-        bounded_command(['/usr/bin/tilo-app-package', 'pack', '--manifest', str(runtime_manifest), '--payload', str(bundle),
+        bounded_command(['/usr/libexec/tilo/tilo-app-package', 'pack', '--manifest', str(runtime_manifest), '--payload', str(bundle),
                          '--identity', str(signer), '--output', str(full_runtime)], deadline, private_log)
-        bounded_command(['/usr/bin/tilo-app-package', 'verify', '--trusted-key', publisher, str(full_runtime)], deadline, private_log)
-        bounded_command(['/usr/bin/tilo-install', 'install', str(full_runtime), '--pinned', '--require-publisher', publisher,
+        bounded_command(['/usr/libexec/tilo/tilo-app-package', 'verify', '--trusted-key', publisher, str(full_runtime)], deadline, private_log)
+        bounded_command(['/usr/libexec/tilo/tilo-install', 'install', str(full_runtime), '--pinned', '--require-publisher', publisher,
                          '--allow-self-signed'], deadline, private_log)
-        bounded_command(['/usr/bin/tilo-runtime-bundle', 'verify', str(installed_runtime),
+        bounded_command(['/usr/libexec/tilo/tilo-runtime-bundle', 'verify', str(installed_runtime),
                          '--require-publisher', runtime['publisher'], '--require-signature',
                          '--require-arch', platform.machine()], deadline, private_log)
         actual_bundle = tomllib.loads(read(installed_runtime / 'bundle.toml', 8 * 1024 * 1024).decode())
@@ -250,9 +250,9 @@ def install(candidate, user_profile, private_log, deadline):
             (payload / 'bin' / name).chmod(0o755)
             shutil.copyfile(surface, payload / 'surface.toml')
             package = work / (name + '.tapp')
-            bounded_command(['/usr/bin/tilo-app-package', 'pack', '--manifest', str(manifest), '--payload', str(payload),
+            bounded_command(['/usr/libexec/tilo/tilo-app-package', 'pack', '--manifest', str(manifest), '--payload', str(payload),
                              '--identity', str(signer), '--output', str(package)], deadline, private_log)
-            bounded_command(['/usr/bin/tilo-app-package', 'verify', '--trusted-key', publisher, str(package)], deadline, private_log)
+            bounded_command(['/usr/libexec/tilo/tilo-app-package', 'verify', '--trusted-key', publisher, str(package)], deadline, private_log)
             metadata = archive_metadata(package)
             package_hash = tomllib.loads(metadata['tapp.toml'].decode())['package_id'].removeprefix('tapp:')
             require(re.fullmatch('[0-9a-f]{64}', package_hash), 'actual signed app root is invalid')
@@ -261,7 +261,7 @@ def install(candidate, user_profile, private_log, deadline):
                     and signed_manifest['package']['runtime'] == 'tilo-runtime/' + runtime['version']
                     and signed_manifest['publisher']['identity'] == 'ed25519:' + publisher,
                     'actual signed app declaration differs')
-            bounded_command(['/usr/bin/tilo-install', 'install', str(package), '--force', '--pinned',
+            bounded_command(['/usr/libexec/tilo/tilo-install', 'install', str(package), '--force', '--pinned',
                              '--require-package-root', package_hash, '--require-publisher', publisher,
                              '--allow-self-signed'], deadline, private_log)
             registry = tomllib.loads(read(store / 'registry.toml', 4 * 1024 * 1024).decode())

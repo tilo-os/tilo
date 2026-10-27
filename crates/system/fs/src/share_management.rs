@@ -63,11 +63,6 @@ impl ShareManagement {
     }
 
     /// Mint and durably register a named-human grant.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid scope/identity/issuer/expiry, invite
-    /// signing failure, or durable authority registration failure.
     pub fn create_named(
         &self,
         request: NamedGrantRequest,
@@ -96,11 +91,6 @@ impl ShareManagement {
 
     /// Mint an endpoint-bound V2 bearer link and durably register its inner
     /// grant before returning the only secret-bearing value to the caller.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid scope/issuer/expiry/redemption limits,
-    /// invite/link construction failure, or authority persistence failure.
     pub fn create_bearer_v2(
         &self,
         request: BearerLinkRequest,
@@ -297,7 +287,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn share_management_persists_exact_grants_and_bounds_every_input() {
-        // Phase `creates_persists_restarts_and_revokes_exact_grants`.
         {
             let fixture = Fixture::new();
             let (_, recipient) = collab_types::generate_keypair();
@@ -364,7 +353,6 @@ mod tests {
                 ShareGrantStatus::Revoked
             );
         }
-        // Phase `persistence_failure_returns_no_grant_and_does_not_mutate_authority`.
         {
             let fixture = Fixture::new();
             assert!(!fixture.authority_path.exists());
@@ -397,7 +385,6 @@ mod tests {
             );
             std::fs::remove_dir(&fixture.authority_path).unwrap();
         }
-        // Phase `trust_scope_expiry_redemption_and_endpoint_inputs_are_bounded`.
         {
             let fixture = Fixture::new();
             let (_, recipient) = collab_types::generate_keypair();

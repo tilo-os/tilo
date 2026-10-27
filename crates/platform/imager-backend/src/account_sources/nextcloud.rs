@@ -92,6 +92,7 @@ pub fn discover(text: &str, path: &Path, inventory: &mut Inventory) {
             profile: path.to_owned(),
             needs_sign_in: true,
             can_import_credentials: account.supported,
+            services: vec![super::Service::Files],
         });
     }
 }

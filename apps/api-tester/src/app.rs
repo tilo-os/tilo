@@ -85,10 +85,20 @@ fn pane(slot: Slot, below_divider: bool) -> Column {
 }
 
 /// Preserve the shared divider across request-view replacements, with an
-/// explicit local reset requested by the published header control.
+/// explicit local reset requested by the published header control. It
+/// reports whether the divider moved, so the reset is offered only then.
 struct RequestSplit {
     split: ResizableSplit<Column, Column>,
     reset: LocalState<bool>,
+    resized: LocalState<bool>,
+}
+impl RequestSplit {
+    fn report(&self) {
+        let resized = !self.split.is_at_content_size();
+        if self.resized.get() != resized {
+            self.resized.set(resized);
+        }
+    }
 }
 impl ui::widget::Decorator for RequestSplit {
     type Inner = ResizableSplit<Column, Column>;
@@ -104,6 +114,23 @@ impl ui::widget::Decorator for RequestSplit {
             self.split.reset_to_content_size();
         }
         self.split.sync(state, path);
+        self.report();
+    }
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        ui::widget::Widget::handle_event(&mut self.split, event, ctx);
+        self.report();
+    }
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        key_path: &[u64],
+        state: &mut ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        let handled =
+            ui::widget::Widget::perform_action(&mut self.split, action, key_path, state, path);
+        self.report();
+        handled
     }
 }
 
@@ -135,6 +162,8 @@ struct Stale {
 struct Slots {
     sidebar: sidebar::NavHandle,
     url_bar: SlotHandle,
+    /// Save and Send, which the window's bar shows as its actions.
+    request_actions: SlotHandle,
     request: SlotHandle,
     tab_panel: Option<SlotHandle>,
     panel_inner: Option<SlotHandle>,
@@ -186,7 +215,16 @@ pub struct ApiTesterApp {
     /// The record as last presented.
     workspace: Rc<Workspace>,
     response: Option<ResponseData>,
+    /// A request is in flight.
     sending: bool,
+    /// Set when the person cancels the request in flight: the send watches it
+    /// and stops, rather than holding the app's only primary action forever.
+    send_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// A copy whose outcome the clipboard reports after it returned: a copy
+    /// that fails later is said, not confirmed.
+    copy: ui::CopyWatch,
+    /// What the last copy did, shown once in the response pane.
+    notice: Option<String>,
     error: Option<String>,
 
     // --- View state (local, per-peer) ---
@@ -275,6 +313,7 @@ impl ApiTesterApp {
         );
 
         let (url_slot, url_bar) = Slot::new(request::url_bar(&sink));
+        let (actions_slot, request_actions) = Slot::new(request::request_actions(&sink, false));
         let content = Self::content(
             url_slot,
             request_slot,
@@ -289,14 +328,12 @@ impl ApiTesterApp {
             .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
             .sidebar_header("", vec![sidebar::new_collection(&sink)])
             .content(content)
+            // Save and Send stand in the window bar's row beside New
+            // collection; resetting the request area is occasional and
+            // follows them, in the bar's menu.
             .content_header(
                 model.request.name.clone(),
-                vec![
-                    Box::new(ui::search::search_button(
-                        ui::search::SearchRequest::this_app(),
-                    )),
-                    Box::new(Self::reset_area(&sink)),
-                ],
+                vec![Box::new(actions_slot), Box::new(Self::reset_area(&sink))],
             );
 
         let app = Self {
@@ -309,6 +346,9 @@ impl ApiTesterApp {
             workspace: Rc::default(),
             response,
             sending: false,
+            send_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            copy: ui::CopyWatch::default(),
+            notice: None,
             error: None,
             active_tab: RequestTab::Params,
             response_view: ResponseView::Pretty,
@@ -321,6 +361,7 @@ impl ApiTesterApp {
             slots: Slots {
                 sidebar: sidebar_lists,
                 url_bar,
+                request_actions,
                 request,
                 tab_panel: Some(builtin.slot),
                 panel_inner: builtin.inner,
@@ -344,15 +385,18 @@ impl ApiTesterApp {
     }
 
     /// The header control that gives the request and the response their
-    /// first sizes again.
+    /// first sizes again, offered only while the person moved the divider.
+    /// Its glyph is the request standing on the divider, not a rotating
+    /// arrow, which reads as reloading the request.
     fn reset_area(sink: &Sink) -> ui::widget::Button {
         let reset = sink.reset_area.clone();
         ui::widget::Button::icon_only(
             "api.reset-request-area",
-            ui::icons::Icon::RotateCcw,
+            ui::icons::Icon::AlignEndHorizontal,
             "Reset request area",
         )
         .on_view(move || reset.set(true))
+        .enabled_from(&sink.area_resized)
     }
 
     /// The content column: the URL bar over the request and the response,
@@ -394,6 +438,7 @@ impl ApiTesterApp {
                                 .push(Box::new(RequestSplit {
                                     split,
                                     reset: sink.reset_area.clone(),
+                                    resized: sink.area_resized.clone(),
                                 })),
                         )),
                 ))
@@ -407,7 +452,7 @@ impl ApiTesterApp {
         sink: &Sink,
     ) -> (Slot, SlotHandle, Option<SlotHandle>) {
         if let Some(data) = response {
-            let built = response::response(data, ResponseView::Pretty, sink);
+            let built = response::response(data, ResponseView::Pretty, sink, None);
             let (slot, handle) = Slot::new(built.element);
             (slot, handle, Some(built.body))
         } else {
@@ -617,6 +662,9 @@ impl ApiTesterApp {
         }
         if std::mem::take(&mut self.stale.url_bar) {
             self.slots.url_bar.set(request::url_bar(&self.sink));
+            self.slots
+                .request_actions
+                .set(request::request_actions(&self.sink, self.sending));
         }
         if std::mem::take(&mut self.stale.environments) {
             self.slots.environments.set(Self::environment_picker(
@@ -658,6 +706,11 @@ impl ApiTesterApp {
         {
             slot.set(request::auth_inner(&self.request.auth, &self.sink));
         }
+        if self.copy.failed() {
+            self.notice = None;
+            self.error = Some("Could not copy to the clipboard.".to_owned());
+            self.stale.response = true;
+        }
         if std::mem::take(&mut self.stale.response) {
             self.rebuild_response();
         }
@@ -670,14 +723,19 @@ impl ApiTesterApp {
 
     fn rebuild_response(&mut self) {
         if self.sending {
-            self.slots.response.set(response::sending());
+            self.slots.response.set(response::sending(&self.sink));
             self.slots.response_body = None;
             self.stale.response_body = false;
             return;
         }
         match (&self.response, &self.error) {
             (Some(data), _) => {
-                let built = response::response(data, self.response_view, &self.sink);
+                let built = response::response(
+                    data,
+                    self.response_view,
+                    &self.sink,
+                    self.notice.as_deref(),
+                );
                 self.slots.response.set(built.element);
                 self.slots.response_body = Some(built.body);
             }
@@ -839,12 +897,18 @@ impl ApiTesterApp {
 
     fn replay_history(&mut self, index: usize) {
         if let Some(entry) = self.history.get(index).cloned() {
-            // History keeps what was sent, not the rest of the request: it
-            // opens as a new request.
-            let mut request = crate::seed::blank_request();
-            request.method = entry.method;
-            request.url = entry.url;
-            self.request = request;
+            // The same verb the click runs: the entry's whole request comes
+            // back through the record, so a collaborator sees the builder
+            // change too. The local copy only saves a frame.
+            self.request = match entry.replay.as_ref() {
+                Some(replay) => replay.to_request(),
+                None => {
+                    let mut request = crate::seed::blank_request();
+                    request.method = entry.method;
+                    request.url = entry.url;
+                    request
+                }
+            };
             self.selected = None;
             self.error = None;
             self.active_tab = RequestTab::Params;
@@ -1011,7 +1075,7 @@ impl ApiTesterApp {
     }
 
     /// Delete the saved request `target` names (the one in the builder when
-    /// none): the host asks the person to confirm.
+    /// none). Undo takes it back, so nobody is asked first.
     fn delete_request(&mut self, target: FormTarget) {
         let target = self.resolve_target(target);
         if let (Some(collection), Some(request)) = (target.collection, target.request) {
@@ -1023,7 +1087,8 @@ impl ApiTesterApp {
         self.dirty = true;
     }
 
-    /// Delete the active environment: the host asks the person to confirm.
+    /// Delete the active environment. Undo takes it back, so nobody is asked
+    /// first.
     fn delete_environment(&mut self) {
         if let Some(id) = self.active_env.clone() {
             self.submit(Workspace::DELETE_ENVIRONMENT.with(id));
@@ -1474,6 +1539,19 @@ impl ApiTesterApp {
                 let out = http::build_outgoing(&outgoing, &self.env_vars());
                 self.start_send(outgoing.method, out, cx)
             }
+            ApiTesterEffect::CancelSend => {
+                self.cancel_send();
+                Ok(Effected::done())
+            }
+            ApiTesterEffect::CopyResponse { part } => {
+                let copied = match part.as_str() {
+                    "body" => self.copy_body(),
+                    "headers" => self.copy_headers(),
+                    "request" => self.copy_request(),
+                    other => Err(format!("there is nothing called {other} to copy")),
+                };
+                copied.map(|()| Effected::done())
+            }
             ApiTesterEffect::SetCredential { secret } => {
                 let id = self.request.id.clone();
                 let before = self.workspace.request.auth.clone();
@@ -1540,6 +1618,100 @@ impl ApiTesterApp {
 }
 
 impl ApiTesterApp {
+    /// Stop the request in flight. The send wakes on the flag within a
+    /// moment and reports that it was cancelled, so nothing is left looking
+    /// like it is still on its way.
+    fn cancel_send(&mut self) {
+        if !self.sending {
+            return;
+        }
+        self.send_cancel
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.sending = false;
+        self.error = Some(http::CANCELLED.to_owned());
+        self.dirty = true;
+        self.stale.response = true;
+        self.retrigger_send_slot();
+    }
+
+    /// Copy the response body exactly as the pane shows it — the text a bug
+    /// report or a colleague needs.
+    fn copy_body(&mut self) -> Result<(), String> {
+        match &self.response {
+            Some(response) => self.copy_to_clipboard(response.body.clone(), "api-copied-body"),
+            None => {
+                let reason = "There is no response to copy yet.";
+                self.error = Some(reason.to_owned());
+                self.dirty = true;
+                self.stale.response = true;
+                Err(reason.to_owned())
+            }
+        }
+    }
+
+    /// Copy every response header, one `Name: value` per line, so a token in
+    /// one of them can be taken without retyping it.
+    fn copy_headers(&mut self) -> Result<(), String> {
+        let Some(response) = &self.response else {
+            let reason = "There is no response to copy yet.";
+            self.error = Some(reason.to_owned());
+            self.dirty = true;
+            self.stale.response = true;
+            return Err(reason.to_owned());
+        };
+        let text = response
+            .headers
+            .iter()
+            .map(|header| format!("{}: {}", header.key, header.value))
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        self.copy_to_clipboard(text, "api-copied-headers")
+    }
+
+    /// Copy the request as it was authored (**with its `{{variables}}`, and
+    /// never a credential, which stays on this device**), the shape a bug
+    /// report needs.
+    fn copy_request(&mut self) -> Result<(), String> {
+        let request = &self.request;
+        let mut text = format!("{} {}", request.method.as_str(), request.url);
+        for row in request.headers.iter().filter(|row| row.enabled) {
+            text.push_str(&format!("\n{}: {}", row.key, row.value));
+        }
+        text.push('\n');
+        if !request.body_text.trim().is_empty() {
+            text.push('\n');
+            text.push_str(&request.body_text);
+            text.push('\n');
+        }
+        self.copy_to_clipboard(text, "api-copied-request")
+    }
+
+    /// Put `text` on the clipboard and say so, or say it did not take.
+    fn copy_to_clipboard(&mut self, text: String, done: &str) -> Result<(), String> {
+        let copied = self.copy.watch(ui::try_clipboard_copy(&text));
+        if copied {
+            self.error = None;
+            self.notice = Some(ui::i18n::I18nManager::format(done, &[]));
+        }
+        self.dirty = true;
+        self.stale.response = true;
+        if copied {
+            Ok(())
+        } else {
+            Err("Could not copy to the clipboard.".to_owned())
+        }
+    }
+
+    /// Show what the cancel did, the moment it is pressed: the response pane
+    /// and the bar's Send/Cancel control.
+    fn retrigger_send_slot(&mut self) {
+        self.stale.response = true;
+        self.stale.url_bar = true;
+    }
+
     fn start_send(
         &mut self,
         method: HttpMethod,
@@ -1549,12 +1721,34 @@ impl ApiTesterApp {
         if self.sending {
             return Err("another API request is already running".into());
         }
+        // With no address there is nothing to send to; a browser would
+        // quietly fetch the page itself. Say what is missing where the
+        // answer would show.
+        if out
+            .url
+            .split(['?', '#'])
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        {
+            let missing = String::from("Enter a URL to send the request to.");
+            self.response = None;
+            self.error = Some(missing.clone());
+            self.stale.response = true;
+            self.dirty = true;
+            return Err(missing);
+        }
         self.sending = true;
         self.error = None;
+        self.notice = None;
         self.dirty = true;
+        // A fresh flag for this send: an earlier cancel must not stop it.
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.send_cancel = std::sync::Arc::clone(&cancel);
         let url = out.url.clone();
         Ok(cx.spawn(
-            move |_| async move { http::send(&out).await },
+            move |_| async move { http::send(&out, &cancel).await },
             move |app: &mut Self, sent, cx| {
                 app.sending = false;
                 app.dirty = true;
@@ -1566,12 +1760,12 @@ impl ApiTesterApp {
                             status: response.status,
                             duration_ms: response.duration_ms,
                         }));
+                        let answer = Effected::value(http::answer(&response));
                         app.response = Some(response);
                         app.response_view = ResponseView::Pretty;
                         app.stale.response = true;
                         app.stale.response_body = true;
-
-                        Ok(Effected::done())
+                        Ok(answer)
                     }
                     Err(error) => {
                         app.error = Some(error.clone());

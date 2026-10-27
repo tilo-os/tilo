@@ -1,7 +1,7 @@
 //! `tilo-agent` — a participant without a window.
 //!
 //! The agent connects to the compositor's collaboration broker and carries
-//! out broker-leased tasks (`--task-runs`) under its own actor, so every
+//! out the runs of issues assigned to it (`--task-runs`) under its own actor, so every
 //! change is attributed to it. It never sees a pixel and never touches a
 //! pointer.
 //!
@@ -42,7 +42,6 @@
 #[cfg(test)]
 extern crate self as tilo_agent;
 
-pub mod memory;
 pub mod model;
 pub mod pages;
 pub mod plan;

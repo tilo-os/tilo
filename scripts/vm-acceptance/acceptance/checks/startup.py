@@ -23,7 +23,7 @@ import tomllib
 from pathlib import Path
 
 from .. import app_startup, core, gpu, records, session_unit
-from ..core import CheckFailed, Unobservable, check
+from ..core import CheckFailed, Skipped, Unobservable, check
 from ..vm import VmError, wait_until
 from .apps import _close, _lifecycle
 from .resources import shell_anon_mib, slope
@@ -44,7 +44,10 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 # Walks the app's tree in the guest, where each AT-SPI call is one local gdbus: from the
 # host every call would cross ssh. Prints one JSON object: the bus it read, whether the
-# root was there, and the names in the folder listing (None: no listing found).
+# root was there, and the names in the folder listing (None: no listing found). When it
+# finds no connection of the program it prints every connection instead, attributed to
+# its process, so the report separates "nothing published" from "published under a
+# process this reader does not recognise".
 ATSPI_PROBE = r'''
 import importlib.util, json, os, re, sys, time
 CLIENT = os.environ["TILO_ATSPI_CLIENT"]
@@ -63,8 +66,12 @@ except Exception as e:
     print(json.dumps({"error": error}))
     sys.exit(0)
 
-# AtspiRole's list. AccessKit has no role-name method; roles are numbers.
+# AtspiRole's list and table. AccessKit has no role-name method; roles are numbers. Files'
+# listing is the toolkit's file table (a row per entry, named for its file); a plain list
+# names its items the same way.
 ROLE_LIST = 31
+ROLE_TABLE = 55
+LISTING_ROLES = (ROLE_LIST, ROLE_TABLE)
 
 def text(reply):
     # gdbus quotes a string in single quotes, or double quotes when it holds one.
@@ -81,7 +88,7 @@ def walk(client, limit=800):
         name = text(client.property(path, "Name"))
         names.append(name)
         children = m.PATH_RE.findall(client.call(path, "org.a11y.atspi.Accessible.GetChildren"))
-        if name == list_name and client.role(path) == ROLE_LIST:
+        if name == list_name and client.role(path) in LISTING_ROLES:
             return names, [text(client.property(c, "Name")) for c in children]
         pending += [c for c in children if c not in seen]
     return names, None
@@ -97,7 +104,9 @@ def set_a11y(on):
               "org.a11y.Status", "IsEnabled", "b", "true" if on else "false", check=False)
 
 deadline = time.monotonic() + timeout
-last = {"error": f"no AT-SPI connection belongs to a {program} process"}
+found = None
+# Every connection the walk found on the last pass, whether it belonged to PROGRAM.
+clients = []
 try:
     address = m.atspi_address()
 except Exception as e:
@@ -117,20 +126,27 @@ def report(result):
         set_a11y(False)
     sys.exit(0)
 while True:
+    clients = []
     for bus, pid in m.bus_pids(address).items():
-        cmd = m.process_command(m.app_process(pid)).split()
-        if not cmd or cmd[0].rsplit("/", 1)[-1] != program:
-            continue
+        app = m.app_process(pid)
+        cmd = m.process_command(app).split()
+        own = bool(cmd) and cmd[0].rsplit("/", 1)[-1] == program
         try:
             names, entries = walk(m.AtspiClient(address, bus))
+            client = {"bus": bus, "pid": pid, "app_pid": app, "command": " ".join(cmd)[:160],
+                      "root": root_name in names, "entries": entries, "names": names[:20]}
         except Exception as e:
-            last = {"bus": bus, "error": f"walk failed: {e}"}
+            client = {"bus": bus, "pid": pid, "app_pid": app, "command": " ".join(cmd)[:160],
+                      "error": f"walk failed: {e}"}
+        clients.append(client)
+        if not own:
             continue
-        last = {"bus": bus, "root": root_name in names, "entries": entries, "names": names[:80]}
-        if last["root"] and entries:
-            report(last)
+        found = client
+        if found["root"] and entries:
+            report(found)
     if time.monotonic() >= deadline:
-        report(last)
+        report(found or {"error": f"no AT-SPI connection belongs to a {program} process",
+                         "clients": clients[:20]})
     time.sleep(0.5)
 '''
 
@@ -346,6 +362,9 @@ def files_start(ctx, res):
 
 @check("R05", "resources", "App windows render on the machine's GPU, not on a CPU fallback")
 def gpu_adapters(ctx, res):
+    if ctx.facts.get("software_rendering"):
+        raise Skipped("needs a GPU render node; this run renders in software")
+
     def read():
         out = ctx.vm.exec(gpu.PROBE, timeout=90, check=False)
         health_text, log = gpu.split_probe(out)
@@ -612,6 +631,15 @@ def every_launch(ctx, res):
     if not startups:
         raise Unobservable("no app logged an APP-STARTUP line in the session's logs")
     problems = app_startup.over_budget(startups) + app_startup.history_over_budget(opens)
+    # A failed check keeps no files, so the slowest late launch's own phases go into the
+    # failure text: which marks the first frame waited on, and whether the window named
+    # its adapter (a launch with no adapter line is judged on the hardware budget).
+    late = [s for s in startups if s["total_ms"] > app_startup.budget_ms(s["app"], s["renderer"])]
+    if late:
+        slowest = max(late, key=lambda s: s["total_ms"])
+        unnamed = (f" ({slowest['app']} logged no `tilo-gpu: window adapter` line before it)"
+                   if slowest["renderer"] == "unknown" else "")
+        problems.append(f"slowest late launch{unnamed}: {slowest['line'][:900]}")
     if "so.tilo.notes" not in apps:
         problems.append("so.tilo.notes logged no APP-STARTUP line")
     if problems:

@@ -36,6 +36,8 @@ pub(crate) use android::android_font_system;
 /// The database is read from the font index the last launch recorded
 /// ([`index`]) when everything it was built from is unchanged, so a launch
 /// parses no font and hashes nothing; otherwise it is built and recorded.
+/// Either way every font file is mapped before the database is handed out
+/// ([`mapped`]), so shaping never opens a file.
 #[cfg(not(test))]
 pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
@@ -45,7 +47,7 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
         if let Some(db) = recorded.as_deref().and_then(|path| {
             tilo_startup_metrics::span("font-index-read", || index::load(path, &roots))
         }) {
-            return Some(db);
+            return Some(tilo_startup_metrics::span("font-files-map", || mapped(&db)));
         }
         match load_first_catalog_at(&roots, &locale, fontdb::Database::load_system_fonts) {
             Ok((root, font_system)) => {
@@ -53,7 +55,7 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
                 if let Some(path) = recorded.as_deref() {
                     index::store(path, &roots, &root, &db);
                 }
-                Some(db)
+                Some(tilo_startup_metrics::span("font-files-map", || mapped(&db)))
             }
             Err(errors) => {
                 tracing::error!(?errors, "Tilo font catalog unavailable");
@@ -102,11 +104,17 @@ pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
 /// build's verified artifact catalog, so a binary run from a checkout sets text in
 /// the faces the product ships.
 pub(crate) fn catalog_roots() -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("fonts")))
+    let mut roots: Vec<PathBuf> = crate::host::environment()
+        .paths
+        .font_catalog
+        .clone()
         .into_iter()
         .collect();
+    roots.extend(
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("fonts"))),
+    );
     // Launcher owns this fixed read-only mount in the app's private namespace.
     // Each retained SDK can carry its own catalog without replacing OS fonts.
     roots.push(PathBuf::from("/run/tilo-fonts"));
@@ -114,18 +122,62 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     roots.push(
         PathBuf::from("/usr/share/tilo/font-catalogs").join(tilo_font_catalog::manifest_sha256()),
     );
+    // A build materializes the pinned catalog into the machine's font cache
+    // (`tools/font-catalog.py`) and bakes *that* path in. A binary built on
+    // another machine therefore names a directory this one does not have, and
+    // every frame it renders is set in the host's faces — nearly right, and
+    // wrong in a way only a screenshot review notices. The cache is keyed by
+    // what it was prepared from, so any prepared catalog whose manifest is
+    // this build's is the catalog this build expects.
+    // A build materializes the pinned catalog into the machine's font cache
+    // (`tools/font-catalog.py`) and bakes *that* path in, so a binary built on
+    // another machine names a directory this one does not have. The cache is
+    // keyed by what it was prepared from; any catalog in it that this build
+    // can read is the catalog this build expects.
+    let paths = &crate::host::environment().paths;
+    for cache in paths.font_artifact_cache.iter().cloned().chain(
+        paths
+            .cache_dir()
+            .map(|cache| cache.join("tilo/test-env/font-artifacts")),
+    ) {
+        roots.extend(tilo_font_catalog::prepared_catalogs(&cache));
+    }
     roots.push(checkout_root());
     roots
+}
+
+/// The root a capture would set text from, without reading a font: the roots
+/// [`bundled_font_system`] tries, checked for a manifest this build pins. A
+/// run whose answer is `None` would render every frame in the host's faces,
+/// which is not the product, so a capture asks this before it draws anything.
+#[cfg(feature = "native")]
+pub(crate) fn catalog_root() -> Option<PathBuf> {
+    tilo_font_catalog::find_root(catalog_roots())
+}
+
+/// Why no root holds this build's catalog, naming the places that were
+/// tried: the message a capture fails with, so the answer is one line away
+/// rather than a review of frames set in the wrong typeface.
+#[cfg(feature = "native")]
+pub(crate) fn catalog_missing_message() -> String {
+    let roots: Vec<String> = catalog_roots()
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect();
+    format!(
+        "no font catalog for this build. Tried: {}. A binary built on another machine names \
+         that machine's checkout, so it finds none of this one's. Point {} at a prepared \
+         catalog: `python3 tools/font-catalog.py root crates/sdk/ui-core/assets/fonts \
+         --scope fixtures` prints one.",
+        roots.join(", "),
+        tilo_font_catalog::OVERRIDE_ENV,
+    )
 }
 
 /// Load the product catalog from the first of `roots` that holds one this
 /// build accepts, with `discover` adding the host's fonts behind it. A root
 /// whose manifest is from another Tilo build (an older image under a newer
 /// checkout) is passed over for the next one.
-///
-/// # Errors
-///
-/// Every root's failure, in order, when none loads.
 pub(crate) fn load_first_catalog(
     roots: &[PathBuf],
     locale: &str,
@@ -161,6 +213,51 @@ pub(crate) fn load_first_catalog_at(
         ));
     }
     Err(errors)
+}
+
+/// `db` with every face's file mapped now, one mapping per file, in the
+/// same face order and generic families.
+///
+/// fontdb opens a face's file by path whenever the face is read: each time
+/// for a `File` source, and the first time for a lazily mapped one. Text is
+/// shaped on the thread that lays it out, which in the compositor is the main
+/// loop, and a path lookup there waits on the disk with the desktop frozen.
+/// Mapping is an open, a stat and an `mmap` per file and reads no font
+/// bytes; a page of a face is read when shaping first touches it. A file
+/// that cannot be mapped loses its faces, as it would have failed to load
+/// when shaped.
+pub(crate) fn mapped(db: &fontdb::Database) -> fontdb::Database {
+    type Bytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
+    let mut files: HashMap<PathBuf, Option<Bytes>> = HashMap::new();
+    let mut out = fontdb::Database::new();
+    for face in db.faces() {
+        let source = match &face.source {
+            fontdb::Source::File(path) | fontdb::Source::SharedFile(path, _) => {
+                let bytes = files.entry(path.clone()).or_insert_with(|| {
+                    tilo_files::native::mapped::MappedFile::open(path)
+                        .map(|map| Arc::new(map) as Bytes)
+                        .inspect_err(|error| {
+                            tracing::debug!(%error, path = %path.display(), "font file not mapped");
+                        })
+                        .ok()
+                });
+                let Some(bytes) = bytes else {
+                    continue;
+                };
+                fontdb::Source::SharedFile(path.clone(), Arc::clone(bytes))
+            }
+            fontdb::Source::Binary(bytes) => fontdb::Source::Binary(Arc::clone(bytes)),
+        };
+        let mut info = face.clone();
+        info.source = source;
+        out.push_face_info(info);
+    }
+    out.set_sans_serif_family(db.family_name(&fontdb::Family::SansSerif));
+    out.set_serif_family(db.family_name(&fontdb::Family::Serif));
+    out.set_monospace_family(db.family_name(&fontdb::Family::Monospace));
+    out.set_cursive_family(db.family_name(&fontdb::Family::Cursive));
+    out.set_fantasy_family(db.family_name(&fontdb::Family::Fantasy));
+    out
 }
 
 /// Keep one face per family, style, weight and stretch. A system can install
@@ -317,11 +414,6 @@ impl FontCatalog {
         &self.locale
     }
 
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`FontCatalogError`] when the manifest or any declared font
-    /// is absent, corrupt, or does not match its declared face metadata.
     pub fn load(&self) -> Result<FontSystem, FontCatalogError> {
         self.load_with_system(fontdb::Database::load_system_fonts)
     }
@@ -409,19 +501,24 @@ impl FontCatalog {
     /// Load the canonical core families required before a browser can mount.
     /// Script, symbol, math, and emoji assets remain absent until shaping
     /// reports demand and the host supplies their verified bytes.
+    ///
+    /// `bytes` gives each asset's bytes with the lowercase hex SHA-256 the
+    /// page computed for them, checked as in [`Self::install_browser_asset`]:
+    /// hashing them again here held back the first frame.
     /// # Errors
-    /// Rejects a missing or corrupt startup asset.
+    /// Rejects a missing startup asset, or one whose digest is not the pinned
+    /// one.
     pub fn load_browser_startup_bytes(
         &self,
-        mut bytes: impl FnMut(&str) -> Option<Vec<u8>>,
+        mut bytes: impl FnMut(&str) -> Option<(Vec<u8>, String)>,
     ) -> Result<FontSystem, FontCatalogError> {
         self.build_from_bytes(
             Path::new("canonical-browser-fonts"),
             |asset| asset.scope == Scope::Product && asset.browser_startup,
             |asset| {
-                let data = bytes(&asset.file)
+                let (data, sha256) = bytes(&asset.file)
                     .ok_or_else(|| FontCatalogError::at(&asset.file, "missing font bytes"))?;
-                verify_asset_bytes(asset, &data)?;
+                asset.check_digest(Path::new(&asset.file), &sha256)?;
                 Ok(fontdb::Source::Binary(Arc::new(data)))
             },
         )
@@ -429,13 +526,22 @@ impl FontCatalog {
 
     /// Validate and add one canonical optional browser asset to a live font
     /// system. Returns `false` when the exact asset faces are already present.
+    ///
+    /// `sha256` is the lowercase hex SHA-256 of `data` as the page computed it
+    /// with the browser's native, asynchronous digest; it is checked against
+    /// the digest compiled into this build. Hashing the bytes again here held
+    /// the page's main thread for about 350 ms a font. Bytes of another size
+    /// cannot carry the pinned digest, and the page's loader has refused
+    /// them already, so the size is not compared again here.
     /// # Errors
-    /// Rejects unknown names, corrupt bytes, or mismatched face metadata.
+    /// Rejects unknown names, a digest other than the pinned one, or
+    /// mismatched face metadata.
     pub fn install_browser_asset(
         &self,
         system: &mut FontSystem,
         name: &str,
         data: Vec<u8>,
+        sha256: &str,
     ) -> Result<bool, FontCatalogError> {
         let manifest = parse_manifest(Path::new("canonical-browser-fonts/manifest.toml"))?;
         let asset = manifest
@@ -443,7 +549,7 @@ impl FontCatalog {
             .iter()
             .find(|asset| asset.scope == Scope::Product && asset.file == name)
             .ok_or_else(|| FontCatalogError::at(name, "unknown canonical font asset"))?;
-        verify_asset_bytes(asset, &data)?;
+        asset.check_digest(Path::new(&asset.file), sha256)?;
         if asset.faces.iter().all(|expected| {
             system.db().faces().any(|face| {
                 face.index == expected.index
@@ -632,6 +738,26 @@ fn face_style(face: &Face) -> fontdb::Style {
 /// The compiled-in catalog manifest, reported against `path` on failure.
 fn parse_manifest(path: &Path) -> Result<&'static Manifest, FontCatalogError> {
     tilo_font_catalog::manifest().map_err(|error| FontCatalogError::at(path, error.problem))
+}
+
+/// The lowercase hex SHA-256 a browser page reports for `bytes`, for tests
+/// that install browser fonts the way the page does.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn test_sha256(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+/// Reads browser font files under `root` with the digest a page would
+/// report, for [`FontCatalog::load_browser_startup_bytes`] in tests.
+#[cfg(test)]
+pub(crate) fn test_font_files(root: &Path) -> impl FnMut(&str) -> Option<(Vec<u8>, String)> + '_ {
+    |name| {
+        let bytes = std::fs::read(root.join(name)).ok()?;
+        let digest = test_sha256(&bytes);
+        Some((bytes, digest))
+    }
 }
 
 fn verify_asset_bytes(asset: &Asset, data: &[u8]) -> Result<(), FontCatalogError> {

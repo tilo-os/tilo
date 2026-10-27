@@ -166,6 +166,8 @@ pub(crate) const RESERVED_CHILD_FDS: &[i32] = &[
     #[cfg(target_os = "linux")]
     crate::job_door::CHILD_FD,
     #[cfg(target_os = "linux")]
+    runtime_portal::windows::CHILD_FD,
+    #[cfg(target_os = "linux")]
     crate::retained_view::SELECTED_PARENT_FD,
     #[cfg(target_os = "linux")]
     crate::owned_service::RETAINED_SELECTED_REPLACEMENT_PERMIT_FD,
@@ -191,6 +193,10 @@ const STORE_APP_ID: &str = "so.tilo.store";
 /// package-management interface: the host decides by the app id stamped on
 /// the connection.
 const BROWSER_APP_ID: &str = "so.tilo.browser";
+/// Settings holds `app-host` for the person's languages alone: the host
+/// answers it which language packs are offered and installs one, nothing
+/// else.
+const SETTINGS_APP_ID: &str = "so.tilo.settings";
 pub const APP_HOST_LAUNCH_MAGIC: [u8; 4] = *b"QAH1";
 /// After [`APP_HOST_LAUNCH_MAGIC`]: a big-endian `u32` length, then the JSON
 /// handoff.
@@ -271,7 +277,9 @@ pub enum ServiceError {
         #[source]
         source: std::io::Error,
     },
-    #[error("service `app-host` is restricted to the signed Tilo Store package")]
+    #[error(
+        "service `app-host` is restricted to the Store, and to Browser and Settings for their own narrow requests"
+    )]
     AppHostUnauthorized,
 }
 
@@ -369,11 +377,6 @@ pub fn resolve_identity_bind(
 
 /// Validate a signed service requirement and use the canonical identity
 /// handshake. Profile metadata remains owned by the current identity broker.
-///
-/// # Errors
-///
-/// Returns [`ServiceError`] if serializing or sending the bounded handshake fails.
-/// A missing service or refused connection returns `Ok(None)`.
 pub fn resolve_identity_bind_for_contract(
     app_id: &str,
     workspace_id: Option<&str>,
@@ -725,11 +728,6 @@ pub fn resolve_service_binds(
 
 /// Resolve service descriptors and write the compositor-authenticated
 /// compatibility preamble before the descriptor enters the app sandbox.
-///
-/// # Errors
-///
-/// Returns the same service resolution errors as [`resolve_service_binds`],
-/// plus a context or handoff error when the `compat` service is connected.
 pub fn resolve_service_binds_for_launch(
     services: &BTreeMap<String, ServiceReq>,
     no_services: bool,
@@ -892,7 +890,7 @@ fn resolve_service_binds_inner(
 
         if name == APP_HOST_SERVICE
             && context.is_none_or(|launch| {
-                launch.app_id != STORE_APP_ID && launch.app_id != BROWSER_APP_ID
+                ![STORE_APP_ID, BROWSER_APP_ID, SETTINGS_APP_ID].contains(&launch.app_id)
             })
         {
             return Err(ServiceError::AppHostUnauthorized);
@@ -1225,7 +1223,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn service_handoffs_bind_the_launch_context() {
-        // Phase `identity_handoff_is_bound_to_launcher_app_and_workspace_context`.
         {
             use std::io::Read;
 
@@ -1299,7 +1296,6 @@ mod tests {
                 app_only
             );
         }
-        // Phase `blob_handoff_fixes_the_app_and_room_before_the_app_holds_the_descriptor`.
         {
             use std::io::Read;
 
@@ -1366,7 +1362,6 @@ mod tests {
                     .is_none()
             );
         }
-        // Phase `chooser_handshake_names_the_app_and_room_before_the_app_holds_the_descriptor`.
         {
             use std::io::BufRead;
 
@@ -1423,7 +1418,6 @@ mod tests {
                 .is_none()
             );
         }
-        // Phase `collab_handoff_is_framed_for_broker_authentication`.
         {
             use std::io::Read;
 
@@ -1466,7 +1460,6 @@ mod tests {
             assert_eq!(handoff["app_id"], "so.tilo.notes");
             assert_eq!(handoff["workspace_id"], "room-7");
         }
-        // Phase `shell_ui_connection_is_authenticated_before_child_handoff`.
         {
             use std::io::{BufRead, BufReader};
 
@@ -1563,7 +1556,6 @@ mod tests {
 
     #[test]
     fn service_requirements_resolve_or_fail_as_declared() {
-        // Phase `app_host_capability_is_not_self_grantable_by_third_party_packages`.
         {
             let mut services = BTreeMap::new();
             services.insert(
@@ -1581,7 +1573,6 @@ mod tests {
             .expect_err("third-party manifest must not grant package-manager authority");
             assert!(matches!(error, ServiceError::AppHostUnauthorized));
         }
-        // Phase `optional_service_whose_socket_refuses_is_skipped_not_fatal`.
         {
             let dir = tempfile::tempdir().unwrap();
             let _env = runtime_dir_env(dir.path());
@@ -1600,7 +1591,6 @@ mod tests {
                 "nothing can be handed to the app for a service that does not answer"
             );
         }
-        // Phase `required_service_whose_socket_refuses_is_still_an_error`.
         {
             let dir = tempfile::tempdir().unwrap();
             let _env = runtime_dir_env(dir.path());
@@ -1619,7 +1609,6 @@ mod tests {
                 "got {err:?}"
             );
         }
-        // Phase `a_live_optional_socket_is_handed_over`.
         {
             let dir = tempfile::tempdir().unwrap();
             let _env = runtime_dir_env(dir.path());
@@ -1641,7 +1630,6 @@ mod tests {
                 "the app is told to read fd 17, so that is where it must land"
             );
         }
-        // Phase `no_services_flag_skips_required_silently`.
         {
             let mut svcs = BTreeMap::new();
             svcs.insert(
@@ -1651,14 +1639,12 @@ mod tests {
             let out = resolve_service_binds(&svcs, true).expect("no-services path is infallible");
             assert!(out.is_empty(), "required service must be skipped");
         }
-        // Phase `required_missing_returns_required_missing_error`.
         {
             let mut svcs = BTreeMap::new();
             svcs.insert(
                 "collab".to_string(),
                 crate::manifest::service_req("required@1"),
             );
-            // Point XDG_RUNTIME_DIR at a tempdir with nothing in it.
             let dir = tempfile::tempdir().unwrap();
             let _env = runtime_dir_env(dir.path());
             let err = resolve_service_binds(&svcs, false).unwrap_err();
@@ -1792,7 +1778,7 @@ mod tests {
                 .accept()
                 .expect("the launcher's connection has to arrive");
             served
-                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .expect("a bounded wait, so a leak fails the test instead of hanging it");
 
             // The launch is over: either bwrap was spawned and holds the `dup2`
@@ -1843,16 +1829,12 @@ mod tests {
             };
             drop(resolved);
 
-            served
-                .set_read_timeout(Some(std::time::Duration::from_millis(250)))
-                .unwrap();
+            // A closed connection reads its end at once; an open one with
+            // nothing to read would block.
+            served.set_nonblocking(true).unwrap();
             let mut buf = [0u8; 1];
             match served.read(&mut buf) {
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                    ) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Ok(0) => panic!(
                     "the app's connection was closed the moment the launcher let go \
                      of its own copy, so the app is handed a descriptor to a socket \
@@ -1863,8 +1845,9 @@ mod tests {
 
             // Darwin refuses timeout changes after peer disconnect. Establish the
             // same EOF deadline while the final peer descriptor is still alive.
+            served.set_nonblocking(false).unwrap();
             served
-                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             drop(app_copy);
             assert_eq!(
@@ -1949,11 +1932,6 @@ pub struct EnrolledServiceContext {
 }
 impl EnrolledServiceContext {
     /// Validate one launch's connected services and hand off the model gateway.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description for an invalid binding, provider or context label, an unusable
-    /// data home or stream, or a failed model gateway handoff.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "public constructor shared with the cloud host; the canonical root replaces the supplied one"
@@ -2019,20 +1997,10 @@ impl EnrolledServiceContext {
     pub fn channel_id(&self) -> &str {
         &self.channel_id
     }
-    /// The agent's launch context as JSON.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when serialization fails.
     pub fn agent_context_json(&self) -> Result<String, String> {
         serde_json::to_string(&serde_json::json!({ "version": 1, "room": self.binding.room, "agent": self.binding.agent, "launch": self.binding.launch, "runtime_epoch": self.runtime_epoch, "channel_id": self.channel_id, "provider": self.provider })).map_err(|e| e.to_string())
     }
     /// Take the connected services exactly once for the matching launch.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description for another binding, services already taken, or a requirement the
-    /// connected services do not satisfy.
     pub fn take_for_launch(
         &mut self,
         binding: &crate::managed::ManagedBinding,

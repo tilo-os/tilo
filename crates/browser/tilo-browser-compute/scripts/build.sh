@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Assemble lazy worker assets; also used by the canonical runtime/desktop builder.
+# usage: build.sh [OUT] [--profile P] [--[no-]wasm-opt] [--module-only | --assets-only]
+# `--module-only` builds pkg/compute alone, `--assets-only` copies the worker's
+# modules alone: the runtime builder caches the module apart from the pages.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../../../.." && pwd)
 cd "$repo"
@@ -7,19 +10,25 @@ out=${1:-target/browser-compute}
 [[ $# == 0 ]] || shift
 profile=release
 optimize=0
+parts=all
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) profile=${2:?}; shift 2 ;;
     --wasm-opt) optimize=1; shift ;;
     --no-wasm-opt) optimize=0; shift ;;
+    --module-only) parts=module; shift ;;
+    --assets-only) parts=assets; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 case "$profile" in
   release) cargo_profile=wasm-release artifact=wasm-release ;;
+  assert) cargo_profile=wasm-assert artifact=wasm-assert ;;
   dev) cargo_profile=dev artifact=debug ;;
   *) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
+assets() { cp crates/browser/tilo-browser-compute/web/compute-{worker,domains,protocol}.mjs "$out/"; }
+if [[ $parts == assets ]]; then mkdir -p "$out"; assets; exit 0; fi
 bindgen=${WASM_BINDGEN:-wasm-bindgen}
 pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' crates/browser/tilo-browser-compute/Cargo.toml)
 [[ "$("$bindgen" --version)" == "wasm-bindgen $pinned" ]] || { echo "compute needs wasm-bindgen $pinned" >&2; exit 2; }
@@ -31,9 +40,9 @@ if [[ $optimize == 1 ]]; then
   wasm-opt -Os --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals --enable-reference-types --enable-multivalue \
     "$out/pkg/compute/tilo_browser_compute_bg.wasm" -o "$out/pkg/compute/tilo_browser_compute_bg.wasm"
 fi
-cp crates/browser/tilo-browser-compute/web/compute-{worker,domains,protocol}.mjs "$out/"
+[[ $parts == module ]] || assets
 node --input-type=module - "$out/pkg/compute/tilo_browser_compute_bg.wasm" "$profile" <<'JS'
 import {readFileSync} from 'node:fs';
 import {inspectArtifact} from './crates/browser/tilo-browser-compute/scripts/artifact.mjs';
-console.log('compute artifact:', inspectArtifact(readFileSync(process.argv[2]), {release:process.argv[3] === 'release'}));
+console.log('compute artifact:', inspectArtifact(readFileSync(process.argv[2]), {release:process.argv[3] !== 'dev'}));
 JS

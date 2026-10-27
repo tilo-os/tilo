@@ -20,7 +20,7 @@ Group=tilo-relay
 SupplementaryGroups=tilo-identity
 # `run` blocks until SIGTERM. sd_notify(READY=1) is emitted from
 # main.rs once the iroh endpoint is bound + accepting.
-ExecStart=/usr/bin/tilo-relay --config /etc/tilo/relay.toml run
+ExecStart=/usr/libexec/tilo/tilo-relay --config /etc/tilo/relay.toml run
 Restart=on-failure
 RestartSec=5
 TimeoutStartSec=30

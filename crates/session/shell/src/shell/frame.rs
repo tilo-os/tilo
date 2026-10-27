@@ -49,10 +49,6 @@ fn consume_record_requests(
     let mut index = index.borrow_mut();
     let mut completed = Vec::new();
     for request in requested {
-        #[expect(
-            clippy::suspicious_operation_groupings,
-            reason = "a tracked request names its workspace by `workspace_id`, not `id`"
-        )]
         let authorized = {
             let state = chrome.borrow();
             let tree = state.tree();
@@ -60,7 +56,7 @@ fn consume_record_requests(
                 .workspaces
                 .iter()
                 .find(|workspace| {
-                    workspace.id == request.workspace_id && workspace.room == request.room
+                    workspace.id == request.workspace_id && workspace.room() == request.room
                 })
                 .is_some_and(|workspace| {
                     // The queued actor records who made the request, but its
@@ -254,7 +250,7 @@ pub enum LayerPolicy {
     /// Every frame the layers can express.
     #[default]
     Always,
-    /// Only while a strip pans, and [`PAN_LINGER_FRAMES`] frames after it
+    /// Only while a strip pans, and `PAN_LINGER_FRAMES` frames after it
     /// stops. A frame at rest keeps its screen-space damage, so typing or a
     /// hover repaints what it changed, not a layer.
     WhilePanning,
@@ -264,6 +260,11 @@ pub enum LayerPolicy {
 /// after the last strip pan moved, so a gesture that pauses for a frame
 /// does not leave the layers and come back.
 const PAN_LINGER_FRAMES: u32 = 4;
+
+/// How many drawn frame identities the desktop remembers, so a pointer action
+/// waiting for the next frame can still tell whether one landed. A press holds
+/// one frame, not a session.
+const DRAWN_REVISIONS_KEPT: usize = 16;
 
 /// What the presenter asks of strip pans.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -547,6 +548,9 @@ struct ProducedSections {
 struct OpaqueParts {
     workspace: Option<ui::scene_parts::SectionParts>,
     workspace_overlays: Option<ui::scene_parts::SectionParts>,
+    /// The top bar's own pieces (the strip it names): the bar is bounded as
+    /// a whole too, so its parts only narrow it.
+    topbar: Option<ui::scene_parts::SectionParts>,
     /// The Quick Settings panel, the strip ribbon and the strip rail: that
     /// section is bounded as a whole too, so its parts only narrow it.
     quick_settings: Option<ui::scene_parts::SectionParts>,
@@ -561,6 +565,7 @@ impl OpaqueParts {
         Self {
             workspace: recorded.of(&sections.workspace),
             workspace_overlays: recorded.of(&sections.workspace_overlays),
+            topbar: recorded.of(&sections.topbar),
             quick_settings: recorded.of(&sections.quick_settings),
             above_quick_settings: recorded.of(&sections.above_quick_settings),
         }
@@ -752,6 +757,8 @@ pub struct FrameBuilder {
     root_node: Option<NodeId>,
     #[cfg(test)]
     layout_tree_builds: u64,
+    #[cfg(test)]
+    layout_passes: u64,
     text_renderer: TextRenderer,
     theme: Theme,
     /// The theme the settings document describes, before the active
@@ -836,6 +843,9 @@ pub struct FrameBuilder {
     /// The lock screen's keyboard keys by name and where they sit, while it
     /// shows; for the state dump.
     lock_keyboard_keys: Vec<(String, Rect)>,
+    /// The lock screen's surfaces as last drawn, one per display; for the
+    /// state dump.
+    lock_surfaces: Vec<crate::compositor::lock_screen::LockSurface>,
     /// A layout rebuild invalidates every Taffy node id held by the native
     /// input loop. Re-seat its external focus cursor before the next event;
     /// otherwise the first-login wizard starts unfocused and a step change
@@ -852,6 +862,12 @@ pub struct FrameBuilder {
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
     next_scene_revision: u64,
+    /// Revisions issued to frames the desktop has finished drawing, in order:
+    /// the last few of them. A press the control socket lands asks to be
+    /// answered at a revision later than the frame its target was read from,
+    /// so the one place that turns a decision into a pointer action is also
+    /// the one place that has to hold it until then.
+    drawn_revisions: Vec<u64>,
     /// Capacity of this builder's actual presenter; absent for dense captures.
     retained_layer_width: Option<u32>,
     /// Which frames that presenter gets as layers.
@@ -861,11 +877,20 @@ pub struct FrameBuilder {
     /// The frame being drawn is the desktop as layers whatever the policy
     /// ([`Self::layers_at_rest`]), not a frame.
     drawing_layers_at_rest: bool,
+    /// The host saw nothing but motion since the last frame
+    /// ([`Self::set_frame_only_moved`]); the next scene build may replay
+    /// windows at rest that stay where they were drawn.
+    frame_only_moved: bool,
+    /// Scene builds so far, numbering each for [`ui::retained_present::PanReplay`].
+    scene_builds: u64,
     /// A frame changed the desktop since the presenter's layers were last
     /// drawn ([`Self::layers_stale`]).
     layers_stale: bool,
     /// The last [`FrameCache::generation`] handed out.
     layers_generation: u64,
+    /// Why the last frame of a presenter that wants every frame as layers
+    /// ([`LayerPolicy::Always`]) came without them, once said.
+    layers_off: Option<&'static str>,
     /// The sections of the latest drawing of the desktop as layers made at
     /// rest, and its generation: what the next one's [`ChromeDamage`] is
     /// measured from. `None` once a frame came as layers of its own.
@@ -888,6 +913,8 @@ pub struct FrameBuilder {
     /// The session network, once peer sync is up, so a control invoke can
     /// address an enrolled device.
     enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
+    /// Frames whose layout failed, skipped, and when that was last logged.
+    skipped_frames: ui::widget::SkippedFrames,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -949,6 +976,7 @@ fn shots_theme_requested() -> bool {
     SHOTS_THEME.get().is_some()
         || std::env::var_os("TILO_SHOTS_THEME").is_some()
         || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
+        || std::env::var_os("TILO_SHOTS_DENSITY").is_some()
 }
 
 /// Whether `app` may write `workspace`'s room for `person` at `now`: the
@@ -990,10 +1018,10 @@ impl FrameBuilder {
     }
 
     /// Optional presentation overrides for offscreen `shots` capture:
-    /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds) and
-    /// `TILO_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
-    /// a theme-driven chrome change be proven in high contrast and at large
-    /// text, not just its comfortable default density.
+    /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds),
+    /// `TILO_SHOTS_TEXT_SCALE=<factor>` and `TILO_SHOTS_DENSITY=compact`.
+    /// Unset keeps the dark default — lets a theme-driven chrome change be
+    /// proven in high contrast, at large text and at compact density.
     fn shots_theme_override() -> Option<Theme> {
         let requested_theme = SHOTS_THEME
             .get()
@@ -1003,18 +1031,21 @@ impl FrameBuilder {
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|value| value.is_finite());
-        if requested_theme.is_none() && requested_scale.is_none() {
+        let compact = std::env::var_os("TILO_SHOTS_DENSITY").is_some_and(|d| d == "compact");
+        if requested_theme.is_none() && requested_scale.is_none() && !compact {
             return None;
         }
-        let theme = requested_theme
+        let mut theme = requested_theme
             .as_deref()
             .and_then(|name| Theme::named(name.trim()))
             .unwrap_or_else(Theme::dark);
-        Some(if let Some(scale) = requested_scale {
-            theme.with_text_scale(scale)
-        } else {
-            theme
-        })
+        if let Some(scale) = requested_scale {
+            theme = theme.with_text_scale(scale);
+        }
+        if compact {
+            theme = theme.with_density(ui::tokens::Density::Compact);
+        }
+        Some(theme)
     }
 
     /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle), with
@@ -1144,6 +1175,8 @@ impl FrameBuilder {
             root_node: None,
             #[cfg(test)]
             layout_tree_builds: 0,
+            #[cfg(test)]
+            layout_passes: 0,
             text_renderer: presentation.text_renderer,
             last_room_epoch: 0,
             peer_windows_quiet_at: None,
@@ -1189,18 +1222,23 @@ impl FrameBuilder {
             osk_commits: 0,
             osk_serves_shell: false,
             lock_keyboard_keys: Vec::new(),
+            lock_surfaces: Vec::new(),
             focus_tree_changed: true,
             native_focus_ordinal: None,
             palette_focus_return: None,
             palette_focus_active: false,
             last_produced_sections: None,
             next_scene_revision: 1,
+            drawn_revisions: Vec::new(),
             retained_layer_width: None,
             layer_policy: LayerPolicy::default(),
             strip_motion: StripMotion::default(),
             drawing_layers_at_rest: false,
+            frame_only_moved: false,
+            scene_builds: 0,
             layers_stale: false,
             layers_generation: 0,
+            layers_off: None,
             layers_drawn: None,
             strip_pan_presenter: StripPanPresenter::default(),
             scroll_copy_presenter: false,
@@ -1209,6 +1247,7 @@ impl FrameBuilder {
             painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             enrolled_actions: None,
+            skipped_frames: ui::widget::SkippedFrames::default(),
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -1931,6 +1970,13 @@ impl FrameBuilder {
     /// re-runs, unless `take_structure_dirty()` says otherwise, in which
     /// case the taffy tree rebuilds first.
     pub fn relayout(&mut self) {
+        #[cfg(test)]
+        {
+            self.layout_passes = self
+                .layout_passes
+                .checked_add(1)
+                .expect("test layout pass counter exhausted");
+        }
         // Apply the compositor's live fullscreen state to the strip rows
         // first, flagging the owning row dirty so the structure-dirty check
         // below rebuilds and the collapse (or restore) takes this frame.
@@ -1965,8 +2011,14 @@ impl FrameBuilder {
         // solver settles allocation-dependent styles as well as measurements.
         // SAFETY: this frame exclusively owns the exact stable host, Taffy
         // topology and matching pointers for admission and the whole solve.
+        let started = std::time::Instant::now();
         let layout_result = unsafe {
             admitted.rebuild(self.host.as_ref(), &self.taffy, child, measure_map);
+            crate::compositor::metrics::profile::record_phase(
+                "layout/admit",
+                started.elapsed(),
+                None,
+            );
             ui::widget::compute_widget_layout(
                 &mut self.taffy,
                 outer,
@@ -1977,16 +2029,21 @@ impl FrameBuilder {
             )
         };
         if let Err(err) = layout_result {
-            // Same "should be structurally impossible" situation as
-            // `rebuild_layout_tree`'s node-creation call: log and skip this
-            // frame's apply_layout rather than aborting the session.
-            tracing::error!(
-                %err,
-                "frame-builder: widget layout did not settle; skipping apply_layout this frame"
-            );
+            // Skip this frame's apply_layout rather than aborting the
+            // session, as every host does with a layout that fails.
+            if let Some(line) = self.skipped_frames.skip(&err, ui::time::now()) {
+                tracing::error!("frame-builder: {line}");
+            }
             return;
         }
+        let solved = std::time::Instant::now();
+        crate::compositor::metrics::profile::record_phase(
+            "layout/solve",
+            solved.duration_since(started),
+            None,
+        );
         self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
+        crate::compositor::metrics::profile::record_phase("layout/apply", solved.elapsed(), None);
         // Semantic search can open during the pump, before input dispatch
         // attaches the external cursor. Settle its owner before painting.
         if let Some(palette) = self.palette_focus_target() {
@@ -2067,6 +2124,7 @@ impl FrameBuilder {
         }
         let sync_done = std::time::Instant::now();
         let changed = self.host.update(doc, root);
+        let host_update_done = std::time::Instant::now();
         let before_settle = (doc.base_heads(), doc.pending_ops());
         self.host.settle(&mut ui::widget::Edits::lend(doc), root);
         if before_settle != (doc.base_heads(), doc.pending_ops()) {
@@ -2081,12 +2139,33 @@ impl FrameBuilder {
         // loop reads the focused node through the map on every iteration
         // (`focused_ime_requires_deferred_ack`), which then called through a
         // freed widget and ended the session.
+        let settle_done = std::time::Instant::now();
         if self.host.take_structure_dirty() {
             self.rebuild_layout_tree();
             self.relayout();
         }
         let update_done = std::time::Instant::now();
         let total = update_done.duration_since(started);
+        for (phase, took) in [
+            ("widget-pump/records", records_done.duration_since(started)),
+            ("widget-pump/rooms", rooms_done.duration_since(records_done)),
+            ("widget-pump/sync", sync_done.duration_since(rooms_done)),
+            ("widget-pump/update", update_done.duration_since(sync_done)),
+            (
+                "widget-pump/update/host",
+                host_update_done.duration_since(sync_done),
+            ),
+            (
+                "widget-pump/update/settle",
+                settle_done.duration_since(host_update_done),
+            ),
+            (
+                "widget-pump/update/structure",
+                update_done.duration_since(settle_done),
+            ),
+        ] {
+            crate::compositor::metrics::profile::record_phase(phase, took, None);
+        }
         if total >= std::time::Duration::from_millis(50) {
             tracing::warn!(
                 target: "tilo::latency",
@@ -2167,9 +2246,10 @@ impl FrameBuilder {
     /// `Rc<RefCell<_>>`, the tree behind an `Arc<RwLock<_>>`, and
     /// `ui::App::set_frame_tick` requires `Send + Sync`, which an `Rc` can't enter.
     ///
-    /// Cheap on a quiet frame: `RoomRecords::replicate_with` compares a
-    /// generation counter before reading any document, and the chrome only
-    /// bumps when something actually arrived.
+    /// Cheap on a quiet frame: `RoomRecords::replication_due` compares a
+    /// generation counter before reading any document, the tree is written
+    /// only when it is due, and the chrome only bumps when something
+    /// actually arrived.
     fn replicate_room_records(&self) {
         let index = self.host.room_records();
 
@@ -2181,7 +2261,9 @@ impl FrameBuilder {
             let chrome = self.chrome.borrow();
             let mut tree = chrome.tree_mut();
             let mut index = index.borrow_mut();
-            index.replicate_with(&mut tree)
+            // Asked through the guard first: a pump with nothing to exchange
+            // lends the tree no mutable access, so it announces no write.
+            index.replication_due(&tree) && index.replicate_with(&mut tree)
         };
         if arrived {
             self.chrome.borrow_mut().bump();
@@ -2198,12 +2280,15 @@ impl FrameBuilder {
             .hdr_layers_composited()
             .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
         let backdrop = BackdropRecording::begin();
-        let logical = self.paint_logical();
+        let (logical, sections) = self.paint_logical();
         let surfaces = backdrop.finish();
         let layers = recording.map(crate::shell::hdr_surface::HdrLayerRecording::finish);
         self.painted_hdr_layers = self.hdr_layers_to_scene(layers.unwrap_or_default());
-        // One scene: each surface's backdrop is what was drawn before it.
-        self.painted_backdrop = self.backdrop_to_scene(surfaces, |_| Some(Vec::new()));
+        // A surface drawn into a section sits over the sections below it;
+        // one drawn over them all, into the scene itself (layer 0), over
+        // what that scene already holds.
+        self.painted_backdrop =
+            self.backdrop_to_scene(surfaces, |layer| sections.below_layer(layer));
         self.to_scene(logical)
     }
 
@@ -2335,20 +2420,21 @@ impl FrameBuilder {
 
     /// [`Self::paint`] before the displays magnify it: the desktop in
     /// logical coordinates, the space the widget tree is laid out in.
-    fn paint_logical(&mut self) -> Scene {
+    fn paint_logical(&mut self) -> (Scene, Box<crate::shell::overlay_host::ShellSceneSections>) {
+        let motions_at = ui::motion::frame_now();
         self.refresh_configured_theme();
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
         let mut scene = Scene::new();
-        // One scene: a floating surface's backdrop is what was drawn before it.
         ui::backdrop::layer_scene(&scene, 0);
-        self.host.draw(
-            &mut scene,
+        let sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
             &self.theme,
             &self.presence,
         );
+        self.frame_drawn(motions_at);
+        sections.compose_into(&mut scene);
         for proxy in &self.floating_transfer_proxies {
             proxy.draw(&mut scene);
         }
@@ -2424,26 +2510,48 @@ impl FrameBuilder {
         if self.watch_configured_theme {
             self.apply_visual_accessibility(&mut scene);
         }
-        scene
+        (scene, sections)
+    }
+
+    /// Tell the next scene build whether nothing but motion (an animation
+    /// moving laid-out content) happened since the last one: no input, no
+    /// client or app content, no chrome change. Windows at rest then show
+    /// the drawings they already have where those still hold
+    /// ([`ui::retained_present::PanFrame::Moved`]).
+    pub fn set_frame_only_moved(&mut self, only_moved: bool) {
+        self.frame_only_moved = only_moved;
     }
 
     /// Produce the same ordered shell composition as [`paint`](Self::paint), together with
-    /// retained-damage metadata for the DRM bridge. The dense [`paint`](Self::paint) path stays
-    /// independent for capture and pixel-oracle use.
+    /// retained-damage metadata for the DRM bridge. Both draw the host's sections
+    /// ([`crate::shell::overlay_host::ShellOverlayHost::draw_scene_sections`]).
     #[allow(
         clippy::too_many_lines,
         reason = "Retained-damage metadata must be derived alongside the exact scene composition; splitting this transaction risks draw-order or damage-region divergence."
     )]
     pub fn paint_with_damage(&mut self) -> FramePaint {
+        let motions_at = ui::motion::frame_now();
         // This producer owns the policy even when invoked during another draw.
         let _dense_scope = ui::retained_present::RetainedScene::begin(false);
         let mut phases = ScenePhases::start();
+        let revision = self.chrome_revision();
         self.refresh_configured_theme();
         self.refresh_workspace_temperature();
         self.refresh_magnifier();
         // Theme, locale and workspace temperature can rebuild the whole layout
         // tree here; named apart so a slow scene says whether it was this.
-        phases.mark("refresh");
+        phases.mark("scene/refresh");
+        let only_moved =
+            std::mem::take(&mut self.frame_only_moved) && self.chrome_revision() == revision;
+        self.scene_builds = self.scene_builds.wrapping_add(1);
+        let _pan_frame = ui::retained_present::PanReplay::begin(
+            if only_moved {
+                ui::retained_present::PanFrame::Moved
+            } else {
+                ui::retained_present::PanFrame::Drawn
+            },
+            self.scene_builds,
+        );
         let global_filter = self.global_filter();
         // A presenter that moves pixels within its target gets what a scroll
         // in an app moved, while the scene is one display's view of the
@@ -2486,6 +2594,15 @@ impl FrameBuilder {
         .then(|| self.strip_plan())
         .flatten();
         let unbake = plan.as_ref().is_some_and(|plan| plan.unbake);
+        if layered && self.layer_policy == LayerPolicy::Always && !unbake {
+            self.note_layers_off(if global_filter {
+                "a filter over the whole desktop"
+            } else if plan.is_none() {
+                "no strip plan (not one unrotated output)"
+            } else {
+                "a strip's pan is not shown as layers (too wide, or between pixels)"
+            });
+        }
         let retained_scope = ui::retained_present::RetainedScene::begin(unbake);
         let foreign_recording = super::foreign_damage::Recording::begin();
         let backdrop_recording = BackdropRecording::begin();
@@ -2496,6 +2613,7 @@ impl FrameBuilder {
             &self.theme,
             &self.presence,
         );
+        self.frame_drawn(motions_at);
         // Each kind of client surface floating over the desktop is one
         // damage part, there whether or not any is mapped: a popup opening
         // or a floating window repainting repaints its own rect.
@@ -2573,7 +2691,12 @@ impl FrameBuilder {
             )?])
         });
         drop(retained_scope);
-        phases.mark("draw-sections");
+        phases.mark("scene/draw-sections");
+        crate::compositor::metrics::profile::record_phase(
+            "scene/replayed-windows",
+            std::time::Duration::ZERO,
+            Some(ui::retained_present::take_replayed()),
+        );
 
         let parts = OpaqueParts::of(&parts_recording.finish(), &sections);
         let backdrop_surfaces = backdrop_recording.finish();
@@ -2597,6 +2720,17 @@ impl FrameBuilder {
                 || fullscreen_on_top.is_some()
                 || pieces.is_none())
         {
+            if self.layer_policy == LayerPolicy::Always {
+                self.note_layers_off(if !backdrop_surfaces.is_empty() {
+                    "a floating surface samples what is behind it"
+                } else if !hdr_layers.is_empty() {
+                    "an HDR surface"
+                } else if fullscreen_on_top.is_some() {
+                    "a fullscreen client on top"
+                } else {
+                    "the strips could not be drawn apart"
+                });
+            }
             // Material sampling needs the original screen-space sections, a
             // fullscreen client may be scanned out of the screen-space
             // scene, and strips the host could not draw apart as planned
@@ -2607,8 +2741,7 @@ impl FrameBuilder {
             self.retained_layer_width = capacity;
             return frame;
         }
-        let revision = self.next_scene_revision;
-        self.next_scene_revision = self.next_scene_revision.saturating_add(1);
+        let revision = self.reserve_scene_revision();
         let previous_revision = self
             .last_produced_sections
             .as_ref()
@@ -2628,17 +2761,18 @@ impl FrameBuilder {
         // a strip is unbaked. They cannot authorize sparse screen damage.
         let screen_space_damage = strips.as_ref().is_none_or(Vec::is_empty);
         let mut section_copies = Vec::new();
-        let damage_regions = (!pointer_filter && strips_kept && screen_space_damage)
-            .then(|| {
-                self.damage_from_sections_with_images(
-                    &sections,
-                    &parts,
-                    (pointer_filter, tint),
-                    &foreign_images,
-                    copying.then_some(&mut section_copies),
-                )
-            })
-            .flatten();
+        let damage_regions =
+            (revision != 0 && !pointer_filter && strips_kept && screen_space_damage)
+                .then(|| {
+                    self.damage_from_sections_with_images(
+                        &sections,
+                        &parts,
+                        (pointer_filter, tint),
+                        &foreign_images,
+                        copying.then_some(&mut section_copies),
+                    )
+                })
+                .flatten();
         // What a floating surface blurs, an HDR layer and a fullscreen
         // client over the desktop are not moved by a copy.
         let copies_shown =
@@ -2653,7 +2787,7 @@ impl FrameBuilder {
         let damage_regions = self
             .with_backdrop_damage(damage_regions, &backdrop_surfaces)
             .map(|regions| without_contained_regions(&regions));
-        phases.mark("damage");
+        phases.mark("scene/damage");
         // A backdrop-dependent section is never independently composited.
         let separable = backdrop_surfaces.is_empty()
             && hdr_layers.is_empty()
@@ -2717,7 +2851,10 @@ impl FrameBuilder {
                 },
             }
         });
-        phases.mark("frame-cache");
+        if layered.is_some() {
+            self.layers_off = None;
+        }
+        phases.mark("scene/frame-cache");
         if layered.is_some() {
             self.layers_generation = generation;
             if !self.drawing_layers_at_rest {
@@ -2727,7 +2864,7 @@ impl FrameBuilder {
         }
         let backdrop =
             self.backdrop_to_scene(backdrop_surfaces, |layer| sections.below_layer(layer));
-        phases.mark("backdrop");
+        phases.mark("scene/backdrop");
         // A layered frame's scene is the one a full render of it draws,
         // composed from the layers exactly as the presenter composites them.
         // No filter is on (filters keep the strips in screen space) and no
@@ -2747,7 +2884,7 @@ impl FrameBuilder {
             );
             (scene, scanout, None)
         };
-        phases.mark("compose");
+        phases.mark("scene/compose");
         phases.report();
 
         let after_layers = self
@@ -2990,15 +3127,7 @@ impl FrameBuilder {
         Option<crate::shell::scanout_candidate::ScanoutCandidate>,
     ) {
         let mut scene = Scene::new();
-        scene.append(&sections.backdrop, None);
-        scene.append(&sections.workspace, None);
-        scene.append(&sections.workspace_overlays, None);
-        // OS chrome owns this layer. Its normal controls stay inside the
-        // reserved top-bar band, while anchored surfaces such as the center
-        // widget editor must remain above app tabs and client content.
-        scene.append(&sections.topbar, None);
-        scene.append(&sections.quick_settings, None);
-        scene.append(&sections.above_quick_settings, None);
+        sections.compose_into(&mut scene);
         // A popup, the on-screen keyboard or anything else drawn above the
         // fullscreen client in its section leaves it not on top.
         let fullscreen_on_top = fullscreen_on_top
@@ -3060,8 +3189,13 @@ impl FrameBuilder {
         }
         // Night light, a colour filter and the magnifier change every pixel
         // of the output; the magnifier does it without drawing anything more.
-        let client_on_top = client_on_top
-            .filter(|_| !global_filter && scene.encoding().draw_tags.len() == draws_below_filters);
+        // While a screenshot holds the windows still, a client's live buffer
+        // is never flipped to the screen in place of its held frame.
+        let client_on_top = client_on_top.filter(|_| {
+            !global_filter
+                && scene.encoding().draw_tags.len() == draws_below_filters
+                && !super::foreign::store().frames_held()
+        });
         let scene = self.to_scene(scene);
         let scanout = client_on_top
             .and_then(|(surface, drawn)| self.scanout_candidate(surface, drawn, &scene));
@@ -3223,8 +3357,10 @@ impl FrameBuilder {
                 .flatten();
             let compared = match &normalized {
                 Some((scene, image_damage)) => {
+                    // A buffer's damage where no display shows it (the part
+                    // of a window past the screen's edge) repairs nothing.
                     for &bounds in image_damage {
-                        regions.push(self.native_damage_rect(Some(bounds))?);
+                        regions.extend(self.native_damage_rect(Some(bounds)));
                     }
                     scene
                 }
@@ -3290,6 +3426,26 @@ impl FrameBuilder {
         } else {
             self.set_retained_layer_width(None);
         }
+        self.align_strip_pans();
+    }
+
+    /// Say once why frames stopped coming as layers for a presenter that
+    /// wants every frame as layers: it then draws the whole screen, which on
+    /// a CPU renderer costs most of a frame.
+    fn note_layers_off(&mut self, reason: &'static str) {
+        if self.layers_off != Some(reason) {
+            self.layers_off = Some(reason);
+            eprintln!("STRIP-LAYERS-OFF reason={reason:?}");
+        }
+    }
+
+    /// The presenter keeps every layer in a canvas of its own, strips in
+    /// canvas coordinates up to `width` scene pixels wide: every frame the
+    /// layers can express comes as layers ([`LayerPolicy::Always`]), so the
+    /// presenter never needs the screen drawn whole after a pan.
+    pub fn keep_strip_canvases(&mut self, width: u32) {
+        self.set_layer_policy(LayerPolicy::Always);
+        self.set_retained_layer_width(Some(width));
         self.align_strip_pans();
     }
 
@@ -3417,6 +3573,11 @@ impl FrameBuilder {
         };
         if screen_w > max_width {
             return None;
+        }
+        // Between two strips both are cut at the deck's edge and move every
+        // frame: they are drawn where they are on screen.
+        if self.host.strip_deck_moving() {
+            return Some(StripPlan::baked(screen_w));
         }
         // Scene pixels per layout pixel along a pan.
         let [scale_x, ..] = to_scene.as_coeffs();
@@ -3597,9 +3758,13 @@ impl FrameBuilder {
         let quick_settings_changed = !previous.quick_settings.encoding_eq(&current.quick_settings);
         let mut regions = Vec::new();
         if topbar_changed {
-            let old = self.topbar_damage_rect(&previous.topbar, previous.topbar_bounds)?;
-            let new = self.topbar_damage_rect(&current.topbar, current.topbar_bounds)?;
-            regions.extend([old, new]);
+            if let Some(changed) = self.topbar_part_damage(previous, current, parts) {
+                regions.extend(changed);
+            } else {
+                let old = self.topbar_damage_rect(&previous.topbar, previous.topbar_bounds)?;
+                let new = self.topbar_damage_rect(&current.topbar, current.topbar_bounds)?;
+                regions.extend([old, new]);
+            }
         }
         if quick_settings_changed
             && let Some(changed) = self.quick_settings_part_damage(previous, current, parts)
@@ -3640,6 +3805,29 @@ impl FrameBuilder {
             return None;
         }
         self.native_damage_rect(bounds)
+    }
+
+    /// Damage in the top bar proven by its parts: each changed part's old and
+    /// new bounds. `None` when the parts cannot prove it (a change outside
+    /// every part); the bar's whole extent then bounds it.
+    fn topbar_part_damage(
+        &self,
+        previous: &ProducedSections,
+        current: &crate::shell::overlay_host::ShellSceneSections,
+        parts: &OpaqueParts,
+    ) -> Option<Vec<FineDamageRect>> {
+        let rects = ui::scene_parts::damage(
+            &previous.topbar,
+            previous.parts.topbar.as_ref()?,
+            &current.topbar,
+            parts.topbar.as_ref()?,
+        )
+        .ok()?;
+        let regions: Vec<FineDamageRect> = rects
+            .into_iter()
+            .filter_map(|rect| self.native_damage_rect(Some(rect)))
+            .collect();
+        (!regions.is_empty()).then_some(regions)
     }
 
     /// Damage in the Quick Settings section proven by its parts (the panel,
@@ -3691,7 +3879,7 @@ impl FrameBuilder {
 
     /// `rect`, in scene pixels, rounded out to whole clip tiles inside the
     /// scene.
-    fn scene_tile_rect(&self, rect: Rect) -> Option<FineDamageRect> {
+    pub(crate) fn scene_tile_rect(&self, rect: Rect) -> Option<FineDamageRect> {
         // Vello evaluates clip layers in 16px tiles. Even outside a layer's
         // exact shape, compositing that tile can round an existing channel by
         // one unit. Retain complete clip tiles so a changed shadow cannot
@@ -3953,18 +4141,36 @@ impl FrameBuilder {
             .snapshot();
         // The wallpaper is part of the look: a choice in Settings lands with
         // the same settings change that would retheme the desktop.
-        super::desktop_backdrop::follow_wallpaper_choice(&snapshot.document);
+        let active = {
+            let chrome = self.chrome.borrow();
+            let tree = chrome.tree();
+            tree.desktop
+                .active_workspace()
+                .map(|workspace| workspace.id.0.to_string())
+        };
+        super::desktop_backdrop::follow_wallpaper_choice(
+            &snapshot.document,
+            active.as_deref().filter(|_| self.watch_configured_theme),
+        );
         // So do the desk widgets' choices (when each shows, which edge).
         self.host.set_desk_widget_prefs(
             settings_store::desk_widgets::DeskWidgetPrefs::from_document(&snapshot.document),
         );
-        self.configured_theme = Theme::configured();
+        // `Theme::configured` leaves text size and interface scale to its
+        // host; the chrome is that host, so it applies the person's choice
+        // here, on every settings change, as an app window does.
+        // Read from the same document `Theme::configured` reads.
+        let access = Theme::configured_accessibility();
+        self.configured_theme = Theme::configured()
+            .with_ui_scale(access.ui_scale)
+            .with_text_scale(access.text_scale);
         self.windows
             .set_your_colour(crate::shell::state::read_local_presence_hue());
         self.theme = self
             .configured_theme
             .clone()
             .in_window(&self.windows.active());
+        self.text_renderer.set_text_scale(self.theme.text_scale);
         self.text_renderer
             .set_distinct_letters(self.theme.tokens.typography.distinct_letters);
     }
@@ -4029,25 +4235,37 @@ impl FrameBuilder {
 
     /// What the app window(s) of `app_id` are shown in: the temperature of
     /// the workspace holding its window (the active one before it has a
-    /// tile) and the person's colour. The compositor sends it over the
-    /// app's shell-ui connection whenever it changes.
+    /// tile), the person's colour, and how round its corners are drawn:
+    /// the theme's window radius while it is framed, 0 while its tile
+    /// draws it edge to edge. The compositor sends it over the app's
+    /// shell-ui connection whenever it changes.
     #[must_use]
     pub fn window_appearance_for_app(&self, app_id: &str) -> ui::WindowAppearance {
         let id = self.with_app_workspace(app_id, |workspace| workspace.id.0.to_string());
-        self.windows.in_workspace(id.as_deref())
+        // The radius the window's frame is clipped with
+        // (`ForeignSurfaceWidget::paint_window`).
+        let corner_radius = if crate::shell::foreign::store().app_drawn_full_bleed(app_id) {
+            0.0
+        } else {
+            self.theme.tokens.radii.tile
+        };
+        ui::WindowAppearance {
+            corner_radius: Some(corner_radius),
+            ..self.windows.in_workspace(id.as_deref())
+        }
     }
 
     /// Where the room of the workspace holding `app_id`'s window stands
-    /// with its host ([`crate::shell::room_sync`]); `None` for a workspace
+    /// with its host (`crate::shell::room_sync`); `None` for a workspace
     /// that syncs with no host.
     #[must_use]
     pub fn room_sync_for_app(&self, app_id: &str) -> Option<ui::room_sync::RoomSync> {
         let person = self
-            .with_app_workspace(app_id, |workspace| workspace.room)
+            .with_app_workspace(app_id, crate::shell::state::Workspace::room)
             .map(|room| self.chrome.borrow().local_user_for_room(&room))?;
         self.with_app_workspace(app_id, |workspace| {
             crate::shell::room_sync::told(
-                crate::shell::network::room_topic_id(workspace.room),
+                crate::shell::network::room_topic_id(workspace.room()),
                 &workspace.name,
                 app_writes(workspace, &person, app_id, tilo_clock::unix_now()),
             )
@@ -4148,10 +4366,21 @@ impl FrameBuilder {
     /// fold found anything — someone who joined but hasn't moved their
     /// pointer publishes nothing, but is in the room all the same.
     pub fn pump_peer_presence(&mut self) -> bool {
+        // Arriving where people are pulses their faces in the bar, as a
+        // wave does the waver's.
+        let arrived = self.host.take_arrival_pulses();
+        for person in &arrived {
+            self.presence.bounce(
+                ui::permissions::UserId(person.clone()),
+                self.theme.motion(),
+                Instant::now(),
+            );
+        }
         let Some(relay) = self.peer_presence.as_ref() else {
-            return false;
+            return !arrived.is_empty();
         };
         let tiles = self.host.tab_tiles();
+        relay.set_shown_strip(self.host.shown_strip());
         let moved = relay.pump(&mut self.presence, &tiles);
         let roster_changed = relay.refresh_roster(&self.presence);
         // Cursor chat: offered over a shared window, and what was typed goes
@@ -4162,7 +4391,7 @@ impl FrameBuilder {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room.to_string());
+            .map(|workspace| workspace.room().to_string());
         let available = room
             .as_deref()
             .is_some_and(|room| relay.chat_target(room).is_some());
@@ -4171,25 +4400,17 @@ impl FrameBuilder {
             .as_deref()
             .is_some_and(|room| relay.chat_destination(room).is_some());
         self.host.set_cursor_chat_reachable(reachable);
-        // Waves at this person, from whoever waved.
-        let own = relay.own_presence_id();
-        let waves: Vec<String> = self
-            .presence
-            .take_waves()
-            .into_iter()
-            .filter(|(_, target, _)| *target == own)
-            .map(|(from, _, _)| from.0)
-            .collect();
-        let waved = !waves.is_empty() && self.host.receive_waves(waves);
-        let bounced = self.host.take_wave_bounces();
-        for target in &bounced {
+        // Waves at this person, from whoever waved, on the room's live
+        // presence: the bar says who, and their face bounces.
+        let waves = relay.take_waves();
+        let greeted = self.host.receive_waves(&waves);
+        for from in waves {
             self.presence.bounce(
-                ui::permissions::UserId(target.clone()),
+                ui::permissions::UserId(from),
                 self.theme.motion(),
                 Instant::now(),
             );
         }
-        let waved = waved || !bounced.is_empty();
         let said = self.host.take_cursor_chat_outbox(Instant::now());
         if let Some(target) = room
             .as_deref()
@@ -4210,7 +4431,7 @@ impl FrameBuilder {
                 }
             }
         }
-        moved || roster_changed || waved
+        moved || roster_changed || greeted
     }
 
     /// Read-only view of the presence the next paint will draw.
@@ -4222,6 +4443,28 @@ impl FrameBuilder {
     /// that a received peer packet uses. Deterministic product proofs need
     /// this seam so they can render intent without standing up a network
     /// relay; it is unavailable in production-only builds.
+    /// Write `bytes` to the active Terminal window as its session's output:
+    /// for captures of a terminal at work.
+    ///
+    /// # Errors
+    /// No Terminal window is active.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn feed_active_terminal_for_shots(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.relayout();
+        let id = self
+            .active_terminal_node()
+            .ok_or("no Terminal window is active")?;
+        let widget = *self
+            .node_map
+            .get(&id)
+            .ok_or("the Terminal is not laid out")?;
+        // SAFETY: the pointer belongs to the current node map.
+        let terminal = hosted_terminal(unsafe { &mut *widget })
+            .ok_or("the active window is not a hosted Terminal")?;
+        terminal.feed(bytes);
+        Ok(())
+    }
+
     /// The presence the next paint draws, to seed it for captures.
     #[cfg(feature = "hosted-test-control")]
     pub fn presence_mut_for_shots(&mut self) -> &mut PresenceCtx {
@@ -4289,6 +4532,29 @@ impl FrameBuilder {
     /// other strips suppressed); a later `None` restores the exact prior tiling.
     pub fn set_fullscreen(&mut self, group: Option<u64>) {
         self.with_chrome(|st| st.set_fullscreen_group(group));
+    }
+
+    /// The group of the client in its own full screen this frame, or
+    /// `None`. A client's full screen is the overlay drawn above everything
+    /// ([`Self::set_client_fullscreen_surface`]), never a layout collapse,
+    /// so another display's desktop stays visible and interactive. Except
+    /// while the shell takes the input over it (the search palette, a
+    /// sheet): the shell's surfaces would draw under the overlay unseen, so
+    /// the group is laid out full screen in the desktop itself, on its own
+    /// display, beneath them, and the top bar stays hidden.
+    pub fn set_client_fullscreen_group(&mut self, group: Option<u64>) {
+        let beneath_shell =
+            group.filter(|_| crate::shell::input_policy::chrome_captures_input(self));
+        self.set_fullscreen(beneath_shell);
+    }
+
+    /// The client in full screen, placed over `rect`: drawn as the overlay
+    /// above everything, unless [`Self::set_client_fullscreen_group`] laid
+    /// it out beneath the shell this frame. Then nothing is drawn above the
+    /// shell's surfaces and no frame of it goes straight to the display.
+    pub fn set_client_fullscreen_surface(&mut self, surface: Option<(u64, String, Rect)>) {
+        let beneath_shell = self.chrome().client_fullscreen_group().is_some();
+        self.set_fullscreen_surface(surface.filter(|_| !beneath_shell));
     }
 
     /// The group currently promoted to full-output, or `None` in the normal
@@ -4368,7 +4634,7 @@ impl FrameBuilder {
             .filter(|label| *label != "content")
             .map(str::to_string)
             .collect();
-        if demand.host & (1 << 10) != 0 {
+        if demand.host & crate::shell::animation_diagnostics::CONTENT_BIT != 0 {
             owners.extend(
                 self.content_animating_leaves()
                     .into_iter()
@@ -4388,6 +4654,13 @@ impl FrameBuilder {
         if demand.osk {
             owners.push("osk".to_string());
         }
+        // A toolkit menu or popover a shell surface draws in its own pass
+        // asks through the motion clock; it is named by where it started.
+        owners.extend(
+            ui::motion::frames_wanted_by(now)
+                .into_iter()
+                .map(|caller| format!("motion@{caller}")),
+        );
         owners
     }
 
@@ -4418,6 +4691,15 @@ impl FrameBuilder {
 
     /// Earliest one-shot widget deadline. Unlike animation demand this lets
     /// the compositor sleep until the visual state can actually change.
+    /// Until when the next frame waits for a window's first frame that may
+    /// still land inside its frame budget ([`ui::arriving`]): shown then, it
+    /// opens with no placeholder at all. The hold's end is a wake deadline
+    /// ([`Self::next_wake_deadline`]), so the frame is made then at the
+    /// latest.
+    pub fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
+        Widget::holds_frame_until(&*self.host, now).filter(|until| *until > now)
+    }
+
     pub fn next_wake_deadline(&self) -> Option<Instant> {
         [
             self.host.next_wake_deadline(),
@@ -4478,12 +4760,12 @@ impl FrameBuilder {
         .flatten()
     }
 
-    /// Whether any tab is still holding a place for an app that hasn't drawn
-    /// yet. The opening card's spinner keeps [`Self::needs_animation_frame`]
-    /// true for the wait's duration, so a caller waiting for quiet has to
-    /// distinguish "still starting" from "animation wedged".
-    pub fn any_tile_opening(&mut self) -> bool {
-        self.host.any_tile_opening()
+    /// Whether any tab is still holding a place for a window whose first
+    /// frame hasn't arrived yet. Asking also latches a client frame that was
+    /// published as presented, so a caller waiting for a client to show asks
+    /// this every frame.
+    pub fn any_tile_arriving(&mut self) -> bool {
+        self.host.any_tile_arriving()
     }
 
     /// The chrome's monotonic revision counter. Bumps whenever chrome
@@ -4493,11 +4775,32 @@ impl FrameBuilder {
         self.chrome.borrow().revision
     }
 
-    /// A frame was painted for presentation. The content is never marked
-    /// drawn here, so motion that steps once per drawn frame (a window
-    /// group's width spring) is told the frame turned.
-    pub fn frame_presented(&mut self) {
+    /// The identity of the last frame drawn, and which frames were drawn
+    /// before it, oldest first — what a pointer action asks to be answered at
+    /// a later one of.
+    #[must_use]
+    pub fn drawn_revisions(&self) -> &[u64] {
+        &self.drawn_revisions
+    }
+
+    /// The shell was drawn, its motions read at `motions_at` or later: the
+    /// motion clock may stop asking for a frame at rest it has now had, and
+    /// the window groups' once-per-drawn-frame motion is told the frame
+    /// turned. Every paint says it here, whoever asked for the paint.
+    fn frame_drawn(&mut self, motions_at: Instant) {
+        ui::motion::frame_drawn(motions_at);
         self.host.frame_presented();
+        // The scene this frame issued has just landed. The list is a window,
+        // not a ledger: a press waits for one frame, not for a session.
+        let issued = self.next_scene_revision.saturating_sub(1);
+        if self.drawn_revisions.last() != Some(&issued) {
+            self.drawn_revisions.push(issued);
+            let excess = self
+                .drawn_revisions
+                .len()
+                .saturating_sub(DRAWN_REVISIONS_KEPT);
+            self.drawn_revisions.drain(..excess);
+        }
     }
 
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
@@ -4550,27 +4853,12 @@ impl FrameBuilder {
         self.host.set_capture_recording_active(active);
     }
 
-    pub fn set_capture_recording_transition_progress(&mut self, permille: u16) {
-        self.host
-            .set_capture_recording_transition_progress(permille);
-    }
-
     pub fn set_capture_pip_transition_progress(&mut self, permille: u16) {
         self.host.set_capture_pip_transition_progress(permille);
     }
 
     pub fn set_capture_recording_paused(&mut self, paused: bool) {
         self.host.set_capture_recording_paused(paused);
-    }
-
-    pub fn set_capture_recording_state_transition_progress(&mut self, permille: u16) {
-        self.host
-            .set_capture_recording_state_transition_progress(permille);
-    }
-
-    pub fn set_capture_recording_receipt_transition_progress(&mut self, permille: u16) {
-        self.host
-            .set_capture_recording_receipt_transition_progress(permille);
     }
 
     pub fn set_capture_recording_finished(&mut self) {
@@ -4623,15 +4911,18 @@ impl FrameBuilder {
         self.host.set_capture_audio_available(system, microphone);
     }
 
-    /// Paint live selected apps in virtual-desktop coordinates without the
-    /// physical output clip. This is the authoritative source for a full-app
-    /// or whole-strip capture, including apps not presently on the monitor.
+    /// Paint whole live windows in virtual-desktop coordinates without the
+    /// physical output clip: the authoritative source for a capture of a
+    /// window, of the strip, or of a selection inside a window, including
+    /// windows not presently on the monitor. Returns each painted window's id
+    /// and the rect it was painted in.
+    /// `anywhere` also paints windows of workspaces kept off screen, for a
+    /// capture that follows its window wherever the person is.
     pub fn paint_capture_targets(
         &mut self,
-        target_ids: &[String],
-        extent: ui::widget::CaptureExtent,
-        complete_semantic_content: bool,
-    ) -> (Scene, Vec<Rect>) {
+        capture: &ui::widget::LiveCapture<'_>,
+        anywhere: bool,
+    ) -> (Scene, Vec<(String, Rect)>) {
         let mut scene = Scene::new();
         if self.session_locked {
             return (scene, Vec::new());
@@ -4639,20 +4930,19 @@ impl FrameBuilder {
         // This paint exists only to be captured, so protected surfaces draw
         // their placeholder wherever they are, on screen or not.
         let _capture = crate::shell::capture_protection::CapturePaint::begin();
-        let rects = self.host.draw_capture_targets(
-            &ui::widget::LiveCapture {
-                target_ids,
-                extent,
-                complete_semantic_content,
-            },
-            &mut ui::paint::PaintCtx::new(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut self.text_renderer,
-                &self.theme,
-            ),
-            &self.presence,
+        let mut ctx = ui::paint::PaintCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.text_renderer,
+            &self.theme,
         );
+        let rects = if anywhere {
+            self.host
+                .draw_capture_targets_anywhere(capture, &mut ctx, &self.presence)
+        } else {
+            self.host
+                .draw_capture_targets(capture, &mut ctx, &self.presence)
+        };
         (scene, rects)
     }
 
@@ -4760,6 +5050,21 @@ impl FrameBuilder {
     /// source has been consumed. This keeps live mirrors recursive-safe and
     /// recording status out of the encoded pixels.
     /// Returns whether compositor-owned capture chrome appended encoded scene data.
+    /// Hold every window of an app this shell runs still, as last drawn,
+    /// until [`Self::release_windows`] (a screenshot's freeze; client
+    /// windows are held in the frame store).
+    pub fn hold_windows(&mut self) {
+        if ui::widget::hold_windows() {
+            self.host
+                .hold_window_content(&mut self.text_renderer, &self.theme, &self.presence);
+        }
+    }
+
+    /// Let the windows [`Self::hold_windows`] held draw live again.
+    pub fn release_windows(&mut self) {
+        ui::widget::release_windows();
+    }
+
     pub fn draw_capture_overlays(&mut self, scene: &mut Scene) -> bool {
         let mut logical = Scene::new();
         self.host.draw_capture_overlays(
@@ -4787,7 +5092,7 @@ impl FrameBuilder {
     }
 
     #[cfg(test)]
-    fn enable_test_onboarding(&mut self, view: crate::onboarding_view::OnboardingView) {
+    pub(crate) fn enable_test_onboarding(&mut self, view: crate::onboarding_view::OnboardingView) {
         self.host.enable_test_onboarding(view);
         self.rebuild_layout_tree();
     }
@@ -4860,7 +5165,7 @@ impl FrameBuilder {
                 .desktop
                 .workspaces
                 .iter()
-                .filter(|workspace| workspace.room.to_string() == room)
+                .filter(|workspace| workspace.room().to_string() == room)
                 .flat_map(|workspace| &workspace.strips)
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
@@ -4923,6 +5228,8 @@ impl FrameBuilder {
             _ => {}
         }
         self.layout_osk_overlay();
+        let cover = self.osk_overlay.as_ref().filter(|_| active);
+        self.host.set_keyboard_cover(cover.map(Widget::get_rect));
     }
 
     /// Reconcile exact authenticated interactive bounds separately from the
@@ -5176,6 +5483,19 @@ impl FrameBuilder {
         &self.lock_keyboard_keys
     }
 
+    /// Record the lock screen's surfaces as drawn (empty: unlocked).
+    pub fn set_lock_surfaces(
+        &mut self,
+        surfaces: Vec<crate::compositor::lock_screen::LockSurface>,
+    ) {
+        self.lock_surfaces = surfaces;
+    }
+
+    /// The lock screen's surfaces, one per display, while it shows.
+    pub fn lock_surfaces(&self) -> &[crate::compositor::lock_screen::LockSurface] {
+        &self.lock_surfaces
+    }
+
     /// Whether the keyboard serves one of the shell's own fields rather
     /// than an application's.
     pub fn osk_serves_shell(&self) -> bool {
@@ -5236,23 +5556,20 @@ impl FrameBuilder {
         self.pointer_image = image;
     }
 
-    /// The cursor the chrome under `point` asks for: the smallest widget
-    /// containing the point that names one wins, so a nested button beats
-    /// the bar around it — the same rule `ui::App` applies to app windows.
+    /// The cursor the chrome under `point` asks for, by the rule every
+    /// host shares ([`ui::widget::cursor`]).
     pub fn chrome_cursor_at(
         &self,
         point: vello::kurbo::Point,
     ) -> Option<winit::window::CursorIcon> {
-        let mut best: Option<(f64, winit::window::CursorIcon)> = None;
-        chrome_cursor_walk(self.host.as_ref(), point, &mut best);
-        best.map(|(_, icon)| icon)
+        ui::widget::cursor::in_tree(self.host.as_ref(), point)
     }
 
     /// What the focused chrome widget asks of an input method — its purpose
     /// and caret — when it takes text; `None` otherwise.
     pub fn focused_ime_field(&self, focus: Option<NodeId>) -> Option<ui::ime::ImeWindowState> {
-        if self.host.palette_visible() {
-            return self.host.palette_ime_field();
+        if self.host.overlay_owns_ime() {
+            return self.host.overlay_ime_field();
         }
         let widget = *self.node_map.get(&focus?)?;
         // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
@@ -5262,7 +5579,7 @@ impl FrameBuilder {
     }
 
     pub(crate) fn focused_ime_requires_deferred_ack(&self, focus: Option<NodeId>) -> bool {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return false;
         }
         let Some(widget) = focus.and_then(|focus| self.node_map.get(&focus)) else {
@@ -5272,13 +5589,21 @@ impl FrameBuilder {
         unsafe { &**widget }.ime_requires_deferred_ack()
     }
 
+    /// The focused field takes text only through deferred receipts.
+    pub(crate) fn focused_ime_refuses_ordinary_commits(&self, focus: Option<NodeId>) -> bool {
+        let widget = focus.and_then(|focus| self.node_map.get(&focus));
+        // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
+        !self.host.overlay_owns_ime()
+            && widget.is_some_and(|widget| unsafe { &**widget }.ime_refuses_ordinary_commits())
+    }
+
     pub(crate) fn start_deferred_text(
         &mut self,
         focus: Option<NodeId>,
         document: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
     ) -> Option<ui::webview::text_input::Receipt> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return None;
         }
         let focus = focus?;
@@ -5314,7 +5639,7 @@ impl FrameBuilder {
         document: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
     ) -> Option<ui::webview::text_input::Receipt> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return None;
         }
         let focus = focus?;
@@ -5347,12 +5672,12 @@ impl FrameBuilder {
         focus: Option<NodeId>,
         document: &automerge::AutoCommit,
     ) -> Option<crate::compositor::shell_text_input::NativeEditStamp> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return Some(crate::compositor::shell_text_input::NativeEditStamp {
                 document: ui::bound_dispatch::DocumentEditStamp::for_document(document),
                 fingerprint: self
                     .host
-                    .palette_ime_edit_fingerprint(&self.ime_stamp_key)?,
+                    .overlay_ime_edit_fingerprint(&self.ime_stamp_key)?,
             });
         }
         let focus = focus?;
@@ -5639,6 +5964,11 @@ impl FrameBuilder {
         // Snapshot the focus going in to detect any new target set by the
         // host's `handle_event` — mirrors `ui::App::window_event`.
         let prior_focus = *focus;
+        let overlays_before = (
+            self.host.palette_visible(),
+            self.host.agent_quick_composer_open(),
+            self.host.person_quick_composer_open(),
+        );
         let mut focus_target: Option<NodeId> = None;
         if self.offer_terminal_typing(event, modifiers, state, root_obj, &mut focus_target) {
             if let Some(new_id) = focus_target
@@ -5685,9 +6015,25 @@ impl FrameBuilder {
             || self.host.person_quick_composer_open()
             || self.palette_focus_active
         {
-            // Opening or closing an overlay must update the external seat
-            // cursor too, not just the widget's internal focus during layout.
-            self.relayout();
+            // Visibility alone is not a layout change. Pointer motion and key
+            // releases used to rebuild admission and solve the entire desktop
+            // while search was open. Still settle structural edits, geometry,
+            // opening/closing and native focus synchronously before returning.
+            let structure_changed = self.host.take_structure_dirty();
+            if structure_changed {
+                self.rebuild_layout_tree();
+            }
+            let overlays_after = (
+                self.host.palette_visible(),
+                self.host.agent_quick_composer_open(),
+                self.host.person_quick_composer_open(),
+            );
+            let geometry_dirty = self
+                .root_node
+                .is_none_or(|node| self.taffy.dirty(node).unwrap_or(true));
+            if structure_changed || geometry_dirty || overlays_before != overlays_after {
+                self.relayout();
+            }
             self.reconcile_native_focus(focus);
         }
         // Native/DRM chrome does not run through `ui::App`, whose event loop
@@ -5777,6 +6123,7 @@ impl FrameBuilder {
             ("members", WsTab::Members),
             ("permissions", WsTab::Permissions),
             ("apps", WsTab::Apps),
+            ("emoji", WsTab::Emoji),
         ] {
             put(
                 format!("ws_settings_tab[{key}]"),
@@ -5817,8 +6164,9 @@ impl FrameBuilder {
             put(format!("member_remove[{index}]"), *remove_rect);
             put(format!("member_remove[{user}]"), *remove_rect);
         }
-        for (which, rect) in host.peer_sync_prompt_rects_for_tests() {
-            put(format!("peer_sync_{which}"), rect);
+        // The invite, join and pairing sheet's controls, by their own names.
+        for (name, rect) in host.peer_sync_prompt_rects_for_tests() {
+            put(name, rect);
         }
         // The collaborator dropdown's own controls, named so a scenario
         // clicks the button a person clicks rather than invoking the action
@@ -5869,25 +6217,6 @@ fn claims_raw_touch_walk(widget: &dyn ui::widget::Widget, point: vello::kurbo::P
             .children()
             .into_iter()
             .any(|child| claims_raw_touch_walk(child, point))
-}
-
-fn chrome_cursor_walk(
-    widget: &dyn ui::widget::Widget,
-    point: vello::kurbo::Point,
-    best: &mut Option<(f64, winit::window::CursorIcon)>,
-) {
-    let rect = widget.get_rect();
-    if rect.contains(point)
-        && let Some(icon) = widget.cursor_shape(point)
-    {
-        let area = rect.area().max(0.0);
-        if best.is_none_or(|(smallest, _)| area < smallest) {
-            *best = Some((area, icon));
-        }
-    }
-    for child in widget.children() {
-        chrome_cursor_walk(child, point, best);
-    }
 }
 
 /// Depth-first walk of the widget tree, registering each visited node:
@@ -5952,6 +6281,15 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
     }
 }
 
+/// The terminal a hosted Terminal tab shows, inside its app.
+#[cfg(any(test, feature = "hosted-test-control"))]
+fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
+    let embedded = widget
+        .as_any_mut()?
+        .downcast_mut::<ui::app::EmbeddedApp>()?;
+    terminal::mounted_terminal(embedded.component_root_mut()?)
+}
+
 #[cfg(test)]
 #[allow(
     clippy::float_cmp,
@@ -5964,13 +6302,7 @@ pub fn walk_widget<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
 mod tests {
     use super::*;
 
-    /// The terminal a hosted Terminal tab shows, inside its app.
-    fn hosted_terminal(widget: &mut dyn Widget) -> Option<&mut terminal::TerminalWidget> {
-        let embedded = widget
-            .as_any_mut()?
-            .downcast_mut::<ui::app::EmbeddedApp>()?;
-        terminal::mounted_terminal(embedded.component_root_mut()?)
-    }
+    use super::hosted_terminal;
     /// Attach a real process before rebuilding any pointers into its widget.
     /// A probe of the unopened production tab cannot prove PTY dispatch.
     fn live_hosted_terminal_probe(fb: &mut FrameBuilder) -> std::sync::mpsc::Receiver<Vec<u8>> {
@@ -6032,6 +6364,7 @@ mod tests {
                 note: String::new(),
                 missing: None,
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let mut strip = Strip::new(StripId::from(next_id()), "main");
@@ -6281,45 +6614,6 @@ mod tests {
     }
 
     #[test]
-    fn frame_pump_settles_a_launchpad_request_once() {
-        let mut frame = FrameBuilder::new((1280, 800));
-        let mut doc = AutoCommit::new();
-        doc.put(
-            &automerge::ROOT,
-            tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP,
-            true,
-        )
-        .expect("queued launcher request");
-
-        assert!(
-            frame.pump_apps(&mut doc, &automerge::ROOT),
-            "a settled action requests repaint"
-        );
-        assert!(
-            frame.host.palette_visible(),
-            "the production frame pump opens the launcher"
-        );
-        assert!(
-            matches!(
-                doc.get(&automerge::ROOT, tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP),
-                Ok(Some((automerge::Value::Scalar(value), _)))
-                    if matches!(value.as_ref(), automerge::ScalarValue::Boolean(false))
-            ),
-            "typed settlement consumes the request"
-        );
-        doc.put(&automerge::ROOT, "pending-observer-witness", "uncommitted")
-            .expect("pending fixture edit");
-        assert!(doc.pending_ops() > 0);
-        let revision = (doc.base_heads(), doc.pending_ops());
-        frame.pump_apps(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            revision,
-            (doc.base_heads(), doc.pending_ops()),
-            "the next pump does not repeat the request"
-        );
-    }
-
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -6351,12 +6645,12 @@ mod tests {
                     .iter()
                     .find(|workspace| workspace.id == source_id)
                     .expect("source workspace")
-                    .room;
+                    .room();
                 let destination_room = workspaces
                     .iter()
                     .find(|workspace| workspace.id == destination_id)
                     .expect("destination workspace")
-                    .room;
+                    .room();
                 let source_user = state.local_user_for_room(&source_room);
                 workspaces
                     .iter_mut()
@@ -6476,6 +6770,9 @@ mod tests {
             crate::shell::test_support::collaborator_renames_active_workspace(
                 &mut frame.chrome().tree_mut(),
             );
+            // A live frame: the tick reads the room, then paint.
+            let mut doc = AutoCommit::new();
+            frame.pump_apps(&mut doc, &automerge::ROOT);
             let _ = frame.paint_settled();
             assert!(
                 frame.chrome().activity_glance.unread > 0,
@@ -6677,7 +6974,8 @@ mod tests {
                 let active = tree.desktop.active;
                 // Joined through the peer's invite, which pins it (hub 1)
                 // as the room's governor.
-                tree.set_room(active, room) && tree.pin_room_authority(room, PeerOrigin::hub(1))
+                tree.stand_in_room(active, room)
+                    && tree.pin_room_authority(room, PeerOrigin::hub(1))
             };
             assert!(joined, "this session joins the peer's room");
 
@@ -7394,6 +7692,7 @@ mod tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "Notes".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: 84,
                     width: WindowWidth::Fraction(667),
@@ -7421,6 +7720,99 @@ mod tests {
             TopBarPresence::Hidden,
             "the maximized window fills the display the bar stands on"
         );
+    }
+
+    /// A window maximized by key is drawn whole in the key's own frame: the
+    /// bar steps aside and the window takes the display in that frame, so
+    /// the next one repaints nothing. Restored by key, the same.
+    #[test]
+    fn a_maximize_by_key_is_drawn_whole_in_its_own_frame() {
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
+        };
+        use tilo_desktop::chrome::TopBarPresence;
+        use winit::keyboard::{Key, ModifiersState, NamedKey};
+        fn frame(fb: &mut FrameBuilder, doc: &mut AutoCommit) -> FramePaint {
+            fb.pump_apps(doc, &automerge::ROOT);
+            fb.relayout();
+            fb.paint_with_damage()
+        }
+        let ws_id = WorkspaceId(91);
+        let strip = StripId(92);
+        let mut ws = Workspace::new(ws_id, "Typing");
+        ws.strips = vec![Strip {
+            id: strip,
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: 93,
+                tabs: vec![Tab {
+                    id: 94,
+                    title: "Notes".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Notes".into()),
+                        label: "Notes".into(),
+                    },
+                    app_title: None,
+                }],
+                active_tab: 94,
+                width: WindowWidth::Fraction(667),
+                maximized: false,
+                focus_history: Vec::new(),
+            }],
+        }];
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces = vec![ws];
+        tree.desktop.active = ws_id;
+        tree.desktop.active_strip.insert(ws_id, strip);
+        tree.desktop.active_group.insert(strip, 93);
+        let mut fb = FrameBuilder::with_tree(tree, (1600, 900));
+        let mut doc = AutoCommit::new();
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let _ = frame(&mut fb, &mut doc);
+            if !fb.needs_animation_frame() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the desktop settles: {:?}",
+                fb.animation_owners()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        let _ = frame(&mut fb, &mut doc);
+        let super_held = winit::event::Modifiers::from(ModifiersState::SUPER);
+        for (key, presence) in [
+            (NamedKey::ArrowUp, TopBarPresence::Hidden),
+            (NamedKey::ArrowDown, TopBarPresence::Docked),
+        ] {
+            let press = ui::synthetic_input::key_press(Key::Named(key), None);
+            let mut focus = None;
+            assert!(
+                fb.dispatch_event(
+                    &press,
+                    &super_held,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &mut focus,
+                ),
+                "Super+{key:?} is the desktop's"
+            );
+            let _ = frame(&mut fb, &mut doc);
+            assert_eq!(
+                fb.chrome().top_bar_presence(),
+                presence,
+                "after Super+{key:?}; maximized {:?}",
+                fb.chrome().maximized_group()
+            );
+            let next = frame(&mut fb, &mut doc);
+            assert!(
+                matches!(next.damage_regions.as_deref(), Some([])),
+                "Super+{key:?} was drawn whole in its own frame; the next repaints {:?}",
+                next.damage_regions
+            );
+        }
     }
 
     /// A window that was a tile before it went fullscreen keeps drawing over
@@ -7656,6 +8048,7 @@ mod tests {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         };
 
         let window_groups = groups
@@ -7675,13 +8068,14 @@ mod tests {
             })
             .collect();
 
-        let ws = Workspace {
-            strips: vec![Strip {
+        let ws = {
+            let mut workspace = Workspace::new(ws_id, "Test");
+            workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Main".into(),
                 window_groups,
-            }],
-            ..Workspace::new(ws_id, "Test")
+            }];
+            workspace
         };
 
         let mut active_strip = HashMap::new();
@@ -8016,11 +8410,17 @@ mod tests {
             let on_primary = covered == groups[0];
             let label = if on_primary { "primary" } else { "second" };
             let before = rect_of(&mut fb, kept);
-            let before_below = rect_of(&mut fb, kept_below);
+            // Each strip is a full-height screen, one shown at a time: the
+            // strip below keeps its window laid out on the other display,
+            // where the strip deck has it off screen.
             assert!(before.width() > 1.0, "{label}: the kept window is shown");
             assert!(
-                before_below.width() > 1.0,
-                "{label}: the other strip's window is shown"
+                rect_of(&mut fb, kept_below).width() > 1.0,
+                "{label}: the other strip's window is laid out"
+            );
+            assert!(
+                fb.host().strip_row_rect(below).is_none(),
+                "{label}: the strip deck has the other strip off screen"
             );
             fb.with_chrome(|chrome| chrome.set_user_fullscreen_group(Some(covered)));
             fb.set_fullscreen(None);
@@ -8038,10 +8438,10 @@ mod tests {
                 before,
                 "{label}: the other display keeps its window where it was"
             );
-            assert_eq!(
-                rect_of(&mut fb, kept_below),
-                before_below,
-                "{label}: the other strip keeps its window on the other display"
+            assert!(
+                rect_of(&mut fb, kept_below).width() > 1.0
+                    && fb.host().strip_row_rect(below).is_none(),
+                "{label}: the other strip keeps its window on the other display, off screen"
             );
             assert!(
                 rect_of(&mut fb, hidden_below).width() <= 0.5,
@@ -8643,7 +9043,7 @@ mod tests {
             assert!(
                 names
                     .iter()
-                    .any(|name| name.contains("without an encrypted backup")),
+                    .any(|name| name.contains("without a recovery key or backup")),
                 "skip acknowledgement must be keyboard reachable: {names:?}"
             );
 
@@ -8652,7 +9052,7 @@ mod tests {
                 .into_iter()
                 .find(|id| {
                     focused_name(&fb, Some(*id))
-                        .is_some_and(|name| name.contains("without an encrypted backup"))
+                        .is_some_and(|name| name.contains("without a recovery key or backup"))
                 })
                 .expect("acknowledgement focus target");
             fb.set_native_focus(&mut focus, Some(acknowledgement));
@@ -8857,9 +9257,7 @@ mod tests {
                     &mut focus
                 ));
                 assert_eq!(
-                    probes[index]
-                        .recv_timeout(std::time::Duration::from_secs(2))
-                        .unwrap(),
+                    tilo_test_env::recv("the probe's keys", &probes[index]),
                     vec![expected]
                 );
                 assert!(
@@ -9503,7 +9901,7 @@ mod tests {
             let store = crate::shell::foreign::store();
             store.forget(SURFACE);
             let mut tree = WorkspaceTree::bootstrap_default();
-            let room = tree.desktop.workspaces[0].room;
+            let room = tree.desktop.workspaces[0].room();
             let tab = tab_binding::place_tab(
                 &mut tree,
                 Tab {
@@ -9516,6 +9914,7 @@ mod tests {
                         // a real process from this frame-builder regression.
                         note: crate::shell::peer_windows::OPENING.into(),
                     },
+                    app_title: None,
                 },
                 Placement::NewGroup,
             );
@@ -9548,13 +9947,13 @@ mod tests {
                 .take_pending_configure(SURFACE)
                 .expect("layout must make the initial client configure available without input");
             assert!(
-                fb.needs_animation_frame(),
+                fb.needs_animation_frame() || fb.next_wake_deadline().is_some(),
                 "the opening window must keep progressing"
             );
             assert!(!store.is_presented(SURFACE));
             assert!(
-                fb.any_tile_opening(),
-                "the visible notice must become an opening card, not an unresponsive-app error"
+                fb.any_tile_arriving(),
+                "the visible notice must become the window's arrival, not an unresponsive-app error"
             );
             let _ = fb.paint();
 
@@ -9759,7 +10158,7 @@ mod tests {
             store.forget(SURFACE);
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_default();
-            let room = tree.desktop.workspaces[0].room;
+            let room = tree.desktop.workspaces[0].room();
             crate::shell::launcher::set_pending_placement(APP, Placement::NewGroup);
             assert!(
                 tab_binding::adopt_toplevel_in_room(&mut tree, SURFACE, Some(APP.into()), room)
@@ -9818,241 +10217,6 @@ mod tests {
         super_f_on_a_tilo_group_covers_the_output();
         an_expanded_window_keeps_the_top_bar();
         super_f_foreign_window_covers_its_output_in_a_partitioned_desktop();
-    }
-
-    fn both_directions_carry_the_desktop() {
-        let mut fb = FrameBuilder::new((3200, 1080));
-        let _ = fb.paint_settled();
-        for step in [1, -1] {
-            let mut switched = false;
-            fb.with_chrome(|st| {
-                switched = st.switch_workspace(step);
-            });
-            assert!(switched, "the demo tree switches by {step}");
-            fb.host_mut()
-                .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
-            for _ in 0..2 {
-                let frame = fb.paint_with_damage();
-                assert!(
-                    !frame.scene.encoding().is_empty(),
-                    "switching by {step} draws the workspace, not an empty clip"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn overview_and_workspace_switch_request_a_run_of_frames() {
-        fn overview_toggle_requests_frames_before_draw() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            fb.with_chrome(|st| {
-                st.overlays.overview = true;
-                st.bump();
-            });
-            // Latch on the host before update, as Super+Tab does.
-            fb.host_mut().latch_overview_transition();
-            assert!(
-                fb.animation_owners()
-                    .iter()
-                    .any(|owner| owner == "root-transition"),
-                "overview must request frames on the chord, not only after draw; owners {:?}",
-                fb.animation_owners()
-            );
-            let mut doc = AutoCommit::new();
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            assert!(
-                fb.animation_owners()
-                    .iter()
-                    .any(|owner| owner == "root-transition"),
-                "overview must request frames on the update that sees the toggle, not only after draw; owners {:?}",
-                fb.animation_owners()
-            );
-        }
-
-        fn workspace_switch_requests_frames_before_draw() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            let mut switched = false;
-            fb.with_chrome(|st| {
-                switched = st.switch_workspace(1);
-            });
-            assert!(switched, "the demo tree has a second workspace");
-            // Latch on the host before update, as Super+PageDown does.
-            fb.host_mut()
-                .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
-            assert!(
-                fb.animation_owners()
-                    .iter()
-                    .any(|owner| owner == "workspace-switch"),
-                "a workspace switch must request frames on the chord, not only after draw; owners {:?}",
-                fb.animation_owners()
-            );
-            let mut doc = AutoCommit::new();
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            assert!(
-                fb.animation_owners()
-                    .iter()
-                    .any(|owner| owner == "workspace-switch"),
-                "a workspace switch must keep requesting a run of frames; owners {:?}",
-                fb.animation_owners()
-            );
-        }
-
-        fn compositor_paint_run_is_not_host_demand() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            fb.with_chrome(|st| st.request_transition_paints(8));
-            assert_eq!(fb.chrome().transition_paints_remaining(), 8);
-            assert!(
-                !fb.needs_animation_frame(),
-                "the compositor paint run must not keep the host asking after the crossfade; owners {:?}",
-                fb.animation_owners()
-            );
-        }
-
-        fn latch_asks_the_compositor_for_eight_paints() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            fb.with_chrome(|st| {
-                st.overlays.overview = true;
-                st.bump();
-            });
-            fb.host_mut().latch_overview_transition();
-            assert_eq!(
-                fb.chrome().transition_paints_remaining(),
-                8,
-                "overview must keep the compositor painting until eight frames have run"
-            );
-        }
-
-        overview_toggle_requests_frames_before_draw();
-        workspace_switch_requests_frames_before_draw();
-        compositor_paint_run_is_not_host_demand();
-        latch_asks_the_compositor_for_eight_paints();
-        both_directions_carry_the_desktop();
-    }
-
-    #[test]
-    fn overview_fade_damages_only_its_display_on_two_heads() {
-        use crate::shell::output_scene::OutputGeometry;
-
-        /// Every frame of a fade carries the desktop and a sparse proof, and
-        /// after the chord's own frame repaints only the first display.
-        fn fade(fb: &mut FrameBuilder, open: bool) {
-            let direction = if open { "open" } else { "close" };
-            fb.with_chrome(|st| {
-                st.overlays.overview = open;
-                st.bump();
-            });
-            fb.host_mut().latch_overview_transition();
-            let mut repainted = false;
-            for index in 0..8 {
-                // The fade samples the wall clock in whole milliseconds.
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                let frame = fb.paint_with_damage();
-                assert!(
-                    !frame.scene.encoding().is_empty(),
-                    "{direction} frame {index} draws the desktop, not an empty clip"
-                );
-                if index == 0 {
-                    // The chord may change chrome beyond the overview (the
-                    // top bar's button) once.
-                    continue;
-                }
-                let damage = frame.damage_regions.unwrap_or_else(|| {
-                    panic!("{direction} frame {index} is sparse, not both displays")
-                });
-                for rect in &damage {
-                    let right = rect.x.saturating_add(rect.width);
-                    assert!(
-                        right <= 1920,
-                        "{direction} frame {index} stays on the first display ({rect:?})"
-                    );
-                }
-                repainted |= !damage.is_empty();
-            }
-            assert!(repainted, "the {direction} fade repaints its display");
-        }
-
-        let mut fb = FrameBuilder::new((3200, 1080));
-        fb.set_output_geometry(vec![
-            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
-            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
-        ]);
-        let _ = fb.paint_settled();
-        let _ = fb.paint_with_damage();
-        fade(&mut fb, true);
-        fade(&mut fb, false);
-    }
-
-    #[test]
-    fn single_head_transition_frames_carry_the_desktop() {
-        let mut fb = FrameBuilder::new((1600, 900));
-        let _ = fb.paint_settled();
-        let _ = fb.paint_with_damage();
-        fb.with_chrome(|st| {
-            st.overlays.overview = true;
-            st.bump();
-        });
-        fb.host_mut().latch_overview_transition();
-        for index in 0..8 {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            let frame = fb.paint_with_damage();
-            assert!(
-                !frame.scene.encoding().is_empty(),
-                "overview frame {index} on one display draws the desktop"
-            );
-        }
-        let mut switched = false;
-        fb.with_chrome(|st| {
-            switched = st.switch_workspace(1);
-        });
-        assert!(switched, "the demo tree has a second workspace");
-        fb.host_mut()
-            .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
-        for index in 0..8 {
-            let frame = fb.paint_with_damage();
-            assert!(
-                !frame.scene.encoding().is_empty(),
-                "switch frame {index} on one display draws the desktop"
-            );
-        }
-    }
-
-    #[test]
-    fn workspace_switch_frames_carry_the_desktop_and_settle_sparse() {
-        use crate::shell::output_scene::OutputGeometry;
-
-        let mut fb = FrameBuilder::new((3200, 1080));
-        fb.set_output_geometry(vec![
-            OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
-            OutputGeometry::unscaled(1920.0, 0.0, 1280.0, 800.0).with_id(1),
-        ]);
-        let _ = fb.paint_settled();
-        let _ = fb.paint_with_damage();
-        for step in [1, -1] {
-            let mut switched = false;
-            fb.with_chrome(|st| {
-                switched = st.switch_workspace(step);
-            });
-            assert!(switched, "the demo tree switches by {step}");
-            fb.host_mut()
-                .start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
-            for index in 0..8 {
-                let frame = fb.paint_with_damage();
-                assert!(
-                    !frame.scene.encoding().is_empty(),
-                    "switch {step} frame {index} draws the workspace it shows"
-                );
-                if index > 0 {
-                    assert!(
-                        frame.damage_regions.is_some(),
-                        "switch {step} frame {index} repaints only what changed, not both displays"
-                    );
-                }
-            }
-        }
     }
 
     #[test]
@@ -10260,7 +10424,7 @@ mod tests {
                 let tree = chrome.tree();
                 tree.desktop
                     .active_workspace()
-                    .map(|workspace| chrome.local_user_for_room(&workspace.room))
+                    .map(|workspace| chrome.local_user_for_room(&workspace.room()))
             };
             if let Some(user) = user {
                 let mut tree = chrome.tree_mut();
@@ -10374,6 +10538,170 @@ mod tests {
         );
     }
 
+    /// The desktop rasterised on the CPU at `size`, as the next frame shows it.
+    fn rendered_frame(frame: &mut FrameBuilder, (width, height): (u32, u32)) -> Vec<u8> {
+        let scene = frame.paint();
+        let stride = usize::try_from(width)
+            .ok()
+            .and_then(|width| width.checked_mul(4))
+            .expect("a row's bytes fit");
+        let len = usize::try_from(height)
+            .ok()
+            .and_then(|height| height.checked_mul(stride))
+            .expect("a frame's bytes fit");
+        let mut pixels = vec![0u8; len];
+        let mut target = tilo_cpu_raster::Target::new(&mut pixels, width, height, stride)
+            .expect("a raster target");
+        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            None,
+            frame.theme.tokens.colors.surfaces.base,
+        );
+        pixels
+    }
+
+    /// The share of pixels that differ between two frames.
+    fn changed_share(before: &[u8], after: &[u8]) -> f64 {
+        let changed = before
+            .chunks_exact(4)
+            .zip(after.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        let pixels = before.chunks_exact(4).len();
+        let count = |n: usize| f64::from(u32::try_from(n).expect("a test frame's pixels fit u32"));
+        count(changed) / count(pixels)
+    }
+
+    /// A desktop following an isolated settings file, and a way to change
+    /// its `appearance` section as Settings does: the write, then the
+    /// compositor's notice of it.
+    fn following_appearance() -> (tempfile::TempDir, tilo_test_env::ScopedEnv, FrameBuilder) {
+        let config = tempfile::tempdir().expect("isolated settings store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        env.remove("TILO_SESSION_SETTINGS");
+        env.remove("TILO_SHOTS_THEME");
+        env.remove("TILO_SHOTS_TEXT_SCALE");
+        for name in [
+            "TILO_A11Y_TEXT_SCALE",
+            "TILO_TEXT_SCALE",
+            "TILO_UI_SCALE",
+            "TILO_A11Y_UI_SCALE",
+        ] {
+            env.remove(name);
+        }
+        let mut frame = FrameBuilder::new((1280, 800));
+        frame.enable_configured_theme();
+        (config, env, frame)
+    }
+
+    fn set_appearance(frame: &mut FrameBuilder, values: serde_json::Value) {
+        let serde_json::Value::Object(values) = values else {
+            unreachable!("an appearance section is an object")
+        };
+        settings_store::update_section("appearance", values).expect("write appearance");
+        frame.with_chrome(ChromeState::note_appearance_change);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn toggling_high_contrast_recolours_the_desktop_on_the_next_frame() {
+        let (_config, _env, mut frame) = following_appearance();
+        set_appearance(
+            &mut frame,
+            serde_json::json!({"mode": "dark", "high_contrast": false}),
+        );
+        let before = rendered_frame(&mut frame, (1280, 800));
+        set_appearance(&mut frame, serde_json::json!({"high_contrast": true}));
+        let contrast = rendered_frame(&mut frame, (1280, 800));
+        assert!(
+            frame.theme.document.palette.high_contrast,
+            "the chrome's theme is the high-contrast one"
+        );
+        let share = changed_share(&before, &contrast);
+        assert!(
+            share > 0.01,
+            "high contrast changes what the desktop shows on the next frame ({:.2}% of pixels)",
+            share * 100.0
+        );
+        set_appearance(&mut frame, serde_json::json!({"high_contrast": false}));
+        let after = rendered_frame(&mut frame, (1280, 800));
+        assert!(!frame.theme.document.palette.high_contrast);
+        assert!(
+            changed_share(&contrast, &after) > 0.01,
+            "turning it off changes the next frame back"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_text_size_change_relays_the_desktop_out_on_the_next_frame() {
+        let (_config, _env, mut frame) = following_appearance();
+        set_appearance(
+            &mut frame,
+            serde_json::json!({"mode": "dark", "text_scale": 1.0}),
+        );
+        let before_pixels = rendered_frame(&mut frame, (1280, 800));
+        let before = frame.widget_registry();
+        assert!((frame.theme.text_scale - 1.0).abs() < f32::EPSILON);
+
+        set_appearance(&mut frame, serde_json::json!({"text_scale": 1.3}));
+        let after_pixels = rendered_frame(&mut frame, (1280, 800));
+        assert!(
+            (frame.theme.text_scale - 1.3).abs() < 1e-3,
+            "the chrome's theme takes the person's text size, not the launcher's"
+        );
+        assert!(
+            (frame.text_renderer.text_scale() - 1.3).abs() < 1e-3,
+            "the chrome's text is measured and drawn at that size"
+        );
+        assert_ne!(
+            before,
+            frame.widget_registry(),
+            "the chrome is laid out again"
+        );
+        assert!(changed_share(&before_pixels, &after_pixels) > 0.0);
+
+        set_appearance(&mut frame, serde_json::json!({"ui_scale": 1.25}));
+        let _ = frame.paint();
+        assert!(
+            (frame.theme.ui_scale - 1.25).abs() < 1e-3,
+            "the interface scale reaches the chrome too"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_theme_preset_change_recolours_the_desktop_on_the_next_frame() {
+        let (_config, _env, mut frame) = following_appearance();
+        set_appearance(
+            &mut frame,
+            serde_json::json!({"mode": "dark", "dark_theme": "dark"}),
+        );
+        let before = rendered_frame(&mut frame, (1280, 800));
+        set_appearance(&mut frame, serde_json::json!({"mode": "light"}));
+        let light = rendered_frame(&mut frame, (1280, 800));
+        assert_eq!(frame.theme.name, Theme::light().name);
+        assert!(
+            changed_share(&before, &light) > 0.01,
+            "light shows on the next frame"
+        );
+        set_appearance(
+            &mut frame,
+            serde_json::json!({"mode": "dark", "dark_theme": "dark-cool"}),
+        );
+        let cool = rendered_frame(&mut frame, (1280, 800));
+        assert_eq!(
+            frame.theme.name,
+            Theme::named("dark-cool").expect("a preset").name
+        );
+        assert!(
+            changed_share(&light, &cool) > 0.01,
+            "the preset shows on the next frame"
+        );
+    }
+
     #[test]
     #[serial_test::serial(process_env)]
     fn workspace_temperature_is_read_from_the_followed_settings_not_the_file() {
@@ -10432,9 +10760,32 @@ mod tests {
     }
 }
 
+#[path = "frame_scene_revision.rs"]
+mod scene_revision;
+
+#[cfg(test)]
+#[path = "frame_overlay_latency_tests.rs"]
+mod overlay_latency_tests;
+
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]
 mod retained_tests;
+
+#[cfg(test)]
+#[path = "frame_window_bar_keyboard_tests.rs"]
+mod window_bar_keyboard_tests;
+
+#[cfg(test)]
+#[path = "frame_quiet_pump_tests.rs"]
+mod quiet_pump_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+#[path = "frame_transition_tests.rs"]
+mod transition_tests;
 
 /// `regions` without any region another one contains (the first of two
 /// equal ones stays): the same pixels, rasterised once. A changed card's
@@ -10535,8 +10886,12 @@ struct ScenePhases {
 }
 
 impl ScenePhases {
-    /// A scene build slower than this is reported.
-    const REPORT_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
+    /// A scene build slower than this is reported: one frame at 60 Hz, past
+    /// which the build alone misses the frame.
+    const REPORT_AFTER: std::time::Duration = std::time::Duration::from_millis(16);
+    /// At most one report this often, so a machine slow at every frame
+    /// still logs a sample of them rather than every one.
+    const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
     fn start() -> Self {
         let now = std::time::Instant::now();
@@ -10549,18 +10904,33 @@ impl ScenePhases {
 
     fn mark(&mut self, phase: &'static str) {
         let now = std::time::Instant::now();
-        self.spans.push((phase, now.duration_since(self.last)));
+        let took = now.duration_since(self.last);
+        crate::compositor::metrics::profile::record_phase(phase, took, None);
+        self.spans.push((phase, took));
         self.last = now;
     }
 
     fn report(&self) {
+        thread_local! {
+            static LAST_REPORT: std::cell::Cell<Option<std::time::Instant>> =
+                const { std::cell::Cell::new(None) };
+        }
+        let sections = crate::shell::overlay_host::take_section_spans();
         let total = self.started.elapsed();
-        if total < Self::REPORT_AFTER {
+        if total < Self::REPORT_AFTER
+            || LAST_REPORT
+                .with(std::cell::Cell::get)
+                .is_some_and(|last| last.elapsed() < Self::REPORT_EVERY)
+        {
             return;
         }
+        LAST_REPORT.with(|last| last.set(Some(std::time::Instant::now())));
+        // The section draws are inside `scene/draw-sections`; named apart,
+        // the line says which part of the desktop the time went to.
         let split = self
             .spans
             .iter()
+            .chain(sections.iter())
             .map(|(phase, took)| format!("{phase}={took:?}"))
             .collect::<Vec<_>>()
             .join(" ");

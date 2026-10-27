@@ -12,6 +12,7 @@ fn tab(id: u64) -> Tab {
             label: "Notes".into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 
@@ -186,4 +187,98 @@ fn canonical_keeps_only_what_the_record_keeps() {
     let group = &canonical.tree.workspaces[0].strips[0].window_groups[0];
     assert_eq!(group.width, WindowWidth::Normal);
     assert!(!group.maximized);
+}
+
+/// A page's fresh desktop for a room it has not received yet: one workspace
+/// named after the room and one empty "Main" strip, under the page's own ids.
+fn fresh(workspace: u64, strip: u64, name: &str) -> SharedDesktop {
+    let mut fresh = Workspace::new(WorkspaceId(workspace), name);
+    fresh.strips.push(Strip::new(StripId(strip), "Main"));
+    SharedDesktop {
+        tree: DesktopTree {
+            active: fresh.id,
+            workspaces: vec![fresh],
+            ..DesktopTree::default()
+        },
+        ..SharedDesktop::default()
+    }
+}
+
+fn group_of(id: u64, tab_id: u64) -> WindowGroup {
+    WindowGroup {
+        id,
+        tabs: vec![tab(tab_id)],
+        active_tab: tab_id,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    }
+}
+
+#[test]
+fn desktops_written_before_the_room_was_received_fold_into_its_workspace() {
+    // The room's desktop: a window, and a second strip.
+    let mut room = AutoCommit::new();
+    let mut first = fresh(1, 10, "Lounge");
+    first.tree.workspaces[0].strips[0]
+        .window_groups
+        .push(group_of(100, 1));
+    first.tree.workspaces[0]
+        .strips
+        .push(Strip::new(StripId(11), "Design"));
+    write(&mut room, &first).unwrap();
+    room.commit();
+    // Pages that published a fresh desktop of their own before the room's
+    // reached them, each from a document of its own: every one adds its
+    // own `workspaces` map, concurrent with the room's. One of them also
+    // opened a window and made a workspace of another name.
+    for page in 2..12_u8 {
+        let mut blind = AutoCommit::new().with_actor(automerge::ActorId::from(vec![page; 16]));
+        let id = u64::from(page);
+        let mut written = fresh(id, id * 10, "Lounge");
+        if page == 5 {
+            written.tree.workspaces[0].strips[0]
+                .window_groups
+                .push(group_of(500, 5));
+            let mut side = Workspace::new(WorkspaceId(55), "Side");
+            side.strips.push(Strip::new(StripId(550), "Main"));
+            written.tree.workspaces.push(side);
+        }
+        write(&mut blind, &written).unwrap();
+        blind.commit();
+        merge(&mut room, &mut blind);
+    }
+    let desktop = read(&room, None).unwrap();
+    let names: Vec<&str> = desktop
+        .tree
+        .workspaces
+        .iter()
+        .map(|w| w.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["Lounge", "Side"]);
+    let lounge = &desktop.tree.workspaces[0];
+    let strips: Vec<&str> = lounge.strips.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        strips.iter().filter(|name| **name == "Main").count(),
+        1,
+        "{strips:?}"
+    );
+    assert!(strips.contains(&"Design"), "{strips:?}");
+    let mut tabs: Vec<u64> = lounge
+        .strips
+        .iter()
+        .flat_map(|s| &s.window_groups)
+        .flat_map(|g| g.tabs.iter().map(|t| t.id))
+        .collect();
+    tabs.compact_sort();
+    assert_eq!(tabs, vec![1, 5], "no window anyone opened is lost");
+
+    // Writing back what was read leaves the record holding only that.
+    write(&mut room, &desktop).unwrap();
+    room.commit();
+    let after = held(&room);
+    assert_eq!(after.workspaces.len(), 2);
+    assert_eq!(after.strips.len(), 3, "Main and Design, and Side's Main");
+    let again = read(&room, None).unwrap();
+    assert!(!write(&mut room, &again).unwrap());
 }

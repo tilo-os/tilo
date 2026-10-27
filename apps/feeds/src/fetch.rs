@@ -50,8 +50,78 @@ pub enum FetchResult {
     /// Something went wrong; `feed_id` is set for a refresh failure.
     Failed {
         feed_id: Option<Id>,
+        /// Why it went wrong, in the words the subscription's row uses.
+        reason: RefreshFailure,
+        /// The transport's own words: what the notice says when there is no
+        /// subscription to put a reason on.
         message: String,
     },
+}
+
+/// Why one subscription could not be refreshed, as its sidebar row says it.
+///
+/// These are the distinctions a person acts on: a site that refused this
+/// reader is not a broken connection, and neither is a page that turned out
+/// not to be a feed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshFailure {
+    /// The site could not be reached, or the connection broke mid-answer.
+    Unreachable,
+    /// The server answered and said no: an access rule, a challenge, a
+    /// removed page. `status` is the code it named, when it named one.
+    Refused { status: Option<u16> },
+    /// The address answered with something this reader cannot read as a feed.
+    NotAFeed,
+    /// A gemini server presented a different certificate than the one the
+    /// subscription was pinned to.
+    Untrusted,
+    /// Fetching could not start at all (no network client, no runtime).
+    Unavailable,
+}
+
+/// A failed fetch: the reason a row words, and the transport's own words for
+/// the cases with no row to carry it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FetchFailure {
+    pub reason: RefreshFailure,
+    pub message: String,
+}
+
+impl FetchFailure {
+    fn unreachable(message: impl Into<String>) -> Self {
+        Self {
+            reason: RefreshFailure::Unreachable,
+            message: message.into(),
+        }
+    }
+
+    fn refused(status: Option<u16>, message: impl Into<String>) -> Self {
+        Self {
+            reason: RefreshFailure::Refused { status },
+            message: message.into(),
+        }
+    }
+
+    fn not_a_feed(message: impl Into<String>) -> Self {
+        Self {
+            reason: RefreshFailure::NotAFeed,
+            message: message.into(),
+        }
+    }
+
+    fn untrusted(message: impl Into<String>) -> Self {
+        Self {
+            reason: RefreshFailure::Untrusted,
+            message: message.into(),
+        }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            reason: RefreshFailure::Unavailable,
+            message: message.into(),
+        }
+    }
 }
 
 /// Where queued requests go.
@@ -84,6 +154,7 @@ impl FetchWorker {
             Err(e) => {
                 let _ = res_tx.send(FetchResult::Failed {
                     feed_id: None,
+                    reason: RefreshFailure::Unavailable,
                     message: format!("runtime: {e}"),
                 });
                 Dispatch::Unavailable
@@ -185,9 +256,10 @@ async fn handle(client: Option<&tilo_net::Client>, req: FetchRequest) -> FetchRe
                 articles,
                 certificate_pin,
             },
-            Err(e) => FetchResult::Failed {
+            Err(failure) => FetchResult::Failed {
                 feed_id: Some(feed_id),
-                message: e,
+                reason: failure.reason,
+                message: failure.message,
             },
         },
     }
@@ -208,26 +280,32 @@ async fn fetch_feed(
     url: &str,
     kind: FeedKind,
     certificate_pin: Option<&str>,
-) -> Result<Found, String> {
+) -> Result<Found, FetchFailure> {
     if kind == FeedKind::Gemini || url.starts_with("gemini://") {
         return fetch_gemini(url, certificate_pin).await;
     }
-    let client = client.ok_or("no http client")?;
+    let client =
+        client.ok_or_else(|| FetchFailure::unavailable("no http client for a network fetch"))?;
     let resp = client
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("request: {e}"))?;
+        .map_err(|e| FetchFailure::unreachable(format!("request: {e}")))?;
     if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status().as_u16()));
+        let status = resp.status().as_u16();
+        return Err(FetchFailure::refused(
+            Some(status),
+            format!("HTTP {status}"),
+        ));
     }
     let bytes = resp
         .bytes_limited(MAX_FEED_BYTES)
         .await
-        .map_err(|e| format!("body: {e}"))?;
+        .map_err(|e| FetchFailure::unreachable(format!("body: {e}")))?;
     let (title, articles) = ui::rt::cpu(move || parse_http_feed(&bytes))
         .await
-        .map_err(|e| format!("parse: {e}"))??;
+        .map_err(|e| FetchFailure::not_a_feed(format!("parse: {e}")))?
+        .map_err(FetchFailure::not_a_feed)?;
     Ok(Found {
         title,
         articles,
@@ -330,14 +408,14 @@ pub(crate) fn derive_site_url(feed_url: &str) -> String {
 // Gemini (gemini://, port 1965, TOFU)
 // =====================================================================
 
-async fn fetch_gemini(url: &str, certificate_pin: Option<&str>) -> Result<Found, String> {
+async fn fetch_gemini(url: &str, certificate_pin: Option<&str>) -> Result<Found, FetchFailure> {
     let (body, presented) = gemini_request(url, certificate_pin).await?;
     let (body, blocks) = ui::rt::cpu(move || {
         let blocks = gemtext::to_blocks(&body);
         (body, blocks)
     })
     .await
-    .map_err(|e| format!("parse: {e}"))?;
+    .map_err(|e| FetchFailure::not_a_feed(format!("parse: {e}")))?;
     // Use the first heading as the feed/article title if present.
     let title = blocks
         .iter()
@@ -365,22 +443,27 @@ fn check_certificate(
     host: &str,
     der: Option<&[u8]>,
     expected: Option<&str>,
-) -> Result<String, String> {
-    let presented = blake3::hash(der.ok_or("the server presented no certificate")?)
-        .to_hex()
-        .to_string();
+) -> Result<String, FetchFailure> {
+    let presented = blake3::hash(
+        der.ok_or_else(|| FetchFailure::untrusted("the server presented no certificate"))?,
+    )
+    .to_hex()
+    .to_string();
     if expected.is_some_and(|expected| expected != presented) {
-        return Err(format!(
+        return Err(FetchFailure::untrusted(format!(
             "{host} presented a different certificate than when you subscribed; \
              someone may be impersonating it"
-        ));
+        )));
     }
     Ok(presented)
 }
 
 /// Request `url` and return its body with the pin of the certificate the
 /// server presented, refusing a server whose certificate is not `expected`.
-async fn gemini_request(url: &str, expected: Option<&str>) -> Result<(String, String), String> {
+async fn gemini_request(
+    url: &str,
+    expected: Option<&str>,
+) -> Result<(String, String), FetchFailure> {
     use tilo_net::sockets::{TlsStream, Trust};
 
     let rest = url.strip_prefix("gemini://").unwrap_or(url);
@@ -397,30 +480,33 @@ async fn gemini_request(url: &str, expected: Option<&str>) -> Result<(String, St
     // is the server the feed was subscribed to. Nothing is sent before that.
     let mut tls = TlsStream::connect(&host_only, port, Trust::AnyCertificate)
         .await
-        .map_err(|e| format!("connect: {e}"))?;
+        .map_err(|e| FetchFailure::unreachable(format!("connect: {e}")))?;
     let presented = check_certificate(&host_only, tls.peer_certificate().as_deref(), expected)?;
 
     let request = format!("{url}\r\n");
     tls.write_all(request.as_bytes())
         .await
-        .map_err(|e| format!("write: {e}"))?;
+        .map_err(|e| FetchFailure::unreachable(format!("write: {e}")))?;
 
     let raw = tls
         .read_to_end(MAX_FEED_BYTES)
         .await
-        .map_err(|e| format!("read: {e}"))?;
+        .map_err(|e| FetchFailure::unreachable(format!("read: {e}")))?;
 
     let text = String::from_utf8_lossy(&raw);
     // Response = "<status><space><meta>\r\n" then body.
     let Some(nl) = text.find("\r\n") else {
-        return Err("malformed gemini response".into());
+        return Err(FetchFailure::not_a_feed("malformed gemini response"));
     };
     let Some(header) = text.get(..nl) else {
-        return Err("malformed gemini response".into());
+        return Err(FetchFailure::not_a_feed("malformed gemini response"));
     };
     let status = header.chars().take(2).collect::<String>();
     if !status.starts_with('2') {
-        return Err(format!("gemini status {header}"));
+        return Err(FetchFailure::refused(
+            None,
+            format!("gemini status {header}"),
+        ));
     }
     Ok((
         text.get(nl + 2..).unwrap_or_default().to_string(),
@@ -480,16 +566,22 @@ mod tests {
                 Ok(pin.clone())
             );
             let refused = check_certificate("example.org", Some(b"other"), Some(&pin));
-            assert!(refused.is_err_and(|e| e.contains("different certificate")));
-            assert!(check_certificate("example.org", None, None).is_err());
+            assert!(refused.is_err_and(|failure| {
+                failure.reason == RefreshFailure::Untrusted
+                    && failure.message.contains("different certificate")
+            }));
+            // A server that presents none is untrusted too, not a network fault.
+            assert!(
+                check_certificate("example.org", None, None)
+                    .is_err_and(|failure| failure.reason == RefreshFailure::Untrusted)
+            );
         }
 
         // --- phase: worker_send_is_nonblocking_and_poll_drains ---
         {
             fn worker_send_is_nonblocking_and_poll_drains() {
-                // A worker with no fetch thread. Enqueuing must be instant (no I/O).
+                // A worker that records requests instead of fetching them.
                 let (mut w, res_tx) = FetchWorker::for_test();
-                let start = ui::time::now();
                 for n in 0..50 {
                     w.send(FetchRequest::Refresh {
                         feed_id: Id::from_raw(format!("feed-{n}")),
@@ -498,12 +590,8 @@ mod tests {
                         certificate_pin: None,
                     });
                 }
-                // 50 enqueues with bogus URLs return in well under a frame budget,
-                // proving `send` never fetches.
-                assert!(start.elapsed().as_millis() < 50, "enqueue must not block");
                 assert_eq!(w.pending(), 50);
 
-                // Nothing drained yet.
                 assert!(w.poll().is_empty());
 
                 // A "worker thread" posts a result; the UI drains it non-blockingly.

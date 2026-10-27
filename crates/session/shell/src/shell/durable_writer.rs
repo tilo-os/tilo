@@ -73,7 +73,6 @@ impl Queue {
 
 struct Shared {
     queue: Mutex<Queue>,
-    /// Signalled when a write is queued.
     work: Condvar,
     /// Signalled when a write finishes.
     done: Condvar,
@@ -131,14 +130,20 @@ impl DurableWriter {
         queue.submitted = queue.submitted.saturating_add(1);
         let ticket = queue.submitted;
         let job: Job = Box::new(job);
-        match queue.queued.entry(WriteKey::Snapshot(key)) {
-            std::collections::hash_map::Entry::Occupied(mut queued) => queued.get_mut().job = job,
+        let replaced = match queue.queued.entry(WriteKey::Snapshot(key)) {
+            std::collections::hash_map::Entry::Occupied(mut queued) => {
+                Some(std::mem::replace(&mut queued.get_mut().job, job))
+            }
             std::collections::hash_map::Entry::Vacant(slot) => {
                 slot.insert(Queued { ticket, job });
+                None
             }
-        }
+        };
         drop(queue);
         self.shared.work.notify_one();
+        // Dropped with the queue let go: what the replaced write owned may
+        // queue a write of its own as it goes.
+        drop(replaced);
     }
 
     /// Queue a command whose completion must not be replaced by a later
@@ -293,6 +298,33 @@ mod tests {
         assert!(writer.progress() > before);
     }
 
+    /// A write replaced before it ran is dropped, and what it owned may
+    /// queue a write of its own as it goes (a policy export does).
+    #[test]
+    fn a_replaced_write_may_queue_another_as_it_is_dropped() {
+        struct QueuesOnDrop(Arc<DurableWriter>, Arc<Mutex<Vec<&'static str>>>);
+        impl Drop for QueuesOnDrop {
+            fn drop(&mut self) {
+                let written = self.1.clone();
+                self.0.submit(PathBuf::from("follow-up"), move || {
+                    written.lock().push("follow-up");
+                });
+            }
+        }
+        let (writer, release) = blocked_writer();
+        let writer = Arc::new(writer);
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let owned = QueuesOnDrop(writer.clone(), written.clone());
+        writer.submit(PathBuf::from("state.json"), move || drop(owned));
+        let newest = written.clone();
+        writer.submit(PathBuf::from("state.json"), move || {
+            newest.lock().push("newest");
+        });
+        release.send(()).expect("release");
+        writer.flush();
+        assert_eq!(*written.lock(), vec!["newest", "follow-up"]);
+    }
+
     #[test]
     fn durable_writer_ordered_commands_are_bounded_and_never_coalesced() {
         let (writer, release) = blocked_writer();
@@ -321,7 +353,6 @@ mod tests {
 
     #[test]
     fn durable_writer_coalesces_orders_and_flushes() {
-        // Phase `writes_queued_behind_a_running_one_collapse_to_the_latest`.
         {
             let (writer, release) = blocked_writer();
             let written = Arc::new(Mutex::new(Vec::new()));
@@ -339,7 +370,6 @@ mod tests {
                 "twenty saves queued behind one write are one write of the newest"
             );
         }
-        // Phase `different_files_are_written_in_submission_order`.
         {
             let (writer, release) = blocked_writer();
             let written = Arc::new(Mutex::new(Vec::new()));
@@ -355,7 +385,6 @@ mod tests {
                 "a replacement keeps its file's place in line and carries the newest content"
             );
         }
-        // Phase `flush_waits_for_a_replacement_of_an_earlier_write`.
         {
             let (writer, release) = blocked_writer();
             let written = Arc::new(Mutex::new(0));
@@ -378,15 +407,13 @@ mod tests {
                 "a barrier is not satisfied by dropping the write it waited for"
             );
         }
-        // Phase `flush_timeout_reports_a_stuck_write`.
         {
             let (writer, release) = blocked_writer();
             writer.submit(PathBuf::from("state.json"), || {});
             assert!(!writer.flush_timeout(Duration::from_millis(20)));
             release.send(()).expect("release");
-            assert!(writer.flush_timeout(Duration::from_secs(30)));
+            assert!(writer.flush_timeout(tilo_test_env::hang_bound()));
         }
-        // Phase `a_panicking_write_does_not_stop_later_ones`.
         {
             let writer = DurableWriter::spawn("durable-writer-test");
             writer.submit(PathBuf::from("bad"), || panic!("disk on fire"));

@@ -206,6 +206,11 @@ impl Widget for Column {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.flow.build_children(taffy, theme, node_map);
+        // A band disclosing in the column moves the widgets after it, its
+        // gap included.
+        self.flow.vertical = true;
+        self.flow.laid_gap = f64::from(self.flow.gap(theme));
+        self.flow.content_sized = self.intrinsic_height;
 
         let style = Style {
             // Intrinsic-height columns use a one-column implicit Grid.
@@ -294,17 +299,41 @@ impl Widget for Column {
     }
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
-        for child in &self.flow.children {
-            child.collect_damage(regions);
+        // A band on its way moves every widget after it; a content-sized
+        // column is drawn that much taller.
+        if let Some(shifts) = self.flow.follower_shifts() {
+            let grows = shifts.last().copied().unwrap_or(0.0).max(0.0);
+            let mut rect = self.flow.rect;
+            if self.flow.content_sized {
+                rect.y1 += grows;
+            }
+            regions.push(rect);
+            return;
         }
+        self.for_each_child_in_clip(&mut |child| child.collect_damage(regions));
     }
 
     fn name(&self) -> &'static str {
         "Column"
     }
+
+    /// A content-sized column a band moves in grows with it, and so moves
+    /// what follows it in its own container.
+    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+        self.flow.disclosing()
+    }
 }
 
 flow_capabilities!(Column);
+
+#[cfg(test)]
+impl Column {
+    /// How far below its laid-out place each child is drawn this frame,
+    /// then how much taller the column is drawn; `None` at rest.
+    pub(crate) fn drawn_offsets(&self) -> Option<Vec<f64>> {
+        self.flow.follower_shifts()
+    }
+}
 
 impl crate::widget::controls::ActionControls for Column {
     fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
@@ -328,6 +357,45 @@ mod tests {
 
     /// Build the five-pass layout for `root` inside an 800×600 viewport and
     /// return the populated taffy tree + node so the caller can draw.
+    /// A theme change redraws a column's cached subtree: no child's size
+    /// changes and no child is dirty, yet every pixel the cache holds is in
+    /// the old theme. An unchecked box in a table cell stayed dark in a light
+    /// window when the column replayed its cache.
+    #[test]
+    fn a_theme_change_redraws_the_cached_subtree() {
+        let mut col = Column::new()
+            .with_intrinsic_height()
+            .push(Box::new(crate::widget::Checkbox::new("probe", "probe")));
+        let _ = lay_out(&mut col);
+        let mut tr = TextRenderer::new();
+        let presence = crate::presence::PresenceCtx::default();
+        let mut frame = |col: &mut Column, theme: &Theme| {
+            let mut scene = Scene::new();
+            col.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+            col.mark_drawn();
+            scene
+        };
+        let dark = frame(&mut col, &Theme::dark());
+        let dark_again = frame(&mut col, &Theme::dark());
+        assert!(
+            dark.encoding_eq(&dark_again),
+            "an unchanged theme replays the same paint"
+        );
+        let light = frame(&mut col, &Theme::light());
+        let light_alone = {
+            let mut fresh = Column::new()
+                .with_intrinsic_height()
+                .push(Box::new(crate::widget::Checkbox::new("probe", "probe")));
+            let _ = lay_out(&mut fresh);
+            frame(&mut fresh, &Theme::light())
+        };
+        assert!(
+            light.encoding_eq(&light_alone),
+            "after switching to light the column paints what a fresh light column paints"
+        );
+        assert!(!light.encoding_eq(&dark), "light paint differs from dark");
+    }
+
     fn lay_out(root: &mut dyn Widget) -> (TaffyTree<()>, NodeId) {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -428,7 +496,6 @@ mod tests {
             assert_eq!(style.padding.left, length(0.0_f32));
             assert_eq!(style.padding.top, length(r.tight));
         }
-        // A later pixel gap replaces the rhythm, and the other way round.
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut map = HashMap::new();

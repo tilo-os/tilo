@@ -2,7 +2,8 @@
 //!
 //! Supports a practical subset of the spreadsheet formula language:
 //!   * literals: numbers, `"strings"`, `TRUE` / `FALSE`
-//!   * cell refs `A1`, absolute `$A$1`, and ranges `A1:B3`
+//!   * cell refs `A1`, absolute `$A$1`, and ranges `A1:B3`, on this sheet
+//!     or another one of the workbook (`Rates!A2:B5`, `'Q3 data'!B2`)
 //!   * arithmetic `+ - * / ^` and unary `-`/`+`
 //!   * text concatenation `&`
 //!   * comparisons `= <> < > <= >=`
@@ -10,8 +11,8 @@
 //!     ROUNDDOWN, ROUNDUP, FLOOR, CEILING, SIGN, EXP, LN, LOG, LOG10, PI
 //!   * stats: AVERAGE, MEDIAN, MIN, MAX, COUNT, COUNTA, COUNTBLANK,
 //!     COUNTIF, COUNTIFS, SUMIF, SUMIFS, AVERAGEIF, AVERAGEIFS
-//!   * logical: IF, IFS, IFERROR, IFNA, AND, OR, NOT, XOR, SWITCH,
-//!     TRUE, FALSE
+//!   * logical: IF, IFS, IFERROR, IFNA, ISERROR, ISERR, ISNA, AND, OR,
+//!     NOT, XOR, SWITCH, TRUE, FALSE
 //!   * text: LEN, UPPER, LOWER, PROPER, TRIM, LEFT, RIGHT, MID, REPLACE,
 //!     SUBSTITUTE, FIND, SEARCH, REPT, CONCAT/CONCATENATE, TEXTJOIN, TEXT,
 //!     VALUE, EXACT, CHAR, CODE
@@ -22,14 +23,25 @@
 //! Evaluation is memoised with on-the-fly cycle detection so a sheet with
 //! `A1 = B1 + 1`, `B1 = A1` resolves to `#CYCLE!` rather than recursing
 //! forever. References that point at unparseable cells yield `#REF!`;
-//! division by zero yields `#DIV/0!`; type mismatches yield `#VALUE!`.
+//! division by zero yields `#DIV/0!`; type mismatches yield `#VALUE!`; a
+//! result outside the real numbers (`SQRT(-1)`, `LN(0)`) yields `#NUM!`.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::hash::BuildHasher;
 use ui::num::f64_of_usize;
 
-use crate::model::{Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1};
+use crate::model::{
+    Addr, CellFormat, CellValue, FormulaError, GridEdit, a1_to_addr, addr_to_a1, parse_number,
+};
+
+mod book;
+mod real;
+mod resolve;
+mod rounding;
+pub use book::{Book, recalculate_in_book, recalculate_snapshot};
+use real::{finite_number, logarithm, power};
+use rounding::RoundMode;
 
 // ---------------------------------------------------------------------------
 // Character cursor
@@ -195,7 +207,8 @@ pub struct RefSpan {
 /// String literals are skipped, and an identifier immediately followed by `(`
 /// is treated as a function name rather than a reference (so `SUM` in
 /// `SUM(A1:A3)` is not tinted, but `A1:A3` is). Numeric exponents like `1e3`
-/// are never mistaken for references.
+/// are never mistaken for references. A reference to another sheet
+/// (`Rates!A2`) names no cell of this one and is not returned.
 pub fn references(body: &str) -> Vec<RefSpan> {
     let chars: Vec<char> = body.chars().collect();
     let mut scan = Scan::new(&chars);
@@ -205,6 +218,10 @@ pub fn references(body: &str) -> Vec<RefSpan> {
             scan.bump();
             scan.skip_while(|c| c != '"');
             scan.bump(); // closing quote, when the literal is terminated
+            continue;
+        }
+        if sheet_prefix(&mut scan).is_some() {
+            skip_reference(&mut scan);
             continue;
         }
         if ch != '$' && !ch.is_ascii_alphabetic() {
@@ -300,7 +317,7 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
         return raw.to_string();
     }
     let shift = |token: RefToken| token.render(token.offset(dcol, drow));
-    rewrite_refs(raw, |first, second| match second {
+    rewrite_refs(raw, true, |first, second| match second {
         Some((sep, second)) => format!("{}{sep}{}", shift(first), shift(second)),
         None => shift(first),
     })
@@ -321,7 +338,7 @@ pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
 /// preserve formula relationships in the same replayable action that moves the
 /// cells, rather than leaving stale coordinates for a later UI-only repair.
 pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
-    rewrite_refs(raw, |first, second| {
+    rewrite_refs(raw, false, |first, second| {
         let moved = match second {
             Some((sep, second)) => edit
                 .map_range(first.addr, second.addr)
@@ -334,10 +351,14 @@ pub fn remap_refs(raw: &str, edit: GridEdit) -> String {
 
 /// Rewrite every reference in a formula through `rewrite`, which receives a
 /// lone reference or both ends of a range with the separator between them.
-/// String literals, function names, and numeric exponents (`1e3`) are copied
-/// verbatim; non-formula input (no leading `=`) is returned unchanged.
+/// String literals, sheet names, function names, and numeric exponents
+/// (`1e3`) are copied verbatim; non-formula input (no leading `=`) is
+/// returned unchanged. A reference to another sheet is rewritten only when
+/// `foreign` is set: a copy shifts it as any other, but rows and columns
+/// inserted on this sheet do not move it.
 fn rewrite_refs(
     raw: &str,
+    foreign: bool,
     mut rewrite: impl FnMut(RefToken, Option<(&str, RefToken)>) -> String,
 ) -> String {
     let Some(body) = raw.strip_prefix('=') else {
@@ -349,12 +370,20 @@ fn rewrite_refs(
     out.push('=');
     while let Some(ch) = scan.peek() {
         if ch == '"' {
-            // Copy a string literal verbatim, including the closing quote.
             let start = scan.pos();
             scan.bump();
             scan.skip_while(|c| c != '"');
             scan.bump();
             out.push_str(&scan.text_from(start));
+            continue;
+        }
+        if let Some(sheet) = sheet_prefix(&mut scan) {
+            out.push_str(&sheet);
+            if !foreign {
+                let start = scan.pos();
+                skip_reference(&mut scan);
+                out.push_str(&scan.text_from(start));
+            }
             continue;
         }
         if ch != '$' && !ch.is_ascii_alphabetic() {
@@ -392,6 +421,68 @@ fn rewrite_refs(
         out.push_str(&rewrite(first, None));
     }
     out
+}
+
+/// At a sheet name and its `!` (`Rates!`, `'Q3 data'!`), move `scan` past
+/// both and answer the text they span; otherwise leave it and answer `None`.
+fn sheet_prefix(scan: &mut Scan<'_>) -> Option<String> {
+    let start = scan.pos();
+    let mut ahead = *scan;
+    if ahead.peek() == Some('\'') {
+        quoted_sheet(&mut ahead)?;
+    } else {
+        // A name right after a digit is a number's exponent, not a sheet.
+        if ahead
+            .before(start)
+            .is_some_and(|prev| prev.is_ascii_alphanumeric() || prev == '.')
+        {
+            return None;
+        }
+        ahead.skip_while(is_name_char);
+        if ahead.pos() == start || ahead.bump() != Some('!') {
+            return None;
+        }
+    }
+    *scan = ahead;
+    Some(scan.text_from(start))
+}
+
+/// Move `scan` past the reference at it, and the range end after a `:`.
+fn skip_reference(scan: &mut Scan<'_>) {
+    scan.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+    let mut ahead = *scan;
+    ahead.skip_while(char::is_whitespace);
+    if ahead.peek() == Some(':') {
+        ahead.bump();
+        ahead.skip_while(char::is_whitespace);
+        ahead.skip_while(|c| c == '$' || c.is_ascii_alphanumeric());
+        *scan = ahead;
+    }
+}
+
+/// Whether `c` may be part of an unquoted name: a function's, a
+/// reference's or a sheet's.
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '.'
+}
+
+/// A quoted sheet name and the `!` after it (`'Q3 data'!`), the scan at its
+/// opening quote: the name, a doubled quote standing for one. `None` when
+/// the quote is not closed or no `!` follows.
+fn quoted_sheet(scan: &mut Scan<'_>) -> Option<String> {
+    scan.bump();
+    let mut name = String::new();
+    loop {
+        match scan.bump()? {
+            '\'' if scan.peek() == Some('\'') => {
+                scan.bump();
+                name.push('\'');
+            }
+            '\'' => break,
+            c => name.push(c),
+        }
+    }
+    (scan.bump() == Some('!')).then_some(name)
 }
 
 /// One `A1`/`$A$1`-shaped token, remembering its `$` spelling so a
@@ -485,6 +576,7 @@ enum Token {
     Num(f64),
     Str(String),
     Ident(String), // function name or reference text
+    Sheet(String), // the sheet a reference after it is on: `Rates!`, `'Q3 data'!`
     Op(char),      // + - * / ^ & % ( ) , : and comparison head chars
     Lt,
     Gt,
@@ -494,7 +586,60 @@ enum Token {
     Ne,
 }
 
-fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
+impl std::fmt::Display for Token {
+    /// The token as a formula spells it, for naming it in a parse problem.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Token::Num(n) => write!(f, "{n}"),
+            Token::Str(s) => write!(f, "\"{s}\""),
+            Token::Ident(id) => f.write_str(id),
+            Token::Sheet(sheet) => write!(f, "{sheet}!"),
+            Token::Op(op) => write!(f, "{op}"),
+            Token::Lt => f.write_str("<"),
+            Token::Gt => f.write_str(">"),
+            Token::Le => f.write_str("<="),
+            Token::Ge => f.write_str(">="),
+            Token::Eq => f.write_str("="),
+            Token::Ne => f.write_str("<>"),
+        }
+    }
+}
+
+/// Why a formula does not parse: the error its cell shows, and the problem
+/// in words for whoever wrote it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParseError {
+    /// What the cell shows.
+    pub error: FormulaError,
+    /// What is wrong, e.g. "`INDEX(` is never closed: add `)`".
+    pub problem: String,
+}
+
+impl ParseError {
+    fn new(error: FormulaError, problem: impl Into<String>) -> Self {
+        Self {
+            error,
+            problem: problem.into(),
+        }
+    }
+
+    fn syntax(problem: impl Into<String>) -> Self {
+        Self::new(FormulaError::Error, problem)
+    }
+}
+
+/// The sheet a quoted name at `scan` names (`'Q3 data'!`).
+fn quoted_sheet_token(scan: &mut Scan<'_>) -> Result<Token, ParseError> {
+    let name = quoted_sheet(scan).ok_or_else(|| {
+        ParseError::new(
+            FormulaError::Ref,
+            "a quoted sheet name is never closed or has no `!` after it, as in `'Q3 data'!A1`",
+        )
+    })?;
+    Ok(Token::Sheet(name))
+}
+
+fn tokenize(input: &str) -> Result<Vec<Token>, ParseError> {
     let chars: Vec<char> = input.chars().collect();
     let mut scan = Scan::new(&chars);
     let mut out = Vec::new();
@@ -520,10 +665,9 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
                         scan = before_exponent; // not actually an exponent
                     }
                 }
-                let n = scan
-                    .text_from(start)
-                    .parse::<f64>()
-                    .map_err(|_| FormulaError::Error)?;
+                let n = scan.text_from(start).parse::<f64>().map_err(|_| {
+                    ParseError::syntax(format!("`{}` is not a number", scan.text_from(start)))
+                })?;
                 out.push(Token::Num(n));
             }
             '"' => {
@@ -532,16 +676,26 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
                 scan.skip_while(|c| c != '"');
                 let literal = scan.text_from(start);
                 if scan.bump() != Some('"') {
-                    return Err(FormulaError::Error); // unterminated string
+                    return Err(ParseError::syntax(
+                        "a text in quotes is never closed: add the closing `\"`",
+                    ));
                 }
                 out.push(Token::Str(literal));
             }
             '$' | 'A'..='Z' | 'a'..='z' | '_' => {
-                // Identifier: function name or cell reference (may contain $).
+                // Identifier: function name or cell reference (may contain $),
+                // or the name of the sheet the reference after its `!` is on.
                 let start = scan.pos();
-                scan.skip_while(|c| c.is_ascii_alphanumeric() || c == '$' || c == '_' || c == '.');
-                out.push(Token::Ident(scan.text_from(start)));
+                scan.skip_while(is_name_char);
+                let text = scan.text_from(start);
+                if scan.peek() == Some('!') {
+                    scan.bump();
+                    out.push(Token::Sheet(text));
+                } else {
+                    out.push(Token::Ident(text));
+                }
             }
+            '\'' => out.push(quoted_sheet_token(&mut scan)?),
             '<' => {
                 scan.bump();
                 match scan.peek() {
@@ -573,7 +727,11 @@ fn tokenize(input: &str) -> Result<Vec<Token>, FormulaError> {
                 scan.bump();
                 out.push(Token::Op(ch));
             }
-            _ => return Err(FormulaError::Error),
+            _ => {
+                return Err(ParseError::syntax(format!(
+                    "`{ch}` has no meaning in a formula"
+                )));
+            }
         }
     }
     Ok(out)
@@ -590,6 +748,8 @@ enum Expr {
     Bool(bool),
     Ref(Addr),
     Range(Addr, Addr),
+    /// A reference to a sheet the formula cannot reach: `#REF!`.
+    Missing,
     Unary(char, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
@@ -611,14 +771,40 @@ enum BinOp {
     Ge,
 }
 
-struct Parser {
-    tokens: Vec<Token>,
-    pos: usize,
+/// Where a formula is: the column its sheet's cells start at in the
+/// engine's address space, and the sheets it may reach by name (folded),
+/// each with the column its cells start at. A formula read on its own is at
+/// column 0 and reaches no other sheet.
+#[derive(Clone, Copy, Default)]
+struct Place<'a> {
+    base: u32,
+    sheets: Option<&'a HashMap<String, u32>>,
 }
 
-impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+impl Place<'_> {
+    /// `addr` of this place's sheet in the engine's address space; `None`
+    /// past the last column a sheet has.
+    fn at(self, base: u32, (col, row): Addr) -> Option<Addr> {
+        if self.sheets.is_some() && col >= book::SHEET_SPAN {
+            return None;
+        }
+        Some((col.checked_add(base)?, row))
+    }
+}
+
+struct Parser<'a> {
+    tokens: Vec<Token>,
+    pos: usize,
+    place: Place<'a>,
+}
+
+impl<'a> Parser<'a> {
+    fn new(tokens: Vec<Token>, place: Place<'a>) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            place,
+        }
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -633,15 +819,65 @@ impl Parser {
         t
     }
 
-    fn parse(&mut self) -> Result<Expr, FormulaError> {
+    fn parse(&mut self) -> Result<Expr, ParseError> {
         let e = self.parse_comparison()?;
-        if self.pos != self.tokens.len() {
-            return Err(FormulaError::Error);
+        match self.peek() {
+            None => Ok(e),
+            Some(Token::Op(')')) => Err(ParseError::syntax("a `)` closes no `(`")),
+            Some(token) => Err(ParseError::syntax(format!(
+                "unexpected `{token}` after a complete value: an operator or `,` is missing"
+            ))),
         }
-        Ok(e)
     }
 
-    fn parse_comparison(&mut self) -> Result<Expr, FormulaError> {
+    /// The problem of the `(` after `opened` (a function's name, or nothing
+    /// for a bracket) that `found` does not close.
+    fn unclosed(opened: &str, found: Option<Token>) -> ParseError {
+        ParseError::syntax(match (opened, found) {
+            ("", None) => "a `(` is never closed: add `)`".to_owned(),
+            ("", Some(token)) => format!("`)` is expected, not `{token}`"),
+            (_, None) => format!("`{opened}(` is never closed: add `)`"),
+            (_, Some(token)) => format!("in `{opened}(…)` `,` or `)` is expected, not `{token}`"),
+        })
+    }
+
+    /// The cell or range `id` (and the `:` end after it) names on the sheet
+    /// whose cells start at column `base`.
+    fn reference(&mut self, id: &str, base: u32) -> Result<Expr, ParseError> {
+        if matches!(self.peek(), Some(Token::Op(':'))) {
+            self.next();
+            let Some(Token::Ident(end)) = self.next() else {
+                return Err(ParseError::new(
+                    FormulaError::Ref,
+                    format!("`{id}:` is followed by no cell, as in `A1:B5`"),
+                ));
+            };
+            let place = self.place;
+            let range = a1_to_addr(id)
+                .and_then(|a| place.at(base, a))
+                .zip(a1_to_addr(&end).and_then(|b| place.at(base, b)));
+            let (a, b) = range.ok_or_else(|| {
+                ParseError::new(
+                    FormulaError::Ref,
+                    format!("`{id}:{end}` is not a range of cells such as `A1:B5`"),
+                )
+            })?;
+            return Ok(Expr::Range(a, b));
+        }
+        // Single cell reference; an identifier that isn't a valid A1
+        // reference is an unknown name.
+        let addr = a1_to_addr(id)
+            .and_then(|addr| self.place.at(base, addr))
+            .ok_or_else(|| {
+                ParseError::new(
+                    FormulaError::Name,
+                    format!("`{id}` is not a cell such as `A1` nor a call such as `SUM(…)`"),
+                )
+            })?;
+        Ok(Expr::Ref(addr))
+    }
+
+    fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_concat()?;
         loop {
             let op = match self.peek() {
@@ -660,7 +896,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_concat(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_concat(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_add()?;
         while matches!(self.peek(), Some(Token::Op('&'))) {
             self.next();
@@ -670,7 +906,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_add(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_add(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_mul()?;
         loop {
             let op = match self.peek() {
@@ -685,7 +921,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_mul(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_mul(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_unary()?;
         loop {
             let op = match self.peek() {
@@ -700,7 +936,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_unary(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         if let Some(Token::Op(c @ ('-' | '+'))) = self.peek().cloned() {
             self.next();
             let e = self.parse_unary()?;
@@ -709,7 +945,7 @@ impl Parser {
         self.parse_power()
     }
 
-    fn parse_power(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_power(&mut self) -> Result<Expr, ParseError> {
         let base = self.parse_postfix()?;
         if matches!(self.peek(), Some(Token::Op('^'))) {
             self.next();
@@ -720,7 +956,7 @@ impl Parser {
         Ok(base)
     }
 
-    fn parse_postfix(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
         let mut e = self.parse_primary()?;
         // Percent literal suffix: `50%` -> 0.5.
         while matches!(self.peek(), Some(Token::Op('%'))) {
@@ -730,7 +966,7 @@ impl Parser {
         Ok(e)
     }
 
-    fn parse_primary(&mut self) -> Result<Expr, FormulaError> {
+    fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         match self.next() {
             Some(Token::Num(n)) => Ok(Expr::Num(n)),
             Some(Token::Str(s)) => Ok(Expr::Str(s)),
@@ -738,8 +974,26 @@ impl Parser {
                 let e = self.parse_comparison()?;
                 match self.next() {
                     Some(Token::Op(')')) => Ok(e),
-                    _ => Err(FormulaError::Error),
+                    found => Err(Self::unclosed("", found)),
                 }
+            }
+            Some(Token::Sheet(sheet)) => {
+                let Some(Token::Ident(id)) = self.next() else {
+                    return Err(ParseError::new(
+                        FormulaError::Ref,
+                        format!("`{sheet}!` is followed by no cell, as in `{sheet}!A1`"),
+                    ));
+                };
+                let base = self
+                    .place
+                    .sheets
+                    .and_then(|sheets| sheets.get(&book::fold(&sheet)).copied());
+                let reference = self.reference(&id, base.unwrap_or_default())?;
+                Ok(if base.is_some() {
+                    reference
+                } else {
+                    Expr::Missing
+                })
             }
             Some(Token::Ident(id)) => {
                 // Function call?
@@ -759,7 +1013,7 @@ impl Parser {
                     }
                     match self.next() {
                         Some(Token::Op(')')) => {}
-                        _ => return Err(FormulaError::Error),
+                        found => return Err(Self::unclosed(&id, found)),
                     }
                     return Ok(Expr::Call(id.to_uppercase(), args));
                 }
@@ -769,34 +1023,38 @@ impl Parser {
                     "FALSE" => return Ok(Expr::Bool(false)),
                     _ => {}
                 }
-                // Range A1:B3 ?
-                if matches!(self.peek(), Some(Token::Op(':'))) {
-                    self.next();
-                    let Some(Token::Ident(end)) = self.next() else {
-                        return Err(FormulaError::Ref);
-                    };
-                    let a = a1_to_addr(&id).ok_or(FormulaError::Ref)?;
-                    let b = a1_to_addr(&end).ok_or(FormulaError::Ref)?;
-                    return Ok(Expr::Range(a, b));
-                }
-                // Single cell reference; an identifier that isn't a valid A1
-                // reference is an unknown name.
-                let addr = a1_to_addr(&id).ok_or(FormulaError::Name)?;
-                Ok(Expr::Ref(addr))
+                self.reference(&id, self.place.base)
             }
-            _ => Err(FormulaError::Error),
+            None => Err(ParseError::syntax(
+                "the formula ends where a value is expected",
+            )),
+            Some(token) => Err(ParseError::syntax(format!(
+                "unexpected `{token}` where a value is expected"
+            ))),
         }
     }
 }
 
 /// Parse a formula body (without the leading `=`) into an `Expr`. The
 /// returned tree can be evaluated repeatedly against changing cell data.
-fn parse(formula: &str) -> Result<Expr, FormulaError> {
+fn parse(formula: &str) -> Result<Expr, ParseError> {
+    parse_in(formula, Place::default())
+}
+
+/// [`parse`] of a formula at `place`.
+fn parse_in(formula: &str, place: Place<'_>) -> Result<Expr, ParseError> {
     let tokens = tokenize(formula)?;
     if tokens.is_empty() {
-        return Err(FormulaError::Error);
+        return Err(ParseError::syntax("nothing follows the `=`"));
     }
-    Parser::new(tokens).parse()
+    Parser::new(tokens, place).parse()
+}
+
+/// Why cell input `raw` is a formula that does not parse: `None` for a
+/// formula that parses and for input that is no formula. The cell keeps the
+/// input and shows the error, as a spreadsheet does.
+pub fn parse_error(raw: &str) -> Option<ParseError> {
+    parse(raw.strip_prefix('=')?).err()
 }
 
 // ---------------------------------------------------------------------------
@@ -810,6 +1068,9 @@ pub struct Engine<'a, S = std::collections::hash_map::RandomState> {
     raw: &'a HashMap<Addr, String, S>,
     cache: HashMap<Addr, CellValue>,
     visiting: HashSet<Addr>,
+    /// The sheets of a workbook evaluated together, by folded name, each
+    /// with the column its cells start at; `None` for one sheet alone.
+    sheets: Option<&'a HashMap<String, u32>>,
 }
 
 impl<'a, S: BuildHasher> Engine<'a, S> {
@@ -818,6 +1079,28 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             raw,
             cache: HashMap::new(),
             visiting: HashSet::new(),
+            sheets: None,
+        }
+    }
+
+    /// An engine over every sheet of a workbook at once, each sheet's cells
+    /// shifted to the column `sheets` names for it, so a formula on one
+    /// reads the others and a cycle across sheets is still found.
+    fn in_book(raw: &'a HashMap<Addr, String, S>, sheets: &'a HashMap<String, u32>) -> Self {
+        Self {
+            sheets: Some(sheets),
+            ..Self::new(raw)
+        }
+    }
+
+    /// Where the formula of the cell at `addr` is.
+    fn place_of(&self, (col, _): Addr) -> Place<'a> {
+        match self.sheets {
+            Some(sheets) => Place {
+                base: col - col % book::SHEET_SPAN,
+                sheets: Some(sheets),
+            },
+            None => Place::default(),
         }
     }
 
@@ -828,7 +1111,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let addrs: Vec<Addr> = self.raw.keys().copied().collect();
         for addr in addrs {
             if !self.cache.contains_key(&addr) {
-                let v = self.eval_cell(addr);
+                let v = self.resolve(addr);
                 self.cache.insert(addr, v);
             }
         }
@@ -850,9 +1133,9 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
 
         let value = if let Some(body) = raw.strip_prefix('=') {
             self.visiting.insert(addr);
-            let v = match parse(body) {
+            let v = match parse_in(body, self.place_of(addr)) {
                 Ok(expr) => self.eval_expr(&expr),
-                Err(e) => CellValue::Error(e),
+                Err(e) => CellValue::Error(e.error),
             };
             self.visiting.remove(&addr);
             v
@@ -865,11 +1148,12 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
 
     fn eval_expr(&mut self, expr: &Expr) -> CellValue {
         match expr {
-            Expr::Num(n) => CellValue::Number(*n),
+            Expr::Num(n) => finite_number(*n),
             Expr::Str(s) => CellValue::Text(s.clone()),
             Expr::Bool(b) => CellValue::Bool(*b),
             Expr::Ref(addr) => self.eval_cell(*addr),
             Expr::Range(_, _) => CellValue::Error(FormulaError::Value),
+            Expr::Missing => CellValue::Error(FormulaError::Ref),
             Expr::Unary(op, inner) => {
                 let v = self.eval_expr(inner);
                 if v.is_error() {
@@ -917,7 +1201,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 }
                 a / b
             }
-            BinOp::Pow => a.powf(b),
+            BinOp::Pow => return power(a, b),
             // Concat and the comparisons are handled above.
             BinOp::Concat
             | BinOp::Eq
@@ -927,7 +1211,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             | BinOp::Le
             | BinOp::Ge => return CellValue::Error(FormulaError::Value),
         };
-        CellValue::Number(result)
+        finite_number(result)
     }
 
     /// Flatten an argument into the list of scalar values it represents.
@@ -971,10 +1255,21 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         Ok(nums)
     }
 
+    /// Evaluate a function call. A function whose arithmetic leaves the real
+    /// numbers (`SQRT(-1)`, `LN(0)`, `EXP(1000)`, a `SUM` that overflows)
+    /// yields `#NUM!` here, once for every function, so IFERROR and ISERROR
+    /// see a real error rather than a NaN or an infinity in the cell.
+    fn eval_call(&mut self, name: &str, args: &[Expr]) -> CellValue {
+        match self.dispatch_call(name, args) {
+            CellValue::Number(n) => finite_number(n),
+            other => other,
+        }
+    }
+
     /// Dispatch a function call to the family that implements it. Each stage
     /// returns `None` for a name it does not own, so an unknown function falls
     /// through to `#NAME?`.
-    fn eval_call(&mut self, name: &str, args: &[Expr]) -> CellValue {
+    fn dispatch_call(&mut self, name: &str, args: &[Expr]) -> CellValue {
         if let Some(v) = self.eval_aggregate(name, args) {
             return v;
         }
@@ -1042,11 +1337,9 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 Ok(ns) => CellValue::Number(ns.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
                 Err(e) => e,
             },
-            // Count of numeric cells.
             "COUNT" => CellValue::Number(f64_of_usize(
                 self.count_matching(args, |v| matches!(v, CellValue::Number(_))),
             )),
-            // Count of non-empty cells.
             "COUNTA" => {
                 CellValue::Number(f64_of_usize(self.count_matching(args, |v| !v.is_empty())))
             }
@@ -1114,6 +1407,11 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             "IFS" => self.eval_ifs(args),
             "IFERROR" => self.eval_iferror(args),
             "IFNA" => self.eval_ifna(args),
+            "ISERROR" => self.eval_is(args, CellValue::is_error),
+            "ISERR" => self.eval_is(args, |v| {
+                v.is_error() && !matches!(v, CellValue::Error(FormulaError::Na))
+            }),
+            "ISNA" => self.eval_is(args, |v| matches!(v, CellValue::Error(FormulaError::Na))),
             "SWITCH" => self.eval_switch(args),
             "TRUE" => CellValue::Bool(true),
             "FALSE" => CellValue::Bool(false),
@@ -1182,6 +1480,14 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         }
     }
 
+    /// ISERROR and its siblings: whether the one argument's value is of a kind.
+    fn eval_is(&mut self, args: &[Expr], test: impl Fn(&CellValue) -> bool) -> CellValue {
+        let [only] = args else {
+            return CellValue::Error(FormulaError::Error);
+        };
+        CellValue::Bool(test(&self.eval_expr(only)))
+    }
+
     fn eval_ifna(&mut self, args: &[Expr]) -> CellValue {
         let (Some(probe), Some(fallback)) = (args.first(), args.get(1)) else {
             return CellValue::Error(FormulaError::Error);
@@ -1233,7 +1539,10 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         let value = match name {
             "ABS" => self.unary_num(args, f64::abs),
             "SQRT" => self.unary_num(args, f64::sqrt),
-            "INT" | "FLOOR" => self.unary_num(args, f64::floor),
+            "INT" => self.unary_num(args, f64::floor),
+            "FLOOR" => {
+                self.round_to_multiple(args, f64::floor, CellValue::Error(FormulaError::Div0))
+            }
             "SIGN" => self.unary_num(args, f64::signum),
             "EXP" => self.unary_num(args, f64::exp),
             "LN" => self.unary_num(args, f64::ln),
@@ -1246,11 +1555,15 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 let Some(n) = v.as_number() else {
                     return Some(CellValue::Error(FormulaError::Value));
                 };
-                let base = args
-                    .get(1)
-                    .and_then(|a| self.eval_expr(a).as_number())
-                    .unwrap_or(10.0);
-                CellValue::Number(n.log(base))
+                let base = match args.get(1).map(|a| self.eval_expr(a)) {
+                    None => 10.0,
+                    Some(b) if b.is_error() => return Some(b),
+                    Some(b) => match b.as_number() {
+                        Some(base) => base,
+                        None => return Some(CellValue::Error(FormulaError::Value)),
+                    },
+                };
+                logarithm(n, base)
             }
             "PI" => CellValue::Number(std::f64::consts::PI),
             "ROUND" => self.round_fn(args, RoundMode::Nearest),
@@ -1258,13 +1571,13 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             "ROUNDUP" => self.round_fn(args, RoundMode::Up),
             "MOD" => self.binary_num(args, |a, b| {
                 if b == 0.0 {
-                    None
+                    CellValue::Error(FormulaError::Div0)
                 } else {
-                    Some(a - b * (a / b).floor())
+                    CellValue::Number(a - b * (a / b).floor())
                 }
             }),
-            "POWER" => self.binary_num(args, |a, b| Some(a.powf(b))),
-            "CEILING" => self.unary_num(args, f64::ceil),
+            "POWER" => self.binary_num(args, power),
+            "CEILING" => self.round_to_multiple(args, f64::ceil, CellValue::Number(0.0)),
             _ => return None,
         };
         Some(value)
@@ -1281,7 +1594,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             }
             "UPPER" => self.unary_text(args, str::to_uppercase),
             "LOWER" => self.unary_text(args, str::to_lowercase),
-            "TRIM" => self.unary_text(args, |s| s.trim().to_string()),
+            "TRIM" => self.unary_text(args, trim_spaces),
             "PROPER" => self.unary_text(args, proper_case),
             "LEFT" => self.substr_fn(args, true),
             "RIGHT" => self.substr_fn(args, false),
@@ -1313,18 +1626,10 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 CellValue::Text(s.repeat(count))
             }
             "VALUE" => {
-                let s = self
-                    .eval_expr(args.first().unwrap_or(&Expr::Str(String::new())))
-                    .to_plain_string();
-                let cleaned: String = s
-                    .chars()
-                    .filter(|c| !matches!(c, ',' | '$' | ' '))
-                    .collect();
-                let core = cleaned.trim_end_matches('%');
-                match core.parse::<f64>() {
-                    Ok(n) => CellValue::Number(if cleaned.ends_with('%') { n / 100.0 } else { n }),
-                    Err(_) => CellValue::Error(FormulaError::Value),
-                }
+                let text = args
+                    .first()
+                    .map_or_else(String::new, |a| self.eval_expr(a).to_plain_string());
+                text_to_number(&text)
             }
             "EXACT" => {
                 let (Some(left), Some(right)) = (args.first(), args.get(1)) else {
@@ -1503,7 +1808,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
         }
     }
 
-    fn binary_num(&mut self, args: &[Expr], op: impl Fn(f64, f64) -> Option<f64>) -> CellValue {
+    fn binary_num(&mut self, args: &[Expr], op: impl Fn(f64, f64) -> CellValue) -> CellValue {
         let [left, right] = args else {
             return CellValue::Error(FormulaError::Error);
         };
@@ -1516,45 +1821,9 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             return rv;
         }
         match (lv.as_number(), rv.as_number()) {
-            (Some(ln), Some(rn)) => match op(ln, rn) {
-                Some(result) => CellValue::Number(result),
-                None => CellValue::Error(FormulaError::Div0),
-            },
+            (Some(ln), Some(rn)) => op(ln, rn),
             _ => CellValue::Error(FormulaError::Value),
         }
-    }
-
-    fn round_fn(&mut self, args: &[Expr], mode: RoundMode) -> CellValue {
-        let Some(value_expr) = args.first() else {
-            return CellValue::Error(FormulaError::Error);
-        };
-        let v = self.eval_expr(value_expr);
-        if v.is_error() {
-            return v;
-        }
-        let Some(n) = v.as_number() else {
-            return CellValue::Error(FormulaError::Value);
-        };
-        // Past ±308 the scale factor is already 0 or infinite, so clamping
-        // there loses nothing and keeps the exponent in range.
-        let digits = args.get(1).map_or(0, |a| {
-            let scale = self.eval_expr(a).as_number().unwrap_or(0.0);
-            i32::try_from(number_to_int(scale).clamp(-308, 308)).unwrap_or(0)
-        });
-        let factor = 10f64.powi(digits);
-        let scaled = n * factor;
-        let rounded = match mode {
-            RoundMode::Nearest => scaled.round(),
-            RoundMode::Down => scaled.trunc(),
-            RoundMode::Up => {
-                if scaled >= 0.0 {
-                    scaled.ceil()
-                } else {
-                    scaled.floor()
-                }
-            }
-        };
-        CellValue::Number(rounded / factor)
     }
 
     fn unary_text(&mut self, args: &[Expr], f: impl Fn(&str) -> String) -> CellValue {
@@ -2040,13 +2309,6 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
     }
 }
 
-#[derive(Clone, Copy)]
-enum RoundMode {
-    Nearest,
-    Down,
-    Up,
-}
-
 /// Which way a lookup scans its table.
 #[derive(Clone, Copy)]
 enum Axis {
@@ -2188,6 +2450,33 @@ fn time_parts(serial: f64) -> (i64, i64, i64) {
         seconds_of_day.rem_euclid(3600).div_euclid(60),
         seconds_of_day.rem_euclid(60),
     )
+}
+
+/// VALUE: read text as a number, ignoring thousands separators, a dollar
+/// sign and spaces, with a trailing percent sign dividing by 100.
+fn text_to_number(s: &str) -> CellValue {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !matches!(c, ',' | '$' | ' '))
+        .collect();
+    let core = cleaned.trim_end_matches('%');
+    match parse_number(core) {
+        Some(n) => CellValue::Number(if cleaned.ends_with('%') { n / 100.0 } else { n }),
+        None => CellValue::Error(FormulaError::Value),
+    }
+}
+
+/// TRIM: drop leading and trailing spaces and collapse each run of inner
+/// spaces to one, as Excel and Calc do. Only the space character counts.
+fn trim_spaces(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for word in s.split(' ').filter(|w| !w.is_empty()) {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+    out
 }
 
 /// Title-case a string: capitalize the first letter of each run of letters.
@@ -2375,12 +2664,12 @@ fn parse_literal(raw: &str) -> CellValue {
     if trimmed.is_empty() {
         return CellValue::Empty;
     }
-    if let Ok(n) = trimmed.parse::<f64>() {
+    if let Some(n) = parse_number(trimmed) {
         return CellValue::Number(n);
     }
     // Accept a leading currency/percent for convenience.
     if let Some(p) = trimmed.strip_suffix('%')
-        && let Ok(n) = p.trim().parse::<f64>()
+        && let Some(n) = parse_number(p.trim())
     {
         return CellValue::Number(n / 100.0);
     }
@@ -2413,7 +2702,6 @@ enum Unit {
     Currency(tilo_locale::Currency),
     /// A percentage value.
     Percent,
-    /// A date serial.
     Date(tilo_locale::DateStyle),
     /// A time/duration serial.
     Time(ui::clock::TimeStyle),
@@ -2470,7 +2758,9 @@ fn unit_of_format(fmt: CellFormat) -> Unit {
 /// Recursively determine an expression's unit.
 fn unit_of<S: BuildHasher>(expr: &Expr, formats: &HashMap<Addr, CellFormat, S>) -> Unit {
     match expr {
-        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Range(_, _) => Unit::Scalar,
+        Expr::Num(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Range(_, _) | Expr::Missing => {
+            Unit::Scalar
+        }
         Expr::Ref(addr) => formats
             .get(addr)
             .map_or(Unit::Scalar, |f| unit_of_format(*f)),
@@ -2526,7 +2816,6 @@ fn unit_of_call<S: BuildHasher>(
     formats: &HashMap<Addr, CellFormat, S>,
 ) -> Unit {
     match name {
-        // Sum-family + selection functions preserve a uniform unit.
         "SUM" | "AVERAGE" | "MIN" | "MAX" | "MEDIAN" | "PRODUCT" | "ROUND" | "ROUNDUP"
         | "ROUNDDOWN" | "ABS" | "FLOOR" | "CEILING" | "INT" => {
             let mut acc: Option<Unit> = None;
@@ -2591,10 +2880,24 @@ mod tests {
             .unwrap_or(CellValue::Empty)
     }
 
+    /// TRIM drops the outer spaces and collapses inner runs to one space.
+    #[test]
+    fn trim_collapses_inner_spaces() {
+        let m = run(&[
+            ("A1", "=TRIM(\"  a   b  \")"),
+            ("A2", "=TRIM(\"one\")"),
+            ("A3", "=TRIM(\"   \")"),
+            ("A4", "=LEN(TRIM(\" x  y  z \"))"),
+        ]);
+        assert_eq!(val(&m, "A1"), CellValue::Text("a b".into()));
+        assert_eq!(val(&m, "A2"), CellValue::Text("one".into()));
+        assert_eq!(val(&m, "A3"), CellValue::Text(String::new()));
+        assert_eq!(val(&m, "A4"), CellValue::Number(5.0));
+    }
+
     /// Precedence, references/SUM, IF/comparisons, div-zero/cycles and Excel error codes.
     #[test]
     fn arithmetic_references_conditionals_and_errors() {
-        // Case `arithmetic_and_precedence`.
         {
             let m = run(&[("A1", "=2+3*4"), ("A2", "=(2+3)*4"), ("A3", "=2^3^2")]);
             assert_eq!(val(&m, "A1"), CellValue::Number(14.0));
@@ -2603,7 +2906,6 @@ mod tests {
             assert_eq!(val(&m, "A3"), CellValue::Number(512.0));
         }
 
-        // Case `cell_refs_and_sum_range`.
         {
             let m = run(&[
                 ("A1", "10"),
@@ -2618,7 +2920,6 @@ mod tests {
             assert_eq!(val(&m, "B3"), CellValue::Number(30.0));
         }
 
-        // Case `if_and_comparisons`.
         {
             let m = run(&[
                 ("A1", "5"),
@@ -2629,14 +2930,12 @@ mod tests {
             assert_eq!(val(&m, "C1"), CellValue::Number(0.0));
         }
 
-        // Case `div_zero_and_cycle`.
         {
             let m = run(&[("A1", "=1/0"), ("B1", "=B2"), ("B2", "=B1")]);
             assert_eq!(val(&m, "A1"), CellValue::Error(FormulaError::Div0));
             assert!(val(&m, "B1").is_error());
         }
 
-        // Case `specific_excel_error_codes`.
         {
             use crate::model::{CellFormat, format_value};
             // Each formula triggers one specific cause. Assert both the typed
@@ -2673,10 +2972,8 @@ mod tests {
         }
     }
 
-    /// Text functions, extended text functions and TEXT format codes.
     #[test]
     fn text_functions_and_format_codes() {
-        // Case `text_functions`.
         {
             let m = run(&[
                 ("A1", "=UPPER(\"hi\")"),
@@ -2690,7 +2987,6 @@ mod tests {
             assert_eq!(val(&m, "A4"), CellValue::Number(4.0));
         }
 
-        // Case `extended_text_functions`.
         {
             let m = run(&[
                 ("A1", "=SUBSTITUTE(\"a-b-c\",\"-\",\"+\")"),
@@ -2714,7 +3010,6 @@ mod tests {
             assert_eq!(val(&m, "A9"), CellValue::Bool(false));
         }
 
-        // Case `text_format_codes`.
         {
             assert_eq!(apply_text_code(1234.5, "#,##0.00"), "1,234.50");
             assert_eq!(apply_text_code(0.1234, "0.0%"), "12.3%");
@@ -2724,14 +3019,12 @@ mod tests {
         }
     }
 
-    /// COUNTIF/SUMIF, math, conditional statistics and logical functions.
     #[test]
     #[allow(
         clippy::approx_constant,
         reason = "the literals are spreadsheet inputs and expected outputs, not uses of pi or e"
     )]
     fn math_statistics_and_logical_functions() {
-        // Case `countif_sumif`.
         {
             let m = run(&[
                 ("A1", "5"),
@@ -2763,6 +3056,19 @@ mod tests {
             assert_eq!(val(&m, "A2"), CellValue::Number(2.0));
             assert_eq!(val(&m, "A3"), CellValue::Number(12.0));
             assert_eq!(val(&m, "A4"), CellValue::Number(3.14));
+            // Halves round away from zero at the digits typed, as in Excel,
+            // although 0.285 and 1.005 sit just below their halves in binary.
+            for (formula, rounded) in [
+                ("=ROUND(0.285,2)", 0.29),
+                ("=ROUND(1.005,2)", 1.01),
+                ("=ROUND(-1.005,2)", -1.01),
+                ("=ROUND(1234.5,-2)", 1200.0),
+                ("=ROUNDUP(0.1+0.2,1)", 0.3),
+                ("=ROUNDDOWN(4.35*100,0)", 435.0),
+            ] {
+                let m = run(&[("A1", formula)]);
+                assert_eq!(val(&m, "A1"), CellValue::Number(rounded), "{formula}");
+            }
             assert_eq!(val(&m, "A5"), CellValue::Number(8.0));
             assert_eq!(val(&m, "A6"), CellValue::Number(7.0));
             assert_eq!(val(&m, "A7"), CellValue::Number(24.0));
@@ -2774,7 +3080,6 @@ mod tests {
             }
         }
 
-        // Case `stats_conditional_functions`.
         {
             let m = run(&[
                 ("A1", "10"),
@@ -2800,7 +3105,6 @@ mod tests {
             assert_eq!(val(&m, "C4"), CellValue::Number(30.0));
         }
 
-        // Case `logical_functions`.
         {
             let m = run(&[
                 ("A1", "=IFERROR(1/0,\"safe\")"),
@@ -2817,10 +3121,8 @@ mod tests {
         }
     }
 
-    /// Lookup functions, date/time functions and TODAY.
     #[test]
     fn lookup_and_date_time_functions() {
-        // Case `lookup_functions`.
         {
             // A small table: A=key, B=payload.
             let m = run(&[
@@ -2843,7 +3145,6 @@ mod tests {
             assert_eq!(val(&m, "D5"), CellValue::Text("b".into()));
         }
 
-        // Case `date_time_functions`.
         {
             let m = run(&[
                 ("A1", "=DATE(2023,3,15)"),
@@ -2866,7 +3167,6 @@ mod tests {
             assert_eq!(val(&m, "A7"), CellValue::Number(5.0));
         }
 
-        // Case `today_returns_a_plausible_recent_serial`.
         {
             let m = run(&[("A1", "=TODAY()"), ("A2", "=NOW()")]);
             // A serial well past 2020-01-01 (43831) and before 2100.
@@ -2881,8 +3181,6 @@ mod tests {
         }
     }
 
-    // --- format propagation -------------------------------------------------
-
     use crate::model::CellFormat;
     use tilo_locale::{Currency, DateStyle};
 
@@ -2896,7 +3194,6 @@ mod tests {
     /// Currency, percent, duration and unitless result formats.
     #[test]
     fn result_formats_propagate_through_arithmetic() {
-        // Case `scalar_times_currency_is_currency`.
         {
             // =5*B2 where B2 is $100 must render as currency.
             let f = fmts(&[("B2", CellFormat::Currency(Currency::USD))]);
@@ -2916,7 +3213,6 @@ mod tests {
             );
         }
 
-        // Case `currency_plus_same_currency_propagates`.
         {
             let f = fmts(&[
                 ("A1", CellFormat::Currency(Currency::EUR)),
@@ -2928,7 +3224,6 @@ mod tests {
             );
         }
 
-        // Case `mixed_currencies_fall_back_to_plain`.
         {
             let f = fmts(&[
                 ("A1", CellFormat::Currency(Currency::USD)),
@@ -2936,18 +3231,15 @@ mod tests {
             ]);
             // USD + EUR is unclear → plain number (None).
             assert_eq!(infer_result_format("A1+A2", &f), None);
-            // USD * EUR is also unclear.
             assert_eq!(infer_result_format("A1*A2", &f), None);
         }
 
-        // Case `percent_arithmetic_propagates`.
         {
             let f = fmts(&[("A1", CellFormat::Percent), ("A2", CellFormat::Percent)]);
             assert_eq!(infer_result_format("A1+A2", &f), Some(CellFormat::Percent));
             assert_eq!(infer_result_format("A1*2", &f), Some(CellFormat::Percent));
         }
 
-        // Case `sum_over_currency_range_inherits_currency`.
         {
             let f = fmts(&[
                 ("B2", CellFormat::Currency(Currency::GBP)),
@@ -2964,7 +3256,6 @@ mod tests {
             );
         }
 
-        // Case `date_minus_date_is_a_duration_not_a_date`.
         {
             let f = fmts(&[
                 ("A1", CellFormat::Date(DateStyle::Iso)),
@@ -2972,27 +3263,23 @@ mod tests {
             ]);
             // Difference of two dates is a number of days → plain (None).
             assert_eq!(infer_result_format("A1-A2", &f), None);
-            // A date plus a scalar stays a date.
             assert_eq!(
                 infer_result_format("A1+7", &f),
                 Some(CellFormat::Date(DateStyle::Iso))
             );
         }
 
-        // Case `plain_arithmetic_has_no_format`.
         {
             let f = fmts(&[]);
             assert_eq!(infer_result_format("2+3*4", &f), None);
         }
 
-        // Case `comparison_and_text_are_unitless`.
         {
             let f = fmts(&[("A1", CellFormat::Currency(Currency::USD))]);
             assert_eq!(infer_result_format("A1>100", &f), None);
             assert_eq!(infer_result_format("A1&\"x\"", &f), None);
         }
 
-        // Case `growth_ratio_is_plain_even_with_currency_operands`.
         {
             // (E2-B2)/B2 where E2,B2 are currency → a ratio, which is unitless.
             let f = fmts(&[
@@ -3004,12 +3291,9 @@ mod tests {
         }
     }
 
-    // --- reference extraction -----------------------------------------------
-
     /// Reference spans, range expansion/colour sharing and skipping strings/functions.
     #[test]
     fn references_report_spans_targets_and_colours() {
-        // Case `references_single_cells_get_spans_and_targets`.
         {
             // Body of `=B9-B7`: two single-cell refs, distinct colour slots.
             let spans = references("B9-B7");
@@ -3024,7 +3308,6 @@ mod tests {
             assert_eq!(slots, vec![0, 1], "two different refs → two colours");
         }
 
-        // Case `references_expand_ranges_and_share_colour_for_duplicates`.
         {
             // `SUM(B2:D2)+B2`: the range B2:D2 and the single B2 are different
             // keys; a repeated B2 would reuse a slot.
@@ -3035,13 +3318,11 @@ mod tests {
             assert_eq!(spans[0].br, a1_to_addr("D2").unwrap());
             assert_eq!(spans[1].key, "B2");
 
-            // A ref repeated twice keeps one colour slot.
             let dup = references("A1+A1");
             let slots = ref_color_slots(&dup);
             assert_eq!(slots, vec![0, 0]);
         }
 
-        // Case `references_skip_strings_and_functions`.
         {
             // `IF(B7>B9,"A1","B2")`: refs are B7 and B9 only; the quoted A1/B2 are
             // string literals and IF is a function name.
@@ -3056,7 +3337,6 @@ mod tests {
     /// Relative/absolute offsets and structural remapping.
     #[test]
     fn reference_offsets_and_structural_remaps() {
-        // Case `offset_refs_shifts_relative_preserves_absolute`.
         {
             // A bare reference shifts on the pasted-to axis. Copying `=A1` from B2
             // and pasting into B3 (Δrow +1) yields `=A2`; into C2 (Δcol +1) → `=B1`.
@@ -3071,13 +3351,11 @@ mod tests {
             // `A$1` locks the row: only the column shifts.
             assert_eq!(offset_refs("=A$1", 2, 5), "=C$1");
 
-            // Ranges shift each endpoint independently.
             assert_eq!(offset_refs("=SUM(A1:B3)", 1, 1), "=SUM(B2:C4)");
             // A range mixing anchored and relative endpoints shifts only the free one.
             assert_eq!(offset_refs("=$A$1:B2", 1, 1), "=$A$1:C3");
         }
 
-        // Case `offset_refs_leaves_functions_strings_and_numbers_alone`.
         {
             // Function names and quoted string literals are never references.
             assert_eq!(
@@ -3094,7 +3372,6 @@ mod tests {
             assert_eq!(offset_refs("=A1", -5, -5), "=A1");
         }
 
-        // Case `remap_refs_tracks_structural_moves_including_absolute_references`.
         {
             let moved = remap_refs("=SUM($A$1:B2)+\"A1\"+1e3", GridEdit::InsertRow(0));
             assert_eq!(moved, "=SUM($A$2:B3)+\"A1\"+1e3");
@@ -3103,7 +3380,6 @@ mod tests {
             assert_eq!(deleted, "=SUM(A1:A2)+#REF!");
         }
 
-        // Case `remap_refs_shrinks_a_range_whose_edge_line_is_deleted`.
         {
             // Rows (zero-based `DeleteRow(1)` is row 2): first, last, middle,
             // outside, and the whole range.
@@ -3120,7 +3396,6 @@ mod tests {
             assert_eq!(row("=SUM(B$2:$B3)"), "=SUM(B$2:$B2)");
             assert_eq!(row("=SUM(B3:B2)"), "=SUM(B2:B2)");
             assert_eq!(row("=SUM(B4 : B2)"), "=SUM(B3 : B2)");
-            // A lone reference to the deleted row still breaks.
             assert_eq!(row("=B2+SUM(B2:B3)"), "=#REF!+SUM(B2:B2)");
 
             // Columns (`DeleteColumn(1)` is column B).
@@ -3133,7 +3408,6 @@ mod tests {
             assert_eq!(col("=SUM(C1:B1)"), "=SUM(B1:B1)");
         }
 
-        // Case `remap_refs_grows_a_range_around_an_inserted_line`.
         {
             let row = |raw| remap_refs(raw, GridEdit::InsertRow(2));
             assert_eq!(row("=SUM(B2:B3)"), "=SUM(B2:B4)");
@@ -3143,5 +3417,52 @@ mod tests {
             assert_eq!(col("=SUM(A1:B1)"), "=SUM(A1:C1)");
             assert_eq!(col("=SUM($A$1:$A$3)"), "=SUM($A$1:$A$3)");
         }
+    }
+
+    /// `parse_error` names what the engine cannot parse, with the error the
+    /// cell shows, and passes formulas that parse and input that is no
+    /// formula.
+    #[test]
+    fn parse_errors_say_what_is_wrong() {
+        let problem = |raw: &str| parse_error(raw).map(|e| (e.error.text(), e.problem));
+        assert_eq!(problem("=SUM(A1:A3)"), None);
+        assert_eq!(problem("plain (text"), None);
+        assert_eq!(
+            problem("=SUM(A1"),
+            Some(("#ERROR!", "`SUM(` is never closed: add `)`".into()))
+        );
+        assert_eq!(
+            problem("=(1+2"),
+            Some(("#ERROR!", "a `(` is never closed: add `)`".into()))
+        );
+        assert_eq!(
+            problem("=1+2)"),
+            Some(("#ERROR!", "a `)` closes no `(`".into()))
+        );
+        assert_eq!(
+            problem("="),
+            Some(("#ERROR!", "nothing follows the `=`".into()))
+        );
+        assert_eq!(
+            problem("=\"open"),
+            Some((
+                "#ERROR!",
+                "a text in quotes is never closed: add the closing `\"`".into()
+            ))
+        );
+        assert_eq!(
+            problem("=1 2"),
+            Some((
+                "#ERROR!",
+                "unexpected `2` after a complete value: an operator or `,` is missing".into()
+            ))
+        );
+        assert_eq!(
+            problem("=TOTAL"),
+            Some((
+                "#NAME?",
+                "`TOTAL` is not a cell such as `A1` nor a call such as `SUM(…)`".into()
+            ))
+        );
     }
 }

@@ -710,6 +710,25 @@ async fn checked_restore_late_acl_replacement_buffer_aba_and_rebinding_are_zero_
     }
 }
 
+/// This thread's id, as `/proc/self/task` names it.
+fn thread_id() -> String {
+    tilo_test_env::idle::current_thread_id()
+        .unwrap()
+        .to_string()
+}
+
+/// Waits until thread `tid` sleeps (on a lock, a condvar or a channel) or
+/// `done` says it got through without sleeping.
+fn blocked_or_done(tid: &str, what: &str, mut done: impl FnMut() -> bool) {
+    tilo_test_env::wait_until(format_args!("{what} to sleep or finish"), || {
+        done()
+            || std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).is_ok_and(|stat| {
+                stat.rsplit_once(") ")
+                    .is_some_and(|(_, rest)| rest.starts_with('S'))
+            })
+    });
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::too_many_lines,
@@ -720,6 +739,10 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
     {
         use collab_types::{Access, CapOverride, Effect, Expiry, Scope, Subject};
         let mut fixture = Fixture::new().await;
+        // The wall clock stands still until the test moves it past the
+        // expiry, so admission sees the grant live however slowly it runs.
+        let start = tilo_clock::wall();
+        tilo_clock::freeze_wall(start);
         let expiry = tilo_clock::try_unix_now().unwrap() + 2;
         let cap = CapOverride::new(
             Subject::User(Ed25519PublicKey([55; 32])),
@@ -746,18 +769,20 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
             });
             entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             let (finished, wait) = std::sync::mpsc::channel();
+            let (writer_tid, writer) = std::sync::mpsc::channel();
             scope.spawn(move || {
+                writer_tid.send(thread_id()).unwrap();
                 acl.replace(crate::acl::WorkspaceAcl::new());
                 finished.send(()).unwrap();
             });
-            assert!(
-                wait.recv_timeout(std::time::Duration::from_millis(50))
-                    .is_err(),
-                "ACL write must wait behind admission read lease"
-            );
-            while tilo_clock::try_unix_now().unwrap() <= expiry {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
+            let writer = tilo_test_env::recv("the ACL writer's thread", &writer);
+            let mut through = false;
+            blocked_or_done(&writer, "the ACL writer", || {
+                through = through || wait.try_recv().is_ok();
+                through
+            });
+            assert!(!through, "ACL write must wait behind admission read lease");
+            tilo_clock::freeze_wall(start + std::time::Duration::from_secs(3));
             resume.send(()).unwrap();
             assert_eq!(worker.join().unwrap(), Outcome::NotVisible);
             wait.recv_timeout(tilo_test_env::hang_bound()).unwrap();
@@ -782,13 +807,16 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
         // The actual owners used by storage::execute are held in its audited B→N
         // order. Admission reaches J/P before waiting for B and must not retain N/A.
         let storage_buffers = fixture.fs.write_buffers.lock().unwrap();
+        let (restorer_tid, restorer) = std::sync::mpsc::channel();
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 let _runtime = handle.enter();
+                restorer_tid.send(thread_id()).unwrap();
                 finished
                     .send(fixture.fs.checked_history_restore(fixture.ino, request))
                     .unwrap();
             });
+            let restorer = tilo_test_env::recv("the restore's thread", &restorer);
             entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             let storage_namespace = fixture
                 .fs
@@ -805,12 +833,14 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
                 .recv_timeout(tilo_test_env::hang_bound())
                 .expect("ACL replacement must not wait on admission before B/N");
             resume.send(()).unwrap();
-            assert!(
-                result
-                    .recv_timeout(std::time::Duration::from_millis(30))
-                    .is_err(),
-                "storage still owns the admission buffers"
-            );
+            // Resumed, the restore goes on until it needs the buffers storage
+            // holds, and sleeps there.
+            let mut early = None;
+            blocked_or_done(&restorer, "the resumed restore", || {
+                early = early.take().or_else(|| result.try_recv().ok());
+                early.is_some()
+            });
+            assert!(early.is_none(), "storage still owns the admission buffers");
             drop(storage_namespace);
             drop(storage_buffers);
             assert_eq!(
@@ -1898,6 +1928,7 @@ async fn history_read_complete_paging_and_exact_parent_metadata() {
     let V::Version {
         scope: actual,
         version,
+        ..
     } = fixture
         .fs
         .read_file_history(

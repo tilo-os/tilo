@@ -15,7 +15,10 @@
 //! it wait for that one load instead of repeating it.
 //!
 //! Signatures and shape are verified once. Freshness is the one part that
-//! depends on the clock, and it is checked on every request.
+//! depends on the clock, and it is the client's to judge: an authentic
+//! snapshot is served after it expires too, so a device can tell an expired
+//! catalogue from an unreachable one (and say so), and `/metrics` reports
+//! both expiries for the alerts that ask for a renewal in time.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,9 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 
-use registry_types::{
-    ChannelAuthorization, CompactRegistrySnapshot, SignedRegistrySnapshot, within_validity_window,
-};
+use registry_types::{ChannelAuthorization, CompactRegistrySnapshot, SignedRegistrySnapshot};
 
 use crate::storage::{FileStamp, Storage, StorageError};
 
@@ -58,7 +59,6 @@ pub(crate) struct Encoded {
     pub(crate) body: Bytes,
     /// Its hash, the response's `ETag`.
     pub(crate) etag: Option<String>,
-    issued_at_unix: u64,
     expires_at_unix: u64,
 }
 
@@ -66,7 +66,6 @@ impl Encoded {
     fn new<T: serde::Serialize>(
         value: &T,
         etag: Option<String>,
-        issued_at_unix: u64,
         expires_at_unix: u64,
     ) -> Result<Self, StorageError> {
         let body =
@@ -74,15 +73,22 @@ impl Encoded {
         Ok(Self {
             body: Bytes::from(body),
             etag,
-            issued_at_unix,
             expires_at_unix,
         })
     }
 
-    /// Whether this form may be served at `now_unix`.
-    pub(crate) fn fresh_at(&self, now_unix: u64) -> bool {
-        within_validity_window(self.issued_at_unix, self.expires_at_unix, now_unix)
+    /// When the signer said this form stops being valid (Unix seconds).
+    pub(crate) fn expires_at_unix(&self) -> u64 {
+        self.expires_at_unix
     }
+}
+
+/// The owner's authorization of the online signing channel, as far as
+/// knowing when it must be renewed goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ChannelTerm {
+    pub(crate) generation: u64,
+    pub(crate) expires_at_unix: u64,
 }
 
 /// The full snapshot as this server may serve it.
@@ -100,7 +106,6 @@ pub(crate) enum FullSnapshot {
     },
 }
 
-/// The catalogue of one revision.
 #[derive(Debug)]
 pub(crate) struct Published {
     revision: Revision,
@@ -108,6 +113,9 @@ pub(crate) struct Published {
     /// The compact form, present only while it verifies and is the form of
     /// the full snapshot.
     pub(crate) compact: Option<Encoded>,
+    /// The active channel authorization's term, whatever the snapshot's state:
+    /// it is what has to be renewed before anything can be signed again.
+    pub(crate) channel: Option<ChannelTerm>,
 }
 
 impl Published {
@@ -118,11 +126,16 @@ impl Published {
         let revision = Revision::of(storage)?;
         // An unreadable authorization activates no channel, as a missing one.
         let channel = storage.load_channel_authorization().ok().flatten();
+        let term = channel.as_ref().map(|authorization| ChannelTerm {
+            generation: authorization.generation,
+            expires_at_unix: authorization.expires_at_unix,
+        });
         let Some(snapshot) = storage.load_snapshot()? else {
             return Ok(Self {
                 revision,
                 full: FullSnapshot::Missing,
                 compact: None,
+                channel: term,
             });
         };
         let Some(snapshot_hash) = verified_snapshot(&snapshot, owner_pubkey_hex, channel.as_ref())
@@ -131,6 +144,7 @@ impl Published {
                 revision,
                 full: FullSnapshot::Refused,
                 compact: None,
+                channel: term,
             });
         };
         let compact = match storage.load_compact_snapshot()? {
@@ -145,7 +159,6 @@ impl Published {
                 Some(Encoded::new(
                     &compact,
                     registry_types::compact_snapshot_hash(&compact).ok(),
-                    compact.issued_at_unix,
                     compact.expires_at_unix,
                 )?)
             }
@@ -159,15 +172,11 @@ impl Published {
         Ok(Self {
             revision,
             full: FullSnapshot::Verified {
-                encoded: Encoded::new(
-                    &snapshot,
-                    Some(snapshot_hash),
-                    snapshot.issued_at_unix,
-                    snapshot.expires_at_unix,
-                )?,
+                encoded: Encoded::new(&snapshot, Some(snapshot_hash), snapshot.expires_at_unix)?,
                 packages,
             },
             compact,
+            channel: term,
         })
     }
 }

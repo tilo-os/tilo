@@ -78,9 +78,8 @@ fn private_file(path: &Path, bound: u64) -> io::Result<Vec<u8>> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     let metadata = file.metadata()?;
-    // SAFETY: geteuid reads process credentials without preconditions.
     if !metadata.is_file()
-        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
         || metadata.len() > bound
     {
@@ -329,9 +328,8 @@ impl Pending {
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(directory.join(filename))?;
         let metadata = package.metadata()?;
-        // SAFETY: geteuid reads process credentials without preconditions.
         if !metadata.is_file()
-            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.uid() != rustix::process::geteuid().as_raw()
             || metadata.mode() & 0o077 != 0
         {
             return Err(failure());
@@ -525,7 +523,7 @@ pub(crate) mod tests {
             &identity,
             "Already imported",
             [10, 40, 60],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         runtime_identity::set_active_identity(&identity, "primary").unwrap();

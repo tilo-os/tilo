@@ -1,18 +1,23 @@
 import {createMediaPump} from './voice-controls.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createDataLoader} from './data-loader.mjs';
+import {createImageDecoder} from './image-decode.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {MountRegistry,applyEditorHints,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
+import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
-import {semanticBridge} from './semantics.mjs';
+import {semanticBridge,applySemanticsPatch} from './semantics.mjs';
 import {recoverableClose} from './close-recovery.mjs';
 import {createCrashQuarantine,crashAction} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createLiveCursors} from './live-cursors.mjs';
 import {createHere} from './here.mjs';
+/** Chat, which holds person-to-person conversations. */
+const CHAT_APP='so.tilo.chat';
+import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
+import {focusedApp,untilSnapshot} from './open-target.mjs';
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
 export {createPanorama} from './panorama.mjs';
@@ -21,6 +26,7 @@ import {createNodeApps} from './node-apps.mjs';
 import {createNativeCatalogueBridge, invokeRoomMembership, runRoomAction} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
 import {browserSettings} from './browser-locale.mjs';
+import {fetchProxyFor,proxiedGet} from './fetch-proxy.mjs';
 // Page host for the Tilo browser runtime. Ported from the Tilo browser runtime
 // (PR 541) without its desktop host and action palette.
 // `mountDesktop` mounts the session desktop (tilo-desktop-surface over the
@@ -45,6 +51,8 @@ const fonts=retryableMemo(()=>fontLoader.startup());
 const ready=retryableMemo(()=>init());
 // Streaming compile starts on import, while the page connects; a failure retries on mount.
 void ready().catch(()=>{});
+// So do the fonts a mount waits for: fetched beside the module, not after the page joined.
+void fonts().catch(()=>{});
 const durableHost=createDurableHost({runtime,acquireStorage});
 // Application data kept out of the module (the Typst editor's fonts), fetched when an app asks.
 const data=createDataLoader({baseURL:import.meta.url,runtime});
@@ -62,29 +70,23 @@ export function prepareGpu(){
   if(!navigator.gpu||webgpuRefusal()||isWebKit(navigator))return;
   void ready().then(()=>runtime.prepare_gpu()).catch(()=>{});
 }
-/** Decode an image's bytes with the browser's own decoders into unpremultiplied
- * RGBA, scaled down to fit `maxDimension` on either side: the page's module
- * carries no image decoders of its own. */
-async function decodeImage(bytes,maxDimension){
-  const source=await createImageBitmap(new Blob([bytes]),{premultiplyAlpha:'none'});
-  try{
-    const scale=Math.min(1,maxDimension/Math.max(source.width,source.height));
-    const width=Math.max(1,Math.round(source.width*scale)),height=Math.max(1,Math.round(source.height*scale));
-    const canvas=new OffscreenCanvas(width,height);
-    const context=canvas.getContext('2d',{willReadFrequently:true});
-    context.imageSmoothingQuality='high';
-    context.drawImage(source,0,0,width,height);
-    return {width,height,rgba:new Uint8Array(context.getImageData(0,0,width,height).data.buffer)};
-  }finally{source.close();}
+/** Every mount's images decode in one worker, started on the first. */
+let imageDecoder;
+function decodeImage(bytes,maxDimension){
+  imageDecoder??=createImageDecoder();
+  return imageDecoder(bytes,maxDimension);
 }
-/** Fetch and compile the module of application `app` beside the runtime's
- * own, so the app the page is about to show does not wait for the start
- * module before its code even starts to download. A bundle that splits its
- * apps (the desktop bundle) names each app's module in `apps.json`; any
- * other bundle, an unknown app or a failed fetch leaves it to the app's
- * first open, as without this. */
-export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js')}={}){
+/** Fetch and compile the module of application `app` once the runtime's
+ * own is in, before the page mounts it, so the app the page is about to
+ * show does not wait for its first open. Not beside the runtime: on a link
+ * the downloads saturate, the runtime then arrives late, and admission,
+ * which needs it, runs only after both instead of while the app's code
+ * downloads. A bundle that splits its apps (the desktop bundle) names each
+ * app's module in `apps.json`; any other bundle, an unknown app or a failed
+ * fetch leaves it to the app's first open, as without this. */
+export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js'),after=ready}={}){
   void (async()=>{
+    await after();
     const listing=await fetch(new URL('apps.json',import.meta.url));
     if(!listing.ok)return;
     const module=(await listing.json()).applications?.find(entry=>entry.id===app)?.module;
@@ -99,18 +101,29 @@ export async function mountDesktop(target,options={}) {
   // Native focus may scroll hidden semantic controls; it must not move the canvas viewport.
   const surface=document.createElement('div');surface.className='tilo-host';surface.style.cssText='position:relative;width:100%;height:100%;overflow:clip;overscroll-behavior:none';
   let editor=document.createElement('textarea');editor.setAttribute('aria-label','Tilo focused text editor');editor.tabIndex=-1;editor.autocomplete='off';editor.autocapitalize='off';editor.spellcheck=false;
-  editor.style.cssText='position:absolute;opacity:0.01;width:2px;height:20px;padding:0;border:0;resize:none;pointer-events:none';
-  const accessibility=document.createElement('div');accessibility.setAttribute('aria-label','Tilo application');accessibility.style.cssText='position:absolute;top:0;left:0;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);';
+  // The canvas paints the caret and the text; the IME editor sits at the caret only so the
+  // browser places its composition UI there. Nothing of it may show: a textarea's own
+  // background, caret or focus outline, even nearly transparent, reads as a stray stroke.
+  editor.style.cssText='position:absolute;opacity:0.01;width:2px;height:20px;padding:0;border:0;resize:none;pointer-events:none;background:transparent;color:transparent;caret-color:transparent;outline:none;box-shadow:none;appearance:none';
+  // The accessibility mirror covers the canvas, each element over the control it
+  // stands for, so assistive technology that reads geometry (magnifiers, touch
+  // exploration) finds it where it is drawn. It is never seen and never takes
+  // the pointer; clipping keeps focus from scrolling it.
+  const accessibility=document.createElement('div');accessibility.setAttribute('aria-label','Tilo application');accessibility.style.cssText='position:absolute;top:0;left:0;width:100%;height:100%;overflow:clip;opacity:0;pointer-events:none;';
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
-  commandStatus.style.cssText='display:none;position:absolute;bottom:12px;left:12px;max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
+  const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
+  const fillScreen=createScreenFill(surface,{canvas,observe:globalThis.ResizeObserver});
   let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
   const report=data=>{
-    if(data.clipboard==='copied'||data.clipboard==='failed'){commandStatus.style.display='block';commandStatus.textContent=data.clipboard==='copied'?'Copied to system clipboard':`Could not copy to system clipboard: ${data.clipboardError??'browser access denied'}`;}
-    if(data.desktopCommand){const row=data.desktopCommand;commandStatus.style.display='block';commandStatus.textContent=row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`;}
-    if(data.desktopErrors?.length){commandStatus.style.display='block';commandStatus.textContent=`Desktop request unavailable: ${data.desktopErrors.at(-1)}`;}
+    // A finished copy is the app's to show, in its own window; the page only speaks it.
+    if(data.clipboard==='copied')status.show('Copied to system clipboard',{spoken:true,again:true});
+    // The clipboard says why in a sentence of its own (tilo-clipboard's web/clipboard.mjs).
+    if(data.clipboard==='failed')status.show(data.clipboardError||'Could not copy. Try the keyboard Copy shortcut.',{again:true});
+    if(data.desktopCommand){const row=data.desktopCommand;status.show(row.state==='succeeded'?'Desktop change saved':row.state==='submitting'||row.state==='accepted'?'Saving desktop change…':row.state==='failed'||row.state==='rejected'?`Desktop change refused: ${row.error??'unavailable'}`:`Desktop change awaiting confirmation: ${row.error??row.state}`);}
+    if(data.desktopErrors?.length)status.show(`Desktop request unavailable: ${data.desktopErrors.at(-1)}`);
     options.onStatus?.(data);
   };
   const navigationFocus={errors(){},update(){},close(){}};
@@ -150,12 +163,20 @@ export async function mountDesktop(target,options={}) {
       localActivationGesture=undefined;void handoff.complete(gesture.scope,gesture.epoch);
     }
   }
+  // Until a resize is drawn the canvas stretches the last frame to its new
+  // CSS box, and pointer input maps into that frame the same way; the mirror
+  // follows the frame on screen, scaled from its layout size to the canvas.
+  // The canvas's CSS size comes from its resize observer, so a frame's state
+  // update never forces a synchronous layout to read it.
+  let canvasCssSize;
+  const placeSemantics=()=>semantic?.layout(canvasCssSize??=[canvas.clientWidth,canvas.clientHeight],lastState?.logicalSize);
   semantic=semanticBridge(accessibility,(...args)=>runtime.semantic(id,...args),report,{
     keydown:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keydown(...args);},
     keyup:(...args)=>{inputScope.capture();return active()&&semanticKeys?.keyup(...args);},
     blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},
   },inputScope);
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
+  if(globalThis.ResizeObserver){const resized=new ResizeObserver(([entry])=>{canvasCssSize=[entry.contentRect.width,entry.contentRect.height];placeSemantics();});resized.observe(canvas);listeners.signal.addEventListener('abort',()=>resized.disconnect());}
   const editorListeners=[];
   function onEditor(type,fn,opts={}){
     const guarded=event=>{inputScope.capture();if(event.currentTarget!==editor){event.preventDefault();return;}fn(event);};
@@ -175,6 +196,64 @@ export async function mountDesktop(target,options={}) {
     if(focused){const scope=inputScope.capture();if(scope)(scope.legacy||scope.ime?editor:canvas).focus({preventScroll:true});}
   }
   function active(){return !closed&&!crashed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
+  // The pictures people chose for their profiles, worn by their avatars here.
+  async function showPhoto(user,url){const pixels=url?await photoPixels(url):null;if(active()&&runtime.desktop_set_person_photo)runtime.desktop_set_person_photo(id,user,pixels?.width??0,pixels?.height??0,pixels?.rgba??new Uint8Array());}
+  // Chat's window to run its actions in: one already open (left where it
+  // is), else Chat opened, as invoking an action shows its view.
+  async function chatWindow(){
+    const nav=navigation?.controller;if(!nav)throw Error('This desktop cannot open Chat');
+    const snapshot=nav.getSnapshot();
+    if(focusedApp(snapshot)===CHAT_APP)return snapshot.active.tab;
+    const open=snapshot.entries?.find(entry=>entry.app===CHAT_APP);
+    if(open)return open.route.tab;
+    await nav.dispatch({kind:'open',app:CHAT_APP,generation:snapshot.generation});
+    const shown=await untilSnapshot(nav,next=>focusedApp(next)===CHAT_APP,{frames:()=>lastState?.frames??Infinity});
+    return shown.active.tab;
+  }
+  // Run what the person asked of Chat on its conversation with `ask.to`
+  // (root key, hex), as their own act: Chat offers it once the room's list
+  // of people has them.
+  async function runOwnAsk(ask){
+    const window=await chatWindow();
+    for(let waited=0;;waited+=100){
+      const offered=active()&&JSON.parse(runtime.component_actions(id,undefined,window)).find(entry=>entry.address?.action===ask.action&&String(entry.address.resource??'').endsWith(`chat.person:${ask.to}`));
+      if(offered)return runtime.desktop_run_own_ask(id,ask.id,offered.address.resource,window);
+      if(waited>=10_000)throw Error('Chat has no conversation with this person');
+      await new Promise(done=>setTimeout(done,100));
+    }
+  }
+  // Chat's direct conversation with someone, opened as following a link to it does.
+  async function messagePerson(ask){
+    const nav=navigation?.controller;if(!nav)throw Error('This desktop cannot open Chat');
+    const snapshot=nav.getSnapshot();
+    if(focusedApp(snapshot)!==CHAT_APP){
+      await nav.dispatch({kind:'open',app:CHAT_APP,generation:snapshot.generation});
+      await untilSnapshot(nav,next=>focusedApp(next)===CHAT_APP,{frames:()=>lastState?.frames??Infinity});
+    }
+    await runOwnAsk(ask);
+  }
+  // A message written to `to` in the people overlay, sent by Chat's own
+  // `send-direct-message`, the one way a direct message goes; the overlay
+  // hears whether Chat took it.
+  async function sendToPerson(ask){
+    let refusal=null;
+    try{await runOwnAsk(ask);}catch(error){refusal=String(error?.message??error);}
+    if(active()&&runtime.desktop_message_answer)runtime.desktop_message_answer(id,ask.id,refusal??undefined);
+  }
+  // What the person says they are doing and how they share it, as their
+  // profile keeps it: set on another of their devices, it shows here too.
+  function ownStatus(profile){
+    const status=typeof profile.status==='string'?profile.status:'';
+    const sharing=typeof profile.sharing==='string'?profile.sharing:'';
+    options.onHostAction?.('set-status',{status,sharing,keep:false});
+    // Whether their picture is a linked account's, which a newer one of
+    // that account's replaces, or one they uploaded, which stays.
+    options.onHostAction?.('set-linked',{photoFrom:typeof profile.photo_from==='string'?profile.photo_from:null,linked:Array.isArray(profile.linked)?profile.linked:[],keep:false});
+    if(active()&&runtime.desktop_set_own_status)runtime.desktop_set_own_status(id,status,sharing);
+  }
+  // The accounts elsewhere someone's profile names, which their card says.
+  function showLinked(user,linked){if(active()&&runtime.desktop_set_person_links)runtime.desktop_set_person_links(id,user,JSON.stringify(linked));}
+  const photos=followPhotos({profileOf:user=>fetchPersonProfile(options.peer.origin,user),show:showPhoto,linked:showLinked,own:()=>options.peer?.userPublicKey,onOwn:ownStatus,onError:error=>report({photoError:String(error)})});
   const nativeCatalogue = createNativeCatalogueBridge({current:active,
     actions:()=>options.peer?.actions,
     membership:()=>options.peer?.membership,
@@ -182,14 +261,25 @@ export async function mountDesktop(target,options={}) {
     deliver:message=>runtime.component_catalogue_response(id,JSON.stringify(message)),
     onError:error=>report({catalogueError:String(error)})});
   const fontMountValid=()=>!closed&&!crashed&&registry.current(token)&&id!==undefined&&runtimeReady;
-  fontDemands=createFontDemandPump({loader:fontLoader,valid:fontMountValid,report,install:(name,bytes)=>runtime.install_font(id,name,bytes),failed:()=>runtime.font_failed(id)});
+  fontDemands=createFontDemandPump({loader:fontLoader,valid:fontMountValid,report,install:(name,bytes)=>runtime.install_font(id,name,bytes,fontLoader.digestOf(bytes)??''),failed:()=>runtime.font_failed(id)});
   function update(raw){
     if(closed||crashed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
+    // After the first tree a status carries only what changed in it; one
+    // made for a tree this page does not hold asks for the whole tree.
+    if(state.semanticsPatch){
+      const patched=applySemanticsPatch(lastState?.semantics,lastState?.semanticsSeq,state.semanticsPatch);
+      if(patched){state.semantics=patched;state.semanticsSeq=state.semanticsPatch.seq;}
+      else if(active())queueMicrotask(()=>{if(active())runtime.request_semantics?.(id);});
+      delete state.semanticsPatch;
+    }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.['room-action']){const asked=request['room-action'];void runRoomAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_room_action_answer(id,asked.id,JSON.stringify(answer));});}}
+    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.message)void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.send)void sendToPerson(request.send);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(typeof request?.message==='string')void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.['room-action']){const asked=request['room-action'];void runRoomAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_room_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
-    if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null});}
+    if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});liveCursors?.wake();}
+    // This person's latest wave, which the one it is for shows once.
+    if('liveWave' in state)liveLayer()?.publishPresence({wave:state.liveWave});
+    if('liveFollowing' in state)liveLayer()?.publishPresence({following:state.liveFollowing});
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
       desktopOwnership=Boolean(runtime.desktop_input_ownership&&runtime.desktop_navigation_snapshot?.(id));
       runtimeReady=true;
@@ -218,7 +308,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;inputScope.capture();}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,localFocus:()=>livePlace?.focus??null,windows:()=>{const shown=runtime.desktop_record_windows?.(id);return shown?JSON.parse(shown):undefined;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],onError:error=>report({nodeAppsError:String(error)})});}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,setPointers:pointers=>{if(active())runtime.remote_pointers(id,JSON.stringify(pointers));},anchor:(x,y)=>{const at=active()&&runtime.pointer_anchor(id,x,y);return at?JSON.parse(at):null;}});liveCarets=followRemoteCarets(layer,()=>id,active);if(livePlace)layer.publishPresence({focus:livePlace.focus,place:livePlace.place,layout:livePlace.layout??null});}if(!here&&!config.app&&options.peer&&runtime.desktop_here_tick)here=createHere({runtime,mountId:()=>id,active,layer:liveLayer,peer:options.peer,presenceUrl:options.presenceUrl,photos:options.peer.origin?photos:null,onError:error=>report({hereError:String(error)})});if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],paintFrame:(key,bytes)=>Boolean(active()&&runtime.desktop_peer_window_paint?.(id,key,bytes)),takePaintInput:()=>active()&&runtime.desktop_take_peer_window_input?JSON.parse(runtime.desktop_take_peer_window_input(id)):[],focusWindow:key=>{if(active()&&runtime.desktop_focus_peer_window)runtime.desktop_focus_peer_window(id,key);},focusDesktop:()=>{if(active())canvas.focus({preventScroll:true});},onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],onError:error=>report({nodeAppsError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
@@ -226,7 +316,9 @@ export async function mountDesktop(target,options={}) {
     navigationFocus.errors(state.desktopErrors??[]);
     if(state.phase==='presented'&&navigation)navigationFocus.update(navigation.controller.getSnapshot());
     if(state.semantics)semantic.update(state.semantics);
+    placeSemantics();
     const ownership=inputScope.capture(),ime=ownership?.legacy?state.ime:ownership?.ime;
+    fillScreen(!ime);
     if(ime){
       editor.style.left=`${ime.x}px`;editor.style.top=`${ime.y}px`;editor.style.height=`${Math.max(1,ime.height)}px`;
       applyEditorHints(editor,ime.hints);
@@ -242,14 +334,20 @@ export async function mountDesktop(target,options={}) {
   });
   async function fetchAsset(request){
     if(options.loadAsset)return options.loadAsset(request.url,listeners.signal);
+    // A content address: the runtime hands one out only once its bytes are here.
+    if(request.url.startsWith('tilo-blob://')){
+      const bytes=runtime.blob_asset(id,request.loader,request.url);
+      if(!bytes)throw Error('asset unavailable: content not here');
+      return bytes;
+    }
     const url=new URL(request.url,location.href);
     if(!['http:','https:'].includes(url.protocol))throw Error('asset unavailable: no admitted content transport');
     // A cross-origin image goes through the host's fetch proxy when it offers
     // one (tilo-net's wire protocol v1), else directly where the site allows
     // it; the page's cookies never go to another origin.
-    const proxy=url.origin===location.origin?undefined:globalThis.__tiloFetchProxy;
-    const response=typeof proxy==='string'
-      ?await fetch(`${new URL(proxy,location.href).href}?url=${encodeURIComponent(url.href)}`,{signal:listeners.signal,credentials:'same-origin',headers:{'x-tilo-proxy':'1'}})
+    const proxy=fetchProxyFor(url,{pageHref:location.href});
+    const response=proxy
+      ?await fetch(...proxiedGet(url,proxy,{signal:listeners.signal}))
       :await fetch(url,{signal:listeners.signal,credentials:url.origin===location.origin?'same-origin':'omit'});
     if(!response.ok)throw Error(`asset HTTP ${response.status}`);
     return new Uint8Array(await response.arrayBuffer());
@@ -298,10 +396,12 @@ export async function mountDesktop(target,options={}) {
     if(action==='restart'&&options.restartOnCrash!==false)setTimeout(()=>location.reload(),250);
   }
   let closeWrites=[];
+  let forgetCrashed;
   const cleanup=recoverableClose({
     begin(){
       capture.close();semanticPresentation.close();
       crashListeners.delete(onCrash);
+      if(globalThis.__tiloForgetCrashedWindow===forgetCrashed)delete globalThis.__tiloForgetCrashedWindow;
       nativeCatalogue.dispose();media?.close();liveOverlay?.close();liveOverlay=undefined;liveCursors?.close();liveCursors=undefined;liveCarets?.();liveCarets=undefined;here?.stop();here=undefined;legacyWindows?.close();legacyWindows=undefined;nodeApps?.close();nodeApps=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=Array.from(runtime.close(id));
       surface.remove();
@@ -347,8 +447,15 @@ export async function mountDesktop(target,options={}) {
     if(config.app&&!await runtime.load_application(config.app))throw Error(`${config.app} could not be loaded`);
     if(!registry.current(token))throw Error('mount disposed');
     runtime.quarantine_windows?.(JSON.stringify(crashes.entries(config.room)));
+    // A crashed window the person reopens leaves the record, so the next
+    // load runs its app too.
+    forgetCrashed=tab=>crashes.forget(config.room,tab);
+    globalThis.__tiloForgetCrashedWindow=forgetCrashed;
     crashListeners.add(onCrash);
-    id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>{
+    // Each startup font goes in with the digest the loader computed natively,
+    // which the runtime checks against its build instead of hashing again.
+    for(const [name,bytes] of Object.entries(assets))runtime.provide_startup_font(name,bytes,fontLoader.digestOf(bytes)??'');
+    id=runtime.mount(canvas,JSON.stringify(config),entries,raw=>{
       // Pin pixels and geometry while this presentation is still current,
       // before another presentation or a queued page callback can replace it.
       // This path reads only JS/Canvas state, never re-enters the WASM mount.
@@ -386,11 +493,36 @@ export async function mountDesktop(target,options={}) {
       for(const kind of ['paste','copy','cut'])bind(kind,event=>{
         const scope=inputScope.capture();
         if(!scope||!event.clipboardData||composing||!inputScope.valid(scope))return;
-        try{if(kind==='paste'&&!event.clipboardData.getData('text/plain')){event.preventDefault();report({clipboard:'empty or unsupported clipboard payload'});return;}
+        try{if(kind==='paste'&&!event.clipboardData.getData('text/plain')){event.preventDefault();
+            // A picture's bytes are only readable after the event: read them,
+            // then dispatch the paste again carrying them.
+            const picture=pastedPicture(event.clipboardData);
+            if(!picture){report({clipboard:'empty or unsupported clipboard payload'});return;}
+            const shift=pasteShift;
+            picture.arrayBuffer().then(buffer=>{
+              if(!inputScope.valid(scope))return;
+              const completed=runtime.clipboard_event(id,'paste',{getData:()=>'',tiloImage:{type:picture.type,bytes:new Uint8Array(buffer)}},shift);
+              report({lastInput:kind,clipboard:completed?'picture pasted':'unavailable or no selection'});
+            }).catch(error=>report({clipboard:'failed',error:String(error)}));
+            return;}
           if(kind==='paste'&&oversizedInsert(event.clipboardData.getData('text/plain'))){event.preventDefault();report({clipboard:'refused',error:`Paste is too large (more than ${MAX_TEXT_INSERT.toLocaleString()} characters); nothing was inserted.`});return;}const completed=runtime.clipboard_event(id,kind,event.clipboardData,pasteShift);event.preventDefault();report({lastInput:kind,clipboard:completed?'completed in trusted DOM event':'unavailable or no selection'});}
         catch(error){report({clipboard:'failed',error:String(error)});}
       });
     }
+    // Files dropped on the page go to what is under the pointer, with their
+    // bytes: a page's files have no path to open.
+    on(canvas,'dragover',event=>{if(!active()||!draggingFiles(event.dataTransfer))return;event.preventDefault();event.dataTransfer.dropEffect='copy';});
+    on(canvas,'drop',event=>{
+      if(!active()||!draggingFiles(event.dataTransfer))return;
+      event.preventDefault();
+      const rect=canvas.getBoundingClientRect();
+      const x=(event.clientX-rect.left)*(canvas.width/(rect.width||1)),y=(event.clientY-rect.top)*(canvas.height/(rect.height||1));
+      droppedFiles(event.dataTransfer).then(files=>{
+        if(!files.length)return;
+        const handed=runtime.drop_files(id,files,x,y);
+        report({lastInput:'drop',drop:`${handed} of ${files.length} files handed over`});
+      }).catch(error=>report({drop:'failed',error:String(error)}));
+    });
     const dispatchKey=(type,event)=>canvas.dispatchEvent(new KeyboardEvent(type,event));
     hiddenKeys=createKeyboardForwarder({route:keyboardRoute,mac:config.mac,dispatch:dispatchKey,clearModifiers,report:()=>report({lastInput:'keyboard'})});
     semanticKeys=createKeyboardForwarder({route:(...args)=>overlayKeyboardRoute(retainedWidget(lastState),...args),mac:config.mac,dispatch:dispatchKey,publishModifiers,clearModifiers,report:()=>report({lastInput:'keyboard'})});
@@ -466,10 +598,16 @@ export async function mountDesktop(target,options={}) {
       // Host actions (`[{id, title, subtitle?}]`) in place of earlier ones, and a banner offering one (`{action, title, body}`).
       setHostActions:actions=>{if(active()&&runtime.desktop_set_host_actions)runtime.desktop_set_host_actions(id,JSON.stringify(actions));},
       offerHostAction:offer=>{if(active()&&runtime.desktop_offer_host_action)runtime.desktop_offer_host_action(id,JSON.stringify(offer));},
+      // The picture `user` (root key, hex) chose, as a `data:` URL, shown on their avatars now; `null` takes it away.
+      setPersonPhoto:(user,url)=>{photos.chose(user,url);return showPhoto(user,url);},
       // What the page just did out of sight, said in passing ("Link copied").
       acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
       // Who the desktop shows as here (`[{id, label, agent}]`, one row per person), or null for a single app.
       people:()=>{const shown=active()&&runtime.desktop_here_people?.(id);return shown?JSON.parse(shown):null;},
+      // The room's members' pointers the frame draws: `[{label, agent, x, y, color}]`.
+      pointers:()=>active()?JSON.parse(runtime.remote_pointers_shown(id)):[],
+      // Name the room's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.
+      setPeople:people=>{if(active())runtime.set_people(id,JSON.stringify(people));},
 
       durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
       semantic:(...args)=>runtime.semantic(id,...args),
@@ -495,7 +633,7 @@ function followRemoteCarets(layer,mountId,active){
     const key=JSON.stringify([frame.selection,participant]);
     if(last.get(publisher)?.key===key)return;
     last.set(publisher,{key,participant});
-    runtime.remote_presence(mountId(),publisher,participant?.label??'',participant?.kind??'person',participant?.color??'',frame.selection?.anchor,frame.selection?.head);
+    runtime.remote_presence(mountId(),publisher,participant?.label??'',participant?.kind??'person',frame.selection?.anchor,frame.selection?.head);
   };
   const stops=[layer.onPresence(apply),layer.onMember(({publisher,active:present})=>{
     if(present||!last.delete(publisher)||!active())return;

@@ -65,8 +65,17 @@ cargo_packages = ["other"]
 name = "globs"
 run = "build"
 inputs = ["apps/app/**"]
+
+[[check]]
+name = "per-arch-{arch}"
+run = "build {arch}"
+inputs = ["tools/{arch}.sh"]
+
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 """
         self.assertEqual(t_check_blocks(text, "image", "app"), [])
+        self.assertEqual(t_check_blocks(text, "per-arch-aarch64", "app"), [{"tools/aarch64.sh"}])
         self.assertEqual(t_check_blocks(text, "image", "tool-x"), [])
         self.assertEqual(t_check_blocks(text, "image", "shared"), [{"tools/build.sh"}])
         self.assertEqual(t_check_blocks(text, "packages-only", "app"), [set()])
@@ -144,9 +153,7 @@ jobs:
             from tools.policy.check_workflow_package_paths import load_metadata
 
             repository_metadata = load_metadata(ROOT)
-            relay_text = (
-                ROOT / ".forgejo/workflows/release-relay.yml"
-            ).read_text(encoding="utf-8")
+            t_text = (ROOT / "t.toml").read_text(encoding="utf-8")
             relay_inputs = {
                 ".cargo/**",
                 "Cargo.toml",
@@ -156,65 +163,48 @@ jobs:
                 "os/dev/rpm-snapshot-fingerprint.py",
                 "os/dev/verify-rpm-snapshot-package-set.sh",
             }
-            for index, block in enumerate(workflow_path_blocks(relay_text), start=1):
-                self.assertTrue(
-                    relay_inputs <= block,
-                    f"relay paths block {index} misses direct build/signing inputs: "
-                    f"{sorted(relay_inputs - block)}",
-                )
+            relay_blocks = t_check_blocks(t_text, "image-relay", "tilo-relay")
+            self.assertEqual(len(relay_blocks), 1)
+            self.assertTrue(
+                relay_inputs <= relay_blocks[0],
+                f"image-relay misses direct build/signing inputs: {sorted(relay_inputs - relay_blocks[0])}",
+            )
+            # The kernel recipe builds tilo-crypto without default features
+            # (os/kernel/Containerfile, os/kernel/project-crate.py).
+            kernel_signer = ("--no-default-features",)
             pairs = (
-                ("tilo-relay", ".forgejo/workflows/release-relay.yml"),
-                ("tilo-fs", ".forgejo/workflows/release-relay.yml"),
-                ("tilo-crypto", ".forgejo/workflows/build-kernel.yml"),
+                ("tilo-relay", "image-relay", ()),
+                ("tilo-fs", "image-relay", ()),
+                ("tilo-crypto", "image-kernel-x86_64", kernel_signer),
+                ("tilo-crypto", "image-kernel-aarch64", kernel_signer),
             )
             violations: list[str] = []
-            for package, relative in pairs:
-                workflow = (ROOT / relative).read_text(encoding="utf-8")
+            for package, check, cargo_args in pairs:
+                blocks = t_check_blocks(t_text, check, package)
+                self.assertTrue(blocks, f"{check} names {package} in cargo_packages; audit its inputs instead")
                 violations.extend(
-                    f"{relative}: {item}"
-                    for item in audit(repository_metadata, ROOT, package, workflow)
+                    f"t.toml#{check}: {item}"
+                    for item in audit(repository_metadata, ROOT, package, "", blocks, cargo_args)
                 )
             self.assertEqual(violations, [])
-        with self.subTest(phase='relay catalog only changes do not build an unsigned image'):
-            source = (ROOT / ".forgejo/workflows/release-relay.yml").read_text(
-                encoding="utf-8"
-            )
-            blocks = workflow_path_blocks(source)
-            self.assertEqual(len(blocks), 2)
-            for block in blocks:
-                # PR72 added only PDFium entries here; relay's catalog consumer is
-                # Cosign installation, which runs only for tags/manual publication.
-                self.assertFalse(any(
-                    fnmatchcase("os/external-assets/github-assets.tsv", pattern)
-                    for pattern in block
-                ))
-                for path in (
-                    "crates/hosting/tilo-relay/src/main.rs",
-                    "crates/system/fs/src/lib.rs",
-                    ".forgejo/actions/install-cosign/action.yml",
-                ):
-                    self.assertTrue(any(fnmatchcase(path, pattern) for pattern in block), path)
-            self.assertIn('    tags: ["v*"]', source)
-            self.assertIn("\n  workflow_dispatch:\n", source)
-        with self.subTest(phase='relay image paths exclude test-only workspace edges'):
+        with self.subTest(phase='relay image inputs exclude test-only workspace edges'):
             # The image Containerfile runs cargo build -p tilo-relay -p fs --bins.
             # Dev-harness crates must not schedule that rebuild.
-            source = (ROOT / ".forgejo/workflows/release-relay.yml").read_text(
-                encoding="utf-8"
-            )
-            for block in workflow_path_blocks(source):
-                for path in (
-                    "apps/notes/**",
-                    "apps/chat/**",
-                    "crates/sdk/ui-core/**",
-                    "crates/browser/tilo-browser-runtime/**",
-                    "vendor/vello/**",
-                ):
-                    self.assertNotIn(path, block, path)
-                self.assertIn("crates/hosting/tilo-relay/**", block)
-                self.assertIn("crates/system/fs/**", block)
-                self.assertIn("vendor/genawaiter-proc-macro/**", block)
-
+            (block,) = t_check_blocks((ROOT / "t.toml").read_text(encoding="utf-8"),
+                                      "image-relay", "tilo-relay")
+            for path in (
+                "apps/notes/**",
+                "apps/chat/**",
+                "crates/sdk/ui-core/**",
+                "crates/browser/tilo-browser-runtime/**",
+                "vendor/vello/**",
+            ):
+                self.assertNotIn(path, block, path)
+            for path in ("crates/hosting/tilo-relay/src/main.rs", "crates/system/fs/src/lib.rs"):
+                self.assertTrue(any(fnmatchcase(path, pattern) for pattern in block), path)
+            self.assertIn("crates/hosting/tilo-relay/**", block)
+            self.assertIn("crates/system/fs/**", block)
+            self.assertIn("vendor/genawaiter-proc-macro/**", block)
 
 if __name__ == "__main__":
     unittest.main()

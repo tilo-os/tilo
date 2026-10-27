@@ -19,6 +19,7 @@ pub mod answer;
 pub mod author;
 pub mod background;
 pub mod brushes;
+pub mod chart;
 pub mod content;
 pub mod content_geometry;
 pub mod detail;
@@ -77,6 +78,8 @@ fn probe_paint_engine(_: &str) -> Result<(), String> {
 impl ResourceApp for App {
     type Resource = Artwork;
     const ID: &'static str = crate::APP_ID;
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = crate::APP_TITLE;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
@@ -121,16 +124,22 @@ impl ResourceApp for App {
                 stage_open.set(true);
             }
         });
-        let window = Box::new(
-            NavShell::new()
-                .content_kind(ui::widget::ContentKind::Document)
-                .with_id("canvas-shell")
-                .with_inspector_state(&inspector_open)
-                .content(work)
-                .content_header_leading(panels::header::title(cx, &tools, &compact))
-                .content_header("", panels::header::header(cx, &tools, &compact))
-                .inspector(Box::new(Group::new(sidebar(cx, &tools, &dock)))),
-        );
+        // The window's own row is the title, the artwork's menu and its
+        // commands: the bar carries them as slots, so the canvas keeps the
+        // height the row took and a narrow window keeps every command.
+        let window: Element = Box::new(panels::bar::WindowBar::new(
+            Box::new(
+                NavShell::new()
+                    .content_kind(ui::widget::ContentKind::Canvas)
+                    .with_id("canvas-shell")
+                    .with_window_toolbar()
+                    .with_inspector_state(&inspector_open)
+                    .content(work)
+                    .inspector(Box::new(Group::new(sidebar(cx, &tools, &dock)))),
+            ),
+            &tools,
+            cx.dispatcher(),
+        ));
         // Over a blank artwork, a welcome saying what can be done here and
         // by whom; then the dialogs.
         let mut layers = Stack::new().push(window);
@@ -143,7 +152,7 @@ impl ResourceApp for App {
                 tools,
                 recents,
                 cx.live().clone(),
-                cx.dispatcher(),
+                (**cx).clone(),
             ),
             compact,
         ))
@@ -628,7 +637,7 @@ fn dock_tabs(
             ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(id)),
         )
     };
-    let tabs = ui::widget::ToggleGroup::from_state(
+    let tabs = ui::widget::ViewTabs::from_state(
         vec![
             tab(Dock::Layers, "canvas-layers"),
             tab(Dock::Objects, "canvas-objects"),
@@ -636,7 +645,6 @@ fn dock_tabs(
         ],
         dock,
     )
-    .with_style(ui::widget::SegmentedStyle::Tabs)
     .fill()
     .with_id("canvas-dock");
     let tools = tools.clone();
@@ -683,3 +691,26 @@ fn fold(cx: &ViewCx<Artwork>, open: &LocalState<bool>) -> Element {
 }
 
 ui::dev_reload_entry!(App);
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::App::scenarios() {
+            let mut app = TestApp::<super::App>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

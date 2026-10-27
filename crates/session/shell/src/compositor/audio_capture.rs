@@ -462,7 +462,6 @@ mod tests {
 
     #[test]
     fn dropping_dictation_capture_reaps_its_owned_process_and_unblocks_the_reader() {
-        // A blocked pipe exercises teardown without a microphone or a desktop.
         let mut child = Command::new("cat")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -504,7 +503,6 @@ mod tests {
 
     #[test]
     fn pipewire_sources_come_from_server_assigned_identity() {
-        // Phase `default_sink_serial_comes_from_server_assigned_identity`.
         {
             let inspect = r#"
                 node.name = "spoofable-name"
@@ -514,7 +512,6 @@ mod tests {
             assert_eq!(parse_object_serial(inspect).as_deref(), Some("314"));
             assert_eq!(parse_object_serial("object.serial = hacked"), None);
         }
-        // Phase `desktop_and_microphone_request_different_pipewire_sources`.
         {
             let desktop = capture_args(AudioSource::System, "314").join(" ");
             let microphone = capture_args(AudioSource::Microphone, "271").join(" ");
@@ -523,7 +520,6 @@ mod tests {
             assert!(microphone.contains("--target 271"));
             assert!(!microphone.contains("stream.capture.sink"));
         }
-        // Phase `drain_keeps_only_complete_stereo_sample_frames`.
         {
             let mut pending = vec![1, 2, 3, 4, 5, 6];
             let aligned = pending.len() / SAMPLE_FRAME_BYTES * SAMPLE_FRAME_BYTES;

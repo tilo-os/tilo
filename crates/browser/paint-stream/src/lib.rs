@@ -26,19 +26,11 @@ pub use model::{
 pub use patch::{LayerChange, Patch, PatchError};
 
 /// Wire encoding shared by host and client.
-///
-/// # Errors
-///
-/// Returns the encoder's error when serialisation fails.
 pub fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, postcard::Error> {
     postcard::to_stdvec(value)
 }
 
 /// Decode a value produced by [`encode`].
-///
-/// # Errors
-///
-/// Returns the decoder's error for truncated or malformed input.
 pub fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, postcard::Error> {
     postcard::from_bytes(bytes)
 }

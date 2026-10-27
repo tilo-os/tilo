@@ -1,14 +1,19 @@
-//! The annotation dock: a chart over its sampled range and a comment thread
-//! anchored to a range. A card is an object (it can be opened, edited and
-//! deleted), so it is a `CardFace` with its own title and, for a comment, a
-//! stripe in its author's colour. The cards stand in a row under the grid
-//! (the grid gives up the height) rather than floating over it, so an
-//! annotation never hides the cells it talks about. The plot is genuine
-//! content drawing and reads its colour from the theme's series.
+//! Annotations: charts over their sampled ranges, and comment threads on
+//! their cells. A card is an object (it can be opened, edited and deleted),
+//! so it is a `CardFace` with its own title and, for a comment, a stripe in
+//! its author's colour.
+//!
+//! Chart cards stand in a dock under the grid (the grid gives up the
+//! height). A comment belongs to its cell: the cell carries a marker in its
+//! corner, and selecting the cell (a click on it or its marker, or the
+//! comment's `open`) opens the thread as a floating card beside the cell,
+//! so it never hides the cell it is about. The plot is genuine content
+//! drawing and reads its colour from the theme's series.
 
 use super::{
     Addr, Affine, AnnotationClick, Button, CellValue, ChartKind, ChartSnapshot, ChromeMetrics,
-    Fill, HashMap, Point, Rect, Scene, SheetsApp, TextRenderer, TextRole, Theme, WindowEvent,
+    CommentThread, Fill, HashMap, Point, Rect, Scene, SheetsApp, TextRenderer, TextRole, Theme,
+    WindowEvent,
 };
 use ui::charts::legend;
 use ui::charts::{Sparkline, TrendFill, TrendRange, TrendStyle};
@@ -41,16 +46,15 @@ pub(super) struct CommentRows {
     pub text_h: f64,
     /// The replies line.
     pub replies_top: f64,
-    /// The action row.
     pub actions_top: f64,
     pub height: f64,
 }
 
 impl ChromeMetrics {
-    /// Height of a chart's plot: the legend's line and a step under it, then
-    /// a content-sized plot.
+    /// Height of a chart's plot: the legend's line and a step under it, a
+    /// content-sized plot, then a step and the line of category labels.
     pub(super) fn plot_h(&self) -> f64 {
-        self.lh_caption + self.s1 + self.s16
+        2.0 * (self.lh_caption + self.s1) + self.s16
     }
 
     /// Rows of a comment card's body: the range line, the comment text, the
@@ -73,11 +77,8 @@ impl ChromeMetrics {
     }
 }
 
-/// A card in the dock.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum DockCard {
-    /// The sheet's first comment thread.
-    Comment,
     /// The chart at this index of the sheet's charts.
     Chart(usize),
 }
@@ -146,7 +147,6 @@ impl CardMetrics {
 
     fn height(&self, card: DockCard, width: f64) -> f64 {
         match card {
-            DockCard::Comment => self.comment_h,
             DockCard::Chart(_) if width >= self.chart_single_row_w => self.chart_compact_h,
             DockCard::Chart(_) => self.chart_h,
         }
@@ -154,7 +154,6 @@ impl CardMetrics {
 
     fn min_width(&self, card: DockCard) -> f64 {
         match card {
-            DockCard::Comment => self.comment_min_w,
             DockCard::Chart(_) => self.chart_min_w,
         }
     }
@@ -174,19 +173,17 @@ impl SheetsApp {
     /// window is too short to give them up), where each card stands before
     /// the dock is scrolled, and how wide the cards are together.
     ///
-    /// The cards stand left to right, the comment first, each as wide as a
-    /// utility panel while they fit. When they do not they share the width,
+    /// The cards stand left to right, each as wide as a utility panel while
+    /// they fit. When they do not they share the width,
     /// none narrower than its action row needs, and the dock scrolls
     /// sideways to the ones past its edge, with its bar under them.
     pub(super) fn dock_layout(&self, area: Rect) -> (f64, Vec<(DockCard, Rect)>, f64) {
         let m = &self.metrics;
         let cm = &m.cards;
-        let mut cards: Vec<DockCard> = Vec::new();
         // Every card has a place, however narrow the window.
-        if !self.sheet_comments.is_empty() {
-            cards.push(DockCard::Comment);
-        }
-        cards.extend((0..self.sheet_charts.len().min(MAX_CHART_CARDS)).map(DockCard::Chart));
+        let cards: Vec<DockCard> = (0..self.sheet_charts.len().min(MAX_CHART_CARDS))
+            .map(DockCard::Chart)
+            .collect();
         let pad = m.s3;
         let avail = (area.width() - 2.0 * pad).max(0.0);
         let gaps = pad * f64_of_usize(cards.len().saturating_sub(1));
@@ -330,15 +327,14 @@ impl SheetsApp {
         );
         let Some(cache) = &self.cache else { return };
         let cards = self.dock_cards.clone();
-        let series: Vec<Vec<PlotSeries>> = cards
+        let series: Vec<PlotData> = cards
             .iter()
             .map(|(card, _)| match card {
                 DockCard::Chart(i) => self
                     .sheet_charts
                     .get(*i)
-                    .map(|chart| chart_series(chart, &cache.values))
+                    .map(|chart| chart_data(chart, &cache.values))
                     .unwrap_or_default(),
-                DockCard::Comment => Vec::new(),
             })
             .collect();
         // The cards stand where the dock is scrolled to, clipped to the
@@ -366,7 +362,6 @@ impl SheetsApp {
                     };
                     self.draw_chart_card(&mut ctx, rect, &chart, &series);
                 }
-                DockCard::Comment => self.draw_comment_card(&mut ctx, rect),
             }
         }
         scene.pop_layer();
@@ -387,7 +382,7 @@ impl SheetsApp {
         ctx: &mut PaintCtx<'_>,
         card: Rect,
         chart: &ChartSnapshot,
-        series: &[PlotSeries],
+        data: &PlotData,
     ) {
         let gap = self.metrics.s2;
         let managing = self.managed_chart.as_ref() == Some(&chart.id);
@@ -414,7 +409,7 @@ impl SheetsApp {
             AnnotationClick::ManageChart(chart.id.clone()),
         ));
         if !managing {
-            Self::draw_plot(ctx, body, chart.kind, series);
+            Self::draw_plot(ctx, body, chart.kind, data);
             return;
         }
         let single_row = card.width() >= self.metrics.cards.chart_single_row_w;
@@ -429,7 +424,7 @@ impl SheetsApp {
             body.x1,
             (body.y1 - gap - rows).max(body.y0),
         );
-        Self::draw_plot(ctx, plot, chart.kind, series);
+        Self::draw_plot(ctx, plot, chart.kind, data);
         let mut actions = vec![
             (
                 ChartKind::Column.label(),
@@ -480,16 +475,46 @@ impl SheetsApp {
         self.draw_card_actions(ctx, (body.x0, plot.y1 + gap), actions, Some(chart.kind));
     }
 
+    /// Rounded ticks over `lo..=hi` and their step, reaching past both ends
+    /// of the data so no mark stands above the top value read off the axis.
+    /// A series of one value has one tick at a whole step: its range has no
+    /// width, and a step of none has no precision to label it at.
+    fn value_ticks(lo: f64, hi: f64) -> (Vec<f64>, f64) {
+        let mut ticks = ui::charts::nice_ticks(lo, hi, 3);
+        ticks.dedup();
+        let tick_step = match ticks.as_slice() {
+            [first, second, ..] => second - first,
+            _ => 1.0,
+        };
+        while let Some(&top) = ticks.last()
+            && top < hi - tick_step * 1e-9
+            && ticks.len() < 8
+        {
+            ticks.push(top + tick_step);
+        }
+        while let Some(&bottom) = ticks.first()
+            && bottom > lo + tick_step * 1e-9
+            && ticks.len() < 8
+        {
+            ticks.insert(0, bottom - tick_step);
+        }
+        (ticks, tick_step)
+    }
+
     /// The chart in the theme's series colours: a legend naming each series
     /// over the plot, a value axis with its ticks and rules at the plot's
-    /// leading edge, then columns grouped by point from a zero baseline, or
-    /// one line per series.
-    fn draw_plot(ctx: &mut PaintCtx<'_>, area: Rect, kind: ChartKind, series: &[PlotSeries]) {
+    /// leading edge, then columns grouped by category from a zero baseline,
+    /// or one line per series, with each category's label under it.
+    fn draw_plot(ctx: &mut PaintCtx<'_>, area: Rect, kind: ChartKind, data: &PlotData) {
+        let series = data.series.as_slice();
         let theme = ctx.theme;
         let caption = theme.text(TextRole::Caption);
         let (_, line) = ctx.text.measure_style("Ag", None, &caption);
         let line = f64::from(line);
-        if series.iter().all(|series| series.values.is_empty()) {
+        if series
+            .iter()
+            .all(|series| series.numbers().next().is_none())
+        {
             ctx.text.draw_style(
                 ctx.scene,
                 "No numbers in this range",
@@ -509,11 +534,7 @@ impl SheetsApp {
         // The value axis: rounded ticks over the range, each a rule across
         // the plot and its value in the gutter, the half line it needs
         // above the top rule and below the bottom one kept inside the card.
-        let all = || {
-            series
-                .iter()
-                .flat_map(|series| series.values.iter().copied())
-        };
+        let all = || series.iter().flat_map(PlotSeries::numbers);
         let max = all().fold(f64::NEG_INFINITY, f64::max);
         let min = all().fold(f64::INFINITY, f64::min);
         // Columns stand on zero, so their heights compare honestly.
@@ -521,25 +542,7 @@ impl SheetsApp {
             ChartKind::Column => (min.min(0.0), max.max(0.0)),
             ChartKind::Line => (min, max),
         };
-        let mut ticks = ui::charts::nice_ticks(lo, hi, 3);
-        let tick_step = match ticks.as_slice() {
-            [first, second, ..] => second - first,
-            _ => 1.0,
-        };
-        // The rules reach past both ends of the data, so no mark stands
-        // above the top value read off the axis.
-        while let Some(&top) = ticks.last()
-            && top < hi - tick_step * 1e-9
-            && ticks.len() < 8
-        {
-            ticks.push(top + tick_step);
-        }
-        while let Some(&bottom) = ticks.first()
-            && bottom > lo + tick_step * 1e-9
-            && ticks.len() < 8
-        {
-            ticks.insert(0, bottom - tick_step);
-        }
+        let (ticks, tick_step) = Self::value_ticks(lo, hi);
         let (lo, hi) = (
             ticks.first().copied().unwrap_or(lo).min(lo),
             ticks.last().copied().unwrap_or(hi).max(hi),
@@ -554,11 +557,18 @@ impl SheetsApp {
             .map(|label| f64::from(ctx.text.measure_style(label, None, &caption).0))
             .fold(0.0, f64::max)
             + f64::from(sp.s2);
+        // The category labels take a line under the plot; without them the
+        // bottom tick's half line is all it keeps.
+        let foot = if data.categories.is_empty() {
+            line / 2.0
+        } else {
+            line + step
+        };
         let plot = Rect::new(
             area.x0 + gutter,
             area.y0 + line + step + line / 2.0,
             area.x1,
-            (area.y1 - line / 2.0).max(area.y0 + line + step + line / 2.0 + 1.0),
+            (area.y1 - foot).max(area.y0 + line + step + line / 2.0 + 1.0),
         );
         let y_of = |value: f64| plot.y1 - (value - lo) / span * plot.height();
         for (tick, label) in ticks.iter().zip(&labels) {
@@ -589,6 +599,59 @@ impl SheetsApp {
         }
 
         Self::draw_marks(ctx, plot, (lo, span), kind, series);
+        Self::draw_categories(ctx, plot, kind, &data.categories);
+    }
+
+    /// Each category's label under the plot, centred on its cluster of
+    /// columns or its point on the lines, elided to the room it has.
+    fn draw_categories(ctx: &mut PaintCtx<'_>, plot: Rect, kind: ChartKind, categories: &[String]) {
+        if categories.is_empty() {
+            return;
+        }
+        let theme = ctx.theme;
+        let caption = theme.text(TextRole::Caption);
+        let step = f64::from(theme.tokens.spacing.s1);
+        let n = categories.len();
+        let slot = plot.width() / f64_of_usize(n.max(1));
+        let centres: Vec<f64> = match kind {
+            ChartKind::Column => (0..n)
+                .map(|i| plot.x0 + slot * (f64_of_usize(i) + 0.5))
+                .collect(),
+            ChartKind::Line => {
+                let dot = Self::line_dot(theme);
+                let zeros = vec![0.0_f64; n];
+                Sparkline::points(
+                    plot.inflate(-dot, 0.0),
+                    &zeros,
+                    TrendRange { lo: 0.0, hi: 1.0 },
+                )
+                .into_iter()
+                .map(|point| point.x)
+                .collect()
+            }
+        };
+        let room = (slot - step).max(0.0);
+        for (label, x) in categories.iter().zip(centres) {
+            let shown = ctx
+                .text
+                .elide_to_width_style(label, ui::num::f32_of_f64(room), &caption);
+            let (w, _) = ctx.text.measure_style(&shown, None, &caption);
+            let w = f64::from(w);
+            let left = (x - w / 2.0).clamp(plot.x0, (plot.x1 - w).max(plot.x0));
+            ctx.text.draw_style(
+                ctx.scene,
+                &shown,
+                theme.tokens.colors.text_dim,
+                ctx.transform * Affine::translate((left, plot.y1 + step)),
+                None,
+                &caption,
+            );
+        }
+    }
+
+    /// The radius of a line chart's dot on every sample.
+    fn line_dot(theme: &Theme) -> f64 {
+        2.5 * f64::from(theme.text_scale).max(1.0)
     }
 
     /// The legend over the plot: one row, each entry its swatch and the
@@ -646,6 +709,7 @@ impl SheetsApp {
                 for (s, line) in series.iter().enumerate() {
                     let ink = theme.tokens.colors.presence.series(s);
                     for (i, value) in line.values.iter().enumerate() {
+                        let Some(value) = value else { continue };
                         let x0 =
                             plot.x0 + cluster * f64_of_usize(i) + inset + bar_w * f64_of_usize(s);
                         let (a, b) = (y_of(*value), y_of(0.0));
@@ -659,17 +723,18 @@ impl SheetsApp {
             ChartKind::Line => {
                 // The toolkit's trend line, a dot on every sample, kept a
                 // dot's radius in from the plot's sides.
-                let dot = 2.5 * f64::from(theme.text_scale).max(1.0);
+                let dot = Self::line_dot(theme);
                 let style = TrendStyle::CHART
                     .with_fill(TrendFill::None)
                     .with_markers(dot);
                 let range = TrendRange { lo, hi: lo + span };
                 for (s, line) in series.iter().enumerate() {
+                    let numbers: Vec<f64> = line.numbers().collect();
                     Sparkline::paint(
                         ctx.scene,
                         ctx.transform,
                         plot.inflate(-dot, 0.0),
-                        &line.values,
+                        &numbers,
                         range,
                         theme.tokens.colors.presence.series(s),
                         &style,
@@ -679,17 +744,157 @@ impl SheetsApp {
         }
     }
 
-    /// The first comment thread of the active sheet, as a card: who wrote it
-    /// and on what range, the comment, its replies, and what can be done with
-    /// it.
-    fn draw_comment_card(&mut self, ctx: &mut PaintCtx<'_>, card: Rect) {
-        let Some(thread) = self.sheet_comments.first().cloned() else {
+    /// The thread open on the sheet: the one on the selected cell.
+    pub(super) fn open_thread(&self) -> Option<&CommentThread> {
+        let (col, row) = self.grid.active();
+        self.sheet_comments.iter().find(|thread| {
+            let (c0, c1) = (
+                thread.start.0.min(thread.end.0),
+                thread.start.0.max(thread.end.0),
+            );
+            let (r0, r1) = (
+                thread.start.1.min(thread.end.1),
+                thread.start.1.max(thread.end.1),
+            );
+            (c0..=c1).contains(&col) && (r0..=r1).contains(&row)
+        })
+    }
+
+    /// The cells a thread is about, on screen.
+    pub(super) fn thread_rect(&self, thread: &CommentThread) -> Rect {
+        let a = self.grid.cell_screen_rect(
+            thread.start.0.min(thread.end.0),
+            thread.start.1.min(thread.end.1),
+        );
+        let b = self.grid.cell_screen_rect(
+            thread.start.0.max(thread.end.0),
+            thread.start.1.max(thread.end.1),
+        );
+        a.union(b)
+    }
+
+    /// Where the open thread's card floats: beside its cells, on the side
+    /// with room (after them, else before them) level with their first row,
+    /// else under or over them, kept inside the sheet. `None` while the cells are scrolled out of
+    /// view.
+    pub(super) fn comment_card_rect(&self, thread: &CommentThread) -> Option<Rect> {
+        let body = self.grid.body_rect();
+        let cells = self.thread_rect(thread);
+        if cells.intersect(body).is_zero_area() {
+            return None;
+        }
+        let m = &self.metrics;
+        let gap = m.s2;
+        let w = m
+            .cards
+            .width
+            .min(body.width() - 2.0 * gap)
+            .max(m.cards.comment_min_w.min(body.width()));
+        let h = m.cards.comment_h;
+        // Beside the cells where there is room, level with them; else under
+        // them, else over them; else pinned inside the sheet.
+        let level = cells
+            .y0
+            .min(body.y1 - gap - h)
+            .max(body.y0 + gap.min(body.height()));
+        let aligned = cells
+            .x0
+            .min(body.x1 - gap - w)
+            .max(body.x0 + gap.min(body.width()));
+        let (x0, y0) = if cells.x1 + gap + w <= body.x1 - gap {
+            (cells.x1 + gap, level)
+        } else if cells.x0 - gap - w >= body.x0 + gap {
+            (cells.x0 - gap - w, level)
+        } else if cells.y1 + gap + h <= body.y1 - gap {
+            (aligned, cells.y1 + gap)
+        } else if cells.y0 - gap - h >= body.y0 + gap {
+            (aligned, cells.y0 - gap - h)
+        } else {
+            ((body.x1 - gap - w).max(body.x0), level)
+        };
+        Some(Rect::new(x0, y0, x0 + w, y0 + h))
+    }
+
+    /// The marker of every thread whose cells are in view: the cell in the
+    /// top trailing corner of its cells, and its tone, the author's colour
+    /// while the thread is open for discussion, neutral once it is resolved.
+    pub(super) fn comment_markers(&self) -> Vec<(Rect, Tone)> {
+        let body = self.grid.body_rect();
+        self.sheet_comments
+            .iter()
+            .filter_map(|thread| {
+                let corner = self.grid.cell_screen_rect(
+                    thread.start.0.max(thread.end.0),
+                    thread.start.1.min(thread.end.1),
+                );
+                if corner.intersect(body).is_zero_area() {
+                    return None;
+                }
+                let tone = if thread.resolved {
+                    Tone::Neutral
+                } else {
+                    Tone::of_identity(&thread.author)
+                };
+                Some((corner, tone))
+            })
+            .collect()
+    }
+
+    /// A marker in the corner of every commented cell.
+    pub(super) fn draw_comment_markers(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let markers = self.comment_markers();
+        if markers.is_empty() {
+            return;
+        }
+        let size = self.metrics.s2;
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &self.grid.body_rect(),
+        );
+        let inset = self.metrics.s1;
+        let round = f64::from(theme.tokens.radii.full);
+        for (cell, tone) in markers {
+            ui::paint::fill_round(
+                scene,
+                transform,
+                comment_marker(cell, size, inset),
+                round,
+                tone.colour(theme),
+            );
+        }
+        scene.pop_layer();
+    }
+
+    /// The open thread, floating beside its cell.
+    pub(super) fn draw_comment_popover(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(thread) = self.open_thread().cloned() else {
             return;
         };
+        let Some(card) = self.comment_card_rect(&thread) else {
+            return;
+        };
+        ui::widget::floating_surface::paint_card_shadow(scene, transform, card, 1.0, theme);
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
+        self.draw_comment_card(&mut ctx, card, &thread);
+    }
+
+    /// A comment thread as a card: who wrote it and on what range, the
+    /// comment, its replies, and what can be done with it.
+    fn draw_comment_card(&mut self, ctx: &mut PaintCtx<'_>, card: Rect, thread: &CommentThread) {
         let theme = ctx.theme;
         let rows = self.metrics.comment_rows();
+        let author = self.author_name(&thread.author);
         let face = CardFace::new()
-            .title(&thread.author)
+            .title(&author)
             .leading_stripe(Tone::of_identity(&thread.author))
             .pressable();
         face.paint(ctx, card);
@@ -793,19 +998,50 @@ impl SheetsApp {
     }
 }
 
-/// One series of a chart: its name and its numbers in order.
+/// Where a commented cell's marker sits: a dot of `size` in the cell's top
+/// trailing corner, `inset` in from both edges, never more than half the
+/// cell so a narrow column still shows its text.
+fn comment_marker(cell: Rect, size: f64, inset: f64) -> Rect {
+    let size = size.min(cell.width() / 2.0).min(cell.height() / 2.0);
+    let inset = inset.min((cell.height() - size).max(0.0) / 2.0);
+    Rect::new(
+        cell.x1 - inset - size,
+        cell.y0 + inset,
+        cell.x1 - inset,
+        cell.y0 + inset + size,
+    )
+}
+
+/// One series of a chart: its name and its number at each category, `None`
+/// where that cell holds none.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct PlotSeries {
     pub name: String,
-    pub values: Vec<f64>,
+    pub values: Vec<Option<f64>>,
 }
 
-/// The series a chart plots from the numbers of its range. A range taller
-/// than it is wide plots its columns, a wider one its rows (the usual
-/// convention), so a single column or row is one series of its values in
-/// order. A series is named by the text that heads it, or else by its
-/// column letter or row number. Text, errors and blanks are skipped.
-fn chart_series(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> Vec<PlotSeries> {
+impl PlotSeries {
+    /// The numbers it plots, in order, gaps skipped.
+    fn numbers(&self) -> impl Iterator<Item = f64> + '_ {
+        self.values.iter().filter_map(|value| *value)
+    }
+}
+
+/// What a chart plots: the label of each category (empty when the range has
+/// no label column or row) and the series measured at each.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct PlotData {
+    pub categories: Vec<String>,
+    pub series: Vec<PlotSeries>,
+}
+
+/// What a chart plots from its range. A range taller than it is wide plots
+/// its columns, a wider one its rows (the usual convention). A leading line
+/// of labels (a column of names with no numbers in it) is the category
+/// axis, never a series; a line heading the numbers names each series, or
+/// else its column letter or row number does. A line with no numbers at all
+/// is no series. Errors and blanks are gaps.
+fn chart_data(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> PlotData {
     let (c0, r0) = chart.start;
     let (c1, r1) = chart.end;
     let by_columns = r1.saturating_sub(r0) >= c1.saturating_sub(c0);
@@ -821,23 +1057,137 @@ fn chart_series(chart: &ChartSnapshot, values: &HashMap<Addr, CellValue>) -> Vec
             (step, line)
         }
     };
-    lines
+    let text = |line, step| match values.get(&at(line, step)) {
+        Some(CellValue::Text(text)) if !text.trim().is_empty() => Some(text.trim().to_owned()),
+        _ => None,
+    };
+    let number = |line, step| match values.get(&at(line, step)) {
+        Some(CellValue::Number(value)) => Some(*value),
+        _ => None,
+    };
+    let first_step = *steps.start();
+    // The first line labels the categories when it holds text and no number.
+    let first_line = *lines.start();
+    let labelled = lines.clone().count() > 1
+        && steps.clone().all(|step| number(first_line, step).is_none())
+        && steps.clone().any(|step| text(first_line, step).is_some());
+    let series_lines: Vec<u32> = lines.skip(usize::from(labelled)).collect();
+    // The first step heads the series when one of them is headed by text.
+    let headed = series_lines
+        .iter()
+        .any(|&line| text(line, first_step).is_some());
+    let data_steps: Vec<u32> = steps
+        .skip(usize::from(headed))
+        .filter(|&step| {
+            series_lines
+                .iter()
+                .any(|&line| number(line, step).is_some())
+        })
+        .take(MAX_PLOT_POINTS)
+        .collect();
+    let categories = if labelled {
+        data_steps
+            .iter()
+            .map(|&step| text(first_line, step).unwrap_or_default())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let series = series_lines
+        .into_iter()
+        .filter(|&line| data_steps.iter().any(|&step| number(line, step).is_some()))
         .take(MAX_SERIES)
         .map(|line| {
-            let name = match values.get(&at(line, *steps.start())) {
-                Some(CellValue::Text(text)) if !text.trim().is_empty() => text.trim().to_owned(),
+            let name = match text(line, first_step) {
+                Some(name) if headed => name,
                 _ if by_columns => crate::model::col_to_letters(line),
                 _ => format!("Row {}", line + 1),
             };
-            let values = steps
-                .clone()
-                .filter_map(|step| match values.get(&at(line, step)) {
-                    Some(CellValue::Number(value)) => Some(*value),
-                    _ => None,
-                })
-                .take(MAX_PLOT_POINTS)
-                .collect();
+            let values = data_steps.iter().map(|&step| number(line, step)).collect();
             PlotSeries { name, values }
         })
-        .collect()
+        .collect();
+    PlotData { categories, series }
+}
+
+#[cfg(test)]
+mod chart_data_tests {
+    use super::*;
+
+    /// A series of one value has one tick, at a whole step, and its label
+    /// reads the value: no zero step to label it at.
+    #[test]
+    fn a_series_of_one_value_has_one_tick_it_labels() {
+        let (ticks, step) = SheetsApp::value_ticks(7.0, 7.0);
+        assert_eq!((ticks.as_slice(), step), (&[7.0][..], 1.0));
+        assert_eq!(ui::charts::format_tick(ticks[0], step), "7");
+        let (zeros, step) = SheetsApp::value_ticks(0.0, 0.0);
+        assert_eq!((zeros.as_slice(), step), (&[0.0][..], 1.0));
+    }
+
+    fn sheet(rows: &[&[&str]]) -> HashMap<Addr, CellValue> {
+        let mut values = HashMap::new();
+        for (r, row) in (0_u32..).zip(rows) {
+            for (c, cell) in (0_u32..).zip(row.iter()) {
+                let value = cell
+                    .parse::<f64>()
+                    .map_or_else(|_| CellValue::Text((*cell).to_owned()), CellValue::Number);
+                if !cell.is_empty() {
+                    values.insert((c, r), value);
+                }
+            }
+        }
+        values
+    }
+
+    fn chart(start: Addr, end: Addr) -> ChartSnapshot {
+        ChartSnapshot {
+            id: "c".into(),
+            title: "Sales by region".into(),
+            kind: ChartKind::Column,
+            start,
+            end,
+        }
+    }
+
+    #[test]
+    fn the_label_column_is_the_category_axis_and_never_a_series() {
+        let values = sheet(&[
+            &["Region", "Q1", "Q2", "Q3", "Q4"],
+            &["North", "18200", "21450", "19800", "24300"],
+            &["South", "15600", "16900", "18750", "20100"],
+            &["East", "12400", "14800", "16300", "17900"],
+            &["West", "20900", "19700", "22600", "26800"],
+        ]);
+        let data = chart_data(&chart((0, 0), (4, 4)), &values);
+        assert_eq!(data.categories, ["North", "South", "East", "West"]);
+        let names: Vec<&str> = data.series.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Q1", "Q2", "Q3", "Q4"], "Region is no series");
+        assert_eq!(
+            data.series[0].values,
+            [Some(18200.0), Some(15600.0), Some(12400.0), Some(20900.0)]
+        );
+
+        // Wider than tall: the label row is the axis, each row a series.
+        let values = sheet(&[
+            &["Month", "Jan", "Feb", "Mar", "Apr", "May"],
+            &["Rent", "1250", "1250", "1250", "1250", "1250"],
+            &["Food", "420", "386", "", "402", "399"],
+        ]);
+        let data = chart_data(&chart((0, 0), (5, 2)), &values);
+        assert_eq!(data.categories, ["Jan", "Feb", "Mar", "Apr", "May"]);
+        let names: Vec<&str> = data.series.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Rent", "Food"]);
+        assert_eq!(
+            data.series[1].values[2], None,
+            "a blank is a gap, not a shift"
+        );
+
+        // Numbers alone: no axis labels, no phantom series.
+        let values = sheet(&[&["3"], &["5"], &["8"]]);
+        let data = chart_data(&chart((0, 0), (0, 2)), &values);
+        assert!(data.categories.is_empty());
+        assert_eq!(data.series.len(), 1);
+        assert_eq!(data.series[0].name, "A");
+    }
 }

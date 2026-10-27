@@ -54,13 +54,13 @@ fields = [
   { path = "notes", type = "BTreeMap<String, RichText>" },
   { path = "remote", type = "BTreeMap<String, RemoteCopy>", readonly = true },
   { path = "sync_tokens", type = "BTreeMap<String, String>", readonly = true },
-  { path = "uploads", type = "Outbox<Upload>" },
-  { path = "deletes", type = "Outbox<Removal>" },
+  { path = "uploads", type = "Outbox<Upload>", unit = true },
+  { path = "deletes", type = "Outbox<Removal>", unit = true },
 ]
 
 [[resources.verbs]]
 id = "new-event"
-kind = "outside"
+kind = "undoable"
 params = [
   { name = "event", required = true, schema = { type = "object", additionalProperties = false, properties = { all_day = { type = "boolean" }, attendees = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, email = { type = "string" }, id = { type = "string" }, status = { type = "string" } }, required = ["id", "name", "email", "status"] } }, calendar_id = { type = "string" }, color = { type = "integer", minimum = 0 }, end = { type = "string" }, end_later_fold = { type = "boolean" }, id = { type = "string" }, location = { type = "string" }, occurrence_overrides = { type = "array", items = { type = "object", additionalProperties = false, properties = { cancelled = { type = "boolean" }, end = { type = "string" }, end_later_fold = { type = "boolean" }, location = { type = "string" }, original_date = { type = "string" }, original_time = { type = "string" }, start = { type = "string" }, title = { type = "string" } }, required = ["original_date", "cancelled", "start", "end", "title", "location"] } }, organizer = { type = "string" }, project = { type = "string" }, recurrence_count = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_exdates = { type = "array", items = { type = "string" } }, recurrence_interval = { type = "integer", maximum = 4294967295, minimum = 0 }, recurrence_until = { type = "string" }, reminder = { type = "integer" }, rrule = { type = "string" }, start = { type = "string" }, timezone = { type = "string" }, title = { type = "string" } } } },
 ]
@@ -93,6 +93,14 @@ params = [
   { name = "event", required = true, schema = { type = "string" } },
   { name = "start", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
   { name = "end", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
+]
+
+[[resources.verbs]]
+id = "set-start"
+kind = "outside"
+params = [
+  { name = "event", required = true, schema = { type = "string" } },
+  { name = "start", required = true, schema = { type = "string", pattern = "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?$" } },
 ]
 
 [[resources.verbs]]
@@ -271,5 +279,123 @@ id = "set-active-account"
 kind = "undoable"
 params = [
   { name = "account", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "tilo.contacts.identities"
+label = "Contact identities"
+version = 2
+person = true
+fields = [
+  { path = "people", type = "Collection<Person>", stored = "collection" },
+  { path = "people.*.label", type = "String" },
+  { path = "people.*.removed", type = "bool" },
+  { path = "people.*.phones", type = "Vec<String>" },
+  { path = "people.*.emails", type = "Vec<String>" },
+  { path = "people.*.photo", type = "String" },
+  { path = "people.*.endpoints", type = "Collection<Endpoint>", stored = "collection" },
+  { path = "people.*.endpoints.*.service", type = "String" },
+  { path = "people.*.endpoints.*.recipient", type = "String" },
+  { path = "people.*.endpoints.*.scope", type = "String" },
+  { path = "people.*.endpoints.*.revision", type = "String" },
+  { path = "people.*.endpoints.*.removed", type = "bool" },
+]
+
+[[resources.verbs]]
+id = "project-contact"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "label", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-contact"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "confirm-endpoint"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "endpoint", required = true, schema = { type = "string" } },
+  { name = "service", required = true, schema = { type = "string" } },
+  { name = "recipient", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "confirm-account"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "endpoint", required = true, schema = { type = "string" } },
+  { name = "service", required = true, schema = { type = "string" } },
+  { name = "scope", required = true, schema = { type = "string" } },
+  { name = "recipient", required = true, schema = { type = "string" } },
+  { name = "revision", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "replace-endpoint"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "previous", required = true, schema = { type = "string" } },
+  { name = "endpoint", required = true, schema = { type = "string" } },
+  { name = "service", required = true, schema = { type = "string" } },
+  { name = "recipient", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "replace-account"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "previous", required = true, schema = { type = "string" } },
+  { name = "endpoint", required = true, schema = { type = "string" } },
+  { name = "service", required = true, schema = { type = "string" } },
+  { name = "scope", required = true, schema = { type = "string" } },
+  { name = "recipient", required = true, schema = { type = "string" } },
+  { name = "revision", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "project-phones"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "phones", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "project-emails"
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "emails", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "project-contacts"
+kind = "undoable"
+params = [
+  { name = "people", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { emails = { type = "array", items = { type = "string" } }, label = { type = "string" }, person = { type = "string" }, phones = { type = "array", items = { type = "string" } }, photo = { type = "string" } }, required = ["person", "label", "phones", "emails"] } } },
+  { name = "removed", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "forget-endpoint"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "endpoint", required = true, schema = { type = "string" } },
 ]
 

@@ -24,8 +24,6 @@ use crate::record::{SavedConnection, SavedQuery, id_of};
 
 pub use crate::record::Workspace;
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
-
 #[resource(
     kind = "db-client.workspace",
     label = "Database",
@@ -73,7 +71,10 @@ impl Workspace {
     }
 
     /// Remove saved connection
-    #[action(destructive, item = connections)]
+    ///
+    /// The window forgets the connection's password on this device too,
+    /// which Undo cannot bring back, so the removal is asked first.
+    #[action(destructive, irreversible, item = connections)]
     pub fn remove_connection(&mut self, connection: &Id) -> Result<(), Refusal> {
         self.connections
             .remove(connection)
@@ -142,7 +143,7 @@ impl Workspace {
 /// else rides the catalog entry, result or history entry it acts on, which it
 /// names by id and resolves again when invoked. None carries a password.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "db_client.effects", device_only)]
+#[effect(operation = "db_client.effects")]
 pub enum DbEffect {
     /// Run SQL
     ///
@@ -184,7 +185,7 @@ pub enum DbEffect {
     #[effect(view, row)]
     ShowResult { connection: Uuid, generation: usize },
     /// Export CSV
-    #[effect(row, job)]
+    #[effect(attended, row, job)]
     ExportCsv { connection: Uuid, generation: usize },
     /// Begin transaction
     #[effect(row, job)]
@@ -264,12 +265,12 @@ impl ResourceApp for DbClientShell {
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(crate::i18n::catalogs())
     }
 
     /// `empty` is the first run; every other scenario shows the bundled
     /// sample catalog with a query run against it, on the tab or dialog it
-    /// names (see [`DbClientApp::stage_scenario`]).
+    /// names (see `DbClientApp::stage_scenario`).
     fn scenarios() -> &'static [&'static str] {
         &[
             "data",
@@ -359,3 +360,26 @@ impl ResourceSurface<Workspace, DbEffect> for DbClientApp {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::DbClientShell::scenarios() {
+            let mut app = TestApp::<super::DbClientShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+}

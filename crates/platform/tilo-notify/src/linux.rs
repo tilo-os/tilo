@@ -7,10 +7,10 @@
 //! delay the caller by at most [`CALL_BUDGET`] and never by a D-Bus timeout.
 //!
 //! A notification with an activation URI carries a default action (the
-//! portal's `default-action`, the freedesktop `default` action); the first
-//! such notification starts listeners for both services' `ActionInvoked`
-//! signals on the same connection, which hand the URI to the app while it
-//! runs.
+//! portal's `default-action`, the freedesktop `default` action), and each
+//! button an action of its own (`tilo-button-<n>`); the first such
+//! notification starts listeners for both services' `ActionInvoked` signals
+//! on the same connection, which hand the URI to the app while it runs.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -138,11 +138,37 @@ impl SessionNotifier {
 const PORTAL_ACTION: &str = "tilo-activate";
 /// The freedesktop action key a click (on the body) invokes.
 const DEFAULT_ACTION: &str = "default";
+/// The action a notification's button invokes, after this its index.
+const BUTTON_ACTION: &str = "tilo-button-";
 
-/// Activation URIs by freedesktop notification id, for its `ActionInvoked`.
-fn activation_ids() -> &'static Mutex<HashMap<u32, String>> {
-    static IDS: OnceLock<Mutex<HashMap<u32, String>>> = OnceLock::new();
+/// The action of the button at `index`.
+fn button_action(index: usize) -> String {
+    format!("{BUTTON_ACTION}{index}")
+}
+
+/// A notification's actions, each with the activation URI it hands over.
+type Activations = Vec<(String, String)>;
+
+/// Activation URIs by freedesktop notification id and action, for its
+/// `ActionInvoked`.
+fn activation_ids() -> &'static Mutex<HashMap<u32, Activations>> {
+    static IDS: OnceLock<Mutex<HashMap<u32, Activations>>> = OnceLock::new();
     IDS.get_or_init(Mutex::default)
+}
+
+/// What a notification's actions hand over: its activation for a click on
+/// it, each button's for that button.
+fn activations_of(n: &Notification) -> Activations {
+    n.activation
+        .iter()
+        .map(|uri| (DEFAULT_ACTION.to_owned(), uri.clone()))
+        .chain(
+            n.buttons
+                .iter()
+                .enumerate()
+                .map(|(index, button)| (button_action(index), button.activation.clone())),
+        )
+        .collect()
 }
 
 /// Listen for both services' `ActionInvoked` on `connection`, once.
@@ -169,7 +195,7 @@ fn listen_for_clicks(connection: &Connection) {
                 let uri = parameter
                     .first()
                     .and_then(|value| String::try_from(value.try_clone().ok()?).ok());
-                if action == PORTAL_ACTION
+                if (action == PORTAL_ACTION || action.starts_with(BUTTON_ACTION))
                     && let Some(uri) = uri
                 {
                     crate::activated(&uri);
@@ -190,13 +216,13 @@ fn listen_for_clicks(connection: &Connection) {
                     let Ok((id, action)) = signal.body().deserialize::<(u32, String)>() else {
                         continue;
                     };
-                    let uri = activation_ids()
-                        .lock()
-                        .ok()
-                        .and_then(|ids| ids.get(&id).cloned());
-                    if action == DEFAULT_ACTION
-                        && let Some(uri) = uri
-                    {
+                    let uri = activation_ids().lock().ok().and_then(|ids| {
+                        ids.get(&id)?
+                            .iter()
+                            .find(|(invoked, _)| *invoked == action)
+                            .map(|(_, uri)| uri.clone())
+                    });
+                    if let Some(uri) = uri {
                         crate::activated(&uri);
                     }
                 }
@@ -208,14 +234,38 @@ fn listen_for_clicks(connection: &Connection) {
     });
 }
 
-fn portal_add(connection: &Connection, n: &Notification) -> zbus::Result<()> {
-    let mut content: HashMap<&str, Value<'_>> = HashMap::new();
+/// What the portal is given of `n`.
+fn portal_content(n: &Notification) -> HashMap<&'static str, Value<'_>> {
+    let mut content: HashMap<&'static str, Value<'_>> = HashMap::new();
     content.insert("title", Value::from(n.title.as_str()));
     content.insert("body", Value::from(n.body.as_str()));
     if let Some(uri) = &n.activation {
         content.insert("default-action", Value::from(PORTAL_ACTION));
         content.insert("default-action-target", Value::from(uri.as_str()));
     }
+    if !n.buttons.is_empty() {
+        let buttons: Vec<HashMap<&str, Value<'_>>> = n
+            .buttons
+            .iter()
+            .enumerate()
+            .map(|(index, button)| {
+                HashMap::from([
+                    ("label", Value::from(button.label.as_str())),
+                    ("action", Value::from(button_action(index))),
+                    ("target", Value::from(button.activation.as_str())),
+                ])
+            })
+            .collect();
+        content.insert("buttons", Value::from(buttons));
+    }
+    if n.silent {
+        content.insert("sound", Value::from("silent"));
+    }
+    content
+}
+
+fn portal_add(connection: &Connection, n: &Notification) -> zbus::Result<()> {
+    let content = portal_content(n);
     let (dest, path, iface) = PORTAL;
     connection
         .call_method(
@@ -235,22 +285,38 @@ fn portal_remove(connection: &Connection, tag: &str) -> zbus::Result<()> {
         .map(drop)
 }
 
+/// The freedesktop hints of `n`.
+fn freedesktop_hints(n: &Notification) -> HashMap<&'static str, Value<'static>> {
+    let mut hints = HashMap::new();
+    // The specification has no warning level; only an error is critical.
+    if n.severity == crate::Severity::Error {
+        hints.insert("urgency", Value::U8(2));
+    }
+    if n.silent {
+        hints.insert("suppress-sound", Value::Bool(true));
+    }
+    hints
+}
+
 fn freedesktop_notify(connection: &Connection, app: &str, n: &Notification) -> zbus::Result<()> {
     let replaces = ids()
         .lock()
         .ok()
         .and_then(|ids| ids.get(&n.tag).copied())
         .unwrap_or(0);
-    let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
-    // The specification has no warning level; only an error is critical.
-    if n.severity == crate::Severity::Error {
-        hints.insert("urgency", Value::U8(2));
+    let hints = freedesktop_hints(n);
+    let activations = activations_of(n);
+    let mut actions: Vec<&str> = Vec::new();
+    if n.activation.is_some() {
+        actions.extend([DEFAULT_ACTION, n.action.as_deref().unwrap_or("Open")]);
     }
-    let actions: Vec<&str> = if n.activation.is_some() {
-        vec![DEFAULT_ACTION, n.action.as_deref().unwrap_or("Open")]
-    } else {
-        Vec::new()
-    };
+    for ((action, _), button) in activations
+        .iter()
+        .skip(usize::from(n.activation.is_some()))
+        .zip(&n.buttons)
+    {
+        actions.extend([action.as_str(), button.label.as_str()]);
+    }
     let (dest, path, iface) = FREEDESKTOP;
     let reply = connection.call_method(
         Some(dest),
@@ -272,8 +338,12 @@ fn freedesktop_notify(connection: &Connection, app: &str, n: &Notification) -> z
     if let Ok(mut ids) = ids().lock() {
         ids.insert(n.tag.clone(), id);
     }
-    if let (Some(uri), Ok(mut activations)) = (&n.activation, activation_ids().lock()) {
-        activations.insert(id, uri.clone());
+    if let Ok(mut known) = activation_ids().lock() {
+        if activations.is_empty() {
+            known.remove(&id);
+        } else {
+            known.insert(id, activations);
+        }
     }
     Ok(())
 }
@@ -498,7 +568,7 @@ impl Notifier for SessionNotifier {
         let notification = notification.clone();
         let app = self.app_id.clone();
         on_bus(move |connection| {
-            if notification.activation.is_some() {
+            if notification.activation.is_some() || !notification.buttons.is_empty() {
                 listen_for_clicks(connection);
             }
             either(
@@ -557,4 +627,25 @@ pub(crate) fn publish_priority_contacts(
                 }
             })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_quiet_notification_asks_both_services_for_no_sound() {
+        let loud = Notification::new("t", "Title", "");
+        assert!(!portal_content(&loud).contains_key("sound"));
+        assert!(!freedesktop_hints(&loud).contains_key("suppress-sound"));
+        let quiet = loud.quietly();
+        assert_eq!(
+            portal_content(&quiet).get("sound"),
+            Some(&Value::from("silent"))
+        );
+        assert_eq!(
+            freedesktop_hints(&quiet).get("suppress-sound"),
+            Some(&Value::Bool(true))
+        );
+    }
 }

@@ -65,7 +65,6 @@ pub struct Primary {
     /// Says what it does with the app's name, or why it cannot run now.
     pub tooltip: String,
     pub binding: Option<ActionBinding<()>>,
-    /// Whether it can run now.
     pub enabled: bool,
     /// While it runs: what is happening, shown inline in its place.
     pub progress: Option<String>,
@@ -99,11 +98,12 @@ impl Primary {
 }
 
 /// An app as a card: its icon, name and source above its tag line, and its
-/// one action. The whole card opens the app's page.
+/// one action, when it has one (an app not built for this device has none
+/// and says so under its name). The whole card opens the app's page.
 #[must_use]
 pub fn card(
     item: &StoreItem,
-    primary: Primary,
+    primary: Option<Primary>,
     open_page: Option<ActionBinding<()>>,
     images: Option<&ui::ImageStore>,
 ) -> Element {
@@ -115,7 +115,7 @@ pub fn card(
             Text::new(&item.name).with_role(TextRole::Subheading),
         ))
         .push(Box::new(
-            Text::new(&crate::catalogue::source_label(item))
+            Text::new(&crate::catalogue::list_caption(item))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         ));
@@ -142,19 +142,21 @@ pub fn card(
         ));
     }
     let mut card = ui::widget::Card::new(Box::new(body)).with_accessible_name(&item.name);
-    card = if primary.progress.is_some() {
-        // The footer takes a button; while the action runs its progress
-        // stands in the card's body instead, where the button was.
-        let progress = primary.progress.clone().unwrap_or_default();
-        card.with_footer(Actions::new(
-            Button::new(&primary.key, &progress)
-                .control_size(ControlSize::Small)
-                .with_enabled(false),
-        ))
-    } else {
-        card.with_footer(Actions::new(
+    card = match primary {
+        None => card,
+        Some(primary) if primary.progress.is_some() => {
+            // The footer takes a button; while the action runs its progress
+            // stands in the card's body instead, where the button was.
+            let progress = primary.progress.clone().unwrap_or_default();
+            card.with_footer(Actions::new(
+                Button::new(&primary.key, &progress)
+                    .control_size(ControlSize::Small)
+                    .with_enabled(false),
+            ))
+        }
+        Some(primary) => card.with_footer(Actions::new(
             primary.button(ControlSize::Small, ButtonRole::Secondary),
-        ))
+        )),
     };
     if let Some(binding) = open_page {
         card = card.on_action(format!("store.card.{}", item.id), binding);
@@ -179,7 +181,7 @@ pub fn row(
         MediaSource::Kind(glyph) => row.avatar(&item.name, &item.id).avatar_glyph(glyph),
         art => row.media(art, MediaAspect::Square),
     };
-    let mut row = row.meta(meta.unwrap_or_else(|| crate::catalogue::source_label(item)));
+    let mut row = row.meta(meta.unwrap_or_else(|| crate::catalogue::list_caption(item)));
     let tagline = item.summary();
     if !tagline.is_empty() {
         row = row.secondary(tagline);
@@ -197,7 +199,6 @@ pub fn row(
 mod tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-19): "app icons, tag line, directly opening tapps without explicit installation"
     #[test]
     fn a_tilo_app_shows_the_desktops_glyph_and_a_flathub_app_its_artwork() {
         let mut notes = crate::fixture::fixture_catalog().remove(0);

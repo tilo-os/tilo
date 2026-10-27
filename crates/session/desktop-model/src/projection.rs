@@ -14,11 +14,12 @@
 
 use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
+use tilo_sort::CompactSort as _;
 
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId, counter_of, peer_salt_of};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
-use crate::task::{WorkspaceEffectReceipt, WorkspaceTask};
+use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
 use crate::workspace::Workspace;
@@ -39,8 +40,6 @@ pub const ROOM_DESKTOP_COUNTER_KEY: &str = "desktop_counter_v1";
 /// kept while empty (`1`), unlike an ordinary strip, which is published only
 /// while it holds windows.
 pub const STRIP_RETAINED_EMPTY_KEY: &str = "retained_empty_v1";
-/// Key a room document stores its durable tasks under.
-pub const ROOM_TASKS_KEY: &str = "tasks_v1";
 /// Key a room document stores its effect receipts under.
 pub const ROOM_EFFECT_RECEIPTS_KEY: &str = "effect_receipts_v1";
 /// Key a room document stores its saved shortcuts under.
@@ -66,6 +65,10 @@ pub struct ReplicatedTab {
     pub id: TabId,
     pub order: u64,
     pub title: String,
+    /// The window's own title while a person's name stands in `title`
+    /// ([`Tab::app_title`]): the hosting device keeps it so clearing the
+    /// name anywhere shows the window's latest title.
+    pub app_title: Option<String>,
     /// `None` when unparseable — hydrated as a stub rather than dropped,
     /// since a window in the room should still show up as one here.
     pub tile: Option<TileContent>,
@@ -223,65 +226,6 @@ pub(crate) fn tab_entries(doc: &AutoCommit) -> Vec<(u64, u64, u64, automerge::Ob
         }
     }
     out
-}
-
-/// Project durable tasks as independently mergeable values. Task ids are
-/// stable, so two collaborators creating work concurrently add two map
-/// keys instead of racing over a positional list.
-///
-/// # Errors
-///
-/// The document's error when a map this projection needs cannot be
-/// created.
-pub fn project_workspace_tasks(
-    doc: &mut AutoCommit,
-    tasks: &[WorkspaceTask],
-) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-
-    let tasks_id = match doc.get(&ROOT, ROOM_TASKS_KEY).ok().flatten() {
-        Some((_, id)) => id,
-        None if tasks.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, ROOM_TASKS_KEY, ObjType::Map)?,
-    };
-    for task in tasks {
-        let Ok(blob) = serde_json::to_vec(task) else {
-            continue;
-        };
-        let unchanged = matches!(
-            doc.get(&tasks_id, task.id.as_str()).ok().flatten(),
-            Some((Value::Scalar(value), _))
-                if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
-        );
-        if !unchanged {
-            let _ = doc.put(&tasks_id, task.id.as_str(), ScalarValue::Bytes(blob));
-        }
-    }
-    Ok(())
-}
-
-pub fn workspace_tasks_of(doc: &AutoCommit) -> Vec<WorkspaceTask> {
-    use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-
-    let Some((_, tasks_id)) = doc.get(&ROOT, ROOM_TASKS_KEY).ok().flatten() else {
-        return Vec::new();
-    };
-    let mut tasks = Vec::new();
-    for key in doc.keys(&tasks_id) {
-        if let Some((Value::Scalar(value), _)) = doc.get(&tasks_id, key.as_str()).ok().flatten()
-            && let ScalarValue::Bytes(blob) = value.as_ref()
-            && let Ok(task) = serde_json::from_slice::<WorkspaceTask>(blob)
-        {
-            tasks.push(task);
-        }
-    }
-    tasks.sort_by(|left, right| {
-        right
-            .updated_at
-            .cmp(&left.updated_at)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    tasks
 }
 
 /// Project a workspace's shortcuts as one map value per shortcut id, so two
@@ -478,59 +422,6 @@ pub fn project_room_policy(
 
 /// The authority a room document records for `room`. Values that do not
 /// decode are skipped; grants on another room's nodes are dropped.
-/// The grant sets of the open tasks `doc` holds: every grant naming a task
-/// as its subject, while that task is open.
-#[must_use]
-pub fn task_grants_of(doc: &AutoCommit) -> Vec<tilo_action_policy::Grant> {
-    let open = open_task_ids(doc);
-    blob_map_of(doc, ROOM_GRANTS_KEY)
-        .into_iter()
-        .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
-        .filter(|grant| matches!(&grant.subject, tilo_action_policy::Subject::Task(task) if open.contains(task)))
-        .collect()
-}
-
-/// Remove from `doc`'s grants every one that lapsed with its task
-/// ([`tilo_action_policy::Grant::lapsed_with_tasks`]), so every reader of the
-/// room's grants, the relay's included, stops honouring it. The ids removed.
-///
-/// # Errors
-///
-/// The document's error when the map cannot be written.
-pub fn lapse_task_grants(
-    doc: &mut AutoCommit,
-) -> Result<Vec<tilo_action_policy::GrantId>, automerge::AutomergeError> {
-    use automerge::{ROOT, ReadDoc, transaction::Transactable};
-
-    let open = open_task_ids(doc);
-    let lapsed: Vec<(String, tilo_action_policy::GrantId)> = blob_map_of(doc, ROOM_GRANTS_KEY)
-        .into_iter()
-        .filter(|(_, grant): &(String, tilo_action_policy::Grant)| {
-            grant.lapsed_with_tasks(|task| open.contains(task))
-        })
-        .map(|(name, grant)| (name, grant.id))
-        .collect();
-    if let Some((_, map)) = doc.get(&ROOT, ROOM_GRANTS_KEY)?
-        && !lapsed.is_empty()
-    {
-        for (name, _) in &lapsed {
-            doc.delete(&map, name.as_str())?;
-        }
-    }
-    Ok(lapsed.into_iter().map(|(_, id)| id).collect())
-}
-
-/// The ids of the tasks `doc` holds that are still open: a grant given for
-/// a task ([`tilo_action_policy::Lifetime::Task`]) lives while it is one.
-#[must_use]
-pub fn open_task_ids(doc: &AutoCommit) -> std::collections::HashSet<String> {
-    workspace_tasks_of(doc)
-        .into_iter()
-        .filter(|task| !task.status.is_finished())
-        .map(|task| task.id)
-        .collect()
-}
-
 pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomPolicy {
     use automerge::{ROOT, ReadDoc};
 
@@ -543,12 +434,10 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomP
     let joined = blob_map_of(doc, ROOM_MEMBERS_JOINED_KEY)
         .into_iter()
         .collect();
-    let open = open_task_ids(doc);
     let grants = blob_map_of(doc, ROOM_GRANTS_KEY)
         .into_iter()
         .map(|(_, grant): (String, tilo_action_policy::Grant)| grant)
         .filter(|grant| grant.node.room_id() == Some(room))
-        .filter(|grant| !grant.lapsed_with_tasks(|task| open.contains(task)))
         .collect();
     tilo_action_policy::RoomPolicy {
         room: room.to_owned(),
@@ -557,6 +446,7 @@ pub fn room_policy_of(doc: &AutoCommit, room: &str) -> tilo_action_policy::RoomP
         joined,
         grants,
     }
+    .with_current_roles()
 }
 
 /// Project a room's sandbox capabilities, by id.
@@ -601,7 +491,7 @@ pub fn workspace_shortcuts_of(doc: &AutoCommit) -> Vec<tilo_automation::Shortcut
             _ => None,
         })
         .collect();
-    shortcuts.sort_by(|left, right| left.id.cmp(&right.id));
+    shortcuts.compact_sort_by(|left, right| left.id.cmp(&right.id));
     shortcuts
 }
 
@@ -669,7 +559,7 @@ pub fn schedule_claims_of(doc: &AutoCommit) -> Vec<tilo_automation::ScheduleClai
             (claim.key() == key).then_some(claim)
         })
         .collect();
-    claims.sort_by_key(tilo_automation::ScheduleClaim::key);
+    claims.compact_sort_by_key(tilo_automation::ScheduleClaim::key);
     claims
 }
 
@@ -724,7 +614,7 @@ pub fn workspace_effect_receipts_of(doc: &AutoCommit) -> Vec<WorkspaceEffectRece
             serde_json::from_slice(blob).ok()
         })
         .collect::<Vec<_>>();
-    receipts.sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
+    receipts.compact_sort_by_key(|receipt: &WorkspaceEffectReceipt| receipt.completed_at);
     receipts
 }
 
@@ -770,8 +660,6 @@ pub enum EmptyStrips {
 /// `(order, id)` so peers appending at once still agree, and the
 /// sweep at each level deletes only entries this machine owns. Salt
 /// `0` has no id space, so nothing is projected or merged there.
-/// Device-local tiles ([`TileContent::is_device_local`]) are never
-/// published.
 ///
 /// # Errors
 ///
@@ -816,13 +704,10 @@ pub fn project_owned_contents(
         let owns_strip = mine(strip.id.raw());
         // A peer's strip is still walked: a window we opened into it
         // is ours to publish even though the row isn't.
-        let has_owned = strip.window_groups.iter().any(|g| {
-            g.tabs.iter().any(|t| !t.tile.is_device_local())
-                && (mine(g.id)
-                    || g.tabs
-                        .iter()
-                        .any(|t| !t.tile.is_device_local() && mine(t.id)))
-        });
+        let has_owned = strip
+            .window_groups
+            .iter()
+            .any(|g| !g.tabs.is_empty() && (mine(g.id) || g.tabs.iter().any(|t| mine(t.id))));
         if !owns_strip && !has_owned {
             continue;
         }
@@ -916,14 +801,11 @@ fn project_owned_groups_in(
     let groups_all = or_created(groups_all, &groups_id);
     let mut live_groups: HashSet<String> = HashSet::new();
     for (gi, group) in strip.window_groups.iter().enumerate() {
-        if group.tabs.iter().all(|tab| tab.tile.is_device_local()) {
+        if group.tabs.is_empty() {
             continue;
         }
         let owns_group = mine(group.id);
-        let has_owned_tabs = group
-            .tabs
-            .iter()
-            .any(|t| !t.tile.is_device_local() && mine(t.id));
+        let has_owned_tabs = group.tabs.iter().any(|t| mine(t.id));
         if !owns_group && !has_owned_tabs {
             continue;
         }
@@ -986,7 +868,7 @@ fn project_owned_tabs_in(
     let tabs_all = or_created(tabs_all, &tabs_id);
     let mut live_tabs: HashSet<String> = HashSet::new();
     for (ti, tab) in group.tabs.iter().enumerate() {
-        if tab.tile.is_device_local() || !mine(tab.id) {
+        if !mine(tab.id) {
             continue;
         }
         let tkey = contents_key(tab.id);
@@ -997,6 +879,16 @@ fn project_owned_tabs_in(
         };
         let _ = doc.put_uint_if_changed(&tab_entry, "order", ti as u64);
         let _ = doc.put_str_if_changed(&tab_entry, "title", &tab.title);
+        match &tab.app_title {
+            Some(app_title) => {
+                let _ = doc.put_str_if_changed(&tab_entry, "app_title", app_title);
+            }
+            None => {
+                if doc.get(&tab_entry, "app_title").ok().flatten().is_some() {
+                    let _ = doc.delete(&tab_entry, "app_title");
+                }
+            }
+        }
         if let Ok(blob) = serde_json::to_vec(&tab.tile) {
             let unchanged = matches!(
                 doc.get(&tab_entry, "tile_json").ok().flatten(),
@@ -1064,17 +956,18 @@ pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
                     id: tid,
                     order: uint(tab_entry, "order").unwrap_or(u64::MAX),
                     title: text(tab_entry, "title").unwrap_or_default(),
+                    app_title: text(tab_entry, "app_title"),
                     tile,
                 });
             }
-            tabs.sort_by_key(|t| (t.order, t.id));
+            tabs.compact_sort_by_key(|t| (t.order, t.id));
             groups.push(ReplicatedGroup {
                 id: gid,
                 order: uint(group_entry, "order").unwrap_or(u64::MAX),
                 tabs,
             });
         }
-        groups.sort_by_key(|g| (g.order, g.id));
+        groups.compact_sort_by_key(|g| (g.order, g.id));
         strips.push(ReplicatedStrip {
             id: sid,
             order: uint(strip_entry, "order").unwrap_or(u64::MAX),
@@ -1082,7 +975,7 @@ pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
             groups,
         });
     }
-    strips.sort_by_key(|s| (s.order, s.id));
+    strips.compact_sort_by_key(|s| (s.order, s.id));
     strips
 }
 
@@ -1117,13 +1010,16 @@ pub fn owned_contents_digest(doc: Option<&AutoCommit>, local_salt: u16) -> Vec<(
                 if peer_salt_of(tab.id) == local_salt {
                     out.push((
                         tab.id,
-                        format!("t|{}|{}|{:?}", tab.order, tab.title, tab.tile),
+                        format!(
+                            "t|{}|{}|{:?}|{:?}",
+                            tab.order, tab.title, tab.app_title, tab.tile
+                        ),
                     ));
                 }
             }
         }
     }
-    out.sort();
+    out.compact_sort();
     out
 }
 
@@ -1166,7 +1062,7 @@ pub fn merge_strip(
         out.push((rep.order, gid, hydrate_group(rep)));
         *changed = true;
     }
-    out.sort_by_key(|(order, id, _)| (*order, *id));
+    out.compact_sort_by_key(|(order, id, _)| (*order, *id));
     if !prior_group_order
         .iter()
         .copied()
@@ -1204,6 +1100,10 @@ pub fn merge_group(
                         tab.title.clone_from(&rep.title);
                         *changed = true;
                     }
+                    if tab.app_title != rep.app_title {
+                        tab.app_title.clone_from(&rep.app_title);
+                        *changed = true;
+                    }
                     if let Some(tile) = rep.tile.clone() {
                         let tile = localise_tile(tile, Some(&tab.tile), &rep.title);
                         if serde_json::to_vec(&tab.tile).ok() != serde_json::to_vec(&tile).ok() {
@@ -1222,7 +1122,7 @@ pub fn merge_group(
         out.push((rep.order, tid, hydrate_tab(rep)));
         *changed = true;
     }
-    out.sort_by_key(|(order, id, _)| (*order, *id));
+    out.compact_sort_by_key(|(order, id, _)| (*order, *id));
     if !prior_tab_order
         .iter()
         .copied()
@@ -1280,6 +1180,7 @@ pub fn hydrate_tab(rep: ReplicatedTab) -> Tab {
         ),
         id: rep.id,
         title,
+        app_title: rep.app_title,
     }
 }
 
@@ -1425,7 +1326,7 @@ pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
         let kind = doc.str_at(&entry, "kind").unwrap_or_default();
         out.push((key, kind));
     }
-    out.sort();
+    out.compact_sort();
     out
 }
 
@@ -1466,7 +1367,7 @@ pub fn merge_room_contents(
     };
     let is_local = |id: u64| local_salt == Some(peer_salt_of(id));
 
-    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room == room) else {
+    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == room) else {
         return false;
     };
     let mut changed = false;
@@ -1513,7 +1414,7 @@ pub fn merge_room_contents(
         published.push((order, sid, hydrate_strip(rep)));
         changed = true;
     }
-    published.sort_by_key(|(order, id, _)| (*order, *id));
+    published.compact_sort_by_key(|(order, id, _)| (*order, *id));
     let mut strips: Vec<Strip> = published.into_iter().map(|(_, _, strip)| strip).collect();
     // In ascending index order, so each lands where it stood (or at the
     // end, when fewer strips precede it now) without moving one before it.
@@ -1575,15 +1476,15 @@ pub fn changed_owned_entries(
 }
 
 /// Apply one already-admitted room document to `tree`: create the room's
-/// workspace if the tree has none (its local id derived from the room id),
+/// workspace if the tree has none (under [`WorkspaceId::of_room`]),
 /// take the room's name and owner, and fold its contents in as a
 /// [`Reader::Viewer`]. Existing local workspace identity and local selection
 /// remain untouched. Returns whether anything changed.
 ///
 /// # Errors
 ///
-/// A description when the document does not declare exactly `room`, or no
-/// free local workspace id remains.
+/// A description when the document does not declare exactly `room`, or
+/// another workspace holds the room's workspace id.
 pub fn apply_admitted_room(
     tree: &mut DesktopTree,
     room: RoomId,
@@ -1600,16 +1501,12 @@ pub fn apply_admitted_room(
             .and_then(|(v, _)| v.as_str().map(str::to_owned)))
     };
     let name = text(ROOM_NAME_KEY)?.unwrap_or_default();
-    if !tree.workspaces.iter().any(|w| w.room == room) {
-        let bytes = room.as_uuid().into_bytes();
-        let mut head = [0_u8; 8];
-        head.copy_from_slice(bytes.get(..8).ok_or("room identity")?);
-        let mut raw = u64::from_be_bytes(head).max(1);
-        while tree.workspaces.iter().any(|w| w.id.raw() == raw) {
-            raw = raw.checked_add(1).ok_or("workspace identities exhausted")?;
+    if !tree.workspaces.iter().any(|w| w.room() == room) {
+        let id = WorkspaceId::of_room(room);
+        if tree.workspaces.iter().any(|w| w.id == id) {
+            return Err("another workspace holds the room's workspace id".into());
         }
-        let mut workspace = Workspace::new(WorkspaceId(raw), &name);
-        workspace.set_room(room);
+        let workspace = Workspace::in_room(id, room, &name);
         if tree.workspaces.is_empty() {
             tree.active = workspace.id;
         }
@@ -1619,7 +1516,7 @@ pub fn apply_admitted_room(
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|w| w.room == room)
+        .find(|w| w.room() == room)
         .ok_or("workspace missing")?;
     let renamed = workspace.name != name;
     workspace.name = name;
@@ -1651,6 +1548,203 @@ pub fn contents_owners_of(doc: &AutoCommit) -> std::collections::BTreeMap<u16, S
             Some((salt, value.as_str()?.to_owned()))
         })
         .collect()
+}
+
+/// Key of the room's layout scope in its governance document
+/// ([`RoomLayout`]), which only the room's governor writes.
+pub const ROOM_LAYOUT_KEY: &str = "layout_v1";
+
+/// Whether a room shares its members' strips and windows: a field of the
+/// room's governance, written by its governor alone, that every member reads.
+///
+/// A room admitted through a public door (a community site's) or with open
+/// admission (listed in a public directory) is [`Self::Personal`]; an
+/// invite-only room is [`Self::Shared`]. The governor may change it.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomLayout {
+    /// The namespaced layout model: each member's windows are published into
+    /// the room, and every member shows everyone's.
+    #[default]
+    Shared,
+    /// Each member's strips and windows stay on their device. Only the
+    /// room's records (its apps' documents) and its people are shared: the
+    /// governor takes in no member's layout, and devices send none.
+    Personal,
+}
+
+impl RoomLayout {
+    /// The word the governance document stores.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Shared => "shared",
+            Self::Personal => "personal",
+        }
+    }
+
+    /// The layout `id` names; `None` for any other word.
+    #[must_use]
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "shared" => Some(Self::Shared),
+            "personal" => Some(Self::Personal),
+            _ => None,
+        }
+    }
+
+    /// Whether each member's layout stays on their device.
+    #[must_use]
+    pub const fn is_personal(self) -> bool {
+        matches!(self, Self::Personal)
+    }
+}
+
+/// The layout scope `doc`'s governor chose, `None` when it chose none (a
+/// room from before the field, or an invite-only room left at the
+/// default). A value this build does not read is personal: what a room may
+/// not share is never shared by a device that misreads it.
+#[must_use]
+pub fn room_layout_choice(doc: &AutoCommit) -> Option<RoomLayout> {
+    use automerge::{ROOT, ScalarValue, Value};
+    match doc.get(&ROOT, ROOM_LAYOUT_KEY).ok().flatten()? {
+        (Value::Scalar(value), _) => match value.as_ref() {
+            ScalarValue::Str(id) => Some(RoomLayout::from_id(id).unwrap_or(RoomLayout::Personal)),
+            _ => Some(RoomLayout::Personal),
+        },
+        _ => Some(RoomLayout::Personal),
+    }
+}
+
+/// The people the room `doc` governs lists as its members, by person id:
+/// who still holds what they made on its desktop
+/// ([`crate::ownership::released`]). `None` when `doc` lists nobody (not
+/// heard yet), so nothing is taken as released before the list arrives.
+#[must_use]
+pub fn room_members(doc: &AutoCommit) -> Option<std::collections::BTreeSet<String>> {
+    let people: std::collections::BTreeSet<String> =
+        blob_map_of::<serde_json::Value>(doc, ROOM_MEMBERS_KEY)
+            .into_iter()
+            .map(|(person, _)| person)
+            .collect();
+    (!people.is_empty()).then_some(people)
+}
+
+/// The layout scope of the room `doc` governs: its governor's choice, else
+/// [`RoomLayout::Shared`], an invite-only room's default.
+#[must_use]
+pub fn room_layout(doc: &AutoCommit) -> RoomLayout {
+    room_layout_choice(doc).unwrap_or_default()
+}
+
+/// Delete from `doc`'s `contents` every strip, group and tab whose id `keep`
+/// refuses, with everything under it; what `keep` keeps is walked for what it
+/// holds. Returns how many entries were deleted. Nothing else of the
+/// document is touched.
+pub fn drop_contents_except(doc: &mut AutoCommit, keep: &impl Fn(u64) -> bool) -> usize {
+    let contents = map_candidates(doc, &automerge::ROOT, ROOM_CONTENTS_KEY);
+    drop_contents_level(doc, &contents, 0, keep)
+}
+
+/// [`drop_contents_except`] over one level of `contents`: strips (`0`),
+/// groups (`1`) or tabs (`2`).
+fn drop_contents_level(
+    doc: &mut AutoCommit,
+    containers: &[automerge::ObjId],
+    level: u8,
+    keep: &impl Fn(u64) -> bool,
+) -> usize {
+    use automerge::transaction::Transactable as _;
+    let child = match level {
+        0 => Some("groups"),
+        1 => Some("tabs"),
+        _ => None,
+    };
+    let mut dropped: usize = 0;
+    for container in containers {
+        let keys: Vec<String> = doc.keys(container).collect();
+        for key in keys {
+            let Some(id) = contents_key_id(&key) else {
+                continue;
+            };
+            if !keep(id) {
+                if doc.delete(container, key.as_str()).is_ok() {
+                    dropped = dropped.saturating_add(1);
+                }
+                continue;
+            }
+            if let Some(child) = child {
+                let entries = map_candidates(doc, container, key.as_str());
+                let nested = child_candidates(doc, &entries, child);
+                dropped = dropped.saturating_add(drop_contents_level(
+                    doc,
+                    &nested,
+                    level.saturating_add(1),
+                    keep,
+                ));
+            }
+        }
+    }
+    dropped
+}
+
+/// In the workspace addressing `room`, remove every window `foreign` names
+/// (someone else's, mirrored here while the room shared its layout), then
+/// the window groups left with none, and the strips left with none that this
+/// machine (`local_salt`) did not make. Every window of this machine's own
+/// stays where it is. Reports whether anything changed.
+pub fn drop_windows_of_others(
+    desktop: &mut DesktopTree,
+    room: RoomId,
+    local_salt: u16,
+    foreign: &impl Fn(&Tab) -> bool,
+) -> bool {
+    let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.room() == room) else {
+        return false;
+    };
+    let mut changed = false;
+    let mut vanished: Vec<StripId> = Vec::new();
+    for strip in &mut ws.strips {
+        for group in &mut strip.window_groups {
+            let before = group.tabs.len();
+            group.tabs.retain(|tab| !foreign(tab));
+            if group.tabs.len() == before {
+                continue;
+            }
+            changed = true;
+            group
+                .focus_history
+                .retain(|id| group.tabs.iter().any(|tab| tab.id == *id));
+            if !group.tabs.iter().any(|tab| tab.id == group.active_tab)
+                && let Some(first) = group.tabs.first()
+            {
+                group.active_tab = first.id;
+            }
+        }
+        strip.window_groups.retain(|group| !group.tabs.is_empty());
+    }
+    ws.strips.retain(|strip| {
+        let keep = !strip.window_groups.is_empty() || peer_salt_of(strip.id.raw()) == local_salt;
+        if !keep {
+            vanished.push(strip.id);
+        }
+        keep
+    });
+    changed |= !vanished.is_empty();
+    let ws_id = ws.id;
+    if desktop
+        .active_strip
+        .get(&ws_id)
+        .is_some_and(|active| vanished.contains(active))
+    {
+        desktop.active_strip.remove(&ws_id);
+    }
+    for strip in vanished {
+        desktop.active_group.remove(&strip);
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -1716,6 +1810,7 @@ mod tests {
             id: 9,
             order: 0,
             title: "Poster.xcf".into(),
+            app_title: None,
             tile: Some(hosted.clone()),
         });
         assert_eq!(tab.tile, hosted);
@@ -1773,6 +1868,7 @@ mod tests {
                     kind: AppKind::Other("Canvas".into()),
                     label: name.into(),
                 },
+                app_title: None,
             }],
             active_tab: id,
             width: crate::width::WindowWidth::Normal,
@@ -1783,8 +1879,8 @@ mod tests {
 
     /// A desktop with one workspace in `room` holding `strips`.
     fn room_desktop(room: RoomId, workspace: u64, strips: Vec<Strip>) -> crate::tree::DesktopTree {
-        let mut w = crate::workspace::Workspace::new(crate::ids::WorkspaceId(workspace), "Team");
-        w.room = room;
+        let mut w =
+            crate::workspace::Workspace::in_room(crate::ids::WorkspaceId(workspace), room, "Team");
         w.strips = strips;
         crate::tree::DesktopTree {
             active: w.id,
@@ -1895,6 +1991,206 @@ mod tests {
         assert!(
             strips.iter().any(|s| s.id == StripId(compose_id(B, 1))),
             "B's own strip stays"
+        );
+    }
+
+    /// A person's name for a host window travels with the window's own
+    /// title behind it, and clearing it travels too: every member shows the
+    /// name, and the window's latest title once it is cleared.
+    #[test]
+    fn a_named_host_window_carries_its_own_title_through_the_room() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let room = RoomId::new();
+        let tab_id = compose_id(A, 10);
+        let mut tab = Tab {
+            id: tab_id,
+            title: "~/src".into(),
+            tile: TileContent::Foreign {
+                app_id: "Alacritty".into(),
+                surface_id: 4,
+            },
+            app_title: None,
+        };
+        tab.rename("Build");
+        let mut group = canvas_group(A, 10, "unused");
+        group.tabs = vec![tab];
+        let mut strip = Strip::new(StripId(compose_id(A, 1)), "Main");
+        strip.window_groups.push(group);
+        let mut a = room_desktop(room, 1, vec![strip]);
+        let mut b = room_desktop(room, 2, vec![Strip::new(StripId(compose_id(B, 1)), "Mine")]);
+        let mut doc = AutoCommit::new();
+        let project = |doc: &mut AutoCommit, a: &crate::tree::DesktopTree| {
+            project_owned_contents(doc, &a.workspaces[0].strips, A, None, EmptyStrips::Skip)
+                .expect("projected");
+        };
+        let find_tab = |tree: &crate::tree::DesktopTree| {
+            tree.workspaces[0]
+                .strips
+                .iter()
+                .flat_map(|s| &s.window_groups)
+                .flat_map(|g| &g.tabs)
+                .find(|t| t.id == tab_id)
+                .cloned()
+                .expect("the window is there")
+        };
+        project(&mut doc, &a);
+        let replicated = contents_of(&doc)
+            .into_iter()
+            .flat_map(|s| s.groups)
+            .flat_map(|g| g.tabs)
+            .find(|t| t.id == tab_id)
+            .expect("the tab is in the room");
+        assert_eq!(replicated.title, "Build");
+        assert_eq!(replicated.app_title.as_deref(), Some("~/src"));
+        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        let arrived = find_tab(&b);
+        assert_eq!(arrived.title, "Build");
+        assert_eq!(arrived.app_title.as_deref(), Some("~/src"));
+
+        // The window keeps titling itself behind the name.
+        let tab = &mut a.workspaces[0].strips[0].window_groups[0].tabs[0];
+        tab.set_window_title("cargo test");
+        project(&mut doc, &a);
+        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        assert_eq!(find_tab(&b).title, "Build");
+        assert_eq!(find_tab(&b).app_title.as_deref(), Some("cargo test"));
+
+        let tab = &mut a.workspaces[0].strips[0].window_groups[0].tabs[0];
+        tab.rename("");
+        project(&mut doc, &a);
+        assert!(
+            contents_of(&doc)
+                .into_iter()
+                .flat_map(|s| s.groups)
+                .flat_map(|g| g.tabs)
+                .all(|t| t.app_title.is_none()),
+            "a cleared name leaves nothing behind in the room"
+        );
+        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        let cleared = find_tab(&b);
+        assert_eq!(cleared.title, "cargo test");
+        assert_eq!(cleared.app_title, None);
+    }
+
+    /// The layout scope is the governor's word in the room document: absent,
+    /// an invite-only room's default (shared); a word this build does not
+    /// read is personal, never shared.
+    #[test]
+    fn a_rooms_layout_is_what_its_governor_wrote_and_shared_by_default() {
+        use automerge::transaction::Transactable as _;
+        let mut doc = AutoCommit::new();
+        assert_eq!(room_layout_choice(&doc), None);
+        assert_eq!(room_layout(&doc), RoomLayout::Shared);
+        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, "personal")
+            .unwrap();
+        assert_eq!(room_layout(&doc), RoomLayout::Personal);
+        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, "shared").unwrap();
+        assert_eq!(room_layout_choice(&doc), Some(RoomLayout::Shared));
+        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, "by-invitation")
+            .unwrap();
+        assert_eq!(room_layout(&doc), RoomLayout::Personal);
+        doc.put(automerge::ROOT, ROOM_LAYOUT_KEY, 3_u64).unwrap();
+        assert_eq!(room_layout(&doc), RoomLayout::Personal);
+        for layout in [RoomLayout::Shared, RoomLayout::Personal] {
+            assert_eq!(RoomLayout::from_id(layout.id()), Some(layout));
+        }
+    }
+
+    /// What another namespace put into the room's contents goes, down to a
+    /// window it opened in someone else's strip, and everything of the kept
+    /// namespace stays.
+    #[test]
+    fn dropping_contents_keeps_only_what_keep_admits_at_every_level() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let mut a_strip = Strip::new(StripId(compose_id(A, 1)), "Main");
+        a_strip.window_groups.push(canvas_group(A, 2, "Board"));
+        let mut b_view = a_strip.clone();
+        b_view
+            .window_groups
+            .push(canvas_group(B, 3, "Alacritty: ~/secret"));
+        let b_strip = {
+            let mut strip = Strip::new(StripId(compose_id(B, 4)), "Mine");
+            strip.window_groups.push(canvas_group(B, 5, "htop"));
+            strip
+        };
+        let mut doc = AutoCommit::new();
+        project_owned_contents(&mut doc, &[a_strip], A, None, EmptyStrips::Skip).unwrap();
+        project_owned_contents(&mut doc, &[b_view, b_strip], B, None, EmptyStrips::Skip).unwrap();
+        assert_eq!(contents_of(&doc).len(), 2);
+
+        let dropped = drop_contents_except(&mut doc, &|id| peer_salt_of(id) == A);
+        assert_eq!(dropped, 2, "B's strip, and B's group in A's strip");
+        let after = contents_of(&doc);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].id, compose_id(A, 1));
+        let titles: Vec<&str> = after[0]
+            .groups
+            .iter()
+            .flat_map(|group| group.tabs.iter().map(|tab| tab.title.as_str()))
+            .collect();
+        assert_eq!(titles, ["Board"]);
+        assert_eq!(
+            drop_contents_except(&mut doc, &|id| peer_salt_of(id) == A),
+            0,
+            "nothing left to drop"
+        );
+    }
+
+    /// A device's local copy of a workspace whose room became personal loses
+    /// the windows it mirrored of others, and keeps every window of its own,
+    /// wherever it stands.
+    #[test]
+    fn dropping_others_windows_keeps_every_window_of_ones_own() {
+        const MINE: u16 = 0x1111;
+        const THEIRS: u16 = 0x2222;
+        let room = RoomId::new();
+        // My strip, holding my window and one of theirs side by side; their
+        // strip, holding only theirs; their strip I moved a window of mine
+        // into.
+        let mut mine = Strip::new(StripId(compose_id(MINE, 1)), "Mine");
+        mine.window_groups.push(canvas_group(MINE, 2, "Board"));
+        mine.window_groups
+            .push(canvas_group(THEIRS, 3, "ssh prod-db"));
+        let mut theirs = Strip::new(StripId(compose_id(THEIRS, 4)), "Terminals");
+        theirs
+            .window_groups
+            .push(canvas_group(THEIRS, 5, "~/private"));
+        let mut shared = Strip::new(StripId(compose_id(THEIRS, 6)), "Shared");
+        shared.window_groups.push(canvas_group(MINE, 7, "Notes"));
+        let mut tree = room_desktop(room, 1, vec![mine, theirs, shared]);
+        let ws = tree.workspaces[0].id;
+        tree.active_strip.insert(ws, StripId(compose_id(THEIRS, 4)));
+
+        let foreign = |tab: &Tab| peer_salt_of(tab.id) == THEIRS;
+        assert!(drop_windows_of_others(&mut tree, room, MINE, &foreign));
+        let titles: Vec<(&str, Vec<&str>)> = tree.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| {
+                (
+                    strip.name.as_str(),
+                    strip
+                        .window_groups
+                        .iter()
+                        .flat_map(|group| group.tabs.iter().map(|tab| tab.title.as_str()))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            titles,
+            [("Mine", vec!["Board"]), ("Shared", vec!["Notes"])],
+            "every window of mine stays, none of theirs"
+        );
+        assert!(
+            !tree.active_strip.contains_key(&ws),
+            "no pointer at a strip that went"
+        );
+        assert!(
+            !drop_windows_of_others(&mut tree, room, MINE, &foreign),
+            "nothing more to drop"
         );
     }
 }

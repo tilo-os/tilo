@@ -26,7 +26,7 @@ class DevImageContractTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        for name in ("os/Containerfile", "os/Containerfile.dev", "os/dev/resolve-rpm-snapshot.sh", "os/components.toml",
+        for name in ("os/Containerfile", "os/Containerfile.dev", "os/image/compile.sh", "os/dev/resolve-rpm-snapshot.sh", "os/components.toml",
                      "os/scripts/install-components.py", "os/etc/containers/policy.json",
                      "os/scripts/builder-packages.py", "os/scripts/builder-packages.txt",
                      "os/dev/derive-rpm-package-set.py"):
@@ -85,20 +85,6 @@ class DevImageContractTests(unittest.TestCase):
             errors = "\n".join(self.findings(root))
             self.assertIn('does not label the image sh.tilo.image.flavour="dev"', errors)
             self.assertIn("never runs os/scripts/unseal-rootfs.py", errors)
-        with self.subTest(phase='ci builds the dev image with the local recipe'):
-            root = self.fixture()
-            workflow = root / ".forgejo/workflows/dev-disk.yml"
-            workflow.write_text("jobs:\n  b:\n    steps:\n      - run: |\n"
-                                "          test -f os/Containerfile.dev\n"
-                                "          ./os/dev/build-dev-image.sh\n")
-            self.assertEqual(self.findings(root), [])
-            workflow.write_text("jobs:\n  b:\n    steps:\n      - run: |\n"
-                                "          podman build --file os/Containerfile.dev --tag localhost/tilo-vm:ci .\n")
-            self.assertIn(".forgejo/workflows/dev-disk.yml: builds os/Containerfile.dev itself",
-                          "\n".join(self.findings(root)))
-            workflow.write_text("jobs:\n  b:\n    steps:\n      - run: echo nothing\n")
-            self.assertIn("no longer builds the dev image with os/dev/build-dev-image.sh",
-                          "\n".join(self.findings(root)))
 
     def test_missing_package_generator_cannot_skip_parity_verification(self):
         root = self.fixture()
@@ -135,11 +121,11 @@ class DevImageContractTests(unittest.TestCase):
             self.assertIn("fix: remove it", errors[0])
         with self.subTest(phase='production build of a dev only bin fails'):
             root = self.fixture()
-            self.edit(root / "os/Containerfile", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-vmd ")
+            self.edit(root / "os/image/compile.sh", "--bin tilo-projector ", "--bin tilo-projector --bin tilo-vmd ")
             self.assertIn("bin 'tilo-vmd'", "\n".join(self.findings(root)))
         with self.subTest(phase='production dev feature fails'):
             root = self.fixture()
-            self.edit(root / "os/Containerfile", "--bin tilo-projector ",
+            self.edit(root / "os/image/compile.sh", "--bin tilo-projector ",
                       "--bin tilo-projector --features dev-overrides ")
             self.assertIn("dev feature 'dev-overrides'", "\n".join(self.findings(root)))
         with self.subTest(phase='production policy must reject dev repository'):
@@ -176,13 +162,16 @@ class DevImageContractTests(unittest.TestCase):
 class FinalizeDevImageTests(unittest.TestCase):
     finalize = load("finalize_dev_image_under_test", REPO / "os/scripts/finalize-dev-image.py")
 
-    def test_dev_policy_admits_only_the_dev_repository_on_a_clean_base(self):
+    def test_dev_policy_admits_only_signed_dev_images_on_a_clean_base(self):
         with self.subTest(phase='dev policy admits only the dev repository'):
             production = json.loads((REPO / "os/etc/containers/policy.json").read_text())
             before = json.dumps(production["transports"]["docker"]["registry.tilo.so/tilo/tilo"], sort_keys=True)
             dev = self.finalize.dev_policy(json.loads(json.dumps(production)))
             docker = dev["transports"]["docker"]
-            self.assertEqual(docker["registry.tilo.so/tilo/tilo-vm"], [{"type": "insecureAcceptAnything"}])
+            for repository in ("registry.tilo.so/tilo/tilo-vm", "registry.tilo.so/tilo/tilo-vm-ref"):
+                self.assertEqual(docker[repository], [{
+                    "type": "sigstoreSigned", "keyPath": "/usr/share/tilo/cosign-dev.pub",
+                    "signedIdentity": {"type": "matchRepository"}}])
             self.assertEqual(json.dumps(docker["registry.tilo.so/tilo/tilo"], sort_keys=True), before)
             self.assertEqual(dev["default"], production["default"])
         with self.subTest(phase='a base that already admits dev images is refused'):

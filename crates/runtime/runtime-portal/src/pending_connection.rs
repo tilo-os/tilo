@@ -15,9 +15,6 @@ pub struct Cancellation(Arc<Mutex<Lifetime>>);
 
 impl Cancellation {
     /// Register the request connection before sending anything on it.
-    ///
-    /// # Errors
-    /// Returns an error if cancelled, poisoned or unable to clone the connection.
     #[cfg(unix)]
     pub fn track(&self, socket: &std::os::unix::net::UnixStream) -> std::io::Result<()> {
         let mut guard = self
@@ -62,9 +59,6 @@ pub struct PendingResponse<T> {
 
 impl<T: Send + 'static> PendingResponse<T> {
     /// Start a request away from the host's event thread.
-    ///
-    /// # Errors
-    /// Returns the thread creation error.
     pub fn start(
         name: &str,
         work: impl FnOnce(Cancellation) -> T + Send + 'static,
@@ -95,9 +89,6 @@ impl<T: Send + 'static> PendingResponse<T> {
     }
 
     /// Transfer the answer's lifetime to its caller without blocking.
-    ///
-    /// # Errors
-    /// Returns `Disconnected` if the worker ended without an answer.
     pub fn take_answer(&self) -> Result<T, mpsc::TryRecvError> {
         let answer = self.answer.try_recv()?;
         self.cancellation.detach();
@@ -125,23 +116,70 @@ impl SessionLifetime {
         Self { socket }
     }
 
+    /// The lifetime a supervisor handed over as a descriptor, once it is
+    /// checked to be a Unix stream socket.
+    ///
+    /// Its peer may have closed already (the guest ended at once): that is
+    /// the lifetime's answer, read like any other end of the session, so the
+    /// socket's own address and type are checked, never its peer's, which
+    /// macOS stops answering for once the peer is gone.
+    #[cfg(unix)]
+    pub fn adopt(descriptor: std::os::fd::OwnedFd) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd;
+        let socket = std::os::unix::net::UnixStream::from(descriptor);
+        socket.local_addr()?;
+        let mut kind: libc::c_int = 0;
+        let mut size = libc::socklen_t::try_from(std::mem::size_of_val(&kind))
+            .map_err(std::io::Error::other)?;
+        // SAFETY: a live descriptor and an output buffer of the size passed.
+        if unsafe {
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_TYPE,
+                (&raw mut kind).cast(),
+                &raw mut size,
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        if kind == libc::SOCK_STREAM {
+            Ok(Self { socket })
+        } else {
+            Err(std::io::Error::other(
+                "a session lifetime is a stream socket",
+            ))
+        }
+    }
+
     /// Duplicate the connection for a reader that observes the peer's lifetime.
     /// The duplicate does not acquire responsibility for ending the session.
     ///
     /// # Errors
-    /// Returns the descriptor duplication error.
+    /// Returns the descriptor duplication error, and
+    /// [`std::io::ErrorKind::Unsupported`] where leases are not sockets.
     #[cfg(unix)]
     pub fn clone_for_reader(&self) -> std::io::Result<ReaderLifetime> {
         self.socket
             .try_clone()
             .map(|socket| ReaderLifetime { socket })
     }
+
+    /// Where leases are not sockets there is nothing to duplicate.
+    ///
+    /// # Errors
+    /// Always [`std::io::ErrorKind::Unsupported`].
+    #[cfg(not(unix))]
+    pub fn clone_for_reader(&self) -> std::io::Result<ReaderLifetime> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
 }
 
 /// A reader's duplicate of a [`SessionLifetime`] connection; it only observes
 /// whether the peer still holds the session open.
-#[cfg(unix)]
 pub struct ReaderLifetime {
+    #[cfg(unix)]
     socket: std::os::unix::net::UnixStream,
 }
 
@@ -174,6 +212,82 @@ impl ReaderLifetime {
     }
 }
 
+/// Where a lease stands for a reader, when its peer may say how the session
+/// ended before closing it (a relay session's `end_report`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LeaseState {
+    Open,
+    Closed,
+    /// The peer said how the session ended (one line, without its newline)
+    /// and closes the lease.
+    Reported(Vec<u8>),
+}
+
+/// The longest end report a reader takes.
+#[cfg(unix)]
+const MAX_END_REPORT: usize = 4096;
+
+#[cfg(unix)]
+impl ReaderLifetime {
+    /// [`Self::is_open`] for a lease whose peer may report how the session
+    /// ended before it closes: a report is read (once; afterwards the lease
+    /// reads as closed), never taken for a peer still holding it open.
+    #[must_use]
+    pub fn state(&self) -> LeaseState {
+        use std::os::fd::AsRawFd as _;
+        let mut line = Vec::new();
+        let mut chunk = [0u8; 512];
+        loop {
+            // SAFETY: `chunk` is valid writable storage for its length and the
+            // descriptor stays open for the duration of the call.
+            let received = unsafe {
+                libc::recv(
+                    self.socket.as_raw_fd(),
+                    chunk.as_mut_ptr().cast::<libc::c_void>(),
+                    chunk.len(),
+                    libc::MSG_DONTWAIT,
+                )
+            };
+            match usize::try_from(received) {
+                Ok(0) => break,
+                Ok(n) => {
+                    line.extend_from_slice(chunk.get(..n).unwrap_or_default());
+                    if line.contains(&b'\n') || line.len() >= MAX_END_REPORT {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    let error = std::io::Error::last_os_error().raw_os_error();
+                    if line.is_empty() && matches!(error, Some(libc::EAGAIN | libc::EINTR)) {
+                        return LeaseState::Open;
+                    }
+                    break;
+                }
+            }
+        }
+        if line.is_empty() {
+            return LeaseState::Closed;
+        }
+        let end = line
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .unwrap_or(line.len());
+        line.truncate(end.min(MAX_END_REPORT));
+        LeaseState::Reported(line)
+    }
+}
+
+/// Where leases are not sockets no reader holds one; this is only for the
+/// type to exist on every target.
+#[cfg(not(unix))]
+impl ReaderLifetime {
+    /// A lease that is not there reads as closed.
+    #[must_use]
+    pub fn state(&self) -> LeaseState {
+        LeaseState::Closed
+    }
+}
+
 impl Drop for SessionLifetime {
     fn drop(&mut self) {
         #[cfg(unix)]
@@ -187,7 +301,30 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
-    use std::time::Duration;
+
+    #[test]
+    fn a_reader_takes_the_end_a_peer_reports_and_then_sees_it_closed() {
+        let (ours, peer) = UnixStream::pair().expect("socket pair");
+        let lifetime = SessionLifetime::new(ours);
+        let reader = lifetime.clone_for_reader().expect("reader duplicate");
+        assert_eq!(reader.state(), LeaseState::Open);
+        (&peer)
+            .write_all(b"{\"ended\":\"lost\"}\n")
+            .expect("peer reports");
+        peer.shutdown(std::net::Shutdown::Both)
+            .expect("peer closes");
+        assert_eq!(
+            reader.state(),
+            LeaseState::Reported(b"{\"ended\":\"lost\"}".to_vec())
+        );
+        assert_eq!(reader.state(), LeaseState::Closed);
+
+        let (ours, peer) = UnixStream::pair().expect("socket pair");
+        let lifetime = SessionLifetime::new(ours);
+        let reader = lifetime.clone_for_reader().expect("reader duplicate");
+        drop(peer);
+        assert_eq!(reader.state(), LeaseState::Closed, "closed without a word");
+    }
 
     #[test]
     fn reader_lifetime_sees_the_peer_close_its_end() {
@@ -203,16 +340,14 @@ mod tests {
     #[test]
     fn cancellation_before_connection_registration_prevents_a_request() {
         let (mut connection, mut peer) = UnixStream::pair().expect("connection");
-        peer.set_read_timeout(Some(Duration::from_secs(5)))
+        peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
             .expect("deadline");
         let (release, delayed_discovery) = mpsc::channel();
         let (observed, observation) = mpsc::channel();
         let pending = PendingResponse::start(
             "delayed-discovery",
             move |cancellation| {
-                delayed_discovery
-                    .recv_timeout(Duration::from_secs(5))
-                    .expect("discovery gate");
+                tilo_test_env::recv("the discovery gate", &delayed_discovery);
                 let result = cancellation
                     .track(&connection)
                     .and_then(|()| connection.write_all(b"request"));
@@ -226,11 +361,7 @@ mod tests {
         .expect("worker");
         drop(pending);
         release.send(()).expect("release discovery");
-        assert!(
-            observation
-                .recv_timeout(Duration::from_secs(5))
-                .expect("worker finished")
-        );
+        assert!(tilo_test_env::recv("the worker to finish", &observation));
         assert_eq!(
             peer.read(&mut [0]).expect("peer closed"),
             0,

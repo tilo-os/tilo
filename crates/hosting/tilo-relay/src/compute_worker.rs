@@ -339,10 +339,6 @@ pub fn spawn_worker_stream(
 
 /// Serve one stream the relay opened to this worker, which runs no batch
 /// jobs: it has no job outputs to serve.
-///
-/// # Errors
-///
-/// Returns an error when the stream fails or its first frame is malformed.
 pub async fn serve_worker_stream<S, R>(
     environments: WorkerEnvironments,
     send: &mut S,
@@ -358,10 +354,6 @@ where
 /// Serve one stream the relay opened to this worker: an environment
 /// session, a legacy app, or an output of a job it ran, from `outputs`
 /// ([`WorkerStreamOpen::ComputeContent`](tilo_relay_protocol::environment::WorkerStreamOpen::ComputeContent)).
-///
-/// # Errors
-///
-/// Returns an error when the stream fails or its first frame is malformed.
 pub async fn serve_worker_stream_with<S, R>(
     environments: WorkerEnvironments,
     outputs: Option<Arc<dyn ComputeOutputSource>>,
@@ -460,11 +452,6 @@ struct WorkerHealth {
 /// Run the production worker until shutdown, health regression, or transport
 /// failure. Dropping/aborting this future closes the session and withdraws
 /// every advertisement.
-///
-/// # Errors
-///
-/// Returns an error if health validation, authentication, execution routing,
-/// or the dedicated session fails.
 pub async fn run_production_compute_worker(
     config: ProductionComputeWorkerConfig,
 ) -> Result<(), ComputeWorkerError> {
@@ -740,12 +727,6 @@ impl InputFailure {
 /// exactly what the job lists. The total is bounded by
 /// [`MAX_COMPUTE_INPUT_BYTES`] and the job's memory limit, and the whole
 /// staging by the job's lifetime.
-///
-/// # Errors
-///
-/// Returns the failure code the requester sees (`input_unavailable`,
-/// `input_integrity`, `input_too_large`, `input_timeout`, `staging`) and a
-/// diagnostic.
 pub async fn hydrate_job_inputs(
     connection: &iroh::endpoint::Connection,
     spec: &ComputeJobSpec,
@@ -898,7 +879,6 @@ async fn proven_copy(
 /// worker reports, and what it fetched to get there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComputeAssignment {
-    /// The terminal phase to report.
     pub phase: ComputeJobPhase,
     /// The bounded diagnostic tail to report.
     pub log_tail: Vec<u8>,
@@ -1469,7 +1449,6 @@ mod tests {
         fs::create_dir_all(retained.parent().unwrap()).unwrap();
         fs::write(&retained, b"output").unwrap();
 
-        // A job may still be using scratch younger than any job can live.
         let now = std::time::SystemTime::now();
         assert_eq!(
             prune_stale_job_scratch(&state_root, now, STALE_JOB_SCRATCH).unwrap(),
@@ -1599,7 +1578,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn compute_worker_state_is_bounded_withdrawn_and_revoked_with_its_owner() {
-        // Phase `file_content_store_rejects_digest_substitution`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = FileComputeContentStore::open(root.path().join("content")).unwrap();
@@ -1610,7 +1588,6 @@ mod tests {
             fs::write(store.path_for(digest), b"substitution").unwrap();
             assert!(store.get(digest).is_err());
         }
-        // Phase `log_tail_is_bounded_to_latest_diagnostics`.
         {
             let bytes = (0..MAX_COMPUTE_LOG_BYTES + 9)
                 .map(|index| u8::try_from(index % 251).unwrap())
@@ -1618,13 +1595,11 @@ mod tests {
             let expected = bytes[9..].to_vec();
             assert_eq!(bounded_log(bytes), expected);
         }
-        // Phase `readiness_is_withdrawn_when_owner_stops`.
         {
             let readiness = Arc::new(AtomicBool::new(true));
             drop(ReadinessGuard(Arc::clone(&readiness)));
             assert!(!readiness.load(Ordering::Acquire));
         }
-        // Phase `health_regression_requires_withdrawal`.
         {
             let healthy = WorkerHealth {
                 apps: BTreeSet::from(["org.tilo.Compute".into()]),
@@ -1637,7 +1612,6 @@ mod tests {
             assert!(health_unchanged(&healthy, &healthy));
             assert!(!health_unchanged(&healthy, &constrained));
         }
-        // Phase `cancellation_requires_exact_active_route`.
         {
             let binding = ComputeJobBinding {
                 workspace_id: 7,
@@ -1661,7 +1635,6 @@ mod tests {
             assert!(cancel_active(&active, &binding).unwrap());
             assert!(cancellation.is_cancelled());
         }
-        // Phase `shutdown_cancels_all_active_work_and_clears_exact_routes`.
         {
             let first = ComputeJobBinding {
                 workspace_id: 7,
@@ -1698,7 +1671,6 @@ mod tests {
             assert!(first_cancellation.is_cancelled());
             assert!(second_cancellation.is_cancelled());
         }
-        // Phase `dropping_active_registry_revokes_running_work`.
         {
             let cancellation = CaptureCancellation::default();
             {
@@ -1719,7 +1691,6 @@ mod tests {
             }
             assert!(cancellation.is_cancelled());
         }
-        // Phase `retained_outputs_are_reported_and_failures_keep_their_code`.
         {
             let result = ComputeJobResult {
                 lifecycle: crate::compute::ComputeJobLifecycle {

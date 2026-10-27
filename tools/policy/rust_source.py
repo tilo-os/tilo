@@ -106,8 +106,6 @@ def skip_string(text: str, start: int) -> int:
     return len(text)
 
 
-# --- Lexing ------------------------------------------------------------------
-
 
 @dataclass(frozen=True)
 class Literal:

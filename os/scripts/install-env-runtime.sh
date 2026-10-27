@@ -7,7 +7,7 @@
 #
 #   SOURCE       the published image's /env-runtime directory: one
 #                env-runtime-<arch>.tapp, .id and SHA256SUMS per architecture
-#                and publisher.hex (.forgejo/workflows/build-env-runtime.yml)
+#                and publisher.hex (t's release-env-runtime)
 #   STORE        store root the image's tree goes into (pkgs/<id>/): the OS
 #                image's /usr/share/tilo-apps, the RPM's /usr/lib/tilo-apps
 #   DATA_DIR     the system store's registry directory, where the runtime's

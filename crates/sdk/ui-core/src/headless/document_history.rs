@@ -125,9 +125,6 @@ impl FrameHarness {
 
     /// Observe a frame with an explicit error if its document authority changed.
     /// No cached private History rows escape an invalid frame.
-    ///
-    /// # Errors
-    /// Returns an error if the captured document authority or frame topology changed.
     pub fn try_presentation_inspection(&self) -> Result<InspectionSnapshot, String> {
         self.drain_component_wakes();
         self.try_presentation(|root, _| InspectionSnapshot {
@@ -217,9 +214,6 @@ impl FrameHarness {
 
     /// Local host actions are intentionally separate from `resources()`, the
     /// application's publishable catalogue. No remote actor is granted this door.
-    ///
-    /// # Errors
-    /// Returns an error if the captured document is no longer readable.
     pub fn local_history_resources(&mut self) -> Result<Vec<tilo_actions::Resource>, String> {
         self.invalidate_local();
         if !self.history_chrome_enabled {
@@ -255,10 +249,6 @@ impl FrameHarness {
 
     /// Open History as the History shortcut does: the app's registered
     /// History where it has one, else the document History chrome.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the app has no History to open.
     pub fn open_history(&mut self) -> Result<(), String> {
         self.invalidate_local();
         if let Some(history) = &self.history {
@@ -530,6 +520,7 @@ impl FrameHarness {
             &mut self.node_map,
             f64::from(self.viewport.0),
         );
+        self.admit_layout_maps();
         let palette_node = palette_node.filter(|&node| {
             self.taffy
                 .add_child(layout.root, node)
@@ -930,7 +921,6 @@ mod tests {
             driver.enable_document_history_chrome();
             driver.relayout();
             let rgba = driver.render_rgba();
-            // At the top of app content, outside the centered dialog.
             let (x, y) = (880_usize, 8_usize);
             let at = (y * 900 + x) * 4;
             [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]

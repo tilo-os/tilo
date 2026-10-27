@@ -75,6 +75,8 @@ mod support {
         }
 
         pub fn app(&self) -> SettingsApp {
+            // The panes register before a window over them is made.
+            settings::install();
             SettingsApp::with_config_root(self.dir.path().join("tilo"))
         }
     }
@@ -92,8 +94,6 @@ mod narrow_navigation;
 mod no_app_title_header;
 #[path = "scroll.rs"]
 mod scroll;
-#[path = "search_focus.rs"]
-mod search_focus;
 
 #[path = "composition_balance.rs"]
 mod composition_balance;

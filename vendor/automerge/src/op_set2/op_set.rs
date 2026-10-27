@@ -846,6 +846,7 @@ impl OpSet {
             Some(Some(pos)) if self.op_id_at(pos) == Some(id) => Some(pos),
             _ => {
                 self.id_index.searched(self.cols.id_ctr.slab_count());
+                crate::work::searched_slabs(self.cols.id_ctr.slab_count()); // TILO(work-count)
                 return self.scan_op_id_pos(id);
             }
         };

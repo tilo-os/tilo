@@ -25,7 +25,7 @@ use crate::onboarding::MintedIdentity;
 use crate::shell::i18n::{t, t_args};
 
 /// The enrollment helper the image installs.
-const ENROLL: &str = "/usr/bin/tilo-enroll";
+const ENROLL: &str = "/usr/libexec/tilo/tilo-enroll";
 
 /// Each enrollment window the helper may wait through, in seconds.
 const PAIRING_WINDOW_SECS: u64 = 270;
@@ -787,7 +787,6 @@ mod tests {
         reason = "one phase per way a pairing attempt can end"
     )]
     fn nearby_pairing_always_ends_with_the_join_or_a_reason() {
-        // Phase `the_status_file_completes_the_join_without_reading_output`.
         {
             let fixture = fixture();
             let record = joined_record(&fixture, [7; 32]);
@@ -809,7 +808,6 @@ mod tests {
                 })
             );
         }
-        // Phase `a_completed_record_of_another_identity_is_rejected`.
         {
             let fixture = fixture();
             let record = joined_record(&fixture, [7; 32]);
@@ -825,8 +823,6 @@ mod tests {
                 NearbyEvent::Failed(NearbyFailure::new(NearbyCause::InvalidIdentity))
             );
         }
-        // Phase `a_selected_active_identity_completes_a_lost_status_update`.
-        // The helper ended without recording completion.
         {
             let fixture = fixture();
             let record = joined_record(&fixture, [9; 32]);
@@ -875,7 +871,6 @@ mod tests {
                 "the helper was stopped before it finished"
             );
         }
-        // Phase `the_recorded_helper_error_is_shown_with_a_retry`.
         {
             let fixture = fixture();
             let script = r#"printf '%s' '{"state":"failed","error":"Permission denied (os error 13)","cause":"permission_denied"}' > "$1"; echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
@@ -892,7 +887,6 @@ mod tests {
             );
             assert!(failure.title().contains("Permission denied"), "{failure:?}");
         }
-        // Phase `an_exit_without_a_status_reports_stderr_and_records_it`.
         {
             let fixture = fixture();
             let script = r#"echo "Error: Not authorized" >&2; exit 127"#;
@@ -910,26 +904,22 @@ mod tests {
                 NearbyProgress::Failed(expected)
             );
         }
-        // Phase `a_helper_that_never_finishes_is_stopped_and_reported`.
         {
             let fixture = fixture();
             let script = r#"printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"; trap '' TERM; while :; do sleep 1; done"#;
-            let mut pairing = helper(&fixture, script, Duration::from_millis(300));
-            let mut saw_code = false;
-            let deadline = tilo_test_env::hang_deadline();
-            let event = loop {
+            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
+            tilo_test_env::wait_until("the verification code to be shown while waiting", || {
                 match pairing.poll(Instant::now()) {
-                    NearbyEvent::Idle => {}
+                    NearbyEvent::Idle => false,
                     NearbyEvent::Code(code) => {
                         assert_eq!(code, "424242");
-                        saw_code = true;
+                        true
                     }
-                    event => break event,
+                    event => panic!("the pairing ended before its code: {event:?}"),
                 }
-                assert!(Instant::now() < deadline, "the bound never fired");
-                std::thread::sleep(Duration::from_millis(20));
-            };
-            assert!(saw_code, "the verification code is shown while waiting");
+            });
+            let over = pairing.deadline;
+            let event = poll_until_over_at(&mut pairing, Some(over));
             let expected = NearbyFailure::new(NearbyCause::TimedOut);
             assert_eq!(event, NearbyEvent::Failed(expected.clone()));
             assert!(pairing.child.is_none(), "the stuck helper was stopped");
@@ -938,15 +928,19 @@ mod tests {
                 NearbyProgress::Failed(expected)
             );
         }
-        // Phase `a_worker_holding_stderr_open_never_blocks_the_report`.
         {
             let fixture = fixture();
             // The leader reports and exits while a worker it started keeps
-            // the inherited stderr open for far longer than the test runs.
-            let script =
-                r#"(sleep 600) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
-            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
-            let started = Instant::now();
+            // the inherited stderr open for longer than the test waits, so
+            // a report that waited on the pipe never comes.
+            let script = format!(
+                r#"(sleep {}) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#,
+                tilo_test_env::hang_bound()
+                    .as_secs()
+                    .saturating_mul(2)
+                    .max(600)
+            );
+            let mut pairing = helper(&fixture, &script, PROCESS_BOUND);
             assert_eq!(
                 poll_until_over(&mut pairing),
                 NearbyEvent::Failed(NearbyFailure {
@@ -954,12 +948,7 @@ mod tests {
                     detail: Some("Permission denied (os error 13)".into()),
                 })
             );
-            assert!(
-                started.elapsed() < Duration::from_secs(30),
-                "the report waited on the worker's pipe"
-            );
         }
-        // Phase `a_successful_exit_without_a_joined_identity_is_an_error`.
         {
             let fixture = fixture();
             let mut pairing = helper(&fixture, "exit 0", PROCESS_BOUND);
@@ -1015,9 +1004,7 @@ mod tests {
         for _ in 0..3 {
             let (event, blocked) = std::thread::scope(|scope| {
                 let poll = scope.spawn(|| pairing.poll(Instant::now()));
-                let deadline = Instant::now()
-                    .checked_add(Duration::from_secs(10))
-                    .expect("a deadline");
+                let deadline = tilo_test_env::hang_deadline();
                 while !poll.is_finished() && Instant::now() < deadline {
                     std::thread::sleep(Duration::from_millis(1));
                 }
@@ -1228,7 +1215,6 @@ mod tests {
         ] {
             assert_eq!(NearbyCause::from_text(text), cause, "{text}");
         }
-        // A status without a cause field is read from its error.
         let fixture = fixture();
         std::fs::write(
             &fixture.status,

@@ -29,7 +29,6 @@ use crate::text_break::grapheme_indices;
 /// this explicitly. Mixed-direction text and soft wraps can expose both.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TextAffinity {
-    /// Associate the caret with the text ending at this byte.
     #[default]
     Before,
     /// Associate the caret with the text beginning at this byte.
@@ -334,6 +333,27 @@ pub(crate) fn clipboard_copy_accepted(text: &str) -> bool {
     clipboard().copy(CopyContent::Text(text)).outcome() != Some(false)
 }
 
+/// Copy formatted text: `html` for the apps that read formatting, `plain`
+/// for every other. Reports whether the host's clipboard took it, as
+/// `clipboard_copy_accepted` does, so Cut never deletes words a refused
+/// copy did not keep.
+#[must_use]
+pub fn clipboard_copy_rich_accepted(html: &str, plain: &str) -> bool {
+    clipboard()
+        .copy(CopyContent::Rich { html, plain })
+        .outcome()
+        != Some(false)
+}
+
+/// The formatted text on the clipboard, when what was copied has
+/// formatting: its HTML with its plain-text words. `None` when it holds
+/// plain text only, or nothing; read [`clipboard_paste`] then.
+pub fn clipboard_paste_rich() -> Option<crate::clipboard::RichTextOffer> {
+    clipboard()
+        .rich_text()
+        .filter(crate::clipboard::RichTextOffer::is_valid)
+}
+
 /// Copy text only if a system clipboard backend accepts it, without waiting
 /// for it to.
 ///
@@ -636,7 +656,6 @@ mod tests {
         settler.settle(true);
         assert!(!watch.failed() && !watch.pending());
 
-        // A worker that went away without answering is a failure.
         let (copy, settler) = ClipboardCopy::pending();
         assert!(watch.watch(copy));
         drop(settler);
@@ -671,7 +690,6 @@ mod tests {
             );
         }
 
-        // Case `selection_helpers_min_max_range_collapsed`.
         {
             let s = Selection {
                 anchor: 3,
@@ -695,7 +713,6 @@ mod tests {
             assert_eq!(collapsed.range(), 5..5);
         }
 
-        // Case `selection_move_and_extend`.
         {
             let mut s = Selection::collapsed(0);
             s.extend_to(4);
@@ -713,7 +730,6 @@ mod tests {
             assert_eq!(s.cursor, 10);
         }
 
-        // Case `extend_span_drag_contains_anchor_and_grows_by_whole_units`.
         {
             // A double-click snapped the anchor to the word "beta" at bytes 6..10.
             let (lo, hi) = (6usize, 10usize);
@@ -730,7 +746,6 @@ mod tests {
 
     #[test]
     fn word_boundaries_follow_unicode_words_and_dictionaries() {
-        // Case `prev_word_boundary_walks_word_starts`.
         {
             let s = "hello world quick ui";
             assert_eq!(prev_word_boundary(s, s.len()), 18);
@@ -740,7 +755,6 @@ mod tests {
             assert_eq!(prev_word_boundary(s, 0), 0);
         }
 
-        // Case `next_word_boundary_walks_word_ends`.
         {
             let s = "hello world quick ui";
             assert_eq!(next_word_boundary(s, 0), 6);
@@ -750,7 +764,6 @@ mod tests {
             assert_eq!(next_word_boundary(s, s.len()), s.len());
         }
 
-        // Case `word_boundaries_snaps_to_word_bounds_ascii`.
         {
             let s = "hello world";
             assert_eq!(word_boundaries(s, 2), (0, 5));
@@ -776,7 +789,6 @@ mod tests {
             assert_eq!(word_boundaries(s, 8), (6, 11));
         }
 
-        // Case `unicode_words_keep_apostrophes_and_decimal_numbers_together`.
         {
             let text = "can't pay 32.3 now";
             assert_eq!(word_boundaries(text, 3), (0, "can't".len()));
@@ -788,7 +800,6 @@ mod tests {
             assert_eq!(next_word_boundary(text, 0), "can't ".len());
         }
 
-        // Case `unicode_words_keep_combining_marks_with_their_base`.
         {
             let text = "nai\u{308}ve café";
             let first_end = text.find(' ').unwrap();
@@ -796,7 +807,6 @@ mod tests {
             assert_eq!(prev_word_boundary(text, first_end), 0);
         }
 
-        // Case `dictionary_word_motion_segments_thai_without_spaces`.
         {
             let text = "ทุกสองสัปดาห์";
             assert_eq!(next_word_boundary(text, 0), 9);
@@ -805,12 +815,10 @@ mod tests {
             assert_eq!(word_boundaries(text, 12), (9, 18));
         }
 
-        // Case `word_boundaries_empty_string`.
         {
             assert_eq!(word_boundaries("", 0), (0, 0));
         }
 
-        // Case `char_word_boundaries_snap_to_the_word`.
         {
             let s = "alpha beta gamma";
             // A char index inside "beta" (chars 6..10) snaps to the word's char span.
@@ -825,7 +833,6 @@ mod tests {
 
     #[test]
     fn character_and_line_boundaries_are_utf8_and_grapheme_clean() {
-        // Case `line_boundaries_basic`.
         {
             let s = "first\nsecond\nthird";
             // In "first" (idx 2): start 0, end 5 (the \n).
@@ -836,16 +843,13 @@ mod tests {
             assert_eq!(line_boundaries(s, 8), (6, 12));
             // In "third" (idx 14): start 13, end = len = 18.
             assert_eq!(line_boundaries(s, 14), (13, 18));
-            // At very end.
             assert_eq!(line_boundaries(s, s.len()), (13, 18));
         }
 
-        // Case `line_boundaries_empty_string`.
         {
             assert_eq!(line_boundaries("", 0), (0, 0));
         }
 
-        // Case `line_boundaries_only_newlines`.
         {
             let s = "\n\n";
             // Before first \n: empty line, (0,0).
@@ -872,7 +876,6 @@ mod tests {
             assert_eq!(prev_char_boundary(s, 0), 0);
         }
 
-        // Case `character_motion_keeps_extended_graphemes_whole`.
         {
             let combining = "a\u{301}b";
             let first_cluster_end = "a\u{301}".len();
@@ -890,7 +893,6 @@ mod tests {
             assert_eq!(grapheme_boundary_at_or_before(family, 4), 0);
         }
 
-        // Case `boundaries_at_edges`.
         {
             let s = "abc";
             assert_eq!(prev_word_boundary(s, s.len()), 0);

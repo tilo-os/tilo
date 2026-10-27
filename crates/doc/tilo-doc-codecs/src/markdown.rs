@@ -710,16 +710,18 @@ fn export_md(
             }
             _ => {
                 if b.flag("code") {
-                    // Fenced code block: emit content verbatim (no inline escaping).
+                    // Fenced code block: emit content verbatim (no inline escaping),
+                    // fenced longer than any fence the code itself shows.
                     let lang = b.str_attr("lang").unwrap_or("");
-                    out.push_str("```");
+                    let fence = "`".repeat(fence_length(&b.text));
+                    out.push_str(&fence);
                     out.push_str(lang);
                     out.push('\n');
                     out.push_str(&b.text);
                     if !b.text.ends_with('\n') {
                         out.push('\n');
                     }
-                    out.push_str("```");
+                    out.push_str(&fence);
                 } else {
                     out.push_str(&render_inline_notes(
                         &b.text,
@@ -747,6 +749,20 @@ fn export_md(
         out.push_str(&defs);
     }
     out
+}
+
+/// The backticks a code block's fence takes: three, or one more than the
+/// longest line of `code` that is only backticks (surrounding whitespace
+/// aside), since such a line would close a shorter fence and end the block
+/// early. Markdown closes a fence on a line indented up to three spaces,
+/// such as the fence of a list item the code shows.
+fn fence_length(code: &str) -> usize {
+    code.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && line.bytes().all(|byte| byte == b'`'))
+        .map(str::len)
+        .max()
+        .map_or(3, |longest| longest.saturating_add(1).max(3))
 }
 
 /// Escapes a cell so it survives one table row; re-import unescapes `\|` back to `|`.
@@ -1004,7 +1020,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn markdown_block_structure_roundtrips() {
-        // Phase `borrowed_views_match_document_export`.
         {
             let cases = [
                 "---\ntitle: \"Notes: café\"\nauthor: Ada\nlang: fr\n---\n\n# Résumé\n\nHello **世界** and *é* with [link](https://tilo.dev/).\n",
@@ -1046,7 +1061,6 @@ mod tests {
                 }
             }
         }
-        // Phase `roundtrip_basic`.
         {
             let src = "# Title\n\nHello **world** and *em*.\n\n- a\n- b\n";
             let mut d = Document::new();
@@ -1090,7 +1104,6 @@ mod tests {
                 "export must be idempotent under re-import"
             );
         }
-        // Phase `heading_levels_preserved`.
         {
             let mut d = Document::new();
             MarkdownCodec
@@ -1126,7 +1139,6 @@ mod tests {
             .unwrap();
             assert!(out.contains("1. one"), "got {out:?}");
         }
-        // Phase `pipe_table_roundtrips_as_cells`.
         {
             let src = "| a | b |\n| --- | --- |\n| 1 | 2 |\n";
             let snap = import(src);
@@ -1159,7 +1171,6 @@ mod tests {
             assert!(out.contains("| 1 | 2 |"), "body row missing: {out:?}");
             assert_eq!(export(&out), out, "table export idempotent");
         }
-        // Phase `nested_lists_carry_level_and_reindent`.
         {
             let src = "- top\n  - sub\n  - sub2\n- top2\n";
             let snap = import(src);
@@ -1193,7 +1204,6 @@ mod tests {
             );
             assert_eq!(export(&out), out, "nested-list export idempotent");
         }
-        // Phase `task_lists_roundtrip_checked_attr`.
         {
             let src = "- [ ] todo\n- [x] done\n";
             let snap = import(src);
@@ -1211,7 +1221,6 @@ mod tests {
             assert!(out.contains("- [x] done"), "checked box lost: {out:?}");
             assert_eq!(export(&out), out, "task-list export idempotent");
         }
-        // Phase `fenced_code_block_preserves_content`.
         {
             let src = "```rust\nlet x = 1;\nlet y = 2;\n```\n";
             let snap = import(src);
@@ -1261,13 +1270,39 @@ mod tests {
         .unwrap()
     }
 
+    /// Code that shows a fence (Markdown about Markdown) exports inside a
+    /// longer fence, so it reads back as the one code block it was.
+    #[test]
+    fn a_code_block_showing_a_fence_exports_as_one_block() {
+        let src = "````md\n```rust\nlet a = 1;\n```\n````\n\nafter\n";
+        let shape = |snapshot: &DocSnapshot| {
+            snapshot
+                .blocks
+                .iter()
+                .map(|block| (block.kind.clone(), block.text.clone(), block.flag("code")))
+                .collect::<Vec<_>>()
+        };
+        let imported = import(src);
+        assert!(imported.blocks[0].text.contains("```rust"), "{src:?}");
+        let out = export(src);
+        assert_eq!(shape(&import(&out)), shape(&imported), "exported {out:?}");
+        assert_eq!(export(&out), out);
+        assert!(export("```sh\nls\n```\n").contains("```sh\nls\n```"));
+        // A fence the code shows indented, as under a list item, closes a
+        // three-backtick fence too.
+        let src = "````md\n- step\n  ```sh\n  ls\n  ```\nmore\n````\n\nafter\n";
+        let imported = import(src);
+        assert!(imported.blocks[0].text.contains("  ```\nmore"), "{src:?}");
+        let out = export(src);
+        assert_eq!(shape(&import(&out)), shape(&imported), "exported {out:?}");
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn markdown_inline_marks_roundtrip() {
-        // Phase `link_roundtrips_as_mark`.
         {
             let src = "See [the docs](https://tilo.so/) now.\n";
             let snap = import(src);
@@ -1280,14 +1315,12 @@ mod tests {
                 .find(|m| m.name == "link")
                 .expect("link mark present");
             assert_eq!(link.value, MarkValue::Str("https://tilo.so/".into()));
-            // The mark covers exactly "the docs".
             assert_eq!((link.start, link.end), (4, 12));
 
             let out = export(src);
             assert!(out.contains("[the docs](https://tilo.so/)"), "got {out:?}");
             assert_eq!(export(&out), out);
         }
-        // Phase `inline_code_roundtrips_as_mono_mark`.
         {
             let src = "run `cargo test` please\n";
             let snap = import(src);
@@ -1305,7 +1338,6 @@ mod tests {
             assert!(out.contains("`cargo test`"), "got {out:?}");
             assert_eq!(export(&out), out, "inline-code export idempotent");
         }
-        // Phase `span_carries_color_size_font_through_markdown`.
         {
             // Markdown has no native colour/size/font syntax; these ride as an inline `<span style=…>` on export/import.
             let mut d = Document::new();
@@ -1368,7 +1400,6 @@ mod tests {
 
             assert_eq!(export(&out), out, "span export idempotent");
         }
-        // Phase `highlight_super_sub_carry_through_markdown_html_fallback`.
         {
             // Markdown has no native highlight/super/subscript syntax; highlight rides as `<span style="background:…">`, super/sub as `<sup>`/`<sub>`.
             let mut d = Document::new();
@@ -1436,7 +1467,6 @@ mod tests {
 
             assert_eq!(export(&out), out, "highlight/super/sub export idempotent");
         }
-        // Phase `strikethrough_roundtrips`.
         {
             let src = "this is ~~gone~~ ok\n";
             let snap = import(src);
@@ -1455,7 +1485,6 @@ mod tests {
 
     #[test]
     fn markdown_front_matter_maps_to_document_properties() {
-        // Phase `front_matter_imports_to_doc_properties`.
         {
             let src = "---\ntitle: My Doc\nauthor: Ada Lovelace\ndate: 2026-06-30\nlang: en-GB\n---\n\nBody text.\n";
             let snap = import(src);
@@ -1478,7 +1507,6 @@ mod tests {
             assert_eq!(snap.blocks.len(), 1, "only the body paragraph: {snap:?}");
             assert_eq!(snap.blocks[0].text, "Body text.");
         }
-        // Phase `front_matter_quoted_scalar_with_colon_roundtrips`.
         {
             let src = "---\ntitle: \"Notes: A Sequel\"\n---\n\nHi.\n";
             let snap = import(src);
@@ -1497,7 +1525,6 @@ mod tests {
             );
             assert_eq!(export(&out), out, "front-matter export idempotent");
         }
-        // Phase `front_matter_exports_from_properties`.
         {
             let mut d = Document::new();
             {
@@ -1517,7 +1544,6 @@ mod tests {
                 "got {out:?}"
             );
         }
-        // Phase `front_matter_full_roundtrip_preserves_title_and_author`.
         {
             let src = "---\ntitle: Round Trip\nauthor: Grace\n---\n\nHello world.\n";
             let out1 = export(src);
@@ -1533,7 +1559,6 @@ mod tests {
             assert_eq!(snap.blocks[0].text, "Hello world.");
             assert_eq!(export(&out1), out1, "front-matter+body export idempotent");
         }
-        // Phase `front_matter_less_doc_is_unaffected`.
         {
             // No properties → no front-matter block; a leading `---` in a property-less doc is just a thematic break.
             let src = "Just a paragraph.\n";
@@ -1557,7 +1582,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn markdown_footnotes_roundtrip_in_reference_order() {
-        // Phase `footnote_ref_and_def_import_to_one_footnote`.
         {
             let src = "Text with a ref[^1] here.\n\n[^1]: The footnote body.\n";
             let snap = import(src);
@@ -1595,7 +1619,6 @@ mod tests {
                 "placeholder spliced at ref site"
             );
         }
-        // Phase `footnote_roundtrips_text_and_position`.
         {
             let src = "A para with note[^1] inside.\n\n[^1]: body text\n";
             let out = export(src);
@@ -1628,7 +1651,6 @@ mod tests {
             );
             assert_eq!(export(&out), out, "footnote export idempotent");
         }
-        // Phase `front_matter_plus_footnote_full_roundtrip`.
         {
             // Headline scenario: front-matter + a footnote, exported then re-imported, must preserve both.
             let mut d = Document::new();
@@ -1701,7 +1723,6 @@ mod tests {
             // `nid` is local to `d`; the re-imported note gets a fresh id — what matters is the ref/body survive.
             let _ = nid;
         }
-        // Phase `two_footnotes_number_in_reference_order`.
         {
             let src = "First[^a] then second[^b].\n\n[^a]: alpha\n[^b]: beta\n";
             let out = export(src);

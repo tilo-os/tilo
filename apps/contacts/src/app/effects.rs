@@ -16,6 +16,10 @@ impl ContactsApp {
                     }),
                 )
             }
+            ContactsEffect::ExportVcardContent { contact, name } => {
+                crate::content_export::vcards(&cx.live().get(), contact, name.as_deref())
+                    .map(ui::framework::Effected::value)
+            }
             ContactsEffect::ExportAllVcard => {
                 let ids: Vec<ContactId> = self.store.contacts.iter().map(|c| c.id).collect();
                 self.export_to_chosen_file(&ids, VCardVersion::V4, cx)
@@ -54,7 +58,9 @@ impl ContactsApp {
             ContactsEffect::ExportContact { contact } => self.open_contact_export(contact)?,
             ContactsEffect::KeepExisting { token } => self.queue_import_resolution(token, false)?,
             ContactsEffect::ImportAsNew { token } => self.queue_import_resolution(token, true)?,
-            ContactsEffect::ImportVcard | ContactsEffect::ExportAllVcard => {
+            ContactsEffect::ImportVcard
+            | ContactsEffect::ExportAllVcard
+            | ContactsEffect::ExportVcardContent { .. } => {
                 return Err("a file operation answers through its effect".into());
             }
         }

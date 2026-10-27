@@ -18,8 +18,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::{Duration, Instant};
-
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc, TextEncoding};
 use tilo_automerge::ApplyIncoming;
@@ -31,7 +29,6 @@ use tilo_automerge::ApplyIncoming;
 mod upstream;
 use upstream::{Replica, Rng, agrees_with_upstream};
 
-/// Letters at a random place of `text`.
 fn type_at_random(doc: &mut AutoCommit, text: &ObjId, rng: &mut Rng, letters: usize) {
     let at = rng.below(doc.length(text) as u64 + 1) as usize;
     let word: String = (0..letters)
@@ -66,19 +63,19 @@ fn scattered(changes: usize, letters: usize, rng: &mut Rng) -> (AutoCommit, ObjI
 /// Letters the larger probe change types, each at its own random place.
 const PLACES: u32 = 16;
 
-fn median(mut samples: Vec<Duration>) -> Duration {
+fn median(mut samples: Vec<u64>) -> u64 {
     samples.sort_unstable();
     samples[samples.len() / 2]
 }
 
-/// What each letter of a third collaborator's change costs a replica to
-/// take in, typed at a random place of a text that two collaborators wrote
-/// in `changes` changes of 16 letters at scattered places: how much longer
-/// (by the median) a change typing [`PLACES`] letters at as many places
-/// takes than one typing a single letter, per added letter. Whatever every
-/// apply costs regardless of its letters, such as the re-check of the whole
-/// document that debug assertions add, is in both and drops out.
-fn letter_cost(changes: usize) -> Duration {
+/// The slabs of the op id column that searches for ops by id may decode
+/// for each letter of a third collaborator's change a replica takes in,
+/// typed at a random place of a text that two collaborators wrote in
+/// `changes` changes of 16 letters at scattered places: how many more (by
+/// the median) a change typing [`PLACES`] letters at as many places searches
+/// than one typing a single letter, per added letter. Whatever every apply
+/// searches regardless of its letters is in both and drops out.
+fn letter_cost(changes: usize) -> u64 {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     let (mut base, busy, _) = scattered(changes, 16, &mut rng);
     let mut replica = AutoCommit::load(&base.save()).unwrap();
@@ -93,16 +90,17 @@ fn letter_cost(changes: usize) -> Duration {
     };
     let probes: Vec<(Vec<u8>, Vec<u8>)> = (0..60).map(|_| (edit(1), edit(PLACES))).collect();
     let (mut one, mut many) = (Vec::new(), Vec::new());
+    let searched = |replica: &mut AutoCommit, change: &[u8]| {
+        let before = automerge::work().searched_slabs;
+        replica.load_incoming(change).unwrap();
+        automerge::work().searched_slabs - before
+    };
     for (single, spread) in &probes {
-        let started = Instant::now();
-        replica.load_incoming(single).unwrap();
-        one.push(started.elapsed());
-        let started = Instant::now();
-        replica.load_incoming(spread).unwrap();
-        many.push(started.elapsed());
+        one.push(searched(&mut replica, single));
+        many.push(searched(&mut replica, spread));
     }
     assert_eq!(replica.save(), remote.save());
-    median(many).saturating_sub(median(one)) / (PLACES - 1)
+    median(many).saturating_sub(median(one)) / u64::from(PLACES - 1)
 }
 
 #[test]
@@ -110,13 +108,13 @@ fn a_remote_letter_costs_no_more_after_a_long_scattered_history() {
     // 4,000 and 80,000 letters of history.
     let short = letter_cost(250);
     let long = letter_cost(5_000);
-    // Without the index, finding a letter's place searched the document:
-    // about 25 µs a letter in the short text and 0.5 ms in the long one, in
-    // an optimised build. With it, a few µs in either.
+    // Without the index, finding a letter's place searched nearly every slab
+    // of the document: about 25 µs a letter in the short text and 0.5 ms in
+    // the long one, in an optimised build. With it, a few µs in either.
     assert!(
-        long <= short * 2 + Duration::from_micros(25),
-        "a remote letter cost {long:?} after 80,000 letters of scattered history, \
-         {short:?} after 4,000"
+        long <= short * 2 + 4,
+        "a remote letter searched {long} slabs after 80,000 letters of scattered history, \
+         {short} after 4,000"
     );
 }
 

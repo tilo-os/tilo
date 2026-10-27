@@ -757,7 +757,6 @@ mod tests {
 
     #[test]
     fn device_sync_lifecycle_persists_keys_peers_and_merges_additively() {
-        // Case `peer_store_survives_restart_and_keeps_revocation_tombstone`.
         {
             let dir = tempfile::tempdir().unwrap();
             let document = dir.path().join("settings.json");
@@ -783,7 +782,6 @@ mod tests {
                 "the paired devices never leave this device"
             );
         }
-        // Case `independently_derived_device_keys_are_stable_and_distinct`.
         {
             let a = DeviceKey::from_private(&[1; 32]).unwrap();
             let a_restart = DeviceKey::from_private(&[1; 32]).unwrap();

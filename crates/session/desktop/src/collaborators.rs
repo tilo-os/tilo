@@ -43,6 +43,9 @@ const TRAILING_GAP: f64 = 4.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CollaboratorsHit {
     Invite,
+    /// Keep the list on screen: the host pins it out of the bar as the
+    /// people overlay.
+    Pin,
     /// Follow the person at this row index, or stop following them.
     ToggleFollow(usize),
     /// Wave at the person at this row index.
@@ -96,6 +99,38 @@ pub struct RosterRow {
     /// The voice channel of theirs this device may join from their row:
     /// one they are in and this person is not.
     pub join: Option<VoiceChannel>,
+    /// Another device of this person, listed among their devices.
+    pub own_device: bool,
+}
+
+impl RosterRow {
+    /// This person as their own row shows them (the pinned overlay's
+    /// first): by `id`, `label` and `color`, with what everyone here reads
+    /// of them, their own words or what is said of them automatically.
+    #[must_use]
+    pub fn own(id: String, label: String, color: Color, status: Option<RosterStatus>) -> Self {
+        Self {
+            id,
+            initial: label
+                .chars()
+                .next()
+                .map_or('\u{2022}', |c| c.to_uppercase().next().unwrap_or(c)),
+            label,
+            color,
+            is_agent: false,
+            is_bot: false,
+            role: None,
+            invited: false,
+            activity: None,
+            status: status.filter(|status| !status.text.trim().is_empty()),
+            recent: Vec::new(),
+            followable: false,
+            availability: ui::Availability::Available,
+            call: None,
+            join: None,
+            own_device: false,
+        }
+    }
 }
 
 /// One voice channel's call, by the app, record and channel that hold it:
@@ -118,7 +153,7 @@ pub struct RecentChange {
     pub entry: Option<[u8; 16]>,
 }
 
-/// Changes an open row lists before "See their changes" takes over.
+/// Changes an open row lists before "Their changes" takes over.
 pub const RECENT_CHANGES_SHOWN: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,6 +196,9 @@ pub struct CollaboratorsModel<'a> {
     /// while it is true: it leads the list.
     pub exposure: Option<&'a str>,
     pub may_invite: bool,
+    /// The host can keep the list on screen as the people overlay: the
+    /// header offers to.
+    pub may_pin: bool,
     pub followed_id: Option<&'a str>,
     /// Ephemeral room-local attachments, expressed using roster ids.
     pub following_pairs: &'a [(String, String)],
@@ -169,6 +207,12 @@ pub struct CollaboratorsModel<'a> {
     pub expanded_id: Option<&'a str>,
     /// People watching a public workspace without joining it.
     pub watching: usize,
+    /// Whom this person waved at a moment ago, by roster id: their row
+    /// shows the wave sent.
+    pub waved: &'a [String],
+    /// This person only watches, as the workspace's spectator: counted
+    /// among the watching, never among who is here.
+    pub spectating: bool,
 }
 
 /// Direction of a transient attachment relative to one roster row.
@@ -179,24 +223,25 @@ pub enum RosterFollowRelationship {
 }
 
 impl CollaboratorsModel<'_> {
-    /// The rows of who is here, not merely invited, as people and agents.
-    fn present_groups(&self) -> (Vec<usize>, Vec<usize>) {
-        self.rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| !row.invited)
-            .map(|(index, row)| (index, row.is_agent))
-            .fold(
-                (Vec::new(), Vec::new()),
-                |(mut people, mut agents), (index, is_agent)| {
-                    if is_agent {
-                        agents.push(index);
-                    } else {
-                        people.push(index);
-                    }
-                    (people, agents)
-                },
-            )
+    /// The rows of who is here, not merely invited, under their headings:
+    /// people, agents, and this person's own other devices.
+    fn present_groups(&self) -> [(&'static str, Vec<usize>); 3] {
+        let mut groups = [
+            ("people-panel-section-people", Vec::new()),
+            ("people-panel-section-agents", Vec::new()),
+            ("people-panel-section-devices", Vec::new()),
+        ];
+        for (index, row) in self.rows.iter().enumerate().filter(|(_, row)| !row.invited) {
+            let group = if row.own_device {
+                2
+            } else {
+                usize::from(row.is_agent)
+            };
+            if let Some((_, rows)) = groups.get_mut(group) {
+                rows.push(index);
+            }
+        }
+        groups
     }
 
     #[must_use]
@@ -212,6 +257,39 @@ impl CollaboratorsModel<'_> {
     }
 }
 
+/// Say on each follower's row whom they follow, from `pairs` of
+/// `(follower, followed)` roster ids: "Following Ada", or "Following you"
+/// when they follow this person (`own_id`). Every member's roster says who
+/// follows whom, the same on every host.
+pub fn note_following(rows: &mut [RosterRow], pairs: &[(String, String)], own_id: Option<&str>) {
+    for (follower, followed) in pairs {
+        // `None` for this person: "you".
+        let person = if own_id == Some(followed.as_str()) {
+            None
+        } else if let Some(row) = rows.iter().find(|row| &row.id == followed) {
+            Some(row.label.clone())
+        } else {
+            continue;
+        };
+        let Some(row) = rows.iter_mut().find(|row| &row.id == follower) else {
+            continue;
+        };
+        let place = row
+            .activity
+            .take()
+            .filter(|activity| !activity.trim().is_empty());
+        row.activity = Some(match (place, person) {
+            (None, None) => t("people-follows-you"),
+            (None, Some(person)) => t_args("people-follows", &[("person", person.into())]),
+            (Some(place), None) => t_args("people-follows-you-where", &[("place", place.into())]),
+            (Some(place), Some(person)) => t_args(
+                "people-follows-where",
+                &[("place", place.into()), ("person", person.into())],
+            ),
+        });
+    }
+}
+
 /// One painted row: which model row, where, and its controls.
 #[derive(Clone, Debug, Default)]
 struct RowPlace {
@@ -221,7 +299,7 @@ struct RowPlace {
     follow: Rect,
     wave: Rect,
     join: Rect,
-    /// The open part under the row, its changes and "See their changes".
+    /// The open part under the row, its changes and "Their changes".
     details: Rect,
     change_rows: Vec<Rect>,
     changes: Rect,
@@ -254,6 +332,8 @@ pub struct CollaboratorsOverlay {
     exposure: Rect,
     shown_exposure: Option<String>,
     invite: Rect,
+    /// The header's Keep on screen button.
+    pin: Rect,
     /// The trailing slot every row reserves for Wave and Follow, and Join
     /// where anyone has a call to join.
     trailing_w: f64,
@@ -275,7 +355,12 @@ pub struct CollaboratorsOverlay {
     shown_workspace: String,
     shown_expanded: Option<String>,
     shown_followed: Option<String>,
+    /// Whom the last frame showed waved at.
+    shown_waved: Vec<String>,
     motion: ui::tokens::EffectiveMotion,
+    /// How the host draws the roster now, while it arrives; input is
+    /// hit-tested there (`Pose::to_local`), not where it will rest.
+    drawn: ui::motion::Pose,
     /// When someone here was first seen in a call, so their ring breathes
     /// from its start.
     call_since: Option<ui::time::Instant>,
@@ -311,6 +396,38 @@ fn doing_line(row: &RosterRow) -> Option<String> {
     }
 }
 
+/// Whether the line under someone's name is software's words about them
+/// (a model's, or the host's reading of what they did), not theirs: it
+/// carries the automatic mark.
+#[must_use]
+pub fn says_automatically(row: &RosterRow) -> bool {
+    row.call.is_none()
+        && row.status.as_ref().is_some_and(|status| {
+            status.source != LineSource::Written && !status.text.trim().is_empty()
+        })
+}
+
+/// The panel's header line: who is here besides this person, counted as
+/// the list is (the others, never this person, who is the "you" of the
+/// words; "2 here" over one row read as someone missing), and who is
+/// watching without joining. A spectator reads who is here and that they
+/// watch among the others watching.
+fn here_line(others: usize, watching: usize, spectating: bool) -> String {
+    if spectating {
+        t_args(
+            "people-panel-here-spectating",
+            &[("count", others.into()), ("watching", watching.into())],
+        )
+    } else if watching > 0 {
+        t_args(
+            "people-panel-here-watching",
+            &[("count", others.into()), ("watching", watching.into())],
+        )
+    } else {
+        t_args("people-panel-here-count", &[("count", others.into())])
+    }
+}
+
 impl CollaboratorsOverlay {
     /// Paint the roster for `model` and lay out its targets.
     pub fn draw(
@@ -331,6 +448,7 @@ impl CollaboratorsOverlay {
         self.shown_rows = model.rows.to_vec();
         model.workspace.clone_into(&mut self.shown_workspace);
         self.shown_followed = model.followed_id.map(str::to_owned);
+        self.shown_waved = model.waved.to_vec();
         self.shown_exposure = model.exposure.map(str::to_owned);
         self.layout(text, theme, model);
         self.keyboard_focus = focused.and_then(|id| {
@@ -339,8 +457,16 @@ impl CollaboratorsOverlay {
                 .find(|hit| self.target_id(*hit).as_deref() == Some(id.as_str()))
         });
         self.configure_scroll(theme);
+        let cursor = cursor.map(|point| self.drawn.to_local(point));
         self.paint(scene, transform, text, theme, model, cursor);
         self.register_targets(model.host);
+    }
+
+    /// How the host draws the roster now, while it arrives: input is
+    /// hit-tested where it is drawn ([`ui::motion::Pose::to_local`]), not
+    /// where it will rest.
+    pub fn set_drawn_pose(&mut self, pose: ui::motion::Pose) {
+        self.drawn = pose;
     }
 
     /// Open the row the host says is open, on the disclose motion.
@@ -389,7 +515,7 @@ impl CollaboratorsOverlay {
             .secondary("0")
             .height(text, theme);
         let control = f64::from(metrics.bar_control_height);
-        let (people, agents) = model.present_groups();
+        let groups = model.present_groups();
         let face = FloatingPanelFace::new()
             .header(header_h)
             .footer(if model.may_invite { control } else { 0.0 })
@@ -412,17 +538,14 @@ impl CollaboratorsOverlay {
             self.details_height,
         )
         .height;
-        let sections = [&people, &agents]
-            .into_iter()
-            .filter(|group| !group.is_empty())
-            .count();
+        let sections = groups.iter().filter(|(_, group)| !group.is_empty()).count();
         let mut body_h = if sections == 0 {
             row_h
         } else {
-            [&people, &agents]
-                .into_iter()
-                .filter(|group| !group.is_empty())
-                .map(|group| heading_h + row_h * ui::num::f64_of_usize(group.len()))
+            groups
+                .iter()
+                .filter(|(_, group)| !group.is_empty())
+                .map(|(_, group)| heading_h + row_h * ui::num::f64_of_usize(group.len()))
                 .sum::<f64>()
                 + f64::from(spacing.s2) * ui::num::f64_of_usize(sections.saturating_sub(1))
         };
@@ -450,6 +573,16 @@ impl CollaboratorsOverlay {
         self.panel = Rect::new(right - width, anchor_top, right, anchor_top + panel_h);
         let parts = face.layout(self.panel, theme);
         self.header = parts.header;
+        self.pin = if model.may_pin {
+            Rect::new(
+                parts.header.x1 - control,
+                parts.header.center().y - control / 2.0,
+                parts.header.x1,
+                parts.header.center().y + control / 2.0,
+            )
+        } else {
+            Rect::ZERO
+        };
         self.body = parts.body;
         self.viewport = self.panel;
         self.invite = if model.may_invite {
@@ -463,8 +596,7 @@ impl CollaboratorsOverlay {
             theme,
             model,
             &RowsPlan {
-                people: &people,
-                agents: &agents,
+                groups: &groups,
                 open_index,
                 shown_changes,
                 revealed,
@@ -489,8 +621,7 @@ impl CollaboratorsOverlay {
         let heading_h = f64::from(metrics.row_single);
         let control = f64::from(metrics.bar_control_height);
         let RowsPlan {
-            people,
-            agents,
+            groups,
             open_index,
             shown_changes,
             revealed,
@@ -524,10 +655,7 @@ impl CollaboratorsOverlay {
         // Follow stands in one column down the list: where any row has a
         // chevron, every row keeps its place free.
         let any_disclosure = model.rows.iter().any(|row| !row.recent.is_empty());
-        for (key, group) in [
-            ("people-panel-section-people", people),
-            ("people-panel-section-agents", agents),
-        ] {
+        for (key, group) in groups {
             if group.is_empty() {
                 continue;
             }
@@ -621,7 +749,11 @@ impl CollaboratorsOverlay {
             index,
             rect,
             follow: if row.followable { follow } else { Rect::ZERO },
-            wave: if row.is_agent { Rect::ZERO } else { wave },
+            wave: if row.is_agent || row.own_device {
+                Rect::ZERO
+            } else {
+                wave
+            },
             join,
             ..RowPlace::default()
         };
@@ -718,26 +850,43 @@ impl CollaboratorsOverlay {
         let (_, inner) = face.paint(scene, transform, self.panel, 1.0, theme);
         let theme = &inner;
         let colors = &theme.tokens.colors;
-        let here = model
-            .rows
-            .iter()
-            .filter(|row| !row.invited)
-            .count()
-            .saturating_add(1);
-        let here_text = if model.watching > 0 {
-            t_args(
-                "people-panel-here-watching",
-                &[("count", here.into()), ("watching", model.watching.into())],
+        let here_text = here_line(
+            model
+                .rows
+                .iter()
+                .filter(|row| !row.invited && !row.own_device)
+                .count(),
+            model.watching,
+            model.spectating,
+        );
+        let title = if self.pin.area() > 0.0 {
+            Rect::new(
+                self.header.x0,
+                self.header.y0,
+                self.pin.x0 - f64::from(theme.tokens.spacing.s2),
+                self.header.y1,
             )
         } else {
-            t_args("people-panel-here-count", &[("count", here.into())])
+            self.header
         };
         ui::widget::TextStackFace::new(model.workspace)
             .secondary(&here_text)
             .paint(
                 &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
-                self.header,
+                title,
             );
+        if self.pin.area() > 0.0 {
+            let label = t("people-panel-pin");
+            ui::widget::Button::paint(
+                scene,
+                transform,
+                text,
+                theme,
+                &ButtonFace::icon_only(self.pin, Icon::Pin, &label)
+                    .hovered(cursor.is_some_and(|p| self.pin.contains(p)))
+                    .focused(self.keyboard_focus == Some(CollaboratorsHit::Pin)),
+            );
+        }
 
         // The body scrolls under the header and above the footer.
         scene.push_layer(
@@ -804,6 +953,7 @@ impl CollaboratorsOverlay {
         let follow_label = t("people-panel-follow");
         let stop_label = t("people-panel-stop-following");
         let wave_label = t("people-panel-wave");
+        let sent_label = t("people-panel-waved");
         let join_label = t("people-panel-join");
         let changes_label = t("people-panel-changes");
         let now = ui::time::now();
@@ -860,6 +1010,11 @@ impl CollaboratorsOverlay {
             if let Some(doing) = &lines.1 {
                 face = face.secondary(doing);
             }
+            // Words software wrote about someone are marked as such: never
+            // shown as if they had said them.
+            if says_automatically(row) {
+                face = face.mark(ui::icons::Icon::Sparkles);
+            }
             if row.is_agent {
                 face = face.tags(&tags);
             }
@@ -885,15 +1040,29 @@ impl CollaboratorsOverlay {
                 &mut ui::paint::PaintCtx::new(scene, scrolled, text, theme),
                 place.rect,
             );
+            // The open row (a press on their face in the bar opens it) is
+            // their card: its wave shows without a hover.
+            let opened = model.expanded_id == Some(row.id.as_str());
+            // A wave just sent stays shown as sent, so the waver knows it
+            // went.
+            let waved = model.waved.contains(&row.id);
             if place.wave.area() > 0.0
-                && (hovered || self.keyboard_focus == Some(CollaboratorsHit::Wave(place.index)))
+                && (hovered
+                    || opened
+                    || waved
+                    || self.keyboard_focus == Some(CollaboratorsHit::Wave(place.index)))
             {
+                let (icon, label) = if waved {
+                    (Icon::Check, &sent_label)
+                } else {
+                    (Icon::Hand, &wave_label)
+                };
                 ui::widget::Button::paint(
                     scene,
                     scrolled,
                     text,
                     theme,
-                    &ButtonFace::icon_only(place.wave, Icon::Hand, &wave_label)
+                    &ButtonFace::icon_only(place.wave, icon, label)
                         .role(ButtonRole::Plain)
                         .hovered(cursor.is_some_and(|p| place.wave.contains(p)))
                         .focused(self.keyboard_focus == Some(CollaboratorsHit::Wave(place.index))),
@@ -1058,7 +1227,7 @@ impl CollaboratorsOverlay {
         }
         for hit in self.focus_order() {
             if let (Some(id), Some(rect)) = (self.target_id(hit), self.rect_for_hit(hit)) {
-                let rect = if hit == CollaboratorsHit::Invite {
+                let rect = if matches!(hit, CollaboratorsHit::Invite | CollaboratorsHit::Pin) {
                     rect
                 } else {
                     self.view_rect(rect)
@@ -1076,6 +1245,19 @@ impl CollaboratorsOverlay {
         self.targets.cancel_pointer_press();
         self.targets.set_host_focus(false);
         self.keyboard_focus = None;
+    }
+
+    /// Step a glide after a flick to the frame's time, from the host's
+    /// `update`; returns whether the roster moved.
+    pub fn advance_scroll(&mut self) -> bool {
+        let moved = self
+            .scroll
+            .as_mut()
+            .is_some_and(ui::widget::ScrollRegion::advance);
+        if moved {
+            self.targets.cancel_pointer_press();
+        }
+        moved
     }
 
     pub fn needs_animation_frame(&self) -> bool {
@@ -1175,6 +1357,19 @@ impl CollaboratorsOverlay {
             }
             return None;
         }
+        // While it arrives, the pointer acts on what is drawn under it.
+        let drawn = self.drawn;
+        let cursor = cursor.map(|point| drawn.to_local(point));
+        let posed;
+        let event = match event {
+            WindowEvent::CursorMoved { position, .. } if !drawn.is_rest() => {
+                let scale = ctx.scale_factor;
+                let local = drawn.to_local(Point::new(position.x / scale, position.y / scale));
+                posed = ui::synthetic_input::cursor_moved(local.x * scale, local.y * scale);
+                &posed
+            }
+            _ => event,
+        };
         if matches!(
             event,
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
@@ -1289,7 +1484,7 @@ impl CollaboratorsOverlay {
     pub fn wave_target(&self, index: usize) -> Option<&str> {
         self.shown_rows
             .get(index)
-            .filter(|row| !row.is_agent && !row.invited)
+            .filter(|row| !row.is_agent && !row.own_device && !row.invited)
             .map(|row| row.id.as_str())
     }
 
@@ -1333,6 +1528,9 @@ impl CollaboratorsOverlay {
         if self.invite.contains(point) {
             return CollaboratorsHit::Invite;
         }
+        if self.pin.contains(point) {
+            return CollaboratorsHit::Pin;
+        }
         if !self.body.contains(point) {
             return CollaboratorsHit::Absorb;
         }
@@ -1367,10 +1565,13 @@ impl CollaboratorsOverlay {
         CollaboratorsHit::Absorb
     }
 
-    /// Every control in reading order: each row's body, Wave and Follow,
-    /// its changes link when open, then Invite.
+    /// Every control in reading order: Keep on screen in the header, each
+    /// row's body, Wave and Follow, its changes link when open, then Invite.
     fn focus_order(&self) -> Vec<CollaboratorsHit> {
         let mut order = Vec::new();
+        if self.pin.area() > 0.0 {
+            order.push(CollaboratorsHit::Pin);
+        }
         for place in &self.rows {
             if self.details_target(place.index).is_some() {
                 order.push(CollaboratorsHit::ToggleDetails(place.index));
@@ -1400,11 +1601,12 @@ impl CollaboratorsOverlay {
         order
     }
 
-    /// Where `hit` is, in content coordinates (Invite: on screen).
+    /// Where `hit` is, in content coordinates (Invite and Pin: on screen).
     fn rect_for_hit(&self, hit: CollaboratorsHit) -> Option<Rect> {
         let place = |index: usize| self.rows.iter().find(|place| place.index == index);
         match hit {
             CollaboratorsHit::Invite => Some(self.invite),
+            CollaboratorsHit::Pin => Some(self.pin),
             CollaboratorsHit::ToggleFollow(index) => place(index).map(|place| place.follow),
             CollaboratorsHit::Wave(index) => place(index).map(|place| place.wave),
             CollaboratorsHit::JoinCall(index) => place(index).map(|place| place.join),
@@ -1422,7 +1624,7 @@ impl CollaboratorsOverlay {
     fn reveal_focus(&mut self) {
         let Some(rect) = self
             .keyboard_focus
-            .filter(|hit| *hit != CollaboratorsHit::Invite)
+            .filter(|hit| !matches!(hit, CollaboratorsHit::Invite | CollaboratorsHit::Pin))
             .and_then(|hit| self.rect_for_hit(hit))
         else {
             return;
@@ -1492,6 +1694,18 @@ impl CollaboratorsOverlay {
         None
     }
 
+    /// What the wave on row `index` is called: sent, or to send.
+    fn wave_name(&self, index: usize) -> String {
+        let row = self.shown_rows.get(index);
+        let name = row.map_or_else(String::new, |row| row.label.clone());
+        let key = if row.is_some_and(|row| self.shown_waved.contains(&row.id)) {
+            "a11y-shell-waved"
+        } else {
+            "a11y-shell-wave"
+        };
+        t_args(key, &[("name", name.into())])
+    }
+
     /// The roster for assistive technology: who is here, each with where
     /// they are and what they are doing, then every control.
     pub fn accessibility_snapshot(&self) -> ui::a11y::AccessNode {
@@ -1526,10 +1740,9 @@ impl CollaboratorsOverlay {
                     t_args("a11y-shell-follow", &[("name", name_of(index).into())]),
                     t("a11y-shell-follow-description"),
                 ),
-                CollaboratorsHit::Wave(index) => (
-                    t_args("a11y-shell-wave", &[("name", name_of(index).into())]),
-                    t("a11y-shell-wave-description"),
-                ),
+                CollaboratorsHit::Wave(index) => {
+                    (self.wave_name(index), t("a11y-shell-wave-description"))
+                }
                 CollaboratorsHit::JoinCall(index) => (
                     t_args("a11y-shell-join-call", &[("name", name_of(index).into())]),
                     t("a11y-shell-join-call-description"),
@@ -1569,6 +1782,7 @@ impl CollaboratorsOverlay {
                 CollaboratorsHit::Invite => {
                     (t("a11y-shell-invite"), t("a11y-shell-invite-description"))
                 }
+                CollaboratorsHit::Pin => (t("people-panel-pin"), t("a11y-people-pin")),
                 CollaboratorsHit::Absorb | CollaboratorsHit::Dismiss => continue,
             };
             let mut state = AccessState::new().focusable(true).focused(focused);
@@ -1594,6 +1808,43 @@ impl CollaboratorsOverlay {
                 t("a11y-shell-people-description")
             ))
             .with_children(children)
+    }
+
+    /// [`Self::accessibility_snapshot`] for a host that routes a reader's
+    /// press by target: each control says where it is painted and carries
+    /// its place in the focus order as its action target (`people:<n>`),
+    /// which [`Self::hit_for_target`] turns back into what it does.
+    #[must_use]
+    pub fn accessibility_with_targets(&self) -> ui::a11y::AccessNode {
+        let order = self.focus_order();
+        let mut node = self.accessibility_snapshot().with_bounds(self.panel_rect());
+        let controls = node
+            .children
+            .iter_mut()
+            .skip(1)
+            .filter(|child| child.role == ui::a11y::Role::Button);
+        for (index, (child, hit)) in controls.zip(&order).enumerate() {
+            let mut control =
+                std::mem::replace(child, ui::a11y::AccessNode::new(ui::a11y::Role::Button))
+                    .with_action_target(format!("people:{index}"));
+            let rect = self.rect_for_hit(*hit).map(|rect| match hit {
+                CollaboratorsHit::Invite | CollaboratorsHit::Pin => rect,
+                _ => self.view_rect(rect),
+            });
+            if let Some(rect) = rect {
+                control = control.with_bounds(rect);
+            }
+            *child = control;
+        }
+        node
+    }
+
+    /// What the control a reader pressed (`people:<n>`, from
+    /// [`Self::accessibility_with_targets`]) does.
+    #[must_use]
+    pub fn hit_for_target(&self, target: &str) -> Option<CollaboratorsHit> {
+        let index: usize = target.strip_prefix("people:")?.parse().ok()?;
+        self.focus_order().get(index).copied()
     }
 
     pub fn accessibility_rect_for_path(&self, path: &[usize]) -> Option<Rect> {
@@ -1661,15 +1912,49 @@ pub fn collaborator_roster_rows_named(
     let joined = |id: &str| policy.and_then(|policy| policy.joined_at(id));
     let labels = ui::presence::ParticipantLabels::by_joining(
         rows.iter()
-            .filter(|row| !row.is_agent && row.id != local_user)
+            .filter(|row| !row.is_agent && !row.own_device && row.id != local_user)
             .map(|row| (row.id.as_str(), row.label.as_str()))
             .chain(own_name.map(|name| (local_user, name)))
             .map(|(id, name)| (id, name, joined(id))),
     );
-    for row in rows.iter_mut().filter(|row| !row.is_agent) {
+    for row in rows
+        .iter_mut()
+        .filter(|row| !row.is_agent && !row.own_device)
+    {
         row.label = labels.label(&row.id, &row.label);
     }
     (rows, own_name.map(|name| labels.label(local_user, name)))
+}
+
+/// What each person in the active workspace is called, exactly as the roster
+/// calls them (numbered where two share a name), with this person by their
+/// own name: the one source every surface that names people reads, so a
+/// name is spelt and cased the same in People, the roster and settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PeopleNames(HashMap<String, String>);
+
+impl PeopleNames {
+    /// The roster's names for the active workspace of `desktop`, as
+    /// `local_user` (named `own_name`) sees it.
+    #[must_use]
+    pub fn of(desktop: &DesktopTree, local_user: &str, own_name: Option<&str>) -> Self {
+        let (rows, own) = collaborator_roster_rows_named(desktop, local_user, own_name);
+        let mut names: HashMap<String, String> = rows
+            .into_iter()
+            .filter(|row| !row.label.trim().is_empty())
+            .map(|row| (row.id, row.label))
+            .collect();
+        if let Some(own) = own.filter(|own| !own.trim().is_empty()) {
+            names.insert(local_user.to_owned(), own);
+        }
+        Self(names)
+    }
+
+    /// What the person `id` is called, when the roster names them.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<&str> {
+        self.0.get(id).map(String::as_str)
+    }
 }
 
 fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<RosterRow> {
@@ -1687,8 +1972,27 @@ fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<Roster
             roster.push(participant.clone());
         }
     }
-    let colors = roster_colors_with_local_user(&roster, local_user);
-    let workspace = desktop.active_workspace();
+    rows_of(desktop.active_workspace(), &roster, local_user)
+}
+
+/// Everyone present in `workspace` (not only the active one) as the roster
+/// lists them: the presence its collaborators last published, which is what
+/// the overview and the strip show of a workspace too. The active workspace
+/// reads [`collaborator_roster_rows`], which also merges the tree-wide mirror.
+#[must_use]
+pub fn workspace_roster_rows(
+    workspace: &tilo_desktop_model::Workspace,
+    local_user: &str,
+) -> Vec<RosterRow> {
+    rows_of(Some(workspace), &workspace.collaborators, local_user)
+}
+
+fn rows_of(
+    workspace: Option<&tilo_desktop_model::Workspace>,
+    roster: &[Collaborator],
+    local_user: &str,
+) -> Vec<RosterRow> {
+    let colors = roster_colors_with_local_user(roster, local_user);
     let now = tilo_clock::unix_now();
     let rows: Vec<RosterRow> = roster
         .iter()
@@ -1722,9 +2026,10 @@ fn unnumbered_roster_rows(desktop: &DesktopTree, local_user: &str) -> Vec<Roster
                             .map(display_role_id)
                     }),
                 invited: participant.invited,
+                own_device: participant.own_device,
                 activity: participant
                     .active_tab
-                    .and_then(|tab| active_tab_title(desktop, tab))
+                    .and_then(|tab| tab_title_in(workspace, tab))
                     .map(|title| {
                         crate::i18n::t_args("people-panel-viewing", &[("title", title.into())])
                     }),
@@ -1830,9 +2135,13 @@ fn roster_initial(name: &str) -> char {
         .map_or('\u{2022}', |character| character.to_ascii_uppercase())
 }
 
-fn active_tab_title(desktop: &DesktopTree, tab_id: u64) -> Option<String> {
-    desktop
-        .active_workspace()?
+/// Where someone is when no window here shows it: "In Notes".
+pub fn in_app(app: &str) -> String {
+    crate::i18n::t_args("people-panel-in-app", &[("app", app.to_owned().into())])
+}
+
+fn tab_title_in(workspace: Option<&tilo_desktop_model::Workspace>, tab_id: u64) -> Option<String> {
+    workspace?
         .strips
         .iter()
         .flat_map(|strip| &strip.window_groups)
@@ -1866,8 +2175,7 @@ fn spoken_details(row: &RosterRow) -> String {
 /// and the open row's details as the layout measured them.
 #[derive(Clone, Copy)]
 struct RowsPlan<'p> {
-    people: &'p [usize],
-    agents: &'p [usize],
+    groups: &'p [(&'static str, Vec<usize>)],
     open_index: Option<usize>,
     shown_changes: usize,
     revealed: f64,
@@ -1931,6 +2239,7 @@ mod tests {
             availability: ui::Availability::Available,
             call: None,
             join: None,
+            own_device: false,
         }
     }
 
@@ -1950,12 +2259,60 @@ mod tests {
                 unavailable: None,
                 exposure: None,
                 may_invite: true,
+                may_pin: false,
                 followed_id: None,
                 following_pairs: &[],
                 expanded_id: expanded,
                 watching: 0,
+                waved: &[],
+                spectating: false,
             },
             None,
+        );
+    }
+
+    /// A wave just sent reads as sent on its row, to the pointer's eye and
+    /// to assistive technology alike; the others still offer one.
+    #[test]
+    fn a_wave_just_sent_reads_as_sent() {
+        let rows = vec![row("ada", "Ada"), row("ben", "Ben")];
+        let mut overlay = CollaboratorsOverlay::default();
+        let waved = ["ada".to_owned()];
+        overlay.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &CollaboratorsModel {
+                host: Rect::new(0.0, 0.0, 1400.0, 900.0),
+                workspace: "Lounge",
+                rows: &rows,
+                unavailable: None,
+                exposure: None,
+                may_invite: true,
+                may_pin: false,
+                followed_id: None,
+                following_pairs: &[],
+                expanded_id: None,
+                watching: 0,
+                waved: &waved,
+                spectating: false,
+            },
+            None,
+        );
+        let names: Vec<String> = overlay
+            .accessibility_snapshot()
+            .children
+            .iter()
+            .filter_map(|node| node.name.clone())
+            .collect();
+        assert!(
+            names.contains(&t_args("a11y-shell-waved", &[("name", "Ada".into())])),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&t_args("a11y-shell-wave", &[("name", "Ben".into())])),
+            "{names:?}"
         );
     }
 
@@ -2090,10 +2447,13 @@ mod tests {
             unavailable: None,
             exposure: None,
             may_invite: false,
+            may_pin: false,
             followed_id: None,
             following_pairs: &pairs,
             expanded_id: None,
             watching: 0,
+            waved: &[],
+            spectating: false,
         };
         assert_eq!(
             model.relationship_for("ada"),
@@ -2103,6 +2463,50 @@ mod tests {
             model.relationship_for("bob"),
             Some(RosterFollowRelationship::FollowedBy("ada".into()))
         );
+    }
+
+    /// A follower's row says whom they follow, "you" for this person,
+    /// after where they are.
+    #[test]
+    fn a_followers_row_says_whom_they_follow() {
+        let mut rows = vec![row("ada", "Ada"), row("bob", "Bob"), row("cy", "Cy")];
+        rows[0].activity = Some("In Notes".into());
+        rows[1].activity = None;
+        rows[2].activity = None;
+        let pairs = [
+            ("ada".to_owned(), "bob".to_owned()),
+            ("cy".to_owned(), "me".to_owned()),
+        ];
+        note_following(&mut rows, &pairs, Some("me"));
+        assert_eq!(rows[0].activity.as_deref(), Some("In Notes, following Bob"));
+        assert_eq!(rows[1].activity, None);
+        assert_eq!(rows[2].activity.as_deref(), Some("Following you"));
+    }
+
+    /// The person's other devices are listed as theirs, under their own
+    /// heading after people, with nobody to wave at.
+    #[test]
+    fn the_roster_lists_the_person_s_other_devices_as_their_devices() {
+        let mut pi = row("peer@7", "Orange Pi");
+        pi.own_device = true;
+        let rows = vec![pi, row("ada", "Ada")];
+        let mut overlay = CollaboratorsOverlay::default();
+        paint(&mut overlay, &rows, None);
+        let order: Vec<usize> = overlay.rows.iter().map(|place| place.index).collect();
+        assert_eq!(order, vec![1, 0], "people first, then the devices");
+        assert_eq!(
+            overlay
+                .headings
+                .iter()
+                .map(|h| h.text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                t("people-panel-section-people"),
+                t("people-panel-section-devices")
+            ]
+        );
+        assert_eq!(overlay.rows[1].wave, Rect::ZERO);
+        assert_eq!(overlay.wave_target(0), None);
     }
 
     /// People, then agents, each with Follow on its row and Wave for
@@ -2178,6 +2582,20 @@ mod tests {
         );
         assert_eq!(overlay.wave_target(1), Some("ada"));
         assert_eq!(overlay.wave_target(0), None);
+    }
+
+    /// The header counts the people the list shows, besides you.
+    #[test]
+    fn the_header_counts_the_people_listed() {
+        ui::i18n::I18nManager::init("en-US");
+        assert_eq!(here_line(0, 0, false), "Just you");
+        assert_eq!(here_line(1, 0, false), "You and 1 other");
+        assert_eq!(here_line(3, 0, false), "You and 3 others");
+        assert_eq!(here_line(1, 2, false), "You and 1 other, 2 watching");
+        assert_eq!(
+            here_line(1, 1, true),
+            "1 person here, 1 watching, you among them"
+        );
     }
 
     /// Only you: the roster says nobody else is here, and still offers

@@ -4,12 +4,13 @@
 //! leave to them by its own word: the host asks the person's approving
 //! devices about that one invocation. This device, when it may admit
 //! devices (it holds the person's root custody), keeps an approver session
-//! with each host it connects to, puts every question on the compositor's
+//! with each host it connects to, tells the person about every question
+//! with an ordinary notification whose Answer puts it on the compositor's
 //! confirmation sheet — the same "… wants to act for you" sheet an agent or
 //! app acting for the person on this machine is confirmed on, Allow once or
-//! Deny — and sends the answer back. The sheet appears over whatever the
-//! person is doing; the agent meanwhile shows it is waiting in the room's
-//! presence. A question that is withdrawn or expires takes its sheet away.
+//! Deny — and sends the answer back. An agent never takes the screen on its
+//! own; it meanwhile shows it is waiting in the room's presence. A question
+//! that is withdrawn or expires takes its notice and sheet away.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -29,20 +30,17 @@ const POLL: Duration = Duration::from_millis(250);
 /// The longest wait before an approver session that failed is opened again.
 const RETRY_MAX: Duration = Duration::from_secs(30);
 
-/// Where questions are shown, and whether anyone is there to answer them.
+/// Where questions are answered.
 #[derive(Clone)]
 pub(crate) struct Sheet {
     queue: PortalDialogQueue,
-    present: fn() -> bool,
 }
 
 impl Sheet {
-    /// This session's sheet, answered only while someone is at its
-    /// unlocked screen.
+    /// This session's sheet.
     pub(crate) fn session() -> Self {
         Self {
             queue: PortalDialogQueue::global(),
-            present: crate::shell::app_action_consent::session_attended,
         }
     }
 }
@@ -83,7 +81,6 @@ impl Answering {
         self.sessions.insert(id, session);
     }
 
-    /// Stop answering `host`'s questions.
     pub(crate) fn stop(&mut self, host: EndpointId) {
         if let Some(session) = self.sessions.remove(&host) {
             session.abort();
@@ -147,21 +144,25 @@ async fn serve(mut approver: Approver, sheet: &Sheet, person: &str) -> CertifyEr
         }
         withdraw(sheet, gone.into_iter());
         for question in asked {
-            if shown.contains(&question.id) || !(sheet.present)() {
+            if shown.contains(&question.id) {
                 continue;
             }
-            let Ok(answer) = sheet.queue.enqueue_action_grant(request(&question, person)) else {
-                continue;
-            };
             shown.insert(question.id);
             let answered = answered.clone();
-            tokio::spawn(async move {
-                let answer = match answer.await {
-                    Ok(AppActionConsent::Deny) | Err(_) => ConfirmationAnswer::Deny,
-                    Ok(_) => ConfirmationAnswer::AllowOnce,
-                };
-                let _ = answered.send((question.id, answer));
-            });
+            let runtime = tokio::runtime::Handle::current();
+            crate::shell::app_action_consent::notify_on(
+                &sheet.queue,
+                request(&question, person),
+                Box::new(move |answer| {
+                    runtime.spawn(async move {
+                        let answer = match answer.await {
+                            Ok(AppActionConsent::Deny) | Err(_) => ConfirmationAnswer::Deny,
+                            Ok(_) => ConfirmationAnswer::AllowOnce,
+                        };
+                        let _ = answered.send((question.id, answer));
+                    });
+                }),
+            );
         }
         tokio::select! {
             () = tokio::time::sleep(POLL) => {}
@@ -182,6 +183,7 @@ fn handle(id: &[u8; 32]) -> String {
 
 fn withdraw(sheet: &Sheet, ids: impl Iterator<Item = [u8; 32]>) {
     for id in ids {
+        crate::shell::app_action_consent::withdraw_notice(&handle(&id));
         sheet.queue.cancel(&handle(&id));
     }
 }
@@ -205,5 +207,8 @@ fn request(question: &PendingConfirmation, person: &str) -> AppActionConsentRequ
         needs_confirmation: true,
         confirming: true,
         moderation: None,
+        preview: None,
+        scope: None,
+        draft: None,
     }
 }

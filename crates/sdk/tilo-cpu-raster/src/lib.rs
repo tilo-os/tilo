@@ -167,7 +167,6 @@ impl<'a> Target<'a> {
 /// What differs between two prepared scenes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SceneChanges {
-    /// Every pixel that can differ.
     pub regions: Vec<Region>,
     /// The part of the change that moved, when every differing draw is its
     /// old self translated by one whole-pixel offset.

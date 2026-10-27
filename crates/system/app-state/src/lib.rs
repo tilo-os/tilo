@@ -70,6 +70,11 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub enum StoreError {
     #[error("another writer owns {path}")]
     WriterBusy { path: PathBuf },
+    /// The store's own thread is still opening the key for a thread that
+    /// must not wait on storage ([`durable_store::waiting`]), and wakes it
+    /// once when done.
+    #[error("{0} is still being opened")]
+    Opening(String),
     #[error("existing document is empty: {path}")]
     EmptyExistingDocument { path: PathBuf },
     #[error("storage source changed: {path}")]
@@ -751,13 +756,14 @@ impl DocStore {
         Ok(self.owner.stored()?.is_some())
     }
 
-    /// Submit one write through the owner and wait for its outcome.
+    /// Submit one write through the owner and, where this thread may wait on
+    /// storage, wait for its outcome.
     fn commit(&self, op: WriteOp) -> Result<(), StoreError> {
         let store = self.owner.store();
         let key = self.owner.key();
         let writer = self.owner.unstored_writer();
         let revision = store.write(key, op, writer.as_deref())?;
-        match store.flush(Some(key)) {
+        match store.flush_where_allowed(key) {
             Ok(()) | Err(durable_store::StoreError::Pending(_)) => {}
             Err(error) => return Err(error.into()),
         }
@@ -954,11 +960,14 @@ pub fn validate_canonical_schema_of(doc: &AutoCommit, label: &Path) -> Result<()
     Ok(())
 }
 
-/// `fsync` a directory and every ancestor, so a newly created or renamed
-/// entry survives a crash however deep it was created. `visit` runs before
-/// each directory and may refuse it.
+/// `fsync` a directory and every ancestor up to the store's provisioned
+/// boundary, so a newly created or renamed entry survives a crash however
+/// deep it was created. `provisioned` is the store's root when its host
+/// provisioned it ([`FsStore::provisioned`]). `visit` runs before each
+/// directory and may refuse it.
 fn sync_directory_ancestors(
     dir: &Path,
+    provisioned: Option<&Path>,
     mut visit: impl FnMut(&Path) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let physical = fs::canonicalize(dir).map_err(|e| io_err("resolving canonical directory", e))?;
@@ -970,13 +979,18 @@ fn sync_directory_ancestors(
     // folder, not an environment variable), the app sandbox on Android
     // (`ui::android_main!` makes it `$HOME`), and the room directory the
     // Linux launcher binds at `/run/tilo/app` beneath a Landlock boundary.
+    //
+    // A root its host provisioned is the same: the Linux launcher binds the
+    // person's records at `/run/tilo/person` beside the app's home, and
+    // what is above it is the host's, not the store's.
     let profile_root = tilo_paths::home().and_then(|path| fs::canonicalize(path).ok());
+    let store_root = provisioned.and_then(|root| fs::canonicalize(root).ok());
     for path in physical.ancestors() {
         visit(path)?;
         open_directory(path, true)
             .and_then(|f| f.sync_all())
             .map_err(|e| io_err(format!("syncing directory {}", path.display()), e))?;
-        if profile_root.as_deref() == Some(path) {
+        if profile_root.as_deref() == Some(path) || store_root.as_deref() == Some(path) {
             break;
         }
     }
@@ -1193,7 +1207,7 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("HOME", &home);
         let mut visited = Vec::new();
-        sync_directory_ancestors(&nested, |path| {
+        sync_directory_ancestors(&nested, None, |path| {
             visited.push(path.to_path_buf());
             Ok(())
         })
@@ -1201,6 +1215,33 @@ mod tests {
         drop(env);
         let home = fs::canonicalize(&home).unwrap();
         assert_eq!(visited.last(), Some(&home), "{visited:?}");
+        assert_eq!(visited.len(), 3, "{visited:?}");
+    }
+
+    /// A store over a root its host provisioned, as the launcher binds the
+    /// person's records at `/run/tilo/person` beside the app's home, syncs
+    /// up to its root and never opens the host's directory above it, which
+    /// the sandbox may not let it open.
+    #[test]
+    #[serial_test::serial]
+    fn directory_sync_stops_at_a_provisioned_root() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("run").join("app");
+        let person = tmp.path().join("run").join("person");
+        let nested = person.join("records").join("chat");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&nested).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &home);
+        let mut visited = Vec::new();
+        sync_directory_ancestors(&nested, Some(&person), |path| {
+            visited.push(path.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        drop(env);
+        let person = fs::canonicalize(&person).unwrap();
+        assert_eq!(visited.last(), Some(&person), "{visited:?}");
         assert_eq!(visited.len(), 3, "{visited:?}");
     }
 

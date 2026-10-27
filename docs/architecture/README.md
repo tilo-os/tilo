@@ -102,6 +102,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `collaboration.md` | CRDT sync, presence, peers |
 | `workspace.md` | one workspace: layout, people and state in one room, one engine for every host |
 | `rooms.md` | workspaces, hosts, membership |
+| `hosting.md` | the target for hosting: one governor and many record hosts, many workspaces per host, devices and identity, the shared browser |
 | `web-routing.md` | links: one URL grammar over resource refs, desktop and full-tab modes, history, admission, `share-link` |
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |
 | `security.md` | sandbox and capability grants for app code |
@@ -109,10 +110,12 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `hosts.md` | host interfaces: time, background work, platform services, storage, transport, actions, desktop model |
 | `network.md` | `tilo-net`: HTTP, WebSocket, WebTransport, sockets, status, and the fetch-proxy contract |
 | `search.md` | providers and per-resource-type rendering |
+| `tasks.md` | the workspace's issues: nested issues, the board, threads, agent runs as issue actions |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
 | `agent-host.md` | agent MCP beside a local enrolled relay on a foreign Linux host (no desktop/OS) |
 | `bots.md` | bots and connectors: headless Shortcuts with identity, derived grants, the trigger dispatcher, the runner, appearance, the bot directory |
 | `discord-bridge.md` | the Discord connector and bridge bot, layout and role ownership, moderation mapping, and the persistent public room it bridges |
+| `slack-bridge.md` | the Slack connector and bridge bot: record, verbs and events, threads and emoji, layout and import, links, moderation |
 | `../system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |
 | `distribution.md` | how software, settings and content reach a machine |
 | `language-checking.md` | spelling, grammar, text actions |

@@ -1,6 +1,3 @@
-//! Rename, structural moves, context menu, row and heading actions, and the
-//! drag feedback built on them.
-
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -105,8 +102,6 @@ fn flat_list() -> TreeView<()> {
 fn ids(node: &TreeNode<()>) -> Vec<NodeId> {
     node.children.iter().map(|child| child.id).collect()
 }
-
-// --- structural moves ------------------------------------------------------
 
 #[test]
 fn keyboard_and_assistive_moves_reorder_through_the_commit() {
@@ -289,8 +284,6 @@ fn keyboard_and_assistive_moves_reorder_through_the_commit() {
         );
     }
 }
-
-// --- drops -------------------------------------------------------------------
 
 /// A hierarchy in which every node may hold children (an outline), backed by
 /// the owned tree. Leaves keep no disclosure.
@@ -487,8 +480,6 @@ fn pointer_drops_target_leaves_and_seams_with_a_lifted_scrolling_preview() {
     }
 }
 
-// --- rename ----------------------------------------------------------------
-
 fn renamable() -> (TreeView<()>, Log<(NodeId, String)>, Log<NodeId>) {
     let renamed = log();
     let activated = log();
@@ -641,8 +632,6 @@ fn inline_rename_starts_commits_and_cancels() {
     }
 }
 
-// --- context menu ------------------------------------------------------------
-
 fn with_menu() -> (TreeView<()>, Log<(Option<NodeId>, usize)>, Log<NodeId>) {
     let chosen = log();
     let selected = log();
@@ -787,8 +776,6 @@ fn row_context_menu_opens_from_pointer_keys_and_semantics() {
         );
     }
 }
-
-// --- row and heading actions -------------------------------------------------
 
 fn with_actions() -> (TreeView<()>, Log<(NodeId, usize)>, Rc<RefCell<usize>>) {
     let actions = log();
@@ -996,8 +983,6 @@ fn a_reveal_before_the_first_layout_waits_for_a_viewport() {
         "the far row is brought into view"
     );
 }
-
-// --- scrolling -------------------------------------------------------------
 
 #[test]
 fn a_filled_tree_hides_its_bar_at_rest_and_shows_it_while_scrolling() {

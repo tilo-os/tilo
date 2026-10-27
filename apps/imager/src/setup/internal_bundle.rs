@@ -9,7 +9,6 @@
 
 use super::staging::STAGING_ROOT_TYPE;
 use serde::Deserialize;
-use std::{path::Path, sync::atomic::AtomicBool};
 
 pub const MAX_MANIFEST_BYTES: usize = 65_536;
 const MAX_IMAGE_BYTES: u64 = 1 << 40;
@@ -144,8 +143,6 @@ impl InternalBundle {
     }
 
     /// Check the prepared account requirement against this selected image's proof.
-    /// # Errors
-    /// Refuses protected custody when the authenticated target lacks its protocol.
     pub fn require_account_protocol(&self, required: Option<u32>) -> Result<(), String> {
         if required.is_some_and(|protocol| {
             self.manifest
@@ -478,203 +475,6 @@ pub fn validate_internal_bundle(manifest: &[u8]) -> Result<InternalBundle, Strin
     Ok(InternalBundle { manifest: data })
 }
 
-/// Verify ordinary component files for this invocation only. Future staging must
-/// reopen pinned handles and reverify; success here is not retained byte authority.
-/// # Errors
-/// Rejects unsupported hosts, unsafe files, replacements, cancellation or mismatched bytes.
-pub fn verify_internal_components(
-    bundle: &InternalBundle,
-    directory: &Path,
-    cancelled: &AtomicBool,
-) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        unix::verify(bundle, directory, cancelled)
-    }
-    #[cfg(windows)]
-    {
-        windows::verify(bundle, directory, cancelled)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (bundle, directory, cancelled);
-        Err("Internal bundle file verification is unsupported on this platform.".into())
-    }
-}
-
-fn check_cancel(cancel: &AtomicBool) -> Result<(), String> {
-    require(
-        !cancel.load(std::sync::atomic::Ordering::Acquire),
-        "Internal bundle verification cancelled.",
-    )
-}
-
-// Cancellation is cooperative between blocking calls; this does not promise
-// bounded latency from an unresponsive filesystem, filter driver or oplock.
-fn verify_bytes(
-    file: &mut std::fs::File,
-    component: &Component,
-    cancel: &AtomicBool,
-) -> Result<(), String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-    let mut remaining = component.byte_size;
-    let mut hash = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    while remaining > 0 {
-        check_cancel(cancel)?;
-        let size = remaining.min(buffer.len() as u64) as usize;
-        let count = file.read(&mut buffer[..size]).map_err(|e| e.to_string())?;
-        check_cancel(cancel)?;
-        require(count > 0, "truncated component")?;
-        hash.update(&buffer[..count]);
-        remaining -= count as u64;
-        #[cfg(test)]
-        tests::event("read", &component.filename, component.byte_size - remaining);
-    }
-    check_cancel(cancel)?;
-    require(
-        file.read(&mut buffer[..1]).map_err(|e| e.to_string())? == 0,
-        "long component",
-    )?;
-    #[cfg(test)]
-    tests::event("eof", &component.filename, component.byte_size);
-    check_cancel(cancel)?;
-    require(
-        hex::encode(hash.finalize()) == component.sha256,
-        "component digest mismatch",
-    )
-}
-
-#[cfg(unix)]
-mod unix {
-    use super::*;
-    use std::{
-        fs::{self, File, Metadata, OpenOptions},
-        os::{
-            fd::{AsRawFd, FromRawFd},
-            unix::fs::{MetadataExt, OpenOptionsExt},
-        },
-    };
-
-    fn fingerprint(meta: &Metadata) -> (u64, u64, u64, i64, i64, i64, i64, u64, u32) {
-        (
-            meta.dev(),
-            meta.ino(),
-            meta.len(),
-            meta.mtime(),
-            meta.mtime_nsec(),
-            meta.ctime(),
-            meta.ctime_nsec(),
-            meta.nlink(),
-            meta.mode(),
-        )
-    }
-    fn open(dir: &File, name: &str, cancel: &AtomicBool) -> Result<File, String> {
-        check_cancel(cancel)?;
-        let name = std::ffi::CString::new(name).map_err(|e| e.to_string())?;
-        // SAFETY: the directory descriptor and NUL-terminated leaf name are live.
-        let fd = unsafe {
-            libc::openat(
-                dir.as_raw_fd(),
-                name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
-            )
-        };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
-        // SAFETY: openat returned a fresh owned descriptor.
-        let file = unsafe { File::from_raw_fd(fd) };
-        check_cancel(cancel)?;
-        Ok(file)
-    }
-    pub(super) fn verify(
-        bundle: &InternalBundle,
-        path: &Path,
-        cancel: &AtomicBool,
-    ) -> Result<(), String> {
-        check_cancel(cancel)?;
-        let dir = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY | libc::O_NONBLOCK)
-            .open(path)
-            .map_err(|e| e.to_string())?;
-        let dir_meta = dir.metadata().map_err(|e| e.to_string())?;
-        let mut pinned = Vec::new();
-        let mut identities = std::collections::HashSet::new();
-        for component in &bundle.manifest.components {
-            check_cancel(cancel)?;
-            let mut file = open(&dir, &component.filename, cancel)?;
-            let before = file.metadata().map_err(|e| e.to_string())?;
-            require(
-                before.is_file() && before.nlink() == 1 && before.len() == component.byte_size,
-                "invalid component type, links or length",
-            )?;
-            require(
-                identities.insert((before.dev(), before.ino())),
-                "component names alias the same file",
-            )?;
-            #[cfg(test)]
-            super::tests::event("opened", &component.filename, 0);
-            verify_bytes(&mut file, component, cancel)?;
-            pinned.push((component, file, before));
-        }
-        // Retain all handles until every by-name check finishes, including earlier
-        // components that might have changed while a later component was hashed.
-        for (component, file, before) in &pinned {
-            check_cancel(cancel)?;
-            let after = file.metadata().map_err(|e| e.to_string())?;
-            check_cancel(cancel)?;
-            let named = open(&dir, &component.filename, cancel)?
-                .metadata()
-                .map_err(|e| e.to_string())?;
-            #[cfg(test)]
-            super::tests::event("readback", &component.filename, component.byte_size);
-            check_cancel(cancel)?;
-            require(
-                fingerprint(before) == fingerprint(&after)
-                    && fingerprint(&after) == fingerprint(&named),
-                "component changed during verification",
-            )?;
-        }
-        check_cancel(cancel)?;
-        let named_dir = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-        require(
-            named_dir.is_dir()
-                && dir_meta.dev() == named_dir.dev()
-                && dir_meta.ino() == named_dir.ino(),
-            "bundle directory replaced",
-        )?;
-        check_cancel(cancel)
-    }
-}
-
-#[cfg(any(windows, test))]
-fn windows_leaf_supported(name: &str) -> bool {
-    if name.is_empty()
-        || name.len() > 255
-        || name.ends_with(['.', ' '])
-        || !name
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b" ._-".contains(&c))
-    {
-        return false;
-    }
-    let stem = name
-        .split('.')
-        .next()
-        .unwrap_or("")
-        .trim_end()
-        .to_ascii_uppercase();
-    !matches!(
-        stem.as_str(),
-        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
-    ) && !((stem.starts_with("COM") || stem.starts_with("LPT"))
-        && stem.len() == 4
-        && matches!(stem.as_bytes()[3], b'1'..=b'9'))
-}
-
 #[cfg(any(windows, test))]
 #[derive(Debug, PartialEq, Eq)]
 pub(in crate::setup) struct WindowsDirectoryPath {
@@ -747,309 +547,10 @@ pub(in crate::setup) fn windows_directory_path(
     })
 }
 
-#[cfg(any(windows, test))]
-fn windows_volume_root(value: &str) -> bool {
-    value
-        .strip_prefix(r"\\?\Volume{")
-        .and_then(|v| v.strip_suffix(r"}\"))
-        .is_some_and(|id| guid(&id.to_ascii_lowercase()))
-}
-
-/// Windows is deliberately restricted to ordinary absolute drive-letter paths
-/// with lossless UTF-16 directory names and ASCII payload names. UNC,
-/// verbatim/device namespaces, relative paths,
-/// alternate streams, DOS aliases and every reparse tag fail closed.
-#[cfg(windows)]
-mod windows {
-    use super::*;
-    use cap_fs_ext::OpenOptionsFollowExt;
-    use cap_primitives::fs::FollowSymlinks;
-    use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
-    use std::{
-        ffi::{OsStr, OsString},
-        fs::File,
-        os::windows::{
-            ffi::{OsStrExt, OsStringExt},
-            fs::OpenOptionsExt as StdOpenOptionsExt,
-            io::{AsRawHandle, RawHandle},
-        },
-        path::PathBuf,
-    };
-    use windows_sys::Win32::Storage::FileSystem::*;
-
-    #[derive(Debug, PartialEq, Eq)]
-    struct Snapshot {
-        volume: u64,
-        id: [u8; 16],
-        length: i64,
-        links: u32,
-        attributes: u32,
-        tag: u32,
-        created: i64,
-        written: i64,
-        changed: i64,
-    }
-
-    fn snapshot(
-        handle: RawHandle,
-        directory: bool,
-        cancel: &AtomicBool,
-    ) -> Result<Snapshot, String> {
-        check_cancel(cancel)?;
-        // SAFETY: caller retains the owning file/directory throughout these
-        // synchronous queries. The raw handle is borrowed, never re-owned.
-        require(
-            unsafe { GetFileType(handle) } == FILE_TYPE_DISK,
-            "unsupported Windows file type",
-        )?;
-        let mut tag = FILE_ATTRIBUTE_TAG_INFO::default();
-        let mut basic = FILE_BASIC_INFO::default();
-        let mut standard = FILE_STANDARD_INFO::default();
-        let mut id = FILE_ID_INFO::default();
-        macro_rules! query {
-            ($class:expr,$value:expr) => {{
-                check_cancel(cancel)?;
-                // SAFETY: class and corresponding initialized output type are
-                // paired below; buffer is writable and has the exact type size.
-                let success = unsafe {
-                    GetFileInformationByHandleEx(
-                        handle,
-                        $class,
-                        std::ptr::from_mut(&mut $value).cast(),
-                        std::mem::size_of_val(&$value) as u32,
-                    )
-                };
-                check_cancel(cancel)?;
-                if success == 0 {
-                    return Err(std::io::Error::last_os_error().to_string());
-                }
-            }};
-        }
-        query!(FileAttributeTagInfo, tag);
-        query!(FileBasicInfo, basic);
-        query!(FileStandardInfo, standard);
-        query!(FileIdInfo, id);
-        require(
-            tag.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DEVICE) == 0
-                && tag.ReparseTag == 0
-                && basic.FileAttributes == tag.FileAttributes
-                && standard.Directory == directory
-                && !standard.DeletePending
-                && (directory || standard.NumberOfLinks == 1)
-                && standard.EndOfFile >= 0
-                && id.FileId.Identifier != [0; 16],
-            "ambiguous Windows file metadata",
-        )?;
-        check_cancel(cancel)?;
-        Ok(Snapshot {
-            volume: id.VolumeSerialNumber,
-            id: id.FileId.Identifier,
-            length: standard.EndOfFile,
-            links: standard.NumberOfLinks,
-            attributes: tag.FileAttributes,
-            tag: tag.ReparseTag,
-            created: basic.CreationTime,
-            written: basic.LastWriteTime,
-            changed: basic.ChangeTime,
-        })
-    }
-
-    fn open_leaf(
-        dir: &Dir,
-        name: &OsStr,
-        directory: bool,
-        cancel: &AtomicBool,
-    ) -> Result<File, String> {
-        check_cancel(cancel)?;
-        require(
-            if directory {
-                windows_directory_leaf_supported(&name.encode_wide().take(256).collect::<Vec<_>>())
-            } else {
-                name.to_str().is_some_and(windows_leaf_supported)
-            },
-            "unsupported Windows leaf name",
-        )?;
-        let mut options = OpenOptions::new();
-        options
-            .read(true)
-            .follow(FollowSymlinks::No)
-            .share_mode(FILE_SHARE_READ)
-            .custom_flags(
-                FILE_FLAG_OPEN_REPARSE_POINT
-                    | if directory {
-                        FILE_FLAG_BACKUP_SEMANTICS
-                    } else {
-                        0
-                    },
-            );
-        let file = dir
-            .open_with(name, &options)
-            .map_err(|e| e.to_string())?
-            .into_std();
-        snapshot(file.as_raw_handle(), directory, cancel)?;
-        Ok(file)
-    }
-
-    struct DirectoryChain {
-        root_path: PathBuf,
-        // Each handle remains live, preventing compatible delete/write opens.
-        entries: Vec<(OsString, Dir, Snapshot)>,
-    }
-    fn open_drive(root: &Path, cancel: &AtomicBool) -> Result<File, String> {
-        check_cancel(cancel)?;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(root)
-            .map_err(|e| e.to_string())?;
-        snapshot(file.as_raw_handle(), true, cancel)?;
-        // Require an actual volume root, not a SUBST/mapped subdirectory whose
-        // hidden ancestors would escape the explicit no-reparse walk.
-        let mut final_path = [0_u16; 128];
-        check_cancel(cancel)?;
-        // SAFETY: the live borrowed handle and fixed writable UTF-16 buffer are
-        // valid for this synchronous query; no returned pathname is reopened.
-        let length = unsafe {
-            GetFinalPathNameByHandleW(
-                file.as_raw_handle(),
-                final_path.as_mut_ptr(),
-                final_path.len() as u32,
-                VOLUME_NAME_GUID | FILE_NAME_NORMALIZED,
-            )
-        } as usize;
-        check_cancel(cancel)?;
-        require(
-            length > 0 && length < final_path.len(),
-            "Windows volume identity is unavailable",
-        )?;
-        let final_path = String::from_utf16(&final_path[..length]).map_err(|e| e.to_string())?;
-        require(
-            windows_volume_root(&final_path),
-            "Windows drive maps outside an ordinary volume root",
-        )?;
-        Ok(file)
-    }
-    impl DirectoryChain {
-        fn acquire(path: &Path, cancel: &AtomicBool) -> Result<Self, String> {
-            check_cancel(cancel)?;
-            let parsed = windows_directory_path(path.as_os_str().encode_wide())?;
-            let root_path = PathBuf::from(OsString::from_wide(&parsed.root));
-            let root = open_drive(&root_path, cancel)?;
-            let root_snapshot = snapshot(root.as_raw_handle(), true, cancel)?;
-            let mut chain = Self {
-                root_path,
-                entries: vec![(OsString::new(), Dir::from_std_file(root), root_snapshot)],
-            };
-            for raw_name in parsed.names {
-                let name = OsString::from_wide(&raw_name);
-                let file = open_leaf(
-                    &chain.entries.last().ok_or("missing root")?.1,
-                    &name,
-                    true,
-                    cancel,
-                )?;
-                let before = snapshot(file.as_raw_handle(), true, cancel)?;
-                chain.entries.push((name, Dir::from_std_file(file), before));
-            }
-            Ok(chain)
-        }
-        fn directory(&self) -> Result<&Dir, String> {
-            self.entries
-                .last()
-                .map(|entry| &entry.1)
-                .ok_or_else(|| "missing bundle directory".into())
-        }
-        fn revalidate(&self, cancel: &AtomicBool) -> Result<(), String> {
-            for (index, (name, dir, before)) in self.entries.iter().enumerate() {
-                let named = if index == 0 {
-                    open_drive(&self.root_path, cancel)?
-                } else {
-                    open_leaf(&self.entries[index - 1].1, name, true, cancel)?
-                };
-                require(
-                    snapshot(dir.as_raw_handle(), true, cancel)? == *before
-                        && snapshot(named.as_raw_handle(), true, cancel)? == *before,
-                    "Windows directory changed during verification",
-                )?;
-            }
-            check_cancel(cancel)
-        }
-    }
-    pub(super) fn verify(
-        bundle: &InternalBundle,
-        path: &Path,
-        cancel: &AtomicBool,
-    ) -> Result<(), String> {
-        let chain = DirectoryChain::acquire(path, cancel)?;
-        let dir = chain.directory()?;
-        let mut pinned = Vec::new();
-        let mut identities = std::collections::HashSet::new();
-        for component in &bundle.manifest.components {
-            let mut file = open_leaf(dir, OsStr::new(&component.filename), false, cancel)?;
-            let before = snapshot(file.as_raw_handle(), false, cancel)?;
-            require(
-                before.length as u64 == component.byte_size,
-                "wrong Windows component length",
-            )?;
-            require(
-                identities.insert((before.volume, before.id)),
-                "Windows component names alias the same file",
-            )?;
-            #[cfg(test)]
-            super::tests::event("opened", &component.filename, 0);
-            verify_bytes(&mut file, component, cancel)?;
-            pinned.push((component, file, before));
-        }
-        for (component, file, before) in &pinned {
-            let named = open_leaf(dir, OsStr::new(&component.filename), false, cancel)?;
-            require(
-                snapshot(file.as_raw_handle(), false, cancel)? == *before
-                    && snapshot(named.as_raw_handle(), false, cancel)? == *before,
-                "Windows component changed during verification",
-            )?;
-            #[cfg(test)]
-            super::tests::event("readback", &component.filename, component.byte_size);
-            check_cancel(cancel)?;
-        }
-        chain.revalidate(cancel)?;
-        check_cancel(cancel)
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use serde_json::{Value, json};
-    use sha2::{Digest, Sha256};
-
-    type Hook = Box<dyn FnMut(&str, &str, u64)>;
-    thread_local! { static HOOK: std::cell::RefCell<Option<Hook>> = const { std::cell::RefCell::new(None) }; }
-    pub(super) fn event(stage: &str, name: &str, count: u64) {
-        HOOK.with(|hook| {
-            if let Some(hook) = hook.borrow_mut().as_mut() {
-                hook(stage, name, count);
-            }
-        });
-    }
-    fn with_hook(hook: Hook, test: impl FnOnce()) {
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                HOOK.with(|hook| *hook.borrow_mut() = None);
-            }
-        }
-        HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
-        let _reset = Reset;
-        test();
-    }
-    fn ordinary_bundle() -> (tempfile::TempDir, InternalBundle) {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("staging-esp.img"), vec![b'E'; 4096]).unwrap();
-        std::fs::write(dir.path().join("staging-root.img"), vec![b'R'; 8192]).unwrap();
-        let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
-        (dir, bundle)
-    }
 
     /// The one fixture both validators accept. os/tests/internal_bundle_test.py
     /// derives its command line from the live image's kargs.d and
@@ -1084,7 +585,6 @@ pub(crate) mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn live_cmdline_profile_and_root_floor_are_closed_contracts() {
-        // Phase `python_compatible_positive`.
         {
             assert!(validate_internal_bundle(SHARED_FIXTURE.as_bytes()).is_ok());
             assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
@@ -1093,7 +593,6 @@ pub(crate) mod tests {
             assert_eq!(bundle.purpose(), "tilo-internal-installer");
         }
 
-        // Phase `shared_fixture_is_the_live_cmdline`.
         {
             let text = cmdline();
             let tokens: Vec<_> = text.split_ascii_whitespace().collect();
@@ -1114,7 +613,6 @@ pub(crate) mod tests {
             assert!(!text.contains("tilo.unlock="));
         }
 
-        // Phase `minimised_root_fits_its_live_floor_partition`.
         {
             let data = fixture();
             let root = &data["components"][1];
@@ -1131,7 +629,6 @@ pub(crate) mod tests {
             assert!(bundle.component_by_role("target-root").is_none());
             assert_eq!(bundle.efi_path(), "/EFI/BOOT/BOOTX64.EFI");
             assert_eq!(bundle.uki_sha256(), "a".repeat(64));
-            // A root that fills its partition exactly is still a valid bundle.
             let mut full = fixture();
             full["components"][1]["byte_size"] = json!(LIVE_ROOT_FLOOR_BYTES);
             full["source_image_bytes"] = json!(21504 + LIVE_ROOT_FLOOR_BYTES);
@@ -1141,7 +638,6 @@ pub(crate) mod tests {
             assert!(validate_internal_bundle(&bytes(&full)).is_err());
         }
 
-        // Phase `cmdline_profile_is_closed`.
         {
             let base = cmdline();
             for tail in [
@@ -1208,7 +704,6 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `device_bound_cmdlines_are_rejected`.
         {
             let base = cmdline();
             let auto = "root=tilo-auto";
@@ -1228,7 +723,6 @@ pub(crate) mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn bundle_schema_rejects_corrupt_ambiguous_or_positional_records() {
-        // Phase `rejects_single_field_schema_corruptions`.
         {
             let cases = [
                 ("/schema", json!(1)),
@@ -1293,7 +787,6 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `rejects_ambiguous_or_unbounded_json`.
         {
             let raw = String::from_utf8(bytes(&fixture())).unwrap();
             assert!(raw.contains("\"schema\":2"));
@@ -1321,7 +814,6 @@ pub(crate) mod tests {
             assert!(validate_internal_bundle(&raw).is_err());
         }
 
-        // Phase `accepts_both_architectures_and_rejects_nested_unknown_or_duplicate_keys`.
         {
             let mut value = fixture();
             value["architecture"] = json!("aarch64");
@@ -1345,7 +837,6 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `representation_manifest_must_be_an_object`.
         {
             let value = fixture();
             assert!(validate_internal_bundle(&bytes(&value)).is_ok());
@@ -1356,7 +847,6 @@ pub(crate) mod tests {
             assert!(validate_internal_bundle(&bytes(&array)).is_err());
         }
 
-        // Phase `representation_component_must_be_an_object`.
         {
             let mut value = fixture();
             assert!(validate_internal_bundle(&bytes(&value)).is_ok());
@@ -1367,7 +857,6 @@ pub(crate) mod tests {
             assert!(validate_internal_bundle(&bytes(&value)).is_err());
         }
 
-        // Phase `representation_boot_binding_must_be_an_object`.
         {
             let mut value = fixture();
             assert!(validate_internal_bundle(&bytes(&value)).is_ok());
@@ -1376,184 +865,6 @@ pub(crate) mod tests {
                 "efi_path uki_architecture uki_sha256 uki_cmdline composefs_digest",
             );
             assert!(validate_internal_bundle(&bytes(&value)).is_err());
-        }
-    }
-    /// Missing components, exact bytes, special files, replacement and cancellation.
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn component_verification_requires_exact_stable_regular_files() {
-        // Phase `missing_components_are_rejected`.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
-            assert!(
-                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err()
-            );
-        }
-
-        // Phase `component_bytes_must_match_exact_length_and_digest`.
-        {
-            let (dir, bundle) = ordinary_bundle();
-            assert!(
-                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_ok()
-            );
-            for data in [vec![b'R'; 8191], vec![b'R'; 8193], vec![b'X'; 8192]] {
-                std::fs::write(dir.path().join("staging-root.img"), data).unwrap();
-                assert!(
-                    verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false))
-                        .is_err()
-                );
-            }
-        }
-
-        // Phase `rejects_links_directories_and_fifos_without_blocking`.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::symlink;
-            let (dir, bundle) = ordinary_bundle();
-            let root = dir.path().join("staging-root.img");
-            std::fs::rename(&root, dir.path().join("saved.img")).unwrap();
-            symlink("saved.img", &root).unwrap();
-            assert!(
-                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err()
-            );
-            std::fs::remove_file(&root).unwrap();
-            std::fs::hard_link(dir.path().join("saved.img"), &root).unwrap();
-            assert!(
-                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err()
-            );
-            std::fs::remove_file(&root).unwrap();
-            std::fs::create_dir(&root).unwrap();
-            assert!(
-                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err()
-            );
-            std::fs::remove_dir(&root).unwrap();
-            let name = std::ffi::CString::new(root.as_os_str().as_encoded_bytes()).unwrap();
-            // SAFETY: the temporary pathname is NUL-terminated and remains live.
-            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-            assert!(
-                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err()
-            );
-            let alias = dir.path().with_extension("link");
-            symlink(dir.path(), &alias).unwrap();
-            assert!(verify_internal_components(&bundle, &alias, &AtomicBool::new(false)).is_err());
-            std::fs::remove_file(alias).unwrap();
-        }
-
-        // Phase `rejects_replacement_after_open_and_of_an_earlier_component`.
-        #[cfg(unix)]
-        {
-            for target in ["staging-root.img", "staging-esp.img"] {
-                let (dir, bundle) = ordinary_bundle();
-                let root = dir.path().to_owned();
-                with_hook(
-                    Box::new(move |stage, name, _| {
-                        if stage == "opened" && name == "staging-root.img" {
-                            std::fs::rename(root.join(target), root.join("retained.img")).unwrap();
-                            std::fs::write(
-                                root.join(target),
-                                vec![
-                                    if target == "staging-root.img" {
-                                        b'R'
-                                    } else {
-                                        b'E'
-                                    };
-                                    if target == "staging-root.img" {
-                                        8192
-                                    } else {
-                                        4096
-                                    }
-                                ],
-                            )
-                            .unwrap();
-                        }
-                    }),
-                    || {
-                        assert!(
-                            verify_internal_components(
-                                &bundle,
-                                dir.path(),
-                                &AtomicBool::new(false)
-                            )
-                            .is_err()
-                        )
-                    },
-                );
-            }
-        }
-
-        // Phase `rejects_directory_replacement_even_when_pinned_bytes_match`.
-        #[cfg(unix)]
-        {
-            let parent = tempfile::tempdir().unwrap();
-            let path = parent.path().join("bundle");
-            std::fs::create_dir(&path).unwrap();
-            std::fs::write(path.join("staging-esp.img"), vec![b'E'; 4096]).unwrap();
-            std::fs::write(path.join("staging-root.img"), vec![b'R'; 8192]).unwrap();
-            let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
-            let root = path.clone();
-            let moved = parent.path().join("retained");
-            with_hook(
-                Box::new(move |stage, name, _| {
-                    if stage == "opened" && name == "staging-esp.img" {
-                        std::fs::rename(&root, &moved).unwrap();
-                        std::fs::create_dir(&root).unwrap();
-                    }
-                }),
-                || {
-                    assert!(
-                        verify_internal_components(&bundle, &path, &AtomicBool::new(false))
-                            .is_err()
-                    )
-                },
-            );
-        }
-
-        // Phase `observes_cancellation_before_open_first_middle_last_read_and_eof`.
-        {
-            use std::sync::{Arc, atomic::Ordering};
-            let (dir, _) = ordinary_bundle();
-            // Three reads, with the final read shorter than the fixed buffer.
-            let payload = vec![b'R'; 131584];
-            std::fs::write(dir.path().join("staging-root.img"), &payload).unwrap();
-            let mut manifest = fixture();
-            manifest["components"][1]["byte_size"] = json!(payload.len());
-            manifest["components"][1]["sha256"] = json!(hex::encode(Sha256::digest(&payload)));
-            manifest["source_image_bytes"] = json!(21504 + payload.len());
-            let bundle = validate_internal_bundle(&bytes(&manifest)).unwrap();
-            assert!(
-                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_ok()
-            );
-            assert!(
-                verify_internal_components(&bundle, dir.path(), &AtomicBool::new(true)).is_err()
-            );
-            for (stage, count) in [
-                ("opened", 0),
-                ("read", 65536),
-                ("read", 131072),
-                ("read", 131584),
-                ("eof", 131584),
-                ("readback", 131584),
-            ] {
-                let cancel = Arc::new(AtomicBool::new(false));
-                let signal = cancel.clone();
-                with_hook(
-                    Box::new(move |observed, name, bytes| {
-                        if name == "staging-root.img" && observed == stage && bytes == count {
-                            signal.store(true, Ordering::Release);
-                        }
-                    }),
-                    || {
-                        assert!(
-                            verify_internal_components(&bundle, dir.path(), &cancel).is_err(),
-                            "missed {stage}/{count}"
-                        )
-                    },
-                );
-            }
         }
     }
     fn windows_path(text: &str) -> Result<WindowsDirectoryPath, String> {
@@ -1567,7 +878,6 @@ pub(crate) mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn windows_unicode_ancestors_are_exact_bounded_and_lossless() {
-        // Phase `windows_unicode_ancestors_retain_exact_names`.
         {
             for name in [
                 "André",
@@ -1609,7 +919,6 @@ pub(crate) mod tests {
             assert!(windows_path(&format!("C:\\{}", vec!["é"; 65].join("\\"))).is_err());
         }
 
-        // Phase `windows_unicode_raw_collection_is_bounded`.
         {
             let mut consumed = 0;
             let raw = std::iter::repeat(b'a' as u16).inspect(|_| consumed += 1);
@@ -1617,7 +926,6 @@ pub(crate) mod tests {
             assert_eq!(consumed, 4097);
         }
 
-        // Phase `windows_unicode_unpaired_surrogates_are_preserved`.
         {
             let name = vec![0xd800, b'a' as u16, 0xdc00, 0xd83d, 0xde00];
             let mut raw: Vec<_> = "C:\\".encode_utf16().collect();
@@ -1625,7 +933,6 @@ pub(crate) mod tests {
             assert_eq!(windows_directory_path(raw).unwrap().names, vec![name]);
         }
 
-        // Phase `windows_unicode_os_string_bridge_is_lossless`.
         #[cfg(windows)]
         {
             use std::{
@@ -1646,31 +953,15 @@ pub(crate) mod tests {
             }
             assert_eq!(rebuilt, raw);
         }
-
-        // Phase `windows_unicode_directory_verifies_ordinary_payloads`.
-        #[cfg(windows)]
-        {
-            let parent = tempfile::tempdir().unwrap();
-            let path = parent.path().join("André-用户-e\u{301}-😀");
-            std::fs::create_dir(&path).unwrap();
-            std::fs::write(path.join("staging-esp.img"), vec![b'E'; 4096]).unwrap();
-            std::fs::write(path.join("staging-root.img"), vec![b'R'; 8192]).unwrap();
-            let bundle = validate_internal_bundle(&bytes(&fixture())).unwrap();
-            assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(false)).is_ok());
-            assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(true)).is_err());
-            std::fs::write(path.join("staging-root.img"), vec![b'X'; 8192]).unwrap();
-            assert!(verify_internal_components(&bundle, &path, &AtomicBool::new(false)).is_err());
-        }
     }
 
-    /// Namespaces, separators, aliases, devices, streams and drive roots.
+    /// Namespaces, separators, aliases, devices and streams.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn windows_names_cannot_alias_escape_or_broaden_authenticated_files() {
-        // Phase `windows_unicode_raw_namespaces_and_separators_are_refused`.
         {
             assert!(windows_path("C:\\Users\\ordinary").is_ok());
             for path in [
@@ -1696,7 +987,6 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `windows_unicode_leaf_aliases_and_control_units_are_refused`.
         {
             assert!(windows_path("C:\\Users\\ordinary").is_ok());
             for name in [
@@ -1738,68 +1028,16 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `windows_unicode_ancestors_do_not_broaden_authenticated_filenames`.
         {
             assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
             for name in ["é.img", "用户.img", "e\u{301}.img", "😀.img"] {
-                assert!(!windows_leaf_supported(name));
                 let mut manifest = fixture();
                 manifest["components"][0]["filename"] = json!(name);
                 assert!(validate_internal_bundle(&bytes(&manifest)).is_err());
             }
         }
-
-        // Phase `windows_names_cannot_enter_device_stream_or_alias_namespaces`.
-        {
-            for name in [
-                "",
-                ".",
-                "..",
-                "file.",
-                "file ",
-                "CON.img",
-                "lpt1.img",
-                "aux",
-                "nul.txt",
-                "COM9.img",
-                "file:stream",
-                "a/b",
-                "a\\b",
-            ] {
-                assert!(!windows_leaf_supported(name), "accepted {name}");
-            }
-            assert!(windows_leaf_supported("staging-root.img"));
-        }
-
-        // Phase `windows_drive_root_cannot_hide_a_subdirectory_mapping`.
-        {
-            assert!(windows_volume_root(
-                r"\\?\Volume{12345678-1234-4234-8234-123456789abc}\"
-            ));
-            assert!(!windows_volume_root(
-                r"\\?\Volume{12345678-1234-4234-8234-123456789abc}\mapped"
-            ));
-            assert!(!windows_volume_root(r"\\?\UNC\server\share\"));
-        }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn case_aliases_cannot_satisfy_both_component_roles() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("payload.img"), vec![b'E'; 4096]).unwrap();
-        // This regression applies to case-insensitive source filesystems only.
-        if !dir.path().join("PAYLOAD.img").exists() {
-            return;
-        }
-        let mut data = fixture();
-        data["components"][0]["filename"] = json!("payload.img");
-        data["components"][1]["filename"] = json!("PAYLOAD.img");
-        data["components"][1]["byte_size"] = json!(4096);
-        data["components"][1]["sha256"] = data["components"][0]["sha256"].clone();
-        let bundle = validate_internal_bundle(&bytes(&data)).unwrap();
-        assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_err());
-    }
     fn positional_record(value: &Value, fields: &str) -> Value {
         Value::Array(
             fields

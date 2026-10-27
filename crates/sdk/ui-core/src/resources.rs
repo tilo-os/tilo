@@ -11,7 +11,6 @@ use crate::published::SharedResource;
 use crate::widget::capability::capability;
 use crate::widget::{ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, Widget};
 
-/// A widget that publishes resources.
 pub trait PublishesResources: Widget {
     /// The tree of resources this widget currently has open, each with the
     /// actions it exports, e.g. a playing video plus its comments. `doc` lets
@@ -149,7 +148,6 @@ pub fn document_action_result(
     found
 }
 
-/// The resources `widget` has open.
 pub fn resources(widget: &(impl Widget + ?Sized), doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
     capability::<dyn PublishesResources>(widget).map_or_else(Vec::new, |w| w.resources(doc))
 }
@@ -171,7 +169,6 @@ pub fn shared_resources(widget: &(impl Widget + ?Sized), doc: &AutoCommit) -> Ve
         })
 }
 
-/// `widget`'s caller-palette view resources.
 pub fn caller_view_resources(
     widget: &(impl Widget + ?Sized),
     doc: &AutoCommit,
@@ -180,7 +177,6 @@ pub fn caller_view_resources(
         .map_or_else(Vec::new, |w| w.caller_view_resources(doc))
 }
 
-/// One bounded directory page from `widget`.
 pub fn action_directory_resource_page(
     widget: &(impl Widget + ?Sized),
     doc: &AutoCommit,
@@ -194,7 +190,6 @@ pub fn action_directory_resource_page(
     )
 }
 
-/// `widget`'s directory revision.
 pub fn action_directory_revision(
     widget: &(impl Widget + ?Sized),
     doc: &AutoCommit,

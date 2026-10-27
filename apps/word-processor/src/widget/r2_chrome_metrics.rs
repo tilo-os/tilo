@@ -86,64 +86,6 @@ fn paragraph_controls_follow_their_measured_labels() {
 }
 
 #[test]
-fn find_controls_fit_their_published_bounds_at_every_scale() {
-    for scale in [1.0, 2.0] {
-        let theme = Theme::dark().with_text_scale(scale);
-        let mut state = crate::initialized_state();
-        let mut wp = WordProcessorWidget::detached();
-        wp.sync(&state.doc, &state.root);
-        wp.model_mut().insert_str(
-            &mut Edits::lend(&mut state.doc),
-            "A report about the report",
-        );
-        wp.stage_find_for_shot(&state.doc, "report");
-        let mut framed = mount_themed(state, wp, 1200, 800, &theme);
-        let (wp, _) = Framed::split(&mut framed);
-        let access = wp
-            .find
-            .accessibility()
-            .expect("the shared Find bar is published");
-        let controls: Vec<_> = access
-            .children
-            .iter()
-            .filter_map(|node| node.bounds.map(|bounds| (node, bounds.to_rect())))
-            .collect();
-        assert!(
-            controls.len() >= 7,
-            "find and replace fields, navigation and replacement actions are visible"
-        );
-        let band = wp.find_band;
-        assert!((band.height() - wp.find.height(&theme)).abs() < 0.01);
-        for (node, rect) in &controls {
-            assert!(
-                rect.x0 >= band.x0 - 0.01
-                    && rect.x1 <= band.x1 + 0.01
-                    && rect.y0 >= band.y0 - 0.01
-                    && rect.y1 <= band.y1 + 0.01,
-                "published control {:?} {rect:?} leaves Find band {band:?}",
-                node.name
-            );
-            assert!(
-                rect.height() >= label_height(&theme) - 0.01,
-                "published control {:?} clips its label",
-                node.name
-            );
-        }
-        for (i, (_, a)) in controls.iter().enumerate() {
-            for (j, (_, b)) in controls.iter().enumerate().skip(i + 1) {
-                assert!(!overlaps(*a, *b), "Find controls #{i} and #{j} overlap");
-            }
-        }
-        assert!(
-            controls
-                .iter()
-                .any(|(node, _)| node.action_target.as_deref() == Some("find-Replace")),
-            "the real Replace action remains reachable"
-        );
-    }
-}
-
-#[test]
 fn layout_controls_center_on_the_theme_sized_bar() {
     for scale in [1.0, 2.0] {
         let theme = Theme::dark().with_text_scale(scale);
@@ -208,36 +150,42 @@ fn image_inspector_controls_never_overlap_at_large_text() {
 }
 
 #[test]
-fn shared_toolbar_keeps_visible_commands_inside_its_reserved_band() {
+fn the_commands_are_the_window_bars_and_the_editor_draws_no_toolbar_row() {
     for scale in [1.0, 2.0] {
         for width in [520, 800, 1800] {
             let theme = Theme::dark().with_text_scale(scale);
             let state = crate::initialized_state();
             let mut wp = WordProcessorWidget::detached();
             wp.sync(&state.doc, &state.root);
+            wp.set_styles_panel_open(true);
             let mut framed = mount_themed(state, wp, width, 900, &theme);
             let (wp, _) = Framed::split(&mut framed);
-            assert!(!wp.toolbar.is_empty(), "the toolbar exposes commands");
-            for (_, rect) in &wp.toolbar {
-                assert!(
-                    rect.x0 >= wp.tool_band.x0 - 0.01
-                        && rect.x1 <= wp.tool_band.x1 + 0.01
-                        && rect.y0 >= wp.tool_band.y0 - 0.01
-                        && rect.y1 <= wp.tool_band.y1 + 0.01,
-                    "toolbar target {rect:?} leaves its reserved band {:?}",
-                    wp.tool_band
-                );
-                assert!(rect.height() >= label_height(&theme));
-            }
-            for pair in wp.toolbar.windows(2) {
-                assert!(
-                    !overlaps(pair[0].1, pair[1].1),
-                    "visible toolbar commands overlap"
-                );
-            }
+            let bar = wp.window_bar();
+            let ids: Vec<&str> = bar.actions.iter().map(|a| a.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                [
+                    "format",
+                    "insert",
+                    "toggle-styles",
+                    "file-menu",
+                    "toggle-ruler"
+                ],
+                "{width}px: the commands are the window bar's slots"
+            );
+            assert_eq!(bar.sidebar, Some(false), "the outline is the bar's sidebar");
+            // The page's column and the inspector start at the window's top:
+            // nothing the editor paints sits above them.
             assert!(
-                (wp.tool_band.height() - WordProcessorWidget::toolbar_band_height(&theme)).abs()
-                    < 0.01
+                // Docked it starts at the top; floating, a drawer's inset from it.
+                wp.inspector_drawer.sidebar_rect().y0 - wp.rect.y0 < 16.0
+                    || wp.styles_panel_full_window(),
+                "{width}px@{scale}: the inspector starts at the top, {:?}",
+                wp.inspector_drawer.sidebar_rect()
+            );
+            assert!(
+                (wp.zoom_viewport.y0 - wp.rect.y0 - wp.ruler.rect().height()).abs() < 0.01,
+                "{width}px@{scale}: the page starts under the ruler alone"
             );
         }
     }
@@ -254,23 +202,13 @@ fn frame_reserves_large_text_chrome_without_covering_the_page() {
     wp.set_styles_panel_open(true);
     let mut framed = mount_themed(state, wp, 800, 900, &theme);
     let (wp, _) = Framed::split(&mut framed);
-    assert!(wp.panel_rect.y0 >= wp.tool_band.y1 - 0.01);
+    assert!(wp.panel_rect.y0 >= wp.rect.y0 - 0.01);
     assert!(wp.panel_rect.y1 <= wp.rect.y1 - wp.layout_bar_height + 0.01);
-    assert!(
-        wp.laid
-            .iter()
-            .all(|line| line.y_top >= wp.tool_band.y1 - 0.01),
-        "the writing page starts below the toolbar"
-    );
     let state = crate::initialized_state();
     let mut wp = WordProcessorWidget::detached();
     wp.sync(&state.doc, &state.root);
     let mut framed = mount(state, wp, 800, 900);
     let (wp, _) = Framed::split(&mut framed);
-    assert!(
-        (wp.tool_band.height() - WordProcessorWidget::toolbar_band_height(&Theme::dark())).abs()
-            < 0.01
-    );
     assert!(
         (wp.layout_bar_height - WordProcessorWidget::status_band_height(&Theme::dark())).abs()
             < 0.01

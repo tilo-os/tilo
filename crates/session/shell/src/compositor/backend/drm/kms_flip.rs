@@ -114,7 +114,6 @@ pub(super) trait FlipDevice {
     fn enable_atomic(&self) -> io::Result<()>;
     /// The primary plane showing `crtc`, with the properties a flip writes.
     fn primary_plane(&self, crtc: crtc::Handle) -> Result<PrimaryPlane, String>;
-    /// Commit `commit` on `plane` atomically.
     fn commit_plane(
         &self,
         plane: &PrimaryPlane,
@@ -339,7 +338,6 @@ impl KmsFlip {
         &self.api
     }
 
-    /// The primary plane, when flips are atomic.
     pub fn plane(&self) -> Option<&PrimaryPlane> {
         match &self.api {
             FlipApi::Atomic(plane) => Some(plane),
@@ -486,7 +484,6 @@ mod tests {
                 atomic: Ok(()),
                 plane: Ok(primary()),
                 atomic_flip_error: Cell::new(None),
-                // Two XRGB targets and an XBGR client buffer.
                 formats: HashMap::from([(fb(1), XRGB), (fb(2), XRGB), (fb(9), XBGR)]),
                 shown: Cell::new(XRGB),
                 calls: RefCell::new(Vec::new()),
@@ -596,7 +593,6 @@ mod tests {
         flip.queue(&card, fb(1)).expect("flipped");
         assert_eq!(card.calls(), [Call::EnableAtomic, Call::Legacy(fb(1))]);
 
-        // Phase `no_primary_plane`.
         let mut card = MockCard::new();
         card.plane = Err("no primary plane shows this CRTC".to_owned());
         let mut flip = KmsFlip::probe(&card, target(), None);
@@ -765,7 +761,6 @@ mod tests {
             };
             if file == this {
                 found_this = true;
-                // This module's tests name the calls they look for.
                 let production = text
                     .split("#[cfg(test)]\nmod tests")
                     .next()

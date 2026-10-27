@@ -29,10 +29,6 @@ impl BlobHash {
     }
 
     /// Hash everything `reader` yields, returning the hash and the length.
-    ///
-    /// # Errors
-    ///
-    /// Returns any error from reading.
     pub fn of_reader(reader: &mut dyn Read) -> io::Result<(Self, u64)> {
         let mut hashing = HashingReader::new(reader);
         io::copy(&mut hashing, &mut io::sink())?;
@@ -128,19 +124,11 @@ pub trait BlobSink {
     /// at the end of an archive that carries none). Returning an error
     /// aborts decoding before any payload byte reaches the sink — the place
     /// to apply trust policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error to refuse the package.
     fn metadata(&mut self, _meta: &crate::package::PackageMeta) -> io::Result<()> {
         Ok(())
     }
 
     /// Consume the `len` bytes of the blob named `hash`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error to abort decoding.
     fn accept(&mut self, hash: &BlobHash, len: u64, bytes: &mut dyn Read) -> io::Result<()>;
 }
 

@@ -93,7 +93,7 @@ fn text_collections_and_sets_edit_by_their_merge_kind() {
                 field(&items),
                 EditOp::InsertItem {
                     id: Some(Id::from_raw("i1")),
-                    at: 0,
+                    at: tilo_resource::At::End,
                     value: item_json("milk"),
                 },
             ),
@@ -121,7 +121,7 @@ fn text_collections_and_sets_edit_by_their_merge_kind() {
 
     // An insert and a concurrent insert elsewhere in the same collection merge.
     let mut other = doc.fork();
-    let insert = |label: &str, id: &str, at: usize| {
+    let insert = |label: &str, id: &str, at: tilo_resource::At| {
         action(
             &todo.app,
             "x",
@@ -135,9 +135,13 @@ fn text_collections_and_sets_edit_by_their_merge_kind() {
             )],
         )
     };
-    insert("eggs", "i2", 1).apply(&mut doc).unwrap();
+    insert("eggs", "i2", tilo_resource::At::After(Id::from_raw("i1")))
+        .apply(&mut doc)
+        .unwrap();
     doc.commit();
-    insert("bread", "i3", 0).apply(&mut other).unwrap();
+    insert("bread", "i3", tilo_resource::At::Before(Id::from_raw("i1")))
+        .apply(&mut other)
+        .unwrap();
     other.commit();
     doc.merge_incoming(&mut other).unwrap();
     other.merge_incoming(&mut doc).unwrap();

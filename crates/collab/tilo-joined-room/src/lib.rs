@@ -1,7 +1,8 @@
-//! A device's enrolled replicas of rooms that a remote durable host governs.
+//! A device's rooms: replicas of rooms a remote durable host governs, and
+//! rooms this device governs itself.
 //!
 //! [`NativeWorkspaceOwner`] holds the admitted state of every room this
-//! device enrolled in ([`NativeCommittedView`]) and is the only writer of
+//! device enrolled in or created ([`NativeCommittedView`]) and is the only writer of
 //! their durable record, [`NativeAuthorityStorage`]. Every change is admitted
 //! into a candidate, published through the host's [`Store`] and only then
 //! installed, so no reader or receipt ever sees state the disk may not hold.
@@ -19,11 +20,14 @@ mod effect_receipt;
 pub mod enroll;
 mod enrollment;
 mod file_store;
+mod governed;
+mod governor;
 mod history_content;
 mod limits;
 mod private_direct_conversations;
 mod publication;
 mod record;
+pub mod renewal;
 pub mod session;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
@@ -43,6 +47,7 @@ pub use checkpoint::{
 };
 pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
 pub use file_store::open_file;
+pub use governor::Nonces;
 pub use history_content::HistoryContent;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 pub use private_direct_conversations::{
@@ -92,7 +97,7 @@ pub trait Store: std::any::Any + Send + Sync {
     fn healthy(&self) -> bool;
     /// Whether such an uncertain publication may have made `room` durable.
     fn uncertain(&self, room: RoomId) -> bool;
-    /// The room a local workspace slot shows, where the host has slots.
+    /// The room a local workspace is, where the host has workspaces.
     fn slot_room(&self, slot: WorkspaceId) -> Option<RoomId>;
     /// Make `next` durable, then call `install` before anyone can observe
     /// the new record. Nothing is installed when this fails.
@@ -111,12 +116,18 @@ pub trait Store: std::any::Any + Send + Sync {
 pub enum Change<'a> {
     /// Only pending-enrollment bookkeeping.
     Pending,
-    /// `room` now holds `peer`; a completed enrollment binds its slot.
+    /// `room` now holds `peer`; a completed enrollment installs into the
+    /// workspace made for it, which is `room` already.
     Room {
         room: RoomId,
         peer: &'a StatePeer,
-        bind: Option<&'a EnrollmentTarget>,
+        into: Option<&'a EnrollmentTarget>,
     },
+    /// This device no longer holds `room`: its replica and any enrollment
+    /// into it are gone from the record, and the host takes the room's
+    /// workspace off in the same publication. Nobody else's data goes: the
+    /// room lives on with its governor and members.
+    Released { room: RoomId },
 }
 
 #[derive(Clone)]
@@ -152,13 +163,30 @@ impl NativeCommittedView {
     pub fn peer(&self) -> &StatePeer {
         &self.peer
     }
+    /// Who governs the room now: the invitation's governor, or the device
+    /// its root named in its place.
     #[must_use]
     pub fn governor(&self) -> &DeviceCert {
-        &self.record.governor
+        self.peer.authority()
     }
+    /// The signed invitation this device enrolled with.
+    ///
+    /// # Errors
+    /// The room is governed here: this device created it.
+    pub fn enrollment_invitation(&self) -> Result<&[u8], String> {
+        Ok(&self.enrollment()?.invitation)
+    }
+    /// Whether this device governs the room itself, having created it,
+    /// rather than holding a replica of a room a host governs.
     #[must_use]
-    pub fn enrollment_invitation(&self) -> &[u8] {
-        &self.record.invitation
+    pub fn governed_here(&self) -> bool {
+        self.record.enrollment.is_none()
+    }
+    fn enrollment(&self) -> Result<&record::StoredEnrollment, String> {
+        self.record
+            .enrollment
+            .as_ref()
+            .ok_or_else(|| "the room is governed here, not joined through a host".into())
     }
     #[must_use]
     pub fn device(&self) -> &DeviceCert {
@@ -178,19 +206,22 @@ impl NativeCommittedView {
     }
     #[must_use]
     pub fn host(&self) -> Option<&DeviceCert> {
-        self.record.host.as_ref()
+        self.record.enrollment.as_ref()?.host.as_ref()
     }
     #[must_use]
     pub fn delivery_locator(&self) -> Option<&tilo_peer_state::join::TransportHint> {
-        self.record.locator.as_ref()
+        self.record.enrollment.as_ref()?.locator.as_ref()
     }
     #[must_use]
     pub fn hint(&self) -> Option<&tilo_peer_state::join::TransportHint> {
-        self.record.hint.as_ref()
+        self.record.enrollment.as_ref()?.hint.as_ref()
     }
-    #[must_use]
-    pub fn transport_hint(&self) -> &tilo_peer_state::join::TransportHint {
-        &self.record.transport_hint
+    /// Where the host this device enrolled through is reached.
+    ///
+    /// # Errors
+    /// The room is governed here: no host carries it.
+    pub fn transport_hint(&self) -> Result<&tilo_peer_state::join::TransportHint, String> {
+        Ok(&self.enrollment()?.transport_hint)
     }
     /// # Errors
     /// The enrollment pinned no delivery host independently of its governor.
@@ -198,7 +229,7 @@ impl NativeCommittedView {
         if self.host().is_none() {
             return Err("enrollment has no independently pinned delivery host".into());
         }
-        Ok(match &self.record.floor {
+        Ok(match &self.enrollment()?.floor {
             Some(floor) => GenerationExpectation::Current {
                 generation: floor.generation,
                 descriptor_digest: floor.digest,
@@ -216,13 +247,14 @@ impl NativeCommittedView {
             .map(|doc| tilo_peer_state::room::media::security_basis(doc, &self.peer.revocations()))
             .transpose()
             .map_err(|e| e.to_string())?;
+        let enrollment = self.record.enrollment.as_ref();
         let bytes = postcard::to_stdvec(&(
             policy,
             basis,
             &self.record.device,
-            &self.record.host,
-            &self.record.hint,
-            &self.record.floor,
+            enrollment.and_then(|enrollment| enrollment.host.as_ref()),
+            enrollment.and_then(|enrollment| enrollment.hint.as_ref()),
+            enrollment.and_then(|enrollment| enrollment.floor.as_ref()),
         ))
         .map_err(|e| e.to_string())?;
         Ok(*blake3::hash(&bytes).as_bytes())
@@ -286,6 +318,12 @@ impl SharedOwner {
         result
     }
 }
+impl Drop for SharedOwner {
+    fn drop(&mut self) {
+        // Rooms that required this owner have none now.
+        tilo_identity_host::policy_change::announce();
+    }
+}
 impl WeakNativeWorkspaceOwner {
     #[must_use]
     pub fn upgrade(&self) -> Option<NativeWorkspaceOwner> {
@@ -295,9 +333,6 @@ impl WeakNativeWorkspaceOwner {
 impl NativeWorkspaceOwner {
     /// Restore every enrolled room of `authority`, the record `store` last
     /// published. The owner is not yet shared with anyone.
-    ///
-    /// # Errors
-    /// A pending enrollment or a committed room fails its validation.
     pub fn restore(
         store: Arc<dyn Store>,
         authority: NativeAuthorityStorage,
@@ -343,6 +378,44 @@ impl NativeWorkspaceOwner {
     pub fn fence_all(&self) {
         self.0.fence_all();
     }
+    /// Stop holding `room` here: drop this device's replica of it and any
+    /// enrollment into it, with the host's workspace of it in the same
+    /// publication ([`Change::Released`]). A workspace and its room go
+    /// together; the room itself, its governor and its other members are
+    /// untouched. Answers whether the record held the room.
+    ///
+    /// # Errors
+    /// The record cannot be published.
+    pub fn release_room(&self, room: RoomId) -> Result<bool, String> {
+        let _turn = self.0.mutation.lock();
+        let mut next = self.0.authority.read().clone();
+        let held = next.rooms.remove(&room).is_some();
+        let joining = next.pending.remove(&room).is_some();
+        if !held && !joining {
+            return Ok(false);
+        }
+        next.revision = next
+            .revision
+            .checked_add(1)
+            .ok_or("native storage generation exhausted")?;
+        let mut continuity = 0;
+        self.0.publish(&next, Change::Released { room }, &mut || {
+            {
+                let mut current = self.0.current.write();
+                continuity = current
+                    .rooms
+                    .remove(&room)
+                    .map_or(0, |view| view.continuity());
+                current.required.remove(&room);
+                current.denied.remove(&room);
+            }
+            *self.0.authority.write() = next.clone();
+        })?;
+        // Every session of the room ends: its replica is gone. Told once the
+        // publication is over, with no lock of the host's held.
+        self.0.notify(room, continuity);
+        Ok(true)
+    }
     /// Every room with a committed enrollment.
     #[must_use]
     pub fn rooms(&self) -> Vec<RoomId> {
@@ -353,118 +426,13 @@ impl NativeWorkspaceOwner {
         self.0.current.read().required.contains(&room) || self.0.store.uncertain(room)
     }
 
-    /// Canonical task state from the current admitted owner view, never the
-    /// desktop presentation cache.
-    ///
-    /// # Errors
-    /// The room is fenced, absent, or its task-control sidecar is malformed.
-    pub fn workspace_task_snapshot(
-        &self,
-        room: RoomId,
-    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
-        self.with_current(room, |view| {
-            let document = view
-                .peer()
-                .admitted_room()
-                .ok_or("native room has no admitted task document")?;
-            tilo_peer_state::workspace_task::snapshot(document)
-        })
-    }
-
-    /// Result retained by the owner for one device-scoped task invocation.
-    ///
-    /// # Errors
-    /// The room is fenced, absent, or its task-control sidecar is malformed.
-    pub fn workspace_task_result(
-        &self,
-        room: RoomId,
-        id: tilo_peer_state::workspace_task::WorkspaceTaskCommandId,
-    ) -> Result<Option<tilo_desktop_model::WorkspaceTaskMutationResult>, String> {
-        self.with_current(room, |view| {
-            let document = view
-                .peer()
-                .admitted_room()
-                .ok_or("native room has no admitted task document")?;
-            tilo_peer_state::workspace_task::result_of(document, id)
-        })
-    }
-
-    /// Serialize one ordinary agent action admission against task directions.
-    /// The current room read guard is released before `admit` runs, while the
-    /// task mutation turn remains held, so nested policy reads are safe and a
-    /// concurrent direction is ordered wholly before or after this admission.
-    ///
-    /// `applied_direction_revision` is the revision the agent actually planned
-    /// against. It must equal both the active run's acknowledgement and the
-    /// latest durable direction, preventing a delayed pre-direction action from
-    /// entering after a newer direction has been acknowledged.
-    ///
-    /// # Errors
-    /// The room is fenced, the task/run/revision lease is stale, or `admit`
-    /// refuses the ordinary invocation.
-    pub fn with_task_action_admission<T>(
-        &self,
-        room: RoomId,
-        task_id: &str,
-        agent_id: &str,
-        run_epoch: u64,
-        applied_direction_revision: u64,
-        admit: impl FnOnce() -> Result<T, String>,
-    ) -> Result<T, String> {
-        let _turn = self.0.mutation.lock();
-        self.with_current(room, |view| {
-            let document = view
-                .peer()
-                .admitted_room()
-                .ok_or("native room has no admitted task document")?;
-            let snapshot = tilo_peer_state::workspace_task::snapshot(document)?;
-            let task = snapshot
-                .tasks
-                .iter()
-                .find(|task| task.id == task_id)
-                .ok_or("workspace task no longer exists")?;
-            let control = snapshot
-                .controls
-                .get(task_id)
-                .ok_or("workspace task has no execution control")?;
-            let run = control
-                .active_run
-                .as_ref()
-                .ok_or("workspace task has no active run")?;
-            let latest_direction = control
-                .directions
-                .last()
-                .map_or(0, |direction| direction.revision);
-            if task.status != tilo_desktop_model::WorkspaceTaskStatus::InProgress
-                || task.assigned_agent.as_deref() != Some(agent_id)
-                || run.agent_id != agent_id
-                || run.epoch != run_epoch
-                || run.applied_direction_revision != applied_direction_revision
-                || latest_direction != applied_direction_revision
-            {
-                return Err("workspace task action lease is stale".into());
-            }
-            view.peer().workspace().check_task_execution_actor(
-                agent_id,
-                run.approval.as_ref(),
-                std::time::SystemTime::now(),
-            )?;
-            Ok(())
-        })?;
-        admit()
-    }
     /// Store availability only; room authority still requires `with_current`.
-    ///
-    /// # Errors
-    /// The owner is fenced.
     pub fn health(&self) -> Result<(), String> {
         if self.0.current.read().fenced || !self.0.store.healthy() {
             return Err("native owner continuity is fenced".into());
         }
         Ok(())
     }
-    /// # Errors
-    /// The room is fenced or has no committed enrollment, or `read` fails.
     pub fn with_current<T>(
         &self,
         room: RoomId,
@@ -500,6 +468,59 @@ impl NativeWorkspaceOwner {
         drop(current);
         tilo_identity_host::policy_change::announce();
     }
+    /// Move every room whose governor its root revoked to the device the
+    /// root named in its place ([`StatePeer::follow_successions`]), and keep
+    /// the statements with the room so it is restored under the successor.
+    /// Returns the rooms that moved.
+    ///
+    /// # Errors
+    /// A room is fenced, refuses the successor, or cannot be published.
+    pub fn follow_successions(
+        &self,
+        successions: &[tilo_user_identity::GovernorSuccession],
+        now: SystemTime,
+    ) -> Result<Vec<RoomId>, String> {
+        if successions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _turn = self.0.mutation.lock();
+        let rooms: Vec<RoomId> = self
+            .0
+            .current
+            .read()
+            .rooms
+            .iter()
+            .filter(|(_, view)| {
+                tilo_peer_state::succeeded_authority(view.peer.authority(), successions, now)
+                    .is_some()
+            })
+            .map(|(room, _)| *room)
+            .collect();
+        let mut moved = Vec::new();
+        for room in rooms {
+            let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+            if !candidate.peer.follow_successions(successions, now)? {
+                continue;
+            }
+            let root = candidate.record.governor.user_public_key;
+            for succession in successions {
+                if succession.previous.user_public_key == root
+                    && !candidate.record.successions.contains(succession)
+                {
+                    candidate.record.successions.push(succession.clone());
+                }
+            }
+            candidate.record.peer = candidate.peer.durable()?;
+            candidate.record.generation = candidate
+                .record
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            self.publish_room(room, candidate, None)?;
+            moved.push(room);
+        }
+        Ok(moved)
+    }
     /// Admits genuine relay provenance; pending document prerequisites are also durable.
     ///
     /// # Errors
@@ -512,35 +533,44 @@ impl NativeWorkspaceOwner {
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<AdmissionReport, String> {
-        if !matches!(
-            message,
-            NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
-        ) {
-            return Err("native owner admits only workspace state messages".into());
-        }
+        self.receive_batch(room, vec![(origin, message)], now)?
+            .pop()
+            .ok_or_else(|| "native owner admitted no input".to_owned())?
+    }
+    /// Admit `inputs`, in order, into `room` and commit the room once for
+    /// all of them: a host's replay of a busy room is thousands of inputs,
+    /// and committing the room for each one rewrote the whole state file
+    /// thousands of times. Each input is decided on its own, exactly as
+    /// [`Self::receive`] decides it, and its refusal changes nothing; the
+    /// answer is one result per input. Nothing of the batch is observable,
+    /// and no report is returned, before the one commit is durable: when
+    /// it fails, every input fails with it.
+    ///
+    /// # Errors
+    /// The room is fenced, or the batch's commit cannot be published.
+    pub fn receive_batch(
+        &self,
+        room: RoomId,
+        inputs: Vec<(TransportOrigin, NeighbourMsg)>,
+        now: SystemTime,
+    ) -> Result<Vec<Result<AdmissionReport, String>>, String> {
         let _turn = self.0.mutation.lock();
-        if matches!(&message, NeighbourMsg::AppDocument { .. })
-            && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
-            && let Some(report) = self.with_current(room, |view| {
-                let exact = view
-                    .peer
-                    .lookup_exact_document_report(origin, &message, now)
-                    .map_err(|error| error.to_string())?;
-                if exact.is_some() && publication::exact_replay_unchanged(view)? {
-                    Ok(exact)
-                } else {
-                    Ok(None)
-                }
-            })?
-        {
-            return Ok(report);
-        }
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
-        let report = candidate
-            .peer
-            .receive_from_report(origin, message, now)
-            .map_err(|e| e.to_string())?;
         let previous_publication = candidate.record.publication.clone();
+        let mut reports = Vec::with_capacity(inputs.len());
+        for (origin, message) in inputs {
+            reports.push(Self::admit_input(
+                &mut candidate,
+                room,
+                origin,
+                message,
+                now,
+            ));
+        }
+        if reports.iter().all(Result::is_err) {
+            // Every input was refused: nothing changed to commit.
+            return Ok(reports);
+        }
         publication::retire(&mut candidate)?;
         publication::refresh_governance_checkpoint(&mut candidate)?;
         let durable = candidate.peer.durable()?;
@@ -551,7 +581,7 @@ impl NativeWorkspaceOwner {
         // still require publication before they can be observed.
         if durable == candidate.record.peer && candidate.record.publication == previous_publication
         {
-            return Ok(report);
+            return Ok(reports);
         }
         candidate.record.peer = durable;
         candidate.record.generation = candidate
@@ -560,6 +590,42 @@ impl NativeWorkspaceOwner {
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
         self.publish_room(room, candidate, None)?;
+        Ok(reports)
+    }
+    /// Decide one relay input into `candidate`: refused, it changes nothing.
+    fn admit_input(
+        candidate: &mut NativeCommittedView,
+        room: RoomId,
+        origin: TransportOrigin,
+        message: NeighbourMsg,
+        now: SystemTime,
+    ) -> Result<AdmissionReport, String> {
+        if !matches!(
+            message,
+            NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
+        ) {
+            return Err("native owner admits only workspace state messages".into());
+        }
+        if matches!(&message, NeighbourMsg::AppDocument { .. })
+            && !matches!(origin, TransportOrigin::RetainedNativePublication { .. })
+        {
+            let exact = candidate
+                .peer
+                .lookup_exact_document_report(origin, &message, now)
+                .map_err(|error| error.to_string())?;
+            if let Some(exact) = exact
+                && publication::exact_replay_unchanged(candidate)?
+            {
+                return Ok(exact);
+            }
+        }
+        let report = candidate
+            .peer
+            .receive_from_report(origin, message, now)
+            .map_err(|e| e.to_string())?;
+        for dropped in &report.summary().dropped {
+            tracing::warn!(%room, %dropped, "a held app message was let go unapplied");
+        }
         Ok(report)
     }
     /// Caller holds the serialized turn, but readers keep the preceding committed view during I/O.
@@ -621,7 +687,7 @@ impl NativeWorkspaceOwner {
             Change::Room {
                 room,
                 peer: &candidate.peer,
-                bind: enrollment.and_then(|pending| pending.target.as_ref()),
+                into: enrollment.and_then(|pending| pending.target.as_ref()),
             },
             &mut || {
                 let mut current = self.0.current.write();

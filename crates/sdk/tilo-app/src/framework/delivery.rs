@@ -18,10 +18,6 @@ const CONTROL_INVOKE: &str = "tilo.ui.control.invoke";
 /// finish later — or `None` when nothing in the widget answers it.
 pub trait HostDelivery {
     /// Start the encoded operation (`type_id`, `payload`) of `kind`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the widget's refusal or failure.
     fn start_encoded(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -33,10 +29,6 @@ pub trait HostDelivery {
 
     /// Hand back the invocation of the toolkit control `control` (its id,
     /// as its `tilo.control:` resource names it).
-    ///
-    /// # Errors
-    ///
-    /// Returns the widget's refusal or failure.
     fn deliver_control(
         &mut self,
         kind: tilo_actions::OperationKind,
@@ -58,7 +50,8 @@ impl<W: Widget + ?Sized> HostDelivery for W {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<Effected>, String> {
-        let started = self.start_operation(
+        let started = ui_core::host_operation::start_operation(
+            self,
             &ResourceOperation::local(tilo_actions::InvocationId::new(), kind, type_id, payload),
             &mut ui_core::widget::Edits::lend(doc),
             path,

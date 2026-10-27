@@ -68,6 +68,7 @@ pub mod approval;
 pub mod certify;
 pub mod confirm;
 pub mod counter;
+pub mod dual_boot;
 pub mod exec;
 pub mod generation;
 pub mod keyslots;
@@ -76,6 +77,7 @@ pub mod policy;
 pub mod retention;
 pub mod token;
 pub mod tpm_policy;
+pub mod verified;
 
 /// Everything that is a deployment policy rather than a constant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +99,6 @@ pub struct Config {
     /// Device-local PCRs applied after `PolicyAuthorize`. These cannot be part of
     /// a release prediction because their values depend on the machine.
     pub platform_pcrs: Vec<u32>,
-    /// Public half of the PCR-prediction signing key.
     pub pcr_public_key: String,
     /// Public half of the key that authorises floor advances. Defaults to the PCR-prediction
     /// key (same trust domain — the image publisher), but production custody should separate

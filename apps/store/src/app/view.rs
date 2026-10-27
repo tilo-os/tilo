@@ -21,11 +21,10 @@ use ui::framework::TextControl;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::widget::media_card::{MediaAspect, MediaCard, MediaSource};
-use ui::widget::toggle_group::{Segment, ToggleGroup};
 use ui::widget::{
     Actions, Badge, Banner, Button, ButtonRole, CardGrid, ChipStyle, Column, Container,
     ControlSize, EmptyState, Field, Form, FormSection, ListRow, Property, PropertyList, Row,
-    ScrollAxis, Scrollable, Section, SectionHeader, Spinner, Text, TextInput, Widget,
+    ScrollAxis, Scrollable, Section, SectionHeader, Spacer, Spinner, Text, TextInput, Widget,
 };
 
 use super::{
@@ -145,79 +144,10 @@ impl StoreApp {
         Box::new(Text::new(text).with_role(TextRole::Body).dimmed())
     }
 
-    // ---- the catalogue's chrome ----
-
-    /// The catalogue's actions in the window's header row: review a package
-    /// file, the Flatpak remotes and trust. Search is the window's filter
-    /// field; the catalogue refreshes itself.
-    pub(super) fn catalogue_actions() -> Vec<Element> {
-        let mut remotes = Button::icon_only(
-            "store.remotes",
-            Icon::Globe,
-            &ui::i18n!("store-remotes-title"),
-        );
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowRemotes) {
-            remotes = remotes.on_action(binding);
-        }
-        let mut trust = Button::icon_only(
-            "store.safety",
-            Icon::Shield,
-            &ui::i18n!("store-trust-title"),
-        );
-        if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
-            trust = trust.on_action(binding);
-        }
-        let mut import = Button::icon_only(
-            "store.package.import",
-            Icon::Upload,
-            &ui::i18n!("store-package-review"),
-        );
-        if let Some(binding) = bindings::effect(&StoreEffect::ImportPackage {
-            path: None,
-            content: None,
-            reported_size: None,
-        }) {
-            import = import.on_action(binding);
-        }
-        vec![Box::new(import), Box::new(remotes), Box::new(trust)]
-    }
-
-    /// The four parts of the Store, as one segmented control at the top of
-    /// every catalogue view. Updates carries how many there are.
-    fn view_switcher(&self) -> Element {
-        let updates = self.update_ids().len();
-        let updates_label = if updates == 0 {
-            ui::i18n!("store-view-updates")
-        } else {
-            ui::i18n!("store-view-updates-count", "count" => ui::format::count(updates as u64))
-        };
-        let selected = match &self.view {
-            View::Home | View::Category(_) | View::Repository(_) => 0,
-            View::Updates => 1,
-            View::Installed => 2,
-            View::Bots => 3,
-        };
-        let mut switcher = ToggleGroup::new(
-            vec![
-                Segment::new(ui::i18n!("store-view-home")),
-                Segment::new(updates_label),
-                Segment::new(ui::i18n!("store-view-installed")),
-                Segment::new(ui::i18n!("store-view-bots")),
-            ],
-            selected,
-        )
-        .with_id("store.views")
-        .with_accessible_name(ui::i18n!("store-views-label"));
-        if let Some(binding) = bindings::view() {
-            switcher = switcher.on_action(binding);
-        }
-        Box::new(switcher)
-    }
-
-    /// The top of every catalogue view: the switcher, then a running
-    /// operation or a failure.
+    /// The top of every catalogue view: a running operation or a failure.
+    /// The view switcher is the window bar's ([`super::window_bar`]).
     fn catalogue_top(&self) -> Vec<Element> {
-        let mut top = vec![self.view_switcher()];
+        let mut top = Vec::new();
         if !self.items.is_empty()
             && let Some(notice) = self.operation_notice()
         {
@@ -251,6 +181,19 @@ impl StoreApp {
                     )),
             ));
         }
+        if let Some(name) = self.expired_repositories.first() {
+            // While a repository's catalogue is expired nothing from it can be
+            // installed or updated, so that is the one thing to say.
+            let mut refresh = Button::new("store.error.refresh", &ui::i18n!("store-error-refresh"));
+            if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
+                refresh = refresh.on_action(binding);
+            }
+            return Some(Box::new(
+                Banner::warning(ui::i18n!("store-catalogue-expired-title", "name" => name.clone()))
+                    .with_message(ui::i18n!("store-catalogue-expired", "name" => name.clone()))
+                    .with_action(refresh),
+            ));
+        }
         let source_error = self
             .remotes
             .iter()
@@ -272,8 +215,6 @@ impl StoreApp {
         })
     }
 
-    // ---- an app in a list ----
-
     /// The one action an app offers from a list or its page.
     pub(super) fn primary(&self, item: &StoreItem) -> Primary {
         let action = item.action_kind(self.flatpak_available);
@@ -290,16 +231,19 @@ impl StoreApp {
             }),
             label,
             binding: bindings::package(item, action),
-            enabled: unavailable.is_none() && (self.active_operation.is_none() || busy),
+            // One operation no longer freezes the Store: jobs are concurrent
+            // by construction, and each has its own row.
+            enabled: unavailable.is_none(),
             progress: busy.then(|| progress_label(action, &item.name)),
         }
     }
 
-    /// An app as a card, opening its page.
+    /// An app as a card, opening its page. An app not built for this device
+    /// offers no action; its card says it is not available here.
     fn card(&self, item: &StoreItem) -> Element {
         app_widget::card(
             item,
-            self.primary(item),
+            (!item.not_built_for_this_device()).then(|| self.primary(item)),
             bindings::show_details(item),
             self.images.as_ref(),
         )
@@ -318,10 +262,36 @@ impl StoreApp {
 
     /// An app as a row whose end is its one action.
     fn action_row(&self, item: &StoreItem, meta: Option<String>) -> Element {
-        let primary = self
+        if item.not_built_for_this_device() {
+            // Nothing to offer: the row says it is not available here, and
+            // its page says why.
+            return self.row(item, None, meta);
+        }
+        let primary: Element = self
             .primary(item)
             .control(ControlSize::Small, ButtonRole::Secondary);
-        self.row(item, Some(primary), meta)
+        // Removing five apps is five rows, not five pages: an installed app
+        // carries its own remove beside its one action (the system's own
+        // Uninstall, which asks first).
+        let controls: Element = if item.installed.is_installed() {
+            let remove = Button::icon_only(
+                &format!("store.remove.{}", item.id),
+                Icon::Trash2,
+                &ui::i18n!("store-action-remove"),
+            )
+            .control_size(ControlSize::Small)
+            .on_action(bindings::uninstall(item));
+            Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_rhythm(ui::tokens::Rhythm::Related)
+                    .push(Box::new(remove))
+                    .push(primary),
+            )
+        } else {
+            primary
+        };
+        self.row(item, Some(controls), meta)
     }
 
     /// The items `ids` name, in that order, skipping any no longer listed.
@@ -340,7 +310,6 @@ impl StoreApp {
         })
     }
 
-    /// Show more, when `total` is more than a list shows.
     fn show_more(&self, total: usize) -> Option<Element> {
         (total > self.shown).then(|| {
             let mut more =
@@ -351,8 +320,6 @@ impl StoreApp {
             Box::new(Actions::new(more)) as Element
         })
     }
-
-    // ---- Discover ----
 
     /// Home: Updates when there are any, Tilo's apps and Flathub's popular
     /// ones, the recently updated, and the categories. Real content only; a
@@ -455,10 +422,8 @@ impl StoreApp {
                 .take(self.shown)
                 .map(|item| self.card(item))
                 .collect();
-            children.push(Box::new(
-                Section::new(vec![Box::new(CardGrid::new(cards))])
-                    .with_header(SectionHeader::heading(self.page_title()).count(ids.len())),
-            ));
+            // The window bar's location names the repository.
+            children.push(Box::new(Section::new(vec![Box::new(CardGrid::new(cards))])));
             children.extend(self.show_more(ids.len()));
         }
         self.page(theme, Measure::Catalogue, true, children)
@@ -472,6 +437,24 @@ impl StoreApp {
             Some(home) => catalogue::keep_order(&home.updates, &fresh),
             None => fresh,
         }
+    }
+
+    /// The empty state for a catalogue that couldn't be read, if it
+    /// couldn't. An expired catalogue is named as such: nothing is wrong with
+    /// the connection, and installed apps keep working.
+    fn catalogue_failure(&self) -> Option<EmptyState> {
+        if let Some(name) = self.expired_repositories.first() {
+            return Some(EmptyState::error(
+                ui::i18n!("store-catalogue-expired-title", "name" => name.clone()),
+                ui::i18n!("store-catalogue-expired", "name" => name.clone()),
+            ));
+        }
+        self.catalogue_unreachable().map(|error| {
+            EmptyState::error(
+                ui::i18n!("store-offline-title"),
+                visible_operation_status(error),
+            )
+        })
     }
 
     /// Why the catalogue couldn't be read, if it couldn't.
@@ -490,13 +473,9 @@ impl StoreApp {
         if ids.is_empty() {
             // Without the catalogue nobody knows whether updates wait:
             // "Every app is up to date" would be a guess.
-            let state = match self.catalogue_unreachable() {
-                Some(error) => EmptyState::error(
-                    ui::i18n!("store-offline-title"),
-                    visible_operation_status(error),
-                ),
-                None => EmptyState::new(ui::i18n!("store-updates-none")),
-            };
+            let state = self
+                .catalogue_failure()
+                .unwrap_or_else(|| EmptyState::new(ui::i18n!("store-updates-none")));
             children.push(Box::new(state));
             return self.page(theme, Measure::Catalogue, true, children);
         }
@@ -542,9 +521,22 @@ impl StoreApp {
             .iter()
             .map(|item| self.action_row(item, Some(device_meta(item))))
             .collect();
-        children.push(Box::new(Section::new(rows).with_header(
-            SectionHeader::heading(ui::i18n!("store-view-installed")).count(here.len()),
-        )));
+        let bytes: u64 = here
+            .iter()
+            .filter_map(|item| item.versions.first().map(|version| version.size_bytes))
+            .fold(0, u64::saturating_add);
+        let heading = if bytes > 0 {
+            ui::i18n!(
+                "store-installed-total",
+                "count" => here.len().to_string(),
+                "size" => format_size(bytes)
+            )
+        } else {
+            ui::i18n!("store-view-installed")
+        };
+        children.push(Box::new(
+            Section::new(rows).with_header(SectionHeader::heading(heading).count(here.len())),
+        ));
         self.page(theme, Measure::Catalogue, true, children)
     }
 
@@ -638,38 +630,31 @@ impl StoreApp {
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// The catalogue has nothing to show: loading, offline or empty. One
+    /// The catalogue has nothing to show: on its way, offline or empty. One
     /// sentence and at most one action.
     fn empty_catalogue(&self) -> Element {
         if self.worker_busy && self.items.is_empty() {
+            // The catalogue on its way: the framework's placeholder, in the
+            // shape of the cards it brings.
             return Box::new(
-                Row::new()
-                    .with_rhythm(ui::tokens::Rhythm::Sibling)
-                    .with_align_items(taffy::AlignItems::Center)
-                    .push(Box::new(Spinner::new()))
-                    .push(Box::new(
-                        Text::new(&ui::i18n!("store-loading")).with_role(TextRole::Body),
-                    )),
+                self.catalogue_read
+                    .view(|()| -> Element { Box::new(Spacer::new()) })
+                    .shaped(ui::widget::SkeletonShape::Media(MediaAspect::Square)),
             );
         }
-        let empty = if let Some(error) = self.catalogue_unreachable() {
-            EmptyState::error(
-                ui::i18n!("store-offline-title"),
-                visible_operation_status(error),
-            )
-        } else {
-            EmptyState::new(ui::i18n!("store-empty-title"))
-                .with_message(ui::i18n!("store-empty-help"))
-        }
-        .with_action(ui::i18n!("store-error-refresh"))
-        .with_action_id("store.empty.refresh");
+        let empty = self
+            .catalogue_failure()
+            .unwrap_or_else(|| {
+                EmptyState::new(ui::i18n!("store-empty-title"))
+                    .with_message(ui::i18n!("store-empty-help"))
+            })
+            .with_action(ui::i18n!("store-error-refresh"))
+            .with_action_id("store.empty.refresh");
         Box::new(match bindings::effect(&StoreEffect::Refresh) {
             Some(binding) => empty.on_action(binding),
             None => empty,
         })
     }
-
-    // ---- an app's page ----
 
     /// The page of the focused app: who makes it and what it is, its one
     /// action, its screenshots, what it does and what changed, its facts and
@@ -827,6 +812,15 @@ impl StoreApp {
             // A blocked app cannot be opened or installed from here; its
             // notice says who blocked it.
             return Box::new(Row::new());
+        }
+        if let Some(reason) = item.not_built_for_this_device_reason() {
+            // No build runs on this processor: say so and why, in place of
+            // an action that could only fail.
+            return Box::new(
+                Banner::info(ui::i18n!("store-not-for-this-device"))
+                    .with_message(reason)
+                    .with_id(format!("store.detail.{}.not-for-this-device", item.id)),
+            );
         }
         let imported = self
             .imported_review
@@ -1278,8 +1272,6 @@ impl StoreApp {
         ))
     }
 
-    // ---- component repair ----
-
     /// Optional payloads never download just because a Browser link was opened.
     fn build_runtime_recovery(&self, theme: &Theme) -> Element {
         use crate::runtime_recovery::Phase;
@@ -1367,8 +1359,6 @@ impl StoreApp {
         }
         self.page(theme, Measure::Reading, false, children)
     }
-
-    // ---- trust and moderation ----
 
     /// Reports the person has drafted, how decisions work, and what a
     /// signature does and does not promise.
@@ -1505,8 +1495,6 @@ impl StoreApp {
         })
     }
 
-    // ---- flatpak remotes ----
-
     /// Flatpak repositories: the form that adds one and the list of those
     /// configured on this machine.
     pub(super) fn build_remotes(&self, theme: &Theme) -> Element {
@@ -1515,10 +1503,6 @@ impl StoreApp {
         if let Some(binding) = bindings::add_remote(&self.remote_name_state, &self.remote_url_state)
         {
             add = add.on_action(binding);
-        }
-        let mut refresh = Button::new("store.remote.refresh", &ui::i18n!("store-remote-refresh"));
-        if let Some(binding) = bindings::effect(&StoreEffect::RefreshRemotes) {
-            refresh = refresh.on_action(binding);
         }
         let form = Form::new()
             .section(
@@ -1541,7 +1525,7 @@ impl StoreApp {
                         .with_help(ui::i18n!("store-remote-url-help")),
                     ),
             )
-            .with_actions(Actions::new(add).secondary(refresh));
+            .with_actions(Actions::new(add));
 
         let rows: Vec<Element> = self
             .remotes
@@ -1642,6 +1626,14 @@ fn update_meta(item: &StoreItem) -> String {
 
 /// An installed app's row meta in On this device: whether it is kept.
 fn device_meta(item: &StoreItem) -> String {
+    // What it costs on this device is the question after "can I install
+    // it": the size stands where the row's value stands, and the state the
+    // source gives it when no size is known.
+    if let Some(bytes) = item.versions.first().map(|version| version.size_bytes)
+        && bytes > 0
+    {
+        return format_size(bytes);
+    }
     match (&item.source, &item.installed) {
         (
             StoreSource::Tilo { .. },

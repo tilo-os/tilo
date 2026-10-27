@@ -16,7 +16,6 @@ use tilo_desktop_model::commands::{
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{IdMinter, TileContent, shared_record};
 
-/// One view to put on the desk.
 pub(crate) struct View<'a> {
     pub app_id: &'a str,
     pub title: &'a str,
@@ -129,6 +128,7 @@ mod tests {
                 label: app.into(),
                 note: String::new(),
             },
+            app_title: None,
         }
     }
 

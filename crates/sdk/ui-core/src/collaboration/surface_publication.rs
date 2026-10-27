@@ -9,6 +9,7 @@
 //! fields that are its own and the template of its actions.
 
 use std::collections::{HashMap, HashSet};
+use tilo_sort::CompactSort as _;
 
 use runtime_collab::{ExportedAction, ShapeId, SurfaceDelta, SurfaceResource};
 use tilo_actions::ActionDescriptor;
@@ -132,7 +133,7 @@ impl SurfacePublication {
             .filter(|name| !resources.contains_key(*name))
             .cloned()
             .collect();
-        delta.removed.sort();
+        delta.removed.compact_sort();
         (
             delta,
             Self {

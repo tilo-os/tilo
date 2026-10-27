@@ -43,7 +43,6 @@ RETIRED_SOURCE_ROOTS = {
     "tools/check_changed_rust_allows.py": "tools/ci/check_changed_rust_allows.py",
     "tools/check_": "tools/policy/check_",
     "tools/ci-": "tools/ci/",
-    "tools/ci/select.py": "tools/ci/affected_packages.py",
     "tools/ci_": "tools/ci/",
     "tools/clippy-": "tools/ci/clippy-",
     "tools/gstreamer-licenses/": "tools/windows/gstreamer-licenses/",
@@ -60,20 +59,14 @@ RETIRED_SOURCE_ROOTS = {
     "ui/": "crates/sdk/ui-core/",
 }
 
-# These application tools are deployed outside candidate checkouts by exact
-# reviewed path. Their paths are part of app_packaging_product.REQUIRED_PATHS
-# and retained qualification evidence, so moving them requires a coordinated
-# controller/policy migration. This is a closed exception, not a precedent for
-# adding more application code to the tools root.
+# release-apps.yml fetches these application tools by exact reviewed path and
+# digest, so moving them means moving those pins with them. This is a closed
+# exception, not a precedent for adding more application code to the tools root.
 ROOT_APPLICATION_CONTROLLER_FILES = frozenset(
     {
-        "tools/accept_app_artifacts.py",
         "tools/app_packaging_contract.py",
-        "tools/app_packaging_coordinator.py",
         "tools/app_packaging_plan.py",
-        "tools/app_packaging_product.py",
         "tools/app_packaging_qualification.py",
-        "tools/app_packaging_service.py",
         "tools/assemble_verified_apps.py",
         "tools/canonical_verifier_bundle.py",
     }

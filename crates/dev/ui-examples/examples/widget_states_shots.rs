@@ -53,7 +53,6 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::time::Duration;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use tilo_ui::widget::toast::ToastKind;
 use tilo_ui::widget::toggle_group::{Segment, SegmentedStyle};
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::tree_view::TreeNode;
@@ -237,6 +236,15 @@ fn control_specs() -> Vec<Spec> {
         widget("Button, plain", 56.0, |c, _| {
             button(ButtonRole::Plain, "Details", c)
         }),
+        widget("Menu button", 56.0, |c, _| match c.st {
+            St::Selected | St::Error => None,
+            st => boxed(
+                Button::new("menu", "Editor")
+                    .control_size(c.size)
+                    .with_enabled(st != St::Disabled)
+                    .with_menu(Vec::new()),
+            ),
+        }),
         widget("Key", 56.0, |c, _| match c.st {
             St::Error => None,
             st => boxed(
@@ -339,6 +347,21 @@ fn control_specs() -> Vec<Spec> {
                 .control_size(c.size),
             ),
         }),
+        // Past their room, tabs take their short labels before they scroll.
+        filling("Tabs, short labels", 56.0, |c, _| match c.st {
+            St::Error | St::Disabled => None,
+            _ => boxed(
+                ToggleGroup::new(
+                    [("Privacy & Security", "Privacy"), ("Apps & Files", "Apps")]
+                        .iter()
+                        .map(|(tab, short)| Segment::new(*tab).short(*short))
+                        .collect(),
+                    usize::from(c.st == St::Selected),
+                )
+                .with_style(SegmentedStyle::Tabs)
+                .control_size(c.size),
+            ),
+        }),
         widget("Chip", 56.0, |c, _| match c.st {
             St::Disabled | St::Error => None,
             st => boxed(
@@ -376,7 +399,42 @@ fn control_specs() -> Vec<Spec> {
             }
             _ => None,
         }),
+        face("Colour swatch", 48.0, |ctx, rect, col| {
+            swatch_states(ctx, rect, col, |r| {
+                tilo_ui::widget::ColorSwatchFace::new(
+                    r,
+                    vello::peniko::Color::from_rgb8(0x3b, 0x6f, 0xd4),
+                    "Blue",
+                )
+            });
+        }),
+        face("Colour swatch, none", 48.0, |ctx, rect, col| {
+            swatch_states(ctx, rect, col, |r| {
+                tilo_ui::widget::ColorSwatchFace::none(r, "No colour")
+            });
+        }),
     ]
+}
+
+/// A colour swatch of the default size, at the start of `rect`, in `col`'s
+/// state; it has no disabled or error state.
+fn swatch_states(
+    ctx: &mut PaintCtx<'_>,
+    rect: Rect,
+    col: Col,
+    face: impl Fn(Rect) -> tilo_ui::widget::ColorSwatchFace,
+) {
+    if matches!(col.st, St::Disabled | St::Error) {
+        return;
+    }
+    let side = col.size.height(ctx.theme);
+    let cell = centred(rect, side);
+    let swatch = Rect::from_origin_size(cell.origin(), (side * 1.6, side));
+    face(swatch)
+        .selected(col.st == St::Selected)
+        .hovered(matches!(col.st, St::Hover | St::Pressed))
+        .focused(col.st == St::Focused)
+        .paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
 }
 
 fn size_specs() -> Vec<Spec> {
@@ -1445,7 +1503,7 @@ fn content_blocks() -> Vec<Block> {
                 Box::new(StatTile::new("Uptime", "99.9").unit("%")),
             ]))
         }),
-        block("Media", 600.0, 340.0, |_| {
+        block("Media", 600.0, 700.0, |_| {
             Box::new(MediaGrid::new(vec![
                 MediaCard::new("a", MediaSource::Image(art().clone()))
                     .title("Coastline")
@@ -1486,7 +1544,7 @@ fn content_blocks() -> Vec<Block> {
         block("Error", 380.0, 220.0, |_| {
             Box::new(EmptyState::error(
                 "Could not load messages",
-                "The server did not answer.",
+                "The server did not answer. Check the connection and try again in a moment.",
             ))
         }),
         block("Loading", 380.0, 220.0, |_| {
@@ -1494,7 +1552,11 @@ fn content_blocks() -> Vec<Block> {
                 Column::new()
                     .with_no_padding()
                     .with_gap(16.0)
-                    .push(Box::new(Skeleton::row()))
+                    .push(Box::new(Skeleton::row(
+                        tilo_ui::widget::RowShape::TITLE
+                            .led_by(tilo_ui::widget::RowLeadingShape::Avatar)
+                            .with_secondary(1),
+                    )))
                     .push(Box::new(Skeleton::text(3)))
                     .push(Box::new(Spinner::new())),
             )
@@ -1564,54 +1626,6 @@ impl Widget for TooltipProbe {
     }
     fn get_rect(&self) -> Rect {
         self.anchor
-    }
-}
-
-/// A transient toast painted in the main pass, inside the page's cached
-/// columns, as a painted app paints one: its material blurs the photograph
-/// through the subtree caches.
-struct ToastProbe {
-    area: Rect,
-}
-
-impl Widget for ToastProbe {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        _nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy
-            .new_leaf(taffy::Style::default())
-            .unwrap_or_else(|_| NodeId::new(0))
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        tilo_ui::widget::toast::paint_transient(
-            scene,
-            transform,
-            tr,
-            theme,
-            self.area,
-            tilo_ui::widget::toast::ToastAnchor::BottomRight,
-            &tilo_ui::widget::toast::ToastCard::new(
-                "Copied link to Quarterly report",
-                ToastKind::Success,
-            )
-            .closable(true),
-        );
-    }
-    fn name(&self) -> &'static str {
-        "ToastProbe"
-    }
-    fn get_rect(&self) -> Rect {
-        self.area
     }
 }
 
@@ -1788,9 +1802,6 @@ fn overlays(theme: &Theme, out: &Path, viewport: (u32, u32)) {
             label: "Share this report",
         }));
     }
-    let root = root.push(Box::new(ToastProbe {
-        area: Rect::new(24.0, 24.0, width - 24.0, 324.0),
-    }));
     let mut harness =
         FrameHarness::new_with_theme(State::new(), Box::new(root), viewport, theme.clone());
     harness.settle_for_capture(SETTLE);

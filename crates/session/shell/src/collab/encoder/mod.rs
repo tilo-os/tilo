@@ -11,6 +11,8 @@
 //! ([`media::realtime::negotiate`]) and the HDR config; a codec no local
 //! element can encode reports [`EncoderError::Unavailable`].
 
+pub mod nv12;
+
 use crate::collab::colorimetry::Colorimetry;
 use crate::collab::hdr_metadata::{Hdr10Metadata, HdrConfig};
 use crate::config::EncoderChoice;
@@ -80,7 +82,6 @@ impl EncoderKind {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FrameStats {
     pub encode_wallclock: Duration,
-    /// Was this frame a keyframe?
     pub keyframe: bool,
     /// Bytes emitted for this frame.
     pub bytes: usize,
@@ -120,6 +121,12 @@ impl std::error::Error for EncoderError {}
 pub enum FrameInput<'a> {
     /// Row-major RGBA, `width * height * 4` bytes, no padding.
     Rgba(&'a [u8]),
+    /// As [`Self::Rgba`], differing from the frame encoded before it only
+    /// within `changed`.
+    RgbaChanged {
+        rgba: &'a [u8],
+        changed: &'a [nv12::Region],
+    },
     /// DMABUF fds + per-plane offsets/strides. Imported without a copy when
     /// the element can read the layout (VA-API through `vapostproc`);
     /// otherwise refused with [`EncoderError::EncodeFailed`] so the caller
@@ -193,7 +200,6 @@ pub struct EncoderInit {
 }
 
 impl EncoderInit {
-    /// An SDR configuration for `codec`.
     pub const fn sdr(
         codec: Codec,
         width: u32,
@@ -313,6 +319,13 @@ fn hdr_metadata(m: Hdr10Metadata) -> HdrStaticMetadata {
     }
 }
 
+/// Whether frames for `init` are converted to NV12 here: an SDR stream in
+/// limited-range BT.709, the colour [`nv12::Nv12Frame`] converts into.
+fn converts_here(init: &EncoderInit) -> bool {
+    let colour = colour(init.colorimetry);
+    !init.dmabuf_input && init.hdr.is_none() && colour.matrix == 1 && !colour.full_range
+}
+
 /// The media stack's configuration for `init` under `choice`.
 fn media_config(init: &EncoderInit, choice: EncoderChoice) -> EncoderConfig {
     // 4:2:0 encoders need even dimensions; an odd surface is encoded without
@@ -325,10 +338,13 @@ fn media_config(init: &EncoderInit, choice: EncoderChoice) -> EncoderConfig {
     );
     config.bitrate_bps = u64::from(init.bitrate_kbps).saturating_mul(1000);
     config.keyframe_interval = init.keyframe_interval_secs.saturating_mul(init.fps.max(1));
-    // Captures are 8-bit RGB either way; a 10-bit encoder receives them
-    // converted into its stream colour by the pipeline.
+    // Captures are 8-bit RGB. An SDR BT.709 stream is handed NV12 converted
+    // here, where only what changed is converted; any other stream colour
+    // is converted by the pipeline.
     config.input = if init.dmabuf_input {
         InputFormat::Bgrx
+    } else if converts_here(init) {
+        InputFormat::Nv12
     } else {
         InputFormat::Rgba
     };
@@ -336,7 +352,6 @@ fn media_config(init: &EncoderInit, choice: EncoderChoice) -> EncoderConfig {
     config.output_size = init.output.map(|(width, height)| (width & !1, height & !1));
     config.color = colour(init.colorimetry);
     config.hdr = init.hdr.map(hdr_metadata);
-    config.screen_content = true;
     config.policy = choice.policy();
     config
 }
@@ -400,6 +415,8 @@ pub struct GstEncoder {
     init: EncoderInit,
     /// RGBA frames swizzled for a `BGRx`-configured (dmabuf-capable) encoder.
     swizzle: Vec<u8>,
+    /// The window as the NV12 frame the encoder takes, where it takes one.
+    nv12: Option<nv12::Nv12Frame>,
     origin: Instant,
 }
 
@@ -426,11 +443,15 @@ impl GstEncoder {
             dmabuf = inner.accepts_dmabuf(),
             "shared-surface encoder selected"
         );
+        let config = inner.config();
+        let nv12 = (config.input == InputFormat::Nv12)
+            .then(|| nv12::Nv12Frame::new(config.width, config.height, init.width));
         Ok(Self {
             inner,
             kind,
             init,
             swizzle: Vec::new(),
+            nv12,
             origin: Instant::now(),
         })
     }
@@ -472,7 +493,11 @@ impl Encoder for GstEncoder {
         // is what rate control needs; frames can arrive at any cadence.
         let pts = self.origin.elapsed();
         let units = match input {
-            FrameInput::Rgba(rgba) => {
+            FrameInput::Rgba(rgba) | FrameInput::RgbaChanged { rgba, .. } => {
+                let changed = match input {
+                    FrameInput::RgbaChanged { changed, .. } => Some(changed),
+                    _ => None,
+                };
                 let expected = (self.init.width as usize)
                     .saturating_mul(self.init.height as usize)
                     .saturating_mul(4);
@@ -487,7 +512,10 @@ impl Encoder for GstEncoder {
                 let config = self.inner.config();
                 let bgrx = config.input == InputFormat::Bgrx;
                 let cropped = (config.width, config.height) != (self.init.width, self.init.height);
-                if bgrx || cropped {
+                let frame = if let Some(nv12) = self.nv12.as_mut() {
+                    nv12.update(rgba, changed);
+                    nv12.bytes()
+                } else if bgrx || cropped {
                     // 4:2:0 encoders take even dimensions, so an odd-sized
                     // surface loses its last row/column; the dmabuf-capable
                     // pipeline takes BGRx, so a readback frame is swizzled.
@@ -498,14 +526,13 @@ impl Encoder for GstEncoder {
                         bgrx,
                         &mut self.swizzle,
                     );
-                    self.inner
-                        .encode(InputFrame::Packed(&self.swizzle), pts)
-                        .map_err(|e| failed(e.to_string()))?
+                    &self.swizzle
                 } else {
-                    self.inner
-                        .encode(InputFrame::Packed(rgba), pts)
-                        .map_err(|e| failed(e.to_string()))?
-                }
+                    rgba
+                };
+                self.inner
+                    .encode(InputFrame::Packed(frame), pts)
+                    .map_err(|e| failed(e.to_string()))?
             }
             FrameInput::DmabufFd {
                 plane_fds,
@@ -568,6 +595,9 @@ impl Encoder for GstEncoder {
         Ok(stats)
     }
 }
+
+#[cfg(test)]
+mod cost_tests;
 
 #[cfg(test)]
 #[allow(

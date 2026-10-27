@@ -3,7 +3,8 @@
 #
 #   RUNNER='./os/dev/vm.sh ssh' SUDO_PASS=tilo \
 #   RESET='./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk "$TILO_DISK"' \
-#   FAULT=greetd|greeter \
+#   SERIAL='./os/dev/vm.sh serial' \
+#   FAULT=greetd|greeter|unlock \
 #     ./os/tests/boot_assessment_rollback.sh STAGE_IMAGE [OUT_DIR]
 #
 # RUNNER runs one shell command line in the booted guest (`vm.sh ssh`, an ssh
@@ -14,6 +15,8 @@
 # runs on the host every few seconds while a rebooted guest does not answer yet:
 # an installed system's encrypted root waits for its passphrase at every boot
 # (UNLOCK types it once the prompt is on screen, e.g. with `vm.sh type -`).
+# SERIAL, if set, prints the guest's console log; each boot that never answers
+# keeps it as evidence of where it stopped.
 #
 # STAGE_IMAGE is what `bootc switch` stages: any bootable image other than the
 # booted one that this machine's policy accepts (an immutable tilo-vm digest on
@@ -39,15 +42,26 @@
 #                 and goes while systemd restarts greetd every few seconds: the
 #                 shape of an update that breaks the GPU stack, cage or the
 #                 greeter, and the one a check of `greetd is active` blesses.
-#      Each of its boots spends a try: tilo-boot-health.service fails,
-#      systemd-bless-boot leaves the counter, and the boot loader decrements it.
-#      While a broken boot is up, its own boot-entry pass puts the previous
-#      deployment on trial as well.
+#        unlock   the staged deployment's boot stops in the initrd at a disk
+#                 unlock prompt that nobody answers, and the machine is
+#                 power-cycled there (RESET): the shape of an update whose
+#                 keyboard is dead at the unlock prompt. On a kernel/initrd
+#                 entry (a dev disk) the prompt is added to that entry's
+#                 command line, a plain dm-crypt mapping of the root
+#                 filesystem's device that is never opened; on a sealed UKI entry the
+#                 fault is UNLOCK not being run for the staged deployment's
+#                 boots, so its real encrypted root waits.
+#      Each of its boots spends a try: tilo-boot-health.service fails (or, at
+#      the unlock prompt, nothing runs at all), systemd-bless-boot leaves the
+#      counter, and the boot loader decrements it. While a broken boot is up,
+#      its own boot-entry pass puts the previous deployment on trial as well.
 #   4. After exactly as many failed boots as it had tries, the boot loader
-#      starts the previous deployment by itself. Nothing runs a rollback
-#      command. The used-up entry stays on the ESP, and the deployment that
-#      came back reaches its greeter, passes its health check and is blessed
-#      (systemd-bless-boot renames its entry on the read-only ESP).
+#      starts the previous deployment by itself. The used-up entry stays on the
+#      ESP, and the deployment that came back reaches its greeter, passes its
+#      health check and is blessed (systemd-bless-boot renames its entry on the read-only ESP).
+#   5. On an image with tilo-boot-fallback.service, the deployment that came
+#      back is bootc's default again (no rollbackQueued) and a report of the
+#      failed deployment, with its spent tries, is under /var/lib/tilo/boot-fallback.
 #
 # Entries are matched to deployments by the composefs identity they boot, never
 # by file name: bootc renumbers every entry when it stages one.
@@ -62,6 +76,9 @@ RUNNER="${RUNNER:-}"
 SUDO_PASS="${SUDO_PASS:-}"
 RESET="${RESET:-}"
 UNLOCK="${UNLOCK:-}"
+SERIAL="${SERIAL:-}"
+# How long a staged boot is left at its unlock prompt before the power-cycle.
+HANG_TIMEOUT="${HANG_TIMEOUT:-150}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-420}"
 # Above tilo-boot-health's own wait for a greeter (180 s, then a 20 s hold), so
 # the verdict on a broken boot is the health check's and not this timeout's.
@@ -74,7 +91,8 @@ FAULT_CONFIG=/etc/greetd/boot-assessment-fault.toml
 
 [ -n "$RUNNER" ] || { echo "set RUNNER to a command that runs a shell line in the guest" >&2; exit 2; }
 [ -n "$STAGE_IMAGE" ] || { echo "usage: $0 STAGE_IMAGE [OUT_DIR]" >&2; exit 2; }
-case "$FAULT" in greetd|greeter) ;; *) echo "FAULT must be greetd or greeter, not '$FAULT'" >&2; exit 2 ;; esac
+case "$FAULT" in greetd|greeter|unlock) ;; *) echo "FAULT must be greetd, greeter or unlock, not '$FAULT'" >&2; exit 2 ;; esac
+[ "$FAULT" != unlock ] || [ -n "$RESET" ] || { echo "FAULT=unlock power-cycles boots that wait at their unlock prompt: set RESET" >&2; exit 2; }
 mkdir -p "$OUT"
 
 step() { printf '\n=== %s\n' "$*" >&2; }
@@ -135,12 +153,12 @@ entry_for() {
   printf '%s\n' "$hits"
 }
 
-wait_reachable() {
-  local old="$1" deadline=$(( $(date +%s) + BOOT_TIMEOUT )) id
+wait_reachable() {  # OLD-BOOT-ID [TIMEOUT [UNLOCK]]
+  local old="$1" deadline=$(( $(date +%s) + ${2:-$BOOT_TIMEOUT} )) unlock="${3-$UNLOCK}" id
   while [ "$(date +%s)" -lt "$deadline" ]; do
     id="$(boot_id)"
     if [ -n "$id" ] && [ "$id" != "$old" ]; then printf '%s\n' "$id"; return 0; fi
-    [ -z "$UNLOCK" ] || bash -c "$UNLOCK" >&2 || true
+    [ -z "$unlock" ] || bash -c "$unlock" >&2 || true
     sleep 3
   done
   return 1
@@ -305,7 +323,33 @@ ok "the staged entry carries a try counter before the reboot: $NEXT/$B_FILE (the
 
 # --- 3. the staged deployment cannot reach the greeter --------------------------------
 step "make only the staged deployment unable to reach the greeter ($FAULT)"
-if [ "$FAULT" = greetd ]; then
+UNLOCK_INJECTED=no
+if [ "$FAULT" = unlock ]; then
+  # The staged entry's own command line, edited in a private mount namespace
+  # with the ESP's superblock writable only for the edit.
+  fault_script='set -eu
+esp="$1" file="$2"
+if grep -q "^uki[[:space:]]" "$file" || ! grep -q "^options[[:space:]]" "$file"; then echo sealed; exit 0; fi
+# The prompt is keyed to the UUID of the root filesystem, as the entry names it:
+# systemd-cryptsetup takes per-device options only for a full 128-bit UUID,
+# which a FAT serial is not, and without them it reads the device as LUKS,
+# fails at once and lets the boot go on.
+uuid="$(grep "^options[[:space:]]" "$file" | tr " \t" "\n\n" | sed -n "s/^root=UUID=//p" | head -1)"
+printf "%s" "$uuid" | grep -Eqx "[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}" \
+  || { echo "the staged entry names no root=UUID= to key the prompt to" >&2; exit 1; }
+unshare -m sh -c "mount -o remount,rw \"\$1\" && sed -i \"/^options[[:space:]]/s/\\\$/ rd.luks.name=\$3=tilo-unlock-fault rd.luks.options=\$3=plain/\" \"\$2\"; rc=\$?; mount -o remount,ro \"\$1\"; exit \$rc" fault "$esp" "$file" "$uuid"
+grep "^options" "$file"'
+  shape="$(as_root "printf '%s' $(printf '%q' "$(printf '%s' "$fault_script" | base64 -w0)") | base64 -d > /run/tilo-unlock-fault.sh && bash /run/tilo-unlock-fault.sh $(printf '%q' "$ESP_PATH") $(printf '%q' "$ESP_PATH/loader/$NEXT/$B_FILE")" 2>"$OUT/03-fault.txt" | tr -d '\r')"
+  printf '%s\n' "$shape" >> "$OUT/03-fault.txt"
+  if [ "$shape" = sealed ]; then
+    [ -n "$UNLOCK" ] || fail "the staged entry boots a sealed UKI whose command line cannot carry the fault, and this guest has no encrypted root (UNLOCK) whose prompt could be left waiting"
+    ok "the staged entry is sealed; its boots will wait at the encrypted root's own prompt, which is not answered"
+  else
+    grep -q 'rd.luks.name=[^ ]*=tilo-unlock-fault' <<<"$shape" || fail "could not add the unlock prompt to $NEXT/$B_FILE; see $OUT/03-fault.txt"
+    UNLOCK_INJECTED=yes
+    ok "the staged entry's initrd now waits at an unlock prompt: $shape"
+  fi
+elif [ "$FAULT" = greetd ]; then
   as_root "install -d -m 0755 $DROPIN_DIR && cat > $DROPIN <<EOF
 # Written by os/tests/boot_assessment_rollback.sh: greetd fails on the
 # deployment under test (composefs $B_DIGEST) and nowhere else.
@@ -333,7 +377,7 @@ else
 vt = 1
 
 [default_session]
-command = \"/usr/bin/timeout 12 /usr/libexec/tilo-cage-session /usr/bin/tilo-greeter\"
+command = \"/usr/bin/timeout 12 /usr/libexec/tilo-cage-session /usr/libexec/tilo/tilo-greeter\"
 user = \"greetd\"
 EOF
 cat > $DROPIN <<EOF
@@ -347,7 +391,90 @@ EOF
 systemctl daemon-reload" > "$OUT/03-fault.txt" 2>&1 || fail "could not write $DROPIN"
 fi
 guest 'systemctl is-active --quiet greetd.service' || fail "greetd is not active on the booted deployment after the fault was written; it must only affect the staged one"
-ok "greetd still runs here; its $FAULT fault acts on composefs ${B_DIGEST:0:16}"
+[ "$FAULT" = unlock ] || ok "greetd still runs here; its $FAULT fault acts on composefs ${B_DIGEST:0:16}"
+
+has_fallback_unit() {
+  guest 'systemctl cat tilo-boot-fallback.service >/dev/null 2>&1'
+}
+
+# tilo-boot-fallback settles bootc on the deployment that came back and
+# reports the one that failed; images from before it leave bootc queuing the
+# failed one, which is checked as such.
+check_fallback_settled() {  # TRIES-SPENT
+  local queued report
+  local i state
+  has_fallback_unit || return 0
+  for i in $(seq 1 40); do
+    state="$(guest 'systemctl show -p ActiveState --value tilo-boot-fallback.service' 2>/dev/null | tr -d '\r\n')"
+    case "$state" in active|failed) break ;; esac
+    sleep 3
+  done
+  as_root 'systemctl show -p Result --value tilo-boot-fallback.service; journalctl -b --no-pager -u tilo-boot-fallback; bootc status --json' \
+    > "$OUT/05-fallback.txt" 2>&1
+  queued="$(as_root 'bootc status --json' 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"].get("rollbackQueued"))' 2>/dev/null)"
+  [ "$queued" = False ] || fail "after the fallback bootc still queues the failed deployment (rollbackQueued $queued); see $OUT/05-fallback.txt"
+  report="$(as_root "grep -l 'composefs=$B_DIGEST' /var/lib/tilo/boot-fallback/*/report" | tr -d '\r' | head -1)"
+  [ -n "$report" ] || fail "no fallback report names composefs ${B_DIGEST:0:16}; see $OUT/05-fallback.txt"
+  as_root "cat ${report%/report}/summary.txt ${report}" >> "$OUT/05-fallback.txt" 2>&1
+  as_root "grep -qx 'tries=$1' $report && grep -qx 'settled=yes' $report" \
+    || fail "the fallback report does not record $1 spent tries, settled; see $OUT/05-fallback.txt"
+  ok "the deployment that came back is bootc's default again, and ${report%/report} reports the failed one"
+}
+
+if [ "$FAULT" = unlock ]; then
+  # --- 4. each staged boot waits at its unlock prompt and is power-cycled -------
+  current_boot="$(boot_id)"
+  as_root 'systemctl reboot' >/dev/null 2>&1 || true
+  for attempt in $(seq 1 "$TRIES"); do
+    step "boot $attempt: the staged deployment, left at its unlock prompt"
+    if new="$(wait_reachable "$current_boot" "$HANG_TIMEOUT" "")"; then
+      record_boot "04-boot$attempt"
+      # What became of the prompt, where the check's own log keeps it.
+      as_root 'echo "cmdline: $(cat /proc/cmdline)"; systemctl status --no-pager --all "systemd-cryptsetup@*" 2>&1 | head -40
+               journalctl -b --no-pager -o short-monotonic 2>/dev/null | grep -iE "cryptsetup|unlock-fault|luks|password" | head -80' >&2 || true
+      fail "boot $attempt reached userspace on composefs $(booted_digest | cut -c1-16) instead of waiting at its unlock prompt; see $OUT/04-boot$attempt.txt"
+    fi
+    if [ -n "$SERIAL" ]; then
+      bash -c "$SERIAL" > "$OUT/04-boot$attempt-console.txt" 2>&1 || true
+      if [ "$UNLOCK_INJECTED" = yes ]; then
+        grep -qi 'tilo-unlock-fault' "$OUT/04-boot$attempt-console.txt" \
+          || fail "boot $attempt never answered, but its console shows no unlock prompt for the fault; see $OUT/04-boot$attempt-console.txt"
+      fi
+      grep -qiE 'passphrase|password' "$OUT/04-boot$attempt-console.txt" \
+        && ok "boot $attempt waits at an unlock prompt (console: $OUT/04-boot$attempt-console.txt)" \
+        || printf '      boot %s: no prompt text on the console to show for it\n' "$attempt" >&2
+    fi
+    printf '      no answer within %ss; power-cycling at the prompt\n' "$HANG_TIMEOUT" >&2
+    bash -c "$RESET" >&2 || fail "RESET failed after boot $attempt"
+  done
+  step "boot $((TRIES + 1)): after $TRIES tries the boot loader must go back by itself"
+  current_boot="$(wait_reachable "$current_boot")" || fail "after $TRIES boots left at the unlock prompt the machine never came back (see the VM's serial log)"
+  digest="$(booted_digest)"
+  [ "$digest" = "$A_DIGEST" ] || fail "boot $((TRIES + 1)) runs composefs ${digest:0:16}, not the previous deployment ${A_DIGEST:0:16}"
+  entry="$(current_entry)"
+  verdict="$(health_verdict)"
+  [ "$verdict" = good ] && wait_blessed
+  record_boot "04-boot$((TRIES + 1))"
+  case "$verdict" in good|not-assessed) ;; *) fail "the deployment that came back was judged '$verdict'; see $OUT/04-boot$((TRIES + 1)).txt" ;; esac
+  TABLE="$(entry_table)"
+  a_now="$(entry_for "$TABLE" entries "$A_DIGEST")" || fail "no single entry boots the deployment that came back"
+  [[ "$a_now" != *+* ]] || fail "the deployment that came back is still on trial ($a_now)"
+  if has_fallback_unit; then
+    # bootc's rollback renumbers the entries, so the names the boot loader
+    # used this boot are gone; the report holds what the boot loader counted.
+    check_fallback_settled "$TRIES"
+  else
+    [ "$entry" = "$(id_of "$a_now")" ] || fail "the previous deployment booted, but the boot loader reports entry $entry, not $a_now"
+    b_now="$(entry_for "$TABLE" entries "$B_DIGEST")" || b_now=""
+    [ "$b_now" = "${B_ENTRY%.conf}+0-$TRIES.conf" ] \
+      || fail "the used-up entry is ${b_now:-<gone>}, expected ${B_ENTRY%.conf}+0-$TRIES.conf to stay on the ESP"
+  fi
+  ok "boot $((TRIES + 1)): the boot loader went back to $a_now by itself after $TRIES boots that hung at the unlock prompt"
+  as_root '/usr/libexec/tilo-deployment list 2>&1 || true' > "$OUT/05-list.txt" 2>&1
+  printf 'PASS staged=%s tries=%s fault=%s\n' "$B_ENTRY" "$TRIES" "$FAULT" > "$OUT/verdict.txt"
+  printf '\nPASS: an update that hangs at its unlock prompt spent its %s tries and the boot loader went back by itself (evidence in %s)\n' "$TRIES" "$OUT"
+  exit 0
+fi
 
 # --- 4. each boot of the staged deployment spends a try, then it falls back ----------
 current_boot="$(boot_id)"
@@ -396,9 +523,11 @@ while :; do
   [ "$digest" = "$A_DIGEST" ] || fail "boot $attempt runs composefs ${digest:0:16}, neither deployment"
   [ "$attempt" = $((TRIES + 1)) ] || fail "the machine went back after $((attempt - 1)) failed boots, not $TRIES"
   a_now="$(entry_for "$TABLE" entries "$A_DIGEST")" || fail "no single entry boots the deployment that came back"
-  [ "$entry" = "$(id_of "$a_now")" ] || fail "the previous deployment booted, but the boot loader reports entry $entry, not $a_now"
-  [ "$b_now" = "${B_ENTRY%.conf}+0-$TRIES.conf" ] \
-    || fail "the used-up entry is ${b_now:-<gone>}, expected ${B_ENTRY%.conf}+0-$TRIES.conf to stay on the ESP"
+  if ! has_fallback_unit; then
+    [ "$entry" = "$(id_of "$a_now")" ] || fail "the previous deployment booted, but the boot loader reports entry $entry, not $a_now"
+    [ "$b_now" = "${B_ENTRY%.conf}+0-$TRIES.conf" ] \
+      || fail "the used-up entry is ${b_now:-<gone>}, expected ${B_ENTRY%.conf}+0-$TRIES.conf to stay on the ESP"
+  fi
   # Counted before this boot, it has to be judged and blessed like any other.
   if [ "${a_counted:-no}" = yes ]; then
     [ "$verdict" = good ] || fail "the deployment that came back was on trial and judged '$verdict', not good; see $OUT/04-boot$attempt.txt"
@@ -408,6 +537,7 @@ while :; do
   [[ "$a_now" != *+* ]] || fail "the deployment that came back is still on trial ($a_now) after a good boot: systemd-bless-boot did not bless it, so it will spend its tries on boots that work; see $OUT/04-boot$attempt.txt"
   guest 'systemctl is-active --quiet greetd.service' || fail "greetd is not active on the deployment that came back"
   ok "boot $attempt: the boot loader went back to $a_now by itself (on trial: ${a_counted:-no}, health: $verdict, blessed)"
+  check_fallback_settled "$TRIES"
   break
 done
 

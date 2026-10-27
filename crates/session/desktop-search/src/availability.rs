@@ -1,8 +1,10 @@
-//! Which Tilo applications a desktop cannot run here, and why. The catalog
-//! is generated from every app's `tilo-app.toml`, so a desktop lists an app
-//! it cannot open with the same reason the Cloud console shows.
-
-use crate::providers::AppEntry;
+//! What the manifest registry knows about each Tilo application: where it
+//! runs, its category, and the other names and words people know it by. The
+//! catalog is generated from every app's `tilo-app.toml`.
+//!
+//! A desktop offers only the apps it can run. An app that cannot run here is
+//! not listed with a reason: offering Terminal in a browser tab, where
+//! choosing it can only fail, is noise at best and a broken promise at worst.
 
 /// One application of the manifest registry and the platforms it declares
 /// (`linux`, `macos`, `web`, `tilo-os`).
@@ -53,118 +55,67 @@ pub fn names_for(package_id: &str) -> &'static [&'static str] {
     entry_for(package_id).map_or(&[], |app| app.names)
 }
 
-/// Why an app declaring `platforms` is not offered: "Tilo OS only",
-/// "Needs Tilo OS", or the platforms it runs on ("Linux and macOS only").
+/// The category the app's manifest declares ("Office"), if the registry
+/// lists it with one.
 #[must_use]
-pub fn unavailable_reason(platforms: &[&str]) -> String {
-    if platforms == ["tilo-os"] {
-        return "Tilo OS only".into();
-    }
-    if platforms.contains(&"tilo-os") {
-        return "Needs Tilo OS".into();
-    }
-    let names: Vec<&str> = platforms
-        .iter()
-        .map(|platform| match *platform {
-            "linux" => "Linux",
-            "macos" => "macOS",
-            "web" => "the web",
-            other => other,
-        })
-        .collect();
-    match names.as_slice() {
-        [] => "Not available here".into(),
-        [only] => format!("{only} only"),
-        [rest @ .., last] => format!("{} and {last} only", rest.join(", ")),
-    }
+pub fn category_for(package_id: &str) -> Option<&'static str> {
+    entry_for(package_id)
+        .map(|app| app.category)
+        .filter(|category| !category.is_empty())
 }
 
-/// The catalog's apps that run on none of `host` (the platforms this
-/// desktop provides), as search entries carrying their reason. Those in
-/// `hosted`, the apps a node runs for this desktop, are left out: the
-/// desktop offers them as the node's.
+/// Whether the app `package_id` runs on any of `host`, the platforms a
+/// desktop provides. An app the registry does not list is one the desktop
+/// found to run itself (a node's app, an installed package), so it runs.
 #[must_use]
-pub fn unavailable_on(host: &[&str], hosted: &[&str]) -> Vec<AppEntry> {
-    catalog()
-        .iter()
-        .filter(|app| !app.platforms.iter().any(|platform| host.contains(platform)))
-        .filter(|app| !hosted.contains(&app.id))
-        .map(|app| AppEntry {
-            id: app.id.into(),
-            title: app.name.into(),
-            category: (!app.category.is_empty()).then(|| app.category.into()),
-            description: None,
-            unavailable: Some(unavailable_reason(app.platforms)),
-        })
-        .collect()
+pub fn runs_on(package_id: &str, host: &[&str]) -> bool {
+    entry_for(package_id).is_none_or(|app| app.platforms.iter().any(|p| host.contains(p)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn reasons_match_the_cloud_console() {
-        assert_eq!(unavailable_reason(&["tilo-os"]), "Tilo OS only");
-        assert_eq!(unavailable_reason(&["tilo-os", "linux"]), "Needs Tilo OS");
-        assert_eq!(
-            unavailable_reason(&["linux", "macos"]),
-            "Linux and macOS only"
-        );
-        assert_eq!(unavailable_reason(&["linux"]), "Linux only");
-        assert_eq!(
-            unavailable_reason(&["linux", "macos", "web"]),
-            "Linux, macOS and the web only"
-        );
+    fn app(id: &str) -> &'static CatalogApp {
+        entry_for(id).unwrap_or_else(|| panic!("the registry lists {id}"))
     }
 
     #[test]
-    fn each_desktop_lists_what_it_cannot_run() {
-        let web = unavailable_on(&["web"], &[]);
-        let desktop_only = catalog()
-            .iter()
-            .find(|app| app.platforms == ["linux", "macos"])
-            .expect("the registry has a desktop-only app");
+    fn each_platform_runs_only_the_apps_that_declare_it() {
+        let terminal = app("so.tilo.terminal");
+        assert!(!terminal.platforms.contains(&"web"));
+        assert!(!runs_on(terminal.id, &["web"]), "no terminal in a browser");
+        assert!(runs_on(terminal.id, &["macos"]));
+        assert!(runs_on(terminal.id, &["tilo-os", "linux"]));
+        assert!(runs_on("dev.tilo.terminal", &["linux"]), "a local build");
+        assert!(!runs_on("dev.tilo.terminal", &["web"]));
+
         let os_only = catalog()
             .iter()
             .find(|app| app.platforms == ["tilo-os"])
             .expect("the registry has a Tilo-OS-only app");
-        let reason = |entries: &[AppEntry], id: &str| {
-            entries
-                .iter()
-                .find(|entry| entry.id == id)
-                .and_then(|entry| entry.unavailable.clone())
-        };
-        assert_eq!(
-            reason(&web, desktop_only.id).as_deref(),
-            Some("Linux and macOS only")
+        assert!(!runs_on(os_only.id, &["macos"]));
+        assert!(!runs_on(os_only.id, &["web"]));
+        assert!(runs_on(os_only.id, &["tilo-os", "linux"]));
+
+        assert!(runs_on("so.tilo.notes", &["web"]));
+        assert!(
+            runs_on("node-app:7", &["web"]),
+            "not the registry's to judge"
         );
-        assert_eq!(reason(&web, os_only.id).as_deref(), Some("Tilo OS only"));
-        assert!(web.iter().all(|entry| {
-            catalog()
-                .iter()
-                .any(|app| app.id == entry.id && !app.platforms.contains(&"web"))
-        }));
-        let mac = unavailable_on(&["macos"], &[]);
-        assert_eq!(reason(&mac, desktop_only.id), None);
-        assert_eq!(reason(&mac, os_only.id).as_deref(), Some("Tilo OS only"));
+
+        let web: Vec<_> = catalog()
+            .iter()
+            .filter(|app| runs_on(app.id, &["web"]))
+            .collect();
+        assert!(!web.is_empty());
+        assert!(web.iter().all(|app| app.platforms.contains(&"web")));
     }
 
     #[test]
-    fn apps_a_node_runs_are_not_listed_as_unavailable() {
-        let terminal = catalog()
-            .iter()
-            .find(|app| app.id == "so.tilo.terminal")
-            .expect("the registry has the terminal");
-        assert!(!terminal.platforms.contains(&"web"));
-        let listed = |entries: &[AppEntry]| entries.iter().any(|entry| entry.id == terminal.id);
-        assert!(listed(&unavailable_on(&["web"], &[])));
-        let beside_node = unavailable_on(&["web"], &[terminal.id]);
-        assert!(!listed(&beside_node), "the node opens it");
-        assert_eq!(
-            beside_node.len(),
-            unavailable_on(&["web"], &[]).len().saturating_sub(1),
-            "every other app keeps its reason"
-        );
+    fn categories_come_from_the_manifest() {
+        assert_eq!(category_for("so.tilo.calendar"), Some("Office"));
+        assert_eq!(category_for("dev.tilo.calendar"), Some("Office"));
+        assert_eq!(category_for("node-app:7"), None);
     }
 }

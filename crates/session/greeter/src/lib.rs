@@ -13,17 +13,22 @@
 //!   (its own crate, so the compositor's lock screen shares it without
 //!   depending on the greeter).
 //! * [`auth`] — background auth worker + the UI-facing update protocol.
+//! * [`boot_look`] — the colours and sizes the boot sign-in screen takes from this one.
 //! * [`device_status`] — battery and Wi-Fi for the status corner.
 //! * [`greeter_app`] — the root [`GreeterApp`] `Widget` (the sign-in panel).
+//! * [`handoff`] — who signed in on the boot screen, so they are not asked again.
 //! * [`i18n`] — the sign-in screen's string catalogue.
 //! * [`local_users`] — conservative local-account discovery for one-passcode login.
 
 pub mod auth;
+pub mod boot_look;
 pub mod device_status;
 pub mod greeter_app;
+pub mod handoff;
 pub mod i18n;
 pub mod local_users;
 pub mod output_scale;
+pub mod seat_input;
 pub mod sessions;
 
 pub use greetd_client;

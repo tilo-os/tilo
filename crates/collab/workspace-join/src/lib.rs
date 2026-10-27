@@ -13,6 +13,7 @@
 //! re-exported by `tilo-relay-protocol`.
 
 pub mod delegation;
+pub mod invitations;
 
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, Verifier as _};
@@ -43,6 +44,13 @@ pub const TRANSPORT_TILO_SESSION_JOIN_HTTP_V1: &str = "tilo-session-join-http-v1
 /// challenge. Every other refusal of a Complete may follow an admission the
 /// answer did not reach, so a retained proof is resent exactly.
 pub const JOIN_PROOF_LAPSED: u16 = 410;
+
+/// The `code` of a [`JoinTransportResponse::Error`] answering a Complete
+/// the host admitted before, when the room has moved on since: the host no
+/// longer replays that answer, and the device, a member now, takes the
+/// room's current state through the membership exchange
+/// ([`JoinTransportRequest::MembershipChallenge`]) instead.
+pub const JOIN_COMPLETED_REFRESH: u16 = 409;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemberRole {
@@ -241,11 +249,6 @@ pub struct JoinChallenge {
 
 impl JoinChallenge {
     /// Issue a join challenge for a device redeeming `join`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the device certificate does not verify at `now_ns` or the
-    /// challenge has already expired.
     pub fn new(
         join: &VerifiedJoin,
         device_cert: &DeviceCert,
@@ -309,11 +312,6 @@ pub struct MembershipChallenge {
 
 impl MembershipChallenge {
     /// Issue a membership refresh challenge for a device of `room`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a certificate does not verify at `now_ns` or the challenge has
-    /// already expired.
     pub fn new(
         room: &str,
         workspace_id: u64,
@@ -489,11 +487,6 @@ pub enum JoinTransportResponse {
 }
 
 /// Sign a delegation of workspace permissions from `authority` to `delegate`.
-///
-/// # Errors
-///
-/// Returns an error if the delegation is malformed or `authority_key` does not match
-/// `authority`.
 pub fn sign_workspace_delegation(
     room: impl Into<String>,
     workspace_id: u64,
@@ -542,11 +535,6 @@ impl WorkspaceDelegation {
 }
 
 /// Verify a workspace delegation against `authority` and `revocations`.
-///
-/// # Errors
-///
-/// Returns an error if the signature, certificates, expiry or revocation state does not
-/// verify at `now_ns`.
 pub fn verify_workspace_delegation(
     delegation: &WorkspaceDelegation,
     authority: &DeviceCert,
@@ -579,10 +567,6 @@ pub fn verify_workspace_delegation(
 }
 
 /// Sign an invitation grant, returning its wire bytes.
-///
-/// # Errors
-///
-/// Returns an error if the grant is malformed or `key` does not match its issuer.
 pub fn issue_invitation(
     grant: InviteGrant,
     key: &ed25519_dalek::SigningKey,
@@ -605,11 +589,6 @@ pub fn issue_invitation(
 }
 
 /// [`issue_invitation`] that also names `inviter`, under the same signature.
-///
-/// # Errors
-///
-/// Returns an error if the grant or the inviter is malformed, or the signer
-/// is not the declared issuer.
 pub fn issue_invitation_from(
     grant: InviteGrant,
     inviter: Inviter,
@@ -649,11 +628,6 @@ fn validate_inviter(inviter: &Inviter) -> Result<(), String> {
     Ok(())
 }
 
-/// Sign an opaque transport hint as `host`.
-///
-/// # Errors
-///
-/// Returns an error if the hint is malformed or `host_key` does not match `host`.
 pub fn sign_transport_hint(
     kind: impl Into<String>,
     opaque_json: impl Into<String>,
@@ -684,10 +658,6 @@ pub fn sign_transport_hint(
 }
 
 /// Verify a transport hint's signature and host certificate.
-///
-/// # Errors
-///
-/// Returns an error if the hint does not verify.
 pub fn verify_transport_hint(hint: &TransportHint) -> Result<(), String> {
     let key = ed25519_dalek::VerifyingKey::from_bytes(&hint.host.device_public_key)
         .map_err(|_| "invalid transport host device key".to_string())?;
@@ -707,10 +677,6 @@ pub fn verify_transport_hint(hint: &TransportHint) -> Result<(), String> {
 }
 
 /// Verify a transport hint at `now_ns` against `revocations`.
-///
-/// # Errors
-///
-/// Returns an error if the hint does not verify, has expired or its host is revoked.
 pub fn verify_transport_hint_at(
     hint: &TransportHint,
     revocations: &RevocationList,
@@ -724,12 +690,6 @@ pub fn encode_invitation_text(signed_invitation: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signed_invitation)
 }
 
-/// Decode a textual invitation and verify it.
-///
-/// # Errors
-///
-/// Returns an error if the text is not a valid invitation encoding or verification
-/// fails.
 pub fn decode_and_verify_invitation_text(
     text: &str,
     recipient_user_public_key: Option<[u8; 32]>,
@@ -742,12 +702,6 @@ pub fn decode_and_verify_invitation_text(
     decode_and_verify_invitation(&bytes, recipient_user_public_key, revocations, now_ns)
 }
 
-/// Decode a signed invitation and verify it for the recipient.
-///
-/// # Errors
-///
-/// Returns an error if the invitation is malformed, not for the recipient, expired,
-/// revoked, or its signature does not verify.
 pub fn decode_and_verify_invitation(
     signed_invitation: &[u8],
     recipient_user_public_key: Option<[u8; 32]>,
@@ -833,11 +787,6 @@ pub fn sign_join_proof(
 }
 
 /// Verify a join proof against the challenge that was issued.
-///
-/// # Errors
-///
-/// Returns an error if the proof does not match the challenge, its signature or device
-/// certificate does not verify, or the device is revoked.
 pub fn verify_join_proof(
     proof: &JoinProof,
     issued_challenge: &JoinChallenge,
@@ -904,11 +853,6 @@ pub fn sign_membership_proof(
 }
 
 /// Verify a membership proof against the challenge that was issued.
-///
-/// # Errors
-///
-/// Returns an error if the proof does not match the challenge, its signature or device
-/// certificate does not verify, or the device is revoked.
 pub fn verify_membership_proof(
     proof: &MembershipProof,
     issued_challenge: &MembershipChallenge,
@@ -1031,10 +975,6 @@ fn tagged_digest(value: &[u8], body: &impl Serialize) -> Result<[u8; 32], String
 /// Derive the stable numeric host/gossip shard for a room UUID. This is shared
 /// by the shell and admin CLI so local workspace handles never leak onto the
 /// wire and operators cannot accidentally bind a different shard.
-///
-/// # Errors
-///
-/// Returns an error if `room` is not a valid UUID string.
 pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
     let room = uuid::Uuid::parse_str(room)?;
     // Encode on the stack: bounded delivery paths derive this id under a

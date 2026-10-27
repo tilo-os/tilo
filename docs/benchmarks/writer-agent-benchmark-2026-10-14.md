@@ -4,7 +4,7 @@ One fixed task — a short field report with two headings, a bold phrase, a
 two-item bullet list and an italic date — done twice against one checked-in
 reference, then saved as DOCX and PDF and reopened. All 15 qualifications
 passed on the run recorded here.
-[The receipt](writer-agent-benchmark-2026-10-14.json) is the test's own output.
+[The receipt](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/writer-agent-benchmark-2026-10-14.json) is the test's own output.
 
 The benchmark is a test, so it runs in CI with the rest of Writer's tests:
 

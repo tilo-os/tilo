@@ -120,6 +120,7 @@ fn minimal_tree() -> WorkspaceTree {
                 kind: AppKind::Other("Test".into()),
                 label: "stub".into(),
             },
+            app_title: None,
         }],
         active_tab: tab_id,
         width: WindowWidth::Normal,
@@ -131,12 +132,10 @@ fn minimal_tree() -> WorkspaceTree {
         name: "S".into(),
         window_groups: vec![group],
     };
-    let ws = Workspace {
-        strips: vec![strip],
-        // Everything else, including the workspace's durable collaboration room,
-        // comes from the builder, so a field added to `Workspace` does not break
-        // this fixture.
-        ..Workspace::new(ws_id, "W")
+    let ws = {
+        let mut workspace = Workspace::new(ws_id, "W");
+        workspace.strips = vec![strip];
+        workspace
     };
     let mut active_strip = HashMap::new();
     active_strip.insert(ws_id, strip_id);
@@ -165,11 +164,19 @@ fn open_quick_settings(
         state.quick_settings.brightness_available = true;
         state.quick_settings.radios.wifi_available = true;
         state.quick_settings.bluetooth_available = true;
+        state.quick_settings.status.volume = Some(SOUND_OUTPUT_READING);
         state.bump();
     }
     host.force_quick_settings_settled();
     layout_host(host)
 }
+
+/// A volume slider shows only once the sound output has been read, as a
+/// real session reads it on open.
+const SOUND_OUTPUT_READING: os_actions::VolumeState = os_actions::VolumeState {
+    level: 0.4,
+    muted: false,
+};
 
 #[test]
 #[allow(
@@ -215,6 +222,7 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
             let mut st = chrome.borrow_mut();
             st.overlays.quick_settings = true;
             st.quick_settings.brightness_available = true;
+            st.quick_settings.status.volume = Some(SOUND_OUTPUT_READING);
             st.bump();
         }
         host.force_quick_settings_settled();
@@ -260,14 +268,16 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
             Key::Named(NamedKey::ArrowRight),
             ModifiersState::empty(),
         ));
-        // One more Tab moves brightness → volume.
-        assert!(press_key(
-            &mut host,
-            &taffy,
-            host_node,
-            Key::Named(NamedKey::Tab),
-            ModifiersState::empty(),
-        ));
+        // Two more Tabs move brightness → the volume's mute switch → volume.
+        for _ in 0..2 {
+            assert!(press_key(
+                &mut host,
+                &taffy,
+                host_node,
+                Key::Named(NamedKey::Tab),
+                ModifiersState::empty(),
+            ));
+        }
         assert!(press_key(
             &mut host,
             &taffy,
@@ -303,10 +313,6 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
-    // Phase `keyboard_actions_and_reverse_tab_route_through_the_host`.
-    // Enter, Space and reverse-Tab all use the same root actions exposed to
-    // pointer users. This guards the route through `ShellOverlayHost`, where
-    // overlay ordering and modifier state have historically swallowed keys.
     {
         // Sliders, live controls and both radio detail targets, Devices,
         // Clipboard, power profile and Edit precede Settings.
@@ -418,7 +424,7 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
 
         // Edit leads the footer: four Shift+Tabs from no focus reach it.
         // Space enters edit mode with no hidden selection. Two Tabs then
-        // select Bluetooth. Move it below Night Light with Ctrl+Down.
+        // select Bluetooth. Move it below Night light with Ctrl+Down.
         for _ in 0..4 {
             assert!(press_key(
                 &mut host,
@@ -465,7 +471,7 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
             .collect::<Vec<_>>();
         assert_eq!(
             names[..3],
-            ["Wi-Fi", "Night Light", "Bluetooth"],
+            ["Wi-Fi", "Night light", "Bluetooth"],
             "Ctrl+Down must reorder the semantic and visual row order"
         );
 
@@ -489,7 +495,7 @@ fn quick_settings_keyboard_actions_and_edit_reorder_route_through_the_host() {
             .collect::<Vec<_>>();
         assert_eq!(
             names[..3],
-            ["Wi-Fi", "Bluetooth", "Night Light"],
+            ["Wi-Fi", "Bluetooth", "Night light"],
             "Ctrl+Up must reverse a keyboard reorder"
         );
     }
@@ -695,7 +701,7 @@ fn only_the_invite_button_opens_the_signed_composer() {
         host.force_ws_settings_settled();
         // Paint once so the modal's geometry is populated the way it is in a
         // real frame before any click arrives.
-        let _ = &taffy;
+        paint(&mut host);
 
         let btn = host.ws_settings_invite_rect_for_tests();
         assert!(
@@ -729,10 +735,11 @@ fn only_the_invite_button_opens_the_signed_composer() {
         }
         let (taffy, host_node) = layout_host(&mut host);
         host.force_ws_settings_settled();
+        paint(&mut host);
 
         let btn = host.ws_settings_invite_rect_for_tests();
-        // Well left of the button, still inside the modal body.
-        let p = Point::new(btn.x0 - 160.0, btn.center().y);
+        assert!(btn.area() > 0.0, "the Create button is laid out");
+        let p = Point::new(btn.x1 + 160.0, btn.center().y);
         click(&mut host, &taffy, host_node, p);
 
         assert!(
@@ -744,7 +751,7 @@ fn only_the_invite_button_opens_the_signed_composer() {
 
 /// The ribbon's own geometry is unit-tested in `ui`, but geometry that
 /// nothing routes is exactly the defect the ws-settings Copy button was
-/// — this drives a real click and asserts `active_strip` moved.
+/// — this drives real clicks and asserts `active_strip` moved.
 #[test]
 fn clicking_a_strip_ribbon_segment_moves_focus() {
     let mut tree = minimal_tree();
@@ -768,12 +775,21 @@ fn clicking_a_strip_ribbon_segment_moves_focus() {
 
     let target = ribbon.hit_rect(2).expect("third segment has a target");
     let c = target.center();
+    // A tap on the ribbon opens the strip switcher's labels, pinned (a
+    // finger cannot rest there to open them); the third strip's label row
+    // reaches under its mark, so a second tap there takes it.
+    click(&mut host, &taffy, host_node, c);
+    assert!(
+        chrome.borrow().strip_switcher_open(),
+        "a tap on the ribbon opens the strip switcher"
+    );
+    assert_eq!(chrome.borrow().strip_focus().1, 0, "nothing moved yet");
     click(&mut host, &taffy, host_node, c);
 
     let (_, focused) = chrome.borrow().strip_focus();
     assert_eq!(
         focused, 2,
-        "clicking the third ribbon segment must focus the third strip"
+        "the third strip's label, over its ribbon segment, focuses the third strip"
     );
 }
 
@@ -903,7 +919,7 @@ fn tab_through_every_quick_settings_stop_focuses_exactly_one_node() {
         "Wi-Fi",
         "Bluetooth",
         "Wi-Fi networks",
-        "Night Light",
+        "Night light",
         "Devices",
         "Clipboard",
         "Notifications",

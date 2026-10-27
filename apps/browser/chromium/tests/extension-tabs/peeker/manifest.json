@@ -1,0 +1,5 @@
+{"manifest_version": 3, "name": "Peeker", "version": "1.0",
+ "action": {"default_title": "Capture"},
+ "permissions": ["tabs", "scripting"],
+ "host_permissions": ["http://127.0.0.1/*"],
+ "background": {"service_worker": "worker.js"}}

@@ -48,7 +48,6 @@ fn legacy_obj(obj: &ObjId) -> legacy::ObjectId {
 pub struct ChangeWriter {
     actor: ActorId,
     seq: u64,
-    /// Counter of the next op.
     next: u64,
     /// Counter of the first op of the change being built.
     start: NonZeroU64,
@@ -247,9 +246,6 @@ impl ChangeWriter {
 
 /// Apply one change, dropping the patch events Automerge logs for it unless
 /// a diff cursor will read them (see `tilo_automerge`).
-///
-/// # Errors
-/// Returns Automerge's refusal.
 pub fn apply_change(
     doc: &mut Doc,
     change: automerge::Change,
@@ -306,7 +302,6 @@ mod tests {
             assert_eq!(marks.len(), 1);
             assert_eq!((marks[0].start, marks[0].end), (0, 5));
         }
-        // The next local edit continues the written history.
         let item = direct.get(&items, "a").unwrap().unwrap().1;
         direct.put(&item, "kind", "done").unwrap();
         assert!(direct.commit().is_some());

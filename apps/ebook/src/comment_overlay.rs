@@ -506,7 +506,6 @@ impl CommentOverlay {
         y
     }
 
-    /// "Add comment" and its hit.
     fn draw_add_button(
         &mut self,
         ctx: &mut PaintCtx<'_>,

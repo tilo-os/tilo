@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createPictureInbox, publishPictures} from './voice-video.mjs';
-import {decodeVideoObject} from './video-profile.mjs';
+import {createPictureInbox, publishPictures, receivePictures} from './voice-video.mjs';
+import {decodeVideoObject, encodeVideoObject} from './video-profile.mjs';
 
 const drain = async () => { for (let index = 0; index < 20; index++) await Promise.resolve(); };
 
@@ -123,4 +123,78 @@ test('the inbox hands pictures over by cursor, in base64, and a stream that fall
   assert.equal(inbox.take(cursor).pictures.length, 0, 'not without its keyframe');
   inbox.admit(picture('slow', 10), true);
   assert.equal(inbox.take(cursor).pictures.length, 1);
+});
+
+/** A remote publisher's broadcast whose camera track the test feeds one group at a time. */
+function remoteBroadcast() {
+  let group, ended = false;
+  const subscriber = {
+    recvGroup: () => ended ? Promise.resolve(undefined) : new Promise(resolve => { group = resolve; }),
+    close() {},
+  };
+  const picture = (keyframe, sequence) => encodeVideoObject({keyframe, layer: 'low', sequence, timestampUs: sequence * 33_333, width: 320, height: 180, payload: Uint8Array.of(1, 2, 3)});
+  return {
+    track: () => ({subscribe: () => subscriber}),
+    send(sequence) {
+      const frames = [picture(true, sequence)];
+      group({readFrame: async () => frames.length ? {payload: frames.shift()} : undefined, close() {}});
+    },
+    end() { ended = true; group?.(undefined); },
+  };
+}
+
+test('a camera whose publisher renewed its carrier is seen again without a new announcement', async () => {
+  const PUBLISHER = 'b'.repeat(64);
+  let request;
+  const incoming = {
+    request() {
+      let current = remoteBroadcast(), changed;
+      request = {
+        active: {peek: () => current, changed: () => new Promise(resolve => { changed = resolve; })},
+        swap(next) { current = next; changed?.(); },
+        current: () => current,
+        closed: false, close() { this.closed = true; },
+      };
+      return request;
+    },
+  };
+  const moq = {Path: {from: (...parts) => parts.join('/')}};
+  const delivered = [];
+  const reading = receivePictures({moq, incoming, call: 'c'.repeat(64), deliver: (publisher, source) => delivered.push([publisher, source])});
+  reading.show([{publisher: PUBLISHER, source: 'camera', layer: 'low'}]);
+  await drain();
+  const first = request.current();
+  first.send(0);
+  await drain();
+  assert.equal(delivered.length, 1);
+  // The publisher's renewed carrier republishes the path and its old one
+  // closes; the route never lapses, so nothing calls show() again.
+  const second = remoteBroadcast();
+  request.swap(second);
+  first.end();
+  await drain();
+  second.send(0);
+  await drain();
+  assert.deepEqual(delivered, [[PUBLISHER, 'camera'], [PUBLISHER, 'camera']], 'the broadcast that took the path is shown');
+  reading.close();
+  assert.equal(request.closed, true, 'closing releases the request');
+});
+
+test('a camera its publisher stopped on the same broadcast is read again when shown again', async () => {
+  const PUBLISHER = 'b'.repeat(64);
+  const broadcast = remoteBroadcast();
+  const requests = [];
+  const incoming = {request() { const request = {active: {peek: () => broadcast, changed: () => new Promise(() => {})}, closed: false, close() { this.closed = true; }}; requests.push(request); return request; }};
+  const moq = {Path: {from: (...parts) => parts.join('/')}};
+  const reading = receivePictures({moq, incoming, call: 'c'.repeat(64), deliver() {}});
+  const camera = [{publisher: PUBLISHER, source: 'camera', layer: 'low'}];
+  reading.show(camera);
+  await drain();
+  broadcast.end();
+  await drain();
+  reading.show(camera);
+  await drain();
+  assert.equal(requests[0].closed, true, 'the ended stream releases its request');
+  assert.equal(requests.length, 2, 'the ended stream is asked for again, not waited on');
+  reading.close();
 });

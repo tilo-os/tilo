@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use ui::time::Instant;
 use ui::widget::TaffyTreeExt;
+use ui::widget::paint_damage::PaintParts;
 use ui::widget::{AppModel, Edits, ModelPath};
 
 use automerge::ObjId;
@@ -36,18 +37,21 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{
-    Button, ColorSwatchPicker, ContextMenu, EditOutcome, EditableLabel, Popover, PopoverSide,
-    TextInput, Widget,
+    Button, ColorSwatchPicker, ContextMenu, EditOutcome, EditableLabel, MenuItem as Row, Popover,
+    PopoverSide, TextInput, Widget,
 };
 
 mod annotations;
 mod chrome;
+mod content_files;
+mod find;
 mod overlays;
 #[cfg(test)]
 mod polish_tests;
 mod presence;
 #[cfg(test)]
 mod presence_tests;
+mod window_bar;
 
 use chrome::{ChromeMetrics, CommandSlot, MenuRow};
 use overlays::SettingsSheet;
@@ -166,15 +170,6 @@ enum SettingsPanel {
     Document,
 }
 
-/// The app's only decorative animation is the transient status bubble. Keep
-/// the preference as a semantic state rather than another independent bool so
-/// it cannot accidentally conflict with the run mode.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MotionPreference {
-    Full,
-    Reduced,
-}
-
 /// One-shot duties the app still owes the frame loop.
 #[derive(Clone, Copy, Default)]
 struct Pending {
@@ -243,6 +238,38 @@ enum TabAction {
     SetColor(Option<u32>),
 }
 
+/// A row of a cell's context menu. The menu names what it will act on (a
+/// range, a count) and each row runs one workbook verb, so an insert or a
+/// delete of several rows is one undo step.
+#[derive(Clone, Copy, PartialEq)]
+enum CellMenuRow {
+    Cut,
+    Copy,
+    Paste,
+    InsertRowsAbove,
+    InsertRowsBelow,
+    DeleteRows,
+    InsertColumnsLeft,
+    InsertColumnsRight,
+    DeleteColumns,
+    ClearContents,
+    Bold,
+    Format(CellFormat),
+    ClearFormat,
+}
+
+/// One match the workbook's find found: which sheet, which cell, and the
+/// byte range of the cell's raw input it covers. Search runs over the input
+/// (formulas included), which is what replace can edit; the grid shows the
+/// cell it belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FoundCell {
+    sheet: usize,
+    addr: Addr,
+    start: usize,
+    end: usize,
+}
+
 #[derive(Clone)]
 enum AnnotationClick {
     Open(Addr),
@@ -283,6 +310,12 @@ fn tab_palette_color(theme: &Theme, idx: u32) -> Color {
 /// Inclusive count of grid indices from `lo` through `hi`. Every caller passes
 /// ordered selection bounds, so the saturation only guards the degenerate
 /// whole-axis span rather than wrapping it.
+/// Whether `id` is an opaque participant id (a long hex key) rather than a
+/// name someone could read.
+fn opaque_participant_id(id: &str) -> bool {
+    id.len() >= 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn span(lo: u32, hi: u32) -> u32 {
     hi.saturating_sub(lo).saturating_add(1)
 }
@@ -331,21 +364,19 @@ pub struct SheetsApp {
     /// the current accessibility text preference.
     text_scale: f64,
     rect: Rect,
-    toolbar_rect: Rect,
     formula_rect: Rect,
     grid_rect: Rect,
     tabs_rect: Rect,
-    /// The command bar, and what its commands and menus last ran.
-    toolbar: ui::widget::Toolbar,
+    /// What the window bar's commands last ran ([`window_bar`]).
     command_slot: CommandSlot,
-    /// The Format menu's rows as the bar holds them.
-    format_rows_shown: Option<Vec<MenuRow>>,
+    /// The window bar's slot ids, and the command each runs.
+    bar_commands: Vec<(String, MenuItem)>,
+    /// The file the workbook was opened from, which names it; `None` for
+    /// one never saved.
+    file: Option<PathBuf>,
     /// The theme the chrome was last measured in, for laying the bar out
     /// between frames.
     chrome_theme: Theme,
-    /// The window's History control in the header row's corner.
-    history: ui::widget::HistoryOpener,
-    history_rect: Rect,
     /// The document-settings sheet as last laid out.
     settings_sheet: Option<SettingsSheet>,
     /// Measured chrome text metrics driving `relayout` (see [`ChromeMetrics`]).
@@ -363,6 +394,22 @@ pub struct SheetsApp {
     tab_colour: Popover<ColorSwatchPicker>,
     /// The tab and colour the popover's picker was last built for.
     tab_colour_shown: Option<(usize, Option<usize>)>,
+    /// Right-click menu on a cell: the menu, what each row runs, and the
+    /// cell that was under the pointer when it opened.
+    cell_menu: ContextMenu,
+    cell_menu_rows: Vec<Option<CellMenuRow>>,
+    cell_menu_target: Option<Addr>,
+    /// The window bar's search over the workbook: the matches it found and
+    /// the one shown. This app is the `Findable` the bar drives; it draws no
+    /// find field of its own.
+    find_matches: Vec<FoundCell>,
+    find_current: Option<usize>,
+    /// A replacement the bar asked for, waiting for the next frame's edit
+    /// path: `Findable::replace` has no document handle.
+    pending_find_replace: Vec<(usize, Addr, String)>,
+    /// The window's size changed: the next sync keeps the active cell in
+    /// view once the grid's new metrics and data are in.
+    pending_ensure_visible: bool,
     /// Whether the active cell is bold, for the Bold command's toggle state.
     active_cell_bold: bool,
     /// A screenshot scenario's menu or sheet, waiting for the first measured
@@ -413,20 +460,21 @@ pub struct SheetsApp {
     /// The resource's live state, read again right after an own edit.
     live: Option<ui::framework::Live<Workbook>>,
     active_sheet: usize,
-    /// The latest transient action message (e.g. "Pasted into B2"), surfaced
-    /// via the floating [`status_bubble`](Self::status_bubble) rather than a
-    /// permanent status line. Initialised to `"Ready"`, which the bubble
-    /// treats as "nothing to say".
+    /// The latest transient action message (e.g. "Pasted into B2"), said in
+    /// the window's bar ([`status_notice`](Self::status_notice)) rather than
+    /// a permanent status line. Initialised to `"Ready"`, which counts as
+    /// "nothing to say".
     status: String,
-    /// Transient floating status bubble carrying the selection summary or the
-    /// active cell's format, plus any fresh action message. It surfaces when
-    /// that composed text changes (a selection move/extend, an action) or
-    /// while the pointer rests in its corner, then fades — keeping the
-    /// sheet-tab strip free of status text so it reads purely as the sheet
-    /// switcher.
-    status_bubble: ui::StatusBubble,
-    /// A staged capture pins the bubble open so a still frame shows it.
-    staged_status: bool,
+    /// The selection summary or the active cell's format, or a fresh action
+    /// message, said in the window's bar for a while when that text changes
+    /// (a selection move/extend, an action), keeping the sheet-tab strip
+    /// free of status text so it reads purely as the sheet switcher.
+    status_notice: ui::widget::toast::Transient<String>,
+    /// The status last said in the bar, so only a change is news.
+    status_said: String,
+    /// The last frame's drawing, part by part, so a frame reports where it
+    /// differs from it.
+    paint_damage: ui::widget::paint_damage::PaintDamage,
     /// The part of a screenshot scenario staged against the document, done
     /// by the `sync` that follows the staging.
     staged: Option<Staged>,
@@ -441,7 +489,6 @@ pub struct SheetsApp {
     /// The shared `locale` setting, followed while the app runs.
     locale: Option<ui::framework::Setting<Locale>>,
     doc_settings: DocSettings,
-    motion: MotionPreference,
     /// Memoised recalculation: `reload` recomputes only when the document
     /// heads or active sheet change, so selection/scroll frames are cheap.
     cache: Option<ReloadCache>,
@@ -458,6 +505,11 @@ pub struct SheetsApp {
     /// palette's and an agent's. `None` until the framework attaches the
     /// surface.
     dispatch: Option<ui::framework::Dispatcher<Workbook>>,
+    /// The store the host lends the window: workbooks imported from and
+    /// exported as content are read and kept there.
+    content: Option<ui::framework::content::ContentStore>,
+    /// The participants' names, for the authors comments record.
+    people: Option<ui::framework::People>,
     /// The search hit or `open` waiting for the next settle to show it.
     opening: Rc<std::cell::RefCell<Option<PendingReveal>>>,
     /// The edits last bound to the selection, with what they were built
@@ -507,16 +559,12 @@ impl SheetsApp {
     pub fn new() -> Self {
         let command_slot = CommandSlot::default();
         Self {
-            toolbar: Self::build_command_bar(&command_slot),
             command_slot,
-            format_rows_shown: None,
+            bar_commands: Vec::new(),
             chrome_theme: Theme::dark(),
-            history: ui::widget::HistoryOpener::new(),
-            history_rect: Rect::ZERO,
             grid: Grid::new(),
             text_scale: 1.0,
             rect: Rect::ZERO,
-            toolbar_rect: Rect::ZERO,
             formula_rect: Rect::ZERO,
             grid_rect: Rect::ZERO,
             tabs_rect: Rect::ZERO,
@@ -531,6 +579,13 @@ impl SheetsApp {
             tab_colour: Popover::with_content(ColorSwatchPicker::new(Vec::new(), 1))
                 .side(PopoverSide::Above),
             tab_colour_shown: None,
+            cell_menu: ContextMenu::new(),
+            cell_menu_rows: Vec::new(),
+            cell_menu_target: None,
+            find_matches: Vec::new(),
+            find_current: None,
+            pending_find_replace: Vec::new(),
+            pending_ensure_visible: false,
             active_cell_bold: false,
             staged_overlay: None,
             tab_rename: None,
@@ -555,8 +610,9 @@ impl SheetsApp {
             live: None,
             active_sheet: 0,
             status: "Ready".into(),
-            status_bubble: ui::StatusBubble::new(),
-            staged_status: false,
+            status_notice: ui::widget::toast::Transient::new(),
+            status_said: String::new(),
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             staged: None,
             pending: Pending { redraw: true },
             last_press: None,
@@ -566,19 +622,28 @@ impl SheetsApp {
             global: Locale::default(),
             locale: None,
             doc_settings: DocSettings::default(),
-            motion: MotionPreference::Full,
             cache: None,
             pending_reveal: None,
             clipboard: None,
             palette: {
+                // window-bar: picker, type-ahead in the Ctrl+K command palette
                 let mut palette = CommandPalette::commands();
+                // window-bar: picker, the command palette's own query
                 palette.set_query_placeholder("Search commands\u{2026}");
                 palette
             },
             dispatch: None,
+            content: None,
+            people: None,
             opening: Rc::default(),
             selection_decls: std::cell::RefCell::default(),
+            file: None,
         }
+    }
+
+    /// The window shows the workbook of the file at `path`.
+    pub(crate) fn show_file_of(&mut self, path: PathBuf) {
+        self.file = Some(path);
     }
 
     /// Take part in the framework: submit workbook edits through its dispatcher.
@@ -619,21 +684,45 @@ impl SheetsApp {
         }
     }
 
-    /// How a comment's `author` is named to the person reading it: by
-    /// name, their own included.
-    fn author_name(&self, author: &str) -> String {
-        let me = self.dispatch.as_ref().and_then(|dispatch| dispatch.me());
+    /// How a comment's `author` is named to the person reading it: by the
+    /// name the room knows them by, their own included; never by a raw
+    /// participant id. Before anyone has named them, the reader is "You"
+    /// and anyone else "Someone"; a record from before ids, whose author
+    /// field holds a name, reads as that name.
+    pub(crate) fn author_name(&self, author: &str) -> String {
         if author.is_empty() {
-            "Someone".to_owned()
-        } else if me == Some(author)
-            && let Some(name) = ui::local_identity::bound()
+            return "Someone".to_owned();
+        }
+        if let Some(name) = self
+            .people
+            .as_ref()
+            .map(|people| people.name(author))
+            .filter(|name| name != author)
+        {
+            return name;
+        }
+        let me = self.dispatch.as_ref().and_then(|dispatch| dispatch.me()) == Some(author)
+            || self
+                .people
+                .as_ref()
+                .is_some_and(|people| people.is_me(author));
+        if me {
+            return ui::local_identity::bound()
                 .map(|identity| identity.display_name.trim().to_owned())
                 .filter(|name| !name.is_empty())
-        {
-            name
+                .unwrap_or_else(|| "You".to_owned());
+        }
+        if opaque_participant_id(author) {
+            "Someone".to_owned()
         } else {
             author.to_owned()
         }
+    }
+
+    /// Name comment authors from the room's roster.
+    pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
+        self.people = Some(people);
+        self.pending.redraw = true;
     }
 
     /// Follow the person's shared locale defaults.
@@ -641,20 +730,17 @@ impl SheetsApp {
         self.locale = Some(locale);
     }
 
-    /// Show the workbook as the resource holds it.
     pub(crate) fn adopt_resource_state(&mut self, state: &Rc<Workbook>) {
         if Rc::ptr_eq(state, &self.workbook) {
             return;
         }
         self.workbook = Rc::clone(state);
         self.revision = self.revision.wrapping_add(1);
-        self.sheet_names = state
-            .sheets
-            .values()
-            .map(|sheet| sheet.name.0.clone())
-            .collect();
-        self.sheet_colors = state.sheets.values().map(|sheet| sheet.color).collect();
-        self.sheet_ids = state.sheets.ids().cloned().collect();
+        // A hidden sheet has no tab; its cells still feed formulas.
+        let shown = || state.sheets.iter().filter(|(_, sheet)| !sheet.hidden);
+        self.sheet_names = shown().map(|(_, sheet)| sheet.name.0.clone()).collect();
+        self.sheet_colors = shown().map(|(_, sheet)| sheet.color).collect();
+        self.sheet_ids = shown().map(|(id, _)| id.clone()).collect();
         self.doc_settings = state.settings;
         self.pending.redraw = true;
     }
@@ -670,7 +756,6 @@ impl SheetsApp {
         }
     }
 
-    /// The active sheet's id.
     fn active_sheet_id(&self) -> Option<Id> {
         self.sheet_ids.get(self.active_sheet).cloned()
     }
@@ -688,8 +773,6 @@ impl SheetsApp {
                 .unwrap_or_default()
         }
     }
-
-    // --- action dispatch ----------------------------------------------------
 
     /// Submit `invoke` now through the workbook's dispatcher — the one door
     /// every edit takes, the palette's and an agent's too — and read the
@@ -985,13 +1068,6 @@ impl SheetsApp {
         self.settings_panel = SettingsPanel::Document;
     }
 
-    /// Pin the floating status bubble open, so a still frame shows the Sum /
-    /// Avg / Count pill or the message it carries rather than a bubble that
-    /// has faded.
-    fn pin_status_bubble(&mut self) {
-        self.staged_status = true;
-    }
-
     /// Stage a screenshot scenario's view state over the sample workbook its
     /// actions wrote: the active cell, an edit in progress, a message. A menu
     /// or sheet opens in the first measured frame (it anchors to what that
@@ -1004,10 +1080,9 @@ impl SheetsApp {
             self.grid.select_only(addr);
         }
         match scenario {
-            Some(
-                name @ ("file" | "format" | "more" | "docsettings" | "tabmenu" | "tabcolour"
-                | "tabrename"),
-            ) => self.staged_overlay = Some(name.to_owned()),
+            Some(name @ ("docsettings" | "tabmenu" | "tabcolour" | "tabrename" | "cellmenu")) => {
+                self.staged_overlay = Some(name.to_owned());
+            }
             Some("editing") => self.grid.begin_edit_in_place(),
             // A formula built purely by clicking cells (point mode): the
             // coloured references it inserted and the matching outlines on
@@ -1022,14 +1097,12 @@ impl SheetsApp {
             // Budget!B2:B6 — the January column body — and its summary.
             Some("summary") => {
                 self.grid.select_range_public((1, 1), (1, 5));
-                self.pin_status_bubble();
             }
             // Two separate highlighted rectangles with lit headers: the
             // January column body and the Q1 Total column.
             Some("multiselect") => {
                 self.grid.select_range_public((1, 1), (1, 5)); // B2:B6
                 self.grid.add_range_public((4, 1), (4, 6)); // E2:E7
-                self.pin_status_bubble();
             }
             // The range reference inside E2's `=SUM(B2:D2)` selected in the
             // editable formula bar.
@@ -1047,23 +1120,19 @@ impl SheetsApp {
             Some("pasteformula") => self.staged = Some(Staged::PasteFormula),
             Some("error") => {
                 self.status = "Excel import failed: the workbook is password protected".into();
-                self.pin_status_bubble();
             }
             // An incoming revision superseding the value being edited.
             Some("conflict") => {
                 self.status =
                     "Budget was updated by a collaborator; showing the latest value".into();
-                self.pin_status_bubble();
             }
             // The acknowledgement stays visible with animations suppressed.
             Some("reducedmotion") => {
                 self.set_motion_reduced(true);
                 self.status = "Pasted into B2:D4".into();
-                self.pin_status_bubble();
             }
             Some("charts" | "comments") => {
                 self.status = "2 charts and 1 resolved comment thread added".into();
-                self.pin_status_bubble();
             }
             // The bold header row, so the Bold command shows it is on.
             Some("bold") => self.grid.select_range_public((0, 0), (6, 0)),
@@ -1078,25 +1147,13 @@ impl SheetsApp {
             return;
         };
         match name.as_str() {
-            "file" => self.toolbar.open_command_menu(chrome::bar::FILE),
-            "format" => self.toolbar.open_command_menu(chrome::bar::FORMAT),
-            "more" => {
-                if self.toolbar.has_overflow() {
-                    self.toolbar.open_overflow();
-                } else {
-                    // Nothing to open, and a capture of the plain window under
-                    // this name would pass for the menu.
-                    #[allow(clippy::print_stderr, reason = "a capture-time diagnostic")]
-                    {
-                        eprintln!(
-                            "sheets: scenario `more` needs a window too narrow for the command \
-                             bar, for example --viewport 390x844 or --text-scale 2"
-                        );
-                    }
-                }
-            }
             "docsettings" => self.open_doc_settings(),
             "tabmenu" => self.open_tab_menu(0),
+            "cellmenu" => {
+                self.grid.select_only((1, 1));
+                let anchor = self.grid.cell_screen_rect(1, 1).center();
+                self.open_cell_menu(anchor);
+            }
             "tabrename" => self.begin_tab_rename(0),
             // The popover opens over tabs that already carry a colour.
             "tabcolour" => {
@@ -1153,8 +1210,6 @@ impl SheetsApp {
         self.locale().currency
     }
 
-    // --- document plumbing --------------------------------------------------
-
     /// Read the active sheet, recalculate, propagate formats onto computed
     /// cells, and push the data into the grid.
     ///
@@ -1181,7 +1236,16 @@ impl SheetsApp {
         let no_sheet = Id::default();
         let (snap, charts, comments) = match &current {
             Some((sheet, layout)) => (
-                sheet.snapshot_in(layout),
+                {
+                    // Formulas reading other sheets evaluate with the workbook.
+                    let snap = sheet.snapshot_in(layout);
+                    match self.active_sheet_id() {
+                        Some(id) if crate::formula::Book::needed(&snap.raw) => {
+                            state.snapshot_of(&id).unwrap_or(snap)
+                        }
+                        _ => snap,
+                    }
+                },
                 sheet.chart_snapshots(layout),
                 crate::workbook::Sheet::comment_snapshots(
                     self.sheet_ids.get(self.active_sheet).unwrap_or(&no_sheet),
@@ -1196,7 +1260,7 @@ impl SheetsApp {
         // The dock takes its height from the annotations, so the sheet
         // re-lays out whenever they change.
         self.relayout();
-        let values = formula::recalculate(&snap.raw);
+        let values = formula::recalculate_snapshot(&snap);
 
         // Effective per-cell formats: an explicit cell format wins; a
         // formula cell with no explicit format inherits from its operands.
@@ -1252,9 +1316,30 @@ impl SheetsApp {
             }
         }
         if !writes.is_empty() {
+            // A single typed entry that evaluates to an error says why right
+            // away: the selection usually moves on with Enter, so the error
+            // cell would otherwise sit there unexplained.
+            let single = match writes.as_slice() {
+                [(addr, ..)] => Some(*addr),
+                _ => None,
+            };
             self.write_raw(doc, writes);
             self.reload();
+            if let Some(addr) = single
+                && let Some(why) = self.error_explanation(addr)
+            {
+                self.status = format!("{}: {why}", crate::model::addr_to_a1(addr.0, addr.1));
+            }
         }
+    }
+
+    /// Why the cell at `addr` shows an error, in words, or `None` when its
+    /// value is not an error.
+    fn error_explanation(&self, addr: Addr) -> Option<String> {
+        let Some(CellValue::Error(err)) = self.grid.cell_value_at(addr) else {
+            return None;
+        };
+        Some(explain_formula_error(&self.grid.cell_raw_at(addr), err))
     }
 
     fn apply_format(&mut self, doc: &mut Edits<'_>, fmt: CellFormat) {
@@ -1287,8 +1372,6 @@ impl SheetsApp {
         self.reload();
         self.status = format!("Cleared format on {}", self.grid.selection_label());
     }
-
-    // --- clipboard ----------------------------------------------------------
 
     /// Copy (or cut) the current selection. The rich rectangle (raw + format)
     /// is retained for a lossless in-app paste, and a tab/newline-separated
@@ -1479,31 +1562,44 @@ impl SheetsApp {
     }
 
     /// `AutoSum`: scan upward from the active cell for a run of numeric cells
-    /// and write `=SUM(top:above)` into the active cell.
+    /// and write `=SUM(top:bottom)` into the active cell.
+    ///
+    /// Error cells directly above are stepped over (summing them would only
+    /// propagate the error), and the run stops at a blank, text, an error or
+    /// an existing total (a `SUM` formula), so a column's subtotal is never
+    /// counted twice.
     fn auto_sum(&mut self, doc: &mut Edits<'_>) {
         let (c, r) = self.grid.active();
         if r == 0 {
             self.status = "Nothing above to sum".into();
             return;
         }
-        let mut top = r;
-        for rr in (0..r).rev() {
+        let is_error =
+            |grid: &Grid, rr: u32| matches!(grid.cell_value_at((c, rr)), Some(CellValue::Error(_)));
+        let mut bottom = r;
+        while bottom > 0 && is_error(&self.grid, bottom - 1) {
+            bottom -= 1;
+        }
+        let mut top = bottom;
+        for rr in (0..bottom).rev() {
             let raw = self.grid.cell_raw_at((c, rr));
-            let is_num = raw.trim().parse::<f64>().is_ok() || raw.starts_with('=');
-            if raw.is_empty() || !is_num {
+            let is_formula = raw.starts_with('=');
+            let is_total = is_formula && raw.to_ascii_uppercase().contains("SUM(");
+            let is_num = raw.trim().parse::<f64>().is_ok() || is_formula;
+            if raw.is_empty() || !is_num || is_total || is_error(&self.grid, rr) {
                 break;
             }
             top = rr;
         }
-        if top == r {
+        if top == bottom {
             self.status = "No numeric run above".into();
             return;
         }
-        // `r > 0` here (the zero row returned above), so the run ends on `r - 1`.
+        // `top < bottom` here, so the run ends on `bottom - 1`.
         let formula = format!(
             "=SUM({}:{})",
             crate::model::addr_to_a1(c, top),
-            crate::model::addr_to_a1(c, r.saturating_sub(1))
+            crate::model::addr_to_a1(c, bottom.saturating_sub(1))
         );
         self.write_raw(doc, vec![((c, r), formula.clone(), None)]);
         self.reload();
@@ -1616,8 +1712,6 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    // --- file interchange ---------------------------------------------------
-
     /// Invoke one of the workbook's effects through its door, as the palette
     /// or an agent does.
     fn invoke_effect(&self, effect: &actions::SheetsEffect) {
@@ -1643,14 +1737,25 @@ impl SheetsApp {
             E::ExportXlsx { path } => self.export(Interchange::Xlsx, path, cx),
             E::ExportOds { path } => self.export(Interchange::Ods, path, cx),
             E::ReadCells { sheet, range } => {
+                let id = self
+                    .workbook
+                    .sheet_key(&Id::from_raw(sheet))
+                    .map_err(|refusal| refusal.0)?;
                 let snapshot = self
                     .workbook
-                    .sheet(&Id::from_raw(sheet))
-                    .ok_or_else(|| "no such sheet".to_owned())?
-                    .snapshot();
-                crate::cell_actions::read(&snapshot, range.as_deref())
-                    .map(ui::framework::Effected::value)
+                    .snapshot_of(&id)
+                    .ok_or_else(|| "no such sheet".to_owned())?;
+                crate::cell_actions::read(&snapshot, range.as_deref()).map(|mut read| {
+                    if let Some(fields) = read.as_object_mut() {
+                        fields.insert("item".into(), id.as_str().into());
+                    }
+                    ui::framework::Effected::value(read)
+                })
             }
+            E::ImportXlsxContent { content, title } => {
+                self.import_xlsx_content(&content, title, cx)
+            }
+            E::ExportXlsxContent => self.export_xlsx_content(),
             E::Commands => {
                 let resources = self.published();
                 self.open_palette_with(&resources);
@@ -1789,7 +1894,7 @@ impl SheetsApp {
         source: Option<String>,
         cx: &ui::framework::EffectCx<Workbook, Self>,
     ) -> ui::framework::EffectAnswer {
-        let built = tables.and_then(|tables| self.import_action(tables, source));
+        let built = tables.and_then(|tables| self.import_action(tables, source, None));
         let (invoke, total) = match built {
             Ok(built) => built,
             Err(error) => return self.failed(error),
@@ -1818,16 +1923,10 @@ impl SheetsApp {
         let sheets: Vec<crate::workbook::SheetSnapshot> = match format {
             Interchange::Csv => active
                 .as_ref()
-                .and_then(|id| self.workbook.sheet(id))
-                .map(crate::workbook::Sheet::snapshot)
+                .and_then(|id| self.workbook.snapshot_of(id))
                 .into_iter()
                 .collect(),
-            Interchange::Xlsx | Interchange::Ods => self
-                .workbook
-                .sheets
-                .values()
-                .map(crate::workbook::Sheet::snapshot)
-                .collect(),
+            Interchange::Xlsx | Interchange::Ods => self.workbook_snapshots(),
         };
         let Some(name) = active
             .as_ref()
@@ -1894,6 +1993,7 @@ impl SheetsApp {
         &self,
         tables: Vec<crate::xlsx::SheetTable>,
         source: Option<String>,
+        title: Option<String>,
     ) -> Result<(Invoke<Workbook>, usize), String> {
         use crate::resource::{CellWrite, ImportedSheet};
         let cur = self.default_currency();
@@ -1939,9 +2039,14 @@ impl SheetsApp {
             sheets.push(ImportedSheet {
                 name,
                 cells: writes.into_iter().map(|(_, write)| write).collect(),
+                hidden: table.hidden,
             });
         }
-        let invoke = Workbook::IMPORT_SHEETS.with(verbs::ImportSheets { sheets, source });
+        let invoke = Workbook::IMPORT_SHEETS.with(verbs::ImportSheets {
+            sheets,
+            source,
+            title,
+        });
         Ok((invoke, total))
     }
 
@@ -2033,6 +2138,7 @@ impl SheetsApp {
                 }
                 Ok(vec![crate::xlsx::SheetTable {
                     name: csv_name.to_string(),
+                    hidden: false,
                     rows,
                 }])
             }
@@ -2075,7 +2181,7 @@ impl SheetsApp {
     }
 
     fn table_from_snapshot(snap: &crate::workbook::SheetSnapshot) -> crate::xlsx::SheetTable {
-        let values = formula::recalculate(&snap.raw);
+        let values = formula::recalculate_snapshot(snap);
         let mut fmt = snap.fmt.clone();
         for (addr, raw) in &snap.raw {
             if !snap.fmt.contains_key(addr)
@@ -2085,7 +2191,10 @@ impl SheetsApp {
                 fmt.insert(*addr, inferred);
             }
         }
-        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
+        crate::xlsx::SheetTable {
+            hidden: snap.hidden,
+            ..crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
+        }
     }
 
     /// Add `tables` as new sheets now, as an import does, and show the last.
@@ -2095,7 +2204,7 @@ impl SheetsApp {
         doc: &mut Edits<'_>,
         tables: Vec<crate::xlsx::SheetTable>,
     ) -> Result<usize, String> {
-        let (invoke, total) = self.import_action(tables, None)?;
+        let (invoke, total) = self.import_action(tables, None, None)?;
         if !self.submit(doc, invoke) {
             return Err(self.status.clone());
         }
@@ -2122,8 +2231,10 @@ impl SheetsApp {
         self.submit(
             doc,
             Workbook::NEW_SHEET.with(verbs::NewSheet {
-                name: None,
-                after: None,
+                new: crate::resource::SheetSpec {
+                    after: None,
+                    ..crate::resource::SheetSpec::default()
+                },
             }),
         );
         // The active sheet tab is presentation, not a document change. The
@@ -2133,8 +2244,6 @@ impl SheetsApp {
         self.reload();
         self.status = "Added sheet".into();
     }
-
-    // --- settings actions ---------------------------------------------------
 
     fn apply_setting(&mut self, doc: &mut Edits<'_>, kind: SettingKind) {
         match kind {
@@ -2156,8 +2265,6 @@ impl SheetsApp {
         self.reload();
     }
 
-    // --- command palette ----------------------------------------------------
-
     /// Seed the Ctrl+K command palette with the current action set and open it.
     /// Rebuilt each time so argument prefills (e.g. the active cell reference)
     /// stay current. Every entry is wired to a real mutation in
@@ -2170,7 +2277,6 @@ impl SheetsApp {
     /// Open the command palette on `resources`, the workbook as published.
     fn open_palette_with(&mut self, resources: &[tilo_actions::Resource]) {
         // Close any other overlay so the palette owns the surface.
-        self.toolbar.close_menus();
         self.settings_panel = SettingsPanel::None;
         self.tab_menu_target = None;
         self.name_box_edit = None;
@@ -2367,8 +2473,6 @@ impl SheetsApp {
         );
     }
 
-    // --- layout -------------------------------------------------------------
-
     /// The File menu's rows, in order.
     fn file_menu_items() -> [(&'static str, MenuItem); 7] {
         [
@@ -2466,16 +2570,23 @@ impl SheetsApp {
         })
     }
 
-    /// The text for the floating status bubble, or `None` when there is nothing
-    /// worth surfacing (an idle sheet: no pending action, no numeric selection,
-    /// a plain `General` active cell — which keeps the bubble hidden).
+    /// What the window's bar says about the sheet, or `None` when there is
+    /// nothing worth saying (an idle sheet: no pending action, no numeric
+    /// selection, a plain `General` active cell).
     ///
     /// A fresh transient action message (e.g. "Pasted into B2") wins; absent
     /// one, the text is the live selection summary (count, sum and average of
     /// the numeric selection) or, absent numbers, the active cell's format.
     /// The idle default `"Ready"` (and the empty string) count as "no action
     /// message" so they never surface on their own.
-    fn status_bubble_label(&self) -> Option<String> {
+    fn status_label(&self) -> Option<String> {
+        // A selected error cell explains itself before anything else.
+        let (lo, hi) = self.grid.selection_bounds();
+        if lo == hi
+            && let Some(why) = self.error_explanation(self.grid.active())
+        {
+            return Some(why);
+        }
         let summary = self.selection_summary().map(|s| {
             format!(
                 "{} numbers: sum {}, average {}",
@@ -2506,6 +2617,42 @@ impl SheetsApp {
                 }
             }
         }
+    }
+}
+
+/// A sentence saying why a cell holding `raw` evaluates to `err`. For a
+/// formula that could not be read, it names the most likely mistake.
+fn explain_formula_error(raw: &str, err: crate::model::FormulaError) -> String {
+    use crate::model::FormulaError;
+    match err {
+        FormulaError::Error => {
+            let body = raw.trim_start_matches('=').trim_end();
+            let opens = body.matches('(').count();
+            let closes = body.matches(')').count();
+            if body.is_empty() {
+                "The formula is empty: type a value or reference after =".into()
+            } else if body.ends_with(['+', '-', '*', '/', '^', '&', '=', '<', '>', ',', ';']) {
+                "The formula ends with an operator: add a value or reference after it".into()
+            } else if opens > closes {
+                "A parenthesis is opened but not closed".into()
+            } else if closes > opens {
+                "A closing parenthesis has no matching opening one".into()
+            } else if body.matches('"').count() % 2 == 1 {
+                "A text value is missing its closing quote".into()
+            } else {
+                "The formula could not be read: check for a missing value, operator or parenthesis"
+                    .into()
+            }
+        }
+        FormulaError::Div0 => "Division by zero or by an empty cell".into(),
+        FormulaError::Name => "Unknown function or name".into(),
+        FormulaError::Ref => "The formula refers to a cell that does not exist".into(),
+        FormulaError::Value => {
+            "A value has the wrong type for this operation, such as text in arithmetic".into()
+        }
+        FormulaError::Na => "No value is available, such as a lookup that found nothing".into(),
+        FormulaError::Num => "The result is not a valid number".into(),
+        FormulaError::Cycle => "The formula depends on its own cell (circular reference)".into(),
     }
 }
 
@@ -2591,8 +2738,8 @@ fn file_label(path: &std::path::Path) -> String {
 impl Widget for SheetsApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
-        dyn ui::presence::capability::PublishesPresence,
-        dyn ui::widget::WindowHeader
+        dyn ui::widget::Findable,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -2608,14 +2755,28 @@ impl Widget for SheetsApp {
             self.global = locale.get();
         }
         self.reload();
+        if self.pending_ensure_visible {
+            self.pending_ensure_visible = false;
+            self.grid.ensure_active_visible();
+        }
         self.current_active_format = self.format_of_active();
         self.active_cell_bold = self.grid.cell_is_bold(self.grid.active());
-        // Hand the composed label to the floating status bubble. It shows
-        // only when the text actually changes — a selection move/extend, or a
-        // fresh action message — so calling this every frame is fine, and the
-        // idle nothing state (empty label) never surfaces.
-        let label = self.status_bubble_label().unwrap_or_default();
-        self.status_bubble.show(&label, ui::time::now());
+        // Say the composed label in the window's bar when it changes — a
+        // selection move/extend, or a fresh action message; the idle
+        // nothing state (empty label) never surfaces.
+        let label = self.status_label().unwrap_or_default();
+        if label != self.status_said {
+            if label.is_empty() {
+                self.status_notice.dismiss();
+            } else {
+                self.status_notice.show(label.clone());
+            }
+            self.status_said = label;
+        }
+        self.status_notice.expire();
+        self.status_notice.publish(|text| {
+            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
+        });
     }
 
     fn build_layout(
@@ -2634,7 +2795,11 @@ impl Widget for SheetsApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        let area = ui::widget::layout_rect(taffy, node, origin);
+        if area != self.rect {
+            self.pending_ensure_visible = true;
+        }
+        self.rect = area;
         self.relayout();
     }
 
@@ -2650,23 +2815,68 @@ impl Widget for SheetsApp {
         // Measure first, so this frame's chrome (and the hit-rects it leaves
         // behind) is laid out from the renderer that is about to paint it.
         self.refresh_chrome_metrics(text_renderer, theme);
+        // A resize that arrived without a sync still keeps the active cell in
+        // view: the draw is the first moment the new metrics are settled.
+        if self.pending_ensure_visible {
+            self.pending_ensure_visible = false;
+            self.grid.ensure_active_visible();
+        }
         // A staged menu or sheet opens once the chrome is measured, so it
         // anchors to what is painted (and the More menu knows whether the bar
         // overflowed).
         self.apply_staged_overlay();
-        self.draw_chrome(scene, transform, text_renderer, theme, presence);
-        self.grid.draw(scene, transform, text_renderer, theme);
-        self.draw_cell_presence(scene, transform, text_renderer, theme, presence);
-        self.draw_annotation_dock(scene, transform, text_renderer, theme);
-        // The transient floating status bubble sits above the grid and the
-        // tab strip, below the top layer.
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
-        self.draw_tab_rename(scene, transform, text_renderer, theme);
+        // Each region is a part of its own, so the frame reports as damage
+        // the regions whose drawing changed: a typed character repaints the
+        // editor and the formula bar, not the window.
+        let window = self.rect;
+        let tr = text_renderer;
+        let mut parts = PaintParts::new(scene);
+        self.draw_chrome(&mut parts, scene, transform, tr, theme, presence);
+        self.grid.draw(&mut parts, scene, transform, tr, theme);
+        parts.draw(scene, "sheet-find-matches", self.grid_rect, |scene| {
+            let body = self.grid.body_rect();
+            for (index, found) in self.find_matches.iter().enumerate() {
+                if found.sheet != self.active_sheet {
+                    continue;
+                }
+                let cell = self.grid.cell_screen_rect(found.addr.0, found.addr.1);
+                let visible = cell.intersect(body);
+                if visible.area() > 0.0 {
+                    ui::widget::paint_find_match(
+                        scene,
+                        transform,
+                        visible,
+                        self.find_current == Some(index),
+                        theme,
+                    );
+                }
+            }
+        });
+        parts.draw(scene, "sheet-comment-markers", window, |scene| {
+            self.draw_comment_markers(scene, transform, theme);
+        });
+        parts.draw(scene, "sheet-cell-presence", window, |scene| {
+            self.draw_cell_presence(scene, transform, tr, theme, presence);
+        });
+        parts.draw(scene, "sheet-annotations", window, |scene| {
+            self.draw_annotation_dock(scene, transform, tr, theme);
+        });
+        // The open comment floats over the cells beside its own.
+        parts.draw(scene, "sheet-comment", window, |scene| {
+            self.draw_comment_popover(scene, transform, tr, theme);
+        });
+        parts.draw(scene, "sheet-tab-rename", window, |scene| {
+            self.draw_tab_rename(scene, transform, tr, theme);
+        });
         // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
         // glow that sheet's tab in their colour so you can see where they
         // went ("Alice is on Q2"). Painted after the chrome so it reads on
         // top of the tab surface.
-        self.draw_sheet_tab_presence(scene, transform, theme, presence);
+        parts.draw(scene, "sheet-tab-presence", window, |scene| {
+            self.draw_sheet_tab_presence(scene, transform, theme, presence);
+        });
+        self.paint_damage
+            .record(window, parts.finish(scene, vec![window], transform, theme));
     }
 
     fn draw_overlay(
@@ -2681,22 +2891,40 @@ impl Widget for SheetsApp {
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
-        self.motion = if reduced {
-            MotionPreference::Reduced
-        } else {
-            MotionPreference::Full
-        };
         self.palette.set_motion_reduced(reduced);
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming while the floating status bubble is lingering /
-        // fading, so it hides itself without needing a stray pointer event.
-        (self.motion == MotionPreference::Full && self.status_bubble.needs_frame(ui::time::now()))
+        self.dock_scroll.needs_animation_frame(&self.chrome_theme)
             || self.children().iter().any(|c| c.needs_animation_frame())
     }
 
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .chain(self.status_notice.deadline())
+            .min()
+    }
+
+    /// The annotation dock glides on after a sideways flick, as the wheel
+    /// scrolls it; that changes no model.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        if self.dock_scroll.advance() {
+            self.pending.redraw = true;
+        }
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
+    }
+
     fn settle(&mut self, edits: &mut Edits<'_>, _path: &ObjId) {
+        // What the window's search asked to replace goes through the
+        // workbook's own edit path, with the document in hand.
+        self.drain_find_replace(edits);
+        self.apply_window_toolbar(edits);
         if let Some(opening) = self.opening.borrow_mut().take() {
             self.pending_reveal = Some(opening);
         }
@@ -2729,6 +2957,33 @@ impl Widget for SheetsApp {
     fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = event_ctx.logical(position);
+        }
+        // Find and replace open the window bar's search, which owns the
+        // field and the keys: the sheet's matches are painted from its
+        // find, never typed into a field of the sheet's own.
+        if let WindowEvent::KeyboardInput { event: key, .. } = event {
+            let ctrl = event_ctx.modifiers.state().control_key()
+                || event_ctx.modifiers.state().super_key();
+            let shift = event_ctx.modifiers.state().shift_key();
+            if key.state == ElementState::Pressed
+                && ctrl
+                && !self.palette.is_open()
+                && self.settings_panel == SettingsPanel::None
+                && self.name_box_edit.is_none()
+                && self.tab_rename.is_none()
+                && let winit::keyboard::Key::Character(character) = &key.logical_key
+            {
+                if character.eq_ignore_ascii_case("f") && !shift {
+                    self.open_find(ui::window_toolbar::SearchOpening::Find);
+                    *event_ctx.handled = true;
+                    return;
+                }
+                if character.eq_ignore_ascii_case("h") {
+                    self.open_find(ui::window_toolbar::SearchOpening::Replace);
+                    *event_ctx.handled = true;
+                    return;
+                }
+            }
         }
         // A menu or popover over the sheet is modal and takes the event first.
         if self.route_overlays(event, event_ctx) {
@@ -2825,6 +3080,16 @@ impl Widget for SheetsApp {
         "SheetsApp"
     }
 
+    /// The grid owns Tab, as every spreadsheet's does: it commits the cell
+    /// and moves right (Shift+Tab left) instead of handing focus to the next
+    /// control. An open palette, settings sheet or name-box edit leaves Tab
+    /// to the host's focus order.
+    fn wants_tab_input(&self) -> bool {
+        !self.palette.is_open()
+            && self.settings_panel == SettingsPanel::None
+            && self.name_box_edit.is_none()
+    }
+
     /// A cell being edited takes input-method composition.
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
         self.grid
@@ -2847,49 +3112,43 @@ impl Widget for SheetsApp {
         use ui::a11y::{AccessNode, AccessState, Role};
         let active = self.grid.active();
         let active_name = crate::model::addr_to_a1(active.0, active.1);
-        // The command bar's own nodes (its commands, the More button and
-        // any open menu), the window's History control, then the formula bar.
-        let toolbar_controls: Vec<AccessNode> = Widget::accessibility(&self.toolbar)
-            .map(|toolbar| toolbar.children)
-            .unwrap_or_default()
-            .into_iter()
-            .chain(self.history.accessibility(self.history_rect))
-            .chain([
-                AccessNode::new(Role::Button)
-                    .with_name("Start a formula")
-                    .with_description("Begin a formula in the active cell")
-                    .with_action_target("sheets.fx")
-                    .with_bounds(self.fx_rect)
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::TextInput)
-                    .with_name("Name box")
-                    .with_description("Go to a cell or range; shortcut Control+G")
-                    .with_value(self.grid.selection_label())
-                    .with_action_target("sheets.name-box")
-                    .with_bounds(self.name_box_rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.name_box_edit.is_some()),
-                    ),
-                AccessNode::new(Role::TextInput)
-                    .with_name("Formula bar")
-                    .with_description("Edit the active cell's value or formula")
-                    .with_value(self.grid.active_display_raw())
-                    .with_action_target("sheets.formula-bar")
-                    .with_bounds(self.formula_field_rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.grid.is_editing()),
-                    ),
-                AccessNode::new(Role::Button)
-                    .with_name("Add sheet")
-                    .with_action_target("sheets.new-sheet")
-                    .with_bounds(self.add_tab_rect)
-                    .with_state(AccessState::new().focusable(true)),
-            ])
-            .collect();
+        // The formula bar; the commands are the window bar's.
+        let toolbar_controls: Vec<AccessNode> = [
+            AccessNode::new(Role::Button)
+                .with_name("Start a formula")
+                .with_description("Begin a formula in the active cell")
+                .with_action_target("sheets.fx")
+                .with_bounds(self.fx_rect)
+                .with_state(AccessState::new().focusable(true)),
+            AccessNode::new(Role::TextInput)
+                .with_name("Name box")
+                .with_description("Go to a cell or range; shortcut Control+G")
+                .with_value(self.grid.selection_label())
+                .with_action_target("sheets.name-box")
+                .with_bounds(self.name_box_rect)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.name_box_edit.is_some()),
+                ),
+            AccessNode::new(Role::TextInput)
+                .with_name("Formula bar")
+                .with_description("Edit the active cell's value or formula")
+                .with_value(self.grid.active_display_raw())
+                .with_action_target("sheets.formula-bar")
+                .with_bounds(self.formula_field_rect)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.grid.is_editing()),
+                ),
+            AccessNode::new(Role::Button)
+                .with_name("Add sheet")
+                .with_action_target("sheets.new-sheet")
+                .with_bounds(self.add_tab_rect)
+                .with_state(AccessState::new().focusable(true)),
+        ]
+        .into();
         let tabs = self
             .sheet_names
             .iter()
@@ -3095,21 +3354,22 @@ impl Widget for SheetsApp {
                     }))
                     .collect(),
             );
+        let children = vec![
+            AccessNode::new(Role::Toolbar)
+                .with_name("Spreadsheet actions")
+                .with_children(toolbar_controls),
+            AccessNode::new(Role::TabBar)
+                .with_name("Sheets")
+                .with_children(tabs),
+            sheet,
+            annotations,
+        ];
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Spreadsheet")
                 .with_description("Editable workbook with formula bar and sheet tabs")
                 .with_state(AccessState::new().focusable(true))
-                .with_children(vec![
-                    AccessNode::new(Role::Toolbar)
-                        .with_name("Spreadsheet actions")
-                        .with_children(toolbar_controls),
-                    AccessNode::new(Role::TabBar)
-                        .with_name("Sheets")
-                        .with_children(tabs),
-                    sheet,
-                    annotations,
-                ]),
+                .with_children(children),
         )
     }
 
@@ -3118,20 +3378,8 @@ impl Widget for SheetsApp {
         target: &str,
         action: &ui::a11y::Action,
         state: &mut Edits<'_>,
-        path: &ModelPath,
+        _path: &ModelPath,
     ) -> bool {
-        if self.history.perform_semantic_action(target, action) {
-            self.pending.redraw = true;
-            return true;
-        }
-        if self
-            .toolbar
-            .perform_semantic_action(target, action, state, path)
-        {
-            self.drain_command_bar(state);
-            self.pending.redraw = true;
-            return true;
-        }
         let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
         if activates {
             match target {
@@ -3179,9 +3427,27 @@ impl Widget for SheetsApp {
         self.pending.redraw || self.grid.dirty()
     }
 
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+
+    fn damage_covers_own_box(&self) -> bool {
+        self.paint_damage.covers_own_bounds()
+    }
+
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
+
     fn mark_drawn(&mut self) {
         self.pending.redraw = false;
         self.grid.mark_drawn();
+        self.paint_damage.mark_drawn();
     }
 
     /// The grid fills its node and places everything in it in
@@ -3206,24 +3472,9 @@ impl ui::presence::capability::PublishesPresence for SheetsApp {
     }
 }
 
-/// The command bar's row is the window's header row: it holds the History
-/// control the host offers, so the window draws no History bar above the
-/// sheet.
-impl ui::widget::WindowHeader for SheetsApp {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        if self.history.control() != control {
-            self.history.set_control(control);
-            self.relayout();
-            self.pending.redraw = true;
-        }
-    }
-}
-
 impl ui::widget::controls::ActionControls for SheetsApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.history
-            .take()
-            .or_else(|| self.palette.take_control_invocation())
+        self.palette.take_control_invocation()
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         use ui::widget::Widget as _;
@@ -3684,7 +3935,280 @@ impl SheetsApp {
             self.open_tab_menu(idx);
             self.pending.redraw = true;
             *handled = true;
+            return;
         }
+        // Right-click on a cell opens the cell menu. Pressing a cell outside
+        // the selection makes it the selection first, as a right-press does
+        // in every spreadsheet; a press inside one keeps the range so a
+        // multi-row delete is one action.
+        if let Some(addr) = self.cell_under(p) {
+            if !self.grid.selected_cells().contains(&addr) {
+                self.grid.select_only(addr);
+            }
+            self.open_cell_menu(p);
+            self.pending.redraw = true;
+            *handled = true;
+        }
+    }
+
+    /// Open the cell context menu at `p`, naming the range and the count each
+    /// structural edit will act on.
+    fn open_cell_menu(&mut self, p: Point) {
+        self.close_overlays();
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        let rows = span(r0, r1);
+        let cols = span(c0, c1);
+        let plural = |n: u32, one: &str, many: &str| {
+            if n == 1 {
+                one.to_owned()
+            } else {
+                format!("{n} {many}")
+            }
+        };
+        let first_col = crate::model::col_to_letters(c0);
+        let last_col = crate::model::col_to_letters(c1);
+        let all_bold = self
+            .grid
+            .selected_cells()
+            .iter()
+            .all(|addr| self.grid.cell_is_bold(*addr));
+        let mut context = ContextMenu::new();
+        let mut rows_out: Vec<Option<CellMenuRow>> = Vec::new();
+        macro_rules! row {
+            ($label:expr, $item:expr) => {{
+                context.push(Row::selection($label));
+                rows_out.push(Some($item));
+            }};
+        }
+        macro_rules! destructive {
+            ($label:expr, $item:expr) => {{
+                context.push(Row::destructive_selection($label));
+                rows_out.push(Some($item));
+            }};
+        }
+        macro_rules! separator {
+            () => {{
+                context.push(Row::separator());
+                rows_out.push(None);
+            }};
+        }
+        row!("Cut", CellMenuRow::Cut);
+        row!("Copy", CellMenuRow::Copy);
+        row!("Paste", CellMenuRow::Paste);
+        separator!();
+        row!(
+            format!("Insert {} above", plural(rows, "row", "rows")),
+            CellMenuRow::InsertRowsAbove
+        );
+        row!(
+            format!("Insert {} below", plural(rows, "row", "rows")),
+            CellMenuRow::InsertRowsBelow
+        );
+        destructive!(
+            format!("Delete {}", plural(rows, "row", "rows")),
+            CellMenuRow::DeleteRows
+        );
+        separator!();
+        row!(
+            format!(
+                "Insert {} left of {}",
+                plural(cols, "column", "columns"),
+                first_col
+            ),
+            CellMenuRow::InsertColumnsLeft
+        );
+        row!(
+            format!(
+                "Insert {} right of {}",
+                plural(cols, "column", "columns"),
+                last_col
+            ),
+            CellMenuRow::InsertColumnsRight
+        );
+        destructive!(
+            format!("Delete {}", plural(cols, "column", "columns")),
+            CellMenuRow::DeleteColumns
+        );
+        separator!();
+        row!("Clear contents", CellMenuRow::ClearContents);
+        context.push(Row::selection(if all_bold { "Regular" } else { "Bold" }));
+        rows_out.push(Some(CellMenuRow::Bold));
+        let currency = self.default_currency();
+        row!(
+            "Format as currency",
+            CellMenuRow::Format(CellFormat::Currency(currency))
+        );
+        row!(
+            "Format as percent",
+            CellMenuRow::Format(CellFormat::Percent)
+        );
+        row!("Clear formatting", CellMenuRow::ClearFormat);
+        context.set_align(ui::widget::PanelAlign::Leading);
+        context.open_at_clamped([p.x as f32, p.y as f32], self.float_bounds());
+        self.cell_menu = context;
+        self.cell_menu_rows = rows_out;
+        self.cell_menu_target = self.cell_under(p);
+        self.pending.redraw = true;
+    }
+
+    /// Run the row the open cell menu reported, if any.
+    fn drain_cell_menu(&mut self, doc: &mut Edits<'_>) {
+        if let Some(choice) = self.cell_menu.take_selection() {
+            let row = self.cell_menu_rows.get(choice).copied().flatten();
+            if let Some(row) = row {
+                self.run_cell_menu_row(doc, row);
+            }
+            self.cell_menu_target = None;
+        }
+        if !self.cell_menu.is_open() {
+            self.cell_menu_target = None;
+        }
+        self.pending.redraw = true;
+    }
+
+    /// One cell-menu command. Structural edits reach the workbook as a single
+    /// verb with the range's count or rows, so undo takes the whole change
+    /// back in one step; cell contents and formats go through the app's
+    /// grouped write path, which is also one step.
+    fn run_cell_menu_row(&mut self, doc: &mut Edits<'_>, row: CellMenuRow) {
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        let Some(sheet) = self.active_sheet_id() else {
+            return;
+        };
+        match row {
+            CellMenuRow::Cut => {
+                self.copy_selection(true);
+                self.status = "Cut selection".into();
+            }
+            CellMenuRow::Copy => {
+                self.copy_selection(false);
+                self.status = "Copied selection".into();
+            }
+            CellMenuRow::Paste => {
+                self.paste(doc);
+            }
+            CellMenuRow::InsertRowsAbove => {
+                let count = span(r0, r1);
+                self.submit(
+                    doc,
+                    Workbook::INSERT_ROWS.with(verbs::InsertRows {
+                        sheet,
+                        at: r0.saturating_add(1),
+                        count: Some(count),
+                    }),
+                );
+                self.reload();
+                self.status = format!(
+                    "Inserted {} above row {}",
+                    if count == 1 {
+                        "row".to_owned()
+                    } else {
+                        format!("{count} rows")
+                    },
+                    r0.saturating_add(1)
+                );
+            }
+            CellMenuRow::InsertRowsBelow => {
+                let count = span(r0, r1);
+                let at = r1.saturating_add(2);
+                self.submit(
+                    doc,
+                    Workbook::INSERT_ROWS.with(verbs::InsertRows {
+                        sheet,
+                        at,
+                        count: Some(count),
+                    }),
+                );
+                self.reload();
+                self.status = format!(
+                    "Inserted {} below row {}",
+                    if count == 1 {
+                        "row".to_owned()
+                    } else {
+                        format!("{count} rows")
+                    },
+                    r1.saturating_add(1)
+                );
+            }
+            CellMenuRow::DeleteRows => {
+                let rows: Vec<u32> = (r0..=r1).map(|r| r.saturating_add(1)).collect();
+                let count = rows.len();
+                self.submit(
+                    doc,
+                    Workbook::DELETE_ROWS.with(verbs::DeleteRows { sheet, rows }),
+                );
+                self.reload();
+                self.status = format!(
+                    "Deleted {}",
+                    if count == 1 {
+                        "row".to_owned()
+                    } else {
+                        format!("{count} rows")
+                    }
+                );
+            }
+            CellMenuRow::InsertColumnsLeft => {
+                let count = span(c0, c1);
+                let at = crate::model::col_to_letters(c0);
+                self.submit(
+                    doc,
+                    Workbook::INSERT_COLUMNS.with(verbs::InsertColumns {
+                        sheet,
+                        at: at.clone(),
+                        count: Some(count),
+                    }),
+                );
+                self.reload();
+                self.status = format!("Inserted {count} column(s) left of {at}");
+            }
+            CellMenuRow::InsertColumnsRight => {
+                let count = span(c0, c1);
+                let at = crate::model::col_to_letters(c1.saturating_add(1));
+                self.submit(
+                    doc,
+                    Workbook::INSERT_COLUMNS.with(verbs::InsertColumns {
+                        sheet,
+                        at: at.clone(),
+                        count: Some(count),
+                    }),
+                );
+                self.reload();
+                self.status = format!("Inserted {count} column(s) right of {at}");
+            }
+            CellMenuRow::DeleteColumns => {
+                let columns: Vec<String> = (c0..=c1).map(crate::model::col_to_letters).collect();
+                let count = columns.len();
+                self.submit(
+                    doc,
+                    Workbook::DELETE_COLUMNS.with(verbs::DeleteColumns { sheet, columns }),
+                );
+                self.reload();
+                self.status = format!(
+                    "Deleted {}",
+                    if count == 1 {
+                        "column".to_owned()
+                    } else {
+                        format!("{count} columns")
+                    }
+                );
+            }
+            CellMenuRow::ClearContents => {
+                let writes: Vec<(Addr, String, Option<CellFormat>)> = self
+                    .grid
+                    .selected_cells()
+                    .into_iter()
+                    .map(|addr| (addr, String::new(), None))
+                    .collect();
+                let count = writes.len();
+                self.write_raw(doc, writes);
+                self.reload();
+                self.status = format!("Cleared {count} cell(s)");
+            }
+            CellMenuRow::Bold => self.toggle_bold(doc),
+            CellMenuRow::Format(format) => self.apply_format(doc, format),
+            CellMenuRow::ClearFormat => self.clear_format(doc),
+        }
+        self.pending.redraw = true;
     }
 
     fn handle_cursor_moved(&mut self, x: f64, y: f64, scale_factor: f64, handled: &mut bool) {
@@ -3692,9 +4216,7 @@ impl SheetsApp {
         self.last_mouse = Point::new(x / scale_factor, y / scale_factor);
         // The painted buttons and tabs light up under the pointer, so a move
         // into, within or out of the bars repaints them.
-        let on_bar = |p: Point| {
-            self.toolbar_rect.contains(p) || self.tabs_rect.contains(p) || self.annotation_hit(p)
-        };
+        let on_bar = |p: Point| self.tabs_rect.contains(p) || self.annotation_hit(p);
         if on_bar(before) || on_bar(self.last_mouse) {
             self.pending.redraw = true;
         }
@@ -3765,10 +4287,26 @@ impl SheetsApp {
             *handled = true;
             return;
         }
-        // Familiar spreadsheet navigation remains available even when the
-        // compact toolbar has moved secondary commands into More.
+        // Familiar spreadsheet navigation stays on the keyboard, whatever
+        // the window bar has room for.
         if let WindowEvent::KeyboardInput { event: ke, .. } = event {
             let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+            let shift = modifiers.state().shift_key();
+            if ke.state.is_pressed()
+                && ctrl
+                && let winit::keyboard::Key::Character(c) = &ke.logical_key
+            {
+                if c.as_str().eq_ignore_ascii_case("f") && !shift {
+                    self.open_find(ui::window_toolbar::SearchOpening::Find);
+                    *handled = true;
+                    return;
+                }
+                if c.as_str().eq_ignore_ascii_case("h") {
+                    self.open_find(ui::window_toolbar::SearchOpening::Replace);
+                    *handled = true;
+                    return;
+                }
+            }
             if ke.state.is_pressed()
                 && ctrl
                 && !self.grid.is_editing()
@@ -4074,6 +4612,16 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
+    // --- find and replace --------------------------------------------------
+
+    /// Open the window bar's search on the workbook: on its query for Find,
+    /// on its replacement for Replace. The bar hosts the field at every
+    /// width, with match case, whole word and the replacement.
+    fn open_find(&mut self, opening: ui::window_toolbar::SearchOpening) {
+        self.close_overlays();
+        ui::window_toolbar::open_search(opening);
+    }
+
     // --- name box (Go-To) + fx formula entry -------------------------------
 
     /// Open the Name box for a Go-To entry, seeded with the active cell's
@@ -4165,8 +4713,10 @@ impl SheetsApp {
                 if self.submit(
                     doc,
                     Workbook::NEW_SHEET.with(verbs::NewSheet {
-                        name: None,
-                        after: Some(id),
+                        new: crate::resource::SheetSpec {
+                            after: Some(id),
+                            ..crate::resource::SheetSpec::default()
+                        },
                     }),
                 ) {
                     self.active_sheet = idx + 1;
@@ -4241,6 +4791,12 @@ mod r2_annotation_cards;
 mod interaction_tests;
 
 #[cfg(test)]
+mod entry_tests;
+
+#[cfg(test)]
+mod window_bar_tests;
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::actions::SheetsEffect;
@@ -4278,7 +4834,6 @@ pub(crate) mod tests {
         crate::sample::replica().doc().clone()
     }
 
-    /// The workbook `doc` holds.
     pub(crate) fn doc_workbook(doc: &AutoCommit) -> Workbook {
         use ui::tilo_resource::Resource as _;
         Workbook::read(doc).unwrap()
@@ -4402,7 +4957,7 @@ pub(crate) mod tests {
         )
     }
 
-    /// Chrome bands, status bubble, tabs, settings sheet, tab menu and pointer targets follow measured text.
+    /// Chrome bands, tabs, settings sheet, tab menu and pointer targets follow measured text.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -4411,16 +4966,15 @@ pub(crate) mod tests {
     fn chrome_density_follows_measured_text() {
         // Case `chrome_metrics_keep_the_one_x_density`.
         // At 1× the measured chrome is built from the toolkit's control
-        // heights and the spacing scale: the command bar is the window's
-        // header row, a 40 px formula bar, a 44 px tab strip, the
-        // small control height for the column header and the default row, and
-        // a 56 px row header.
+        // heights and the spacing scale: a 40 px formula bar at the top (the
+        // commands are the window bar's), a 44 px tab strip, the small
+        // control height for the column header and the default row, and a
+        // 56 px row header.
         {
-            let (app, _tr, theme) = measured_app(1280.0, 720.0, 1.0);
+            let (app, _tr, _theme) = measured_app(1280.0, 720.0, 1.0);
             assert!(
-                (app.toolbar_rect.height() - ui::chrome::HeaderRowFace::height(&theme)).abs()
-                    < 0.01,
-                "command bar"
+                (app.formula_rect.y0 - app.rect.y0).abs() < 0.01,
+                "the formula bar leads"
             );
             assert!(
                 (app.formula_rect.height() - 40.0).abs() < 0.01,
@@ -4451,30 +5005,10 @@ pub(crate) mod tests {
                 m.lh_label
             );
 
-            // Bands grew to their text.
-            assert!(app.toolbar_rect.height() > 44.0);
             assert!(app.formula_rect.height() >= m.lh_body + 2.0 * m.s1);
             assert!(app.tabs_rect.height() >= m.lh_label + m.s1);
             assert!(app.grid.metrics().col_header_h() >= m.lh_caption);
             assert!(app.grid.metrics().default_row_h() >= m.lh_body);
-
-            // Commands: one centre line in the header row, each at least a
-            // line box tall.
-            let shown: Vec<Rect> = chrome::bar::COMMANDS
-                .iter()
-                .filter_map(|index| app.toolbar.item_rect(*index))
-                .collect();
-            assert!(shown.len() >= 6, "the whole bar fits 1280 px at 2x");
-            for rect in &shown {
-                assert!(
-                    (rect.center().y - app.toolbar_rect.center().y).abs() < 0.5,
-                    "one centre line"
-                );
-                assert!(
-                    rect.height() >= m.lh_label,
-                    "button taller than its line box"
-                );
-            }
 
             // Formula bar: the fx label fits its own hit slot, which is
             // exactly where it is painted; field and name box share one centre
@@ -4490,7 +5024,6 @@ pub(crate) mod tests {
             );
             assert!(app.name_box_rect.width() >= reference);
 
-            // Sheet tabs fit their names and share the strip's centre line.
             for (rect, idx) in &app.tab_rects {
                 let name = &app.sheet_names[*idx];
                 let w = tab_label_w(&mut tr, &theme, name);
@@ -4502,41 +5035,6 @@ pub(crate) mod tests {
                 (app.add_tab_rect.width() - app.add_tab_rect.height()).abs() < 0.01,
                 "+ is square"
             );
-        }
-
-        // Case `status_bubble_floats_above_the_scrollbar_gutter`.
-        // The floating status pill anchors inside the grid body, clear of the
-        // scroll bar gutters and never on the tab strip.
-        {
-            for scale in [1.0_f32, 2.0] {
-                let (mut app, mut tr, theme) = measured_app(1200.0, 800.0, scale);
-                let area = app.status_area();
-                let gutter = app.grid.scrollbar_thickness();
-                assert!(
-                    (area.y1 - (app.grid_rect.y1 - gutter)).abs() < 0.01,
-                    "the area stops at the horizontal bar's gutter"
-                );
-                assert!(
-                    (area.x1 - (app.grid_rect.x1 - gutter)).abs() < 0.01,
-                    "the area stops at the vertical bar's gutter"
-                );
-                app.status_bubble.show("Currency (USD)", ui::time::now());
-                let pill = app.status_bubble.rect_in(area, &mut tr, &theme);
-                assert!(
-                    pill.y1 <= area.y1 && pill.x1 <= area.x1,
-                    "{pill:?} in {area:?}"
-                );
-                assert!(pill.y1 < app.tabs_rect.y0);
-                // The pill is at least as tall as its measured text, so a 2×
-                // label never spills out of it.
-                let (_, th) =
-                    tr.measure_style("Currency (USD)", None, &theme.text(TextRole::Label));
-                assert!(
-                    pill.height() >= f64::from(th) - 0.01,
-                    "pill height {} at {scale}x",
-                    pill.height()
-                );
-            }
         }
 
         // Case `sheet_tabs_keep_their_floor_and_ceiling_at_every_scale`.
@@ -4659,18 +5157,6 @@ pub(crate) mod tests {
             let (app, _tr, _theme) = measured_app(560.0, 720.0, 1.0);
             let minimum =
                 f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target());
-            let commands = |app: &SheetsApp| -> Vec<Rect> {
-                chrome::bar::COMMANDS
-                    .iter()
-                    .filter_map(|index| app.toolbar.item_rect(*index))
-                    .collect()
-            };
-            assert!(
-                commands(&app)
-                    .iter()
-                    .all(|rect| rect.height() >= minimum - 0.01),
-                "every command reaches the pointer minimum"
-            );
             assert!(app.name_box_rect.height() >= minimum);
             assert!(app.formula_field_rect.height() >= minimum);
             assert!(
@@ -4680,11 +5166,7 @@ pub(crate) mod tests {
             );
 
             let (app2, _tr, _theme) = measured_app(560.0, 720.0, 2.0);
-            assert!(
-                commands(&app2)
-                    .iter()
-                    .all(|rect| rect.height() >= minimum * 1.25)
-            );
+            assert!(app2.name_box_rect.height() >= minimum * 1.25);
             assert!(
                 app2.grid.accessibility_window().rows[0].bounds.height()
                     >= app.grid.accessibility_window().rows[0].bounds.height() * 1.5
@@ -4696,7 +5178,6 @@ pub(crate) mod tests {
     /// stops bubble frames.
     #[test]
     fn idle_frames_do_no_redundant_work() {
-        // Case `unchanged_sync_and_tab_switch_keep_the_tabs`.
         {
             let (mut app, mut doc) = seeded_app();
             app.sync(&doc, &automerge::ROOT);
@@ -4709,15 +5190,6 @@ pub(crate) mod tests {
             app.switch_sheet(&mut Edits::lend(&mut doc), 1);
             app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.sheet_ids.as_ptr(), first_ids);
-        }
-
-        // Case `reduced_motion_stops_status_bubble_animation_frames`.
-        {
-            let (mut app, _doc) = seeded_app();
-            app.status_bubble.poke(ui::time::now());
-            assert!(app.needs_animation_frame());
-            app.set_motion_reduced(true);
-            assert!(!app.needs_animation_frame());
         }
     }
 
@@ -4776,7 +5248,7 @@ pub(crate) mod tests {
     }
 
     /// A workbook holding the sample's Budget and Sales sheets, run as the app.
-    fn sample_app() -> TestApp<crate::resource::SheetsShell> {
+    pub(super) fn sample_app() -> TestApp<crate::resource::SheetsShell> {
         let mut app = TestApp::<crate::resource::SheetsShell>::new().unwrap();
         for invoke in crate::sample::workbook() {
             app.invoke_confirmed(invoke).unwrap();
@@ -4913,6 +5385,13 @@ pub(crate) mod tests {
                     SheetsEffect::ImportOds { path: at },
                 ),
             };
+            assert!(
+                matches!(
+                    app.effect(&export),
+                    Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+                ),
+                "writing over a named path asks first"
+            );
             app.effect_confirmed(&export).unwrap();
             assert!(path.exists(), "the .{ext} was written");
             assert!(shown(&mut app).1.starts_with("Exported"));
@@ -4953,7 +5432,8 @@ pub(crate) mod tests {
     }
 
     /// Without a path, the host's chooser picks where an export is saved and
-    /// which file is imported; cancelling it changes nothing.
+    /// which file is imported; cancelling it changes nothing. The save dialog
+    /// is the export's confirmation, so nothing asks before it.
     #[test]
     fn the_file_chooser_saves_exports_and_picks_imports() {
         let dir = tempfile::tempdir().unwrap();
@@ -4963,8 +5443,8 @@ pub(crate) mod tests {
         let mut app = sample_app();
 
         recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-        app.effect_confirmed(&SheetsEffect::ExportCsv { path: None })
-            .unwrap();
+        app.effect(&SheetsEffect::ExportCsv { path: None })
+            .expect("exporting through the save dialog asks nothing first");
         let written = std::fs::read_to_string(&path).expect("the chosen file was written");
         assert!(written.starts_with("Category"), "{written}");
         assert_eq!(
@@ -5070,7 +5550,6 @@ pub(crate) mod tests {
             assert_eq!(scope.sheet, app.sheet_ids[app.active_sheet].as_str());
             assert_eq!(payload, PresencePayload::Arrived);
 
-            // Switching sheets re-targets the announcement at the new tab.
             if app.sheet_names.len() > 1 {
                 let other = (app.active_sheet + 1) % app.sheet_names.len();
                 app.active_sheet = other;
@@ -5105,7 +5584,6 @@ pub(crate) mod tests {
     /// Coloured formula bodies, name box/fx hit-rects, and fx on empty or filled cells.
     #[test]
     fn formula_bar_and_fx_start_formulas() {
-        // Case `selected_formula_bar_shows_colored_body`.
         {
             let (app, _doc) = seeded_app();
             // After seeding, E2 (a SUM formula) is the active cell and NOT editing.
@@ -5138,7 +5616,6 @@ pub(crate) mod tests {
                 app.fx_rect.x1 <= app.formula_field_rect.x0 + 0.01,
                 "fx overlaps field"
             );
-            // Both sit inside the formula bar row.
             assert!(app.formula_rect.contains(app.name_box_rect.center()));
             assert!(app.formula_rect.contains(app.fx_rect.center()));
         }
@@ -5186,7 +5663,6 @@ pub(crate) mod tests {
     /// Seeded formulas compute, edits recalc dependents, `AutoSum` writes or refuses.
     #[test]
     fn recalculation_and_auto_sum_write_working_formulas() {
-        // Case `seed_computes_real_formulas`.
         {
             let (app, _doc) = seeded_app();
             // Budget!E2 = SUM(B2:D2) = 1200 + 1200 + 1200 = 3600.
@@ -5195,7 +5671,6 @@ pub(crate) mod tests {
             assert!(matches!(app.format_of_active(), CellFormat::Currency(_)));
         }
 
-        // Case `editing_a_cell_recalculates_dependents`.
         {
             // This is the real path `handle_event` runs after `grid.key`: it hands
             // the emitted commands to `apply_cmds`, which infers the entry, writes
@@ -5216,21 +5691,18 @@ pub(crate) mod tests {
                 ],
             );
 
-            // The stored raw changed and the dependent SUM recomputed.
             assert_eq!(doc_cell_raw(&doc, 0, b2), "1000");
             assert_eq!(value_at(&app, e2), Some(CellValue::Number(3400.0)));
         }
 
-        // Case `auto_sum_writes_a_working_formula`.
         {
             let (mut app, mut doc) = seeded_app();
-            // Put the active cell just below a numeric run and AutoSum it.
-            app.grid.select_only((1, 7)); // B8, under B2:B7
+            app.grid.select_only((1, 6)); // B7, under B2:B6
             app.auto_sum(&mut Edits::lend(&mut doc));
-            let raw = doc_cell_raw(&doc, 0, (1, 7));
-            assert!(raw.starts_with("=SUM("), "auto-sum wrote {raw:?}");
+            let raw = doc_cell_raw(&doc, 0, (1, 6));
+            assert_eq!(raw, "=SUM(B2:B6)", "auto-sum wrote {raw:?}");
             // The computed value is finite and positive (a real sum, not an error).
-            match value_at(&app, (1, 7)) {
+            match value_at(&app, (1, 6)) {
                 Some(CellValue::Number(n)) => assert!(n > 0.0),
                 other => panic!("expected a numeric AutoSum result, got {other:?}"),
             }
@@ -5262,7 +5734,6 @@ pub(crate) mod tests {
     /// Format application over single and multi-range selections, clearing and percent commands.
     #[test]
     fn formats_apply_and_clear_across_selections() {
-        // Case `apply_format_changes_active_type`.
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((1, 8)); // B9 = 2600 (currency in the seed)
@@ -5308,7 +5779,6 @@ pub(crate) mod tests {
             assert_eq!(snap.fmt.get(&(0, 25)).copied(), None);
         }
 
-        // Case `command_format_percent_applies_to_selection`.
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((1, 1)); // B2
@@ -5369,7 +5839,6 @@ pub(crate) mod tests {
             );
         }
 
-        // Case `selection_summary_sums_real_values`.
         {
             let (mut app, _doc) = seeded_app();
             // Select the Jan column body B2:B6 (five numeric cells).
@@ -5382,8 +5851,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Imported tables restore live formulas, and a file imported into a new
-    /// workbook replaces its blank sheet.
     #[test]
     fn imported_tables_restore_formulas_and_replace_a_blank_workbook() {
         // Case `xlsx_export_import_restores_live_formulas`.
@@ -5404,7 +5871,6 @@ pub(crate) mod tests {
             let tables = crate::xlsx::read_xlsx(&path).unwrap();
             let _ = std::fs::remove_file(&path);
 
-            // Import into a brand-new, empty document via the real import path.
             let mut doc2 = new_doc();
             let mut fresh = attached_app(&doc2);
             fresh
@@ -5417,7 +5883,6 @@ pub(crate) mod tests {
             let snap = doc_snapshot(&doc2, 0, Currency::USD);
             let values = formula::recalculate(&snap.raw);
             assert_eq!(values.get(&(4, 1)), Some(&CellValue::Number(3600.0)));
-            // A non-formula neighbour still round-trips as a plain value.
             assert_eq!(doc_cell_raw(&doc2, 0, (1, 1)), "1200");
         }
 
@@ -5429,6 +5894,7 @@ pub(crate) mod tests {
             let mut app = attached_app(&doc);
             let table = crate::xlsx::SheetTable {
                 name: "sales".into(),
+                hidden: false,
                 rows: vec![vec![Some(crate::xlsx::ImportedCell {
                     raw: "Region".into(),
                     format: CellFormat::General,
@@ -5450,7 +5916,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// Fill down/right and fill-handle drags extend series and shift references.
     #[test]
     fn fill_commands_and_handle_extend_series_and_formulas() {
         // Case `fill_down_copies_and_shifts_formulas`.
@@ -5552,12 +6017,10 @@ pub(crate) mod tests {
             assert_eq!(formula::offset_refs("=$A1+A$1", 1, 1), "=$A2+B$1");
             // Scientific-notation literals are not references.
             assert_eq!(formula::offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
-            // Function names + string literals are left untouched.
             assert_eq!(
                 formula::offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
                 "=IF(A2>0,\"A1\",B3)"
             );
-            // A plain literal is returned unchanged.
             assert_eq!(formula::offset_refs("1200", 3, 3), "1200");
         }
 
@@ -5603,7 +6066,6 @@ pub(crate) mod tests {
 
     #[test]
     fn copy_cut_and_paste_relativise_formulas_correctly() {
-        // Case `copy_paste_preserves_value_and_format`.
         {
             // Copy a currency cell into an empty one; the raw and the currency
             // format both come across, and it recomputes to the same number.
@@ -5621,7 +6083,6 @@ pub(crate) mod tests {
             assert_eq!(value_at(&app, (1, 7)), Some(CellValue::Number(1200.0)));
         }
 
-        // Case `copy_paste_shifts_relative_formula_refs`.
         {
             // Copy E2 (`=SUM(B2:D2)`) and paste it over F3: the relative refs
             // shift by (+1 col, +1 row) to `=SUM(C3:E3)`, overwriting F3's seeded
@@ -5637,7 +6098,6 @@ pub(crate) mod tests {
             assert_eq!(value_at(&app, (5, 2)), Some(CellValue::Number(2360.0)));
         }
 
-        // Case `cut_moves_cell_and_clears_source`.
         {
             let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
@@ -5694,7 +6154,6 @@ pub(crate) mod tests {
             assert_eq!(doc_cell_raw(&doc, 0, (1, 41)), "40");
             app.sync(&doc, &automerge::ROOT);
             assert_eq!(value_at(&app, (1, 41)), Some(CellValue::Number(40.0)));
-            // Empty payload writes nothing.
             assert!(!app.paste_tsv(&mut Edits::lend(&mut doc), target, ""));
         }
     }
@@ -5718,7 +6177,6 @@ pub(crate) mod tests {
                 "wide grid tracks rect"
             );
 
-            // Simulate a resize to the narrow viewport on the SAME instance.
             app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
             app.relayout();
             assert!(
@@ -5742,44 +6200,10 @@ pub(crate) mod tests {
                 "reflows back to wide"
             );
         }
-
-        // Case `narrow_large_text_collapses_secondary_toolbar_actions_without_clipping`.
-        {
-            let (mut app, mut tr, theme) = measured_app(560.0, 720.0, 2.0);
-            assert!(app.toolbar.item_rect(chrome::bar::FILE).is_some());
-            assert!(app.toolbar.item_rect(chrome::bar::FORMAT).is_some());
-            assert!(
-                app.toolbar.has_overflow(),
-                "what does not fit moves into More"
-            );
-            let shown = chrome::bar::COMMANDS
-                .iter()
-                .filter_map(|index| app.toolbar.item_rect(*index))
-                .collect::<Vec<_>>();
-            assert!(shown.iter().all(|rect| rect.x1 <= app.rect.x1));
-            app.toolbar.open_overflow();
-            paint_frame(&mut app, &mut tr, &theme);
-            let (_, menu) = app.toolbar.shown_menu().expect("the More menu opens");
-            assert_eq!(
-                menu.items()
-                    .iter()
-                    .filter(|item| item.label().is_some())
-                    .count(),
-                // Six commands, File and Format among those shown.
-                6 - shown.len(),
-                "More holds exactly the commands the bar dropped"
-            );
-            let panel = Widget::get_rect(menu);
-            assert!(panel.x0 >= app.rect.x0 && panel.x1 <= app.rect.x1);
-        }
     }
 
-    // --- sheet tab context-menu actions ------------------------------------
-
-    /// Sheet-tab menu operations.
     #[test]
     fn tab_menu_renames_duplicates_deletes_moves_and_colours() {
-        // Case `tab_rename_updates_sheet_name`.
         {
             let (mut app, mut doc) = seeded_app();
             app.begin_tab_rename(0);
@@ -5800,7 +6224,6 @@ pub(crate) mod tests {
             assert_eq!(doc_sheet_names(&doc)[0], "Ledger");
         }
 
-        // Case `tab_rename_escape_cancels_without_a_document_write`.
         {
             let (mut app, mut doc) = seeded_app();
             let before = doc_sheet_names(&doc);
@@ -5822,7 +6245,6 @@ pub(crate) mod tests {
             assert_eq!(doc.pending_ops(), 0, "nothing was written");
         }
 
-        // Case `tab_duplicate_creates_a_copy`.
         {
             let (mut app, mut doc) = seeded_app();
             let before = doc_sheet_count(&doc);
@@ -5830,11 +6252,9 @@ pub(crate) mod tests {
             assert_eq!(doc_sheet_count(&doc), before + 1);
             // Inserted right after the source and named "<name> copy".
             assert_eq!(doc_sheet_names(&doc)[1], "Budget copy");
-            // The copy carries the source's formulas.
             assert_eq!(doc_cell_raw(&doc, 1, (4, 1)), "=SUM(B2:D2)");
         }
 
-        // Case `tab_delete_removes_and_keeps_one_sheet`.
         {
             let (mut app, mut doc) = seeded_app();
             // Seed: Budget, Sales. Remove Sales.
@@ -5846,7 +6266,6 @@ pub(crate) mod tests {
             assert_eq!(doc_sheet_count(&doc), 1);
         }
 
-        // Case `tab_move_right_reorders_sheets`.
         {
             let (mut app, mut doc) = seeded_app();
             app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::MoveRight);
@@ -5855,7 +6274,6 @@ pub(crate) mod tests {
             assert_eq!(doc_cell_raw(&doc, 1, (4, 1)), "=SUM(B2:D2)");
         }
 
-        // Case `tab_set_and_clear_colour`.
         {
             let (mut app, mut doc) = seeded_app();
             app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::SetColor(Some(2)));
@@ -5868,10 +6286,8 @@ pub(crate) mod tests {
     /// Cache reuse and invalidation.
     #[test]
     fn reload_reuses_unchanged_cache_and_invalidates_it_after_an_edit() {
-        // Case `reload_reuses_unchanged_cache_and_invalidates_it_after_an_edit`.
         {
             let (mut app, mut doc) = seeded_app();
-            // Commit the startup seed and refresh once at its steady-state heads.
             doc.commit();
             app.sync(&doc, &automerge::ROOT);
             let cached = app
@@ -6012,8 +6428,6 @@ pub(crate) mod tests {
         }
     }
 
-    // --- fill-right / clear-format / switch-sheet --------------------------
-
     // --- external-clipboard (TSV) paste + auto-sum guards ------------------
 
     // -----------------------------------------------------------------------
@@ -6046,7 +6460,7 @@ pub(crate) mod tests {
         event
     }
 
-    fn named_event(k: winit::keyboard::NamedKey) -> WindowEvent {
+    pub(super) fn named_event(k: winit::keyboard::NamedKey) -> WindowEvent {
         key_event(winit::keyboard::Key::Named(k))
     }
 
@@ -6117,7 +6531,6 @@ pub(crate) mod tests {
         assert!(feed(&mut app, &mut doc, &backspace, Modifiers::default()));
         assert_eq!(app.grid.active_display_raw(), "a日本");
 
-        // A committed composition replaces the selection.
         app.grid.set_edit_caret(1, false);
         app.grid.set_edit_caret(3, true);
         assert!(ime(&mut app, &mut doc, Ime::Commit("x".into())));
@@ -6167,7 +6580,6 @@ pub(crate) mod tests {
             "the committed 'b' draws after the composition"
         );
 
-        // A click past the composition lands on the committed text it shows.
         app.grid.set_edit_caret_shown(4, false);
         assert_eq!(app.grid.edit_caret(), Some(2), "after the 'b' of \"ab\"");
         app.grid.set_edit_caret(1, false);
@@ -6183,7 +6595,6 @@ pub(crate) mod tests {
     /// Ctrl+K opens the palette, which captures arrows and handles go-to-cell.
     #[test]
     fn command_palette_captures_keys_and_goes_to_cells() {
-        // Case `ctrl_k_opens_the_command_palette`.
         {
             let (mut app, mut doc) = seeded_app();
             assert!(!app.palette.is_open());
@@ -6198,7 +6609,6 @@ pub(crate) mod tests {
             );
         }
 
-        // Case `open_palette_captures_arrows_instead_of_moving_the_grid`.
         {
             let (mut app, mut doc) = seeded_app();
             let start = app.grid.active(); // E2 = (4, 1)
@@ -6226,7 +6636,6 @@ pub(crate) mod tests {
             );
             assert_eq!(app.grid.active(), start, "the grid selection must not move");
 
-            // ArrowUp back to the top, still captured.
             let handled = feed(
                 &mut app,
                 &mut doc,
@@ -6238,7 +6647,6 @@ pub(crate) mod tests {
             assert_eq!(app.grid.active(), start);
         }
 
-        // Case `palette_go_to_cell_jumps_the_selection`.
         {
             let (mut app, mut doc) = seeded_app();
             assert_ne!(app.grid.active(), (1, 11));
@@ -6277,7 +6685,6 @@ pub(crate) mod tests {
             assert_eq!(app.grid.active(), (1, 11), "selection jumped to B12");
         }
 
-        // Case `command_go_to_cell_reports_invalid_reference`.
         {
             let (mut app, _doc) = seeded_app();
             app.go_to_cell("not-a-ref");
@@ -6453,7 +6860,6 @@ pub(crate) mod tests {
         };
         assert_eq!(kind_of(&doc), ChartKind::Line);
 
-        // The same picker is offered to assistive technology.
         let column = format!("sheets.annotation:chart:{}:column", chart.as_str());
         assert!(matches!(
             app.annotation_click_from_target(&column),
@@ -6497,8 +6903,6 @@ pub(crate) mod tests {
         assert!(app.managed_chart.is_none());
     }
 
-    /// An agent edits a chart's title, type and cells in one call, and a
-    /// comment's text and replies on the comment itself.
     #[test]
     fn an_agent_edits_charts_and_comments_in_one_call_each() {
         let mut app = TestApp::<crate::resource::SheetsShell>::new().unwrap();
@@ -6574,10 +6978,8 @@ pub(crate) mod tests {
         assert_eq!(thread.replies.len(), 1);
     }
 
-    /// Sum-selection, row/column insertion, formula view and new-sheet commands.
     #[test]
     fn commands_edit_rows_columns_views_and_sheets() {
-        // Case `command_sum_selection_writes_totals_below`.
         {
             let (mut app, mut doc) = seeded_app();
             // Budget!B2:B6 — a column of numbers.
@@ -6586,11 +6988,9 @@ pub(crate) mod tests {
             // A SUM total lands in B7 (the row directly below the selection).
             let raw = doc_cell_raw(&doc, 0, (1, 6));
             assert_eq!(raw, "=SUM(B2:B6)", "sum total written below the selection");
-            // It computes to the real column sum.
             assert!(matches!(value_at(&app, (1, 6)), Some(CellValue::Number(_))));
         }
 
-        // Case `command_insert_and_delete_row_shift_cells`.
         {
             let (mut app, mut doc) = seeded_app();
             // The Budget header "Category" sits at A1; its January value is at B2.
@@ -6618,7 +7018,6 @@ pub(crate) mod tests {
             );
         }
 
-        // Case `command_insert_column_shifts_right`.
         {
             let (mut app, mut doc) = seeded_app();
             let a1 = doc_cell_raw(&doc, 0, (0, 0));
@@ -6633,7 +7032,6 @@ pub(crate) mod tests {
             );
         }
 
-        // Case `command_toggle_formula_view`.
         {
             let (mut app, mut doc) = seeded_app();
             assert!(!app.grid.formula_view());
@@ -6643,7 +7041,6 @@ pub(crate) mod tests {
             assert!(!app.grid.formula_view(), "formula view toggled back off");
         }
 
-        // Case `command_new_sheet_adds_a_sheet`.
         {
             let (mut app, mut doc) = seeded_app();
             let before = doc_sheet_count(&doc);
@@ -6655,7 +7052,6 @@ pub(crate) mod tests {
     /// Active cell/sheet semantics, busy loading and shared toolbar/tab controls.
     #[test]
     fn accessibility_exposes_cells_busy_state_and_live_controls() {
-        // Case `accessibility_exposes_active_cell_and_selected_sheet`.
         {
             use ui::widget::Widget as _;
 
@@ -6688,7 +7084,6 @@ pub(crate) mod tests {
             assert!(cell.bounds.is_some());
         }
 
-        // Case `semantic_toolbar_and_tabs_use_the_same_live_controls`.
         {
             use ui::widget::Widget as _;
 
@@ -6696,12 +7091,11 @@ pub(crate) mod tests {
             app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
             app.relayout();
             let root = automerge::ROOT;
-            assert!(app.perform_semantic_action(
-                &format!("toolbar.item.{}", chrome::bar::FORMULAS),
-                &ui::a11y::Action::Activate,
-                &mut Edits::lend(&mut doc),
-                &root,
-            ));
+            app.settle(&mut Edits::lend(&mut doc), &root);
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+                id: "formulas".into(),
+            });
+            app.settle(&mut Edits::lend(&mut doc), &root);
             assert!(app.grid.formula_view());
             assert!(app.perform_semantic_action(
                 "sheets.name-box",
@@ -6720,7 +7114,6 @@ pub(crate) mod tests {
             assert_eq!(app.active_sheet, 1);
         }
 
-        // Case `semantic_toolbar_controls_are_inventoried_action_bindings`.
         {
             use ui::widget::controls::ActionControls as _;
 
@@ -6730,11 +7123,7 @@ pub(crate) mod tests {
                 .into_iter()
                 .map(|binding| binding.control_id)
                 .collect();
-            let bold = format!("toolbar.item.{}", chrome::bar::BOLD);
-            let formulas = format!("toolbar.item.{}", chrome::bar::FORMULAS);
             for target in [
-                bold.as_str(),
-                formulas.as_str(),
                 "sheets.fx",
                 "sheets.name-box",
                 "sheets.formula-bar",

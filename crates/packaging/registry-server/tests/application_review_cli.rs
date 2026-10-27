@@ -1,5 +1,3 @@
-//! The operator inspects one request and decides that exact displayed snapshot.
-
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -51,7 +49,7 @@ fn fixture() -> Result<(tempfile::TempDir, Storage, PublisherApplication)> {
 }
 
 fn run(directory: &Path, arguments: &[&str]) -> std::io::Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_tilo-registry-server"))
+    Command::new(tilo_test_env::package_binary!("tilo-registry-server"))
         .arg("--data-dir")
         .arg(directory)
         .args(arguments)

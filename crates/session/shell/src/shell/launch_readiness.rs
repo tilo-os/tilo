@@ -28,11 +28,12 @@ impl Drop for Scope {
 pub(super) fn observe(
     start: impl FnOnce() -> Result<(), String>,
 ) -> Result<LaunchReadiness, String> {
-    let session = super::launcher::LaunchSession::current();
-    let (token, readiness) = session.startup.reserve()?;
-    let _scope = Scope(CURRENT.with(|current| current.replace(Some(token))));
-    start()?;
-    Ok(readiness)
+    super::launcher::LaunchSession::with(|session| {
+        let (token, readiness) = session.startup.reserve()?;
+        let _scope = Scope(CURRENT.with(|current| current.replace(Some(token))));
+        start()?;
+        Ok(readiness)
+    })
 }
 
 /// Run `start` as one identified launch attempt, without observing its
@@ -69,6 +70,12 @@ pub(super) fn inherit<T>(start: impl FnOnce() -> T) -> impl FnOnce() -> T {
         let _scope = Scope(CURRENT.with(|current| current.replace(token)));
         start()
     }
+}
+
+/// The launch attempt being made on this thread, if it is observed or
+/// identified.
+pub(super) fn current() -> Option<u64> {
+    CURRENT.with(Cell::get)
 }
 
 pub(super) fn fail_current(detail: String) {
@@ -122,7 +129,7 @@ impl StartupObservations {
 
     pub fn started(&self, token: Option<u64>, pid: u32) {
         let Some(token) = token else { return };
-        let Some((_, start)) = super::launcher::proc_stat(pid) else {
+        let Some((_, start)) = super::host_runtime::proc_stat(pid) else {
             self.fail(Some(token), "the application's launcher disappeared".into());
             return;
         };
@@ -142,38 +149,49 @@ impl StartupObservations {
 
     #[cfg(test)]
     pub fn adopted(&self, pid: u32) {
-        self.adopted_window(pid, None);
+        self.adopted_window(&ancestry(pid), None);
     }
 
+    /// Settle the launch whose launcher is in `ancestry`, the window's
+    /// process and its parents as [`ancestry`] read them when its connection
+    /// was admitted. Never hold our lock while waking a receiver.
     pub fn adopted_window(
         &self,
-        mut pid: u32,
+        ancestry: &[(u32, u64)],
         adoption: Option<tilo_action_broker::services::LaunchAdoption>,
     ) {
-        // Match the same bounded ancestry and PID-reuse rule as the launcher's
-        // ordinary service and Wayland admission. Never hold our lock during
-        // filesystem reads or while waking a receiver.
-        for _ in 0..32 {
-            let Some((parent, start)) = super::launcher::proc_stat(pid) else {
-                return;
-            };
-            let observation = self.0.lock().ok().and_then(|mut pending| {
-                let token = pending.iter().find_map(|(token, entry)| {
-                    (entry.process == Some((pid, start))).then_some(*token)
-                })?;
-                pending.remove(&token)
-            });
-            if let Some(observation) = observation {
-                let _ = observation.adoption.send(adoption);
-                let _ = observation.reply.send(Ok(()));
-                return;
-            }
-            if parent == 0 || parent == pid {
-                return;
-            }
-            pid = parent;
+        let observation = self.0.lock().ok().and_then(|mut pending| {
+            let token = ancestry.iter().find_map(|process| {
+                pending
+                    .iter()
+                    .find_map(|(token, entry)| (entry.process == Some(*process)).then_some(*token))
+            })?;
+            pending.remove(&token)
+        });
+        if let Some(observation) = observation {
+            let _ = observation.adoption.send(adoption);
+            let _ = observation.reply.send(Ok(()));
         }
     }
+}
+
+/// `pid` and its parents, each with its kernel start time, at most 32
+/// deep: the same bounded ancestry and PID-reuse rule as the launcher's
+/// ordinary service and Wayland admission. Reads `/proc`: the compositor
+/// reads it once per connection, off its loop, when it admits the client.
+pub(crate) fn ancestry(mut pid: u32) -> Vec<(u32, u64)> {
+    let mut ancestry = Vec::new();
+    for _ in 0..32 {
+        let Some((parent, start)) = super::host_runtime::proc_stat(pid) else {
+            break;
+        };
+        ancestry.push((pid, start));
+        if parent == 0 || parent == pid {
+            break;
+        }
+        pid = parent;
+    }
+    ancestry
 }
 
 pub(super) fn command_token(command: &super::launcher::LaunchCommand) -> Option<u64> {
@@ -199,7 +217,7 @@ mod tests {
             package_id: "so.tilo.calculator".into(),
             room: "room".into(),
         };
-        observations.adopted_window(std::process::id(), Some(window.clone()));
+        observations.adopted_window(&ancestry(std::process::id()), Some(window.clone()));
         assert_eq!(
             ready.wait_with_adoption().await.unwrap(),
             Some(window.clone())
@@ -224,7 +242,7 @@ mod tests {
             drop(pending);
         }
         observations.adopted_window(
-            pid,
+            &ancestry(pid),
             Some(tilo_action_broker::services::LaunchAdoption {
                 adoption_id: uuid::Uuid::new_v4(),
                 surface_id: 55,
@@ -296,6 +314,7 @@ mod tests {
         session.startup.adopted(descendant);
         assert_eq!(readiness.wait().await, Ok(()));
         assert!(session.startup.0.lock().unwrap().is_empty());
+        drop(session);
         drop(process);
     }
 
@@ -379,14 +398,17 @@ mod tests {
                     service_identity: None,
                     portal_workspace_id: None,
                     managed_agent_id: None,
+                    x11_workspace: None,
                 },
             )
         })
         .unwrap();
-        let error = tokio::time::timeout(std::time::Duration::from_secs(5), readiness.wait())
-            .await
-            .expect("the actual spawn failure must resolve startup")
-            .unwrap_err();
+        let error = tilo_test_env::within(
+            "the actual spawn failure to resolve startup",
+            readiness.wait(),
+        )
+        .await
+        .unwrap_err();
         assert!(
             error.contains("No such file") || error.contains("not found"),
             "{error}"

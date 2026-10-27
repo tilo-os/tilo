@@ -54,7 +54,6 @@ impl<R> FrameReader<R> {
         }
     }
 
-    /// The framing frames are read with.
     pub const fn framing(&self) -> Framing {
         self.framing
     }

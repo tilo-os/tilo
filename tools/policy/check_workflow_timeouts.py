@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,8 +20,6 @@ WORKFLOWS = ROOT / ".forgejo" / "workflows"
 JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 TIMEOUT = re.compile(r"^    timeout-minutes:\s*([0-9]+)\s*$")
 MAX_MINUTES = 180
-# The OS release build still exceeds the limit.
-LONGER = {"build-image.yml"}
 LOCAL_CALL = re.compile(r"^    uses:\s*\./\.forgejo/workflows/([A-Za-z0-9_.-]+\.ya?ml)\s*$")
 
 
@@ -29,9 +28,12 @@ class Violation:
     workflow: str
     job: str
 
+    @property
+    def message(self) -> str:
+        return f"job {self.job!r} needs a timeout-minutes between 1 and {MAX_MINUTES}"
+
     def __str__(self) -> str:
-        return (f"{self.workflow}: job {self.job!r} needs a timeout-minutes between 1 "
-                f"and {MAX_MINUTES}")
+        return f"{self.workflow}: {self.message}"
 
 
 def jobs_without_timeouts(path: Path) -> list[str]:
@@ -58,7 +60,7 @@ def jobs_without_timeouts(path: Path) -> list[str]:
         timeout_match = TIMEOUT.match(line)
         if current_job is not None and timeout_match:
             minutes = int(timeout_match.group(1))
-            jobs[current_job] = 0 < minutes and (minutes <= MAX_MINUTES or path.name in LONGER)
+            jobs[current_job] = 0 < minutes <= MAX_MINUTES
         call_match = LOCAL_CALL.match(line)
         if current_job is not None and call_match:
             jobs[current_job] = (path.parent / call_match.group(1)).is_file()
@@ -97,9 +99,11 @@ def main() -> int:
     violations = audit()
     if violations:
         for violation in violations:
-            print(violation)
+            # A finding names its workflow from the top of the tree (findings.py).
+            path = (WORKFLOWS / violation.workflow).relative_to(ROOT).as_posix()
+            print(f"{path}: {violation.message}")
         return 1
-    print(f"Workflow timeout policy OK ({len(workflow_files(WORKFLOWS))} workflows)")
+    print(f"Workflow timeout policy OK ({len(workflow_files(WORKFLOWS))} workflows)", file=sys.stderr)
     return 0
 
 

@@ -71,8 +71,6 @@ account-custody = { path = "../../crates/system/account-custody", default-featur
 # `live`; the default build uses the offline backend.
 async-imap = { workspace = true, optional = true }
 lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
-# HTTP sender avatars through `ui::ImageStore`; optional and gated by `live`.
-reqwest = { workspace = true, optional = true, features = ["blocking", "form"] }
 # Async runtime and rustls backend used by the live engine; roots come from the
 # Tilo system bundle through `tilo-net`, never OpenSSL.
 tokio = { workspace = true, optional = true, features = ["rt", "net", "io-util", "time", "macros"] }
@@ -98,7 +96,7 @@ runtime-engine = ["thin", "tilo-accounts-engine/thin", "tilo-contact-directory-e
 default = ["live"]
 # Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
 # stack and a configured account at runtime.
-live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
+live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -108,6 +106,8 @@ rcgen.workspace = true
 # sign-in tests.
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# Paused time for the connection race and lookup deadlines.
+tokio = { workspace = true, features = ["test-util"] }
 # Cross-app acceptance: drive the real Settings sign-in and consume its store.
 settings = { path = "../settings" }
 test-http = { path = "../../crates/dev/test-http" }

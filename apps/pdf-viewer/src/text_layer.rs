@@ -285,6 +285,11 @@ impl PageText {
         if self.chars.is_empty() {
             return (0, 0);
         }
+        if let Some(layer) = &self.layer {
+            // The engine knows its lines: a word never runs across one.
+            let range = layer.word_range(glyph_idx.min(self.chars.len() - 1));
+            return (range.start, range.end);
+        }
         let g = glyph_idx.min(self.chars.len() - 1);
         let Some(byte) = self.chars.get(g).map(|c| c.byte_start) else {
             // Unreachable: `g` is clamped to a valid index by the guards above.
@@ -305,6 +310,28 @@ impl PageText {
     pub fn row_range(&self, glyph_idx: usize) -> (usize, usize) {
         if self.chars.is_empty() {
             return (0, 0);
+        }
+        if let Some(layer) = &self.layer {
+            // The engine's own line, without the break it generated
+            // between it and the next.
+            let mut range = layer.line_range(glyph_idx.min(self.chars.len() - 1));
+            while range.end > range.start
+                && layer
+                    .chars()
+                    .get(range.end - 1)
+                    .is_some_and(tilo_pdf::TextChar::is_line_break)
+            {
+                range.end -= 1;
+            }
+            while range.start < range.end
+                && layer
+                    .chars()
+                    .get(range.start)
+                    .is_some_and(tilo_pdf::TextChar::is_line_break)
+            {
+                range.start += 1;
+            }
+            return (range.start, range.end);
         }
         let g = glyph_idx.min(self.chars.len() - 1);
         let Some(a) = self.chars.get(g).map(|c| c.rect) else {
@@ -373,7 +400,6 @@ mod tests {
         let pt = sample_layer();
         assert_eq!(pt.text, "PDF text layer");
         assert_eq!(pt.chars.len(), pt.text.chars().count());
-        // Byte offsets are contiguous and index the concatenated text.
         for c in &pt.chars {
             assert_eq!(pt.text[c.byte_start..].chars().next(), Some(c.ch));
         }
@@ -466,7 +492,6 @@ mod tests {
         let hits = pt.search(1, "text", SearchOptions::default());
         assert_eq!(hits.len(), 1);
         let m = hits[0];
-        // The matched glyph run reads back as the query.
         assert_eq!(
             pt.text_for_range(m.char_start, m.char_start + m.char_len),
             "text"
@@ -520,7 +545,6 @@ mod tests {
             assert_eq!(bands[0].w, 8.0, "highlight covers exactly the source glyph");
         }
 
-        // Whole-word search rejects accented word fragments.
         let page = PageText::from_glyphs(
             "étest testé e\u{301}test test\u{301} test"
                 .chars()

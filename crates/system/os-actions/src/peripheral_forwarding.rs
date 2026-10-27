@@ -35,11 +35,6 @@ pub struct ForwardedPeripheralIdentity {
 impl ForwardedPeripheralIdentity {
     /// Construct only after the privileged caller verified both devices, the
     /// installed app, its workspace membership, and the live app session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for empty, oversized, or control-bearing identifiers,
-    /// or when source and target name the same device.
     pub fn new_after_verification(
         source_device: impl Into<String>,
         target_device: impl Into<String>,
@@ -186,10 +181,6 @@ pub trait VirtualGamepad: Send {
     fn apply(&mut self, event: ForwardedGamepadEvent) -> Result<(), String>;
 
     /// Neutralize every axis/hat and release every button.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the virtual device teardown fails.
     fn release_all(&mut self) -> Result<(), String>;
 }
 
@@ -296,10 +287,6 @@ impl<F: VirtualGamepadFactory> ForwardedPeripheralBroker<F> {
     }
 
     /// Register a broker-local gamepad. No other peripheral class is representable.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid label or when the bounded table is full.
     pub fn register_gamepad(
         &mut self,
         label: impl Into<String>,
@@ -335,11 +322,6 @@ impl<F: VirtualGamepadFactory> ForwardedPeripheralBroker<F> {
     }
 
     /// Mint a fresh one-shot proof for an exact gamepad and identity binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the binding lacks focus, the device disappeared,
-    /// or bounded authorization capacity is exhausted.
     pub fn authorize(
         &mut self,
         identity: &ForwardedPeripheralIdentity,
@@ -375,11 +357,6 @@ impl<F: VirtualGamepadFactory> ForwardedPeripheralBroker<F> {
     }
 
     /// Consume fresh authorization and construct one constrained virtual gamepad.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for replay/foreign proof, binding or focus mismatch,
-    /// device loss, capacity, or virtual-device creation failure.
     pub fn acquire(
         &mut self,
         authorization: PeripheralAuthorizationId,
@@ -440,11 +417,6 @@ impl<F: VirtualGamepadFactory> ForwardedPeripheralBroker<F> {
     }
 
     /// Apply one bounded logical event to the exact focused lease.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid/replayed/rate-limited/unfocused input,
-    /// expiry, binding mismatch, device loss, or virtual-device failure.
     pub fn submit(
         &mut self,
         lease_id: PeripheralLeaseId,
@@ -718,7 +690,6 @@ mod tests {
 
     #[test]
     fn forwarding_authorization_is_one_shot_bound_and_expiring() {
-        // Phase `only_fixed_gamepad_plan_and_sanitized_controls_reach_backend`.
         {
             let (mut broker, factory, identity, device, now) = active();
             let lease = lease(&mut broker, &identity, device, now);
@@ -762,7 +733,6 @@ mod tests {
                 Err(PeripheralBrokerError::InvalidEvent)
             );
         }
-        // Phase `authorization_is_one_shot_exact_bound_and_cross_broker_safe`.
         {
             let (mut broker, _, owner, device, now) = active();
             let other = identity("other");
@@ -791,7 +761,6 @@ mod tests {
                 Err(PeripheralBrokerError::InvalidAuthorization)
             );
         }
-        // Phase `authorization_expires_and_device_loss_clears_proofs`.
         {
             let (mut broker, _, owner, device, now) = active();
             let expired = broker.authorize(&owner, device, now).unwrap();
@@ -815,7 +784,6 @@ mod tests {
 
     #[test]
     fn forwarding_enforces_focus_and_rate_and_audits_every_teardown() {
-        // Phase `focus_sequence_and_rate_are_enforced`.
         {
             let (mut broker, factory, owner, device, now) = active();
             let lease = lease(&mut broker, &owner, device, now);
@@ -846,7 +814,6 @@ mod tests {
                 Err(PeripheralBrokerError::InvalidLease)
             );
         }
-        // Phase `every_teardown_releases_all_and_is_audited`.
         {
             for reason in [
                 PeripheralRevocation::Explicit,
@@ -878,7 +845,6 @@ mod tests {
                 );
             }
         }
-        // Phase `audit_queue_is_bounded`.
         {
             let (mut broker, _, owner, device, now) = active();
             for _ in 0..MAX_AUDIT_EVENTS.saturating_add(5) {

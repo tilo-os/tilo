@@ -120,7 +120,7 @@ pub fn fs_capability_export_path() -> PathBuf {
 }
 
 /// Native file envelope; the portable desktop schema remains independently versioned.
-pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 4;
+pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 5;
 
 /// `state.json` as a versioned format: a file of an older version comes up
 /// to [`NATIVE_STATE_SCHEMA_VERSION`] when it is loaded, after a snapshot of
@@ -132,7 +132,7 @@ pub(crate) const STATE_FORMAT: tilo_files::native::migration::Format =
         name: "desktop state",
         version: NATIVE_STATE_SCHEMA_VERSION,
         oldest: 3,
-        steps: &[drop_untouched_lounges],
+        steps: &[drop_untouched_lounges, activity_becomes_an_app],
     };
 
 /// Version 3 to 4: workspaces no longer get a Lounge. Version 3 gave every
@@ -144,6 +144,10 @@ pub(crate) const STATE_FORMAT: tilo_files::native::migration::Format =
 /// Focus on a dropped strip moves to the workspace's first strip.
 ///
 /// [`RESERVED_SALT`]: tilo_desktop_model::ids::RESERVED_SALT
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "a migration step: every step of a file's migrations takes its bytes and returns them"
+)]
 fn drop_untouched_lounges(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     use serde_json::Value;
     use tilo_desktop_model::ids::{RESERVED_SALT, peer_salt_of};
@@ -230,10 +234,54 @@ fn drop_untouched_lounges(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&file).map_err(|error| error.to_string())
 }
 
+/// Version 4 to 5: Activity is an app. Version 4 kept the Activity window
+/// as a tile of its own kind; it becomes the Activity app's window, in the
+/// same place under the same tab id, and opens the app when the session
+/// starts like any app's window.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "a migration step: every step of a file's migrations takes its bytes and returns them"
+)]
+fn activity_becomes_an_app(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    use serde_json::Value;
+    let mut file: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let tabs = file
+        .get_mut("workspaces")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(|workspace| workspace.get_mut("strips").and_then(Value::as_array_mut))
+        .flatten()
+        .filter_map(|strip| strip.get_mut("window_groups").and_then(Value::as_array_mut))
+        .flatten()
+        .filter_map(|group| group.get_mut("tabs").and_then(Value::as_array_mut))
+        .flatten();
+    for tab in tabs {
+        if tab.get("tile").and_then(Value::as_str) == Some("WorkspaceActivity") {
+            tab["tile"] = serde_json::json!({
+                "LocalApp": {
+                    "app_id": tilo_actions::remote::workspace_activity::APP_ID,
+                    "label": crate::shell::i18n::t("shell-activity-title"),
+                    "note": "",
+                }
+            });
+        }
+    }
+    let Some(fields) = file.as_object_mut() else {
+        return Err("a state file is a JSON object".into());
+    };
+    fields.insert("schema_version".into(), Value::from(5_u32));
+    serde_json::to_vec(&file).map_err(|error| error.to_string())
+}
+
 /// A Lounge as version 3 made it: a strip and three windows under ids in
 /// the reserved namespace, derived from `seed`; with `touched_by`, a window
 /// under that device's salt that the person put into it.
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "fixture ids: a seed below a million, times eight, plus a counter below eight"
+)]
 fn v3_lounge(seed: u64, touched_by: Option<u16>) -> tilo_desktop_model::Strip {
     use tilo_desktop_model::ids::RESERVED_SALT;
     use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, compose_id};
@@ -243,7 +291,12 @@ fn v3_lounge(seed: u64, touched_by: Option<u16>) -> tilo_desktop_model::Strip {
         tabs: vec![Tab {
             id,
             title: title.into(),
-            tile: TileContent::WorkspaceActivity,
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.notes".into(),
+                label: title.into(),
+                note: String::new(),
+            },
+            app_title: None,
         }],
         active_tab: id,
         width: tilo_desktop_model::WindowWidth::Normal,
@@ -265,16 +318,90 @@ fn v3_lounge(seed: u64, touched_by: Option<u16>) -> tilo_desktop_model::Strip {
 }
 
 /// A file the previous version of [`STATE_FORMAT`] wrote, which its step
-/// is tested against: version 3, whose every workspace had a Lounge first.
+/// is tested against: version 4, with the Activity window as a tile of its
+/// own kind.
 #[cfg(test)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a format at its first version has no previous file, which the test reads as None"
+)]
 fn previous_state_file() -> Option<Vec<u8>> {
-    let mut tree = WorkspaceTree::bootstrap_default();
-    let workspace = &mut tree.desktop.workspaces[0];
-    workspace.strips.insert(0, v3_lounge(workspace.id.0, None));
+    Some(v4_with_activity().1)
+}
+
+/// A state file as version 4 wrote it: the demo desktop's windows, and
+/// beside them an Activity window as its own kind of tile; and that
+/// window's tab id.
+#[cfg(test)]
+fn v4_with_activity() -> (u64, Vec<u8>) {
+    use tilo_desktop_model::{Tab, TileContent, WindowGroup};
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    tree.persist_path = None;
+    let id = crate::shell::state::next_id();
+    tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .push(WindowGroup {
+            id,
+            tabs: vec![Tab {
+                id,
+                title: "Activity".into(),
+                tile: TileContent::Stub {
+                    kind: tilo_desktop_model::AppKind::Terminal,
+                    label: String::new(),
+                },
+                app_title: None,
+            }],
+            active_tab: id,
+            width: tilo_desktop_model::WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
     let bytes = encode_tree(&tree).expect("encoded").bytes;
     let mut file: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    file["schema_version"] = serde_json::Value::from(3_u32);
-    Some(serde_json::to_vec(&file).expect("json"))
+    *tab_tile(&mut file, id).expect("the Activity tab is in the file") =
+        serde_json::Value::from("WorkspaceActivity");
+    file["schema_version"] = serde_json::Value::from(4_u32);
+    (id, serde_json::to_vec(&file).expect("json"))
+}
+
+/// The tile of the tab `id` in a state file's JSON.
+#[cfg(test)]
+fn tab_tile(file: &mut serde_json::Value, id: u64) -> Option<&mut serde_json::Value> {
+    file.get_mut("workspaces")?
+        .as_array_mut()?
+        .iter_mut()
+        .filter_map(|workspace| workspace.get_mut("strips")?.as_array_mut())
+        .flatten()
+        .filter_map(|strip| strip.get_mut("window_groups")?.as_array_mut())
+        .flatten()
+        .filter_map(|group| group.get_mut("tabs")?.as_array_mut())
+        .flatten()
+        .find(|tab| tab.get("id").and_then(serde_json::Value::as_u64) == Some(id))?
+        .get_mut("tile")
+}
+
+/// Every window id and tab id a state file's JSON holds, in its order.
+#[cfg(test)]
+fn window_ids(file: &serde_json::Value) -> Vec<u64> {
+    let ids = |value: &serde_json::Value, key: &str| -> Vec<serde_json::Value> {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut found = Vec::new();
+    for workspace in ids(file, "workspaces") {
+        for strip in ids(&workspace, "strips") {
+            for group in ids(&strip, "window_groups") {
+                found.extend(group.get("id").and_then(serde_json::Value::as_u64));
+                for tab in ids(&group, "tabs") {
+                    found.extend(tab.get("id").and_then(serde_json::Value::as_u64));
+                }
+            }
+        }
+    }
+    found
 }
 
 /// The version a state file says it is, read before anything else of it.
@@ -354,6 +481,12 @@ pub(crate) struct DurableRest {
     local_app_records: std::collections::HashMap<TabId, crate::shell::state::LocalAppRecord>,
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     package_launches: std::collections::HashMap<TabId, String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    workspace_aliases: std::collections::BTreeMap<crate::shell::state::WorkspaceId, RoomId>,
+    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    joining_rooms: std::collections::BTreeSet<RoomId>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    archived_workspaces: Vec<crate::shell::state::Workspace>,
 }
 
 impl DurableTree {
@@ -366,11 +499,29 @@ impl DurableTree {
         // Native process surface IDs become durable symbolic launch records.
         symbolise_foreign_surfaces(&mut desktop);
         clear_transient_launch_notes(&mut desktop);
+        // What archived workspaces' windows were launched as stays theirs.
+        let shown_and_archived = (!tree.archived_workspaces.is_empty()).then(|| {
+            let mut all = desktop.clone();
+            all.workspaces
+                .extend(tree.archived_workspaces.iter().cloned());
+            all
+        });
+        let held = shown_and_archived.as_ref().unwrap_or(&desktop);
         let mut local_app_records = tree.local_app_records.clone();
-        WorkspaceTree::prune_local_app_records_of(&desktop, &mut local_app_records);
+        WorkspaceTree::prune_local_app_records_of(held, &mut local_app_records);
         let mut package_launches = tree.package_launches.clone();
-        WorkspaceTree::prune_package_launches_of(&desktop, &mut package_launches);
+        WorkspaceTree::prune_package_launches_of(held, &mut package_launches);
         for ws in &mut desktop.workspaces {
+            ws.sandbox.retain(ui::CapOverride::persists_across_restart);
+        }
+        // Archived workspaces are stored the way shown ones are.
+        let mut archived = crate::shell::state::DesktopTree {
+            workspaces: tree.archived_workspaces.clone(),
+            ..crate::shell::state::DesktopTree::default()
+        };
+        symbolise_foreign_surfaces(&mut archived);
+        clear_transient_launch_notes(&mut archived);
+        for ws in &mut archived.workspaces {
             ws.sandbox.retain(ui::CapOverride::persists_across_restart);
         }
         Self {
@@ -390,6 +541,9 @@ impl DurableTree {
                 native_document_tabs: tree.native_document_tabs.clone(),
                 local_app_records,
                 package_launches,
+                workspace_aliases: tree.workspace_aliases.clone(),
+                joining_rooms: tree.joining_rooms.clone(),
+                archived_workspaces: archived.workspaces,
             },
         }
     }
@@ -447,11 +601,14 @@ fn encode_durable(durable: &DurableTree) -> std::io::Result<EncodedTree> {
 /// of the fields `state.json` holds, and the tree document's changes since
 /// the previous save, cut from it (see `doc_log`). No document is copied;
 /// encoding, the size checks and every write happen in
-/// [`TreeSnapshot::write_to`].
+/// `TreeSnapshot::write_to`.
 pub struct TreeSnapshot {
     durable: DurableTree,
     runtime: super::native_workspace_owner::NativeStateRuntime,
     sequence: super::native_workspace_owner::store::StateSequence,
+    /// Taken while an owner publication was in flight, whose install saves
+    /// the tree again.
+    during_publication: bool,
 }
 
 impl TreeSnapshot {
@@ -461,6 +618,7 @@ impl TreeSnapshot {
         tree.native_runtime.document_log().cut(&tree.doc);
         Self {
             sequence: tree.native_runtime.next_sequence(),
+            during_publication: tree.native_runtime.snapshot_during_publication(),
             runtime: tree.native_runtime.clone(),
             durable: DurableTree::of(tree),
         }
@@ -478,13 +636,21 @@ impl TreeSnapshot {
     ) -> std::io::Result<super::native_workspace_owner::store::Publication> {
         let encoded = encode_durable(&self.durable)?;
         // A snapshot changes no record: it holds the one the file holds.
-        let published = self.runtime.publish(
+        let published = match self.runtime.publish(
             path,
             encoded.authority,
             &self.durable.native_authority,
             &encoded,
             self.sequence,
-        )?;
+        ) {
+            // Taken while an owner publication was writing, it carries the
+            // record that publication replaced. The publication saves the
+            // tree again once installed, which holds all of this snapshot.
+            Err(_) if self.during_publication && self.runtime.moved_past(encoded.authority) => {
+                super::native_workspace_owner::store::Publication::Superseded
+            }
+            published => published?,
+        };
         // Superseded or not, the changes cut for this snapshot are written:
         // the snapshot that superseded it may have been cut before them.
         write_document(&self.runtime, path);
@@ -521,6 +687,24 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     // Refuse a malformed authority before copying anything.
     check_authority(&tree.native_authority)?;
     TreeSnapshot::of(tree).write_to(path).map(drop)
+}
+
+/// [`save_tree_to`] for the shared tree: the snapshot is taken with the tree
+/// held and written once it is let go. An owner publication takes the state
+/// file's writer before the tree, so a save must not hold the tree while it
+/// waits for the writer.
+///
+/// # Errors
+/// As [`save_tree_to`].
+pub fn save_shared_tree_to(
+    tree: &super::state::WorkspaceTreeHandle,
+    path: &Path,
+) -> std::io::Result<()> {
+    let held = tree.read();
+    check_authority(&held.native_authority)?;
+    let snapshot = TreeSnapshot::of(&held);
+    drop(held);
+    snapshot.write_to(path).map(drop)
 }
 
 /// Save `tree` to `path` on the state writer thread, then run
@@ -661,7 +845,10 @@ fn write_meta(state: &Path, actor: &str) -> std::io::Result<()> {
 /// Write the tree document's pending changes beside the state file at
 /// `path`, and its meta after them. Best-effort: `state.json` is already
 /// durable, and on load it is what the desktop is rebuilt from.
-fn write_document(runtime: &super::native_workspace_owner::NativeStateRuntime, path: &Path) {
+pub(crate) fn write_document(
+    runtime: &super::native_workspace_owner::NativeStateRuntime,
+    path: &Path,
+) {
     if let Err(error) =
         runtime
             .document_log()
@@ -671,13 +858,6 @@ fn write_document(runtime: &super::native_workspace_owner::NativeStateRuntime, p
     {
         tracing::warn!(path = %path.display(), %error, "could not save the tree document");
     }
-}
-
-/// Write `tree`'s document beside the state file at `path` now, for a
-/// publication that encoded and published `tree` itself.
-pub(crate) fn save_document(tree: &WorkspaceTree, path: &Path) {
-    tree.native_runtime.document_log().cut(&tree.doc);
-    write_document(&tree.native_runtime, path);
 }
 
 /// Keep a document and log that cannot be opened for recovery, out of the
@@ -798,6 +978,7 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     tree.desktop.schema_version = STATE_SCHEMA_VERSION;
     // Before the repairs below, so the seed after them records their outcome.
     attach_saved_doc(&mut tree, path);
+    bind_workspaces_to_rooms(&mut tree);
     drop_unidentifiable_windows(&mut tree);
     tree.prune_local_app_records();
     tree.prune_package_launches();
@@ -810,6 +991,37 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // allocation collides with a persisted id.
     tree.seed_next_id_from_self();
     Ok(tree)
+}
+
+/// Each workspace is its room and each room held here has its workspace
+/// ([`WorkspaceTree::bind_workspaces_to_rooms`]): a file from before that
+/// comes up to the one record, nothing deleted and no id changed. What it
+/// changed is logged where the session log keeps repairs.
+fn bind_workspaces_to_rooms(tree: &mut WorkspaceTree) {
+    let data_home = launcher::appdir::host_data_home();
+    let binding = tree.bind_workspaces_to_rooms(&|room| {
+        // A data home that cannot be told holds everything.
+        data_home
+            .as_deref()
+            .is_none_or(|home| crate::shell::state::room_holds_files(home, room))
+    });
+    if !binding.is_empty() {
+        tracing::info!(
+            target: tilo_startup_metrics::REPAIR_TARGET,
+            joined = ?binding.joined,
+            kept = ?binding.kept,
+            dropped = ?binding.dropped,
+            made = ?binding.made,
+            "each workspace is its room now",
+        );
+    }
+    let violations = tree.one_record_violations();
+    if !violations.is_empty() {
+        tracing::error!(
+            ?violations,
+            "workspaces and the rooms this device holds disagree"
+        );
+    }
 }
 
 /// Drop the saved windows whose program can't be told (no app id, so the
@@ -1011,7 +1223,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
     }
 
-    // USER REQUIREMENT (2026-10-19): "if i create a workspace I want it to be empty, remove this crap"
     /// A state file from when every workspace got a Lounge comes up without
     /// the Lounges nobody used: a workspace keeps only the strips its person
     /// made or used, and focus on a dropped Lounge goes to the first strip
@@ -1102,38 +1313,93 @@ mod tests {
         assert_eq!(now["schema_version"], NATIVE_STATE_SCHEMA_VERSION);
     }
 
+    /// An Activity window a version 4 file kept comes up as the Activity
+    /// app's window, in the same place under the same id, and nothing else
+    /// in the file changes: every other window, tab and field is as it was.
+    #[test]
+    fn a_v4_activity_window_becomes_the_activity_apps_window_and_nothing_else_changes() {
+        let (id, v4) = v4_with_activity();
+        let before: serde_json::Value = serde_json::from_slice(&v4).unwrap();
+        let after: serde_json::Value =
+            serde_json::from_slice(&activity_becomes_an_app(v4.clone()).unwrap()).unwrap();
+        let mut expected = before.clone();
+        *tab_tile(&mut expected, id).unwrap() = serde_json::json!({
+            "LocalApp": {
+                "app_id": tilo_actions::remote::workspace_activity::APP_ID,
+                "label": crate::shell::i18n::t("shell-activity-title"),
+                "note": "",
+            }
+        });
+        expected["schema_version"] = serde_json::Value::from(5_u32);
+        assert_eq!(
+            after, expected,
+            "only the Activity tile and the version moved"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, &v4).unwrap();
+        let loaded = load_tree_from(&path).expect("a v4 file comes up to date");
+        let tab = loaded
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == id)
+            .expect("the Activity window keeps its id");
+        assert!(
+            matches!(
+                &tab.tile,
+                crate::shell::state::TileContent::LocalApp { app_id, .. }
+                    if app_id == tilo_actions::remote::workspace_activity::APP_ID
+            ),
+            "the window is the Activity app's: {:?}",
+            tab.tile
+        );
+        let now: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(window_ids(&now), window_ids(&before), "every window stays");
+        assert_eq!(
+            std::fs::read(tilo_files::native::migration::Format::snapshot_path(
+                &path, 4
+            ))
+            .unwrap(),
+            v4,
+            "the v4 file is kept as it was"
+        );
+    }
+
     /// Preparing for sleep makes the settings and the queued saves durable
     /// from the compositor loop under a 2 s bound. A settings flush stuck
     /// on the disk, or on the records' lock another process holds, runs on
     /// the state writer: the loop's wait ends at its bound, nothing syncs on
-    /// the loop's thread, and the flush still completes once it can.
+    /// the loop's thread, and the flush still completes once it can. The
+    /// flush here is held until the loop's wait has returned, so returning at
+    /// all proves the wait did not include it.
     #[cfg(target_os = "linux")]
     #[test]
     fn preparing_for_sleep_never_waits_past_its_bound_for_the_settings_flush() {
         use std::sync::{Arc, Mutex, mpsc};
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
         let writer = super::super::durable_writer::DurableWriter::spawn("test-state-writer");
         let (release, stuck) = mpsc::channel::<()>();
         let flushed_on = Arc::new(Mutex::new(None));
         let recorded = Arc::clone(&flushed_on);
-        let (returned, waited, loop_thread) =
+        let (returned, loop_thread) =
             crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
-                let started = Instant::now();
                 let returned = saves_within(
                     &writer,
                     move || {
-                        let _ = stuck.recv();
+                        let _ = stuck.recv_timeout(tilo_test_env::hang_bound());
                         *recorded.lock().unwrap() = Some(std::thread::current().id());
                     },
                     Duration::from_millis(100),
                 );
-                (returned, started.elapsed(), std::thread::current().id())
+                (returned, std::thread::current().id())
             });
         assert!(!returned, "a stuck flush is reported as not saved");
-        assert!(
-            waited < Duration::from_secs(2),
-            "the loop waited {waited:?} for a flush bounded at 100 ms"
-        );
         assert!(
             flushed_on.lock().unwrap().is_none(),
             "the flush was still stuck"
@@ -1212,6 +1478,7 @@ mod tests {
                 label: title.into(),
                 note: note.into(),
             },
+            app_title: None,
         };
         tree.desktop.workspaces[0].strips = vec![Strip {
             id: StripId::from(92_100),
@@ -1315,6 +1582,7 @@ mod tests {
                         label: "XTerm".into(),
                         note: crate::shell::peer_windows::OPENING.into(),
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: 91_102,
@@ -1325,6 +1593,7 @@ mod tests {
                         note: "Not installed on this machine".into(),
                         missing: None,
                     },
+                    app_title: None,
                 },
             ];
             group.active_tab = 91_101;
@@ -1369,6 +1638,7 @@ mod tests {
                             note: String::new(),
                             missing: None,
                         },
+                        app_title: None,
                     }],
                     active_tab: survivor,
                     width: WindowWidth::Normal,
@@ -1383,6 +1653,7 @@ mod tests {
                     app_id: "org.example.Editor".into(),
                     surface_id: 0xfeed_beef,
                 },
+                app_title: None,
             });
             group.active_tab = 90_001;
             tree.desktop.active = workspace_id;
@@ -1481,6 +1752,7 @@ mod tests {
                     app_id: "org.gnome.Rygel.Preferences".into(),
                     surface_id: 90_102,
                 },
+                app_title: None,
             });
             group.active_tab = 90_101;
 
@@ -1520,6 +1792,7 @@ mod tests {
                             app_id: "com.example.Chat".into(),
                             surface_id: 92_003,
                         },
+                        app_title: None,
                     }],
                     active_tab: 92_002,
                     width: WindowWidth::Normal,
@@ -1558,7 +1831,7 @@ mod tests {
                 .desktop
                 .active_workspace()
                 .expect("active workspace")
-                .room;
+                .room();
             assert!(original.admit_collaborator_in_room(
                 room,
                 Collaborator::new("alice", "alice").with_session(0x11),
@@ -1590,7 +1863,7 @@ mod tests {
                 .desktop
                 .workspaces
                 .iter()
-                .find(|w| w.room == room)
+                .find(|w| w.room() == room)
                 .expect("the room survives the round trip");
             assert_eq!(
                 after.policy, policy_before,
@@ -1615,8 +1888,6 @@ mod tests {
             let mut original = WorkspaceTree::bootstrap_default();
             original.desktop.workspaces[0].name = "Migrated".into();
             save_tree_to(&original, &path).expect("save");
-            // Simulate the writing process exiting and releasing its state-file
-            // writer.
             drop(original);
             // What an older build leaves: `state.json` alone.
             std::fs::remove_file(state_doc_path(&path))
@@ -1640,13 +1911,13 @@ mod tests {
                 from_doc
                     .workspaces
                     .iter()
-                    .map(|ws| (ws.id, ws.name.clone(), ws.room))
+                    .map(|ws| (ws.id, ws.name.clone(), ws.room()))
                     .collect::<Vec<_>>(),
                 loaded
                     .desktop
                     .workspaces
                     .iter()
-                    .map(|ws| (ws.id, ws.name.clone(), ws.room))
+                    .map(|ws| (ws.id, ws.name.clone(), ws.room()))
                     .collect::<Vec<_>>(),
                 "the migrated document describes the loaded desktop"
             );
@@ -1660,7 +1931,7 @@ mod tests {
     /// contributors, named ranges, and the workspace names at each Replay
     /// checkpoint.
     type ActivitySnapshot = (
-        Vec<(ui::widget::HistoryEntryId, String, String)>,
+        Vec<(collab_types::history::HistoryEntryId, String, String)>,
         Vec<String>,
         Vec<String>,
         Vec<Vec<String>>,
@@ -1712,7 +1983,6 @@ mod tests {
             crate::shell::state::WorkspaceId(0x7e57_0001),
             "Research",
         );
-        // Replay draws a workspace through its strips.
         research.strips.push(crate::shell::state::Strip {
             id: crate::shell::state::StripId(0x7e57_0002),
             name: "Main".into(),
@@ -1720,7 +1990,6 @@ mod tests {
         });
         tree.desktop.workspaces.push(research);
         tree.seed_doc_from_cache();
-        // A peer's edit, under the peer's own actor.
         let base = tree.current_heads();
         let mut peer = tree.doc.fork();
         peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
@@ -1840,7 +2109,6 @@ mod tests {
                  from it and must not be in the session"
             );
 
-            // Reported, with the facts that make it actionable.
             let notice = notice.expect(
                 "a refused state file must produce a notice — silently handing the \
                  person a bootstrapped tree is the behaviour this replaces",
@@ -1876,7 +2144,6 @@ mod tests {
                 notice.body()
             );
 
-            // Preserved, byte for byte.
             assert_eq!(
                 std::fs::read_to_string(&path).expect("re-read"),
                 on_disk,
@@ -1967,7 +2234,6 @@ mod tests {
             (tree, [first, second])
         }
 
-        // Phase `a_workspace_switch_writes_nothing_on_the_calling_thread`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
@@ -1992,7 +2258,6 @@ mod tests {
             assert_ne!(restarted.desktop.active, first);
         }
 
-        // Phase `a_queued_save_never_overwrites_a_later_synchronous_one`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
@@ -2016,7 +2281,6 @@ mod tests {
             assert_ne!(restarted.desktop.active, first);
         }
 
-        // Phase `a_burst_of_saves_lands_as_its_newest_state`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
@@ -2041,7 +2305,6 @@ mod tests {
             }
         }
 
-        // Phase `a_reader_racing_the_writer_only_sees_whole_files`.
         {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("state.json");
@@ -2108,7 +2371,7 @@ mod tests {
         };
 
         let mut tree = WorkspaceTree::bootstrap_demo();
-        let room = tree.desktop.workspaces[0].room;
+        let room = tree.desktop.workspaces[0].room();
         let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
         group.tabs.push(Tab {
             id: 93_001,
@@ -2117,6 +2380,7 @@ mod tests {
                 app_id: "org.example.ParityEditor".into(),
                 surface_id: 93_002,
             },
+            app_title: None,
         });
         group.tabs.push(Tab {
             id: 93_003,
@@ -2126,6 +2390,7 @@ mod tests {
                 label: "Terminal".into(),
                 note: crate::shell::peer_windows::OPENING.into(),
             },
+            app_title: None,
         });
         let capabilities = &mut tree.desktop.workspaces[0].sandbox;
         capabilities.push(
@@ -2334,7 +2599,6 @@ mod tests {
         assert_eq!(restarted.doc.get_actor(), &actor);
         assert_eq!(restarted.desktop.workspaces[0].name, "Before the log");
 
-        // And the history continues as a log beside it.
         restarted.desktop.workspaces[0].name = "After the log".into();
         restarted.seed_doc_from_cache();
         save_tree_to(&restarted, &path).expect("save");

@@ -134,7 +134,6 @@ async fn a_failed_or_unstaged_fsync_commits_or_reports_without_discarding_bytes(
         let record_id = fs.ns().record_id_for(ino).unwrap();
         fs.write_buffer(ino, 0, b"precious bytes").unwrap();
 
-        // Make the durable signed publication fail.
         let repository = fs.record_publisher.as_ref().unwrap().repository();
         repository.fail_writes(true);
 

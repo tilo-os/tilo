@@ -7,10 +7,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
 SOURCE = ROOT / 'os/usr/libexec/tilo-firstboot-user'
 FILES_BINARY = Path(os.environ.get('TILO_FIRSTBOOT_FILES_BINARY', ROOT / 'target/debug/tilo-firstboot-files'))
 HASH = '$6$fixture$' + 'A' * 86
@@ -57,8 +60,9 @@ def locked():
     assert (r / 'shadow').read_text().startswith('!'), 'delivery ran unlocked'
 """
         tools = {
-            # Flush only fixture files, not unrelated host filesystem workloads.
-            'sync': "fail('intent-sync'); fd = os.open(sys.argv[-1], os.O_RDONLY); os.fsync(fd); os.close(fd)",
+            # The built helper, unless the case fails the intent's publication,
+            # whose own syncs (record, then directory) make the intent durable.
+            'files-helper': f"fail('intent') if sys.argv[1] == 'intent' else None; os.execv({str(FILES_BINARY)!r}, [{str(FILES_BINARY)!r}] + sys.argv[1:])",
             'id': "raise SystemExit(0 if (r / 'shadow').exists() else 1)",
             'stat': "print('0:600:1' if sys.argv[2] == '%u:%a:%h' else '0:700' if sys.argv[2] == '%u:%a' else Path(sys.argv[-1]).stat().st_size)",
             'getent': "print('fixtureuser:' + ((r / 'shadow').read_text() if sys.argv[1] == 'shadow' else 'x') + ':' + str(os.getuid()) + ':' + str(os.getgid()) + '::' + str(r / 'home/fixtureuser') + ':/bin/bash')",
@@ -117,7 +121,7 @@ else:
             '/var/lib/tilo': str(r / 'state'),
             '/var/home': str(r / 'home'),
             '"/home/$user"': f'"{r}/home/$user"',
-            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files"': f'FILES_HELPER="{FILES_BINARY}"',
+            'FILES_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/tilo-firstboot-files"': f'FILES_HELPER="{r}/bin/files-helper"',
             '/usr/libexec/tilo-staging-handoff': str(r / 'handoff'),
             'seed_helper=/usr/libexec/tilo-firstboot-home-seeds': f'seed_helper={r}/seeds.py',
         }.items():
@@ -128,8 +132,12 @@ else:
     def run_boot(self, fail='', terminate=False):
         env = dict(os.environ, FIXTURE_ROOT=str(self.root), FAIL_STAGE=fail,
                    TERMINATE=str(int(terminate)), PATH=f"{self.root}/bin:{os.environ['PATH']}")
+        # A boot spawns a dozen Python tool stand-ins and fsyncs its intent;
+        # on a loaded runner that took longer than a 10 s guess. The bound
+        # only catches a hang: a timed-out boot leaves the fixture between
+        # stages, which turned one slow boot into every later case failing.
         result = subprocess.run(['bash', str(self.root / 'firstboot')], env=env,
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=HANG_BOUND)
         self.assertNotIn(HASH, result.stdout + result.stderr)
         return result
 
@@ -234,7 +242,7 @@ else:
         self.assertTrue(self.credential.exists())
 
     def test_intent_is_durable_before_account_creation(self):
-        self.assertNotEqual(self.run_boot('intent-sync').returncode, 0)
+        self.assertNotEqual(self.run_boot('intent').returncode, 0)
         self.assertFalse((self.root / 'shadow').exists())
         self.assertTrue(self.credential.exists())
         self.assertEqual(self.run_boot().returncode, 0)

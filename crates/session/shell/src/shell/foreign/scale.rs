@@ -17,7 +17,6 @@ use super::{ChildPixels, FrameSnapshot, WindowGeometry};
 /// `wl_surface.set_buffer_scale` and the `wp_viewport` rectangles.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SurfaceScale {
-    /// `wl_surface.set_buffer_scale`.
     pub buffer_scale: i32,
     /// `wp_viewport.set_source`: `(x, y, width, height)` of the buffer, in
     /// buffer pixels divided by the buffer scale.
@@ -46,7 +45,6 @@ pub(super) struct PixelRect {
 }
 
 impl PixelRect {
-    /// All of a `width`×`height` grid.
     pub fn whole(width: u32, height: u32) -> Self {
         Self {
             x: 0.0,
@@ -61,7 +59,6 @@ impl PixelRect {
 /// logical extent that part covers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct BufferPlacement {
-    /// Buffer pixels.
     pub source: PixelRect,
     /// Logical pixels.
     pub logical: (f64, f64),
@@ -410,14 +407,12 @@ mod tests {
         };
         assert_eq!(fractional.density(300, 150), Some((1.5, 1.5)));
 
-        // A single pixel stretched over the whole window.
         let stretched = SurfaceScale {
             destination: Some((800, 600)),
             ..SurfaceScale::default()
         };
         assert_eq!(stretched.density(1, 1), Some((1.0 / 800.0, 1.0 / 600.0)));
 
-        // A source crop without a destination shows the crop at its own size.
         let cropped = SurfaceScale {
             buffer_scale: 2,
             source: Some((10.0, 5.0, 50.0, 25.0)),

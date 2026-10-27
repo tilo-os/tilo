@@ -43,12 +43,6 @@ pub fn scanners() -> Result<Vec<Scanner>, String> {
     imp::scanners()
 }
 
-/// Scan one page as PNG.
-///
-/// # Errors
-///
-/// An invalid device, a scanner that fails or times out, or a target without
-/// scanner access.
 pub fn scan_page(device: &str, settings: ScanSettings) -> Result<Vec<u8>, String> {
     imp::scan_page(device, settings)
 }

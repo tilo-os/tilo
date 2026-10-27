@@ -1,5 +1,3 @@
-//! The emoji picker as a stacked layer.
-
 use std::time::Instant;
 
 use settings_store::hardware::ShortcutAction;
@@ -57,6 +55,10 @@ impl ShellLayer for EmojiPicker {
 
     fn is_animating(&self, _now: Instant) -> bool {
         self.needs_animation_frame()
+    }
+
+    fn tick(&mut self, _now: Instant) -> bool {
+        self.advance_scroll()
     }
 
     fn accessibility(&self, _geometry: LayerGeometry<'_>) -> Option<AccessNode> {

@@ -49,19 +49,9 @@ pub trait OpenWithRoute {
     fn candidates(&self, path: &Path) -> OpenWithCandidates;
 
     /// Open `path` with exactly `app_id`, once.
-    ///
-    /// # Errors
-    ///
-    /// A message naming the file when the application is gone, no longer
-    /// claims the type, or failed to start.
     fn open_with(&self, path: &Path, app_id: &str) -> Result<(), String>;
 
     /// Make `app_id` the person's default for `path`'s type.
-    ///
-    /// # Errors
-    ///
-    /// A message when the application does not claim the type or the choice
-    /// could not be saved.
     fn set_default(&self, path: &Path, app_id: &str) -> Result<(), String>;
 }
 

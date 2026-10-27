@@ -20,7 +20,7 @@ samples per case: 1,000 measured samples per case and variant. Each sample
 converts all rows into reused frame storage. Every run verifies all pixel bytes,
 frame length and stable destination capacity. Results below pool the samples
 and use nearest-rank percentiles; times are milliseconds per complete frame.
-[Raw samples, binary hashes and toolchain metadata](benchmarks/shm-swizzle-2026-10-05.json)
+[Raw samples, binary hashes and toolchain metadata](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/shm-swizzle-2026-10-05.json)
 are preserved. Shared-host scheduling can affect tails, especially the baseline
 4K p99; these measurements do not establish an isolated-machine guarantee.
 

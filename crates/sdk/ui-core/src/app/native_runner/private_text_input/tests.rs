@@ -14,6 +14,7 @@ struct Calls {
 struct Deferred {
     inner: TextInput,
     calls: Rc<RefCell<Calls>>,
+    takes_ordinary_commits: bool,
 }
 impl Decorator for Deferred {
     type Inner = TextInput;
@@ -28,6 +29,9 @@ impl Decorator for Deferred {
     }
     fn ime_requires_deferred_ack(&self) -> bool {
         true
+    }
+    fn ime_refuses_ordinary_commits(&self) -> bool {
+        !self.takes_ordinary_commits
     }
     fn start_deferred_text(&mut self) -> Option<Receipt> {
         let (receipt, resolver) = Receipt::channel();
@@ -87,6 +91,7 @@ impl Fixture {
                     .with_secret(secret)
                     .disabled(disabled),
                 calls: calls.clone(),
+                takes_ordinary_commits: false,
             }));
         }
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(column));
@@ -357,4 +362,53 @@ fn preparation_lease_is_not_a_successful_start_acknowledgment() {
     f.service();
     assert_eq!(f.wire.acknowledgments.borrow().last(), Some(&(2, 2)));
     assert!(!f.bridge.admitted());
+}
+
+/// A field that takes text only through deferred receipts keeps standard text
+/// input, and with it the on-screen keyboard, closed until dictation prepares
+/// it; one that turns ordinary commits into its own acknowledged edits (the
+/// Terminal at a native editor prompt) is served like any text field.
+#[test]
+fn ordinary_commit_fields_open_standard_input_without_dictation() {
+    let mut f = Fixture::new(false, false);
+    assert!(
+        f.bridge.advertised.is_some(),
+        "the field is offered to dictation"
+    );
+    assert!(
+        !f.bridge.standard_input_open(&f.app),
+        "a receipts-only field stays closed outside dictation"
+    );
+    let stamp = f.bridge.advertised.expect("eligible field").stamp;
+    f.operation(1, PrivateImeKind::Prepare, stamp);
+    assert!(
+        f.bridge.standard_input_open(&f.app),
+        "dictation's preparation opens it"
+    );
+
+    let mut f = Fixture::new(false, false);
+    f.app
+        .mutate_node(f.nodes[0], |widget| {
+            widget
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<Deferred>())
+                .expect("the deferred field")
+                .takes_ordinary_commits = true;
+        })
+        .expect("the focused field");
+    f.service();
+    assert!(
+        f.bridge.advertised.is_some(),
+        "it is still offered to dictation through receipts"
+    );
+    assert!(
+        f.bridge.standard_input_open(&f.app),
+        "ordinary commits reach it, so standard input serves it"
+    );
+    assert!(f.app.ime_window_state().is_some());
+    assert!(!f.bridge.event(
+        &mut f.app,
+        &f.wire,
+        &WindowEvent::Ime(Ime::Commit("ls".into()))
+    ));
 }

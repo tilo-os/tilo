@@ -82,7 +82,6 @@ impl Catalogue {
         &self.entries
     }
 
-    /// The entry for `id`.
     #[must_use]
     pub fn get(&self, id: &str) -> Option<&CatalogueEntry> {
         let wanted = canonical(id);

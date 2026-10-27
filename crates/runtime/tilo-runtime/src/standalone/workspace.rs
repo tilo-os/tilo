@@ -13,7 +13,6 @@ use tilo_action_broker::services::{
 };
 use tilo_desktop_model::{
     DesktopTree, IdMinter, RoomId, Strip, StripId, Workspace, WorkspaceEffectReceipt, WorkspaceId,
-    WorkspaceTaskStatus,
 };
 use tilo_identity_host::broker::WorkspaceMembership;
 
@@ -70,7 +69,7 @@ impl ProfileWorkspace {
             .map(|tree| {
                 tree.workspaces
                     .first()
-                    .map(|workspace| workspace.room.to_string())
+                    .map(|workspace| workspace.room().to_string())
             })
             .ok()
             .flatten()
@@ -180,7 +179,7 @@ impl ProfileWorkspace {
             let workspace = tree
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room.to_string() == room)?
+                .find(|workspace| workspace.room().to_string() == room)?
                 .id;
             change(tree, workspace)
         })
@@ -203,7 +202,7 @@ impl AppActionGrants for ProfileGrants {
             && self.workspace.tree.read().is_ok_and(|tree| {
                 tree.workspaces
                     .iter()
-                    .find(|workspace| workspace.room.to_string() == room)
+                    .find(|workspace| workspace.room().to_string() == room)
                     .is_some_and(|workspace| {
                         workspace.may_govern_at(
                             person,
@@ -235,7 +234,7 @@ impl AppActionGrants for ProfileGrants {
             let workspace = tree
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.room.to_string() == request.room)?
+                .find(|workspace| workspace.room().to_string() == request.room)?
                 .id;
             let stored = tree
                 .grant_in_workspace_at(workspace, &request.person, grant, now)
@@ -258,7 +257,7 @@ impl AppActionGrants for ProfileGrants {
         self.workspace.update(|tree| {
             tree.workspaces
                 .iter_mut()
-                .find(|workspace| workspace.room.to_string() == room)?
+                .find(|workspace| workspace.room().to_string() == room)?
                 .revoke_grant(&tilo_action_policy::GrantId::new(grant))
                 .then_some(())
         });
@@ -293,29 +292,6 @@ impl LegacyWorkspaceProjection for ProfileWorkspace {
             Some(())
         })
     }
-
-    fn record_task_update(
-        &self,
-        room: &str,
-        task: &str,
-        actor: &str,
-        status: Option<WorkspaceTaskStatus>,
-        summary: String,
-    ) -> Result<(), String> {
-        let now = tilo_clock::unix_now_i64();
-        self.record(room, |tree, workspace| {
-            let workspace = tree
-                .workspaces
-                .iter_mut()
-                .find(|candidate| candidate.id == workspace)?;
-            if let Some(status) = status {
-                workspace.set_task_status_at(task, status, actor, now);
-                workspace.lapse_task_grants();
-            }
-            workspace.append_task_audit_at(task, actor, summary, now)?;
-            Some(())
-        })
-    }
 }
 
 impl WorkspaceAuthority for ProfileWorkspace {
@@ -341,7 +317,7 @@ impl WorkspaceMembership for ProfileWorkspace {
             && let Some(workspace) = tree
                 .workspaces
                 .iter()
-                .find(|workspace| &workspace.room == room)
+                .find(|workspace| &workspace.room() == room)
         {
             read(workspace);
         }
@@ -372,13 +348,14 @@ pub(super) fn bootstrap() -> DesktopTree {
     let mut ids = IdMinter::default();
     let workspace = WorkspaceId(ids.mint());
     let strip = StripId(ids.mint());
-    let home = Workspace {
-        strips: vec![Strip {
+    let home = {
+        let mut workspace = Workspace::new(workspace, "Home");
+        workspace.strips = vec![Strip {
             id: strip,
             name: "Main".into(),
             window_groups: Vec::new(),
-        }],
-        ..Workspace::new(workspace, "Home")
+        }];
+        workspace
     };
     DesktopTree {
         workspaces: vec![home],

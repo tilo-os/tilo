@@ -92,19 +92,11 @@ pub mod screens {
     }"#;
 
     /// Build the generated main screen.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph parse, validation, or construction error.
     pub fn main(theme: &Theme) -> Result<Box<dyn Widget>, UiGraphError> {
         main_with(theme, UiBuildContext::default())
     }
 
     /// Build the main screen with app-owned component factories.
-    ///
-    /// # Errors
-    ///
-    /// Returns a graph parse, validation, component, or construction error.
     pub fn main_with(
         theme: &Theme,
         context: UiBuildContext,
@@ -131,10 +123,6 @@ pub mod screens {
     }
 
     /// Build the route registry with app-owned component factories.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the initial route or a screen is invalid.
     pub fn router_with(
         initial: &str,
         theme: &Theme,

@@ -15,7 +15,7 @@ async fn checkout_channel(
         .host_workers
         .lock()
         .unwrap()
-        .get(&peer)
+        .only(peer)
         .unwrap()
         .clone();
     // The actual joined channel supplied the verified identity. Its transport
@@ -41,6 +41,7 @@ async fn checkout_channel(
         directories: room.directories.clone(),
         channel_id: room.route.channel_key(),
         peer_id: peer,
+        connection_id: peer,
         verified_identity: identity,
         record_kind: None,
         route_access: RouteAccess::Own,
@@ -50,6 +51,7 @@ async fn checkout_channel(
             directories: room.directories.clone(),
             peer_id: peer,
         })),
+        _hold: None,
     });
     let mut request = channel.publish_action_directory_request();
     request.get().set_app_id(&room.route.app_id);
@@ -210,7 +212,7 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 .host_workers
                 .lock()
                 .unwrap()
-                .get(&peer)
+                .only(peer)
                 .unwrap()
                 .clone();
             let channel: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
@@ -220,10 +222,12 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
                 directories: room.directories.clone(),
                 channel_id: room.route.channel_key(),
                 peer_id: peer,
+                connection_id: peer,
                 verified_identity: identity,
                 record_kind: None,
                 route_access: RouteAccess::ReadOnly,
                 lease: None,
+                _hold: None,
             });
             let mut send = channel.send_request();
             send.get().set_op(b"any op");

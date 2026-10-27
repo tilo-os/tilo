@@ -154,11 +154,10 @@ fn verbs_make_open_save_and_remove_records() {
             request: request.clone(),
         })
     };
-    assert!(
-        workspace.apply(delete()).is_err(),
-        "deleting asks for confirmation"
-    );
-    workspace.apply_confirmed(delete()).unwrap();
+    // Undo takes a deletion back, so it runs at once.
+    workspace
+        .apply(delete())
+        .expect("an undoable delete runs at once");
     assert!(
         workspace
             .apply(Workspace::OPEN_REQUEST.with(workspace::OpenRequest {
@@ -191,7 +190,6 @@ fn verbs_make_open_save_and_remove_records() {
     assert!(workspace.state().unwrap().collections.is_empty());
 }
 
-/// The builder's request is edited field by field, rows by their ids.
 #[test]
 fn field_edits_change_the_builder_and_rows_in_place() {
     let mut workspace = seeded();
@@ -364,7 +362,6 @@ fn credentials_never_enter_the_record() {
     );
 }
 
-/// The active environment names one the workspace has.
 #[test]
 fn the_active_environment_names_an_environment() {
     let mut workspace = seeded();
@@ -586,8 +583,9 @@ fn history_entries_render_as_the_apps_sentences() {
         serde_json::json!({}),
     )
     .unwrap();
+    // Undo takes a deletion back, so it runs at once.
     app.call_by(agent, &item, "delete-collection", serde_json::json!({}))
-        .expect_err("deleting asks for confirmation");
+        .expect("an undoable delete runs at once");
 
     let sentences = app.sentences(app.history().iter().filter(|entry| {
         entry
@@ -604,14 +602,15 @@ fn history_entries_render_as_the_apps_sentences() {
             "Saved a request to Billing",
             "Created the environment Staging",
             "Switched to the environment Staging",
+            "Deleted the collection Billing",
         ]
     );
 }
 
-/// Deleting from the window asks once, in the host's dialog: the window has
-/// no confirmation sheet of its own, and nothing is deleted before consent.
+/// Deleting from the window asks nothing, of its own or through the host:
+/// Undo takes the deletion back, so it runs at once and is one undo step.
 #[test]
-fn deleting_from_the_window_asks_the_host_once() {
+fn deleting_from_the_window_runs_at_once_and_undo_brings_it_back() {
     let mut app = TestApp::<ApiTesterShell>::new().unwrap();
     for invoke in crate::seed::workspace() {
         app.invoke(invoke).unwrap();
@@ -630,7 +629,6 @@ fn deleting_from_the_window_asks_the_host_once() {
     })
     .unwrap();
     app.settle();
-    assert_eq!(count(&app), before, "deleting waits for consent");
     assert!(
         !app.harness()
             .inspection_json()
@@ -638,13 +636,11 @@ fn deleting_from_the_window_asks_the_host_once() {
             .contains("Delete this request?"),
         "the window asks nothing of its own"
     );
-    app.harness().type_text("CONFIRM");
-    app.harness().key("Enter");
-    app.settle();
+    assert!(app.asking().is_none(), "nor does the host");
     assert_eq!(
         count(&app),
         before - 1,
-        "the confirmed delete applied: {:?}",
+        "the delete applied: {:?}",
         app.harness().control_failures()
     );
     assert!(app.undo(), "the delete is one undo step");

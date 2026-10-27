@@ -73,7 +73,6 @@ pub struct AudioLayer {
     pub rate: f64,
 }
 
-/// Whether `kind` has any soloed track in this project.
 fn soloing(project: &Project, kind: TrackKind) -> bool {
     project.tracks.iter().any(|t| t.kind == kind && t.solo)
 }
@@ -553,6 +552,13 @@ pub fn decode_pcm_for_test(uri: &str) -> Option<Vec<f32>> {
     decode_pcm(uri)
 }
 
+#[cfg(test)]
+#[cfg(any(feature = "gst", feature = "decode"))]
+thread_local! {
+    /// Decodes on this thread that ended because their deadline ran out.
+    static DECODE_TIMEOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Whether a pull that came back empty means the source has no audio at all.
 ///
 /// It means that only once the demuxer has finished exposing its pads and
@@ -644,6 +650,8 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
     loop {
         if ui::time::now() >= deadline {
             tracing::warn!("audio: decoding {uri} timed out; mixing it as silence");
+            #[cfg(test)]
+            DECODE_TIMEOUTS.with(|count| count.set(count.get() + 1));
             break;
         }
         // A pipeline that has failed will never produce another buffer, so
@@ -1035,6 +1043,9 @@ struct MonitorState {
     position: Mutex<f64>,
     playing: AtomicBool,
     stop: AtomicBool,
+    /// Turns the monitor thread took through its paused branch.
+    #[cfg(test)]
+    paused_turns: std::sync::atomic::AtomicUsize,
 }
 
 /// Plays the mixed timeline while the transport runs.
@@ -1072,12 +1083,16 @@ impl AudioMonitor {
             position: Mutex::new(0.0),
             playing: AtomicBool::new(false),
             stop: AtomicBool::new(false),
+            #[cfg(test)]
+            paused_turns: std::sync::atomic::AtomicUsize::new(0),
         });
         let state = shared.clone();
         let handle = ui::rt::spawn_thread("video-editor-monitor", move || {
             let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
             while !state.stop.load(AtomicOrdering::Relaxed) {
                 if !state.playing.load(AtomicOrdering::Relaxed) {
+                    #[cfg(test)]
+                    state.paused_turns.fetch_add(1, AtomicOrdering::SeqCst);
                     // Idle cheaply. Nothing is pushed while paused, so a
                     // paused editor makes no sound at all.
                     let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
@@ -1139,6 +1154,16 @@ impl AudioMonitor {
     /// Where the monitor has mixed up to, in timeline seconds.
     pub fn position(&self) -> f64 {
         self.shared.position.lock().map_or(0.0, |p| *p)
+    }
+
+    /// Wait until the monitor thread has seen the transport paused: from
+    /// then on it pushes nothing until it is played again.
+    #[cfg(test)]
+    fn wait_paused(&self) {
+        let seen = self.shared.paused_turns.load(AtomicOrdering::SeqCst);
+        tilo_test_env::wait_until("the monitor thread sees the pause", || {
+            self.shared.paused_turns.load(AtomicOrdering::SeqCst) > seen
+        });
     }
 }
 
@@ -1259,7 +1284,6 @@ mod tests {
         reason = "silence is written as literal zeros, not computed"
     )]
     fn mixer_fills_missing_or_short_sources_with_silence() {
-        // Case `a_source_that_yields_nothing_contributes_silence`.
         {
             // An un-hydrated reference must not fail the mix — the rest of the
             // timeline is still audible.
@@ -1273,7 +1297,6 @@ mod tests {
                 block[0]
             );
         }
-        // Case `a_short_read_leaves_the_rest_of_the_block_silent`.
         {
             struct Short;
             impl PcmSource for Short {
@@ -1292,7 +1315,6 @@ mod tests {
                 "past the end of the source is silence"
             );
         }
-        // Case `nothing_under_the_playhead_mixes_to_silence`.
         {
             let (p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -1374,9 +1396,7 @@ mod tests {
                 .to_uri()
                 .expect("fixture file URL");
 
-            let began = ui::time::now();
             let got = super::decode_pcm_for_test(&uri);
-            let took = began.elapsed();
             std::fs::remove_file(&junk).ok();
 
             assert!(
@@ -1384,9 +1404,10 @@ mod tests {
                 "there is no audio to be had in {} bytes of junk",
                 31
             );
-            assert!(
-                took < std::time::Duration::from_secs(30),
-                "gave up after {took:?}; the pipeline's failure has to end the wait",
+            assert_eq!(
+                super::DECODE_TIMEOUTS.with(std::cell::Cell::get),
+                0,
+                "gave up only at the deadline; the pipeline's failure has to end the wait",
             );
         }
     }
@@ -1565,7 +1586,6 @@ mod tests {
                 previous_end = Some(b);
             }
         }
-        // Case `at_normal_speed_a_block_covers_exactly_its_own_frames`.
         {
             let (p, _) = speed_project(1.0, false, 10.0);
             let mut src = RampSource {
@@ -1576,7 +1596,6 @@ mod tests {
             assert!(a.abs() < 1.0, "starts at source frame 0, got {a}");
             assert!((b - 999.0).abs() < 2.0, "and ends at frame 999, got {b}");
         }
-        // Case `doubling_the_rate_covers_twice_as_much_source_in_a_block`.
         {
             let (p, _) = speed_project(2.0, false, 10.0);
             let mut src = RampSource {
@@ -1590,7 +1609,6 @@ mod tests {
                 "a 1000-frame block at 2x reads ~2000 source frames, got {b}",
             );
         }
-        // Case `halving_the_rate_covers_half_as_much`.
         {
             let (p, _) = speed_project(0.5, false, 10.0);
             let mut src = RampSource {
@@ -1604,7 +1622,6 @@ mod tests {
                 "a 1000-frame block at 0.5x reads ~500 source frames, got {b}",
             );
         }
-        // Case `reversing_walks_the_source_backwards`.
         {
             let (p, _) = speed_project(1.0, true, 10.0);
             let mut src = RampSource {
@@ -1621,7 +1638,6 @@ mod tests {
                 (a - b - 999.0).abs() < 6.0,
                 "and covers a block's worth of it: {a} → {b}",
             );
-            // A reversed clip starts on the source's *out* point.
             let head = mix_block(&p, 0.0, 64, &mut src);
             let (h, _) = span_of(&head, src.len);
             let end = 10.0 * f64::from(SAMPLE_RATE);
@@ -1630,7 +1646,6 @@ mod tests {
                 "the first timeline frame of a reversed clip is the source's last, got {h}",
             );
         }
-        // Case `resampling_interpolates_rather_than_dropping_to_silence`.
         {
             // A slow clip has to invent samples between source frames. Those
             // must lie between their neighbours — a resampler that returned
@@ -1660,7 +1675,6 @@ mod tests {
                 "a slowed block is not mostly silence, got {zeros} zero samples"
             );
         }
-        // Case `a_speed_change_moves_where_a_later_block_reads_from`.
         {
             // The whole point: the same timeline instant reads different source
             // depending on the rate.
@@ -1677,7 +1691,6 @@ mod tests {
                 "at 3x, four timeline seconds in is twelve source seconds in: {a} vs {b}",
             );
         }
-        // Case `a_keyframed_volume_is_heard_as_a_ramp`.
         {
             let (mut p, _) = speed_project(1.0, false, 10.0);
             let cid = p.clips[0].id;
@@ -1774,8 +1787,6 @@ mod tests {
         Constant(pairs.iter().copied().collect())
     }
 
-    // --- monitoring -------------------------------------------------------
-
     /// Records what the monitor pushed, so the transport can be asserted on
     /// without an audio device.
     #[derive(Clone, Default)]
@@ -1807,7 +1818,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn audio_monitor_plays_seeks_follows_edits_and_stops() {
-        // Case `a_paused_monitor_makes_no_sound_and_playing_starts_it`.
         {
             let (p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -1821,7 +1831,7 @@ mod tests {
             );
 
             assert!(!monitor.is_playing());
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            monitor.wait_paused();
             assert!(
                 tap.lock().unwrap().is_empty(),
                 "a paused editor pushes nothing at all — this is the stutter that comes \
@@ -1839,17 +1849,15 @@ mod tests {
             );
 
             monitor.pause();
-            // Let any block already in flight land, then prove it has stopped.
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            monitor.wait_paused();
             let settled = tap.lock().unwrap().len();
-            std::thread::sleep(std::time::Duration::from_millis(80));
+            monitor.wait_paused();
             assert_eq!(
                 tap.lock().unwrap().len(),
                 settled,
                 "pausing stops the monitor rather than letting it run on",
             );
         }
-        // Case `the_monitor_advances_by_what_it_mixed`.
         {
             // The audio clock is the sample count, not wall time, so it cannot
             // drift away from the picture.
@@ -1869,16 +1877,14 @@ mod tests {
                 monitor.position(),
             );
             monitor.pause();
-            std::thread::sleep(std::time::Duration::from_millis(40));
+            monitor.wait_paused();
             let held = monitor.position();
-            // A whole number of blocks past where it started.
             let blocks = (held - 2.0) / block_secs;
             assert!(
                 (blocks - blocks.round()).abs() < 1e-6,
                 "the position is an exact number of mixed blocks past the start: {blocks}",
             );
         }
-        // Case `seeking_moves_what_is_heard_next`.
         {
             let (mut p, _, _, _) = project_with_audio();
             // A clip only in the second half of the timeline, so where the
@@ -1914,7 +1920,6 @@ mod tests {
             );
             monitor.pause();
         }
-        // Case `an_edit_is_heard_without_restarting_playback`.
         {
             let (p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -1943,7 +1948,9 @@ mod tests {
                     // in the tap and no later silence could ever clear it,
                     // which is a flake rather than a finding.
                     tap.lock().unwrap().clear();
-                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    tilo_test_env::wait_until("a block after the clear", || {
+                        !tap.lock().unwrap().is_empty()
+                    });
                     let got = tap.lock().unwrap();
                     !got.is_empty() && got.iter().all(|s| *s == 0.0)
                 }),
@@ -1952,7 +1959,6 @@ mod tests {
             assert!(monitor.is_playing(), "and playback is still running");
             monitor.pause();
         }
-        // Case `dropping_the_monitor_stops_its_thread`.
         {
             let (p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -1968,12 +1974,11 @@ mod tests {
                 monitor.play(1.0);
                 assert!(eventually(|| !tap.lock().unwrap().is_empty()));
             }
-            // The drop joins the thread, so nothing can arrive after it returns.
-            let after = tap.lock().unwrap().len();
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            // The drop joins the thread, and the thread owned the sink: with
+            // it gone, nothing holds the sink to feed it.
             assert_eq!(
-                tap.lock().unwrap().len(),
-                after,
+                Arc::strong_count(&tap),
+                1,
                 "a dropped monitor leaves no thread still feeding a sink",
             );
         }
@@ -1985,7 +1990,6 @@ mod tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn mixer_sums_scales_and_silences_by_track_state() {
-        // Case `overlapping_clips_sum`.
         {
             let (p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -1998,7 +2002,6 @@ mod tests {
                 block[0],
             );
         }
-        // Case `clip_volume_scales_what_it_contributes`.
         {
             let (mut p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -2012,7 +2015,6 @@ mod tests {
                 block[0]
             );
         }
-        // Case `the_fade_envelope_reaches_the_mix`.
         {
             let (mut p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -2027,7 +2029,6 @@ mod tests {
             );
             assert!((after - 1.0).abs() < 1e-6, "and reaches full past the fade");
         }
-        // Case `a_muted_track_is_silent_and_solo_silences_the_others`.
         {
             let (mut p, a1, a2, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -2049,7 +2050,6 @@ mod tests {
                 "soloing one track silences the other",
             );
 
-            // Mute still wins over solo, matching the picture.
             p.tracks[i2].solo = true;
             p.tracks[i2].muted = true;
             assert!(
@@ -2057,7 +2057,6 @@ mod tests {
                 "a muted track stays silent even when soloed",
             );
         }
-        // Case `a_video_track_never_contributes_to_the_mix`.
         {
             let (mut p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -2073,7 +2072,6 @@ mod tests {
                 "only audio lanes are mixed",
             );
         }
-        // Case `a_loud_overlap_clamps_instead_of_wrapping`.
         {
             // Summed peaks above full scale must saturate. A plain cast would
             // wrap +1.2 round to a large negative sample — an audible crack at
@@ -2094,7 +2092,6 @@ mod tests {
                 "full scale encodes as a large positive: {first}"
             );
         }
-        // Case `full_scale_negative_does_not_overflow`.
         {
             let (p, _, _, _) = project_with_audio();
             let (m1, m2) = (p.media[0].id, p.media[1].id);
@@ -2289,7 +2286,6 @@ mod tests {
             });
             assert!(track_carries_sound(&p, empty));
 
-            // A picture lane with silent footage on it has nothing to meter…
             let vid = Uuid::new_v4();
             p.tracks.push(Track {
                 id: vid,
@@ -2394,7 +2390,6 @@ mod tests {
             );
             assert!(plan_audio(&p, 2.0).is_empty());
         }
-        // Case `a_clip_is_read_at_its_own_source_time`.
         {
             let (mut p, _, _, _) = project_with_audio();
             let c1 = p.clips[0].id;
@@ -2483,7 +2478,6 @@ mod tests {
             );
             assert!(has_audio(&p), "the export still finds sound to mux");
 
-            // Levelling the sound half alone is the whole point of it existing.
             p.clip_mut(sound).expect("sound").volume = 0.25;
             let mut src = constant(&[(media, 0.5)]);
             let quiet = mix_block(&p, 2.0, 8, &mut src);
@@ -2609,7 +2603,6 @@ mod tests {
                 block[0],
             );
         }
-        // Case `a_video_only_project_reports_no_audio`.
         {
             let mut p = Project::new("v");
             assert!(!has_audio(&p), "an empty project has nothing to mix");

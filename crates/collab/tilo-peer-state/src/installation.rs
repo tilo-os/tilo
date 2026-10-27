@@ -87,9 +87,7 @@ pub use registry_types::DirectoryRef;
 /// never fire it, so installing a bot does not replay a room's history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArmedRecord {
-    /// The app whose record it is.
     pub app_id: String,
-    /// The record.
     pub record_id: String,
     /// Automerge change hashes, hex.
     pub heads: Vec<String>,

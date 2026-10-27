@@ -408,8 +408,6 @@ impl ExpandModal {
         }
     }
 
-    // ---- test accessors -------------------------------------------------
-
     #[doc(hidden)]
     pub fn set_field_for_test(&mut self, name: &str, value: &str) {
         if let Some(f) = self.fields.iter_mut().find(|f| f.name == name) {
@@ -577,13 +575,11 @@ mod tests {
     /// The expand modal: one field per placeholder, preview substitution and IME/backspace editing.
     #[test]
     fn expand_modal_collects_fields_and_previews_live() {
-        // Case `modal_collects_one_field_per_placeholder`.
         {
             let m = modal();
             assert_eq!(m.field_count_for_test(), 2);
         }
 
-        // Case `preview_substitutes_filled_fields`.
         {
             let mut m = modal();
             m.set_field_for_test("name", "ada");
@@ -591,14 +587,12 @@ mod tests {
             assert_eq!(m.preview_for_test(), "echo hi ada from prod");
         }
 
-        // Case `preview_keeps_unfilled_placeholders_visible`.
         {
             let mut m = modal();
             m.set_field_for_test("name", "ada");
             assert_eq!(m.preview_for_test(), "echo hi ada from ${host}");
         }
 
-        // Case `shared_editor_ime_and_unicode_backspace_drive_live_preview_without_crdt_writes`.
         {
             let mut modal = modal();
             let mut doc = AutoCommit::new();

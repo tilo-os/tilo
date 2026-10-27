@@ -1,8 +1,13 @@
 terminal-find-scrollback = Find in scrollback
 terminal-target-host = Your shell on this device
 terminal-target-default = Default environment
-terminal-target-legacy = legacy VM
+terminal-target-legacy = { $vm } virtual machine
 terminal-target-manage = Manage environments…
+terminal-target-choose = Choose where this runs
+terminal-start-failed-title = The shell couldn’t start
+terminal-start-retry = Try again
+terminal-reconnecting = Reconnecting…
+terminal-reconnect-superseded = This session is open in another terminal
 terminal-run-on = Run on:
 terminal-run-on-this-device = This device
 terminal-host-awaiting-allow = Waiting for you to allow this device's own shell

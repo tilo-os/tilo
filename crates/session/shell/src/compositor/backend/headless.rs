@@ -88,11 +88,6 @@ pub fn output_fixture(name: &str) -> Option<Vec<Output>> {
 }
 
 /// Resolve a [`HEADLESS_OUTPUTS_ENV`] value: a fixture name, else a spec.
-///
-/// # Errors
-///
-/// Returns a message naming the fixtures and the spec grammar when the
-/// value is neither.
 pub fn resolve_output_arrangement(value: &str) -> Result<Vec<Output>, String> {
     let value = value.trim();
     if let Some(outputs) = output_fixture(value) {
@@ -125,10 +120,6 @@ pub fn resolve_output_arrangement(value: &str) -> Result<Vec<Output>, String> {
 /// The arrangement is translated so its top-left is the origin, as the DRM
 /// backend does, outputs may not overlap, and scene positions are derived
 /// with [`layout::scene_positions`] exactly as the DRM backend derives them.
-///
-/// # Errors
-///
-/// Returns a message naming the offending entry.
 pub fn parse_output_spec(spec: &str) -> Result<Vec<Output>, String> {
     let mut outputs: Vec<Output> = Vec::new();
     for (index, entry) in spec.split(',').enumerate() {
@@ -340,6 +331,10 @@ pub struct HeadlessBackend {
     watched: bool,
     /// The simulated panel's frame interval ([`HEADLESS_VBLANK_HZ_ENV`]).
     vblank_interval: Option<Duration>,
+    /// The person's saved keyboard layout, for the keys their other devices
+    /// send: built at the first one.
+    #[cfg(target_os = "linux")]
+    keyboard: Option<super::drm::runtime::KeyboardXkb>,
 }
 
 impl HeadlessBackend {
@@ -367,11 +362,6 @@ impl HeadlessBackend {
     /// Build a headless backend driving `outputs` — typically from
     /// [`resolve_output_arrangement`]. The offscreen texture spans their
     /// combined extent, exactly as the DRM presenter's paint buffer does.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `outputs` is empty or spans no area, or if no
-    /// wgpu adapter is available.
     pub fn with_outputs(outputs: Vec<Output>) -> Result<Self, Box<dyn std::error::Error>> {
         let (width, height) = combined_geometry(&outputs);
         if outputs.is_empty() || width == 0 || height == 0 {
@@ -401,6 +391,8 @@ impl HeadlessBackend {
             vblank_interval: std::env::var(HEADLESS_VBLANK_HZ_ENV)
                 .ok()
                 .and_then(|raw| super::super::pacing::parse_refresh_override(Some(&raw))),
+            #[cfg(target_os = "linux")]
+            keyboard: None,
         })
     }
 
@@ -595,6 +587,26 @@ impl Backend for HeadlessBackend {
     fn outputs(&self) -> &[Output] {
         &self.outputs
     }
+
+    /// No keyboard of its own, so the saved layout is read as each key
+    /// arrives: a layout chosen meanwhile applies from the next key on.
+    #[cfg(target_os = "linux")]
+    fn translate_key(&mut self, keycode: u32, pressed: bool) -> Vec<BackendEvent> {
+        use super::drm::{input_config::KeyboardSettings, runtime::KeyboardXkb};
+        let settings = KeyboardSettings::load();
+        if !self
+            .keyboard
+            .as_ref()
+            .is_some_and(|keyboard| keyboard.compiles_to_same_keymap(&settings))
+        {
+            self.keyboard = KeyboardXkb::from_settings(&settings);
+        }
+        let Some(keyboard) = self.keyboard.as_mut() else {
+            return Vec::new();
+        };
+        keyboard.set_active_layout(settings.active_index);
+        keyboard.translate(keycode, pressed)
+    }
 }
 
 /// A flip the simulated panel has been asked for.
@@ -622,7 +634,9 @@ const SIMULATED_FRAME_DEADLINE: Duration = Duration::from_secs(1);
 /// time), and a queued flip retires on the first vblank after it was queued.
 /// Nothing is read back.
 struct SimulatedVblankPresenter {
-    bridge: VelloDrmBridge,
+    /// `None` between losing a device and opening the next
+    /// ([`crate::shell::render::paint::retire_lost_bridge`]).
+    bridge: Option<VelloDrmBridge>,
     view: OutputView,
     slots: Vec<(wgpu::Texture, wgpu::TextureView)>,
     next_slot: usize,
@@ -665,6 +679,34 @@ struct PaintedArea {
 
 impl SimulatedVblankPresenter {
     fn new(width: u32, height: u32, interval: Duration) -> Option<Self> {
+        let (bridge, slots) = Self::open_renderer(width, height)?;
+        Some(Self {
+            bridge: Some(bridge),
+            view: OutputView::at(OutputId(0), (0, 0), (width, height)),
+            slots,
+            next_slot: 0,
+            interval,
+            epoch: Instant::now(),
+            owed: VecDeque::new(),
+            ready: Vec::new(),
+            queued_last: false,
+            last_render: Duration::ZERO,
+            last_painted: PaintedArea::default(),
+            scanned_out: None,
+            shm_uploaded: crate::shell::gpu_frames::shm_upload_bytes(),
+        })
+    }
+
+    /// A renderer for the simulated display and its scanout buffers on the renderer's device,
+    /// as the DRM presenter opens one at start and after its device was lost.
+    #[allow(
+        clippy::type_complexity,
+        reason = "the renderer and the buffers on its device are made and replaced together"
+    )]
+    fn open_renderer(
+        width: u32,
+        height: u32,
+    ) -> Option<(VelloDrmBridge, Vec<(wgpu::Texture, wgpu::TextureView)>)> {
         let mut bridge = match VelloDrmBridge::new(width, height) {
             Ok(bridge) => bridge,
             Err(error) => {
@@ -697,21 +739,7 @@ impl SimulatedVblankPresenter {
                 })
                 .collect()
         };
-        Some(Self {
-            bridge,
-            view: OutputView::at(OutputId(0), (0, 0), (width, height)),
-            slots,
-            next_slot: 0,
-            interval,
-            epoch: Instant::now(),
-            owed: VecDeque::new(),
-            ready: Vec::new(),
-            queued_last: false,
-            last_render: Duration::ZERO,
-            last_painted: PaintedArea::default(),
-            scanned_out: None,
-            shm_uploaded: crate::shell::gpu_frames::shm_upload_bytes(),
-        })
+        Some((bridge, slots))
     }
 
     fn target_pixels(&self) -> u64 {
@@ -754,23 +782,32 @@ impl SimulatedVblankPresenter {
     /// Render `frame` into the next scanout buffer, as the DRM presenter's
     /// direct path does; `false` when it kept the image already shown.
     fn render(&mut self, frame: &crate::compositor::frame::FramePaint) -> bool {
+        if !self.ensure_renderer() {
+            return false;
+        }
         let damage = (frame.revision != 0).then_some(SceneDamage {
             revision: frame.revision,
             previous_revision: frame.previous_revision,
             regions: frame.damage_regions.as_deref(),
         });
-        self.bridge.set_backdrop(frame.backdrop.clone());
-        self.bridge.stage_scroll_copies(
-            damage.map(|damage| damage.revision),
-            frame.scroll_copies.as_ref(),
-        );
+        if let Some(bridge) = self.bridge.as_mut() {
+            bridge.set_backdrop(frame.backdrop.clone());
+            bridge.stage_scroll_copies(
+                damage.map(|damage| damage.revision),
+                frame.scroll_copies.as_ref(),
+            );
+        }
         if let Some(shown) = self.scan_out(frame, damage) {
             return shown;
         }
+        let target = self.target_pixels();
+        let Some(bridge) = self.bridge.as_mut() else {
+            return false;
+        };
         if let Some(damage) = damage
             && damage.regions.is_some_and(<[_]>::is_empty)
             && frame.hdr_layers.is_empty()
-            && self.bridge.keep_unchanged_output(&self.view, damage)
+            && bridge.keep_unchanged_output(&self.view, damage)
         {
             self.last_painted = PaintedArea::default();
             return false;
@@ -789,7 +826,7 @@ impl SimulatedVblankPresenter {
             .checked_rem(self.slots.len())
             .unwrap_or(0);
         let started = Instant::now();
-        let painted = self.bridge.paint_output_into(
+        let painted = bridge.paint_output_into(
             &frame.scene,
             &self.view,
             damage,
@@ -811,9 +848,8 @@ impl SimulatedVblankPresenter {
                 layers: frame.cache.as_ref(),
             },
         );
-        self.bridge.after_paint();
-        let target = self.target_pixels();
-        let timing = self.bridge.last_phase_timing().unwrap_or_default();
+        bridge.after_paint();
+        let timing = bridge.last_phase_timing().unwrap_or_default();
         self.last_painted = match painted {
             Ok(stats) => {
                 let sparse = stats.sparse_attempts > 0 && stats.full_attempts == 0;
@@ -826,7 +862,7 @@ impl SimulatedVblankPresenter {
                         target
                     },
                     raster: if sparse {
-                        self.bridge
+                        bridge
                             .last_sparse_render_stats()
                             .map_or(target, |stats| stats.written_pixels)
                     } else {
@@ -848,6 +884,26 @@ impl SimulatedVblankPresenter {
 }
 
 impl SimulatedVblankPresenter {
+    /// Replace a lost renderer before the frame, as the DRM presenter does; the display keeps
+    /// the image it shows until the new renderer's first frame. `false` when none could open.
+    fn ensure_renderer(&mut self) -> bool {
+        if crate::shell::render::paint::retire_lost_bridge(&mut self.bridge).is_some() {
+            self.slots.clear();
+            self.scanned_out = None;
+        }
+        if self.bridge.is_some() {
+            return true;
+        }
+        let (width, height) = self.view.target_size();
+        let Some((bridge, slots)) = Self::open_renderer(width, height) else {
+            return false;
+        };
+        self.bridge = Some(bridge);
+        self.slots = slots;
+        self.next_slot = 0;
+        true
+    }
+
     /// Show the frame's client buffer by itself, as the DRM presenter flips
     /// a fullscreen or maximized client's buffer onto the primary plane:
     /// `Some(true)` when a flip of it is queued, `Some(false)` when that
@@ -870,11 +926,13 @@ impl SimulatedVblankPresenter {
             return None;
         };
         // What changed below the client is owed to the next composited frame.
-        match damage {
-            Some(damage) => {
-                self.bridge.defer_output(&self.view, damage);
+        if let Some(bridge) = self.bridge.as_mut() {
+            match damage {
+                Some(damage) => {
+                    bridge.defer_output(&self.view, damage);
+                }
+                None => bridge.invalidate_output_view(&self.view),
             }
-            None => self.bridge.invalidate_output_view(&self.view),
         }
         let id = candidate.image.data.id();
         let shown = self.scanned_out.replace(id) == Some(id);
@@ -1097,8 +1155,6 @@ mod tests {
         }
     }
 
-    // ---- env-var parser ---------------------------------------------
-
     #[test]
     fn parse_headless_size_accepts_wxh_and_rejects_malformed_values() {
         // Phase `parse_headless_size_accepts_valid_wxh`.
@@ -1116,8 +1172,6 @@ mod tests {
         assert_eq!(parse_headless_size(Some("800x0")), None);
         assert_eq!(parse_headless_size(Some("-1x100")), None);
     }
-
-    // ---- output spec ------------------------------------------------
 
     #[test]
     fn output_spec_reads_mode_scale_position_rotation_and_refresh() {

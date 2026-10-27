@@ -272,7 +272,6 @@ mod tests {
         let left = object_at(&matte, 1, 1).unwrap();
         assert_eq!(left.at(2, 1), 1.0);
         assert_eq!(left.at(6, 1), 0.0);
-        // A click just beside an object finds it.
         let right = object_at(&matte, 8, 1).unwrap();
         assert_eq!(right.at(7, 1), 1.0);
         assert_eq!(right.at(1, 1), 0.0);

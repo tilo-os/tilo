@@ -34,6 +34,7 @@ fn tree() -> DesktopTree {
                     kind: AppKind::Other("so.tilo.word-processor".into()),
                     label: "Renamed".into(),
                 },
+                app_title: None,
             }],
             active_tab: 9_007_199_254_741_001,
             width: WindowWidth::Normal,
@@ -202,6 +203,10 @@ impl ui::widget::Widget for OverlayApp {
     ) -> taffy::NodeId {
         self.leaf.build_layout(tree, theme, map)
     }
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn ui::Widget)) -> bool {
+        visitor(&self.leaf);
+        true
+    }
     fn draw_overlay(
         &mut self,
         _: &mut vello::Scene,
@@ -284,7 +289,16 @@ fn replacing_the_room_requires_fresh_component_contexts() {
     let records = RecordStore::in_memory();
     let mut surface =
         DesktopSurface::build(&tree, &records, &mut Unavailable, SurfaceChrome::default());
-    tree.workspaces[0].set_room(tilo_desktop_model::RoomId::new());
+    // The workspace under the same id is another room now: another
+    // workspace, as a migration that joins a slot to its room makes one.
+    let before = tree.workspaces[0].clone();
+    let mut replaced = tilo_desktop_model::Workspace::in_room(
+        before.id,
+        tilo_desktop_model::RoomId::new(),
+        before.name.clone(),
+    );
+    replaced.strips = before.strips;
+    tree.workspaces[0] = replaced;
     assert_eq!(
         surface.reconcile(&tree, &records, &mut Unavailable),
         tilo_desktop::composition::ReconcileOutcome::RebuildRequired
@@ -403,4 +417,198 @@ fn flush_work_area_is_reachable_and_maximized_groups_stay_maximized() {
     assert!(surface.work_area_mut().is_some());
     let row = surface.row(StripId(2)).expect("strip row");
     assert!(row.groups[0].maximized);
+}
+
+/// A workspace of three strips, each with four windows wider than the
+/// display together; strip `n`'s selected window is its `selected[n]`th.
+fn three_strip_tree(selected: [usize; 3]) -> DesktopTree {
+    let mut workspace = Workspace::new(WorkspaceId(1), "Work");
+    let mut active_group = std::collections::HashMap::new();
+    workspace.strips = (0..3_u64)
+        .map(|s| {
+            let id = StripId(10 + s);
+            let window_groups: Vec<WindowGroup> = (0..4_u64)
+                .map(|g| {
+                    let tab = 1_000 + s * 10 + g;
+                    WindowGroup {
+                        id: 100 + s * 10 + g,
+                        tabs: vec![Tab {
+                            id: tab,
+                            title: format!("Window {s}.{g}"),
+                            tile: TileContent::AppPlaceholder {
+                                kind: AppKind::Other("so.tilo.word-processor".into()),
+                                label: format!("Window {s}.{g}"),
+                            },
+                            app_title: None,
+                        }],
+                        active_tab: tab,
+                        width: WindowWidth::Fraction(500),
+                        maximized: false,
+                        focus_history: Vec::new(),
+                    }
+                })
+                .collect();
+            #[allow(clippy::cast_possible_truncation, reason = "three strips")]
+            let pick = selected[s as usize];
+            active_group.insert(id, window_groups[pick].id);
+            Strip {
+                id,
+                name: format!("Strip {}", s + 1),
+                window_groups,
+            }
+        })
+        .collect();
+    let mut active_strip = std::collections::HashMap::new();
+    active_strip.insert(workspace.id, StripId(10));
+    DesktopTree {
+        active: workspace.id,
+        workspaces: vec![workspace],
+        active_strip,
+        active_group,
+        ..Default::default()
+    }
+}
+
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test helper: a missing frame or row is the failure"
+)]
+fn deck_frame(tree: &DesktopTree) -> ui::headless::FrameHarness {
+    let surface = DesktopSurface::build(
+        tree,
+        &RecordStore::in_memory(),
+        &mut Unavailable,
+        SurfaceChrome::default(),
+    );
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1280, 720),
+        // Windows take their widths at once, so the framing is final.
+        ui::theme::Theme::default().with_reduce_motion(true),
+    );
+    settle(&mut frame);
+    frame
+}
+
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test helper: a missing frame or row is the failure"
+)]
+/// Frames until the windows' width springs and the framing they drive have
+/// arrived: a host tells the surface each frame was presented.
+fn settle(frame: &mut ui::headless::FrameHarness) {
+    for _ in 0..12 {
+        frame.root_mut::<DesktopSurface>().frame_presented();
+        frame.poll_frame().unwrap();
+    }
+}
+
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test helper: a missing frame or row is the failure"
+)]
+fn go_to_strip(frame: &mut ui::headless::FrameHarness, tree: &mut DesktopTree, strip: StripId) {
+    let workspace = tree.active;
+    tree.active_strip.insert(workspace, strip);
+    frame
+        .root_mut::<DesktopSurface>()
+        .reconcile(tree, &RecordStore::in_memory(), &mut Unavailable);
+    settle(frame);
+}
+
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a test helper: a missing frame or row is the failure"
+)]
+/// Each strip's row rect, top to bottom, and the work area they fill.
+fn strip_rects(
+    frame: &ui::headless::FrameHarness,
+) -> (Vec<vello::kurbo::Rect>, vello::kurbo::Rect) {
+    use ui::widget::Widget as _;
+    let surface = frame.root::<DesktopSurface>();
+    let deck = surface
+        .strip_deck()
+        .expect("the strips are in a deck")
+        .get_rect();
+    let rows = surface
+        .strip_ids()
+        .into_iter()
+        .map(|id| surface.row(id).expect("strip row").get_rect())
+        .collect();
+    (rows, deck)
+}
+
+#[test]
+fn every_strip_is_a_full_height_screen_and_one_fills_the_work_area() {
+    let _settled = ui::motion::testing::settled();
+    let mut tree = three_strip_tree([0, 0, 0]);
+    let mut frame = deck_frame(&tree);
+    for (shown, strip) in [(0, StripId(10)), (2, StripId(12)), (1, StripId(11))] {
+        go_to_strip(&mut frame, &mut tree, strip);
+        let (rows, deck) = strip_rects(&frame);
+        assert!(
+            deck.height() > 600.0,
+            "the strips take the whole work area below the top bar, got {deck:?}"
+        );
+        for (i, row) in rows.iter().enumerate() {
+            assert!(
+                (row.height() - deck.height()).abs() < 0.5,
+                "strip {i} is as tall as the work area, never a share of it: {row:?} in {deck:?}"
+            );
+            if i == shown {
+                assert!(
+                    (row.y0 - deck.y0).abs() < 0.5,
+                    "the shown strip fills the work area: {row:?} in {deck:?}"
+                );
+            } else {
+                assert!(
+                    row.intersect(deck).area() <= 0.0,
+                    "strip {i} is off screen while strip {shown} is shown: {row:?} in {deck:?}"
+                );
+            }
+        }
+        for pair in rows.windows(2) {
+            assert!((pair[1].y0 - pair[0].y1).abs() < 0.5, "{pair:?}");
+        }
+    }
+}
+
+#[test]
+fn each_strip_keeps_its_own_scroll_position_across_strip_switches() {
+    let _settled = ui::motion::testing::settled();
+    // Strip 1 is framed on its third window, strip 2 on its first.
+    let mut tree = three_strip_tree([2, 0, 0]);
+    let mut frame = deck_frame(&tree);
+    let scroll = |frame: &ui::headless::FrameHarness, strip: StripId| {
+        frame
+            .root::<DesktopSurface>()
+            .row(strip)
+            .expect("strip row")
+            .scroll_x()
+    };
+    let first = scroll(&frame, StripId(10));
+    assert!(first > 0.0, "strip 1 is panned to its third window");
+    assert!(scroll(&frame, StripId(11)).abs() < 0.5);
+    go_to_strip(&mut frame, &mut tree, StripId(11));
+    assert!(
+        scroll(&frame, StripId(11)).abs() < 0.5,
+        "strip 2 shows where it was, not where strip 1 is"
+    );
+    let hidden = scroll(&frame, StripId(10));
+    assert!(
+        (hidden - first).abs() < 0.5,
+        "strip 1 off screen keeps its pan: {hidden} vs {first}"
+    );
+    go_to_strip(&mut frame, &mut tree, StripId(10));
+    let back = scroll(&frame, StripId(10));
+    assert!(
+        (back - first).abs() < 0.5,
+        "coming back to strip 1 shows it panned as it was left: {back} vs {first}"
+    );
+    assert!(scroll(&frame, StripId(11)).abs() < 0.5);
 }

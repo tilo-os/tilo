@@ -7,10 +7,12 @@ import re
 import shutil
 import subprocess
 import tempfile
-import tomllib
 import unittest
+import sys
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 SCRIPT = 'tools/ci/verifier-bundle.sh'
 BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
 
@@ -18,7 +20,7 @@ BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
 class VerifierBundleTests(unittest.TestCase):
     def test_verifier_bundles_are_native_only_and_bind_only_valid_bundles(self):
         with self.subTest(phase='dispatched natively only, without publication or credentials'):
-            t = tomllib.loads((ROOT / 't.toml').read_text())
+            t = t_matrix.load(ROOT)
             checks = {check['name']: check for check in t['check']}
             for arch in ('x86_64', 'aarch64'):
                 with self.subTest(arch=arch):

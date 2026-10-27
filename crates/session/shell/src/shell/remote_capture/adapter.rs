@@ -24,6 +24,7 @@ use crate::shell::remote_capture::device::{
     MAX_REMOTE_CAPTURE_SESSIONS, RemoteCaptureChunk, RemoteCaptureGrant, RemoteCaptureKind,
     RemoteCaptureProfile, RemoteCaptureRequest,
 };
+use crate::shell::remote_capture::host::CaptureHost;
 
 /// A provisioned, target-local media endpoint. These values must never enter a
 /// fabric action, collaborative document, log, or app-visible resource.
@@ -447,24 +448,29 @@ enum ProductionEndpoint {
 /// endpoints that actually exist and keeps every raw device/node identity
 /// inside the shell process.
 pub(crate) struct ProductionRemoteCaptureAdapter {
-    availability: RemoteCaptureAvailability,
+    host: CaptureHost,
     sessions: BTreeMap<[u8; 16], ProductionEndpoint>,
 }
 
 impl ProductionRemoteCaptureAdapter {
-    pub(crate) fn detect() -> Self {
+    pub(crate) fn new(host: CaptureHost) -> Self {
         Self {
-            availability: RemoteCaptureAvailability {
-                camera: remote_camera_loopback().is_some() && trusted_command("v4l2-ctl").is_some(),
-                microphone: trusted_command("pw-loopback").is_some()
-                    && trusted_command("pw-cat").is_some()
-                    && trusted_command("pw-dump").is_some(),
-                // Scanner transport is source-capable, but target reception is
-                // not advertised until an app-facing document capability can
-                // consume the completed scan.
-                scanner: false,
-            },
+            host,
             sessions: BTreeMap::new(),
+        }
+    }
+
+    fn availability(&self) -> RemoteCaptureAvailability {
+        let probe = self.host.current();
+        RemoteCaptureAvailability {
+            camera: probe.remote_camera_loopback().is_some() && probe.tool("v4l2-ctl").is_some(),
+            microphone: probe.tool("pw-loopback").is_some()
+                && probe.tool("pw-cat").is_some()
+                && probe.tool("pw-dump").is_some(),
+            // Scanner transport is source-capable, but target reception is
+            // not advertised until an app-facing document capability can
+            // consume the completed scan.
+            scanner: false,
         }
     }
 
@@ -483,17 +489,18 @@ impl ProductionRemoteCaptureAdapter {
         else {
             return Err(RemoteCaptureAdapterError::WrongEndpoint);
         };
-        if *format != RemoteVideoFormat::Nv12 || !self.availability.camera {
+        let probe = self.host.current();
+        if *format != RemoteVideoFormat::Nv12 || !self.availability().camera {
             return Err(RemoteCaptureAdapterError::BackendUnavailable(
                 "a Tilo v4l2loopback camera accepting NV12 is unavailable".into(),
             ));
         }
-        let path = remote_camera_loopback().ok_or_else(|| {
+        let path = probe.remote_camera_loopback().ok_or_else(|| {
             RemoteCaptureAdapterError::BackendUnavailable(
                 "the remote-camera loopback disappeared".into(),
             )
         })?;
-        let status = Command::new(trusted_command("v4l2-ctl").ok_or_else(|| {
+        let status = Command::new(probe.tool("v4l2-ctl").ok_or_else(|| {
             RemoteCaptureAdapterError::BackendUnavailable("v4l2-ctl is unavailable".into())
         })?)
         .args([
@@ -515,7 +522,7 @@ impl ProductionRemoteCaptureAdapter {
         }
         let writer = std::fs::OpenOptions::new()
             .write(true)
-            .open(&path)
+            .open(path)
             .map_err(RemoteCaptureAdapterError::Io)?;
         let reader = std::fs::OpenOptions::new()
             .read(true)
@@ -541,7 +548,8 @@ impl ProductionRemoteCaptureAdapter {
         else {
             return Err(RemoteCaptureAdapterError::WrongEndpoint);
         };
-        if *format != RemoteAudioFormat::PcmS16Le || !self.availability.microphone {
+        let probe = self.host.current();
+        if *format != RemoteAudioFormat::PcmS16Le || !self.availability().microphone {
             return Err(RemoteCaptureAdapterError::BackendUnavailable(
                 "PipeWire remote microphone injection is unavailable".into(),
             ));
@@ -549,7 +557,7 @@ impl ProductionRemoteCaptureAdapter {
         let suffix = hex::encode(session_id);
         let sink_name = format!("tilo.remote-mic-sink.{suffix}");
         let source_name = format!("tilo.remote-mic-source.{suffix}");
-        let mut loopback = Command::new(trusted_command("pw-loopback").ok_or_else(|| {
+        let mut loopback = Command::new(probe.tool("pw-loopback").ok_or_else(|| {
             RemoteCaptureAdapterError::BackendUnavailable("pw-loopback is unavailable".into())
         })?)
             .arg(format!(
@@ -563,10 +571,11 @@ impl ProductionRemoteCaptureAdapter {
             .stderr(Stdio::null())
             .spawn()
             .map_err(RemoteCaptureAdapterError::Io)?;
-        let node_id = wait_for_pipewire_node(&source_name).inspect_err(|_| {
-            let _ = loopback.kill();
-        })?;
-        let mut writer = Command::new(trusted_command("pw-cat").ok_or_else(|| {
+        let node_id =
+            wait_for_pipewire_node(probe.tool("pw-dump"), &source_name).inspect_err(|_| {
+                let _ = loopback.kill();
+            })?;
+        let mut writer = Command::new(probe.tool("pw-cat").ok_or_else(|| {
             RemoteCaptureAdapterError::BackendUnavailable("pw-cat is unavailable".into())
         })?)
         .arg("--playback")
@@ -608,7 +617,7 @@ impl ProductionRemoteCaptureAdapter {
 
 impl RemoteCaptureAdapter for ProductionRemoteCaptureAdapter {
     fn availability(&self) -> RemoteCaptureAvailability {
-        self.availability
+        Self::availability(self)
     }
 
     fn provision(
@@ -680,34 +689,16 @@ impl Drop for ProductionRemoteCaptureAdapter {
     }
 }
 
-fn trusted_command(name: &str) -> Option<std::path::PathBuf> {
-    ["/usr/bin", "/usr/libexec/tilo"]
-        .into_iter()
-        .map(std::path::Path::new)
-        .map(|directory| directory.join(name))
-        .find(|path| path.is_file())
-}
-
-fn remote_camera_loopback() -> Option<std::path::PathBuf> {
-    std::fs::read_dir("/sys/class/video4linux")
-        .ok()?
-        .filter_map(Result::ok)
-        .find_map(|entry| {
-            let label = std::fs::read_to_string(entry.path().join("name")).ok()?;
-            label
-                .trim()
-                .starts_with("Tilo Remote Camera")
-                .then(|| std::path::Path::new("/dev").join(entry.file_name()))
-        })
-}
-
-fn wait_for_pipewire_node(name: &str) -> Result<u32, RemoteCaptureAdapterError> {
+fn wait_for_pipewire_node(
+    pw_dump: Option<&std::path::Path>,
+    name: &str,
+) -> Result<u32, RemoteCaptureAdapterError> {
     // An unrepresentable deadline falls back to "now": one probe, then give up.
     let deadline = Instant::now()
         .checked_add(std::time::Duration::from_secs(2))
         .unwrap_or_else(Instant::now);
     loop {
-        let output = Command::new(trusted_command("pw-dump").ok_or_else(|| {
+        let output = Command::new(pw_dump.ok_or_else(|| {
             RemoteCaptureAdapterError::BackendUnavailable("pw-dump is unavailable".into())
         })?)
         .output()
@@ -851,9 +842,20 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn capture_adapter_advertises_approves_and_tears_down_exactly() {
-        // Phase `production_receiver_does_not_advertise_undeliverable_scans`.
         {
-            let mut adapter = ProductionRemoteCaptureAdapter::detect();
+            let mut adapter = ProductionRemoteCaptureAdapter::new(CaptureHost::fixed(
+                crate::shell::remote_capture::host::Probe::of(
+                    &[
+                        ("v4l2-ctl", "/usr/bin/v4l2-ctl"),
+                        ("pw-loopback", "/usr/bin/pw-loopback"),
+                        ("pw-cat", "/usr/bin/pw-cat"),
+                        ("pw-dump", "/usr/bin/pw-dump"),
+                        ("scanimage", "/usr/bin/scanimage"),
+                    ],
+                    None,
+                    Some("/dev/video9"),
+                ),
+            ));
             assert!(!adapter.availability().scanner);
             assert!(matches!(
                 adapter.provision(
@@ -868,7 +870,6 @@ mod tests {
             ));
         }
 
-        // Phase `media_endpoint_requires_fresh_exact_app_approval_and_revokes_atomically`.
         {
             let broker = Arc::new(Mutex::new(CaptureBroker::new()));
             let mut bridge = RemoteCaptureTargetBridge::new(Arc::clone(&broker));
@@ -962,7 +963,6 @@ mod tests {
             assert_eq!(adapter.revoked, vec![session]);
         }
 
-        // Phase `app_and_policy_teardown_are_exact_and_bounded`.
         {
             let broker = Arc::new(Mutex::new(CaptureBroker::new()));
             let mut bridge = RemoteCaptureTargetBridge::new(broker);

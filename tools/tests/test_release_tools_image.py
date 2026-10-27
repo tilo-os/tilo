@@ -1,10 +1,12 @@
 from pathlib import Path
 import re
-import tomllib
 import unittest
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 
 
 def job_block(workflow: str, name: str) -> str:
@@ -21,7 +23,7 @@ def job_block(workflow: str, name: str) -> str:
 
 class ReleaseToolsImageWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
-        t = tomllib.loads((ROOT / "t.toml").read_text())
+        t = t_matrix.load(ROOT)
         self.checks = {check["name"]: check for check in t["check"]}
         self.release_workflow = (
             ROOT / ".forgejo/workflows/release-apps.yml"
@@ -58,12 +60,12 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
             self.assertIn("oci-index.py", index["run"])
             smoke = (ROOT / "os/tests/release_tools_image.sh").read_text()
             self.assertIn("max_image_bytes=536870912", smoke)
-        with self.subTest(phase='main publishes one immutable index, proven anonymously pullable'):
+        with self.subTest(phase='dispatched: one immutable index, proven anonymously pullable'):
             self.doCleanups()
             self.setUp()
             publish = self.checks["publish-release-tools"]
-            self.assertEqual(publish["needs"], ["image-release-tools"])
-            self.assertEqual(publish["on"], ["main", "dispatch"])
+            self.assertEqual(publish["needs"], ["image-release-tools", "signing-tools"])
+            self.assertEqual(publish["on"], ["dispatch"])
             self.assertEqual(publish["id_token"], ["registry.tilo.so"])
             self.assertIn("registry.tilo.so/tilo/tilo-release-tools", publish["run"])
             self.assertIn("'sha-{commit}'", publish["run"])

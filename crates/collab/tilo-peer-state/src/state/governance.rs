@@ -10,11 +10,6 @@ use super::{
 
 impl PeerGovernance<'_> {
     /// The sandbox capabilities the room's governance grants its apps.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or a capability is
-    /// malformed.
     pub fn governed_sandbox(self) -> Result<Vec<collab_types::caps::CapOverride>, String> {
         let doc = self
             .peer
@@ -31,10 +26,6 @@ impl PeerGovernance<'_> {
     /// The standing of every governed member device at `now`: what a relay
     /// that does not hold the room's governance decides their changes
     /// with, each held to its foreign-device bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the room's governance is missing or malformed.
     pub fn governed_standings(
         self,
         now: SystemTime,
@@ -52,10 +43,6 @@ impl PeerGovernance<'_> {
             .collect())
     }
     /// Current governed access derived from the admitted room document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
     pub fn governed_access(self, now: SystemTime) -> Result<GovernedAccess, String> {
         let policy = self
             .peer
@@ -111,7 +98,7 @@ impl PeerGovernance<'_> {
     /// ([`collab_types::ChannelRoute::proves`]). For each such record
     /// [`RecordReaders::withheld`] lists every device of
     /// [`Self::governed_access`] that may not read it
-    /// ([`Self::check_document_read`], the decision every door applies), so a
+    /// ([`StatePeer::check_document_read`](crate::StatePeer::check_document_read), the decision every door applies), so a
     /// Deny on the record, on its app or on any pattern over it withholds its
     /// key, and the room's other records are unaffected.
     ///
@@ -120,10 +107,6 @@ impl PeerGovernance<'_> {
     /// may not read one of the records a Deny over a pattern stands for
     /// ([`collab_types::pattern_read_witnesses`]): such a channel is withheld
     /// from them until a device names its record, and from no one else.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
     pub fn withheld_record_readers(
         self,
         now: SystemTime,
@@ -185,10 +168,6 @@ impl PeerGovernance<'_> {
     }
     /// Authority-authored collaborator projection. The structural owner is
     /// exposed separately by [`PeerGovernance::owner_user_public_key`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if room governance is missing or malformed.
     pub fn governed_members(self, now: SystemTime) -> Result<Vec<GovernedMember>, String> {
         let doc = self
             .peer
@@ -273,26 +252,21 @@ impl PeerGovernance<'_> {
         expires_at_ns: u64,
         now: SystemTime,
     ) -> Result<crate::join::MembershipChallenge, String> {
-        if self
-            .peer
-            .core
-            .certificates
-            .get(&device_cert.device_public_key)
-            .map(AsRef::as_ref)
-            != Some(device_cert)
-        {
-            return Err("membership certificate is absent from governed state".into());
-        }
-        self.peer.certificate(&device_cert.device_public_key, now)?;
-        match self.peer.permissions(device_cert.device_public_key, now) {
-            Ok(_) => {}
-            Err(error)
-                if error.contains("no room membership")
-                    && self.peer.has_governed_admission(device_cert) =>
-            {
-                return Err("member has been removed".into());
+        // A renewed certificate is challenged as the device it renews; its
+        // membership is decided once the governor holds it
+        // ([`PeerGovernanceMut::renew_member_certificate`]).
+        if self.renewal_of(device_cert, now)?.is_none() {
+            self.peer.certificate(&device_cert.device_public_key, now)?;
+            match self.peer.permissions(device_cert.device_public_key, now) {
+                Ok(_) => {}
+                Err(error)
+                    if error.contains("no room membership")
+                        && self.peer.has_governed_admission(device_cert) =>
+                {
+                    return Err("member has been removed".into());
+                }
+                Err(error) => return Err(error),
             }
-            Err(error) => return Err(error),
         }
         crate::join::MembershipChallenge::new(
             &self.peer.core.room,
@@ -306,10 +280,6 @@ impl PeerGovernance<'_> {
         )
     }
     /// Check a verified membership refresh against current governance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the refreshed device is no longer a governed member.
     pub fn verify_member_refresh(
         self,
         membership: &crate::join::VerifiedMembership,
@@ -410,11 +380,6 @@ impl PeerGovernanceMut<'_> {
         Ok(changed)
     }
     /// Record a verified workspace delegation in pinned governance.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer, the delegation does not
-    /// verify, its service is absent from the governed roster, or governance is missing.
     pub fn install_workspace_delegation(
         self,
         delegation: crate::join::WorkspaceDelegation,
@@ -556,6 +521,75 @@ impl PeerGovernanceMut<'_> {
     ) -> Result<bool, String> {
         self.peer
             .set_member(user_public_key, Role::Editor, true, key, now)
+    }
+    /// Name the admitted person `user_public_key` `name` in the room: the
+    /// name every reader of [`PeerGovernance::governed_members`] shows for
+    /// them, on each of their admitted devices' rows. A device's own label
+    /// stays on its certificate. Whether the room changed: naming someone
+    /// what they are already called writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, `name` is not
+    /// a display name ([`tilo_user_identity::display_name`]), the person has
+    /// no admitted device here, or governance cannot be updated.
+    pub fn name_person(
+        self,
+        user_public_key: [u8; 32],
+        name: &str,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer.require_governance_writer(key, now)?;
+        let name = tilo_user_identity::display_name(name)
+            .map_err(tilo_user_identity::DisplayNameError::reason)?;
+        let mut doc = self
+            .peer
+            .core
+            .room_doc
+            .clone()
+            .ok_or("room governance missing")?;
+        let policy = doc.policy();
+        let names = room::governance_of(Some(&doc)).peers;
+        let mut devices = Vec::new();
+        for (id, bytes) in &policy.identities {
+            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            if identity.device_cert.user_public_key == user_public_key && identity.has_admission() {
+                devices.push(id.clone());
+            }
+        }
+        if devices.is_empty() {
+            return Err("the person is not admitted to the room".into());
+        }
+        devices.retain(|id| names.get(id).map(String::as_str) != Some(name));
+        if devices.is_empty() {
+            return Ok(false);
+        }
+        let peers = doc
+            .get(ROOT, "peers")
+            .map_err(err)?
+            .ok_or("governed peers missing")?
+            .1;
+        let before = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        for id in &devices {
+            doc.put(&peers, id, name).map_err(err)?;
+        }
+        doc.commit();
+        let changes = doc
+            .get_changes(&before)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        let room = self.peer.core.room.clone();
+        let outcome = self.peer.receive_from(
+            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp { changes, room },
+            now,
+        )?;
+        Ok(outcome.changed || outcome.metadata_changed)
     }
     /// Rewrite each administrator's grant still in the shape rooms held
     /// before [`tilo_action_policy::roles::administrator_grant`] (on the

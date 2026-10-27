@@ -1,9 +1,7 @@
 //! Offscreen proof that every menu-like list paints a *visible* hover /
 //! keyboard highlight in both the dark and the light theme.
 //!
-//! User report (2026-09-16): "in the dark menu when you have to right click
-//! something, and a context menu opens or a drop down there is no
-//! highlighting." Each case here opens a real widget, moves the highlight onto
+//! Each case here opens a real widget, moves the highlight onto
 //! one row the way a pointer or the keyboard would, renders the scene over the
 //! theme's own window ground and samples a text-free pixel on the highlighted
 //! row against the same pixel on a plain neighbour. The perceptual step
@@ -54,7 +52,7 @@ const MIN_DELTA_L: f64 = 4.0;
 
 /// The floor for an *armed* row (the one Enter / a click activates). The
 /// 10 % veneer that used to paint the context menu's armed row measured
-/// ΔL* 11.6 on dark — the value the user reported as "no highlighting" — so a
+/// ΔL* 11.6 on dark, which reads as no highlight at all, so a
 /// floor that the old paint would pass guards nothing. The armed row is the
 /// panel's overlay lift, which clears this on every material.
 const MIN_ARMED_DELTA_L: f64 = 15.0;
@@ -258,7 +256,6 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
             for label in labels() {
                 menu.push(MenuItem::action(label, || {}));
             }
-            // The legacy point-placement path every right-click host uses.
             menu.open_at([40.0, 40.0]);
             let row1 = menu.item_rect(1).expect("row 1 is an action row");
             dispatch(&mut menu, &cursor_moved(row1.center()));

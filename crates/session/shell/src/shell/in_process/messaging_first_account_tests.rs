@@ -63,6 +63,7 @@ fn empty_native_messages_first_account_protected_review_receive_reply_and_revoke
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("first-apps"),
+        &rig.root.path().join("first-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -102,14 +103,14 @@ fn empty_native_messages_first_account_protected_review_receive_reply_and_revoke
     drop(identity);
     approve_fixture_profile_key(&mut apps, &credential, proposal);
     drop(credential);
-    seed_person(&mut apps, &directory());
+    seed_person(&apps, &directory());
     let writes = Arc::new(AtomicUsize::new(0));
     let daemon = sender_daemon(send_peer, writes.clone());
     let (arrive, inbox) = receiver_daemon(receive_peer);
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 mounted.client.account_state(&account) == AccountState::Ready
             }),
@@ -255,7 +256,7 @@ fn receive_and_reply(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 apps.pump_messaging_records();
                 harness
                     .a11y_nodes()
@@ -301,6 +302,7 @@ fn interrupted_first_account_reset_retires_old_review_before_fresh_pairing() {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("first-apps"),
+        &rig.root.path().join("first-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -394,7 +396,7 @@ fn reset_and_begin(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 apps.first_accounts.as_ref().unwrap().client().phase(old)
                     == tilo_messaging::EnrollmentPhase::Interrupted

@@ -22,7 +22,7 @@ esac
 
 cat >/tmp/tilo-child-status.sh <<'SH'
 #!/usr/bin/env bash
-TILO_STARTUP_METRICS_PATH="/tmp/tilo-greeter-metrics-$$.json" /usr/bin/tilo-greeter
+TILO_STARTUP_METRICS_PATH="/tmp/tilo-greeter-metrics-$$.json" /usr/libexec/tilo/tilo-greeter
 status=$?
 echo "TILO_GREETER_EXIT=$status"
 exit "$status"
@@ -39,7 +39,7 @@ elif [[ $variant == lp-no-rast ]]; then
   sed -i '2i export LP_NO_RAST=1' /tmp/tilo-child-status.sh
 fi
 if [[ ${GREETER_CAPTURE_FAULT_PC:-false} == true ]]; then
-  sed -i 's#/usr/bin/tilo-greeter#/tmp/tilo-greeter-ptrace-probe /usr/bin/tilo-greeter#' /tmp/tilo-child-status.sh
+  sed -i 's#/usr/libexec/tilo/tilo-greeter#/tmp/tilo-greeter-ptrace-probe /usr/libexec/tilo/tilo-greeter#' /tmp/tilo-child-status.sh
 fi
 chmod 0755 /tmp/tilo-child-status.sh
 
@@ -58,8 +58,8 @@ text = Path(sys.argv[2]).read_text()
 log = sys.argv[3]
 variant = sys.argv[4]
 commands = (
-    'command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/bin/tilo-greeter"',
-    'command = "/usr/libexec/tilo-cage-session /usr/bin/tilo-greeter"',
+    'command = "env WLR_NO_HARDWARE_CURSORS=1 cage -s -- /usr/libexec/tilo/tilo-greeter"',
+    'command = "/usr/libexec/tilo-cage-session /usr/libexec/tilo/tilo-greeter"',
 )
 launcher = (
     'TILO_CAGE_SESSION_KEEP_OUTPUT=1 WLR_LOG=debug /usr/libexec/tilo-cage-session'
@@ -124,7 +124,7 @@ journalctl -k -b --no-pager -o short-monotonic 2>&1 |
   grep -Ei 'tilo-greeter|undefined instruction|illegal instruction|sigill|trap|pc :' |
   tail -n 30 || true
 if command -v coredumpctl >/dev/null 2>&1; then
-  coredumpctl --no-pager --no-legend list /usr/bin/tilo-greeter 2>&1 | tail -n 15 || true
+  coredumpctl --no-pager --no-legend list /usr/libexec/tilo/tilo-greeter 2>&1 | tail -n 15 || true
 fi
 echo '::endgroup::'
 systemctl status greetd.service --no-pager -l 2>&1 || true

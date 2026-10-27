@@ -16,7 +16,6 @@ use std::thread::JoinHandle;
 
 /// What the supervisor waits for.
 pub enum SessionEvent {
-    /// Unmount, then return once the session has ended.
     Unmount,
     /// The session's thread ended, by itself or after an unmount.
     Ended(io::Result<()>),
@@ -49,11 +48,6 @@ impl SupervisedSession for fuser::BackgroundSession {
 /// Serves until the session ends by itself or `events` asks for an
 /// unmount, and returns how the session ended. `ended` is a sender of
 /// `events` for the watcher thread.
-///
-/// # Errors
-/// The session's thread ended with an error or panicked, the watcher thread
-/// could not be started, or the requested unmount failed (then this returns
-/// at once, as the session may still be serving).
 pub fn supervise<S: SupervisedSession>(
     session: S,
     events: &Receiver<SessionEvent>,
@@ -228,7 +222,6 @@ mod tests {
             tilo_test_env::idle::spawned_thread("fs-test-idle", || {
                 supervised(session, "fs-test-idle")
             });
-        // The supervisor starts its watcher once it runs.
         let started = std::time::Instant::now();
         while !std::fs::read_dir("/proc/self/task").unwrap().any(|task| {
             let comm = task.unwrap().path().join("comm");

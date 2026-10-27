@@ -13,7 +13,6 @@ use crate::icons;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 
-/// One of the window's controls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowControl {
     History,
@@ -70,6 +69,25 @@ impl WindowControls {
         }
     }
 
+    /// The controls of a window this person may not close (someone else's,
+    /// or one they only watch): no close, the others moved out into its
+    /// place.
+    #[must_use]
+    pub fn without_close(self) -> Self {
+        if self.close.area() <= 0.0 {
+            return self;
+        }
+        let mut kept = Self {
+            close: Rect::ZERO,
+            ..self
+        };
+        kept.offset(vello::kurbo::Vec2::new(
+            self.close.x1 - self.maximize.x1,
+            0.0,
+        ));
+        kept
+    }
+
     /// Where the controls begin, less the gap anything before them keeps;
     /// the row's trailing edge for none.
     #[must_use]
@@ -82,7 +100,6 @@ impl WindowControls {
             .map_or(row.x1, |x0| x0 - LEAD_GAP)
     }
 
-    /// Every offered control with its rect.
     pub fn iter(&self) -> impl Iterator<Item = (WindowControl, Rect)> {
         [
             (WindowControl::History, self.history),
@@ -93,13 +110,11 @@ impl WindowControls {
         .filter(|(_, r)| r.area() > 0.0)
     }
 
-    /// The control under `p`.
     #[must_use]
     pub fn hit(&self, p: Point) -> Option<WindowControl> {
         self.iter().find(|(_, r)| r.contains(p)).map(|(c, _)| c)
     }
 
-    /// Move every control by `shift`.
     pub fn offset(&mut self, shift: vello::kurbo::Vec2) {
         for r in [&mut self.history, &mut self.maximize, &mut self.close] {
             if r.area() > 0.0 {
@@ -135,6 +150,7 @@ impl WindowControls {
                     pressed: state.pressed == Some(control),
                     on: control == WindowControl::History && state.history_open,
                     enabled: true,
+                    destructive: false,
                 },
             );
         }
@@ -146,10 +162,11 @@ impl WindowControls {
 pub struct ButtonFace {
     pub hovered: bool,
     pub pressed: bool,
-    /// A toggle that is on.
     pub on: bool,
     /// It can act now.
     pub enabled: bool,
+    /// It ends, removes or discards something: the destructive role's face.
+    pub destructive: bool,
 }
 
 /// Paint one icon button of the window's bar with the shared button face
@@ -164,7 +181,13 @@ pub fn paint_icon_button(
     (rect, icon): (Rect, icons::Icon),
     face: ButtonFace,
 ) {
+    let role = if face.destructive {
+        crate::widget::ButtonRole::Destructive
+    } else {
+        crate::widget::ButtonRole::Plain
+    };
     let face = crate::widget::ButtonFace::icon_only(rect, icon, "")
+        .role(role)
         .control_size(crate::widget::ControlSize::Small)
         .hovered(face.hovered && face.enabled)
         .pressed(face.pressed && face.enabled)
@@ -177,9 +200,6 @@ pub fn paint_icon_button(
 mod tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-19): "an X at the top right and either a
-    // maximize or minimize button there" — one toggle, beside close, with
-    // History before them; there is no minimize.
     #[test]
     fn close_is_outermost_then_one_maximize_toggle_then_history() {
         let row = Rect::new(0.0, 0.0, 800.0, 44.0);
@@ -192,6 +212,20 @@ mod tests {
         assert_eq!(without.iter().count(), 2);
         assert_eq!(without.close, c.close);
         assert_eq!(without.maximize, c.maximize);
+    }
+
+    #[test]
+    fn a_window_that_is_not_ones_to_close_offers_no_close() {
+        let row = Rect::new(0.0, 0.0, 800.0, 44.0);
+        let c = WindowControls::lay_out(row, true);
+        let held = c.without_close();
+        assert_eq!(held.iter().count(), 2);
+        assert_eq!(held.hit(c.close.center()), Some(WindowControl::Maximize));
+        assert_eq!(
+            held.maximize, c.close,
+            "the outermost control stays outermost"
+        );
+        assert!(held.content_limit(row) > c.content_limit(row));
     }
 
     #[test]

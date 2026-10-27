@@ -1,4 +1,3 @@
-//! Real authenticated HTTP and descriptor administration over isolated files.
 use super::*;
 use crate::{
     caller::{Caller, Session},
@@ -9,6 +8,7 @@ use agent_provider_config::{
     protocol::Conversation,
 };
 use std::os::fd::AsFd as _;
+use tilo_test_env::within;
 
 struct Grant(Caller, bool);
 impl Session for Grant {
@@ -103,6 +103,7 @@ async fn configure(
     let config = ProviderConfig {
         profiles: vec![profile.clone()],
         default_profile: Some(profile.id.clone()),
+        ..Default::default()
     };
     let first = admin
         .set_config(empty.revision.clone(), config.clone())
@@ -158,17 +159,47 @@ async fn configure(
     first
 }
 
-async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<T>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let first = configure(
-        admin,
-        format!("http://{}/v1", listener.local_addr().unwrap()),
-    )
-    .await;
-    let profile = first.config.profiles[0].clone();
-    let (began, mut started) = tokio::sync::mpsc::channel(1);
-    let (release, released) = tokio::sync::oneshot::channel();
-    let provider = tokio::spawn(async move {
+/// Settings' model list asks the provider with the stored key; the key
+/// never reaches the caller.
+async fn lists_models_with_the_stored_key(
+    admin: &dyn ProviderAdmin,
+    listener: &tokio::net::TcpListener,
+    profile: &ProviderProfile,
+) {
+    let listing = async {
+        use tokio::io::AsyncWriteExt as _;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        while !bytes.ends_with(b"\r\n\r\n") {
+            bytes.push(socket.read_u8().await.unwrap());
+        }
+        let headers = String::from_utf8(bytes).unwrap().to_ascii_lowercase();
+        assert!(headers.starts_with("get /v1/models "), "{headers}");
+        assert!(headers.contains("authorization: bearer write-only-test-key"));
+        let reply =
+            r#"{"object":"list","data":[{"id":"second"},{"id":"first","context_length":8192}]}"#;
+        socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes()).await.unwrap();
+    };
+    let (listed, ()) = tokio::join!(admin.list_models(profile.id.clone()), listing);
+    let listed = listed.unwrap();
+    assert_eq!(
+        listed
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        ["first", "second"]
+    );
+    assert_eq!(listed[0].context_window, Some(8192));
+}
+
+/// The provider of [`lifecycle`]: it answers a turn on `first`, holding the
+/// reply until `released` after saying it `began`, then one on `second`.
+fn answer_two_turns(
+    listener: tokio::net::TcpListener,
+    began: tokio::sync::mpsc::Sender<()>,
+    released: tokio::sync::oneshot::Receiver<()>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         use tokio::io::AsyncWriteExt as _;
         let mut released = Some(released);
         for expected in ["first", "second"] {
@@ -202,7 +233,28 @@ async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<
             let reply = serde_json::json!({"id":"answer","object":"chat.completion","created":0,"model":expected,"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}).to_string();
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len()).as_bytes()).await.unwrap();
         }
-    });
+    })
+}
+
+async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<T>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let first = within(
+        "configuring the provider and its key",
+        configure(
+            admin,
+            format!("http://{}/v1", listener.local_addr().unwrap()),
+        ),
+    )
+    .await;
+    let profile = first.config.profiles[0].clone();
+    within(
+        "listing the provider's models",
+        lists_models_with_the_stored_key(admin, &listener, &profile),
+    )
+    .await;
+    let (began, mut started) = tokio::sync::mpsc::channel(1);
+    let (release, released) = tokio::sync::oneshot::channel();
+    let provider = answer_two_turns(listener, began, released);
     let request = Conversation::new("system", "hello").request(vec![], 32);
     let mut next = first.config.clone();
     next.profiles[0].default_model = Some("second".into());
@@ -212,21 +264,50 @@ async fn lifecycle<T: Transport>(admin: &dyn ProviderAdmin, model: &ModelClient<
         release.send(()).unwrap();
         updated
     };
-    let (answer, updated) = tokio::join!(model.complete_once(&request), update);
+    let (answer, updated) = within("a turn across an edit of the default model", async {
+        tokio::join!(model.complete_once(&request), update)
+    })
+    .await;
     answer.unwrap();
-    model.complete_once(&request).await.unwrap();
-    provider.await.unwrap();
-    admin.remove_api_key(profile.id.clone()).await.unwrap();
-    assert_eq!(
-        admin.credential_status(profile.id.clone()).await.unwrap(),
-        CredentialStatus::Missing
-    );
-    assert_eq!(
-        model.complete_once(&request).await.unwrap_err().kind,
-        ErrorKind::Authentication
-    );
-    cleanup(admin, &profile, updated).await;
-    signed_metadata_stays_owned_by_provisioner(admin).await;
+    within(
+        "a turn on the edited default",
+        model.complete_once(&request),
+    )
+    .await
+    .unwrap();
+    within("the provider's second answer", provider)
+        .await
+        .unwrap();
+    within("removing the key", async {
+        admin.remove_api_key(profile.id.clone()).await.unwrap();
+        assert_eq!(
+            admin.credential_status(profile.id.clone()).await.unwrap(),
+            CredentialStatus::Missing
+        );
+        assert_eq!(
+            model.complete_once(&request).await.unwrap_err().kind,
+            ErrorKind::Authentication
+        );
+        assert_eq!(
+            admin
+                .list_models(profile.id.clone())
+                .await
+                .unwrap_err()
+                .kind,
+            ErrorKind::Authentication
+        );
+    })
+    .await;
+    within(
+        "the legacy key and refused edits",
+        cleanup(admin, &profile, updated),
+    )
+    .await;
+    within(
+        "signed metadata staying the provisioner's",
+        signed_metadata_stays_owned_by_provisioner(admin),
+    )
+    .await;
 }
 
 async fn cleanup(
@@ -336,6 +417,7 @@ async fn signed_metadata_stays_owned_by_provisioner(admin: &dyn ProviderAdmin) {
     let installed = ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
+        ..Default::default()
     };
     installed.save().unwrap();
     let snapshot = admin.get_config().await.unwrap();
@@ -380,7 +462,7 @@ async fn mutation_stop_waits_for_commit() {
     let holder = std::thread::spawn(move || {
         let _serial = management_write().unwrap();
         held.send(()).unwrap();
-        released.recv_timeout(Duration::from_secs(5)).unwrap();
+        released.recv_timeout(tilo_test_env::hang_bound()).unwrap();
     });
     acquired.await.unwrap();
     let mut profile = ProviderProfile::local_vllm();
@@ -388,6 +470,7 @@ async fn mutation_stop_waits_for_commit() {
     let config = ProviderConfig {
         profiles: vec![profile],
         default_profile: None,
+        ..Default::default()
     };
     send(
         &mut client,
@@ -403,22 +486,8 @@ async fn mutation_stop_waits_for_commit() {
     )
     .await;
     send(&mut client, Request::Cancel { id: 7 }).await;
-    // Readiness may be spurious after the negotiation. Clear that readiness
-    // without starting a partial frame read; any actual byte is premature.
-    let premature = async {
-        loop {
-            client.readable().await.unwrap();
-            match client.try_read(&mut [0u8; 1]) {
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                result => return result,
-            }
-        }
-    };
-    assert!(
-        tokio::time::timeout(Duration::from_millis(30), premature)
-            .await
-            .is_err()
-    );
+    // The commit is held until released below: a premature answer to the
+    // stopped mutation would be the first frame read after the release.
     release.send(()).unwrap();
     let committed = receive(&mut client).await;
     assert!(committed.ok, "{:?}", committed.error);
@@ -447,19 +516,27 @@ const MODEL_WAIT: Duration = Duration::from_secs(30);
 
 async fn child(http: bool) {
     if http {
-        let service = crate::http_service::HttpService::new(Arc::new(Auth), 4).unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/model/rpc", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let service = service.clone();
-                tokio::spawn(async move {
-                    service.serve_io(stream).await.unwrap();
-                });
-            }
-        });
-        for token in ["agent", "chat", "settings"] {
+        child_http().await;
+    } else {
+        child_fd().await;
+    }
+}
+
+async fn child_http() {
+    let service = crate::http_service::HttpService::new(Arc::new(Auth), 4).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/model/rpc", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let service = service.clone();
+            tokio::spawn(async move {
+                service.serve_io(stream).await.unwrap();
+            });
+        }
+    });
+    for token in ["agent", "chat", "settings"] {
+        within(format!("{token} being refused administration"), async {
             let denied = AdministrationClient::new(Http {
                 url: url.clone(),
                 token,
@@ -484,24 +561,37 @@ async fn child(http: bool) {
                     .kind,
                 ErrorKind::PermissionDenied
             );
-        }
-        lifecycle(
-            &AdministrationClient::new(Http {
-                url: url.clone(),
-                token: "manager",
-            }),
-            &ModelClient::default_model(
-                Http {
-                    url,
-                    token: "agent",
-                },
-                MODEL_WAIT,
-            ),
-        )
+            assert_eq!(
+                denied
+                    .list_models("test-provider".into())
+                    .await
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::PermissionDenied
+            );
+        })
         .await;
-        server.abort();
-    } else {
-        for app in [AGENT_APP, CHAT_APP] {
+    }
+    lifecycle(
+        &AdministrationClient::new(Http {
+            url: url.clone(),
+            token: "manager",
+        }),
+        &ModelClient::default_model(
+            Http {
+                url,
+                token: "agent",
+            },
+            MODEL_WAIT,
+        ),
+    )
+    .await;
+    server.abort();
+}
+
+async fn child_fd() {
+    for app in [AGENT_APP, CHAT_APP, FEEDBACK_APP] {
+        within(format!("{app} being refused administration"), async {
             let (transport, server) = fd(app);
             let denied = AdministrationClient::new(transport);
             assert_eq!(
@@ -517,55 +607,69 @@ async fn child(http: bool) {
                 ErrorKind::PermissionDenied
             );
             server.abort();
-        }
-        let (management, server) = fd(SETTINGS_APP);
-        let (inference, infer_server) = fd(AGENT_APP);
-        lifecycle(
-            &AdministrationClient::new(management),
-            &ModelClient::default_model(inference, MODEL_WAIT),
-        )
+        })
         .await;
-        server.abort();
-        infer_server.abort();
-        mutation_stop_waits_for_commit().await;
     }
+    let (management, server) = fd(SETTINGS_APP);
+    let (inference, infer_server) = fd(AGENT_APP);
+    lifecycle(
+        &AdministrationClient::new(management),
+        &ModelClient::default_model(inference, MODEL_WAIT),
+    )
+    .await;
+    server.abort();
+    infer_server.abort();
+    within(
+        "a stopped edit waiting for its commit",
+        mutation_stop_waits_for_commit(),
+    )
+    .await;
 }
 
-#[test]
-fn provider_administration_http_and_fd_end_to_end() {
+/// Run the end-to-end administration test `name` over `kind` (`http` or
+/// `fd`) in a process of its own, with disposable configuration. Each step
+/// of it is bounded as a hang on its own ([`within`]): the run is a long
+/// chain of durable settings and vault writes, each syncing its directories,
+/// and on a contended disk the chain as a whole takes minutes while every
+/// step still moves.
+fn administration_end_to_end(name: &str, kind: &str) {
     const MARKER: &str = "PROVIDER_ADMIN_TEST_CHILD";
-    if let Ok(kind) = std::env::var(MARKER) {
+    if std::env::var_os(MARKER).is_some() {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
-            .block_on(async {
-                tokio::time::timeout(Duration::from_secs(120), child(kind == "http"))
-                    .await
-                    .unwrap();
-            });
+            .block_on(child(kind == "http"));
         return;
     }
-    for kind in ["http", "fd"] {
-        let root = tempfile::tempdir().unwrap();
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "service::administration_tests::provider_administration_http_and_fd_end_to_end",
-                "--nocapture",
-            ])
-            .env_clear()
-            .env("PATH", root.path())
-            .env("XDG_CONFIG_HOME", root.path())
-            .env(MARKER, kind)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{kind}: {}: {} {}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let root = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("service::administration_tests::{name}"),
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("PATH", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .env(MARKER, kind)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{kind}: {}: {} {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn provider_administration_over_http_end_to_end() {
+    administration_end_to_end("provider_administration_over_http_end_to_end", "http");
+}
+
+#[test]
+fn provider_administration_over_fd_end_to_end() {
+    administration_end_to_end("provider_administration_over_fd_end_to_end", "fd");
 }

@@ -91,7 +91,6 @@ mod tests {
         assert!(text.contains("bin/x\0"));
         assert!(text.contains("hello"));
         assert!(text.contains("TRAILER!!!\0"));
-        // The file's mode and size fields.
         let at = text.find("bin/x").unwrap() - 110;
         assert_eq!(text.get(at + 14..at + 22), Some("000081ed"));
         assert_eq!(text.get(at + 54..at + 62), Some("00000005"));

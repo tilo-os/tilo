@@ -26,13 +26,11 @@ use crate::model::{Artwork, Ground, MarkBody};
 
 /// The file extension of a saved artwork.
 pub const EXTENSION: &str = "artwork";
-/// The media type of a saved artwork.
 pub const MEDIA_TYPE: &str = "application/vnd.tilo.artwork+zip";
 /// What the file says it is.
 const FORMAT: &str = "tilo-artwork";
 /// The largest artwork file read, in bytes: room for a few large photos.
 pub const MAX_FILE_BYTES: usize = 256 << 20;
-/// The package's entry holding the artwork's JSON.
 const DOCUMENT_ENTRY: &str = "artwork.json";
 /// Where the package keeps pictures, each named by its content hash.
 const CONTENT_DIR: &str = "content/";
@@ -487,10 +485,6 @@ pub fn pack(
 
 /// Read a saved artwork: a package, its pictures put in `store`, or the
 /// artwork's JSON alone.
-///
-/// # Errors
-/// Says why the bytes are not an artwork this version reads, or a picture
-/// in it is not the content its name says.
 pub fn unpack(bytes: &[u8], store: &tilo_content::ContentStore) -> Result<ArtworkFile, String> {
     if !bytes.starts_with(b"PK\x03\x04") {
         return ArtworkFile::parse(bytes);

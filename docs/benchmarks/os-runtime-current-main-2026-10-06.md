@@ -5,7 +5,7 @@ from 7,525,588,992 to 7,408,070,656 bytes: **117,518,336 bytes (1.56%)**.
 This is one matched pair using the same immutable image and installer settings,
 with assembly compression changing from zstd level 1 to 3. It is a footprint
 improvement, not evidence of faster interaction or hardware frame presentation.
-[Raw observations and provenance](os-runtime-current-main-2026-10-06.json)
+[Raw observations and provenance](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/os-runtime-current-main-2026-10-06.json)
 retain the distinct image, filesystem and artifact measurements.
 
 ## Source and scope

@@ -70,7 +70,7 @@ pub(crate) fn page_url() -> Option<url::Url> {
     url::Url::parse(&href).ok()
 }
 
-/// The page's origin.
+#[cfg(feature = "http")]
 pub(crate) fn page_origin() -> Option<url::Origin> {
     Some(page_url()?.origin())
 }
@@ -102,7 +102,6 @@ pub(crate) fn is_named(error: &JsValue, name: &str) -> bool {
         .is_some_and(|value| value == name)
 }
 
-/// Await a promise from a `Send` future.
 #[cfg(any(feature = "http", feature = "webtransport"))]
 pub(crate) fn promise(
     promise: Promise,
@@ -211,7 +210,6 @@ impl Events {
         }
     }
 
-    /// Queue every `names` event of `target`.
     pub(crate) fn listen(&mut self, target: &JsValue, names: &[&str]) {
         for name in names {
             let sender = self.sender.clone();

@@ -12,18 +12,26 @@ use std::collections::{BTreeMap, HashSet};
 /// rules, so it includes inflected forms like `jumps`, `jumping`, `foxes` that
 /// the bare `.dic` stems omit — was kept. The result was lowercased, restricted
 /// to ASCII letters with optional internal apostrophes, length 1..=15, and sorted
-/// unique.
+/// unique. The dictionary's own stems were then added the same way: each stem
+/// of `en_US.dic` with the common English suffixes (plural, past, `-ing`,
+/// `-er`, `-ly`, `-ness`, `-ment`, `-ion`, and their spelling changes), kept
+/// where `hunspell -d en_US -G` accepted it, so the words `linux.words` lacks
+/// ("website", "smartphone", "blog") are known too.
 ///
-/// Size: ~75,000 words, ~700 KB. See `spellcheck/data/words.txt`.
+/// Size: ~89,000 words, ~820 KB. See `spellcheck/data/words.txt`. It is the
+/// fallback: where the system has a Hunspell dictionary for the language,
+/// English is checked with that ([`crate::spans_for_language`]).
 const BUILTIN_WORDS: &str = include_str!("../data/words.txt");
 
-/// Product names included in the built-in dictionary.
+/// Product names included in the built-in dictionary, and known beside a
+/// system dictionary too ([`is_extra_word`]).
 ///
 /// Membership is case-insensitive (see [`Dictionary::contains`]), so one
 /// spelling covers `Tilo`, `TILO` and `tilo`.
 const PRODUCT_WORDS: &[&str] = &["tilo", "claude", "tilo"];
 
-/// Common contractions and proper names included in the embedded fallback.
+/// Common contractions and proper names included in the embedded fallback,
+/// and known beside a system dictionary too ([`is_extra_word`]).
 const CONVERSATIONAL_WORDS: &[&str] = &[
     "aren't",
     "can't",
@@ -122,6 +130,13 @@ const CONVERSATIONAL_WORDS: &[&str] = &[
     "ctrl",
 ];
 
+/// Whether `word` is one of the product names or conversational words the
+/// embedded list adds, which a system dictionary may not hold.
+pub(crate) fn is_extra_word(word: &str) -> bool {
+    let lower = word.to_lowercase();
+    PRODUCT_WORDS.contains(&lower.as_str()) || CONVERSATIONAL_WORDS.contains(&lower.as_str())
+}
+
 /// A set of known words for spell checking.
 ///
 /// Membership is **case-insensitive**: words are stored lowercased and
@@ -150,12 +165,11 @@ pub struct Dictionary {
 impl Dictionary {
     /// Build the dictionary embedded in the binary at compile time.
     pub fn builtin() -> Self {
-        Self::from_words(
-            BUILTIN_WORDS
-                .lines()
-                .chain(PRODUCT_WORDS.iter().copied())
-                .chain(CONVERSATIONAL_WORDS.iter().copied()),
-        )
+        // Through the one builder that reads the embedded list, which a web
+        // build's split keeps out of its start module.
+        let mut builder = BuiltinBuilder::default();
+        builder.step(&mut || true);
+        builder.finish()
     }
 
     /// Load any persisted user words from the user-config file into this
@@ -194,29 +208,11 @@ impl Dictionary {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut set = HashSet::new();
-        let mut by_len: Vec<Vec<String>> = Vec::new();
-        for w in words {
-            let normalized = w.as_ref().trim().to_lowercase();
-            if normalized.is_empty() {
-                continue;
-            }
-            if set.insert(normalized.clone()) {
-                let len = normalized.chars().count();
-                if by_len.len() <= len {
-                    by_len.resize(len.saturating_add(1), Vec::new());
-                }
-                // The resize above guarantees `len` is now in bounds.
-                if let Some(bucket) = by_len.get_mut(len) {
-                    bucket.push(normalized);
-                }
-            }
+        let mut building = Building::default();
+        for word in words {
+            building.add(word.as_ref());
         }
-        Dictionary {
-            words: set,
-            by_len,
-            user_words: BTreeMap::new(),
-        }
+        building.finish()
     }
 
     /// Returns `true` if `word` is in the dictionary (built-in list **or** the
@@ -333,6 +329,95 @@ impl Dictionary {
     }
 }
 
+/// Words taken in so far, for [`Dictionary::from_words`] and the built-in
+/// list's [`BuiltinBuilder`].
+#[derive(Default)]
+struct Building {
+    words: HashSet<String>,
+    by_len: Vec<Vec<String>>,
+}
+
+impl Building {
+    fn add(&mut self, word: &str) {
+        let normalized = word.trim().to_lowercase();
+        if normalized.is_empty() || self.words.contains(&normalized) {
+            return;
+        }
+        let len = normalized.chars().count();
+        if self.by_len.len() <= len {
+            self.by_len.resize(len.saturating_add(1), Vec::new());
+        }
+        // The resize above guarantees `len` is now in bounds.
+        if let Some(bucket) = self.by_len.get_mut(len) {
+            bucket.push(normalized.clone());
+        }
+        self.words.insert(normalized);
+    }
+
+    fn finish(self) -> Dictionary {
+        Dictionary {
+            words: self.words,
+            by_len: self.by_len,
+            user_words: BTreeMap::new(),
+        }
+    }
+}
+
+/// The built-in dictionary built a slice at a time: a browser page has no
+/// thread to build its 89,000 words on, and building them at once holds the
+/// page for longer than several frames. [`Self::step`] takes words while
+/// its budget lasts, so the page builds the dictionary in idle time.
+pub(crate) struct BuiltinBuilder {
+    words: Box<dyn Iterator<Item = &'static str> + Send>,
+    building: Building,
+}
+
+impl Default for BuiltinBuilder {
+    /// The only code that reads the embedded list ([`Dictionary::builtin`]
+    /// builds through it too), never inlined: a web build's split moves the
+    /// list into the one module whose code reaches it, and keeps it in the
+    /// start module when two do.
+    #[inline(never)]
+    fn default() -> Self {
+        Self {
+            words: Box::new(
+                BUILTIN_WORDS
+                    .lines()
+                    .chain(PRODUCT_WORDS.iter().copied())
+                    .chain(CONVERSATIONAL_WORDS.iter().copied()),
+            ),
+            building: Building::default(),
+        }
+    }
+}
+
+impl BuiltinBuilder {
+    /// Words taken between two asks of the budget.
+    const SLICE: usize = 256;
+
+    /// Take words while `more` answers true (asked every few hundred words);
+    /// true once every word is in.
+    pub(crate) fn step(&mut self, more: &mut dyn FnMut() -> bool) -> bool {
+        loop {
+            for _ in 0..Self::SLICE {
+                let Some(word) = self.words.next() else {
+                    return true;
+                };
+                self.building.add(word);
+            }
+            if !more() {
+                return false;
+            }
+        }
+    }
+
+    /// The dictionary, once [`Self::step`] answered true.
+    #[must_use]
+    pub(crate) fn finish(self) -> Dictionary {
+        self.building.finish()
+    }
+}
+
 /// Resolve the path of the persisted user dictionary:
 /// `$XDG_CONFIG_HOME/tilo/userdict.txt`, falling back to
 /// `$HOME/.config/tilo/userdict.txt`. Returns `None` when neither environment
@@ -373,7 +458,6 @@ mod tests {
 
     #[test]
     fn dictionaries_build_case_insensitively_and_accept_added_words() {
-        // Phase `from_words_is_case_insensitive`.
         {
             let d = Dictionary::from_words(["Hello", "WORLD"]);
             assert!(d.contains("hello"));
@@ -381,14 +465,12 @@ mod tests {
             assert!(d.contains("World"));
             assert!(!d.contains("goodbye"));
         }
-        // Phase `trims_and_skips_empty`.
         {
             let d = Dictionary::from_words(["  spaced  ", "", "   ", "ok"]);
             assert!(d.contains("spaced"));
             assert!(d.contains("ok"));
             assert_eq!(d.len(), 2);
         }
-        // Phase `len_range_iter_respects_bounds`.
         {
             let d = Dictionary::from_words(["a", "to", "cat", "four", "fives"]);
             let got: HashSet<&str> = d.words_in_len_range(3, 4).collect();
@@ -397,7 +479,6 @@ mod tests {
             assert!(!got.contains("to"));
             assert!(!got.contains("fives"));
         }
-        // Phase `builtin_loads`.
         {
             let d = Dictionary::builtin();
             assert!(d.len() > 10_000);
@@ -405,7 +486,6 @@ mod tests {
             assert!(d.contains("quick"));
             assert!(!d.contains("teh"));
         }
-        // Phase `add_word_makes_a_word_known_case_insensitively`.
         {
             let mut d = Dictionary::from_words(["alpha", "beta"]);
             assert!(!d.contains("tilo"), "precondition: unknown word");
@@ -422,7 +502,6 @@ mod tests {
                 "adding a built-in word records nothing"
             );
         }
-        // Phase `add_word_ignores_empty_and_whitespace`.
         {
             let mut d = Dictionary::from_words(["alpha"]);
             assert!(!d.add_word(""));

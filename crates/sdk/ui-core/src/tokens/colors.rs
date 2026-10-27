@@ -53,6 +53,36 @@ pub fn mix8(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
+/// How far a value's fill stands from the focus ring's ink, in OKLCH
+/// lightness, away from the ground: a focused slider's ring never merges
+/// with its own fill.
+const VALUE_FILL_STEP: f32 = 0.1;
+
+/// [`Intents::value_fill`] on `ground` beside `track` (the lift a bar's
+/// unfilled part is): the accent hue a step further from the ground than
+/// [`Intents::accent_ink`], then stepped on until it clears the non-text
+/// contrast floor against both.
+pub(crate) fn value_fill_on(accent_ink: Color, ground: Color, track: Color) -> Color {
+    use crate::a11y::contrast_ratio;
+    let ink = Oklch::from_color(accent_ink);
+    let away = if Oklch::from_color(ground).l > 0.5 {
+        -1.0
+    } else {
+        1.0
+    };
+    let reads = |fill: Color| {
+        contrast_ratio(fill, ground) >= NON_TEXT_MIN_CONTRAST
+            && contrast_ratio(fill, track) >= NON_TEXT_MIN_CONTRAST
+    };
+    let mut lightness = ink.l + away * VALUE_FILL_STEP;
+    let mut fill = oklch(lightness.clamp(0.0, 1.0), ink.c, ink.h);
+    while !reads(fill) && (0.0..=1.0).contains(&lightness) {
+        lightness += away * 0.02;
+        fill = oklch(lightness.clamp(0.0, 1.0), ink.c, ink.h);
+    }
+    fill
+}
+
 /// Composites `over` onto an opaque `ground`: a token's own RGBA says
 /// nothing about how it reads (`white/20` differs over black vs white), so
 /// every derivation below measures the composite, never the token.
@@ -111,6 +141,11 @@ pub const MATERIAL_ALPHA: f32 = 0.72;
 
 /// Stock backdrop blur of the floating material, in logical pixels.
 pub const MATERIAL_BLUR_PX: f32 = 24.0;
+
+/// Stock opacity of the see-through material ([`Surfaces::see_through_opacity`]):
+/// half. Chrome over pixels the person is choosing (the capture bar and its
+/// selection controls) must leave those pixels visible, unblurred.
+pub const SEE_THROUGH_ALPHA: f32 = 0.5;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorRamp {
@@ -172,7 +207,7 @@ impl std::ops::Index<usize> for ColorRamp {
 }
 
 /// The neutral material's surfaces. Every one is opaque except
-/// [`Self::material`], and every one shares [`Colors::neutral_hue`].
+/// [`Self::material`], and every one shares the hue [`Colors::with_neutral_hue`] sets.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Surfaces {
     /// The desktop ground behind tiles.
@@ -181,7 +216,6 @@ pub struct Surfaces {
     /// The ink tiers ([`Colors::text_primary`] and friends) are defined on
     /// this surface.
     pub content: Color,
-    /// The navigation region of a window.
     pub sidebar: Color,
     /// The detail / inspector region of a window.
     pub inspector: Color,
@@ -208,6 +242,11 @@ pub struct Surfaces {
     pub material_blur_px: f32,
     /// Opacity of the [`Self::overlay`] tint over the blurred backdrop.
     pub material_opacity: f32,
+    /// Opacity of the see-through material: [`Self::overlay`] over an
+    /// unblurred backdrop, for chrome that must not hide what is under it
+    /// (the capture bar over the pixels being chosen). `1` where nothing may
+    /// be translucent.
+    pub see_through_opacity: f32,
     /// The declared edge between a window tile and the desktop. Read it
     /// through [`Colors::window_edge`], which flips its polarity if the
     /// ground would swallow it.
@@ -311,9 +350,11 @@ pub struct Intents {
     /// The knob or mark standing on [`Self::on_state`].
     pub on_state_mark: Color,
     /// A value that is neither on nor an action: a slider's filled track,
-    /// a progress bar, a gauge, a spinner, a chart's default series. Strong
-    /// neutral ink (primary ink at 90 % over the window).
-    pub neutral_fill: Color,
+    /// a progress bar, a gauge, a spinner, a chart's default series, a
+    /// finished step. The accent as a mark ([`Self::accent_ink`]), held to
+    /// the non-text contrast floor on the ground it stands on; never the
+    /// text colour, so a filled bar never reads as a black slab.
+    pub value_fill: Color,
     /// A selected row, tab or segment on the content surface: one surface
     /// step, faintly the accent (colourless under [`Emphasis::Inverted`]).
     /// Other grounds lift with [`Colors::lift_on`].
@@ -328,171 +369,18 @@ pub struct Intents {
     pub selection_tint: Color,
 }
 
-/// How many hues the presence palette has.
-pub const PRESENCE_LEN: usize = 12;
+pub use collab_types::presence::{PRESENCE_HUES, PRESENCE_LEN, PresenceHue};
 
-/// The presence palette's hues, in OKLCH degrees: twelve evenly spaced, so
-/// neighbours sit 30° apart.
-pub const PRESENCE_HUES: [f32; PRESENCE_LEN] = [
-    25.0, 55.0, 85.0, 115.0, 145.0, 175.0, 205.0, 235.0, 265.0, 295.0, 325.0, 355.0,
-];
-
-/// One of the twelve presence hues: a person's colour, as they choose it.
-///
-/// A colour is part of someone's identity, not of a theme: it is stored as
-/// this choice and painted through whatever theme each viewer uses
-/// ([`PresencePalette::hue`]), so it reads at that theme's presence
-/// lightness and chroma everywhere.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PresenceHue {
-    Red,
-    Orange,
-    Amber,
-    Olive,
-    Green,
-    Teal,
-    Cyan,
-    Sky,
-    Blue,
-    Violet,
-    Magenta,
-    Pink,
-}
-
-impl PresenceHue {
-    /// Every hue, in [`PRESENCE_HUES`] order.
-    pub const ALL: [Self; PRESENCE_LEN] = [
-        Self::Red,
-        Self::Orange,
-        Self::Amber,
-        Self::Olive,
-        Self::Green,
-        Self::Teal,
-        Self::Cyan,
-        Self::Sky,
-        Self::Blue,
-        Self::Violet,
-        Self::Magenta,
-        Self::Pink,
-    ];
-
-    /// The palette slot, `0..PRESENCE_LEN`.
-    #[must_use]
-    pub fn slot(self) -> usize {
-        Self::ALL.iter().position(|h| *h == self).unwrap_or(0)
+/// The presence hue nearest to `colour`'s, for a colour that arrives from
+/// outside (a host's accent, a roster's packed colour). A grey has no hue
+/// and gives `None`.
+#[must_use]
+pub fn nearest_presence_hue(colour: Color) -> Option<PresenceHue> {
+    let source = Oklch::from_color(colour);
+    if source.c < 0.02 {
+        return None;
     }
-
-    /// The hue at `slot`, wrapping past [`PRESENCE_LEN`].
-    #[must_use]
-    pub fn from_slot(slot: usize) -> Self {
-        Self::ALL
-            .get(slot % PRESENCE_LEN)
-            .copied()
-            .unwrap_or(Self::Blue)
-    }
-
-    /// The OKLCH hue, in degrees.
-    #[must_use]
-    pub fn degrees(self) -> f32 {
-        PRESENCE_HUES.get(self.slot()).copied().unwrap_or(265.0)
-    }
-
-    /// The stored name (`"violet"`), as settings and actions spell it.
-    #[must_use]
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::Red => "red",
-            Self::Orange => "orange",
-            Self::Amber => "amber",
-            Self::Olive => "olive",
-            Self::Green => "green",
-            Self::Teal => "teal",
-            Self::Cyan => "cyan",
-            Self::Sky => "sky",
-            Self::Blue => "blue",
-            Self::Violet => "violet",
-            Self::Magenta => "magenta",
-            Self::Pink => "pink",
-        }
-    }
-
-    /// The name a person reads in a picker.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Red => "Red",
-            Self::Orange => "Orange",
-            Self::Amber => "Amber",
-            Self::Olive => "Olive",
-            Self::Green => "Green",
-            Self::Teal => "Teal",
-            Self::Cyan => "Cyan",
-            Self::Sky => "Sky",
-            Self::Blue => "Blue",
-            Self::Violet => "Violet",
-            Self::Magenta => "Magenta",
-            Self::Pink => "Pink",
-        }
-    }
-
-    /// Parse [`Self::id`].
-    #[must_use]
-    pub fn from_id(id: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|h| h.id() == id)
-    }
-
-    /// The hue nearest to `colour`'s, for a colour that arrives from outside
-    /// (a host's accent). A grey has no hue and gives `None`.
-    #[must_use]
-    pub fn nearest(colour: Color) -> Option<Self> {
-        let source = Oklch::from_color(colour);
-        if source.c < 0.02 {
-            return None;
-        }
-        let distance = |h: Self| {
-            let d = (h.degrees() - source.h).rem_euclid(360.0);
-            d.min(360.0 - d)
-        };
-        Self::ALL
-            .into_iter()
-            .min_by(|a, b| distance(*a).total_cmp(&distance(*b)))
-    }
-
-    /// The colour someone wears until they choose one: a pure function of
-    /// their identity, so every host paints them the same without asking.
-    /// The fixture names `me`, `alice`, `bob` and `charlie` are pinned so
-    /// demos and tests stay recognisable.
-    #[must_use]
-    pub fn of_identity(id: &str) -> Self {
-        match id {
-            "me" => Self::Blue,
-            "alice" => Self::Pink,
-            "bob" => Self::Orange,
-            "charlie" => Self::Green,
-            _ => {
-                // FNV-1a 64-bit: cheap, deterministic, no RNG state.
-                let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-                for byte in id.as_bytes() {
-                    hash ^= u64::from(*byte);
-                    hash = hash.wrapping_mul(0x0100_0000_01b3);
-                }
-                let slot = hash.checked_rem(PRESENCE_LEN as u64).unwrap_or(0);
-                Self::from_slot(usize::try_from(slot).unwrap_or(0))
-            }
-        }
-    }
-
-    /// The person's stored choice in a settings document
-    /// (`identity.colour`), if they made one.
-    #[must_use]
-    pub fn chosen_in(settings: &serde_json::Value) -> Option<Self> {
-        settings
-            .get("identity")?
-            .get("colour")?
-            .as_str()
-            .and_then(Self::from_id)
-    }
+    Some(PresenceHue::nearest_to_degrees(source.h))
 }
 
 /// How much of a person's chroma their face keeps while they are idle or
@@ -556,12 +444,15 @@ impl PresencePalette {
     /// as this palette paints it: its hue at the palette's lightness and
     /// chroma. Identities travel between devices and themes as colours;
     /// painting them through here keeps every participant equal on every
-    /// ground. A grey identity has no hue and takes [`PresenceHue::Blue`].
+    /// ground. A grey identity has no hue and stays grey at the palette's
+    /// lightness: it is someone whose colour is not known yet
+    /// (`ui::presence::UNSETTLED_RGB`), and a hue picked for them would be
+    /// a colour they then change from.
     #[must_use]
     pub fn of(&self, identity: Color) -> Color {
         let source = Oklch::from_color(identity);
         if source.c < 0.02 {
-            return self.hue(PresenceHue::Blue);
+            return oklch(self.lightness, 0.0, 0.0);
         }
         oklch(self.lightness, self.chroma, source.h)
     }
@@ -963,6 +854,7 @@ impl Colors {
                 },
                 material_blur_px: if opaque { 0.0 } else { MATERIAL_BLUR_PX },
                 material_opacity: if opaque { 1.0 } else { MATERIAL_ALPHA },
+                see_through_opacity: if opaque { 1.0 } else { SEE_THROUGH_ALPHA },
                 content_edge,
             },
             intent: Intents {
@@ -973,7 +865,7 @@ impl Colors {
                 accent_ink,
                 on_state: oklch(on_state.lightness, on_state.chroma, ON_STATE_HUE),
                 on_state_mark: Color::WHITE,
-                neutral_fill: mix8(content, primary, 0.9),
+                value_fill: value_fill_on(accent_ink, content, lift(1.0, true)),
                 selection: lift(1.0, true),
                 selection_hover: lift(0.5, false),
                 you: you_colour,
@@ -1866,7 +1758,6 @@ mod tests {
         );
         let plain_fill = Oklch::from_color(plain.intent.accent);
         assert!(plain_fill.c < 0.01, "inverted emphasis has no hue");
-        // The default accent is the person's own colour.
         let stock = Colors::dark();
         assert_eq!(stock.emphasis, Emphasis::You);
         let you = Oklch::from_color(stock.intent.accent);
@@ -1959,7 +1850,6 @@ mod tests {
             let dark = Colors::dark();
             let light = Colors::light();
             for slot in 0..PRESENCE_LEN {
-                // A dark slot read on light lands on light's own slot.
                 let got = light.presence.of(dark.presence.get(slot));
                 let want = light.presence.get(slot);
                 for (g, w) in [
@@ -1970,7 +1860,6 @@ mod tests {
                     assert!(g.abs_diff(w) <= 2, "slot {slot}: {got:?} vs {want:?}");
                 }
             }
-            // Any colour lands at the palette's lightness, whatever its own.
             let loud = Color::from_rgb8(255, 0, 0);
             let painted = Oklch::from_color(dark.presence.of(loud));
             assert!((painted.l - 0.74).abs() <= 0.006);
@@ -1992,8 +1881,8 @@ mod tests {
             .collect();
         assert!(spread.len() >= 8, "identities spread over the ring");
         let orange = Color::from_rgb8(0xE0, 0x80, 0x30);
-        assert_eq!(PresenceHue::nearest(orange), Some(PresenceHue::Orange));
-        assert_eq!(PresenceHue::nearest(Color::from_rgb8(128, 128, 128)), None);
+        assert_eq!(nearest_presence_hue(orange), Some(PresenceHue::Orange));
+        assert_eq!(nearest_presence_hue(Color::from_rgb8(128, 128, 128)), None);
         let settings = serde_json::json!({"identity": {"colour": "violet"}});
         assert_eq!(PresenceHue::chosen_in(&settings), Some(PresenceHue::Violet));
         assert_eq!(PresenceHue::chosen_in(&serde_json::json!({})), None);

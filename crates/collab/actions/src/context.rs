@@ -35,7 +35,6 @@ pub struct ActionContext {
     /// Publishing app, when the host knows it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<ActionApp>,
-    /// The resource the action addressed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource: Option<ActionResource>,
     /// The item inside the resource the action addressed, with its label at
@@ -218,7 +217,6 @@ impl ActionContext {
         self
     }
 
-    /// The entry of an action on one resource.
     pub fn for_resource(
         id: impl Into<String>,
         kind: impl Into<String>,
@@ -497,7 +495,6 @@ impl ActionContext {
         ))
     }
 
-    /// The gesture a continuation message continues.
     #[must_use]
     pub fn continued_gesture(message: &str) -> Option<crate::ActionId> {
         let rest = message.strip_prefix(CONTINUATION_PREFIX)?;
@@ -1069,11 +1066,6 @@ pub struct ParticipantId(String);
 
 impl ParticipantId {
     /// Validate and wrap a participant id.
-    ///
-    /// # Errors
-    ///
-    /// Returns a description when `id` is empty, longer than
-    /// `MAX_PARTICIPANT_ID_BYTES`, or not printable ASCII.
     pub fn new(id: impl Into<String>) -> Result<Self, String> {
         let id = id.into();
         if id.is_empty()
@@ -1300,6 +1292,12 @@ pub struct ActionGroup {
 /// action a context describes, for a question about it put to a person.
 pub const RISK_FACET: &str = "risk";
 
+/// [`ActionFacet::key`] of where in its app's record a step happened, as
+/// everyone the record is shared with sees that place named: a chat post's
+/// channel, `#general`. Only such a place is named; a direct conversation
+/// never is.
+pub const PLACE_FACET: &str = "place";
+
 /// A filterable activity dimension. Open key/value vocabulary lets future
 /// apps add facets without changing the wire enum.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1332,6 +1330,7 @@ mod tests {
             Some(crate::Persona {
                 service: "discord".into(),
                 account: "80351110224678912".into(),
+                linked: None,
             }),
         )
         .unwrap();
@@ -1344,7 +1343,6 @@ mod tests {
         let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
         assert_eq!(read, entry);
         assert_eq!(read.invoker.unwrap().appearance, Some(appearance));
-        // Without one, nothing is written for it.
         let plain = ActionContext::default().with_invoker(ActionInvoker::actor("person:ada"));
         let json = serde_json::to_string(&plain.invoker).unwrap();
         assert!(!json.contains("appearance"), "{json}");

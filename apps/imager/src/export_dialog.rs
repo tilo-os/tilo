@@ -293,10 +293,8 @@ mod tests {
     /// Export dialog layout, dismissal and read-only accessibility.
     #[test]
     fn export_dialog_layout_input_and_accessibility() {
-        // Phase `responsive_layout_uses_desktop_sheets_and_compact_pages`.
         responsive_export_layout();
 
-        // Phase `escape_and_any_left_click_are_captured_and_dismiss`.
         {
             let mut dialog = ExportDialog::new();
             let mut doc = AutoCommit::new();
@@ -332,7 +330,6 @@ mod tests {
             assert!(!dialog.is_open());
         }
 
-        // Phase `syntax_roles_and_accessibility_preserve_the_read_only_document`.
         {
             let preview = profile_preview("[install]\nhostname = tilo");
             assert_eq!(preview.role(), ui::TextRole::Code);

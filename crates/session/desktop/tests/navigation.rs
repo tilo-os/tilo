@@ -12,6 +12,10 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use ui::record::RecordStore;
+use ui::time::testing::with_monotonic_time;
+
+/// One host frame of a 60 Hz display, on the clock the frames are drawn at.
+const FRAME: ui::time::Duration = ui::time::Duration::from_millis(16);
 
 struct Unavailable;
 impl TileResolver for Unavailable {
@@ -36,6 +40,7 @@ fn tree() -> DesktopTree {
                     kind: AppKind::Other("so.tilo.word-processor".into()),
                     label: "Renamed".into(),
                 },
+                app_title: None,
             }],
             active_tab: 9_007_199_254_741_001,
             width: WindowWidth::Normal,
@@ -338,10 +343,28 @@ fn external_navigation_edge_drag_interrupts_an_inflight_width_animation() {
         group.resolved_width_px() > before.width() + 50.0,
         "the real reconciled width spring is still in flight"
     );
+    // The spring moves on each frame an event runs: on a clock held still
+    // the pointer reaching the edge moves it once, and the press grabs the
+    // edge where that frame left it.
+    let held = ui::time::now();
+    with_monotonic_time(held, || {
+        test.frame.send(&ui::synthetic_input::cursor_moved(
+            before.x1 - 2.0,
+            before.center().y,
+        ));
+    });
+    let before = test.surface().row(StripId(2)).unwrap().groups[0].get_rect();
+    assert!(
+        test.surface().row(StripId(2)).unwrap().groups[0].resolved_width_px()
+            > before.width() + 50.0,
+        "the spring is still in flight when the edge is grabbed"
+    );
     let point = (before.x1 - 2.0, before.center().y);
     let moved = |delta| ui::synthetic_input::cursor_moved(point.0 + delta, point.1);
-    test.frame.send(&moved(0.0));
-    test.frame.send(&ui::synthetic_input::mouse_press());
+    with_monotonic_time(held, || {
+        test.frame.send(&moved(0.0));
+        test.frame.send(&ui::synthetic_input::mouse_press());
+    });
     assert!(test.surface().row(StripId(2)).unwrap().groups[0].edge_resize_in_flight());
     for delta in [20.0, 40.0, 60.0] {
         test.frame.send(&moved(delta));
@@ -366,13 +389,14 @@ fn navigation_animation_frames_settle_without_restarting_and_allow_manual_naviga
     // goes quiet once it arrives: no frame restarts it.
     let start = test.surface().row(StripId(2)).unwrap().scroll_x();
     let mut previous = start;
+    let mut clock = ui::time::now();
     (0..400)
         .find(|_| {
             if !test.frame.frame_output().needs_animation_frame {
                 return true;
             }
-            std::thread::sleep(std::time::Duration::from_millis(16));
-            test.frame.poll_frame().unwrap();
+            clock += FRAME;
+            with_monotonic_time(clock, || test.frame.poll_frame()).unwrap();
             let now = test.surface().row(StripId(2)).unwrap().scroll_x();
             assert!(
                 now >= previous,
@@ -400,14 +424,14 @@ fn navigation_animation_frames_settle_without_restarting_and_allow_manual_naviga
 
 #[test]
 fn navigation_stepping_back_twice_pans_once_and_then_asks_for_no_frame() {
-    fn frames_until_idle(test: &mut NavigationFrame) -> usize {
+    fn frames_until_idle(test: &mut NavigationFrame, clock: &mut ui::time::Instant) -> usize {
         (0..400)
             .find(|_| {
                 if !test.frame.frame_output().needs_animation_frame {
                     return true;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(16));
-                test.frame.poll_frame().unwrap();
+                *clock += FRAME;
+                with_monotonic_time(*clock, || test.frame.poll_frame()).unwrap();
                 false
             })
             .expect("the desktop goes quiet")
@@ -423,14 +447,15 @@ fn navigation_stepping_back_twice_pans_once_and_then_asks_for_no_frame() {
     }
     tree.active_group.insert(StripId(2), 6);
     let mut test = NavigationFrame::new(tree, 1200);
-    frames_until_idle(&mut test);
+    let mut clock = ui::time::now();
+    frames_until_idle(&mut test, &mut clock);
     test.assert_visible(StripId(2), 6);
     let revealed = test.surface().row(StripId(2)).unwrap().scroll_x();
 
     test.tree.active_group.insert(StripId(2), 5);
-    test.reconcile();
+    with_monotonic_time(clock, || test.reconcile());
     test.tree.active_group.insert(StripId(2), 4);
-    test.reconcile();
+    with_monotonic_time(clock, || test.reconcile());
     // Widths are read off pan-shifted rects. When they wobble, each layout
     // asks for the same group again. Reproduce that ask on every frame.
     let frames = (0..400)
@@ -441,13 +466,9 @@ fn navigation_stepping_back_twice_pans_once_and_then_asks_for_no_frame() {
             test.surface_mut()
                 .row_mut(StripId(2))
                 .unwrap()
-                .scroll_group_into_view_animated(
-                    4,
-                    ui::time::Instant::now(),
-                    ui::tokens::MotionSource::Pointer,
-                );
-            std::thread::sleep(std::time::Duration::from_millis(16));
-            test.frame.poll_frame().unwrap();
+                .scroll_group_into_view_animated(4, clock, ui::tokens::MotionSource::Pointer);
+            clock += FRAME;
+            with_monotonic_time(clock, || test.frame.poll_frame()).unwrap();
             false
         })
         .expect("the desktop goes quiet");
@@ -509,8 +530,14 @@ fn navigation_a_window_opened_beside_the_selection_is_shown_whole_with_it() {
     beside.tabs[0].title = "Notes".into();
     beside.active_tab = 20;
     test.tree.workspaces[0].strips[0].window_groups.push(beside);
-    test.reconcile();
-    test.finish_pan();
+    let mut clock = ui::time::now();
+    with_monotonic_time(clock, || test.reconcile());
+    // The window in use narrows and the new one grows on their slot
+    // springs; where they land is measured once those have come to rest.
+    for _ in 0..60 {
+        clock += FRAME;
+        with_monotonic_time(clock, || test.frame.poll_frame()).unwrap();
+    }
     test.finish_pan();
     test.assert_visible(StripId(2), 3);
     test.assert_visible(StripId(2), 4);
@@ -805,10 +832,21 @@ fn external_navigation_lone_window_keeps_pointer_resize_and_local_width_intent()
     frame.set_theme(ui::Theme::light().with_reduce_motion(true));
     frame.poll_frame().unwrap();
     let before = unsafe { (&*ptr).row(StripId(2)).unwrap().groups[0].get_rect() };
-    assert!(before.height() > 0.0 && before.x1 < 1472.0);
+    // Alone on its strip, the window takes the strip: its trailing edge is
+    // on screen, at most at the display's edge.
+    assert!(before.height() > 0.0 && before.x1 <= 1472.0);
     let point = (before.x1 - 2.0, before.center().y);
-    frame.drag_at(point, (point.0 - 80.0, point.1));
-    frame.poll_frame().unwrap();
+    // The grab is at the display's edge, where a drag resting in the edge
+    // band pans the strip for as long as it rests there. The drag here
+    // leaves the band at once, so no time passes while it is in it: on the
+    // running clock a loaded machine let the band pan the strip between
+    // the press and the first move, and the window narrowed less or moved.
+    let clock = ui::time::now();
+    with_monotonic_time(clock, || {
+        frame.drag_at(point, (point.0 - 80.0, point.1));
+        frame.poll_frame()
+    })
+    .unwrap();
     let after = unsafe { (&*ptr).row(StripId(2)).unwrap().groups[0].get_rect() };
     assert!(
         after.width() < before.width() - 70.0,

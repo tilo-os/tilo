@@ -1,7 +1,6 @@
-//! Mounted acceptance fixture, deliberately separate from the native test suite.
 use super::{
-    ActionAddress, Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path,
-    Replica, Seed, common, enrol, record_provider, start_browser,
+    Browser, CatalogueQuery, DeviceCapabilities, DocumentRoute, Duration, Path, Replica, Seed,
+    common, enrol, record_provider, start_browser,
 };
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -27,7 +26,9 @@ fn account_document(root: &str, origin: &str, name: &str) -> Vec<u8> {
 
 /// Run against an explicitly supplied, compiled web app bundle. Missing tools fail.
 pub async fn run() {
-    use super::resource_support::{admit_person, open_admitted_peer};
+    use super::resource_support::{
+        admit_person, on_messages, open_admitted_peer, part_route, published_message,
+    };
     use tilo_peer_state::join::MemberRole;
     use tilo_relay::rooms::RemoveMemberRequest;
     let bundle = std::env::args()
@@ -105,7 +106,7 @@ pub async fn run() {
         "fixture-second-browser",
         DeviceCapabilities::member(),
     );
-    let state = tempfile::tempdir().unwrap();
+    let state = crate::support::scratch_dir();
     let mut hosted = start_browser(&alice, &host, state.path(), Some(page)).await;
     let rooms = hosted.relay.rooms().unwrap();
     let room = rooms.create("Mounted resource acceptance").await.unwrap();
@@ -190,42 +191,35 @@ pub async fn run() {
         .into_iter()
         .find(|channel| channel.kind == chat::model::ChannelKind::Text)
         .unwrap();
-    let message = chat::demo::Room::of(doc.clone())
-        .say(&source_author, &channel.id, "Hello é, mounted natively")
-        .unwrap();
     source
         .apply(&collab_types::DocumentMutation::Snapshot(doc.save()))
         .unwrap();
-    let reference = serde_json::json!({"id": chat::projection::item_id("messages", &message),
-        "kind": "chat.workspace.messages", "label": "Fixture selection", "span": {"start": 6, "end": 7, "unit": "Chars"}});
+    // Messages are kept in the parts of the chat's messages, posted through
+    // the chain the chat publishes beside its record; a message is an item
+    // of the part keeping it, which is the record that provides it.
+    let message = on_messages(
+        &mut source,
+        "post",
+        &serde_json::json!({"channel": channel.id, "text": "Hello é, mounted natively"}),
+    );
+    let (message, message_kind) = published_message(&source, &message);
+    let reference = serde_json::json!({"id": message, "kind": message_kind,
+        "label": "Fixture selection", "span": {"start": 6, "end": 7, "unit": "Chars"}});
     let route = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: room.room.clone(),
         record: source.wire_record().into(),
     };
-    let provider = record_provider(&route);
-    source
-        .invoke(
-            &ActionAddress::new(
-                chat::projection::item_id("channels", &channel.id),
-                "share-resource",
-            ),
-            serde_json::json!({"reference": reference, "source_provider": provider,
-            "text": "Discuss this mounted resource"})
-            .as_object()
-            .unwrap(),
-            false,
-        )
-        .unwrap();
-    let shared = source
-        .read(|doc| {
-            chat::projection::read(doc)
-                .message_rows(&chat::messages::Messages::default(), &channel.id)
-        })
-        .unwrap()
-        .into_iter()
-        .find(|row| row.text == "Discuss this mounted resource")
-        .unwrap();
+    let part = chat::parts::part(0);
+    let messages_route = part_route(&room.room, &part);
+    let provider = record_provider(&messages_route);
+    let shared = on_messages(
+        &mut source,
+        "share-resource",
+        &serde_json::json!({"channel": channel.id, "reference": reference,
+            "source_provider": provider, "text": "Discuss this mounted resource"}),
+    );
+    let (shared, _) = published_message(&source, &shared);
     if voice_journey {
         let fixture_doc = source.read(Clone::clone).unwrap();
         Box::pin(rooms.author_application(
@@ -249,6 +243,13 @@ pub async fn run() {
             .publish(route.clone(), &source.take_mutation().unwrap())
             .unwrap();
     }
+    for (changed, mutation) in source.take_record_mutations() {
+        assert_eq!(changed, part, "every message is in the first part");
+        native
+            .peer
+            .publish(messages_route.clone(), &mutation)
+            .unwrap();
+    }
     if voice_journey {
         let directory_page = native.catalogue(CatalogueQuery::default()).await.unwrap();
         println!(
@@ -264,8 +265,8 @@ pub async fn run() {
     let query = CatalogueQuery {
         provider: Some(provider.clone()),
         view_resource: Some(tilo_actions::remote::ViewResourceQuery {
-            id: chat::projection::item_id("messages", &message),
-            kind: "chat.workspace.messages".into(),
+            id: message.clone(),
+            kind: message_kind.clone(),
         }),
         ..CatalogueQuery::default()
     };
@@ -374,6 +375,8 @@ pub async fn run() {
     let bootstrap = serde_json::json!({
         "origin": hosted.web.origin, "room": room.room,
         "hostDevice": hex::encode(host.cert.device_public_key), "provider": provider,
+        "record": route.record, "messages": ui::record::chain_resource_id(&chat::parts::chain()),
+        "channelId": channel.id,
         "channel": chat::projection::item_id("channels", &channel.id),
         "disconnectRetry": disconnect_retry, "voiceJourney": voice_journey, "encryptedRestart": encrypted_restart, "sourceAuthor": source_author,
         "sourcePeople": source.read(|doc| chat::projection::read(doc).user_rows().into_iter().map(|person|
@@ -383,7 +386,7 @@ pub async fn run() {
             "root": hex::encode(second_device.cert.user_public_key),
             "accounts": account_document(&hex::encode(second_device.cert.user_public_key), &hosted.web.origin, "Fixture second reader"),
             "certificate": {"cert": second_device.cert, "hostCert": host.cert}},
-        "reference": reference, "shared": chat::projection::item_id("messages", &shared.id),
+        "reference": reference, "shared": shared,
         "root": reader_identity, "decoy": decoy, "seed": recipient.key.to_bytes(),
         "certificate": {"cert": recipient.cert, "hostCert": host.cert},
         "accounts": account_document(&reader_identity, &hosted.web.origin, "Fixture reader"),
@@ -397,22 +400,22 @@ pub async fn run() {
         while let Some(line) = output.next_line().await.unwrap() {
             let event: serde_json::Value = serde_json::from_str(&line).unwrap();
             if event["stage"] == "browser-offline" {
-                source
-                    .invoke(
-                        &ActionAddress::new(
-                            chat::projection::item_id("channels", &channel.id),
-                            "post",
-                        ),
-                        serde_json::json!({"text": "Native fixture while browser disconnected"})
-                            .as_object()
-                            .unwrap(),
-                        false,
-                    )
-                    .unwrap();
-                native
-                    .peer
-                    .publish(route.clone(), &source.take_mutation().unwrap())
-                    .unwrap();
+                on_messages(
+                    &mut source,
+                    "post",
+                    &serde_json::json!({"channel": channel.id,
+                        "text": "Native fixture while browser disconnected"}),
+                );
+                if let Some(mutation) = source.take_mutation() {
+                    native.peer.publish(route.clone(), &mutation).unwrap();
+                }
+                for (changed, mutation) in source.take_record_mutations() {
+                    assert_eq!(changed, part, "the post is in the first part");
+                    native
+                        .peer
+                        .publish(messages_route.clone(), &mutation)
+                        .unwrap();
+                }
                 let durable = native.peer.barrier().unwrap();
                 tilo_test_env::within("offline browser fixture's native post is durable", async {
                     loop {
@@ -445,12 +448,24 @@ pub async fn run() {
                                 .apply(&collab_types::DocumentMutation::Incremental(bytes.clone()))
                                 .unwrap();
                         }
-                        let messages = source
-                            .read(|doc| {
-                                chat::projection::read(doc)
-                                    .message_rows(&chat::messages::Messages::default(), &channel.id)
-                            })
-                            .unwrap();
+                        for (_, bytes) in
+                            native.documents.get(&messages_route).into_iter().flatten()
+                        {
+                            source
+                                .apply_record(
+                                    &part,
+                                    &collab_types::DocumentMutation::Incremental(bytes.clone()),
+                                )
+                                .unwrap();
+                        }
+                        let messages: Vec<chat::record::Message> = source
+                            .read_record(&part, chat::messages::read_part)
+                            .unwrap()
+                            .messages
+                            .iter()
+                            .map(|(_, message)| message.clone())
+                            .filter(|message| message.channel.as_str() == channel.id)
+                            .collect();
                         let queued = messages
                             .iter()
                             .filter(|message| {

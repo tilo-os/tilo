@@ -4,19 +4,12 @@
 # Used by `tilo-unlock-helper`, which the compositor spawns to verify the
 # logged-in user's credential while the session is LOCKED. The helper only
 # runs the auth + account phases (pam_authenticate + pam_acct_mgmt) — it never
-# opens a session or starts a login — so this stack deliberately defines no
-# session/password phases.
+# opens a session or starts a login — so this stack defines no session or
+# password phase.
 #
-# It mirrors the greetd auth/account phases so an unlock accepts the same
-# factors a login does: fingerprint (pam_fprintd) and systemd-homed are each
-# offered as a *sufficient* factor and short-circuit to success on a match;
-# otherwise PAM falls through to the distro's maintained `password-auth` stack
-# (pam_unix). The leading "-" makes a factor a silent no-op when its module is
-# absent, so this file ships safely whether or not fingerprint / homed support
-# is installed.
--auth      sufficient   pam_fprintd.so
--auth      sufficient   pam_systemd_home.so
-auth       substack     password-auth
+# An unlock accepts what tilo-auth accepts (os/etc/pam.d/tilo-auth): a
+# fingerprint, since the person's key is held for the session that is locked,
+# or the secret through tilo-authd.
+auth       substack     tilo-auth
 
--account   sufficient   pam_systemd_home.so
-account    include      password-auth
+account    include      tilo-auth

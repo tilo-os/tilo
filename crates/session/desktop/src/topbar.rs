@@ -14,6 +14,7 @@
 //! back as a [`ChromeIntent`]; it never probes or changes the system itself.
 
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
@@ -38,7 +39,11 @@ use ui::theme::Theme;
 use ui::widget::ButtonRole;
 use ui::widget::Widget;
 
+mod arrival_notice;
+mod avatar_ask;
+mod people;
 mod strips;
+mod wave_notice;
 
 /// Where a layout stood the bar: in the column above the windows, or over
 /// it, hidden by the person and shown while reached for.
@@ -58,7 +63,7 @@ impl BarStanding {
     }
 }
 
-/// The desktop's bar: every bar control is [`BAR_CONTROL_PX`] (24) with an
+/// The desktop's bar: every bar control is `BAR_CONTROL_PX` (24) with an
 /// `s1` of air above and below, so the bar is 32 logical pixels (64 at scale
 /// 2). At 24 it read cramped and out of balance with the windows' bars
 /// below it. The controls are the design system's bar control
@@ -227,6 +232,7 @@ struct CacheFingerprint {
     media_expanded: bool,
     notification_badge: u32,
     notifications_quiet: bool,
+    notifications_only: bool,
     workspace_lens_open: bool,
     focused: bool,
     focused_control: Option<String>,
@@ -235,13 +241,23 @@ struct CacheFingerprint {
     /// How far the centre's cross-fade between the time and a live activity
     /// has come, in thousandths; `None` at rest.
     center_fade: Option<u16>,
+    /// The centre selector's width while it morphs between the time and a
+    /// live activity, in quarter pixels; `None` at rest.
+    center_width: Option<u32>,
     app_tray_revision: u64,
     continuity: Option<String>,
+    avatar_ask: Option<crate::chrome::AvatarAsk>,
     strips: strips::StripsKey,
     tilo_mark: Option<bool>,
     own: Option<crate::chrome::OwnChip>,
     /// The bar control under the pointer: it lifts.
-    hovered_control: Option<&'static str>,
+    hovered_control: Option<String>,
+    /// Whether the bar offers its invite button.
+    can_invite: bool,
+    /// What the bar says about a wave at this person, while it does.
+    wave_notice: Option<String>,
+    /// The arrival status as it stands, while it is up.
+    arrival: Option<(String, bool, u16, u16)>,
 }
 
 /// How one face in the people stack looks now.
@@ -261,6 +277,11 @@ struct FaceLook {
 struct AppTraySlot {
     key: String,
     id: String,
+    /// The application proven to own the item, when one was.
+    owner_app: Option<String>,
+    /// What the item is called: the application's own title for it, else
+    /// its id.
+    title: String,
     item_is_menu: bool,
     rect: Rect,
 }
@@ -546,6 +567,9 @@ struct TrayBell {
     /// Fresh banners are held (Do Not Disturb, presenting, a focus
     /// schedule): the bell is silenced.
     quiet: bool,
+    /// The host has no quick settings, so the cluster is the bell itself:
+    /// always shown, and what the cluster is named.
+    only: bool,
 }
 
 /// `DesktopTree`, not `TopBar`, lets `build_tilo_root` stay a pure
@@ -570,6 +594,9 @@ pub struct TopBarChrome {
     /// Most of the bar is stable across frames, so caching cuts the
     /// draw budget at rest by an order of magnitude.
     cached: Scene,
+    /// The parts [`Self::cached`] was drawn with, carried into the bar's
+    /// section each time it is appended: a change damages its part only.
+    cached_parts: Option<ui::scene_parts::SectionParts>,
     cache_theme: Option<Theme>,
     /// Reused iff every field matches `self.*` at draw time. See
     /// [`TopBarChrome::current_fingerprint`].
@@ -625,6 +652,8 @@ pub struct TopBarChrome {
     /// Interaction geometry is deliberately larger than the painted pill:
     /// the screen's top-right edge must remain an easy Quick Settings target.
     tray_hit_rect: Rect,
+    /// Where the bell's unread count was painted, `Rect::ZERO` without one.
+    bell_badge_rect: Rect,
     media_indicator_rect: Rect,
     media_signature: Vec<(u32, u8, String)>,
     media_started: Option<Instant>,
@@ -647,13 +676,27 @@ pub struct TopBarChrome {
     /// off to cancel instead of firing Pause/Close on contact.
     clock_touch_control: Option<(u64, u8)>,
     clock_control_focus: Option<u8>,
-    /// Click toggles `overlays.collaborators`.
+    /// The others' faces (and the "+N" badge): each face opens that
+    /// person's card, the badge everyone.
     avatar_stack_rect: Rect,
+    /// The people button beside the faces, which opens everyone here (the
+    /// panel and its pin); zero when nobody else is here.
+    people_button_rect: Rect,
+    /// The invite button beside the faces; zero when not offered.
+    invite_rect: Rect,
+    /// The arrival status as last drawn; zero while it is not up.
+    arrival_rect: Rect,
+    /// A press on the arrival status opens the person's own menu.
+    arrival_pressable: bool,
+    /// Where the people cluster (faces, spectators, invite) begins.
+    people_left_x: f64,
     /// Persistent trusted-chrome disclosure of active screen viewers.
     sharing_indicator_rect: Rect,
-    /// "Continue <app> from <device>": the offer, and its dismiss chip.
+    /// "Continue \<app\> from \<device\>": the offer, and its dismiss chip.
     continuity_rect: Rect,
     continuity_dismiss_rect: Rect,
+    /// The ask open beside the own avatar: its pill and its two choices.
+    ask: avatar_ask::AskRects,
     activity_headline: Option<String>,
     activity_unread: usize,
     activity_pulse: u64,
@@ -661,6 +704,15 @@ pub struct TopBarChrome {
     /// The centre swapping the time for a live activity and back: a
     /// cross-fade (`ui::motion::CrossFade`, `true` is the activity).
     center_fade: ui::motion::CrossFade<bool>,
+    /// The bar leaving with a window maximizing over it (sliding up as the
+    /// window's frame grows to the top), and coming back with its restore.
+    /// Open at rest; [`Self::move_with_window`] drives it.
+    with_window: ui::motion::Presence,
+    /// The centre selector's width following its content (the time, or a
+    /// live activity filling the lane) on the standard expand/collapse
+    /// motion (`ui::motion::Extent`), so the selector grows into the lane
+    /// and shrinks back to the time rather than jumping.
+    center_width: ui::motion::Extent,
     /// The centre selector as painted and hit-tested: as wide as its
     /// content needs, never wider than [`Self::center_lane`].
     center_rect: Rect,
@@ -687,7 +739,7 @@ pub struct TopBarChrome {
     time_wake: Option<Instant>,
     /// The active workspace's strips as named places, when the host
     /// reports who is where.
-    strips: strips::StripSwitcher,
+    strips: strips::BarStrips,
 }
 
 /// Seconds the centre band's time reading stays the same for: the clock
@@ -731,6 +783,25 @@ fn paint_bar_selector(
     }
 }
 
+/// An unread count on an application's icon, in the same badge a sidebar's
+/// unread count uses: filled in the person's colour, clamped at 99.
+fn paint_unread_badge(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    text: &mut TextRenderer,
+    icon: Rect,
+    count: u32,
+) {
+    let label = count.to_string();
+    let height = ui::widget::BadgeFace::height(theme);
+    let width = ui::widget::BadgeFace::intrinsic_width(&label, text, theme);
+    let centre = Point::new(icon.x1 + 2.0, icon.y0 + 2.0);
+    ui::widget::BadgeFace::new(Rect::from_center_size(centre, (width, height)), &label)
+        .style(ui::widget::ChipStyle::Live)
+        .paint(scene, transform, text, theme);
+}
+
 /// Whether `key` moves keyboard focus through the bar: the keys whose use
 /// shows the focus ring (design-system: focus-visible follows keyboard
 /// navigation, never a pointer press or a key that moves nothing).
@@ -761,9 +832,6 @@ struct TrayLayout {
     icon_px: f64,
     pct_style: TextStyle,
     pct_label: Option<String>,
-    /// Width reserved for the unread-count badge, zero without one.
-    badge_w: f64,
-    slots: usize,
     center_y: f64,
     dim: Color,
     bright: Color,
@@ -908,6 +976,7 @@ impl TopBarChrome {
             workspace_index: 0,
             workspace_total: 1,
             cached: Scene::new(),
+            cached_parts: None,
             cache_theme: None,
             cache_fp: CacheFingerprint::default(),
             collaborator_initials: Vec::new(),
@@ -933,6 +1002,7 @@ impl TopBarChrome {
             app_tray: Vec::new(),
             app_tray_images: HashMap::new(),
             tray_hit_rect: Rect::ZERO,
+            bell_badge_rect: Rect::ZERO,
             media_indicator_rect: Rect::ZERO,
             media_signature: Vec::new(),
             media_started: None,
@@ -948,14 +1018,22 @@ impl TopBarChrome {
             clock_touch_control: None,
             clock_control_focus: None,
             avatar_stack_rect: Rect::ZERO,
+            people_button_rect: Rect::ZERO,
+            invite_rect: Rect::ZERO,
+            arrival_rect: Rect::ZERO,
+            arrival_pressable: false,
+            people_left_x: 0.0,
             sharing_indicator_rect: Rect::ZERO,
             continuity_rect: Rect::ZERO,
             continuity_dismiss_rect: Rect::ZERO,
+            ask: avatar_ask::AskRects::default(),
             activity_headline: None,
             activity_unread: 0,
             activity_pulse: 0,
             activity_started: None,
             center_fade: ui::motion::CrossFade::new(false),
+            with_window: ui::motion::Presence::opened(),
+            center_width: ui::motion::Extent::default(),
             center_rect: Rect::ZERO,
             center_lane: Rect::ZERO,
             last_cursor: None,
@@ -963,7 +1041,7 @@ impl TopBarChrome {
             focused_control: None,
             focus_origin: FocusOrigin::Placed,
             time_wake: None,
-            strips: strips::StripSwitcher::default(),
+            strips: strips::BarStrips::default(),
         };
         this.sync_from_tree(tree);
         this
@@ -1014,6 +1092,7 @@ impl TopBarChrome {
             media_expanded: self.media_expanded,
             notification_badge: self.bell.unread,
             notifications_quiet: self.bell.quiet,
+            notifications_only: self.bell.only,
             workspace_lens_open: self
                 .chrome
                 .as_ref()
@@ -1027,18 +1106,23 @@ impl TopBarChrome {
                     .map(|a| (a.label.clone(), a.remaining_secs, a.overlay, a.paused))
             }),
             center_fade: self.center_fade_key(),
+            center_width: self.center_width_key(),
             app_tray_revision: self.app_tray_revision(),
             continuity: self.continuity_label(),
+            avatar_ask: self.chrome_avatar_ask(),
             strips: self.strips_key(),
             tilo_mark: self.tilo_mark,
             own: self.own_chip(),
             hovered_control: self.hovered_control(),
+            can_invite: self.can_invite(),
+            wave_notice: self.wave_notice_text(ui::time::now()),
+            arrival: self.arrival_shown(ui::time::now()).map(|shown| shown.key()),
         }
     }
 
     /// The bar control under the pointer, from the hit rects the last paint
     /// laid down: plain at rest, it lifts while the pointer is over it.
-    fn hovered_control(&self) -> Option<&'static str> {
+    fn hovered_control(&self) -> Option<String> {
         let point = self.last_cursor?;
         if !self.rect.contains(point) {
             return None;
@@ -1046,6 +1130,14 @@ impl TopBarChrome {
         self.control_targets()
             .into_iter()
             .find(|target| self.control_rect(target).contains(point))
+    }
+
+    /// How many unread notifications the application with this verified id
+    /// owns: what the bar shows on its own icon.
+    fn app_badge(&self, app_id: &str) -> u32 {
+        self.chrome
+            .as_ref()
+            .map_or(0, |chrome| chrome.app_notification_badge(app_id))
     }
 
     fn app_tray_revision(&self) -> u64 {
@@ -1077,14 +1169,14 @@ impl TopBarChrome {
     fn schedule_time_wake(&mut self) {
         let since_epoch = Duration::from_nanos(ui::time::unix_now_ns());
         let bucket = time_bucket_secs(self.activity_is_visible());
-        self.time_wake = Instant::now().checked_add(until_next_time_bucket(since_epoch, bucket));
+        self.time_wake = ui::time::now().checked_add(until_next_time_bucket(since_epoch, bucket));
     }
 
     /// Whether the time reading went stale since the bar last drew. Moves
     /// the wake on, so a bar that is not drawn (hidden under fullscreen, a
     /// locked session) never holds an overdue deadline.
     fn take_time_wake(&mut self) -> bool {
-        if self.time_wake.is_none_or(|at| Instant::now() < at) {
+        if self.time_wake.is_none_or(|at| ui::time::now() < at) {
             return false;
         }
         self.schedule_time_wake();
@@ -1125,6 +1217,14 @@ impl TopBarChrome {
             center_y,
             stack_right_x,
         );
+        let stack_right_x = self.draw_avatar_ask(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
         let stack_right_x = self.draw_app_tray(
             scene,
             transform,
@@ -1152,54 +1252,68 @@ impl TopBarChrome {
             center_y,
             stack_right_x,
         );
-        let watching = self.draw_watching_chip(
+        let people_left_x = self.draw_people_cluster(
             scene,
             transform,
             theme,
             text_renderer,
-            center_y,
-            stack_right_x,
+            (center_y, stack_right_x),
         );
-        let stack_right_x = if watching.is_zero_area() {
-            stack_right_x
+        // The notices beside the faces come and go on their own clock, and
+        // what stands left of one moves with it: one part of the bar, so
+        // that change damages where they are painted, not the whole bar.
+        ui::scene_parts::part_drawn(
+            scene,
+            ui::scene_parts::PartKey::new("desktop.topbar.notices", ()),
+            |scene| {
+                let notices_left_x = self.draw_arrival_notice(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    (center_y, people_left_x),
+                );
+                self.people_left_x = self.draw_wave_notice(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    (center_y, notices_left_x),
+                );
+                let continuity = self.continuity_label();
+                self.draw_continuity_chip(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    center_y,
+                    continuity.as_deref(),
+                );
+                self.notices_painted(people_left_x)
+            },
+        );
+    }
+
+    /// Where the notices left of the faces that start at `faces_x` are
+    /// painted: the arrival and wave notices and the continuity offer, the
+    /// bar's height across.
+    fn notices_painted(&self, faces_x: f64) -> Vec<Rect> {
+        let left = if self.continuity_rect.is_zero_area() {
+            self.people_left_x
         } else {
-            watching.x0 - f64::from(theme.tokens.spacing.s2)
+            self.people_left_x.min(self.continuity_rect.x0)
         };
-        let slot_count = self.draw_avatar_chips(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            stack_right_x,
-        );
-        if watching.is_zero_area() || slot_count > 0 {
-            self.draw_avatar_stack_bounds(
-                scene,
-                transform,
-                theme,
-                (center_y, stack_right_x),
-                slot_count,
-            );
-        }
-        // Spectators and avatars are one People control: the chip alone
-        // still opens it, and the Invite stand-in never paints beside it.
-        if !watching.is_zero_area() {
-            self.avatar_stack_rect = if slot_count > 0 {
-                self.avatar_stack_rect.union(watching)
-            } else {
-                watching
-            };
-        }
-        let continuity = self.continuity_label();
-        self.draw_continuity_chip(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            continuity.as_deref(),
-        );
+        (left < faces_x)
+            .then(|| {
+                Rect::new(
+                    left - 4.0,
+                    self.rect.y0 - 2.0,
+                    faces_x + 4.0,
+                    self.rect.y1 + 2.0,
+                )
+            })
+            .into_iter()
+            .collect()
     }
 
     /// The compact variant a display other than the primary carries.
@@ -1275,10 +1389,61 @@ impl TopBarChrome {
         self.control_rect(Self::CONTROL_PROFILE)
     }
 
+    /// Where the others' faces (or the sharing indicator) were last drawn,
+    /// for anchoring who is here; zero when neither is shown.
+    pub fn collaborators_rect(&self) -> Rect {
+        self.control_rect(Self::CONTROL_COLLABORATORS)
+    }
+
     /// What the own avatar is called to assistive technology.
     fn profile_control_name(&self) -> String {
         let name = self.own_chip().map(|own| own.name).unwrap_or_default();
         t_args("topbar-profile", &[("name", name.into())])
+    }
+
+    /// The faces in the people control, one named image each, then the
+    /// "+N" chip for those beyond them. Keyed by the roster id, so a
+    /// reader's place survives someone arriving or leaving.
+    fn face_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
+        let mut faces: Vec<AccessNode> = self
+            .collaborator_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let name = if self
+                    .collaborator_agents
+                    .get(index)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    t_args("topbar-face-agent", &[("name", name.as_str().into())])
+                } else {
+                    name.clone()
+                };
+                let mut face = AccessNode::new(Role::Image)
+                    .with_name(name)
+                    .with_hashed_key((
+                        "topbar-face",
+                        self.collaborator_ids.get(index).map_or("", String::as_str),
+                    ));
+                if let Some(rect) = self.face_rects.get(index) {
+                    face = face.with_bounds(*rect);
+                }
+                face
+            })
+            .collect();
+        if self.collaborator_overflow > 0 {
+            faces.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(t_args(
+                        "topbar-faces-more",
+                        &[("count", self.collaborator_overflow.into())],
+                    ))
+                    .with_hashed_key("topbar-faces-more"),
+            );
+        }
+        faces
     }
 
     /// The person's own avatar, when the bar shows it.
@@ -1320,7 +1485,12 @@ impl TopBarChrome {
         let roster: &[tilo_desktop_model::Collaborator] =
             active_ws.map_or(&[], |workspace| workspace.collaborators.as_slice());
         // An invited-but-not-arrived peer doesn't count as present.
-        let present = |c: &&tilo_desktop_model::Collaborator| c.id != "me" && !c.invited;
+        // This person is their own avatar beside the stack, never a face in
+        // it, and so are their other devices.
+        let local = self.explicit_local_user.as_deref();
+        let present = |c: &&tilo_desktop_model::Collaborator| {
+            c.id != "me" && Some(c.id.as_str()) != local && !c.invited && !c.own_device
+        };
         self.collaborator_initials.clear();
         self.collaborator_names.clear();
         self.collaborator_colors.clear();
@@ -1332,10 +1502,7 @@ impl TopBarChrome {
         let peer_count = roster.iter().filter(present).count();
         // Settled over the whole room, so a peer's avatar matches the
         // colour their cursor is drawn in elsewhere on the desktop.
-        let colors = self.explicit_local_user.as_deref().map_or_else(
-            || roster_colors(roster, ""),
-            |local| roster_colors(roster, local),
-        );
+        let colors = roster_colors(roster, local.unwrap_or(""));
         let (shown, _) = ui::presence::FaceStack::BAR.split(peer_count);
         for c in roster.iter().filter(present).take(shown) {
             let Some(ch) = c.name.chars().next() else {
@@ -1367,7 +1534,7 @@ impl TopBarChrome {
     /// Read how each face looks from `presence`: who is idle or away, in a
     /// call (their ring breathing), or bouncing from a wave.
     fn read_face_looks(&mut self, presence: &PresenceCtx, motion: ui::tokens::EffectiveMotion) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let mut anyone_in_call = false;
         let since = *self.call_since.get_or_insert(now);
         self.face_looks = self
@@ -1429,6 +1596,19 @@ impl TopBarChrome {
     const CONTROL_MEDIA: &'static str = "topbar:media";
     const CONTROL_CONTINUITY: &'static str = "topbar:continuity";
     const CONTROL_CONTINUITY_DISMISS: &'static str = "topbar:continuity-dismiss";
+    /// A running application's tray item stands on the bar as its own
+    /// control: `tray:<key>` names the one the host addresses.
+    const APP_TRAY_TARGET: &'static str = "tray:";
+
+    /// The bar target naming the tray item addressed by `key`.
+    fn tray_target(key: &str) -> String {
+        format!("{}{key}", Self::APP_TRAY_TARGET)
+    }
+
+    /// The tray key a bar target names, when it names one.
+    fn tray_target_key(target: &str) -> Option<&str> {
+        target.strip_prefix(Self::APP_TRAY_TARGET)
+    }
     fn collaborators_visible(&self) -> bool {
         !self.collaborator_initials.is_empty()
             || self.collaborator_overflow > 0
@@ -1443,11 +1623,6 @@ impl TopBarChrome {
             .map_or(0, |chrome| chrome.snapshot().watching)
     }
 
-    /// The empty-room Invite pill stands in for the avatar stack.
-    fn invite_visible(&self) -> bool {
-        !self.collaborators_visible() && !self.avatar_stack_rect.is_zero_area()
-    }
-
     /// `(viewers, controllers, surfaces)` from the compositor authority.
     fn sharing_summary(&self) -> (usize, usize, usize) {
         let Some(chrome) = self.chrome.as_ref() else {
@@ -1459,7 +1634,7 @@ impl TopBarChrome {
             .iter()
             .map(|row| row.peer)
             .collect::<Vec<_>>();
-        peers.sort_unstable();
+        peers.compact_sort();
         peers.dedup();
         let mut controllers = snapshot
             .active_exposures
@@ -1467,14 +1642,14 @@ impl TopBarChrome {
             .filter(|row| row.can_control)
             .map(|row| row.peer)
             .collect::<Vec<_>>();
-        controllers.sort_unstable();
+        controllers.compact_sort();
         controllers.dedup();
         let mut surfaces = snapshot
             .active_exposures
             .iter()
             .map(|row| row.surface)
             .collect::<Vec<_>>();
-        surfaces.sort_unstable();
+        surfaces.compact_sort();
         surfaces.dedup();
         (peers.len(), controllers.len(), surfaces.len())
     }
@@ -1496,7 +1671,7 @@ impl TopBarChrome {
                 authority.push((row.peer, row.can_control));
             }
         }
-        authority.sort_unstable_by_key(|(peer, _)| *peer);
+        authority.compact_sort_by_key(|(peer, _)| *peer);
         let tree = chrome.tree();
         let mut viewers = Vec::new();
         for (peer, can_control) in authority {
@@ -1543,7 +1718,7 @@ impl TopBarChrome {
                 authority.push((row.surface, row.can_control));
             }
         }
-        authority.sort_unstable_by_key(|(surface, _)| *surface);
+        authority.compact_sort_by_key(|(surface, _)| *surface);
         let tree = chrome.tree();
         let controlled = authority
             .iter()
@@ -1636,31 +1811,46 @@ impl TopBarChrome {
             .collect()
     }
 
-    fn control_targets(&self) -> Vec<&'static str> {
-        let mut controls = Vec::new();
+    fn control_targets(&self) -> Vec<String> {
+        let mut controls: Vec<String> = Vec::new();
         if self.tilo_mark.is_some() {
-            controls.push(Self::CONTROL_TILO_MARK);
+            controls.push(Self::CONTROL_TILO_MARK.to_string());
         }
-        controls.push(Self::CONTROL_WORKSPACE_SETTINGS);
+        controls.push(Self::CONTROL_WORKSPACE_SETTINGS.to_string());
         if self.shows_strip_name() {
-            controls.push(Self::CONTROL_STRIP_NAME);
+            controls.push(Self::CONTROL_STRIP_NAME.to_string());
         }
         if self.is_compact() {
             return controls;
         }
-        controls.push(Self::CONTROL_QUICK_SETTINGS);
-        if self.collaborators_visible() || self.invite_visible() {
-            controls.push(Self::CONTROL_COLLABORATORS);
+        controls.push(Self::CONTROL_QUICK_SETTINGS.to_string());
+        if self.collaborators_visible() {
+            controls.push(Self::CONTROL_COLLABORATORS.to_string());
+        }
+        if !self.invite_rect.is_zero_area() {
+            controls.push(Self::CONTROL_INVITE.to_string());
+        }
+        if !self.ask.pill.is_zero_area() {
+            controls.push(Self::CONTROL_ASK_LATER.to_string());
+            controls.push(Self::CONTROL_ASK_ANSWER.to_string());
         }
         if self.own_chip().is_some() {
-            controls.push(Self::CONTROL_PROFILE);
+            controls.push(Self::CONTROL_PROFILE.to_string());
         }
         if !self.media_indicator_rect.is_zero_area() {
-            controls.push(Self::CONTROL_MEDIA);
+            controls.push(Self::CONTROL_MEDIA.to_string());
         }
+        // Each running application's tray icon is a control of the bar like
+        // any other: Tab reaches it, a reader names it, and it lifts under
+        // the pointer.
+        controls.extend(
+            self.app_tray
+                .iter()
+                .map(|slot| Self::tray_target(&slot.key)),
+        );
         if self.continuity_label().is_some() {
-            controls.push(Self::CONTROL_CONTINUITY);
-            controls.push(Self::CONTROL_CONTINUITY_DISMISS);
+            controls.push(Self::CONTROL_CONTINUITY.to_string());
+            controls.push(Self::CONTROL_CONTINUITY_DISMISS.to_string());
         }
         controls
     }
@@ -1672,19 +1862,36 @@ impl TopBarChrome {
             Self::CONTROL_STRIP_NAME => self.ws_strip_rect,
             Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
             Self::CONTROL_PROFILE => self.own_avatar_rect,
+            Self::CONTROL_INVITE => self.invite_rect,
+            // The people button opens everyone here; the faces beside it
+            // each open one person, so they are not this control.
             Self::CONTROL_COLLABORATORS => {
-                if self.avatar_stack_rect.is_zero_area() {
-                    self.sharing_indicator_rect
-                } else if self.sharing_indicator_rect.is_zero_area() {
+                let people = if self.people_button_rect.is_zero_area() {
                     self.avatar_stack_rect
                 } else {
-                    self.avatar_stack_rect.union(self.sharing_indicator_rect)
+                    self.people_button_rect
+                };
+                if people.is_zero_area() {
+                    self.sharing_indicator_rect
+                } else if self.sharing_indicator_rect.is_zero_area() {
+                    people
+                } else {
+                    people.union(self.sharing_indicator_rect)
                 }
             }
             Self::CONTROL_MEDIA => self.media_hit_rect(),
             Self::CONTROL_CONTINUITY => self.continuity_rect,
             Self::CONTROL_CONTINUITY_DISMISS => self.continuity_dismiss_rect,
-            _ => Rect::ZERO,
+            Self::CONTROL_ASK_ANSWER => self.ask.answer,
+            Self::CONTROL_ASK_LATER => self.ask.later,
+            target => Self::tray_target_key(target)
+                .and_then(|key| {
+                    self.app_tray
+                        .iter()
+                        .find(|slot| slot.key == key)
+                        .map(|slot| slot.rect)
+                })
+                .unwrap_or(Rect::ZERO),
         }
     }
 
@@ -1723,6 +1930,17 @@ impl TopBarChrome {
     }
 
     fn control_name(&self, target: &str) -> String {
+        if let Some(key) = Self::tray_target_key(target) {
+            // The application's own name for its icon, never its bus
+            // address: an item is one app's window or state, said in the
+            // words that app chose.
+            return self
+                .app_tray
+                .iter()
+                .find(|slot| slot.key == key)
+                .map(|slot| slot.title.clone())
+                .unwrap_or_else(|| t("topbar-app-tray-item"));
+        }
         match target {
             Self::CONTROL_TILO_MARK => t("topbar-tilo-menu"),
             Self::CONTROL_WORKSPACE_SETTINGS => t_args(
@@ -1734,8 +1952,9 @@ impl TopBarChrome {
                 "topbar-strip-name",
                 &[("strip", self.strip_name().unwrap_or_default().into())],
             ),
+            Self::CONTROL_QUICK_SETTINGS if self.bell.only => t("topbar-open-notifications"),
             Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
-            Self::CONTROL_COLLABORATORS if self.invite_visible() => t("topbar-invite"),
+            Self::CONTROL_INVITE => t("topbar-invite"),
             Self::CONTROL_COLLABORATORS => {
                 let named = self.sharing_viewers();
                 let watching = self.watching();
@@ -1794,6 +2013,11 @@ impl TopBarChrome {
                 .continuity_label()
                 .unwrap_or_else(|| t("topbar-control")),
             Self::CONTROL_CONTINUITY_DISMISS => t("continuity-dismiss"),
+            Self::CONTROL_ASK_ANSWER => self.chrome_avatar_ask().map_or_else(
+                || t("topbar-control"),
+                |ask| format!("{}: {}", ask.question, ask.answer),
+            ),
+            Self::CONTROL_ASK_LATER => t("notification-not-now"),
             _ => t("topbar-control"),
         }
     }
@@ -1978,7 +2202,7 @@ impl TopBarChrome {
             &RoundedRect::from_rect(self.tilo_mark_rect, f64::from(theme.tokens.radii.control)),
             ui::chrome::SelectionState::new(
                 open,
-                self.hovered_control() == Some(Self::CONTROL_TILO_MARK),
+                self.hovered_control().as_deref() == Some(Self::CONTROL_TILO_MARK),
                 false,
             ),
             theme,
@@ -2082,7 +2306,7 @@ impl TopBarChrome {
             .as_ref()
             .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings);
         let name = self.control_name(Self::CONTROL_WORKSPACE_SETTINGS);
-        let hovered = self.hovered_control() == Some(Self::CONTROL_WORKSPACE_SETTINGS);
+        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_WORKSPACE_SETTINGS);
         let face = ui::widget::BarControlFace::new(&name)
             .label(&ws_label)
             .trailing(Self::WORKSPACE_MENU_ICON)
@@ -2095,6 +2319,22 @@ impl TopBarChrome {
             x - pad + pill_w,
             center_y + pill_h / 2.0,
         );
+        if self.renaming_workspace() {
+            // The new name is typed where the name stands, so it reads as
+            // renaming the workspace, not the strip named after it.
+            let field_h = ui::widget::FieldFace::height(ui::widget::ControlSize::Regular, theme);
+            let room = (center_left - breathing - ws_pill_outer.x0).max(BAR_CONTROL_PX);
+            let field = Rect::new(
+                ws_pill_outer.x0,
+                center_y - field_h / 2.0,
+                ws_pill_outer.x0 + pill_w.max(strips::FIELD_MAX_PX).min(room),
+                center_y + field_h / 2.0,
+            );
+            self.ws_pill_rect = field;
+            self.ws_chevron_rect = Rect::ZERO;
+            self.paint_workspace_name_field(scene, transform, theme, text_renderer, field);
+            return;
+        }
         self.ws_pill_rect = ws_pill_outer;
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.settings_anchor(ws_pill_outer);
@@ -2124,7 +2364,21 @@ impl TopBarChrome {
         center_y: f64,
     ) -> f64 {
         let lane_w = self.center_band_width(theme);
-        let band_w = self.center_pill_width(theme, text_renderer, lane_w);
+        let target_w = self.center_pill_width(theme, text_renderer, lane_w);
+        let now = ui::time::now();
+        if (self.center_lane.width() - lane_w).abs() > 0.5 {
+            // A new lane (the bar's first paint, a resized display): the
+            // selector takes its width as it is.
+            self.center_width.snap(target_w);
+        } else if (self.center_width.target() - target_w).abs() > 0.25 {
+            self.center_width.follow(
+                target_w,
+                theme.motion(),
+                ui::tokens::MotionSource::Pointer,
+                now,
+            );
+        }
+        let band_w = self.center_width.get(now).clamp(0.0, lane_w);
         // The same height as every other bar control, so the band's top
         // and bottom edges line up with the pills either side of it.
         let band_h = BAR_CONTROL_PX;
@@ -2143,7 +2397,7 @@ impl TopBarChrome {
             band.y1,
         );
         // The quiet selector pill comes and goes with the activity.
-        let pill = self.center_activity_opacity(ui::time::now());
+        let pill = self.center_activity_opacity(now);
         if pill > 0.0 {
             let band_rr = RoundedRect::from_rect(
                 band,
@@ -2290,15 +2544,15 @@ impl TopBarChrome {
         );
     }
 
-    /// The tray's status glyph slots: volume, network link and battery
-    /// when known, and one bell slot (the unread count rides beside it, and
-    /// quiet mode silences it).
+    /// The tray's status glyph slots: the bell, always (the unread count
+    /// sits on it, and quiet mode silences it), then volume, network link
+    /// and battery when known.
     fn tray_slot_count(&self) -> usize {
         [
+            true,
             self.status.volume.is_some(),
             self.status.link.is_some(),
             self.status.battery_percent().is_some(),
-            self.bell.unread > 0 || self.bell.quiet,
         ]
         .into_iter()
         .filter(|shown| *shown)
@@ -2330,38 +2584,17 @@ impl TopBarChrome {
         let tray_gap = 0.0;
         let icon_px = BAR_GLYPH_PX;
         let pct_style = tokens.typography.style(TextRole::Caption);
-        // The unread count rides beside the bell; its width is measured
-        // here so the pill is sized for it before anything is painted.
-        let badge_w = if self.bell.unread > 0 {
-            let label = Self::notification_badge_label(self.bell.unread);
-            let (w, h) = text_renderer.measure_style(&label, None, &pct_style);
-            Self::notification_badge_size(w, h, theme).0
-        } else {
-            0.0
-        };
-
         let pct_label = self.status.battery_percent().map(|p| format!("{p}%"));
         let pct_strong = pct_style.clone().with_weight(TextWeight::Semibold);
         let pct_w = pct_label.as_ref().map_or(0.0, |s| {
             f64::from(text_renderer.measure_style(s, None, &pct_strong).0)
         });
         let slots = self.tray_slot_count();
-        let mut tray_w = if slots == 0 {
-            // Still the quick-settings trigger, so keep one slot for
-            // the settings glyph.
-            tray_pad * 2.0 + tray_slot
-        } else {
-            tray_pad * 2.0
-                + small_count_to_f64(slots) * tray_slot
-                + small_count_to_f64(slots.saturating_sub(1)) * tray_gap
-        };
+        let mut tray_w = tray_pad * 2.0
+            + small_count_to_f64(slots) * tray_slot
+            + small_count_to_f64(slots.saturating_sub(1)) * tray_gap;
         if pct_w > 0.0 {
             tray_w += 3.0 + pct_w;
-        }
-        if self.bell.unread > 0 {
-            // Bell plus a compact exact count (`99+` once the number no longer
-            // fits); the base slot calculation already paid for the bell.
-            tray_w += badge_w + tray_gap;
         }
 
         self.tray_pill_rect = Rect::new(
@@ -2388,7 +2621,7 @@ impl TopBarChrome {
             &tray,
             ui::chrome::SelectionState::new(
                 false,
-                self.hovered_control() == Some(Self::CONTROL_QUICK_SETTINGS),
+                self.hovered_control().as_deref() == Some(Self::CONTROL_QUICK_SETTINGS),
                 false,
             ),
             theme,
@@ -2413,8 +2646,6 @@ impl TopBarChrome {
             icon_px,
             pct_style,
             pct_label,
-            badge_w,
-            slots,
             center_y,
             dim: colors.text_dim,
             bright: colors.text_primary,
@@ -2424,24 +2655,13 @@ impl TopBarChrome {
         }
     }
 
-    fn draw_tray_settings_icon(scene: &mut Scene, transform: Affine, layout: &TrayLayout, sx: f64) {
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            layout.slot_rect(sx),
-            ui::icons::Icon::Settings2,
-            layout.dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-    }
-
-    /// Draws the bell + compact unread count if there are unread
-    /// notifications, and the silenced bell while fresh banners are held
-    /// (Do Not Disturb): the state lives in the status cluster, not in a
-    /// card over the person's work. Returns the x cursor position for the
-    /// next slot (unchanged if not drawn).
+    /// Draws the bell, quiet with nothing unread, with a compact unread
+    /// count on its shoulder, and silenced while fresh banners are held (Do
+    /// Not Disturb): the state lives in the status cluster, not in a card
+    /// over the person's work. Returns the x cursor position for the next
+    /// slot.
     fn draw_tray_notification_badge(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -2449,39 +2669,52 @@ impl TopBarChrome {
         layout: &TrayLayout,
         sx: f64,
     ) -> f64 {
-        if self.bell.unread == 0 && !self.bell.quiet {
-            return sx;
-        }
+        // A bell that is only the way to the centre rests as quietly as
+        // the other status glyphs; something unread or held lights it.
+        let ink = if self.bell.unread == 0 && !self.bell.quiet {
+            layout.dim
+        } else {
+            layout.bright
+        };
+        let glyph = layout.slot_rect(sx);
         ui::icons::draw_icon(
             scene,
             transform,
-            layout.slot_rect(sx),
+            glyph,
             if self.bell.quiet {
                 ui::icons::Icon::BellOff
             } else {
                 ui::icons::Icon::Bell
             },
-            layout.bright,
+            ink,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
+        let next = sx + layout.tray_slot + layout.tray_gap;
+        self.bell_badge_rect = Rect::ZERO;
         if self.bell.unread == 0 {
-            return sx + layout.tray_slot + layout.tray_gap;
+            return next;
         }
         let label = Self::notification_badge_label(self.bell.unread);
         // The count is set at the chrome's numeric-readout size, so it
         // follows the person's text scale like every other bar label.
         let label_style = &layout.pct_style;
         let (label_w, label_h) = text_renderer.measure_style(&label, None, label_style);
-        // The width was reserved in `draw_tray_pill_body` from the same
-        // label; reading it back keeps the pill and the badge in agreement.
-        let (_, badge_h) = Self::notification_badge_size(label_w, label_h, theme);
-        let badge_w = layout.badge_w;
-        let badge = Rect::new(
-            sx + layout.tray_slot,
-            layout.center_y - badge_h / 2.0,
-            sx + layout.tray_slot + badge_w,
-            layout.center_y + badge_h / 2.0,
-        );
+        // The count sits on the bell's top-right shoulder inside the bell's
+        // own slot, a wider count growing leftward over the glyph, so it
+        // takes no room of its own: the cluster keeps its width whatever the
+        // count, and the faces to its left never move under a pointer
+        // already on its way to one.
+        // It stays inside the bar with a hair of air, so a tall count (a
+        // large text size) is nudged down rather than cut off at the bar's,
+        // and so the screen's, top edge.
+        let (badge_w, badge_h) = Self::notification_badge_size(label_w, label_h, theme);
+        let inset = f64::from(theme.tokens.spacing.s1) / 2.0;
+        let right = glyph.x1 + badge_h / 2.0 + 1.0;
+        let top = (glyph.y0 - badge_h / 2.0 + 2.0)
+            .min(self.rect.y1 - inset - badge_h)
+            .max(self.rect.y0 + inset);
+        let badge = Rect::new(right - badge_w, top, right, top + badge_h);
+        self.bell_badge_rect = badge;
         // A count badge is a capsule (Selector radius) in the danger hue;
         // its ink is whichever text tone stays legible on that fill, so a
         // light or high-contrast palette is not handed a fixed white.
@@ -2513,13 +2746,15 @@ impl TopBarChrome {
             None,
             label_style,
         );
-        sx + layout.tray_slot + badge_w + layout.tray_gap
+        next
     }
 
-    /// `99+` once the exact number no longer fits the compact badge.
+    /// `9+` once the count needs a second digit: the badge sits on the
+    /// bell's shoulder, and a wider one would hide the bell it counts for.
+    /// The exact number is in the bell's name and the notification centre.
     fn notification_badge_label(count: u32) -> String {
-        if count > 99 {
-            "99+".to_string()
+        if count > 9 {
+            "9+".to_string()
         } else {
             count.to_string()
         }
@@ -2696,7 +2931,7 @@ impl TopBarChrome {
     /// Settings/volume/network/battery glyphs in the already-sized and
     /// already-painted tray pill from [`Self::draw_tray_pill_body`].
     fn draw_tray_icons(
-        &self,
+        &mut self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -2705,9 +2940,6 @@ impl TopBarChrome {
     ) {
         let colors = &theme.tokens.colors;
         let mut sx = self.tray_pill_rect.x0 + layout.tray_pad;
-        if layout.slots == 0 {
-            Self::draw_tray_settings_icon(scene, transform, layout, sx);
-        }
         sx = self.draw_tray_notification_badge(scene, transform, theme, text_renderer, layout, sx);
         sx = Self::draw_tray_volume_icon(scene, transform, &self.status, layout, sx);
         sx = Self::draw_tray_network_icon(scene, transform, &self.status, layout, sx);
@@ -2744,7 +2976,7 @@ impl TopBarChrome {
             return rx;
         }
         let mut labels: Vec<&str> = self.status.media.iter().map(|u| u.label.as_str()).collect();
-        labels.sort_unstable();
+        labels.compact_sort();
         labels.dedup();
         let has_mic = self
             .status
@@ -2867,54 +3099,6 @@ impl TopBarChrome {
         rect
     }
 
-    /// Up to 3 collaborator chips in reading order, then the overflow "+N"
-    /// chip last, the whole stack ending at `stack_right_x`. Returns how
-    /// many circles were drawn (chips + the overflow chip, if any).
-    fn draw_avatar_chips(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        stack_right_x: f64,
-    ) -> usize {
-        let colors = &theme.tokens.colors;
-        let faces: Vec<ui::presence::Face<'_>> = self
-            .collaborator_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| {
-                let look = self.face_looks.get(i).copied();
-                ui::presence::Face {
-                    name: name.as_str(),
-                    identity: self.collaborator_ids.get(i).map_or("", String::as_str),
-                    colour: self
-                        .collaborator_colors
-                        .get(i)
-                        .copied()
-                        .unwrap_or(colors.intent.you),
-                    // Software is never drawn as a person: the shared agent
-                    // mark in the same ring.
-                    is_agent: self.collaborator_agents.get(i).copied().unwrap_or(false),
-                    dimmed: look.is_some_and(|look| look.dimmed),
-                    in_call: look.and_then(|look| look.call),
-                    scale: look.map_or(1.0, |look| look.scale),
-                }
-            })
-            .collect();
-        let (rects, badge) = ui::presence::FaceStack::BAR.paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            (stack_right_x, center_y),
-            (&faces, self.collaborator_overflow),
-            // The bar's own ground (`draw_overlay_surface`), so the gap
-            // between faces and their rings is the bar, not a grey halo.
-            colors.surfaces.base,
-        );
-        self.face_rects = rects;
-        faces.len().saturating_add(usize::from(badge.is_some()))
-    }
-
     /// The person's own avatar, ending at `right_x`, in their colour with
     /// their initials; returns where the controls before it end. It opens
     /// their profile card, so it is set apart from the others' stack.
@@ -2939,7 +3123,7 @@ impl TopBarChrome {
             center_y + side / 2.0,
         );
         let (r, g, b) = own.rgb;
-        ui::widget::AvatarFace::new(&own.name, "")
+        ui::widget::AvatarFace::new(&own.name, &own.identity)
             .presence(Color::from_rgb8(r, g, b))
             .ringed_on(theme.tokens.colors.surfaces.base)
             .paint(
@@ -2947,6 +3131,7 @@ impl TopBarChrome {
                 chip,
             );
         self.own_avatar_rect = chip;
+        self.draw_avatar_ask_dot(scene, transform, theme);
         chip.x0 - f64::from(theme.tokens.spacing.s3)
     }
 
@@ -3035,113 +3220,6 @@ impl TopBarChrome {
         self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }
 
-    /// A quiet "+N watching" label for spectators, right of the avatars,
-    /// ending at `right_x`. Returns its pointer target (zero when nobody is
-    /// watching): the bar's control height, like the avatar stack's.
-    fn draw_watching_chip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-        center_y: f64,
-        right_x: f64,
-    ) -> Rect {
-        let watching = self.watching();
-        if watching == 0 {
-            return Rect::ZERO;
-        }
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let label = t_args("topbar-watching-count", &[("count", watching.into())]);
-        let style = tokens
-            .typography
-            .style(TextRole::Caption)
-            .with_weight(TextWeight::Medium);
-        let (label_w, label_h) = text_renderer.measure_style(&label, None, &style);
-        let pad = f64::from(tokens.spacing.s2);
-        // Plain dim text, no chip: spectators are a count, not people.
-        let pill = Rect::new(
-            right_x - f64::from(label_w) - pad * 2.0,
-            center_y - BAR_CONTROL_PX / 2.0,
-            right_x,
-            center_y + BAR_CONTROL_PX / 2.0,
-        );
-        text_renderer.draw_style(
-            scene,
-            &label,
-            colors.text_dim,
-            at(
-                transform,
-                (pill.x0 + pad, center_y - f64::from(label_h) / 2.0),
-            ),
-            None,
-            &style,
-        );
-        Rect::new(
-            pill.x0,
-            center_y - BAR_CONTROL_PX / 2.0,
-            pill.x1,
-            center_y + BAR_CONTROL_PX / 2.0,
-        )
-    }
-
-    /// Sets [`Self::avatar_stack_rect`] to either the drawn chip stack's
-    /// bounds or the restored empty-room Invite control. `pos` is
-    /// `(center_y, stack_right_x)`.
-    fn draw_avatar_stack_bounds(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        pos: (f64, f64),
-        slot_count: usize,
-    ) {
-        let (center_y, stack_right_x) = pos;
-        if slot_count > 0 {
-            let width = ui::presence::FaceStack::BAR
-                .width_of(self.collaborator_initials.len(), self.collaborator_overflow);
-            self.avatar_stack_rect = Rect::new(
-                stack_right_x - width,
-                center_y - BAR_CONTROL_PX / 2.0,
-                stack_right_x,
-                center_y + BAR_CONTROL_PX / 2.0,
-            );
-            return;
-        }
-        // The first invite is exactly when there is no avatar to click. A
-        // person-plus glyph in an outlined empty seat names the action
-        // without pretending a participant is already present; the word
-        // "Invite" is its accessible name, not a text button half the width
-        // of the status cluster.
-        let colors = &theme.tokens.colors;
-        let seat = BAR_CONTROL_PX;
-        let pill = Rect::new(
-            stack_right_x + 2.0 - seat,
-            center_y - seat / 2.0,
-            stack_right_x + 2.0,
-            center_y + seat / 2.0,
-        );
-        let chip = vello::kurbo::Circle::new(pill.center(), seat / 2.0 - 0.5);
-        scene.stroke(
-            &Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-            transform,
-            ui::surface::edge_on(colors.surfaces.raised),
-            None,
-            &chip,
-        );
-        let glyph = SMALL_GLYPH_PX;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::from_center_size(pill.center(), (glyph, glyph)),
-            ui::icons::Icon::UserPlus,
-            colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        self.avatar_stack_rect = pill;
-    }
-
     /// The click half of [`Widget::handle_event`]'s `MouseInput`
     /// branch, split out to keep that function under the line budget.
     fn handle_left_click(&mut self, handled: &mut bool) {
@@ -3184,13 +3262,16 @@ impl TopBarChrome {
         } else if self.ws_pill_rect.contains(p) {
             ChromeIntent::ToggleWorkspaceMenu
         } else if self.own_avatar_rect.contains(p) {
-            ChromeIntent::ToggleProfile
+            self.avatar_intent()
         } else if self.tray_hit_rect.contains(p) {
             ChromeIntent::ToggleQuickSettings
         } else if self.media_hit_rect().contains(p) {
             ChromeIntent::ShowQuickSettings
-        } else if self.avatar_stack_rect.contains(p) || self.sharing_indicator_rect.contains(p) {
-            ChromeIntent::ToggleCollaborators
+        } else if let Some(intent) = self
+            .arrival_intent_at(p)
+            .or_else(|| self.people_intent_at(p))
+        {
+            intent
         } else {
             return;
         };
@@ -3217,14 +3298,16 @@ impl TopBarChrome {
             .as_ref()
             .map_or(0, |chrome| chrome.snapshot().notification_badge);
         if let Some(chrome) = self.chrome.as_ref() {
-            self.bell.quiet = chrome.snapshot().notifications_quiet;
+            let snapshot = chrome.snapshot();
+            self.bell.quiet = snapshot.notifications_quiet;
+            self.bell.only = snapshot.notifications_only;
         }
         if let Some(chrome) = self.chrome.as_ref() {
             let glance = chrome.snapshot().activity_glance;
             if glance.pulse != self.activity_pulse {
                 self.activity_pulse = glance.pulse;
                 self.activity_started =
-                    (glance.unread > 0 && glance.headline.is_some()).then(Instant::now);
+                    (glance.unread > 0 && glance.headline.is_some()).then(ui::time::now);
             }
             if glance.unread == 0 {
                 self.activity_started = None;
@@ -3249,16 +3332,16 @@ impl TopBarChrome {
             .collect();
         if signature != self.media_signature {
             self.media_signature = signature;
-            self.media_started = (!self.media_signature.is_empty()).then(Instant::now);
+            self.media_started = (!self.media_signature.is_empty()).then(ui::time::now);
         }
         let media_hovered = self
             .last_cursor
             .is_some_and(|p| self.media_hit_rect().contains(p));
         self.media_expanded = !self.media_signature.is_empty()
             && (media_hovered
-                || self
-                    .media_started
-                    .is_some_and(|at| at.elapsed() < Duration::from_secs(4)));
+                || self.media_started.is_some_and(|at| {
+                    ui::time::now().saturating_duration_since(at) < Duration::from_secs(4)
+                }));
     }
 
     /// Sizes the center band, then draws the time, or a live activity over
@@ -3333,6 +3416,60 @@ impl TopBarChrome {
         })
     }
 
+    /// The centre selector's width as the cache sees it while it morphs:
+    /// in quarter pixels, so each of its frames draws anew.
+    fn center_width_key(&self) -> Option<u32> {
+        let now = ui::time::now();
+        self.center_width.is_moving(now).then(|| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a bar's width in quarter pixels, clamped non-negative"
+            )]
+            let quarters = (self.center_width.get(now) * 4.0).round().max(0.0) as u32;
+            quarters
+        })
+    }
+
+    /// Whether the centre is moving: the time and an activity cross-fading,
+    /// or the selector morphing between their widths.
+    fn center_is_moving(&self) -> bool {
+        let now = ui::motion::frame_now();
+        self.center_fade.is_moving(now) || self.center_width.is_moving(now)
+    }
+
+    /// A window maximizing over the bar's display (`shown` false) or
+    /// restoring (`shown` true), moved by `source`: the bar leaves or comes
+    /// back with it, over the window's own motion. A key's lands.
+    pub fn move_with_window(
+        &mut self,
+        shown: bool,
+        motion: ui::tokens::EffectiveMotion,
+        source: ui::tokens::MotionSource,
+    ) {
+        self.with_window.show(
+            shown,
+            ui::motion::WindowMotion::MOVE,
+            motion,
+            source,
+            ui::motion::frame_now(),
+        );
+    }
+
+    fn with_window_moving(&self) -> bool {
+        self.with_window.is_moving(ui::motion::frame_now())
+    }
+
+    /// When the centre's motion settles, if it is moving.
+    #[cfg(test)]
+    fn center_settles_at(&self) -> Option<Instant> {
+        self.center_fade
+            .settles_at()
+            .into_iter()
+            .chain(self.center_width.settles_at())
+            .max()
+    }
+
     /// Whether the centre on screen is not the centre as it is now: the
     /// cached frame was painted part-way through a cross-fade that has
     /// since settled, or the activity came or went since. Without this the
@@ -3348,14 +3485,15 @@ impl TopBarChrome {
             return false;
         }
         self.center_fade_key() != self.cache_fp.center_fade
+            || self.center_width_key() != self.cache_fp.center_width
             || self.activity_is_visible() != self.cache_fp.activity_visible
     }
 
     fn activity_is_visible(&self) -> bool {
         self.activity_headline.is_some()
-            && self
-                .activity_started
-                .is_some_and(|started| started.elapsed() < Duration::from_secs(6))
+            && self.activity_started.is_some_and(|started| {
+                ui::time::now().saturating_duration_since(started) < Duration::from_secs(6)
+            })
     }
 
     fn draw_activity_widget(
@@ -3463,6 +3601,9 @@ impl TopBarChrome {
     }
 
     fn activate_control(&self, target: &str) -> bool {
+        if let Some(done) = self.activate_ask_control(target) {
+            return done;
+        }
         if matches!(
             target,
             Self::CONTROL_CONTINUITY | Self::CONTROL_CONTINUITY_DISMISS
@@ -3472,13 +3613,33 @@ impl TopBarChrome {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
+        if let Some(key) = Self::tray_target_key(target) {
+            // A key or a reader's activation does what a left click does:
+            // the item's primary action, or its own menu when it has none.
+            let rect = self.control_rect(target);
+            let (x, y) = pointer_coordinates(rect.center());
+            let item_is_menu = self
+                .app_tray
+                .iter()
+                .find(|slot| slot.key == key)
+                .is_some_and(|slot| slot.item_is_menu);
+            return chrome.intent(ChromeIntent::AppTray {
+                key: key.to_string(),
+                request: if item_is_menu {
+                    AppTrayRequest::ContextMenu { x, y }
+                } else {
+                    AppTrayRequest::Activate { x, y }
+                },
+            });
+        }
         let intent = match target {
             Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => ChromeIntent::ToggleTiloMenu,
             Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceMenu,
             Self::CONTROL_STRIP_NAME => ChromeIntent::ShowStrips,
-            Self::CONTROL_PROFILE => ChromeIntent::ToggleProfile,
+            Self::CONTROL_PROFILE => self.avatar_intent(),
             Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => ChromeIntent::ToggleQuickSettings,
             Self::CONTROL_COLLABORATORS => ChromeIntent::ToggleCollaborators,
+            Self::CONTROL_INVITE => ChromeIntent::Invite,
             _ => return false,
         };
         chrome.intent(intent)
@@ -3538,7 +3699,36 @@ impl TopBarChrome {
                 center_y + BAR_CONTROL_PX / 2.0,
             );
             let icon_rect = Rect::from_center_size(hit.center(), (icon_px, icon_px));
+            // A tray icon is a bar control: it lifts under the pointer and,
+            // reached from the keyboard, shows the bar's focus ring through
+            // `control_rect`. Its own picture replaces the glyph.
+            let hovered = self
+                .last_cursor
+                .is_some_and(|point| hit.contains(point) && self.rect.contains(point));
+            paint_bar_selector(
+                scene,
+                transform,
+                &RoundedRect::from_rect(hit, f64::from(tokens.radii.control)),
+                ui::chrome::SelectionState::new(false, hovered, false),
+                theme,
+            );
             self.draw_app_tray_icon(scene, transform, theme, text_renderer, item, icon_rect);
+            // The application's own unread count: the bell's total says how
+            // many there are, this says whose.
+            let unread = item
+                .owner_app
+                .as_deref()
+                .map_or(0, |app| self.app_badge(app));
+            if unread > 0 {
+                paint_unread_badge(
+                    scene,
+                    transform,
+                    theme,
+                    text_renderer,
+                    icon_rect,
+                    unread.min(99),
+                );
+            }
             if item.status == AppTrayStatus::NeedsAttention {
                 scene.fill(
                     Fill::NonZero,
@@ -3551,6 +3741,8 @@ impl TopBarChrome {
             self.app_tray.push(AppTraySlot {
                 key: item.key.clone(),
                 id: item.id.clone(),
+                owner_app: item.owner_app.clone(),
+                title: item.title.clone(),
                 item_is_menu: item.item_is_menu,
                 rect: hit,
             });
@@ -3698,7 +3890,7 @@ impl TopBarChrome {
         };
         let gap = f64::from(theme.tokens.spacing.s2);
         let height = 24.0;
-        let right = self.avatar_stack_rect.x0 - f64::from(theme.tokens.spacing.s3);
+        let right = self.people_left_x - f64::from(theme.tokens.spacing.s3);
         let left_limit = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
         let dismiss_w = height;
         let lead = ChipLead::Glyph(ui::icons::Icon::Monitor);
@@ -3759,7 +3951,7 @@ impl TopBarChrome {
             _ => None,
         };
         if let Some(target) = focus.and_then(|index| controls.get(index)) {
-            self.focused_control = Some((*target).into());
+            self.focused_control = Some(target.clone());
             *handled = true;
             return;
         }
@@ -4172,10 +4364,6 @@ impl TopBarChrome {
             *handled = true;
             return;
         }
-        if self.strip_press(point) {
-            *handled = true;
-            return;
-        }
         self.handle_left_click(handled);
     }
 }
@@ -4208,10 +4396,13 @@ impl Widget for TopBarChrome {
         time_changed
     }
 
-    /// The end of the time reading on screen. Only a future instant: once
-    /// it passes, `update` reports the bar dirty and schedules the next one.
+    /// The end of the time reading on screen. Once it passes it stays
+    /// reported as due, so the host runs a frame; that frame's `update`
+    /// reports the bar dirty and schedules the next one. Hiding a passed
+    /// deadline let the loop sleep through the minute until unrelated input
+    /// woke it, and the clock read the minute before.
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let now = Instant::now();
+        let now = ui::time::now();
         // Someone here is in a call: their ring breathes, gently.
         let breath = self.call_since.and_then(|_| {
             ui::motion::Breathe::next_frame(
@@ -4222,10 +4413,15 @@ impl Widget for TopBarChrome {
                 ),
             )
         });
-        [self.time_wake.filter(|at| now < *at), breath]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.time_wake,
+            breath,
+            self.wave_notice_ends(now),
+            self.arrival_notice_ends(now),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     fn build_layout(
@@ -4312,104 +4508,36 @@ impl Widget for TopBarChrome {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Zero-height (fullscreen) paints nothing; without this guard
-        // the encode below still runs at intrinsic size, overflowing
-        // into a stray fragment over the fullscreen window.
-        if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
+        // Leaving with a maximizing window, or coming back with its
+        // restore: the whole bar slides up off its display as it fades.
+        if self.with_window_moving() {
+            let open = self.with_window.progress(ui::motion::frame_now());
+            let shown = ui::motion::unit_opacity(open);
+            if shown <= f32::EPSILON {
+                return;
+            }
+            let lift = vello::kurbo::Vec2::new(0.0, -(1.0 - open) * self.rect.height());
+            out_scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                shown,
+                out_transform,
+                &self.rect,
+            );
+            self.draw_bar(
+                out_scene,
+                out_transform.pre_translate(lift),
+                text_renderer,
+                theme,
+                presence,
+            );
+            out_scene.pop_layer();
             return;
         }
-        // A hidden bar paints nothing until it is reached for.
-        if self.presence() == TopBarPresence::Hidden {
-            self.cache_fp.presence = TopBarPresence::Hidden;
+        if self.presence() == TopBarPresence::Hidden && !self.with_window.is_open() {
             return;
         }
-        // Pulled here, not pushed by update, so a just-dropped battery
-        // percent is drawn and counted as a change in the same pass.
-        self.refresh_status_and_media_state();
-        self.schedule_time_wake();
-        let showing_activity = self.activity_is_visible();
-        self.center_fade.show(
-            showing_activity,
-            theme.motion(),
-            ui::tokens::MotionSource::Pointer,
-            ui::time::now(),
-        );
-        self.read_face_looks(presence, theme.motion());
-        let fp = self.current_fingerprint();
-        if fp == self.cache_fp && self.cache_theme.as_ref() == Some(theme) && fp.rect_px.2 > 0 {
-            out_scene.append(&self.cached, Some(out_transform));
-            return;
-        }
-
-        // Theme typography already includes accessibility scale.
-        let renderer_scale = text_renderer.text_scale();
-        text_renderer.set_text_scale(1.0);
-
-        // Cache miss — encode at IDENTITY, then splice with `out_transform`.
-        let mut local = std::mem::take(&mut self.cached);
-        local.reset();
-        let scene = &mut local;
-        let transform = Affine::IDENTITY;
-        let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
-        if self.presence() == TopBarPresence::Shown {
-            self.draw_overlay_surface(scene, transform, theme);
-        }
-
-        // The workspace's name leads, after the mark when there is one:
-        // where its label starts, past its capsule's `s2` leading pad.
-        let label_x = self.draw_tilo_mark(
-            scene,
-            transform,
-            theme,
-            center_y,
-            self.rect.x0 + f64::from(theme.tokens.spacing.s3),
-        ) + f64::from(theme.tokens.spacing.s2);
-        self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
-        let center_left =
-            f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
-        // The strip shown, named after the workspace it is in where no
-        // strip chips stand: the frequent level, where the person looks for
-        // "where am I".
-        self.draw_strip_name(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            (
-                self.ws_pill_rect.x1,
-                center_left - f64::from(theme.tokens.spacing.s4),
-            ),
-        );
-        self.draw_strip_places(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            (
-                self.ws_pill_rect.x1 + f64::from(theme.tokens.spacing.s2),
-                center_left - f64::from(theme.tokens.spacing.s4),
-            ),
-        );
-
-        self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
-        if !self.is_compact() {
-            self.draw_session_clusters(scene, theme, text_renderer, center_y);
-        }
-        self.draw_focus_indicator(scene, transform, theme);
-        let clock_activity = self.chrome.as_ref().and_then(|chrome| {
-            let snapshot = chrome.snapshot();
-            snapshot.overlays.clock.then_some(snapshot.clock_activity)?
-        });
-        if let Some(activity) = clock_activity {
-            self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
-        }
-        out_scene.append(&local, Some(out_transform));
-        self.cached = local;
-        self.cache_fp = fp;
-        self.cache_theme = Some(theme.clone());
-        text_renderer.set_text_scale(renderer_scale);
+        self.draw_bar(out_scene, out_transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -4445,7 +4573,13 @@ impl Widget for TopBarChrome {
             }
             _ => {}
         }
-        if self.handle_strip_naming_event(event, ctx) {
+        if self.handle_workspace_rename_event(event, ctx) {
+            return;
+        }
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Some(ctx.logical(position));
+        }
+        if self.handle_avatar_ask_event(event, ctx.handled) {
             return;
         }
         if self.is_compact() {
@@ -4541,9 +4675,13 @@ impl Widget for TopBarChrome {
                 "topbar_continuity_dismiss".to_string(),
                 self.control_rect(Self::CONTROL_CONTINUITY_DISMISS),
             ),
+            ("topbar_ask".to_string(), self.ask.pill),
+            ("topbar_ask_answer".to_string(), self.ask.answer),
+            ("topbar_ask_later".to_string(), self.ask.later),
             ("topbar_center_clock".to_string(), self.center_rect),
+            ("topbar_arrival".to_string(), self.arrival_rect),
         ];
-        rects.extend(self.strip_test_rects());
+        rects.extend(self.workspace_rename_test_rects());
         rects.extend(app_tray);
         rects
     }
@@ -4555,11 +4693,12 @@ impl Widget for TopBarChrome {
             .into_iter()
             .map(|target| {
                 let mut node = AccessNode::new(Role::Button)
-                    .with_action_target(target)
-                    .with_name(self.control_name(target))
-                    .with_bounds(self.control_rect(target))
+                    .with_action_target(target.clone())
+                    .with_name(self.control_name(&target))
+                    .with_bounds(self.control_rect(&target))
                     .with_state(AccessState {
-                        focused: self.focused && self.focused_control.as_deref() == Some(target),
+                        focused: self.focused
+                            && self.focused_control.as_deref() == Some(target.as_str()),
                         focusable: true,
                         ..Default::default()
                     });
@@ -4570,6 +4709,26 @@ impl Widget for TopBarChrome {
                     node = node
                         .with_description(bell.clone())
                         .with_children(vec![AccessNode::new(Role::Image).with_name(bell)]);
+                }
+                // An icon carrying unread notifications says how many: the
+                // bell's total alone never said whose they were.
+                if let Some(key) = TopBarChrome::tray_target_key(&target)
+                    && let Some(unread) = self
+                        .app_tray
+                        .iter()
+                        .find(|slot| slot.key == key)
+                        .and_then(|slot| slot.owner_app.as_deref())
+                        .map(|app| self.app_badge(app))
+                        .filter(|unread| *unread > 0)
+                {
+                    node = node.with_description(t_args(
+                        "topbar-app-tray-unread",
+                        &[("count", unread.min(99).into())],
+                    ));
+                }
+                // Each face in the people control is someone here: say who.
+                if target == Self::CONTROL_COLLABORATORS {
+                    node = node.with_children(self.face_accessibility());
                 }
                 // The pill names the workspace; where it stands among the
                 // others is said to a reader, as the menu lists them.
@@ -4596,7 +4755,8 @@ impl Widget for TopBarChrome {
         if let Some(clock) = self.clock_accessibility_node() {
             children.push(clock);
         }
-        children.extend(self.strip_accessibility());
+        children.extend(self.workspace_rename_accessibility());
+        children.extend(self.arrival_accessibility());
         Some(
             AccessNode::new(Role::Toolbar)
                 .with_semantic_key(if self.is_compact() {
@@ -4629,7 +4789,7 @@ impl Widget for TopBarChrome {
         let Some(index) = path.first().copied() else {
             return false;
         };
-        let Some(target) = self.control_targets().get(index).copied() else {
+        let Some(target) = self.control_targets().get(index).cloned() else {
             return false;
         };
         self.focused_control = Some(target.to_string());
@@ -4649,8 +4809,12 @@ impl Widget for TopBarChrome {
         ) {
             return false;
         }
-        if let Some(performed) = self.strip_semantic_action(target) {
-            return performed;
+        if target == Self::ARRIVAL_TARGET {
+            return self.arrival_pressable
+                && self
+                    .chrome
+                    .as_ref()
+                    .is_some_and(|chrome| chrome.intent(ChromeIntent::ToggleProfile));
         }
         match target {
             "clock.overlay.toggle" => {
@@ -4688,12 +4852,9 @@ impl Widget for TopBarChrome {
                 return Some(winit::window::CursorIcon::Grab);
             }
         }
-        if self.strip_hit(point) {
-            return Some(winit::window::CursorIcon::Pointer);
-        }
         self.control_targets()
             .into_iter()
-            .any(|target| self.control_rect(target).contains(point))
+            .any(|target| self.control_rect(&target).contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
@@ -4705,17 +4866,14 @@ impl Widget for TopBarChrome {
 
     fn set_focus(&mut self, focused: bool) {
         if !focused {
-            self.cancel_strip_naming();
+            self.cancel_workspace_rename();
         }
         self.focused = focused;
         if !focused {
             self.focus_origin = FocusOrigin::Placed;
         }
         if focused && self.focused_control.is_none() {
-            self.focused_control = self
-                .control_targets()
-                .first()
-                .map(|target| (*target).into());
+            self.focused_control = self.control_targets().first().map(|target| target.clone());
         }
     }
 
@@ -4726,11 +4884,18 @@ impl Widget for TopBarChrome {
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
     fn needs_animation_frame(&self) -> bool {
-        self.center_fade.is_moving(ui::motion::frame_now()) || self.center_frame_stale()
+        self.center_is_moving()
+            || self.center_frame_stale()
+            || self.with_window_moving()
+            || self.arrival_notice_moving(ui::motion::frame_now())
     }
 
     fn needs_redraw(&self) -> bool {
-        if self.center_fade.is_moving(ui::motion::frame_now()) || self.center_frame_stale() {
+        if self.center_is_moving()
+            || self.center_frame_stale()
+            || self.with_window_moving()
+            || self.arrival_notice_moving(ui::motion::frame_now())
+        {
             return true;
         }
         if self.presence() != self.cache_fp.presence {
@@ -4767,11 +4932,12 @@ impl Widget for TopBarChrome {
         }
         if self.app_tray_revision() != self.cache_fp.app_tray_revision
             || self.continuity_label() != self.cache_fp.continuity
+            || self.chrome_avatar_ask() != self.cache_fp.avatar_ask
         {
             return true;
         }
         if let Some(started) = self.media_started {
-            let elapsed = started.elapsed();
+            let elapsed = ui::time::now().saturating_duration_since(started);
             return elapsed < Duration::from_secs(4)
                 || (self.cache_fp.media_expanded && elapsed >= Duration::from_secs(4));
         }
@@ -4795,6 +4961,126 @@ impl Widget for TopBarChrome {
             children |= child.take_structure_dirty();
         }
         stale || children
+    }
+}
+
+impl TopBarChrome {
+    fn draw_bar(
+        &mut self,
+        out_scene: &mut Scene,
+        out_transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // Zero-height (fullscreen) paints nothing; without this guard
+        // the encode below still runs at intrinsic size, overflowing
+        // into a stray fragment over the fullscreen window.
+        if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
+            return;
+        }
+        // A hidden bar paints nothing until it is reached for, unless it
+        // is leaving with a maximizing window.
+        if self.presence() == TopBarPresence::Hidden && !self.with_window_moving() {
+            self.cache_fp.presence = TopBarPresence::Hidden;
+            return;
+        }
+        // Pulled here, not pushed by update, so a just-dropped battery
+        // percent is drawn and counted as a change in the same pass.
+        self.refresh_status_and_media_state();
+        self.schedule_time_wake();
+        let showing_activity = self.activity_is_visible();
+        self.center_fade.show(
+            showing_activity,
+            theme.motion(),
+            ui::tokens::MotionSource::Pointer,
+            ui::time::now(),
+        );
+        self.read_face_looks(presence, theme.motion());
+        let fp = self.current_fingerprint();
+        if fp == self.cache_fp && self.cache_theme.as_ref() == Some(theme) && fp.rect_px.2 > 0 {
+            ui::scene_parts::append(
+                out_scene,
+                &self.cached,
+                self.cached_parts.as_ref(),
+                Some(out_transform),
+            );
+            return;
+        }
+
+        // Theme typography already includes accessibility scale.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+
+        // Cache miss — encode at IDENTITY, then splice with `out_transform`.
+        let mut local = std::mem::take(&mut self.cached);
+        local.reset();
+        let ((), parts) = ui::scene_parts::record(&mut local, |scene| {
+            let transform = Affine::IDENTITY;
+            let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
+            if self.presence() == TopBarPresence::Shown {
+                self.draw_overlay_surface(scene, transform, theme);
+            }
+
+            // The workspace's name leads, after the mark when there is one:
+            // where its label starts, past its capsule's `s2` leading pad.
+            let label_x = self.draw_tilo_mark(
+                scene,
+                transform,
+                theme,
+                center_y,
+                self.rect.x0 + f64::from(theme.tokens.spacing.s3),
+            ) + f64::from(theme.tokens.spacing.s2);
+            self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
+            let center_left =
+                f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
+            // The strip shown changes as the person moves between strips: it
+            // is one part of the bar, so that change damages where it is
+            // painted rather than the whole bar.
+            let strip_span = (
+                self.ws_pill_rect.x1,
+                center_left - f64::from(theme.tokens.spacing.s4),
+            );
+            ui::scene_parts::part_drawn(
+                scene,
+                ui::scene_parts::PartKey::new("desktop.topbar.strips", ()),
+                |scene| {
+                    // The strip shown, named after the workspace it is in: the
+                    // frequent level, where the person looks for "where am I".
+                    self.draw_strip_name(
+                        scene,
+                        transform,
+                        theme,
+                        text_renderer,
+                        center_y,
+                        strip_span,
+                    );
+                    self.strips_painted()
+                        .into_iter()
+                        .map(|rect| transform.transform_rect_bbox(rect))
+                        .collect()
+                },
+            );
+
+            self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
+            if !self.is_compact() {
+                self.draw_session_clusters(scene, theme, text_renderer, center_y);
+            }
+            self.draw_focus_indicator(scene, transform, theme);
+            let clock_activity = self.chrome.as_ref().and_then(|chrome| {
+                let snapshot = chrome.snapshot();
+                snapshot.overlays.clock.then_some(snapshot.clock_activity)?
+            });
+            if let Some(activity) = clock_activity {
+                self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
+            }
+        });
+        ui::scene_parts::append(out_scene, &local, parts.as_ref(), Some(out_transform));
+        self.cached = local;
+        self.cached_parts = parts;
+        self.cache_fp = fp;
+        self.cache_theme = Some(theme.clone());
+        text_renderer.set_text_scale(renderer_scale);
     }
 }
 
@@ -4932,33 +5218,35 @@ mod tests {
         );
         assert!(!bar.update(&(), &()));
 
-        lay_out_and_draw(&mut bar, 1200.0);
-        let now = Instant::now();
-        let wake = bar
-            .next_wake_deadline()
-            .expect("a drawn clock wakes when its minute ends");
-        assert!(wake > now && wake <= now + Duration::from_secs(60));
-        assert!(!bar.update(&(), &()), "the minute has not turned yet");
+        // The bar's clock stands still, so the minute turns only when the
+        // test says it did.
+        let now = ui::time::now();
+        ui::time::testing::with_monotonic_time(now, || {
+            lay_out_and_draw(&mut bar, 1200.0);
+            let wake = bar
+                .next_wake_deadline()
+                .expect("a drawn clock wakes when its minute ends");
+            assert!(wake > now && wake <= now + Duration::from_secs(60));
+            assert!(!bar.update(&(), &()), "the minute has not turned yet");
 
-        let overdue = Instant::now()
-            .checked_sub(Duration::from_millis(1))
-            .expect("monotonic clock is past its origin");
-        bar.time_wake = Some(overdue);
-        assert_eq!(
-            bar.next_wake_deadline(),
-            None,
-            "an overdue wake must not hold the loop at a zero timeout"
-        );
-        assert!(
-            bar.update(&(), &()),
-            "the turned minute marks the bar dirty so the frame repaints it"
-        );
-        assert!(
-            bar.next_wake_deadline()
-                .is_some_and(|next| next > Instant::now()),
-            "the next minute is scheduled"
-        );
-        assert!(!bar.update(&(), &()), "one repaint per minute");
+            let overdue = now
+                .checked_sub(Duration::from_millis(1))
+                .expect("monotonic clock is past its origin");
+            bar.time_wake = Some(overdue);
+            assert!(
+                bar.next_wake_deadline().is_some_and(|due| due <= now),
+                "a passed wake stays due, so the host runs the frame that turns the clock"
+            );
+            assert!(
+                bar.update(&(), &()),
+                "the turned minute marks the bar dirty so the frame repaints it"
+            );
+            assert!(
+                bar.next_wake_deadline().is_some_and(|next| next > now),
+                "the next minute is scheduled"
+            );
+            assert!(!bar.update(&(), &()), "one repaint per minute");
+        });
     }
 
     fn floating_clock() -> TopBarChrome {
@@ -5028,6 +5316,17 @@ mod tests {
     }
 
     fn lay_out_and_draw_with_theme(bar: &mut TopBarChrome, width: f32, theme: &Theme) {
+        lay_out_and_draw_with_text(bar, width, theme, &mut TextRenderer::new());
+    }
+
+    /// [`lay_out_and_draw_with_theme`] with `text_renderer`, which a test
+    /// comparing two draws keeps: its fonts are what the glyphs refer to.
+    pub(super) fn lay_out_and_draw_with_text(
+        bar: &mut TopBarChrome,
+        width: f32,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = bar.build_layout(&mut taffy, theme, &mut node_map);
@@ -5054,13 +5353,13 @@ mod tests {
         bar.draw(
             &mut Scene::new(),
             Affine::IDENTITY,
-            &mut TextRenderer::new(),
+            text_renderer,
             theme,
             &PresenceCtx::default(),
         );
     }
 
-    fn lay_out_and_draw(bar: &mut TopBarChrome, width: f32) {
+    pub(super) fn lay_out_and_draw(bar: &mut TopBarChrome, width: f32) {
         lay_out_and_draw_with_theme(bar, width, &Theme::default());
     }
 
@@ -5178,10 +5477,10 @@ mod tests {
         assert!(!painted(&mut bar));
     }
 
-    /// Do Not Disturb is shown in the status cluster, as a silenced bell in
-    /// its own slot, not as a card over the person's work.
+    /// Do Not Disturb is shown in the status cluster, as the bell silenced
+    /// in its own slot, not as a card over the person's work.
     #[test]
-    fn quiet_mode_adds_a_silenced_bell_to_the_status_cluster() {
+    fn quiet_mode_silences_the_bell_in_the_status_cluster() {
         let mut bar = sample_chrome();
         bar.status.link = Some(crate::chrome::LinkStatus {
             kind: crate::chrome::LinkKind::Wired,
@@ -5193,11 +5492,7 @@ mod tests {
         bar.bell.quiet = true;
         lay_out_and_draw(&mut bar, 1280.0);
         let quiet = bar.tray_pill_rect;
-        assert!(
-            (quiet.width() - loud.width() - BAR_CONTROL_PX).abs() < 1e-6,
-            "one glyph slot more: {loud:?} -> {quiet:?}"
-        );
-        assert_eq!(quiet.x1, loud.x1, "the cluster keeps its right edge");
+        assert_eq!(quiet, loud, "the bell's slot was there all along");
         bar.bell.unread = 2;
         let node = bar.accessibility().expect("topbar semantics");
         let tray = node
@@ -5217,6 +5512,65 @@ mod tests {
                 .iter()
                 .any(|bell| bell.name.as_deref() == Some("Notifications silenced, 2 unread"))
         );
+    }
+
+    /// The unread count on the bell's shoulder stays whole inside the bar,
+    /// never cut off at its top edge, whatever the count and text size.
+    #[test]
+    fn the_unread_count_stays_inside_the_bar() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            for unread in [1, 42, 5000] {
+                let tree = DesktopTree {
+                    active: WorkspaceId(1),
+                    workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+                    ..DesktopTree::default()
+                };
+                let chrome = fixture::FixtureChrome::new(tree.clone());
+                chrome.borrow_mut().notifications_only = true;
+                chrome.borrow_mut().notification_badge = unread;
+                let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+                lay_out_and_draw_with_theme(&mut bar, 1440.0, &theme);
+                let badge = bar.bell_badge_rect;
+                assert!(
+                    !badge.is_zero_area(),
+                    "{unread} unread at {scale}x: a badge"
+                );
+                assert!(
+                    badge.y0 >= bar.rect.y0
+                        && badge.y1 <= bar.rect.y1
+                        && badge.x0 >= bar.rect.x0
+                        && badge.x1 <= bar.rect.x1,
+                    "{unread} unread at {scale}x: the badge {badge:?} is inside the bar {:?}",
+                    bar.rect
+                );
+            }
+        }
+    }
+
+    /// Every host draws the bell in the status cluster, quiet with nothing
+    /// unread, so both trays are one design. A host without quick settings
+    /// (the web) names the cluster "Notifications", since that is all it
+    /// opens.
+    #[test]
+    fn without_quick_settings_the_status_cluster_is_the_notifications_bell() {
+        let mut bar = sample_chrome();
+        lay_out_and_draw(&mut bar, 1280.0);
+        let desktop = bar.tray_pill_rect;
+        assert_eq!(bar.tray_slot_count(), 1, "the bell, with nothing unread");
+        bar.bell.only = true;
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert_eq!(bar.tray_slot_count(), 1, "the same bell");
+        assert_eq!(bar.tray_pill_rect, desktop, "one tray on both hosts");
+        let node = bar.accessibility().expect("topbar semantics");
+        let tray = node
+            .children
+            .iter()
+            .find(|child| {
+                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_QUICK_SETTINGS)
+            })
+            .expect("the status cluster");
+        assert_eq!(tray.name.as_deref(), Some("Notifications"));
     }
 
     #[test]
@@ -5311,9 +5665,6 @@ mod tests {
             f64::from(tokens.metrics.bar_control_height - spacing.s1)
         );
         assert_eq!(CENTER_INSET_PX, f64::from(spacing.s3));
-        // USER REQUIREMENT (2026-10-19): "why is the top bar so tiny, why not
-        // a few pixel bigger? it looks super unbalanced" — 24 px controls
-        // with an `s1` of air each side: a 32 px bar.
         assert_eq!(TOPBAR_HEIGHT_PX, 32.0);
         assert_eq!(TOPBAR_HEIGHT_PX, BAR_CONTROL_LOGICAL + 2.0 * spacing.s1);
         assert!(TOPBAR_HEIGHT_PX < tokens.metrics.bar_height);
@@ -5404,7 +5755,7 @@ mod tests {
         );
         assert!(width <= max_width + 0.5);
 
-        bar.activity_started = Some(Instant::now());
+        bar.activity_started = Some(ui::time::now());
         bar.last_cursor = Some(bar.center_rect.center());
         let mut handled = false;
         bar.handle_left_click(&mut handled);
@@ -5548,6 +5899,78 @@ mod tests {
         );
     }
 
+    /// A running application's icon stands on the bar as its own control:
+    /// it is in the focus order, a reader names it with the name the
+    /// application chose, and Enter does what a click does.
+    #[test]
+    fn an_applications_tray_icon_is_a_named_control_the_keyboard_reaches() {
+        let workspace = Workspace::new(WorkspaceId(1), "A");
+        let tree = DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..DesktopTree::default()
+        };
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        lay_out_and_draw(&mut bar, 1280.0);
+        assert!(
+            !bar.control_targets()
+                .iter()
+                .any(|target| target.starts_with(TopBarChrome::APP_TRAY_TARGET)),
+            "no running application, no tray control"
+        );
+
+        let key = "org.keepassxc.KeePassXC/StatusNotifierItem";
+        let rect = Rect::new(1100.0, 4.0, 1132.0, 36.0);
+        chrome
+            .borrow_mut()
+            .app_badges
+            .insert("org.keepassxc.KeePassXC".into(), 3);
+        bar.app_tray.push(AppTraySlot {
+            key: key.to_string(),
+            id: "keepassxc".into(),
+            owner_app: Some("org.keepassxc.KeePassXC".into()),
+            title: "KeePassXC".into(),
+            item_is_menu: false,
+            rect,
+        });
+        let target = TopBarChrome::tray_target(key);
+        assert!(
+            bar.control_targets().contains(&target),
+            "the icon is a bar control"
+        );
+        assert_eq!(bar.control_name(&target), "KeePassXC");
+        assert_eq!(bar.control_rect(&target), rect);
+
+        let node = bar.accessibility().expect("topbar semantics");
+        let tray = node
+            .children
+            .iter()
+            .find(|child| child.action_target.as_deref() == Some(target.as_str()))
+            .expect("a reader finds the icon among the bar's buttons");
+        assert_eq!(tray.name.as_deref(), Some("KeePassXC"));
+        assert_eq!(
+            tray.description.as_deref(),
+            Some("3 unread"),
+            "the icon says whose the bell's total is, not just how many there are"
+        );
+        assert!(tray.state.focusable);
+
+        // Keyboard: the bar's last stop is the icon, and Enter activates it.
+        bar.set_focus(true);
+        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::End));
+        assert_eq!(bar.focused_control.as_deref(), Some(target.as_str()));
+        assert!(press_named_key(&mut bar, winit::keyboard::NamedKey::Enter));
+        assert_eq!(
+            chrome.borrow().intents.last(),
+            Some(&ChromeIntent::AppTray {
+                key: key.to_string(),
+                request: AppTrayRequest::Activate { x: 1116, y: 20 },
+            }),
+            "Enter does what a click on the icon does"
+        );
+    }
+
     #[test]
     fn keyboard_navigation_is_one_focus_stop_with_optional_controls() {
         let mut bar = sample_chrome();
@@ -5562,12 +5985,12 @@ mod tests {
             Some(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
         );
 
-        let second = bar.control_targets()[1];
+        let second = bar.control_targets()[1].clone();
         assert!(press_named_key(
             &mut bar,
             winit::keyboard::NamedKey::ArrowRight
         ));
-        assert_eq!(bar.focused_control.as_deref(), Some(second));
+        assert_eq!(bar.focused_control.as_deref(), Some(second.as_str()));
         assert!(press_named_key(
             &mut bar,
             winit::keyboard::NamedKey::ArrowLeft
@@ -5674,7 +6097,7 @@ mod tests {
         assert_eq!(bar.strip_name(), None);
         assert!(
             !bar.control_targets()
-                .contains(&TopBarChrome::CONTROL_STRIP_NAME)
+                .contains(&TopBarChrome::CONTROL_STRIP_NAME.to_string())
         );
         assert!(bar.ws_strip_rect.is_zero_area());
     }
@@ -5745,9 +6168,9 @@ mod tests {
             let child = node
                 .children
                 .iter()
-                .find(|child| child.action_target.as_deref() == Some(target))
+                .find(|child| child.action_target.as_deref() == Some(target.as_str()))
                 .unwrap_or_else(|| panic!("missing semantic child {target}"));
-            let expected_name = bar.control_name(target);
+            let expected_name = bar.control_name(&target);
             assert_eq!(child.name.as_deref(), Some(expected_name.as_str()));
             assert!(child.state.focusable);
             assert!(child.bounds.is_some(), "{target} needs a hit target");
@@ -5756,7 +6179,7 @@ mod tests {
                 bounds.width() > 0.0 && bounds.height() > 0.0,
                 "{target}: {bounds:?}"
             );
-            assert_eq!(child.semantic_key.as_deref(), Some(target));
+            assert_eq!(child.semantic_key.as_deref(), Some(target.as_str()));
         }
 
         let workspace = node
@@ -5808,7 +6231,7 @@ mod tests {
         assert!(
             !plain
                 .control_targets()
-                .contains(&TopBarChrome::CONTROL_TILO_MARK)
+                .contains(&TopBarChrome::CONTROL_TILO_MARK.to_string())
         );
         assert_eq!(plain.tilo_mark_rect(), Rect::ZERO);
 
@@ -5817,7 +6240,7 @@ mod tests {
             .with_tilo_mark();
         lay_out_and_draw(&mut bar, 1280.0);
         assert_eq!(
-            bar.control_targets().first().copied(),
+            bar.control_targets().first().map(String::as_str),
             Some(TopBarChrome::CONTROL_TILO_MARK)
         );
         let mark = bar.tilo_mark_rect();
@@ -5866,9 +6289,8 @@ mod tests {
         chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
             name: "Kim Lee".into(),
             rgb: (200, 120, 90),
+            identity: String::new(),
         });
-        chrome.borrow_mut().strip_places =
-            Some(crate::chrome::StripPlaces::in_active_workspace(&tree, &[]));
         let mut bar = TopBarChrome::from_tree(&tree)
             .with_chrome(chrome.clone())
             .with_tilo_mark();
@@ -5876,13 +6298,13 @@ mod tests {
 
         let targets = bar.control_targets();
         assert_eq!(
-            &targets[..2],
-            &[
+            targets[..2].iter().map(String::as_str).collect::<Vec<_>>(),
+            [
                 TopBarChrome::CONTROL_TILO_MARK,
                 TopBarChrome::CONTROL_WORKSPACE_SETTINGS
             ]
         );
-        assert!(targets.contains(&TopBarChrome::CONTROL_PROFILE));
+        assert!(targets.contains(&TopBarChrome::CONTROL_PROFILE.to_string()));
         let mark = bar.tilo_mark_rect();
         let menu = bar.workspace_menu_rect();
         let own = bar.own_avatar_rect();
@@ -5910,7 +6332,7 @@ mod tests {
         };
         assert_eq!(
             named(TopBarChrome::CONTROL_PROFILE).as_deref(),
-            Some("Kim Lee: your profile")
+            Some("Kim Lee (you): your profile")
         );
         assert!(
             named(TopBarChrome::CONTROL_WORKSPACE_SETTINGS)
@@ -6075,7 +6497,6 @@ mod tests {
             3,
             42,
             Some(crate::chrome::ActivityFocus {
-                task_id: None,
                 author: Some("Ada".into()),
                 group_id: Some("issue:42".into()),
                 entry_id: None,
@@ -6191,8 +6612,8 @@ mod tests {
                 at += Duration::from_millis(40);
             }
             // Then the fade settles with no other reason to paint.
-            let settled = bar.center_fade.settles_at().map_or(at, |end| end.max(at))
-                + Duration::from_millis(1);
+            let settled =
+                bar.center_settles_at().map_or(at, |end| end.max(at)) + Duration::from_millis(1);
             ui::time::testing::with_monotonic_time(settled, || {
                 assert!(
                     bar.needs_redraw(),
@@ -6217,6 +6638,96 @@ mod tests {
                 assert_eq!(*bar.center_fade.shown(), unread > 0, "round {round}");
             });
             at = settled + Duration::from_millis(1);
+        }
+    }
+
+    // The centre selector jumped from the time's width to the whole lane
+    // when an activity arrived; it grows into the lane on the standard
+    // expand/collapse motion and shrinks back to the time when it goes.
+    #[test]
+    fn the_centre_selector_grows_into_the_lane_and_back() {
+        let mut tree = DesktopTree {
+            workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
+            ..Default::default()
+        };
+        tree.active = tree.workspaces[0].id;
+        let chrome = super::fixture::FixtureChrome::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        let theme = Theme::default();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
+        let vp = taffy
+            .new_with_children(
+                Style {
+                    size: Size::from_lengths(1600.0, TOPBAR_HEIGHT_PX),
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                vp,
+                Size {
+                    width: taffy::AvailableSpace::Definite(1600.0),
+                    height: taffy::AvailableSpace::Definite(TOPBAR_HEIGHT_PX),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .unwrap();
+        bar.apply_layout(&taffy, node, Point::ORIGIN);
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut paint_at = |bar: &mut TopBarChrome, at: Instant| {
+            ui::time::testing::with_monotonic_time(at, || {
+                bar.refresh_status_and_media_state();
+                let mut scene = Scene::new();
+                bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            });
+        };
+        let start = ui::time::now();
+        paint_at(&mut bar, start);
+        let time_w = bar.center_rect.width();
+        let lane_w = bar.center_lane.width();
+        assert!(time_w + 1.0 < lane_w, "the time is narrower than its lane");
+
+        for (shown, from, to) in [(3_usize, time_w, lane_w), (0, lane_w, time_w)] {
+            let at = bar.center_settles_at().unwrap_or(start).max(start) + Duration::from_secs(1);
+            chrome.borrow_mut().publish_activity_glance(
+                Some("Ada prepared the launch brief".to_owned()),
+                shown,
+                100 + shown as u64,
+                None,
+            );
+            paint_at(&mut bar, at);
+            assert!(
+                (bar.center_rect.width() - from).abs() < 0.5,
+                "the selector starts from where it was: {} vs {from}",
+                bar.center_rect.width()
+            );
+            let mid = at + Duration::from_millis(60);
+            ui::time::testing::with_monotonic_time(mid, || {
+                assert!(bar.needs_animation_frame(), "the morph asks for frames");
+                assert!(bar.needs_redraw(), "and draws each of them");
+            });
+            paint_at(&mut bar, mid);
+            let drawn = bar.center_rect.width();
+            assert!(
+                drawn > from.min(to) + 0.5 && drawn < from.max(to) - 0.5,
+                "part of the way from {from} to {to}: {drawn}"
+            );
+            let settled = bar.center_settles_at().expect("morphing") + Duration::from_millis(1);
+            paint_at(&mut bar, settled);
+            assert!(
+                (bar.center_rect.width() - to).abs() < 0.5,
+                "it lands on {to}: {}",
+                bar.center_rect.width()
+            );
+            ui::time::testing::with_monotonic_time(settled, || {
+                assert!(!bar.needs_animation_frame(), "then it asks for nothing");
+                assert!(!bar.needs_redraw(), "and is quiet");
+            });
         }
     }
 
@@ -6261,6 +6772,7 @@ mod tests {
                         app_id: "so.tilo.editor".into(),
                         surface_id: *surface,
                     },
+                    app_title: None,
                 }],
                 active_tab: *surface,
                 width: WindowWidth::Normal,
@@ -6436,6 +6948,7 @@ mod tests {
                     app_id: "so.tilo.editor".into(),
                     surface_id: 42,
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,
@@ -6478,7 +6991,12 @@ mod tests {
         tree.active = tree.workspaces[0].id;
         let theme = Theme::default();
         let paint = |unread: usize| {
-            let mut bar = TopBarChrome::from_tree(&tree);
+            let chrome = super::fixture::FixtureChrome::new(tree.clone());
+            chrome.borrow_mut().can_invite = true;
+            chrome
+                .borrow_mut()
+                .publish_activity_glance(None, unread, 0, None);
+            let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let node = bar.build_layout(&mut taffy, &theme, &mut node_map);
@@ -6502,7 +7020,6 @@ mod tests {
                 )
                 .unwrap();
             bar.apply_layout(&taffy, node, Point::ORIGIN);
-            bar.activity_unread = unread;
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
             bar.draw(
@@ -6514,7 +7031,7 @@ mod tests {
             );
             assert_eq!(bar.activity_unread, unread, "nothing else reset it");
             let rgba = ui::offscreen::OffscreenRenderer::new(1600, 48).render(&scene, Color::BLACK);
-            (rgba, bar.avatar_stack_rect)
+            (rgba, bar.invite_rect())
         };
         let (quiet, people) = paint(0);
         let (unread, _) = paint(3);
@@ -6593,7 +7110,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_roster_restores_the_clickable_invite_affordance() {
+    fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
         let mut tree = DesktopTree {
             workspaces: vec![Workspace::new(WorkspaceId(1), "A")],
             active: WorkspaceId::from(0),
@@ -6606,6 +7123,7 @@ mod tests {
 
         let mut bar = TopBarChrome::from_tree(&tree);
         let chrome = super::fixture::FixtureChrome::new(tree);
+        chrome.borrow_mut().can_invite = true;
         bar = bar.with_chrome(chrome.clone());
 
         let theme = Theme::default();
@@ -6642,16 +7160,20 @@ mod tests {
             "this test is about the empty case and the roster is not empty",
         );
         assert!(
-            bar.avatar_stack_rect.area() > 0.0,
-            "an empty room still needs a People entry point for the first invite",
+            bar.invite_rect().area() > 0.0,
+            "an empty room offers the first invite",
         );
-        assert!(!chrome.borrow().overlays.collaborators);
+        assert!(bar.avatar_stack_rect.is_zero_area(), "and no faces");
 
-        bar.last_cursor = Some(bar.avatar_stack_rect.center());
+        bar.last_cursor = Some(bar.invite_rect().center());
         let mut handled = false;
         bar.handle_left_click(&mut handled);
         assert!(handled);
-        assert!(chrome.borrow().overlays.collaborators);
+        assert_eq!(chrome.borrow().intents.last(), Some(&ChromeIntent::Invite));
+        assert!(
+            !chrome.borrow().overlays.collaborators,
+            "inviting is one step: the list stays closed"
+        );
 
         let node = bar.accessibility().expect("topbar semantics");
         let (index, invite) = node
@@ -6663,19 +7185,21 @@ mod tests {
         assert_eq!(invite.role, ui::a11y::Role::Button);
         assert_eq!(
             bar.synthetic_accessibility_rect(&[index]),
-            Some(bar.avatar_stack_rect)
+            Some(bar.invite_rect())
         );
         let target = invite.action_target.clone().expect("an action target");
         let mut doc = AutoCommit::new();
+        chrome.borrow_mut().intents.clear();
         assert!(bar.perform_semantic_action(
             &target,
             &ui::a11y::Action::Activate,
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert!(
-            !chrome.borrow().overlays.collaborators,
-            "activating Invite toggles the same overlay a click does",
+        assert_eq!(
+            chrome.borrow().intents.as_slice(),
+            [ChromeIntent::Invite],
+            "activating Invite invites, as a click does",
         );
     }
 
@@ -6726,7 +7250,7 @@ mod tests {
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         paint(&mut bar);
         assert!(bar.collaborator_initials().is_empty());
-        assert!(bar.avatar_stack_rect.height() >= BAR_CONTROL_PX);
+        assert!(bar.people_button_rect.height() >= BAR_CONTROL_PX);
         let node = bar.accessibility().expect("topbar semantics");
         assert!(
             node.children
@@ -6741,7 +7265,7 @@ mod tests {
                 .is_some_and(|name| name.contains("2 people watching"))),
             "the bar names its spectators"
         );
-        bar.last_cursor = Some(bar.avatar_stack_rect.center());
+        bar.last_cursor = Some(bar.people_button_rect.center());
         let mut handled = false;
         bar.handle_left_click(&mut handled);
         assert!(handled && chrome.borrow().overlays.collaborators);
@@ -6754,6 +7278,23 @@ mod tests {
         let mut bar = TopBarChrome::from_tree(&tree);
         bar.sync_from_tree(&tree);
         assert_eq!(bar.collaborator_agents, vec![true, false]);
+        // Each face is named for a reader, an agent as one.
+        paint(&mut bar);
+        let node = bar.accessibility().expect("topbar semantics");
+        let people = node
+            .children
+            .iter()
+            .find(|child| {
+                child.action_target.as_deref() == Some(TopBarChrome::CONTROL_COLLABORATORS)
+            })
+            .expect("the people control");
+        let faces: Vec<_> = people
+            .children
+            .iter()
+            .filter_map(|face| face.name.as_deref())
+            .collect();
+        assert_eq!(faces, ["Scribe, agent", "Ada"]);
+        assert!(people.children.iter().all(|face| face.bounds.is_some()));
     }
 
     #[test]
@@ -6869,7 +7410,7 @@ mod tests {
 
         // Invited but not redeemed: an avatar here would falsely claim
         // he's in the workspace.
-        let mut asked = empty;
+        let mut asked = empty.clone();
         asked.workspaces[0].collaborators = vec![
             tilo_desktop_model::Collaborator::new("peer@11895642303397647149", "Xaver")
                 .as_invited(),
@@ -6886,6 +7427,14 @@ mod tests {
             0,
             "and does not show up in the +N chip either",
         );
+
+        // Another device of this person is theirs, not a face in the stack.
+        let mut own = empty;
+        own.workspaces[0].collaborators =
+            vec![tilo_desktop_model::Collaborator::new("peer@7", "Orange Pi").as_own_device()];
+        let bar = TopBarChrome::from_tree(&own);
+        assert!(bar.collaborator_initials().is_empty());
+        assert_eq!(bar.collaborator_overflow(), 0);
     }
 }
 
@@ -6919,7 +7468,14 @@ mod fixture {
         pub intents: Vec<ChromeIntent>,
         pub top_bar: TopBarPresence,
         pub own: Option<OwnChip>,
-        pub strip_places: Option<StripPlaces>,
+        pub can_invite: bool,
+        pub waved: Option<WaveNotice>,
+        pub notification_badge: u32,
+        pub notifications_only: bool,
+        pub arrived: Option<ArrivalNotice>,
+        /// Unread counts per verified application id, as an application's
+        /// own icon shows them.
+        pub app_badges: HashMap<String, u32>,
     }
     impl State {
         pub fn publish_activity_glance(
@@ -6937,7 +7493,7 @@ mod fixture {
             };
         }
         pub fn set_active_exposures(&mut self, mut exposures: Vec<ActiveExposure>) {
-            exposures.sort_unstable();
+            exposures.compact_sort();
             exposures.dedup();
             self.active_exposures = exposures;
         }
@@ -6955,7 +7511,12 @@ mod fixture {
                 intents: Vec::new(),
                 top_bar: TopBarPresence::Docked,
                 own: None,
-                strip_places: None,
+                can_invite: false,
+                waved: None,
+                notification_badge: 0,
+                notifications_only: false,
+                arrived: None,
+                app_badges: HashMap::default(),
             })))
         }
         pub fn borrow(&self) -> Ref<'_, State> {
@@ -6983,9 +7544,16 @@ mod fixture {
                 watching: state.watching,
                 top_bar: state.top_bar,
                 own: state.own.clone(),
-                strip_places: state.strip_places.clone(),
+                invite: crate::chrome::Invite::when(state.can_invite),
+                waved: state.waved.clone(),
+                notification_badge: state.notification_badge,
+                notifications_only: state.notifications_only,
+                arrived: state.arrived.clone(),
                 ..Default::default()
             }
+        }
+        fn app_notification_badge(&self, app_id: &str) -> u32 {
+            self.0.borrow().app_badges.get(app_id).copied().unwrap_or(0)
         }
         fn intent(&self, intent: ChromeIntent) -> bool {
             let mut state = self.0.borrow_mut();
@@ -7053,7 +7621,7 @@ mod narrow_tests {
         let visible: Vec<_> = bar
             .control_targets()
             .into_iter()
-            .map(|target| (target, bar.control_rect(target)))
+            .map(|target| (target.clone(), bar.control_rect(&target)))
             .filter(|(_, rect)| !rect.is_zero_area())
             .collect();
         assert!(

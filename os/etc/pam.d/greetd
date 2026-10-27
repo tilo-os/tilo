@@ -2,59 +2,38 @@
 # Tilo greetd PAM stack — used by greetd (and therefore the graphical
 # tilo-greeter) to authenticate the user before StartSession.
 #
-# Fingerprint is offered first as a *sufficient* auth factor: if
-# pam_fprintd.so authenticates the user, the auth phase short-circuits to
-# success; otherwise PAM falls through to the password substack. The
-# leading "-" makes the line a silent no-op when the module is not present
-# in the image (i.e. when the `fprintd-pam` package is absent), so this
-# file is safe to ship whether or not fingerprint support is installed.
-#
-# fprintd drives the conversation by emitting PAM_TEXT_INFO / PAM_ERROR_MSG
-# prompts ("Place your finger on the reader", "swipe didn't match, try
-# again"); greetd relays those as AuthMessage{Info,Error}, which the
-# greeter's conversation loop displays and continues past — the
-# authoritative result is the top-level greetd Success/Error.
-#
-# Everything else defers to the distro's maintained `password-auth` stack
-# (pam_unix for auth/account/password, and pam_systemd/limits/keyinit for
-# the session), which keeps the always-present, VM-testable password login
-# working and registers the started session with logind.
+# Who may sign in, and with what, is tilo-auth's: the boot sign-in, a
+# fingerprint while the person's key is held, then the secret through
+# tilo-authd (os/etc/pam.d/tilo-auth). A substack, so the keyring hook below
+# still runs after a factor that ends tilo-auth's stack early.
 #
 # Tilo's own Secret Service (tilo-secret-service) owns org.freedesktop.secrets
 # and opens with the device identity after any login method.  The two
 # gnome-keyring hooks below remain for one purpose only: at a password login
 # they unlock the person's old GNOME login keyring, which tilo-secret-service
 # reads once and imports.  Nothing of gnome-keyring serves the bus name.
-# systemd-homed: per-user encrypted home (LUKS-backed), unlocked at login and
-# locked at logout/suspend. For a homed user pam_systemd_home authenticates +
-# activates the home (sufficient = short-circuit success); for a traditional
-# user it returns ignore and PAM falls through to the stack below — so this is a
-# no-op for the default account. The leading "-" tolerates the module's absence.
--auth      sufficient   pam_fprintd.so
--auth      sufficient   pam_systemd_home.so
-auth       substack     password-auth
+auth       substack     tilo-auth
 # After the password is verified: pam_gnome_keyring's auth hook only captures
 # the authtok an earlier module obtained (it never prompts), so placed before
-# password-auth it saw no password and left the login keyring locked, and the
-# first libsecret client (Chromium) made gcr-prompter ask for it.  Fedora's
+# the secret check it saw no password and left the login keyring locked, and
+# the first libsecret client (Chromium) made gcr-prompter ask for it.  Fedora's
 # gdm-password stack has the same order.
 auth       optional     pam_gnome_keyring.so
 
--account   sufficient   pam_systemd_home.so
-account    include      password-auth
+account    include      tilo-auth
 
--password  sufficient   pam_systemd_home.so
-password   substack     password-auth
+password   substack     tilo-auth
 
 # The session leaves greetd's own domain (xdm_t) for the user's SELinux
 # context and gets its login uid, as /etc/pam.d/login does. Without these
 # the compositor and every app it starts run as the display manager, whose
 # policy forbids what a user session needs (scopes, sandboxes, home access).
+# pam_systemd, limits and keyinit in password-auth's session register the
+# started session with logind.
 session    required     pam_selinux.so close
 session    required     pam_loginuid.so
 session    required     pam_selinux.so open
 session    required     pam_namespace.so
 session    optional     pam_keyinit.so force revoke
--session   optional     pam_systemd_home.so
 session    include      password-auth
 session    optional     pam_gnome_keyring.so auto_start

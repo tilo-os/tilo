@@ -25,14 +25,17 @@
 
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
 
-pub use settings_store::ChangeOrigin;
+/// Whether this thread may wait on storage. The compositor's frame loop,
+/// where an in-process app runs, may not: there an app reads and lists on a
+/// worker and shows the result on a later frame.
+pub use durable_store::waiting;
+pub use settings_store::{ChangeOrigin, DeviceClass, InvokingAction};
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
 
@@ -150,10 +153,78 @@ impl Scope {
 /// ```
 pub trait SettingsSchema: Serialize + DeserializeOwned + Default + 'static {
     const SCOPE: Scope;
+
+    /// What a person who changed nothing has on a `device`: [`Default`]
+    /// everywhere, unless the setting costs what one class of device should
+    /// not spend unasked (a copy kept on the device, work in the
+    /// background).
+    #[must_use]
+    fn defaults_on(device: DeviceClass) -> Self {
+        let _ = device;
+        Self::default()
+    }
+
+    /// Whether the setting means anything on a `device`: one whose effect a
+    /// class of device cannot have (a copy kept on a device that keeps
+    /// none) is not offered there, neither shown nor published.
+    #[must_use]
+    fn available_on(device: DeviceClass) -> bool {
+        let _ = device;
+        true
+    }
+
+    /// The setting `value` holds, as JSON stores it. Generic code reading
+    /// a setting compiles this, and serde's whole decoder for the type,
+    /// into each crate that names the type; a large type's own crate can
+    /// compile it once instead with [`settings_codec!`](crate::settings_codec).
+    ///
+    /// # Errors
+    ///
+    /// When `value` is not one.
+    fn from_settings_value(value: Value) -> serde_json::Result<Self> {
+        serde_json::from_value(value)
+    }
+
+    /// The setting as JSON stores it; see [`Self::from_settings_value`].
+    ///
+    /// # Errors
+    ///
+    /// When it does not serialize.
+    fn to_settings_value(&self) -> serde_json::Result<Value> {
+        serde_json::to_value(self)
+    }
+}
+
+#[doc(hidden)]
+pub use serde_json as __serde_json;
+
+/// [`SettingsSchema::from_settings_value`] and
+/// [`SettingsSchema::to_settings_value`] compiled where the impl is, never in
+/// the crates that read the setting: for a large settings type whose crate
+/// is in the shared runtime or an engine, every app or pane reading it
+/// otherwise carries its own copy of serde's decoder. Use it inside the
+/// `impl SettingsSchema`.
+#[macro_export]
+macro_rules! settings_codec {
+    () => {
+        #[inline(never)]
+        fn from_settings_value(
+            value: $crate::storage::__serde_json::Value,
+        ) -> $crate::storage::__serde_json::Result<Self> {
+            $crate::storage::__serde_json::from_value(value)
+        }
+
+        #[inline(never)]
+        fn to_settings_value(
+            &self,
+        ) -> $crate::storage::__serde_json::Result<$crate::storage::__serde_json::Value> {
+            $crate::storage::__serde_json::to_value(self)
+        }
+    };
 }
 
 /// Which settings document a host gives its apps.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SettingsDocument {
     /// The person's session document: the one the host installed
     /// (`settings_store::install_source`), else the local `settings.json`.
@@ -163,9 +234,24 @@ pub enum SettingsDocument {
     File(PathBuf),
 }
 
-/// Bumped by every write through this module, so a reader in the same
-/// process sees a write even within one file-time tick.
-static WRITES: AtomicU64 = AtomicU64::new(0);
+/// How many writes through this module each document has taken, so a
+/// reader in the same process sees a write to its document even within one
+/// file-time tick, and is not sent to read it again by another document's.
+static WRITES: std::sync::Mutex<std::collections::BTreeMap<SettingsDocument, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn writes() -> std::sync::MutexGuard<'static, std::collections::BTreeMap<SettingsDocument, u64>> {
+    WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Count a write to `document` ([`WRITES`]).
+fn note_write(document: &SettingsDocument) {
+    let mut writes = writes();
+    let count = writes.entry(document.clone()).or_default();
+    *count = count.wrapping_add(1);
+}
 
 /// One version of a settings document, for readers that follow it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,7 +372,7 @@ impl SettingsDocument {
                 (Self::File(path), _) => settings_store::update_section_at(path, name, values),
             }
         };
-        WRITES.fetch_add(1, Ordering::AcqRel);
+        note_write(self);
         written
     }
 
@@ -298,7 +384,7 @@ impl SettingsDocument {
                 Self::Session => settings_store::stamp(),
                 Self::File(path) => settings_store::stamp_at(path),
             },
-            writes: WRITES.load(Ordering::Acquire),
+            writes: writes().get(self).copied().unwrap_or_default(),
         }
     }
 }
@@ -325,12 +411,17 @@ struct Change {
 /// key wins and what other processes stored meanwhile is kept. A writer on
 /// any other thread stores the queue first, so changes land in the order
 /// they were made in that document.
+///
+/// Each document has a job of its own, scheduled on the background of the
+/// thread that queued its first change, and that job stores that document's
+/// changes alone: a document's changes never wait for, nor are stored by,
+/// the job of another (another window's, or another test's profile).
 struct Queue {
     pending: Vec<Change>,
     /// Batches removed after a store, so readers can detect a stale file.
     retired: u64,
-    /// A background job is to store the queue.
-    scheduled: bool,
+    /// The documents a background job is to store.
+    scheduled: Vec<SettingsDocument>,
     /// A thread is writing the oldest changes.
     writing: bool,
     /// The window to wake when a change could not be stored, so it shows
@@ -341,7 +432,7 @@ struct Queue {
 static QUEUE: std::sync::Mutex<Queue> = std::sync::Mutex::new(Queue {
     pending: Vec::new(),
     retired: 0,
-    scheduled: false,
+    scheduled: Vec::new(),
     writing: false,
     wake: None,
 });
@@ -358,30 +449,38 @@ fn wait(queue: std::sync::MutexGuard<'static, Queue>) -> std::sync::MutexGuard<'
 }
 
 fn defer(change: Change) {
+    let document = change.document.clone();
     let mut queue = lock_queue();
     queue.pending.push(change);
     queue.wake = Some(crate::WakeHandle::new());
-    if std::mem::replace(&mut queue.scheduled, true) {
+    if queue.scheduled.contains(&document) {
         return;
     }
+    queue.scheduled.push(document.clone());
     drop(queue);
     // A host with no background work stores it here rather than lose it.
+    let job = document.clone();
     if crate::background::Background::current()
-        .spawn("settings writes", store_queue)
+        .spawn("settings writes", move || store_queue(&job))
         .is_err()
     {
-        store_queue();
+        store_queue(&document);
     }
 }
 
-/// The background job: store the queue until it is empty.
-fn store_queue() {
+/// The background job of `document`: store its queued changes until there
+/// are none.
+fn store_queue(document: &SettingsDocument) {
     loop {
-        store_pending(None);
+        store_pending(Some(document));
         let mut queue = lock_queue();
         // A change queued after the last batch found this job scheduled.
-        if queue.pending.is_empty() {
-            queue.scheduled = false;
+        if !queue
+            .pending
+            .iter()
+            .any(|change| change.document == *document)
+        {
+            queue.scheduled.retain(|scheduled| scheduled != document);
             STORED.notify_all();
             return;
         }
@@ -443,7 +542,11 @@ fn store_pending(only: Option<&SettingsDocument>) {
         }
         queue.retired = queue.retired.wrapping_add(1);
         queue.writing = false;
-        WRITES.fetch_add(1, Ordering::AcqRel);
+        for (at, change) in batch.iter().enumerate() {
+            if !batch[..at].iter().any(|c| c.document == change.document) {
+                note_write(&change.document);
+            }
+        }
         if failed && let Some(wake) = queue.wake.take() {
             wake.wake();
         }
@@ -460,7 +563,7 @@ pub fn flush_settings_writes() {
         return;
     }
     let mut queue = lock_queue();
-    while queue.scheduled {
+    while !queue.scheduled.is_empty() {
         queue = wait(queue);
     }
 }
@@ -472,6 +575,9 @@ pub fn flush_settings_writes() {
 pub struct Settings<T> {
     app_id: String,
     document: SettingsDocument,
+    /// The class of device whose defaults unset keys read as; the
+    /// installed one ([`DeviceClass::current`]) unless pinned.
+    device: Option<DeviceClass>,
     schema: PhantomData<fn() -> T>,
 }
 
@@ -480,6 +586,7 @@ impl<T> Clone for Settings<T> {
         Self {
             app_id: self.app_id.clone(),
             document: self.document.clone(),
+            device: self.device,
             schema: PhantomData,
         }
     }
@@ -491,6 +598,7 @@ impl<T> std::fmt::Debug for Settings<T> {
             .field("app_id", &self.app_id)
             .field("type", &std::any::type_name::<T>())
             .field("document", &self.document)
+            .field("device", &self.device)
             .finish()
     }
 }
@@ -502,6 +610,7 @@ impl<T: SettingsSchema> Settings<T> {
         Self {
             app_id: app_id.to_owned(),
             document: SettingsDocument::Session,
+            device: None,
             schema: PhantomData,
         }
     }
@@ -530,6 +639,21 @@ impl<T: SettingsSchema> Settings<T> {
         self.in_document(SettingsDocument::File(path.into()))
     }
 
+    /// The same settings read with `device`'s defaults, whatever device
+    /// the process runs on.
+    #[must_use]
+    pub fn on_device(mut self, device: DeviceClass) -> Self {
+        self.device = Some(device);
+        self
+    }
+
+    /// Whether these settings mean anything on the device they are read on
+    /// ([`SettingsSchema::available_on`]).
+    #[must_use]
+    pub fn available(&self) -> bool {
+        T::available_on(self.device.unwrap_or_else(DeviceClass::current))
+    }
+
     /// How far these settings travel.
     #[must_use]
     pub const fn scope(&self) -> Scope {
@@ -556,7 +680,10 @@ impl<T: SettingsSchema> Settings<T> {
     /// The current value.
     #[must_use]
     pub fn get(&self) -> T {
-        decode(self.stored())
+        decode(
+            self.stored(),
+            self.device.unwrap_or_else(DeviceClass::current),
+        )
     }
 
     /// Store `value`. Keys of the section that `T` does not name are kept.
@@ -581,8 +708,16 @@ impl<T: SettingsSchema> Settings<T> {
         value: &T,
         origin: Option<&settings_store::ChangeOrigin>,
     ) -> std::io::Result<()> {
-        let value = serde_json::to_value(value).map_err(std::io::Error::other)?;
-        store_in(&self.document, &self.app_id, T::SCOPE, value, origin)
+        let value = value.to_settings_value().map_err(std::io::Error::other)?;
+        let current = self.get().to_settings_value().ok();
+        store_changed(
+            &self.document,
+            &self.app_id,
+            T::SCOPE,
+            value,
+            current,
+            origin,
+        )
     }
 
     /// Change the current value with `change` and store it, returning what
@@ -606,13 +741,46 @@ impl<T: SettingsSchema> Settings<T> {
     }
 }
 
-/// Decode `stored` over `T`'s defaults one key at a time, so a key that
+/// Store the keys of `value` that differ from `current`, what is read now:
+/// [`Settings::set_by`] once both are JSON. Not generic, so the toolkit
+/// compiles it once rather than every app once per settings type.
+fn store_changed(
+    document: &SettingsDocument,
+    app_id: &str,
+    scope: Scope,
+    value: Value,
+    current: Option<Value>,
+    origin: Option<&settings_store::ChangeOrigin>,
+) -> std::io::Result<()> {
+    // Only what differs from what is read now is written. A key the
+    // person never set reads as `T`'s default; writing the whole value
+    // would store that default as their choice, and a field edit in one
+    // place (a text size) would pin every other field of the section to
+    // whatever default this build has (the theme mode among them),
+    // replacing what another writer meant by leaving it unset.
+    let value = match (value, current) {
+        (Value::Object(values), Some(Value::Object(current))) => Value::Object(
+            values
+                .into_iter()
+                .filter(|(key, value)| current.get(key) != Some(value))
+                .collect(),
+        ),
+        (value, _) => value,
+    };
+    if value.as_object().is_some_and(Map::is_empty) {
+        return Ok(());
+    }
+    store_in(document, app_id, scope, value, origin)
+}
+
+/// Decode `stored` over `T`'s defaults on `device` one key at a time, so a key that
 /// does not decode (an older shape, a hand edit) reads as its default
 /// instead of discarding every other key.
-fn decode<T: SettingsSchema>(stored: Map<String, Value>) -> T {
-    let defaults = serde_json::to_value(T::default());
-    let decodes = |value: &Value| serde_json::from_value::<T>(value.clone()).is_ok();
-    serde_json::from_value(decoded(defaults.ok(), stored, &decodes)).unwrap_or_default()
+fn decode<T: SettingsSchema>(stored: Map<String, Value>, device: DeviceClass) -> T {
+    let defaults = T::defaults_on(device).to_settings_value();
+    let decodes = |value: &Value| T::from_settings_value(value.clone()).is_ok();
+    T::from_settings_value(decoded(defaults.ok(), stored, &decodes))
+        .unwrap_or_else(|_| T::defaults_on(device))
 }
 
 /// The object [`decode`] reads: `stored` over `defaults`, keeping each
@@ -916,9 +1084,9 @@ mod tests {
                 assert_eq!(document.section("playback")["autoplay"], false);
                 std::thread::scope(|scope| {
                     scope.spawn(|| {
-                        // Drain even if another parallel test owns the
-                        // scheduled job for the process-wide queue.
-                        flush_settings_writes();
+                        // Off the UI thread, this document's changes
+                        // first; then its own job, which finds none.
+                        store_pending(Some(&document));
                         work.run_pending();
                     });
                 });
@@ -1047,12 +1215,14 @@ mod tests {
             .unwrap();
 
         let document = settings_at(&file);
+        // Only what was changed is stored: the interval nobody chose stays
+        // unset and keeps following the app's default.
         assert_eq!(
             Value::Object(document.clone()),
             serde_json::json!({
                 "app_personal": {
-                    "so.tilo.example": {"confirm": false, "interval_ms": 1500},
-                    "so.tilo.other": {"confirm": true, "interval_ms": 1000}
+                    "so.tilo.example": {"confirm": false},
+                    "so.tilo.other": {"interval_ms": 1000}
                 },
                 "app_device_local": {"so.tilo.example": {"x": 40}}
             })
@@ -1074,6 +1244,95 @@ mod tests {
                 interval_ms: 1500
             }
         );
+    }
+
+    #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct Copies {
+        keep: bool,
+    }
+
+    impl SettingsSchema for Copies {
+        const SCOPE: Scope = Scope::DeviceLocal;
+
+        fn defaults_on(device: DeviceClass) -> Self {
+            Self {
+                keep: device == DeviceClass::Native,
+            }
+        }
+
+        fn available_on(device: DeviceClass) -> bool {
+            device == DeviceClass::Native
+        }
+    }
+
+    #[test]
+    fn a_setting_nobody_changed_reads_as_the_default_of_the_device_it_is_read_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let on = |device| {
+            Settings::<Copies>::for_app("so.tilo.example")
+                .in_file(&file)
+                .on_device(device)
+        };
+        assert!(on(DeviceClass::Native).get().keep);
+        assert!(!on(DeviceClass::Web).get().keep);
+        assert!(on(DeviceClass::Native).available());
+        assert!(!on(DeviceClass::Web).available());
+        assert!(
+            Settings::<Prefs>::for_app("so.tilo.example")
+                .on_device(DeviceClass::Web)
+                .available(),
+            "a setting is available everywhere unless it says otherwise"
+        );
+
+        // Choosing the default stores nothing, so the choice keeps following
+        // the device; choosing otherwise is the person's on every device.
+        on(DeviceClass::Native).set(&Copies { keep: true }).unwrap();
+        assert!(!settings_at(&file).contains_key("app_device_local"));
+        on(DeviceClass::Native)
+            .set(&Copies { keep: false })
+            .unwrap();
+        assert!(!on(DeviceClass::Native).get().keep);
+        on(DeviceClass::Web).set(&Copies { keep: true }).unwrap();
+        assert!(on(DeviceClass::Web).get().keep);
+    }
+
+    #[test]
+    fn changing_one_field_never_stores_the_others_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        std::fs::write(&file, r#"{"app_personal": {"so.tilo.example": {}}}"#).unwrap();
+        let prefs = Settings::<Prefs>::for_app("so.tilo.example").in_file(&file);
+        prefs.update(|prefs| prefs.confirm = false).unwrap();
+        let stored = || {
+            SettingsSection::named("app_personal")
+                .in_file(&file)
+                .load()
+                .get("so.tilo.example")
+                .cloned()
+        };
+        assert_eq!(stored(), Some(serde_json::json!({"confirm": false})));
+        // Another writer sets the interval; a later change of `confirm` here
+        // leaves it as that writer left it.
+        Settings::<Prefs>::for_app("so.tilo.example")
+            .in_file(&file)
+            .update(|prefs| prefs.interval_ms = 900)
+            .unwrap();
+        prefs.update(|prefs| prefs.confirm = true).unwrap();
+        assert_eq!(
+            stored(),
+            Some(serde_json::json!({"confirm": true, "interval_ms": 900}))
+        );
+        // Setting what is already there writes nothing, and a write to
+        // another document is not a change of this one.
+        let revision = prefs.revision();
+        prefs.set(&prefs.get()).unwrap();
+        let elsewhere = dir.path().join("other.json");
+        Settings::<Prefs>::for_app("so.tilo.example")
+            .in_file(&elsewhere)
+            .update(|prefs| prefs.interval_ms = 700)
+            .unwrap();
+        assert_eq!(prefs.revision(), revision);
     }
 
     #[test]
@@ -1202,5 +1461,54 @@ mod tests {
             Some(&Value::from(1)),
             "the background stores it"
         );
+    }
+}
+
+/// One open window of an app, as its other windows can tell, in every
+/// process: each holds a shared lock on one file. An app whose windows are
+/// processes of their own (each Browser tab) learns from it when its last
+/// window closes, the moment "the app closes" means.
+#[derive(Debug)]
+pub struct OpenWindow {
+    lock: advisory_lock::FileLock,
+    path: PathBuf,
+}
+
+impl OpenWindow {
+    /// Count this window among those counted in `dir`, which exists.
+    ///
+    /// # Errors
+    /// Returns an error when the lock file cannot be opened or locked.
+    pub fn open(dir: &Path) -> std::io::Result<Self> {
+        let path = dir.join("open-windows.lock");
+        let lock = advisory_lock::FileLock::open(&path, advisory_lock::LockMode::Shared)?;
+        Ok(Self { lock, path })
+    }
+
+    /// Stop counting this window. Returns whether it was the last: no other
+    /// window holds the lock once this one lets go of it.
+    #[must_use]
+    pub fn close(self) -> bool {
+        let Self { lock, path } = self;
+        drop(lock);
+        advisory_lock::FileLock::try_open(&path, advisory_lock::LockMode::Exclusive).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod open_window_tests {
+    use super::*;
+
+    #[test]
+    fn the_last_window_to_close_is_the_app_closing() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = OpenWindow::open(dir.path()).unwrap();
+        let second = OpenWindow::open(dir.path()).unwrap();
+        assert!(!first.close(), "a window closes, another stays open");
+        let third = OpenWindow::open(dir.path()).unwrap();
+        assert!(!second.close());
+        assert!(third.close(), "the last one closes: the app is closing");
+        let again = OpenWindow::open(dir.path()).unwrap();
+        assert!(again.close(), "an app opened later is counted afresh");
     }
 }

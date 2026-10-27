@@ -45,9 +45,6 @@ impl Service {
 
     /// Trust exactly one loopback origin as a Google fixture. This is explicit
     /// per service and does not permit a second loopback server or arbitrary URL.
-    ///
-    /// # Errors
-    /// If the fixture is not an HTTP(S) loopback origin without URL metadata.
     #[cfg(feature = "test-support")]
     pub fn for_test_origin(custodian: Custodian, origin: &str) -> Result<Self, String> {
         let url = Url::parse(origin).map_err(|_| "invalid fixture origin")?;
@@ -249,73 +246,85 @@ pub struct AuthorisedClient {
     binding: Binding,
 }
 
+// Each operation returns its future boxed: an `async fn` called from
+// another crate's async code is compiled into that crate, so Calendar would
+// carry the request, the transport and the parsing it awaits, which this
+// library holds once in the accounts engine.
 impl AuthorisedClient {
     /// `REPORT` with an XML body.
     ///
     /// # Errors
     /// Unsafe target or transport failure.
-    pub async fn report(
-        &self,
-        url: &str,
+    pub fn report<'a>(
+        &'a self,
+        url: &'a str,
         depth: Depth,
         body: String,
-    ) -> Result<DavResponse, String> {
-        let url = self.binding.check(url)?;
-        self.client
-            .report(url.as_str(), depth, body)
-            .await
-            .map_err(|error| error.to_string())
+    ) -> net::DavFuture<'a, Result<DavResponse, String>> {
+        Box::pin(async move {
+            let url = self.binding.check(url)?;
+            self.client
+                .report(url.as_str(), depth, body)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
 
     /// `PROPFIND` for properties at depth.
     ///
     /// # Errors
     /// Unsafe target or transport failure.
-    pub async fn propfind(
-        &self,
-        url: &str,
+    pub fn propfind<'a>(
+        &'a self,
+        url: &'a str,
         depth: Depth,
-        props: &[PropName],
-    ) -> Result<DavResponse, String> {
-        let url = self.binding.check(url)?;
-        self.client
-            .propfind(url.as_str(), depth, props)
-            .await
-            .map_err(|error| error.to_string())
+        props: &'a [PropName],
+    ) -> net::DavFuture<'a, Result<DavResponse, String>> {
+        Box::pin(async move {
+            let url = self.binding.check(url)?;
+            self.client
+                .propfind(url.as_str(), depth, props)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
 
     /// Conditional `PUT`.
     ///
     /// # Errors
     /// Unsafe target or transport failure.
-    pub async fn put(
-        &self,
-        url: &str,
+    pub fn put<'a>(
+        &'a self,
+        url: &'a str,
         body: Vec<u8>,
-        content_type: Option<&str>,
-        precondition: Precondition<'_>,
-    ) -> Result<DavResponse, String> {
-        let url = self.binding.check(url)?;
-        self.client
-            .put(url.as_str(), body, content_type, precondition)
-            .await
-            .map_err(|error| error.to_string())
+        content_type: Option<&'a str>,
+        precondition: Precondition<'a>,
+    ) -> net::DavFuture<'a, Result<DavResponse, String>> {
+        Box::pin(async move {
+            let url = self.binding.check(url)?;
+            self.client
+                .put(url.as_str(), body, content_type, precondition)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
 
     /// Conditional `DELETE`.
     ///
     /// # Errors
     /// Unsafe target or transport failure.
-    pub async fn delete(
-        &self,
-        url: &str,
-        precondition: Precondition<'_>,
-    ) -> Result<DavResponse, String> {
-        let url = self.binding.check(url)?;
-        self.client
-            .delete(url.as_str(), precondition)
-            .await
-            .map_err(|error| error.to_string())
+    pub fn delete<'a>(
+        &'a self,
+        url: &'a str,
+        precondition: Precondition<'a>,
+    ) -> net::DavFuture<'a, Result<DavResponse, String>> {
+        Box::pin(async move {
+            let url = self.binding.check(url)?;
+            self.client
+                .delete(url.as_str(), precondition)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
 }
 

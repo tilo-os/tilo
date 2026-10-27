@@ -143,12 +143,14 @@ type Arguments<I> =
 pub(crate) struct ActionTable {
     /// The app whose resource this is, for the keys of its actions.
     app: &'static str,
-    /// The resource's kind.
     kind: &'static str,
     resource: Rc<RefCell<Published>>,
     /// Another record than the app's own, published at this id, whose
     /// actions a live row may offer; `None` for the app's own resource.
     record: Option<Rc<str>>,
+    /// The provider keeping that record, which runs its actions
+    /// ([`Records::kept_by`](super::Records::kept_by)).
+    kept_by: Option<&'static str>,
 }
 
 /// What bound controls look up: a publication shared with the root that
@@ -179,12 +181,15 @@ impl ActionTable {
                 overlay: Vec::new(),
             })),
             record: None,
+            kept_by: None,
         }
     }
 
-    /// Route the actions to the record `record`, where it may be changed.
-    fn route(&mut self, record: &str, editable: bool) {
+    /// Route the actions to the record `record`, where it may be changed,
+    /// kept by the provider `kept_by` when another provider runs them.
+    fn route(&mut self, record: &str, editable: bool, kept_by: Option<&'static str>) {
         self.record = editable.then(|| Rc::from(record));
+        self.kept_by = kept_by;
     }
 
     /// Follow the canonical publication of this same hosted resource.
@@ -209,7 +214,6 @@ impl ActionTable {
         }
     }
 
-    /// The key of action `id`.
     fn key(&self, id: &str) -> ActionKey {
         ActionKey::new(self.app, self.kind, id)
     }
@@ -420,8 +424,13 @@ impl<R: Resource> Actions<R> {
 
     /// These actions as another record's, published at `record`: a live row
     /// may offer them ([`Self::operation`]) where it may change it.
-    pub(crate) fn routed_to(mut self, record: &str, editable: bool) -> Self {
-        self.table.route(record, editable);
+    pub(crate) fn routed_to(
+        mut self,
+        record: &str,
+        editable: bool,
+        kept_by: Option<&'static str>,
+    ) -> Self {
+        self.table.route(record, editable, kept_by);
         self
     }
 
@@ -438,10 +447,63 @@ impl<R: Resource> Actions<R> {
         decl: &tilo_resource::ActionDecl<R>,
     ) -> Option<tilo_actions::ActionSpec> {
         let record = self.table.record.as_deref()?;
-        Some(super::record::route_spec(
-            tilo_resource::declaration_spec(decl),
-            record,
-        ))
+        let spec = super::record::route_spec(tilo_resource::declaration_spec(decl), record);
+        Some(match self.table.kept_by {
+            // The provider keeping the record runs the action this one
+            // invokes of it.
+            Some(provider) => spec.run_as(tilo_actions::RunBy {
+                provider: provider.to_owned(),
+                resource: Some(record.to_owned()),
+                invokes: AsRef::<tilo_resource::Declaration>::as_ref(decl)
+                    .invokes
+                    .clone(),
+            }),
+            None => spec,
+        })
+    }
+
+    /// The resource's own actions as published now: what a query view's
+    /// "In this app" group searches, beside the app's effects.
+    #[must_use]
+    pub fn published(&self) -> Vec<tilo_actions::ActionSpec> {
+        let published = self.table.resource.borrow();
+        let mut specs = published.overlay.clone();
+        specs.extend(
+            published
+                .base
+                .actions
+                .iter()
+                .filter(|spec| !published.overlay.iter().any(|over| over.id == spec.id))
+                .cloned(),
+        );
+        specs
+    }
+
+    /// The binding of a button that runs `spec`, one of the resource's
+    /// published actions or one of its effects, with no arguments; `None`
+    /// where it asks for some.
+    #[must_use]
+    pub fn spec_binding(&self, spec: &tilo_actions::ActionSpec) -> Option<ActionBinding<()>> {
+        let resource = self.table.exporting(spec.clone());
+        let spec = resource.actions.first()?.clone();
+        ActionBinding::static_json(&resource, &spec, serde_json::Map::new())
+            .map_err(|error| tracing::debug!(%error, action = %spec.id, "control not bound"))
+            .ok()
+    }
+
+    /// The binding of a switch that runs `spec`, with no arguments, whichever
+    /// way it is flipped: the action itself flips what it controls.
+    #[must_use]
+    pub fn spec_switch_binding(
+        &self,
+        spec: &tilo_actions::ActionSpec,
+    ) -> Option<ActionBinding<bool>> {
+        let resource = self.table.exporting(spec.clone());
+        let spec = resource.actions.first()?.clone();
+        let arguments: Arguments<bool> = Box::new(|_| Ok(serde_json::Map::new()));
+        ActionBinding::fallible(&resource, &spec, arguments)
+            .map_err(|error| tracing::debug!(%error, action = %spec.id, "control not bound"))
+            .ok()
     }
 
     /// The table these actions bind from, which follows the publication
@@ -606,7 +668,6 @@ impl<R: Resource> Actions<R> {
         )
     }
 
-    /// `control`, bound to effect `effect`.
     pub fn bind_effect<E: Effect, I: 'static, C: ActionControl<I>>(
         &self,
         control: C,
@@ -631,14 +692,12 @@ impl<R: Resource> Actions<R> {
     }
 }
 
-/// `value` with its result in its JSON form, the same for every resource.
 fn json_of<V: tilo_resource::Model, I>(
     value: impl Fn(I) -> Result<V, String> + Send + Sync + 'static,
 ) -> Box<dyn Fn(I) -> Result<serde_json::Value, String> + Send + Sync> {
     Box::new(move |input| value(input).map(|value| value.to_json()))
 }
 
-/// A control's value, set as it is.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "the shape every value conversion has"

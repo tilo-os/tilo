@@ -9,6 +9,7 @@ use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
@@ -27,13 +28,13 @@ use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::{clipboard_copy, clipboard_copy_accepted, clipboard_paste};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::Button;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{LineSignal, RichTextLine, TransientColorSpan};
 use crate::widget::slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};
-use crate::widget::{Button, SearchField, TextInput};
 use crate::widget::{EventCtx, Widget};
 
 /// Deeper nesting runs off the panel's right edge.
@@ -45,6 +46,9 @@ pub const LIST_INDENT_STEP_PX: f32 = 28.0;
 pub enum LinkTarget {
     Page(PageId),
     External(String),
+    /// A resource of this desktop, by the `tilo://open#…` address it is
+    /// written as: activating it opens the resource in its own app.
+    Resource(String),
 }
 
 /// Case-insensitive byte ranges without assuming that Unicode case folding
@@ -682,6 +686,8 @@ pub struct BlockEditor {
     /// Exact membership retained after a structural batch command. Text alone
     /// cannot distinguish an included empty last block from a column-zero end.
     retained_block_selection: Option<RetainedBlockSelection>,
+    /// The menu a secondary click or long press opens on the words.
+    text_menu: text_menu::TextMenu,
     slash_menu: SlashMenu,
     /// Byte offset where `/` was typed. The query after it stays in the
     /// block as typed; `/<query>` is spliced back out on commit.
@@ -722,6 +728,7 @@ pub struct BlockEditor {
     transclusion_previews: HashMap<PageId, TransclusionPreview>,
     transclusion_rects: Vec<Option<(Rect, PageId)>>,
     pending_transclusion_opens: Vec<PageId>,
+    pending_resource_link_opens: Vec<String>,
     pending_external_link_opens: Vec<String>,
     /// Images pasted into the editor, for its host to store and place after
     /// the caret: the editor holds text, and an image becomes a block once
@@ -793,27 +800,16 @@ pub struct BlockEditor {
     /// drain, so retain them until the app's next sync dispatches the same
     /// action-owned delta.
     pending_semantic_ops: Vec<BlockEditOp>,
-    /// Shared, document-local find UI. It is an absolute overlay so opening it
-    /// never reflows authored content or creates an undo boundary.
-    find_field: SearchField,
-    replace_field: TextInput,
-    replace_button: Button,
-    replace_all_button: Button,
-    replace_all_node: Option<NodeId>,
-    replace_all_requested: std::rc::Rc<std::cell::Cell<bool>>,
-    find_snapshot: Vec<BlockContent>,
-    replace_node: Option<NodeId>,
-    replace_button_node: Option<NodeId>,
     replace_enabled: bool,
-    replace_requested: std::rc::Rc<std::cell::Cell<bool>>,
-    find_target: Option<FindReplaceTarget>,
-    find_node: Option<NodeId>,
-    find_visible: bool,
+    /// A replacement the window's search asked for, which the host applies
+    /// through its own edit path ([`Self::take_find_replace`]).
+    find_replace: Option<FindReplace>,
+    /// The text the window's search last found in
+    /// ([`super::find_bar::Findable::content_revision`]): a replacement of
+    /// one of its matches is refused once the text moved on.
+    find_revision: u64,
     find_matches: Vec<FindMatch>,
     find_active: Option<usize>,
-    find_previous_rect: Rect,
-    find_next_rect: Rect,
-    find_close_rect: Rect,
     /// The window's search finds in this document ([`Findable`]): every
     /// match is painted, the current one stronger.
     ///
@@ -858,6 +854,15 @@ pub struct FindReplaceTarget {
     pub end_byte: usize,
 }
 
+/// What the window's search asked to replace, for the host that owns the
+/// blocks: it validates the snapshot against its own and applies it as one
+/// undoable edit.
+#[derive(Clone, Debug)]
+pub enum FindReplace {
+    One(FindReplaceTarget, String),
+    All(FindReplaceBatch),
+}
+
 /// One search snapshot, with byte ranges into its blocks.
 #[derive(Clone, Debug)]
 pub struct FindReplaceBatch {
@@ -883,10 +888,6 @@ impl BlockEditor {
     /// Starts with one empty paragraph — there must be a block to focus.
     pub fn new() -> Self {
         crate::i18n::I18nManager::register_widget_messages();
-        let replace_requested = std::rc::Rc::new(std::cell::Cell::new(false));
-        let requested = replace_requested.clone();
-        let replace_all_requested = std::rc::Rc::new(std::cell::Cell::new(false));
-        let all_requested = replace_all_requested.clone();
         let mut s = Self {
             blocks: Vec::new(),
             focused: None,
@@ -943,6 +944,7 @@ impl BlockEditor {
             cross_block_drag_touched: None,
             document_selection: None,
             retained_block_selection: None,
+            text_menu: text_menu::TextMenu::default(),
             slash_menu: SlashMenu::new(),
             slash_open_at: None,
             slash_request: None,
@@ -960,6 +962,7 @@ impl BlockEditor {
             transclusion_previews: HashMap::new(),
             transclusion_rects: Vec::new(),
             pending_transclusion_opens: Vec::new(),
+            pending_resource_link_opens: Vec::new(),
             pending_external_link_opens: Vec::new(),
             pasted_images: Vec::new(),
             code_copy_hits: Vec::new(),
@@ -994,35 +997,11 @@ impl BlockEditor {
             canonical_empty: false,
             interception_before: None,
             pending_semantic_ops: Vec::new(),
-            find_field: SearchField::new()
-                .with_id("block-editor-find")
-                .with_placeholder("block-editor-find-placeholder")
-                .without_clear(),
-            replace_field: TextInput::local()
-                .with_id("block-editor-replacement")
-                .with_placeholder("block-editor-replace-placeholder"),
-            replace_button: Button::new("block-editor-replace", "block-editor-replace")
-                .control_size(crate::widget::ControlSize::Regular)
-                .on_click(move || requested.set(true)),
-            replace_all_button: Button::new("block-editor-replace-all", "block-editor-replace-all")
-                .control_size(crate::widget::ControlSize::Regular)
-                .tooltip("block-editor-replace-all-help")
-                .on_click(move || all_requested.set(true)),
-            replace_all_node: None,
-            replace_all_requested,
-            find_snapshot: Vec::new(),
-            replace_node: None,
-            replace_button_node: None,
             replace_enabled: false,
-            replace_requested,
-            find_target: None,
-            find_node: None,
-            find_visible: false,
+            find_replace: None,
+            find_revision: 0,
             find_matches: Vec::new(),
             find_active: None,
-            find_previous_rect: Rect::ZERO,
-            find_next_rect: Rect::ZERO,
-            find_close_rect: Rect::ZERO,
             window_find: false,
             find_reveal: false,
             presence_key: None,
@@ -1349,17 +1328,6 @@ impl BlockEditor {
             self.dirty = true;
         }
         if focused && self.read_only {
-            return;
-        }
-        if self.find_visible {
-            self.is_focused = focused;
-            let replacement_focus = self.replace_enabled && self.replace_field.is_focused();
-            self.find_field.set_focused(focused && !replacement_focus);
-            self.replace_field.set_focus(focused && replacement_focus);
-            for block in &mut self.blocks {
-                block.line.set_focus(false);
-            }
-            self.dirty = true;
             return;
         }
         if focused
@@ -1728,16 +1696,14 @@ impl BlockEditor {
     }
 
     /// Whether a menu or popover of the editor is open and takes Escape and
-    /// Enter itself (the slash menu, a link picker, find).
+    /// Enter itself (the slash menu, a link picker).
     #[must_use]
     pub fn has_open_popup(&self) -> bool {
         self.slash_menu.is_visible()
             || self.link_popover.is_visible()
-            || self.find_visible
             || self.mention_picker.is_open()
     }
 
-    /// Whether the `@` picker is open under the caret.
     #[must_use]
     pub fn mention_picker_open(&self) -> bool {
         self.mention_picker.is_open()
@@ -1975,16 +1941,14 @@ impl BlockEditor {
 
     /// Whether the active source line or projected table cell owns an IME preedit.
     pub fn is_composing(&self) -> bool {
-        (self.find_visible && (self.find_field.is_composing() || self.replace_field.is_composing()))
-            || self
-                .focused
-                .and_then(|index| self.blocks.get(index))
-                .is_some_and(|block| {
-                    block.line.inner().is_composing()
-                        || self.table_editors.get(&block.id).is_some_and(
-                            super::block_editor_table::DocumentTable::projected_is_composing,
-                        )
-                })
+        self.focused
+            .and_then(|index| self.blocks.get(index))
+            .is_some_and(|block| {
+                block.line.inner().is_composing()
+                    || self.table_editors.get(&block.id).is_some_and(
+                        super::block_editor_table::DocumentTable::projected_is_composing,
+                    )
+            })
     }
 
     pub fn focused_table_cell(&self) -> Option<(String, usize, usize)> {
@@ -1994,127 +1958,6 @@ impl BlockEditor {
                 .and_then(super::block_editor_table::DocumentTable::projected_focus)
                 .map(|(row, column)| (block.id.clone(), row, column))
         })
-    }
-
-    /// Opens the shared in-document find overlay without touching document
-    /// state. Hosts may call this for a window-level Find command even when a
-    /// sibling field currently owns focus.
-    pub fn open_find(&mut self) {
-        if self.is_composing() {
-            return;
-        }
-        self.find_visible = true;
-        self.structure_dirty = true;
-        self.replace_field.set_focus(false);
-        self.find_field.set_focused(true);
-        self.find_field.select_all();
-        for block in &mut self.blocks {
-            block.line.set_focus(false);
-        }
-        self.refresh_find_matches(true);
-        self.dirty = true;
-    }
-
-    fn close_find(&mut self) {
-        self.find_visible = false;
-        self.structure_dirty = true;
-        self.replace_field.set_focus(false);
-        self.replace_requested.set(false);
-        self.replace_all_requested.set(false);
-        self.find_snapshot.clear();
-        self.find_field.set_focused(false);
-        if let Some(index) = self.focused
-            && let Some(block) = self.blocks.get_mut(index)
-        {
-            block.line.set_focus(true);
-        }
-        self.dirty = true;
-    }
-
-    fn refresh_find_matches(&mut self, select_first: bool) {
-        let query = self.find_field.value().to_string();
-        self.find_matches.clear();
-        self.find_active = None;
-        self.find_target = None;
-        self.find_snapshot.clear();
-        if query.is_empty() {
-            return;
-        }
-        if self.replace_enabled {
-            self.find_snapshot = self.blocks.iter().map(Block::content).collect();
-        }
-        self.clear_find_document_selection();
-        self.find_matches = self.find_ranges(&query, super::find_bar::FindOptions::default());
-        if select_first && !self.find_matches.is_empty() {
-            let current_block = self.focused.unwrap_or(0);
-            let current_byte = self
-                .blocks
-                .get(current_block)
-                .map_or(0, |block| block.line.cursor_pos());
-            let active = self
-                .find_matches
-                .iter()
-                .position(|item| {
-                    item.block > current_block
-                        || (item.block == current_block && item.start >= current_byte)
-                })
-                .unwrap_or(0);
-            self.activate_find_match(active);
-        }
-    }
-
-    fn activate_find_match(&mut self, active: usize) {
-        let replacement_focus = self.replace_field.is_focused();
-        let Some(found) = self.find_matches.get(active).copied() else {
-            self.find_active = None;
-            return;
-        };
-        self.find_target = self.blocks.get(found.block).map(|block| FindReplaceTarget {
-            block: block.content(),
-            start_byte: found.start,
-            end_byte: found.end,
-        });
-        self.clear_find_document_selection();
-        self.retained_block_selection = None;
-        self.document_selection = None;
-        self.focus_block(found.block, CursorPlacement::Byte(found.end));
-        if let Some(block) = self.blocks.get_mut(found.block) {
-            block.line.inner_mut().set_selection(found.start, found.end);
-            // The query continues to own keyboard focus while the matching
-            // document range remains visibly selected.
-            block.line.set_focus(false);
-        }
-        self.focus_find_input(replacement_focus);
-        self.find_active = Some(active);
-        self.dirty = true;
-    }
-
-    fn clear_find_document_selection(&mut self) {
-        for block in &mut self.blocks {
-            let cursor = block.line.cursor_pos();
-            block.line.inner_mut().set_selection(cursor, cursor);
-        }
-        debug_assert!(
-            self.blocks
-                .iter()
-                .all(|block| block.line.selection_range().is_none()),
-            "find navigation must leave only the newly activated match selected"
-        );
-    }
-
-    fn step_find(&mut self, reverse: bool) {
-        if self.find_matches.is_empty() {
-            self.refresh_find_matches(true);
-            return;
-        }
-        let len = self.find_matches.len();
-        let next = match (self.find_active, reverse) {
-            (Some(0) | None, true) => len.saturating_sub(1),
-            (Some(index), true) => index.saturating_sub(1),
-            (Some(index), false) if index < len.saturating_sub(1) => index.saturating_add(1),
-            (Some(_) | None, false) => 0,
-        };
-        self.activate_find_match(next);
     }
 
     /// Every match of `query` in the editable blocks, in reading order.
@@ -2176,381 +2019,28 @@ impl BlockEditor {
         spans
     }
 
-    fn focus_find_input(&mut self, replacement: bool) {
-        self.find_field.set_focused(!replacement);
-        self.replace_field.set_focus(replacement);
-        for block in &mut self.blocks {
-            block.line.set_focus(false);
-        }
-        self.dirty = true;
-    }
-
-    /// Enable replacement only when a canonical host consumes its requests.
+    /// Let the window's search replace in this document: its host applies
+    /// what [`Self::take_find_replace`] hands it through its own edit path.
     pub fn set_find_replace_enabled(&mut self, enabled: bool) {
         self.replace_enabled = enabled;
     }
 
-    pub fn take_find_replace_request(&mut self) -> bool {
-        self.replace_requested.replace(false)
+    /// The replacement the window's search asked for since the last call,
+    /// for the host to validate against its blocks and apply as one edit.
+    pub fn take_find_replace(&mut self) -> Option<FindReplace> {
+        self.find_replace.take()
     }
 
-    /// The replacement payload keeps byte endpoints and original block identity.
-    pub fn find_replace_request(&self) -> Option<(FindReplaceTarget, String)> {
-        if !self.replace_enabled || !self.find_visible || self.read_only || self.is_composing() {
-            return None;
-        }
-        let target = self.find_target.as_ref()?;
-        let matched = target.block.text.get(target.start_byte..target.end_byte)?;
-        if matched.is_empty() || matched.to_lowercase() != self.find_field.value().to_lowercase() {
-            return None;
-        }
-        let replacement = self.replace_field.value();
-        if replacement.chars().any(|c| c.is_control() && c != '\t') {
-            return None;
-        }
-        Some((target.clone(), replacement.to_owned()))
-    }
-
-    pub fn take_find_replace_all_request(&mut self) -> bool {
-        self.replace_all_requested.replace(false)
-    }
-
-    pub fn can_replace_all(&self) -> bool {
+    /// Whether the window's search may replace with `with` now: a host
+    /// applies it, the document is editable, no replacement waits, and the
+    /// text is the one the search found its matches in.
+    fn can_find_replace(&self, with: &str) -> bool {
         self.replace_enabled
-            && self.find_visible
             && !self.read_only
             && !self.is_composing()
-            && !self.find_matches.is_empty()
-            && self.find_matches.len() <= 10_000
-            // Match the canonical action's aggregate text budget before enabling
-            // a control whose payload the host would necessarily refuse.
-            && self.replace_field.value().chars().count().checked_mul(self.find_matches.len())
-                .is_some_and(|total| total <= 1_000_000)
-            && !self
-                .replace_field
-                .value()
-                .chars()
-                .any(|c| c.is_control() && c != '\t')
-    }
-
-    /// Clone the snapshot only when a canonical host consumes the action.
-    pub fn find_replace_all_request(&self) -> Option<FindReplaceBatch> {
-        self.can_replace_all().then(|| FindReplaceBatch {
-            blocks: self.find_snapshot.clone(),
-            matches: self
-                .find_matches
-                .iter()
-                .map(|item| (item.block, item.start..item.end))
-                .collect(),
-            replacement: self.replace_field.value().to_owned(),
-        })
-    }
-
-    pub fn finish_find_replace_all(&mut self) {
-        let replacement_focus = self.replace_field.is_focused();
-        self.refresh_find_matches(true);
-        self.focus_find_input(replacement_focus);
-    }
-
-    /// Move beyond inserted text, refresh matches, and retain overlay focus.
-    pub fn finish_find_replace(&mut self, target: &FindReplaceTarget, replacement_len: usize) {
-        let replacement_focus = self.replace_field.is_focused();
-        if let Some(index) = self
-            .blocks
-            .iter()
-            .position(|block| block.id == target.block.id)
-        {
-            self.focus_block(
-                index,
-                CursorPlacement::Byte(target.start_byte.saturating_add(replacement_len)),
-            );
-        }
-        self.refresh_find_matches(true);
-        self.focus_find_input(replacement_focus);
-    }
-
-    fn handle_find_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
-        use winit::event::MouseButton;
-
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse_pos = ctx.logical(position);
-        }
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Character(key),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-            && (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
-            && key.eq_ignore_ascii_case("f")
-        {
-            self.open_find();
-            *ctx.handled = true;
-            return true;
-        }
-        if !self.find_visible {
-            return false;
-        }
-
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        {
-            match logical_key {
-                Key::Named(NamedKey::Tab) if self.replace_enabled && !self.is_composing() => {
-                    let replacement_focus = !self.replace_field.is_focused();
-                    self.focus_find_input(replacement_focus);
-                    *ctx.handled = true;
-                    return true;
-                }
-                Key::Named(NamedKey::Enter)
-                    if self.replace_enabled
-                        && self.replace_field.is_focused()
-                        && !self.is_composing() =>
-                {
-                    if ctx.modifiers.state().shift_key()
-                        || ctx.modifiers.state().control_key()
-                        || ctx.modifiers.state().super_key()
-                    {
-                        if self.can_replace_all() {
-                            self.replace_all_requested.set(true);
-                        }
-                    } else {
-                        self.replace_requested.set(true);
-                    }
-                    *ctx.handled = true;
-                    return true;
-                }
-                Key::Named(NamedKey::Escape) if !self.is_composing() => {
-                    self.close_find();
-                    *ctx.handled = true;
-                    return true;
-                }
-                Key::Named(NamedKey::Enter | NamedKey::F3) if !self.is_composing() => {
-                    self.step_find(ctx.modifiers.state().shift_key());
-                    *ctx.handled = true;
-                    return true;
-                }
-                _ => {}
-            }
-        }
-
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        {
-            if self.is_composing() {
-                let input_rect = if self.replace_field.is_focused() {
-                    self.replace_field.get_rect()
-                } else {
-                    self.find_field.get_rect()
-                };
-                if !input_rect.contains(self.last_mouse_pos) {
-                    *ctx.handled = true;
-                    return true;
-                }
-            }
-            if self.find_previous_rect.contains(self.last_mouse_pos) {
-                self.step_find(true);
-                *ctx.handled = true;
-                return true;
-            }
-            if self.find_next_rect.contains(self.last_mouse_pos) {
-                self.step_find(false);
-                *ctx.handled = true;
-                return true;
-            }
-            if self.find_close_rect.contains(self.last_mouse_pos) {
-                self.close_find();
-                *ctx.handled = true;
-                return true;
-            }
-            if self.replace_enabled
-                && (self.replace_field.get_rect().contains(self.last_mouse_pos)
-                    || self.replace_button.get_rect().contains(self.last_mouse_pos)
-                    || self
-                        .replace_all_button
-                        .get_rect()
-                        .contains(self.last_mouse_pos))
-            {
-                self.focus_find_input(true);
-            } else if self.find_field.get_rect().contains(self.last_mouse_pos) {
-                self.focus_find_input(false);
-            }
-            let controls = self.find_previous_rect.union(self.find_close_rect);
-            if !(self.replace_enabled
-                && (self.replace_field.get_rect().contains(self.last_mouse_pos)
-                    || self.replace_button.get_rect().contains(self.last_mouse_pos)
-                    || self
-                        .replace_all_button
-                        .get_rect()
-                        .contains(self.last_mouse_pos)))
-                && !self.find_field.get_rect().contains(self.last_mouse_pos)
-                && !controls.contains(self.last_mouse_pos)
-            {
-                self.close_find();
-                return false;
-            }
-        }
-
-        if self.replace_enabled {
-            self.replace_button
-                .set_enabled(self.find_replace_request().is_some());
-            if let Some(node) = self.replace_button_node {
-                self.replace_button
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            }
-            self.replace_all_button.set_enabled(self.can_replace_all());
-            if let Some(node) = self.replace_all_node {
-                self.replace_all_button
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            }
-            if self.replace_field.is_focused() {
-                if let Some(node) = self.replace_node {
-                    self.replace_field
-                        .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-                }
-                if self.replace_field.take_dirty().is_some() {
-                    self.dirty = true;
-                }
-                *ctx.handled = true;
-                return true;
-            }
-        }
-        if let Some(node) = self.find_node {
-            self.find_field
-                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            if self.find_field.take_dirty().is_some() {
-                self.refresh_find_matches(true);
-            }
-        }
-        *ctx.handled
-    }
-
-    #[expect(
-        clippy::arithmetic_side_effects,
-        reason = "finite theme-scaled drawing coordinates intentionally use affine arithmetic"
-    )]
-    fn draw_find_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if !self.find_visible {
-            return;
-        }
-        self.find_field
-            .draw(scene, transform, text_renderer, theme, presence);
-        if self.replace_enabled {
-            self.replace_field
-                .draw(scene, transform, text_renderer, theme, presence);
-            self.replace_button
-                .draw(scene, transform, text_renderer, theme, presence);
-            self.replace_all_button
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
-
-        let controls = self
-            .find_previous_rect
-            .union(self.find_close_rect)
-            .inflate(3.0 * self.text_scale, 3.0 * self.text_scale);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(controls, 8.0 * self.text_scale),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
-            None,
-            &vello::kurbo::RoundedRect::from_rect(controls, 8.0 * self.text_scale),
-        );
-        for (rect, icon) in [
-            (self.find_previous_rect, Icon::ChevronUp),
-            (self.find_next_rect, Icon::ChevronDown),
-            (self.find_close_rect, Icon::X),
-        ] {
-            if rect.contains(self.last_mouse_pos) {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.lift(0.25),
-                    None,
-                    &vello::kurbo::RoundedRect::from_rect(rect, 6.0 * self.text_scale),
-                );
-            }
-            draw_icon(
-                scene,
-                transform,
-                rect.inflate(-7.0 * self.text_scale, -7.0 * self.text_scale),
-                icon,
-                theme.tokens.colors.text_primary,
-                1.6 * self.text_scale,
-            );
-        }
-
-        let status = if self.find_field.value().is_empty() {
-            String::new()
-        } else if self.find_matches.is_empty() {
-            crate::i18n!("block-editor-find-no-results")
-        } else {
-            format!(
-                "{} / {}",
-                self.find_active.map_or(0, |index| index.saturating_add(1)),
-                self.find_matches.len()
-            )
-        };
-        if !status.is_empty() {
-            let field = self.find_field.get_rect();
-            let (width, height) = text_renderer.measure(&status, 11.0, None);
-            let chip_width = f64::from(width) + 12.0 * self.text_scale;
-            let chip = Rect::new(
-                field.x1 - chip_width - 5.0 * self.text_scale,
-                field.y0 + 6.0 * self.text_scale,
-                field.x1 - 5.0 * self.text_scale,
-                field.y1 - 6.0 * self.text_scale,
-            );
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.raised,
-                None,
-                &vello::kurbo::RoundedRect::from_rect(chip, 6.0 * self.text_scale),
-            );
-            text_renderer.draw_text(
-                scene,
-                &status,
-                11.0,
-                if self.find_matches.is_empty() {
-                    theme.tokens.colors.semantic.danger
-                } else {
-                    theme.tokens.colors.text_dim
-                },
-                transform
-                    * Affine::translate((
-                        chip.x0 + 6.0 * self.text_scale,
-                        chip.center().y - f64::from(height) / 2.0,
-                    )),
-                None,
-            );
-        }
+            && self.find_replace.is_none()
+            && self.find_revision == super::find_bar::Findable::content_revision(self)
+            && !with.chars().any(|c| c.is_control() && c != '\t')
     }
 
     pub fn focus_block(&mut self, idx: usize, cursor_at: CursorPlacement) {
@@ -2782,71 +2272,39 @@ impl BlockEditor {
         line.set_cursor_pos(at.saturating_add(text.len()));
     }
 
-    /// Toggle `mark` as a toolbar button does: over the focused block's
-    /// selection, or, with nothing selected, for the text typed next.
-    /// `false` when no block is focused.
-    pub fn toggle_mark(&mut self, mark: Mark) -> bool {
-        let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) else {
-            return false;
-        };
-        block.line.toggle_mark(mark);
-        self.dirty = true;
-        true
-    }
-
-    /// The marks a toolbar shows as on: those covering the whole selection
-    /// in the focused block, or the caret, with the ones set for the text
-    /// typed next.
-    pub fn active_marks(&self) -> Vec<Mark> {
-        let Some(line) = self
-            .focused
-            .and_then(|index| self.blocks.get(index))
-            .map(|block| &block.line)
-        else {
-            return Vec::new();
-        };
-        let (start, end) = line
-            .selection_range()
-            .filter(|(start, end)| start < end)
-            .unwrap_or_else(|| (line.cursor_pos(), line.cursor_pos()));
-        let covers = |span: &MarkSpan| {
-            if start == end {
-                span.range.start < start && start <= span.range.end
-            } else {
-                span.range.start <= start && end <= span.range.end
-            }
-        };
-        let mut active: Vec<Mark> = Vec::new();
-        for span in line.marks().iter().filter(|span| covers(span)) {
-            if !active.contains(&span.mark) {
-                active.push(span.mark.clone());
-            }
-        }
-        for pending in line.pending_marks() {
-            if !active.iter().any(|mark| mark.same_kind(pending)) {
-                active.push(pending.clone());
-            }
-        }
-        active
-    }
-
     /// Link the focused block's selection to `target`, or, with nothing
     /// selected, insert `target` at the caret as its own linked text.
     /// `false` when no block is focused or `target` is blank.
     pub fn insert_link(&mut self, target: &str) -> bool {
+        self.insert_link_to(target, target)
+    }
+
+    /// Link the focused block's selection to the address `target`, labelled
+    /// `label` — the text the person reads, which for a resource is its name
+    /// while `target` is the address that reaches it. With nothing selected,
+    /// `label` is inserted at the caret already linked.
+    /// `false` when no block is focused or `target` is blank.
+    pub fn insert_link_to(&mut self, target: &str, label: &str) -> bool {
         let target = target.trim();
-        if target.is_empty() {
+        let label = label.trim();
+        if target.is_empty() || label.is_empty() {
             return false;
         }
         let Some(block) = self.focused.and_then(|index| self.blocks.get_mut(index)) else {
             return false;
         };
         let line = &mut block.line;
-        let mark = Mark::ExternalLink(target.to_owned());
+        // A `tilo://open#…` address names a resource of this desktop, which
+        // opens in the app that keeps it rather than in a web browser.
+        let mark = if html::is_resource_link(target) {
+            Mark::ResourceLink(target.to_owned())
+        } else {
+            Mark::ExternalLink(target.to_owned())
+        };
         if let Some((start, end)) = line.selection_range().filter(|(start, end)| start < end) {
             let mut spans = line.marks().to_vec();
             spans.retain(|span| {
-                !(matches!(span.mark, Mark::ExternalLink(_))
+                !(matches!(span.mark, Mark::ExternalLink(_) | Mark::ResourceLink(_))
                     && span.range.start < end
                     && start < span.range.end)
             });
@@ -2855,19 +2313,18 @@ impl BlockEditor {
         } else {
             let at = line.cursor_pos().min(line.value().len());
             let mut text = line.value().to_owned();
-            text.insert_str(at, target);
+            text.insert_str(at, label);
             let mut spans = line.marks().to_vec();
-            crate::widget::marks::shift_after_edit(&mut spans, at, target.len(), 0);
-            spans.push(MarkSpan::new(at..at.saturating_add(target.len()), mark));
+            crate::widget::marks::shift_after_edit(&mut spans, at, label.len(), 0);
+            spans.push(MarkSpan::new(at..at.saturating_add(label.len()), mark));
             line.set_text(&text);
             line.set_marks(spans);
-            line.set_cursor_pos(at.saturating_add(target.len()));
+            line.set_cursor_pos(at.saturating_add(label.len()));
         }
         self.dirty = true;
         true
     }
 
-    /// The focused block's kind.
     pub fn focused_kind(&self) -> Option<&BlockKind> {
         self.focused
             .and_then(|index| self.blocks.get(index))
@@ -3427,6 +2884,7 @@ impl BlockEditor {
         theme: &Theme,
     ) {
         self.refresh_popover_anchors(theme);
+        self.paint_text_menu(scene, transform, text_renderer, theme);
         self.slash_menu
             .draw_overlay(scene, transform, text_renderer, theme);
         self.link_popover
@@ -3725,12 +3183,8 @@ impl BlockEditor {
 
     /// [`Widget::accessibility_shared`], with `control` added to every
     /// block's row. Each row is the one of the last frame while nothing it
-    /// is built from changed ([`Self::access_rows`]), so a keystroke builds
+    /// is built from changed (`Self::access_rows`), so a keystroke builds
     /// the row of the block it typed into, not the document's.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the complete resource tree is emitted in one cohesive accessibility snapshot"
-    )]
     pub fn accessibility_shared_with(
         &self,
         control: Option<&RowControl<'_>>,
@@ -3794,61 +3248,6 @@ impl BlockEditor {
                     )
                 }),
         );
-        if self.find_visible {
-            if let Some(search) = self.find_field.accessibility() {
-                children.push(
-                    search
-                        .with_name(crate::i18n!("block-editor-find-placeholder"))
-                        .with_action_target("notes.find:query"),
-                );
-            }
-            if self.replace_enabled {
-                if let Some(field) = self.replace_field.accessibility() {
-                    children.push(
-                        field
-                            .with_name(crate::i18n!("block-editor-replace-placeholder"))
-                            .with_action_target("notes.find:replacement"),
-                    );
-                }
-                if let Some(button) = self.replace_all_button.accessibility() {
-                    children.push(
-                        button
-                            .with_action_target("notes.find:replace-all")
-                            .with_state(
-                                AccessState::new()
-                                    .focusable(true)
-                                    .disabled(!self.can_replace_all()),
-                            ),
-                    );
-                }
-                if let Some(button) = self.replace_button.accessibility() {
-                    children.push(
-                        button.with_action_target("notes.find:replace").with_state(
-                            AccessState::new()
-                                .focusable(true)
-                                .disabled(self.find_replace_request().is_none()),
-                        ),
-                    );
-                }
-            }
-            children.extend([
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-find-previous"))
-                    .with_action_target("notes.find:previous")
-                    .with_bounds(self.find_previous_rect)
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-find-next"))
-                    .with_action_target("notes.find:next")
-                    .with_bounds(self.find_next_rect)
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button)
-                    .with_name(crate::i18n!("block-editor-find-close"))
-                    .with_action_target("notes.find:close")
-                    .with_bounds(self.find_close_rect)
-                    .with_state(AccessState::new().focusable(true)),
-            ]);
-        }
         let mut children: Vec<std::sync::Arc<AccessNode>> =
             children.into_iter().map(std::sync::Arc::new).collect();
         children.extend(self.access_rows(control));
@@ -3864,6 +3263,9 @@ impl BlockEditor {
             namespace_targets(&mut menu);
             menu.semantic_key = Some("notes.slash-menu".into());
             menu.bounds = Some(self.slash_menu.get_rect().into());
+            children.push(std::sync::Arc::new(menu));
+        }
+        if let Some(menu) = self.text_menu_access_node() {
             children.push(std::sync::Arc::new(menu));
         }
         let mentions = self.mention_picker.access_rows();
@@ -3948,7 +3350,7 @@ impl BlockEditor {
             .collect()
     }
 
-    /// The block rows [`Self::access_rows`] built rather than kept, since
+    /// The block rows `Self::access_rows` built rather than kept, since
     /// the editor was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn access_row_builds_for_test(&self) -> usize {
@@ -4278,6 +3680,22 @@ impl BlockEditor {
                     crate::i18n!("block-a11y-open-external"),
                     external_link_action_target(url),
                 ),
+                Mark::ResourceLink(href) => (
+                    crate::i18n::I18nManager::format(
+                        "block-a11y-open-resource",
+                        &[(
+                            "label",
+                            crate::i18n::ArgValue::from(
+                                block
+                                    .text()
+                                    .get(span.range.clone())
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                            ),
+                        )],
+                    ),
+                    resource_link_action_target(href),
+                ),
                 _ => continue,
             };
             block_children.push(
@@ -4361,104 +3779,10 @@ impl BlockEditor {
             self.pending_semantic_ops.extend(ops);
             return changed;
         }
-        if let Some((index, result)) = self.blocks.iter().enumerate().find_map(|(index, block)| {
-            self.table_editors
-                .get_mut(&block.id)
-                .and_then(|table| table.projected_clipboard(command))
-                .map(|result| (index, result))
-        }) {
-            if let Some((row, column, value)) = result {
-                self.begin_edit();
-                self.apply_table_cell_edit(index, row, column, &value);
-                let ops = self.take_edit_ops();
-                self.pending_semantic_ops.extend(ops);
-            }
-            self.dirty = true;
-            return true;
-        }
-        if !matches!(command, "cut" | "copy" | "paste" | "select-all") {
-            return false;
-        }
-        if command == "select-all" {
-            self.handle_document_selection_ctrl_key(&Key::Character("a".into()));
-            self.dirty = true;
-            return true;
-        }
-        // A preview's source is the clipboard candidate, not a live text
-        // selection until a replacement actually succeeds.
-        let image_selection = self.focused.and_then(|index| {
-            let block = self.blocks.get(index)?;
-            self.image_attachments
-                .get(&block.id)
-                .filter(|image| !image.editing)
-                .map(|_| DocumentSelection {
-                    anchor: DocumentPosition {
-                        block: index,
-                        byte: 0,
-                    },
-                    cursor: DocumentPosition {
-                        block: index,
-                        byte: block.text().len(),
-                    },
-                })
-        });
-        let selection = self.document_selection.or(image_selection).or_else(|| {
-            let index = self.focused?;
-            let line = &self.blocks.get(index)?.line;
-            let (start, end) = line
-                .selection_range()
-                .unwrap_or_else(|| (line.cursor_pos(), line.cursor_pos()));
-            Some(DocumentSelection {
-                anchor: DocumentPosition {
-                    block: index,
-                    byte: start,
-                },
-                cursor: DocumentPosition {
-                    block: index,
-                    byte: end,
-                },
-            })
-        });
-        let Some(selection) = selection else {
-            return true;
-        };
-        if matches!(command, "copy" | "cut") && selection.anchor == selection.cursor {
-            return true;
-        }
-        if command == "paste" && self.paste_image() {
-            return true;
-        }
-        // An unavailable clipboard must never turn Paste into Delete.
-        let replacement = if command == "paste" {
-            let Some(value) = clipboard_paste() else {
-                return true;
-            };
-            value
-        } else {
-            String::new()
-        };
-        let prior = self.document_selection;
-        self.document_selection = Some(selection);
-        if matches!(command, "copy" | "cut") {
-            let accepted = self
-                .selected_text()
-                .is_some_and(|text| clipboard_copy_accepted(&text));
-            if command == "cut" && !accepted {
-                self.document_selection = prior;
-                return true;
-            }
-        }
-        if command == "copy" {
-            self.document_selection = prior;
-        } else {
-            self.begin_edit();
-            self.replace_document_selection(&replacement);
-            self.set_focus(true);
-            let ops = self.take_edit_ops();
-            self.pending_semantic_ops.extend(ops);
-        }
-        self.dirty = true;
-        true
+        let edits = self.clipboard_command(command);
+        let ops = self.take_edit_ops();
+        self.pending_semantic_ops.extend(ops);
+        edits
     }
 
     fn try_move_focused_block_shortcut(
@@ -4519,7 +3843,7 @@ impl BlockEditor {
             self.focused.filter(|_| self.is_focused),
             hovered,
         ];
-        shown.sort_unstable();
+        shown.compact_sort();
         let mut previous = None;
         for index in shown.into_iter().flatten() {
             if previous.replace(index) == Some(index) {
@@ -5271,6 +4595,13 @@ impl BlockEditor {
         self.pending_external_link_opens.pop()
     }
 
+    /// The `tilo://open#…` address of the resource link activated since the
+    /// last call (a click, Enter, or assistive technology's activate), for
+    /// the host to open in the app that keeps it.
+    pub fn take_resource_link_open(&mut self) -> Option<String> {
+        self.pending_resource_link_opens.pop()
+    }
+
     /// Images for legacy hosts which insert after the caret. Canonical hosts
     /// use [`Self::take_image_paste_requests`] to replace the captured selection.
     pub fn take_pasted_images(&mut self) -> Vec<crate::clipboard::ClipboardImage> {
@@ -5495,6 +4826,7 @@ impl BlockEditor {
                 let target = match &span.mark {
                     Mark::Link(id) => LinkTarget::Page(*id),
                     Mark::ExternalLink(url) => LinkTarget::External(url.clone()),
+                    Mark::ResourceLink(href) => LinkTarget::Resource(href.clone()),
                     _ => continue,
                 };
                 for rect in line.mark_rects(theme, span.range.clone()) {
@@ -7394,6 +6726,21 @@ impl BlockEditor {
         };
         self.focus_block(cursor_block, CursorPlacement::Byte(cursor_byte));
         self.paint_cross_block_selection(anchor_block, anchor_byte, cursor_block, cursor_byte);
+        // A caller's range inside one block is still a document selection:
+        // it names what `replace_document_selection` and `selected_text`
+        // then act on (a picture's source, replaced whole).
+        if anchor_block == cursor_block && anchor_byte != cursor_byte {
+            self.document_selection = Some(DocumentSelection {
+                anchor: DocumentPosition {
+                    block: anchor_block,
+                    byte: anchor_byte,
+                },
+                cursor: DocumentPosition {
+                    block: cursor_block,
+                    byte: cursor_byte,
+                },
+            });
+        }
     }
 
     /// Retain the exact batch after a structural command, including empty rows.
@@ -7744,22 +7091,27 @@ impl BlockEditor {
                 Some(true)
             }
             Key::Character(c) if c.eq_ignore_ascii_case("c") => {
-                if let Some(selected) = self.selected_text() {
-                    clipboard_copy(&selected);
-                }
-                Some(true)
+                Some(self.clipboard_command("copy"))
             }
-            Key::Character(c) if c.eq_ignore_ascii_case("x") => {
-                if self
-                    .selected_text()
-                    .is_some_and(|selected| clipboard_copy_accepted(&selected))
-                {
-                    self.replace_document_selection("");
-                }
-                Some(true)
-            }
+            Key::Character(c) if c.eq_ignore_ascii_case("x") => Some(self.clipboard_command("cut")),
             Key::Character(c) if c.eq_ignore_ascii_case("v") => {
-                Some(clipboard_paste().is_none_or(|paste| self.replace_document_selection(&paste)))
+                Some(self.clipboard_command("paste"))
+            }
+            // The format shortcuts a paragraph takes, over every paragraph
+            // the selection spans; within one paragraph its line takes them.
+            Key::Character(c)
+                if self
+                    .document_selection
+                    .is_some_and(|selection| selection.anchor.block != selection.cursor.block) =>
+            {
+                let mark = match c.to_lowercase().as_str() {
+                    "b" => Mark::Bold,
+                    "i" => Mark::Italic,
+                    "u" => Mark::Underline,
+                    "e" => Mark::Code,
+                    _ => return None,
+                };
+                Some(self.toggle_mark(mark))
             }
             _ => None,
         }
@@ -7800,17 +7152,20 @@ impl BlockEditor {
         end_byte: usize,
     ) {
         self.retained_block_selection = None;
-        self.document_selection =
-            ((start_block, start_byte) != (end_block, end_byte)).then_some(DocumentSelection {
-                anchor: DocumentPosition {
-                    block: start_block,
-                    byte: start_byte,
-                },
-                cursor: DocumentPosition {
-                    block: end_block,
-                    byte: end_byte,
-                },
-            });
+        // A range inside one block is that block's own selection: its
+        // TextInput moves and extends it with every key (End, Shift+End,
+        // Ctrl+Right). A document selection over it would go stale on the
+        // first such key and take the copy, the typing and the arrows.
+        self.document_selection = (start_block != end_block).then_some(DocumentSelection {
+            anchor: DocumentPosition {
+                block: start_block,
+                byte: start_byte,
+            },
+            cursor: DocumentPosition {
+                block: end_block,
+                byte: end_byte,
+            },
+        });
         let (lo_block, hi_block) = if start_block <= end_block {
             (start_block, end_block)
         } else {
@@ -7904,6 +7259,59 @@ impl BlockEditor {
                 }
             }
         }
+    }
+
+    /// A caret-moving key the focused block's TextInput takes while a
+    /// document selection stands (Shift+Left, Shift+End, Ctrl+Right): the
+    /// selection's anchor, and whether the key extends it. The TextInput
+    /// moves its own caret; [`Self::follow_caret_from_document_selection`]
+    /// then makes the document selection follow, so it never goes stale and
+    /// takes the copy or the typing that follows.
+    fn document_selection_follows(
+        &self,
+        event: &WindowEvent,
+        modifiers: Modifiers,
+    ) -> Option<(DocumentPosition, bool)> {
+        let selection = self.document_selection?;
+        let WindowEvent::KeyboardInput { event, .. } = event else {
+            return None;
+        };
+        (event.state == ElementState::Pressed
+            && matches!(
+                event.logical_key,
+                Key::Named(
+                    NamedKey::ArrowLeft
+                        | NamedKey::ArrowRight
+                        | NamedKey::ArrowUp
+                        | NamedKey::ArrowDown
+                        | NamedKey::Home
+                        | NamedKey::End
+                        | NamedKey::PageUp
+                        | NamedKey::PageDown
+                )
+            ))
+        .then_some((selection.anchor, modifiers.state().shift_key()))
+    }
+
+    /// After the focused block moved its caret: extend the document
+    /// selection from `anchor` to it, or, for a plain move, let it go.
+    fn follow_caret_from_document_selection(&mut self, anchor: DocumentPosition, extend: bool) {
+        let Some(focused) = self.focused else {
+            return;
+        };
+        let Some(caret) = self
+            .blocks
+            .get(focused)
+            .map(|block| block.line.cursor_pos())
+        else {
+            return;
+        };
+        if extend {
+            self.paint_cross_block_selection(anchor.block, anchor.byte, focused, caret);
+        } else {
+            self.clear_cross_block_selection();
+        }
+        self.dirty = true;
     }
 }
 
@@ -8467,6 +7875,10 @@ fn page_link_action_target(id: PageId) -> String {
 
 fn external_link_action_target(url: &str) -> String {
     format!("notes.external-link:{url}")
+}
+
+fn resource_link_action_target(href: &str) -> String {
+    format!("notes.resource-link:{href}")
 }
 
 fn draw_transclusion_card(
@@ -9176,6 +8588,7 @@ impl super::find_bar::Findable for BlockEditor {
     ) -> Vec<super::find_bar::FindMatch> {
         self.window_find = !query.is_empty();
         self.find_matches = self.find_ranges(query, options);
+        self.find_revision = super::find_bar::Findable::content_revision(self);
         self.find_active = None;
         self.dirty = true;
         // One span per match in the document's own reading order: the
@@ -9207,6 +8620,13 @@ impl super::find_bar::Findable for BlockEditor {
         }
     }
 
+    fn mark_current(&mut self, index: usize) {
+        if index < self.find_matches.len() {
+            self.find_active = Some(index);
+            self.dirty = true;
+        }
+    }
+
     fn clear_find(&mut self) {
         if !self.window_find {
             return;
@@ -9214,10 +8634,65 @@ impl super::find_bar::Findable for BlockEditor {
         self.window_find = false;
         self.find_reveal = false;
         self.find_active = None;
-        if !self.find_visible {
-            self.find_matches.clear();
-        }
+        self.find_matches.clear();
         self.dirty = true;
+    }
+
+    fn supports_replace(&self) -> bool {
+        self.replace_enabled && !self.read_only
+    }
+
+    /// The host applies a replacement as one edit on its next frame
+    /// ([`BlockEditor::take_find_replace`]).
+    fn replaces_later(&self) -> bool {
+        true
+    }
+
+    fn replace(&mut self, index: usize, with: &str) -> bool {
+        if !self.can_find_replace(with) {
+            return false;
+        }
+        let Some(found) = self.find_matches.get(index).copied() else {
+            return false;
+        };
+        let Some(block) = self.blocks.get(found.block) else {
+            return false;
+        };
+        self.find_replace = Some(FindReplace::One(
+            FindReplaceTarget {
+                block: block.content(),
+                start_byte: found.start,
+                end_byte: found.end,
+            },
+            with.to_owned(),
+        ));
+        self.dirty = true;
+        true
+    }
+
+    fn replace_all(&mut self, with: &str) -> usize {
+        let count = self.find_matches.len();
+        // The canonical action refuses more matches or more text than this.
+        let within_budget = count <= 10_000
+            && with
+                .chars()
+                .count()
+                .checked_mul(count)
+                .is_some_and(|total| total <= 1_000_000);
+        if count == 0 || !within_budget || !self.can_find_replace(with) {
+            return 0;
+        }
+        self.find_replace = Some(FindReplace::All(FindReplaceBatch {
+            blocks: self.blocks.iter().map(Block::content).collect(),
+            matches: self
+                .find_matches
+                .iter()
+                .map(|found| (found.block, found.start..found.end))
+                .collect(),
+            replacement: with.to_owned(),
+        }));
+        self.dirty = true;
+        count
     }
 
     fn content_revision(&self) -> u64 {
@@ -9368,47 +8843,6 @@ impl Widget for BlockEditor {
                 image.node = Some(button_node);
                 layout_children.push(button_node);
             }
-        }
-        let find_node = self.find_field.build_layout(taffy, theme, node_map);
-        let mut find_style = taffy.style(find_node).cloned().unwrap_or_default();
-        if !self.find_visible {
-            find_style.display = taffy::Display::None;
-        }
-        find_style.position = taffy::Position::Absolute;
-        find_style.inset.top = length(8.0_f32 * theme.text_scale);
-        find_style.inset.right = length(108.0_f32 * theme.text_scale);
-        find_style.size.width = length(248.0_f32 * theme.text_scale);
-        find_style.size.height = length(36.0_f32 * theme.text_scale);
-        let _ = taffy.set_style(find_node, find_style);
-        self.find_node = Some(find_node);
-        layout_children.push(find_node);
-        if self.replace_enabled {
-            self.replace_button
-                .set_enabled(self.find_replace_request().is_some());
-            let field = self.replace_field.build_layout(taffy, theme, node_map);
-            let button = self.replace_button.build_layout(taffy, theme, node_map);
-            self.replace_all_button.set_enabled(self.can_replace_all());
-            let all = self.replace_all_button.build_layout(taffy, theme, node_map);
-            for (node, top, right, width) in [
-                (field, 48.0_f32, 108.0_f32, 248.0_f32),
-                (button, 48.0_f32, 8.0_f32, 96.0_f32),
-                (all, 88.0_f32, 8.0_f32, 120.0_f32),
-            ] {
-                let mut style = taffy.style(node).cloned().unwrap_or_default();
-                if !self.find_visible {
-                    style.display = taffy::Display::None;
-                }
-                style.position = taffy::Position::Absolute;
-                style.inset.top = length(top * theme.text_scale);
-                style.inset.right = length(right * theme.text_scale);
-                style.size.width = length(width * theme.text_scale);
-                style.size.height = length(36.0_f32 * theme.text_scale);
-                let _ = taffy.set_style(node, style);
-                layout_children.push(node);
-            }
-            self.replace_node = Some(field);
-            self.replace_button_node = Some(button);
-            self.replace_all_node = Some(all);
         }
         let style = Style {
             display: taffy::Display::Flex,
@@ -9622,43 +9056,6 @@ impl Widget for BlockEditor {
                     Rect::new(original.x0 + gutter, source_top, original.x1, source_bottom);
                 b.line.apply_layout_external(shifted);
             }
-        }
-        if let Some(find_node) = self.find_node {
-            let find_origin = Point::new(
-                new_origin.x,
-                self.tooltip_viewport
-                    .map_or(new_origin.y, |viewport| viewport.y0),
-            );
-            self.find_field.apply_layout(taffy, find_node, find_origin);
-            if let Some(node) = self.replace_node {
-                self.replace_field.apply_layout(taffy, node, find_origin);
-            }
-            if let Some(node) = self.replace_button_node {
-                self.replace_button.apply_layout(taffy, node, find_origin);
-            }
-            if let Some(node) = self.replace_all_node {
-                self.replace_all_button
-                    .apply_layout(taffy, node, find_origin);
-            }
-            let field = self.find_field.get_rect();
-            let size = 30.0 * self.text_scale;
-            let gap = 3.0 * self.text_scale;
-            let top = field.y0 + (field.height() - size) / 2.0;
-            self.find_previous_rect =
-                Rect::new(field.x1 + gap, top, field.x1 + gap + size, top + size);
-            let advance = size + gap;
-            self.find_next_rect = Rect::new(
-                self.find_previous_rect.x0 + advance,
-                top,
-                self.find_previous_rect.x1 + advance,
-                top + size,
-            );
-            self.find_close_rect = Rect::new(
-                self.find_next_rect.x0 + advance,
-                top,
-                self.find_next_rect.x1 + advance,
-                top + size,
-            );
         }
         self.build_formula_chrome_rects();
     }
@@ -10297,11 +9694,12 @@ impl Widget for BlockEditor {
         // Compact language + copy chrome overlays the upper-right corner of
         // each fenced run, matching established editors while leaving source
         // selection and CRDT text untouched.
-        if self
-            .copied_code_feedback
-            .as_ref()
-            .is_some_and(|(_, at)| at.elapsed().as_secs_f32() >= 2.0)
-        {
+        if self.copied_code_feedback.as_ref().is_some_and(|(_, at)| {
+            crate::time::now()
+                .saturating_duration_since(*at)
+                .as_secs_f32()
+                >= 2.0
+        }) {
             self.copied_code_feedback = None;
             self.copied_code_start = None;
         }
@@ -10361,17 +9759,20 @@ impl Widget for BlockEditor {
             let available = (rect.x0 - left - 8.0 * self.text_scale).max(0.0);
             // Only the language: how to leave a code block is in the
             // shortcuts sheet and the header's tooltip, never permanent text.
-            let size = 11.0 * f32_of_f64(self.text_scale);
-            let language = ctx
-                .text_renderer
-                .elide_to_width(language, size, available as f32);
-            ctx.text_renderer.draw_text(
+            // The run's label, at the size of the code under it, set on the
+            // copy button's centre line so the two read as one header.
+            let style = ctx.theme.text(TextRole::Label);
+            let language =
+                ctx.text_renderer
+                    .elide_to_width_style(language, available as f32, &style);
+            let top = rect.center().y - f64::from(style.line_height_px()) / 2.0;
+            ctx.text_renderer.draw_style(
                 ctx.scene,
                 &language,
-                size,
                 ctx.theme.tokens.colors.text_dim,
-                chrome_transform * Affine::translate((left, rect.y0 + 4.0 * self.text_scale)),
+                chrome_transform * Affine::translate((left, top)),
                 None,
+                &style,
             );
             if let Some(held) = held {
                 let chrome = std::mem::replace(ctx.scene, held);
@@ -10431,7 +9832,6 @@ impl Widget for BlockEditor {
                 drag,
             );
         }
-        self.draw_find_overlay(scene, transform, text_renderer, theme, presence);
         // Link hit geometry depends on the shaped positions produced by this
         // frame's block draw. Refreshing it before that draw made first-frame
         // style, scale, and BiDi changes unclickable.
@@ -10522,41 +9922,29 @@ impl Widget for BlockEditor {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children = self
-            .blocks
+        self.blocks
             .iter()
             .filter_map(|block| {
                 self.image_attachments
                     .get(&block.id)
                     .map(|image| image.button() as &dyn Widget)
             })
-            .collect::<Vec<_>>();
-        if self.find_visible {
-            children.push(&self.find_field);
-            if self.replace_enabled {
-                children.push(&self.replace_field);
-                children.push(&self.replace_button);
-                children.push(&self.replace_all_button);
-            }
-        }
-        children
+            .collect()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children = self
-            .image_attachments
+        self.image_attachments
             .values_mut()
             .map(|image| image.button_mut() as &mut dyn Widget)
-            .collect::<Vec<_>>();
-        if self.find_visible {
-            children.push(&mut self.find_field);
-            if self.replace_enabled {
-                children.push(&mut self.replace_field);
-                children.push(&mut self.replace_button);
-                children.push(&mut self.replace_all_button);
-            }
-        }
-        children
+            .collect()
+    }
+
+    /// The one leaf the block stack is measured through, and the image
+    /// buttons.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(self.stack_leaf.as_ref());
+        self.for_each_child(visitor);
+        true
     }
 
     /// Block lines are not children, so their fields' timers (a settling
@@ -10579,8 +9967,16 @@ impl Widget for BlockEditor {
         earliest
     }
 
+    /// The open text menu is modal; else whatever a child holds open.
+    fn modal_capture(&self) -> Option<Rect> {
+        self.text_menu
+            .modal_rect()
+            .or_else(|| super::defaults::modal_capture(&|visit| self.for_each_child(visit)))
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.copied_code_feedback.is_some()
+            || self.text_menu.needs_animation_frame()
             || self.handles_need_frame()
             || self
                 .image_store
@@ -10589,17 +9985,6 @@ impl Widget for BlockEditor {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.find_visible {
-            if self.find_previous_rect.contains(point)
-                || self.find_next_rect.contains(point)
-                || self.find_close_rect.contains(point)
-            {
-                return Some(winit::window::CursorIcon::Pointer);
-            }
-            if let Some(cursor) = self.find_field.cursor_shape(point) {
-                return Some(cursor);
-            }
-        }
         if self.image_resize.is_some()
             || (0..self.blocks.len()).any(|index| {
                 self.image_resize_handle(index)
@@ -10688,7 +10073,10 @@ impl Widget for BlockEditor {
             let copy_rect = visible(*rect);
             if copy_rect.contains(point) {
                 let copied = self.copied_code_feedback.as_ref().is_some_and(|(id, at)| {
-                    at.elapsed().as_secs_f32() < 2.0
+                    crate::time::now()
+                        .saturating_duration_since(*at)
+                        .as_secs_f32()
+                        < 2.0
                         && self.blocks.get(*start).is_some_and(|block| &block.id == id)
                 });
                 return Some((
@@ -10808,12 +10196,6 @@ impl Widget for BlockEditor {
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        if self.find_visible {
-            if self.replace_enabled && self.replace_field.is_focused() {
-                return Widget::ime_cursor_rect(&self.replace_field);
-            }
-            return Widget::ime_cursor_rect(&self.find_field);
-        }
         if self.link_popover.is_visible() {
             return Widget::ime_cursor_rect(&self.link_popover);
         }
@@ -10828,19 +10210,7 @@ impl Widget for BlockEditor {
             return None;
         }
         self.ime_cursor_rect()?;
-        let (scope, field) = if self.find_visible {
-            if self.replace_enabled && self.replace_field.is_focused() {
-                (
-                    b"replace".as_slice(),
-                    self.replace_field.ime_edit_fingerprint(key)?,
-                )
-            } else {
-                (
-                    b"find".as_slice(),
-                    self.find_field.ime_edit_fingerprint(key)?,
-                )
-            }
-        } else if self.link_popover.is_visible() {
+        let (scope, field) = if self.link_popover.is_visible() {
             (
                 b"link".as_slice(),
                 self.link_popover.ime_edit_fingerprint(key)?,
@@ -10894,7 +10264,6 @@ impl Widget for BlockEditor {
     fn ime_multiline(&self) -> bool {
         self.is_focused
             && !self.read_only
-            && !self.find_visible
             && !self.link_popover.is_visible()
             && !self.slash_menu_has_field()
             && self.visual_formula_focus.is_none()
@@ -10943,70 +10312,14 @@ impl Widget for BlockEditor {
         path: &ModelPath,
     ) -> bool {
         self.edit_scope = EditScope::Anywhere;
-        if self.find_visible {
-            match (target, action) {
-                ("notes.find:query", crate::a11y::Action::SetValue(value))
-                    if !self.is_composing() =>
-                {
-                    self.find_field.set_query(value);
-                    self.refresh_find_matches(true);
-                    self.dirty = true;
-                    return true;
-                }
-                ("notes.find:query", crate::a11y::Action::Focus) if !self.is_composing() => {
-                    self.focus_find_input(false);
-                    return true;
-                }
-                ("notes.find:replacement", crate::a11y::Action::SetValue(value))
-                    if self.replace_enabled && !self.is_composing() =>
-                {
-                    self.replace_field.set_text(value);
-                    self.dirty = true;
-                    return true;
-                }
-                ("notes.find:replacement", crate::a11y::Action::Focus)
-                    if self.replace_enabled && !self.is_composing() =>
-                {
-                    self.focus_find_input(true);
-                    return true;
-                }
-                ("notes.find:replace-all", crate::a11y::Action::Activate)
-                    if self.can_replace_all() =>
-                {
-                    self.replace_all_requested.set(true);
-                    return true;
-                }
-                ("notes.find:replace", crate::a11y::Action::Activate)
-                    if self.find_replace_request().is_some() =>
-                {
-                    self.replace_requested.set(true);
-                    return true;
-                }
-                _ => {}
-            }
-        }
-        if matches!(action, crate::a11y::Action::Activate) {
-            match target {
-                "notes.find:previous" if self.find_visible && !self.is_composing() => {
-                    self.step_find(true);
-                    return true;
-                }
-                "notes.find:next" if self.find_visible && !self.is_composing() => {
-                    self.step_find(false);
-                    return true;
-                }
-                "notes.find:close" if self.find_visible && !self.is_composing() => {
-                    self.close_find();
-                    return true;
-                }
-                _ => {}
-            }
-        }
         if let Some(id) = target.strip_prefix("notes.block-type:")
             && matches!(action, crate::a11y::Action::Activate)
             && let Some(index) = self.blocks.iter().position(|block| block.id == id)
         {
             return self.open_block_type_menu(index);
+        }
+        if let Some(handled) = self.perform_text_menu_action(target, action, state, path) {
+            return handled;
         }
         if let Some(target) = target.strip_prefix("notes.slash-menu:") {
             let handled = self
@@ -11217,6 +10530,11 @@ impl Widget for BlockEditor {
             self.dirty = true;
             return true;
         }
+        if let Some(href) = target.strip_prefix("notes.resource-link:") {
+            self.pending_resource_link_opens.push(href.to_string());
+            self.dirty = true;
+            return true;
+        }
         if let Some((start, end)) = self.resolve_code_copy_target(target) {
             return self.copy_code_run(start, end);
         }
@@ -11227,10 +10545,13 @@ impl Widget for BlockEditor {
         self.dirty || self.visual_formula_focus.is_some() || self.handles_need_frame()
     }
 
+    /// What [`Self::is_layout_dirty`] reads, and a pending structure change.
+    /// `dirty` is not in it: that is paint (a caret, a selection, a menu),
+    /// which no line's size follows.
     fn layout_needs_measure(&self) -> bool {
         self.structure_dirty
             || self.restack
-            || self.dirty
+            || self.table_relayout
             || self
                 .blocks
                 .iter()
@@ -11609,16 +10930,25 @@ impl BlockEditor {
             );
         }
         if let Some(list) = ctx.presence.carets.get(&key) {
+            // What sits above the editor (a note's title and dates) is not
+            // the editor's to cover: a chip on the first line hangs below.
+            let top = self
+                .blocks
+                .first()
+                .map_or(brect.y0, |first| first.line.get_rect().y0);
             for (user, byte_pos) in list {
                 let name = ctx.presence.display_name(user);
-                ctx.presence.draw_peer_caret_labeled(
+                ctx.presence.draw_peer_caret_labeled_in(
                     ctx.scene,
                     ctx.theme,
                     ctx.text_renderer,
                     ctx.transform,
                     user,
                     &name,
-                    line.caret_rect(ctx.theme, *byte_pos),
+                    crate::presence::LabeledCaret::within(
+                        line.caret_rect(ctx.theme, *byte_pos),
+                        top,
+                    ),
                 );
             }
         }
@@ -12391,12 +11721,21 @@ fn code_header_height(blocks: &[Block], index: usize, scale: f64) -> f64 {
     CODE_HEADER_HEIGHT * scale
 }
 
+#[path = "block_editor_clipboard.rs"]
+mod clipboard;
+#[path = "block_editor_format.rs"]
+mod format;
+#[path = "block_editor_html.rs"]
+mod html;
+pub use html::{blocks_from_html, blocks_to_html};
 #[path = "block_editor_handle_reveal.rs"]
 mod handle_reveal;
 #[path = "block_editor_inline_markdown.rs"]
 mod inline_markdown;
 #[path = "block_editor_present.rs"]
 mod present;
+#[path = "block_editor_text_menu.rs"]
+mod text_menu;
 pub use present::{BlockContent, EditScope, PresenceKeyFn};
 
 #[path = "block_editor_callout.rs"]
@@ -12433,6 +11772,10 @@ mod outline_tests;
 #[cfg(test)]
 #[path = "block_editor_image_paste_tests.rs"]
 mod image_paste_tests;
+
+#[cfg(test)]
+#[path = "block_editor_clipboard_tests.rs"]
+mod clipboard_tests;
 
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
@@ -13516,6 +12859,10 @@ impl BlockEditor {
 #[path = "block_editor_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "block_editor_find_tests.rs"]
+mod find_tests;
+
 impl BlockEditor {
     /// For an event that can only type into the focused paragraph (a
     /// character, an IME commit, Backspace or Delete, with no selection
@@ -13543,7 +12890,7 @@ impl BlockEditor {
             }
             _ => false,
         };
-        if !plain || self.find_visible || self.document_selection.is_some() || !self.is_focused {
+        if !plain || self.document_selection.is_some() || !self.is_focused {
             return None;
         }
         let index = self.focused?;
@@ -13595,11 +12942,15 @@ impl BlockEditor {
             self.retained_block_selection = None;
         }
 
-        if self.handle_find_event(event, ctx) {
+        if self.handle_text_menu_event(event, ctx) {
             return;
         }
 
         if self.try_paste_image_key(event, ctx) {
+            return;
+        }
+
+        if self.try_clipboard_key(event, ctx) {
             return;
         }
 
@@ -13785,7 +13136,11 @@ impl BlockEditor {
         // routing below's TextInput click handler sets the caret there.
         self.focus_block_under_mouse(event, ctx);
 
+        let selection_follows = self.document_selection_follows(event, *ctx.modifiers);
         self.route_event_to_focused_block(event, ctx);
+        if let Some((anchor, extend)) = selection_follows {
+            self.follow_caret_from_document_selection(anchor, extend);
+        }
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. }

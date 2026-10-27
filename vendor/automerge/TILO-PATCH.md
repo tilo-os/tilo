@@ -360,12 +360,27 @@ history, the slowest took 3.4 ms more than the median without the patch
 1.5 ms. The index decides how fast an op is found, never which.
 Upstreamable.
 
+# Tilo change: count the work an apply, a lookup and a sync walk do
+
+The tests that pin the patches above (`map_apply.rs`, `sequence_apply.rs`,
+`scattered_apply.rs` and `idle_sync.rs` in `crates/doc/tilo-automerge`)
+compared wall-clock times of a change into a long history and a short one,
+so a loaded machine could fail them. `automerge::work()` returns what this
+thread has done: the document ops an apply stepped over one at a time
+(`walk_list`, `MapWalker::next_doc_op`), the `id_ctr` slabs searches for an
+op by its id may have decoded (`OpSet::get_op_id_pos`), and the changes
+ancestry walks visited (`ChangeGraph::traverse_ancestors`). The tests compare
+those counts. A count is one thread-local add next to work that decodes an
+op or a change, and does not change what any of these do. The marked spots
+are `TILO(work-count)` in `src/work.rs`, `batch.rs`, `op_set.rs`,
+`change_graph.rs` and `lib.rs`.
+
 # Tilo change: the fork's own tests run in CI
 
 The workspace builds this crate as a path dependency and never runs its
-tests, so `tools/ci/test-vendored-crates.sh` runs them: check.yml's
-`vendored` job whenever this directory or `vendor/automerge-test` changes,
-and the nightly. The manifest therefore declares its own `[workspace]` (so
+tests, so `tools/ci/test-vendored-crates.sh` runs them: t's `vendored`
+check whenever this directory or `vendor/automerge-test` changes, and the
+nightly. The manifest therefore declares its own `[workspace]` (so
 its tests run from this directory however the checkout is nested) and
 restores upstream's `automerge-test` dev-dependency, which crates.io
 publication drops and `tests/test.rs` needs, from `vendor/automerge-test`

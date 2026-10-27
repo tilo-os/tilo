@@ -84,12 +84,6 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
         "field-edit",
         serde_json::json!({ "edit": language }),
     );
-    assert!(
-        app.call_by(agent.clone(), &item, "delete", serde_json::json!({}))
-            .is_err(),
-        "deleting asks for confirmation"
-    );
-
     let state = app.state();
     assert_eq!(
         state.path_of(&main.as_str().into()).as_deref(),
@@ -108,6 +102,10 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
         .as_deref(),
         Some("fn main() { run() }\n")
     );
+    // Undo takes a deletion back, so it runs at once.
+    app.call_by(agent.clone(), &item, "delete", serde_json::json!({}))
+        .expect("an undoable delete runs at once");
+    assert_eq!(app.state().path_of(&main.as_str().into()), None);
 
     let entries: Vec<_> = app
         .history()
@@ -129,6 +127,7 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
             "Renamed main.rs to app.rs",
             "Moved app.rs",
             "Set the language of app.rs to Plain Text",
+            "Deleted app.rs",
         ]
     );
     let invoker = entries[0].invoker.as_ref().unwrap();
@@ -136,5 +135,69 @@ fn an_agent_changes_a_project_in_one_call_each_and_history_tells_what_it_did() {
         (invoker.kind, invoker.on_behalf_of.as_deref()),
         (ActorKind::Agent, Some("ada")),
         "the entry names the agent and the person it acted for"
+    );
+}
+
+/// History and agents read a project as it was through the generic `read`:
+/// its entries by path, and a file's text at that version, while the live
+/// project moved on.
+#[test]
+fn a_past_version_of_a_project_reads_as_its_paths_and_texts() {
+    let mut app = TestApp::<CodeEditorShell>::new().unwrap();
+    let kind = Project::KIND;
+    app.call("new-folder", serde_json::json!({ "name": "src" }))
+        .unwrap();
+    let src = entry_named(&app, "src");
+    app.call(
+        "new-file",
+        serde_json::json!({ "name": "main.rs", "folder": src, "text": "fn main() {}\n" }),
+    )
+    .unwrap();
+    let main = entry_named(&app, "main.rs");
+    let item = actions::file_resource_id(&main);
+    let version = app.versions().pop().unwrap().hash.to_string();
+    let typed = Project::paths()
+        .buffers
+        .key(main)
+        .perform(&SourceEdit::between(
+            "fn main() {}\n",
+            "fn main() { run() }\n",
+        ))
+        .unwrap();
+    app.call("field-edit", serde_json::json!({ "edit": typed }))
+        .unwrap();
+    app.call_on(&item, "rename", serde_json::json!({ "name": "app.rs" }))
+        .unwrap();
+
+    let past = app
+        .call("read", serde_json::json!({ "version": version }))
+        .unwrap()
+        .unwrap();
+    let entries = past["content"]["entries"].as_array().unwrap();
+    assert_eq!(past["content"]["kind"], kind);
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["path"] == "src/main.rs" && entry["item"] == item.as_str()),
+        "{past}"
+    );
+    let file = app
+        .call(
+            "read",
+            serde_json::json!({ "version": version, "item": item }),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(file["content"]["text"], "fn main() {}\n");
+    assert_eq!(file["content"]["path"], "src/main.rs");
+    let now = app
+        .call("read", serde_json::json!({ "item": item }))
+        .unwrap()
+        .unwrap();
+    assert_eq!(now["text"], "fn main() { run() }\n");
+    assert_eq!(now["path"], "src/app.rs");
+    assert!(
+        now.get("terminal").is_none() && past["content"].get("terminal").is_none(),
+        "the terminal's session is no part of what the project reads as"
     );
 }

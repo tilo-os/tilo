@@ -1,0 +1,89 @@
+From: Tilo <tilo@tilo.so>
+Subject: drm/msm/a6xx: record a GPU frequency only once the GMU has acknowledged it
+
+a6xx_gmu_set_freq() records the requested level in gmu->freq and
+gmu->current_perf_index before it sends the GX_BW_PERF_VOTE, and ignores
+whether the GMU answered. When the GMU stops answering, the level it
+stalled on is remembered as applied, and every later GMU boot votes it
+first: a6xx_gmu_set_initial_freq() reads current_perf_index on each
+resume, including the cold boot recovery does after the GMU wedged.
+
+On an X1E laptop (Adreno X1-85) the GMU stopped answering a
+GX_BW_PERF_VOTE under load. Over the next twenty minutes about 130
+recoveries collapsed the CX domain, cold booted the GMU, completed its
+HFI start-up messages, and then lost it again on the first vote, the one
+a6xx_gmu_set_initial_freq() sends a second after the boot.
+
+Record the level only when the GMU acknowledged the vote. A vote that
+timed out leaves the last accepted level in place, so a resume or a
+recovery starts from an operating point the GMU accepted, and the next
+devfreq request votes the new level again instead of being skipped as
+already applied. Votes made while the GPU is suspended are recorded as
+before (they are applied at the next resume), and so is the legacy
+register path, which has no acknowledgement to wait for.
+
+diff --git a/drivers/gpu/drm/msm/adreno/a6xx_gmu.c b/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
+index d172512..5afcd9d 100644
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
+@@ -152,6 +152,14 @@ bool a8xx_gmu_gx_is_on(struct adreno_gpu *adreno_gpu)
+ 		 A8XX_GMU_PWR_CLK_STATUS_GX_HM_CLK_OFF));
+ }
+ 
++static void a6xx_gmu_record_freq(struct a6xx_gmu *gmu, u32 perf_index)
++{
++	gmu->current_perf_index = perf_index;
++	gmu->freq = gmu->gpu_freqs[perf_index];
++
++	trace_msm_gmu_freq_change(gmu->freq, perf_index);
++}
++
+ void a6xx_gmu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
+ 		       bool suspended)
+ {
+@@ -204,28 +212,38 @@ void a6xx_gmu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
+ 		}
+ 	}
+ 
+-	gmu->current_perf_index = perf_index;
+-	gmu->freq = gmu->gpu_freqs[perf_index];
+-
+-	trace_msm_gmu_freq_change(gmu->freq, perf_index);
+-
+ 	/*
+ 	 * This can get called from devfreq while the hardware is idle. Don't
+ 	 * bring up the power if it isn't already active. All we're doing here
+ 	 * is updating the frequency so that when we come back online we're at
+ 	 * the right rate.
+ 	 */
+-	if (suspended)
++	if (suspended) {
++		a6xx_gmu_record_freq(gmu, perf_index);
+ 		return;
++	}
+ 
+ 	if (!gmu->legacy) {
+-		a6xx_hfi_set_freq(gmu, perf_index, bw_index);
++		/*
++		 * Record the level only once the GMU has acknowledged it. A
++		 * vote the GMU never answered was not applied, and the next
++		 * GMU boot (a resume, or the recovery after the GMU stopped
++		 * answering) votes the recorded level first: it must be the
++		 * last level the GMU accepted, not the one it stalled on.
++		 */
++		if (a6xx_hfi_set_freq(gmu, perf_index, bw_index))
++			return;
++
++		a6xx_gmu_record_freq(gmu, perf_index);
++
+ 		/* With Bandwidth voting, we now vote for all resources, so skip OPP set */
+ 		if (!bw_index)
+ 			dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
+ 		return;
+ 	}
+ 
++	a6xx_gmu_record_freq(gmu, perf_index);
++
+ 	gmu_write(gmu, REG_A6XX_GMU_DCVS_ACK_OPTION, 0);
+ 
+ 	gmu_write(gmu, REG_A6XX_GMU_DCVS_PERF_SETTING,

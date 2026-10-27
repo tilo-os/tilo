@@ -5,6 +5,7 @@
 //! to the outer app document and never commits a live edit while browsing.
 
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
+use tilo_sort::CompactSort as _;
 
 use crate::bound_dispatch::{BoundDispatchError, CallbackBinding};
 use crate::history_source::{
@@ -73,7 +74,7 @@ impl RestoreReview {
 }
 
 fn sorted(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
-    heads.sort_unstable();
+    heads.compact_sort();
     heads
 }
 
@@ -189,7 +190,6 @@ fn apply_record_restore(
         _ => HistoryError::Unavailable,
     })?;
     if receipt.changed {
-        // Record persistence and sync observe the new canonical heads.
         binding
             .records
             .schedule_committed_history(&binding.checkout.id);
@@ -559,7 +559,6 @@ mod tests {
 
     #[test]
     fn standalone_history_browsing_preserves_edits_and_stays_on_its_document() {
-        // Case `browsing_and_comparison_preserve_pending_edit_and_attribution`.
         {
             let mut doc = document("saved");
             let record = RecordId::for_file("a.md");
@@ -607,7 +606,6 @@ mod tests {
             );
         }
 
-        // Case `record_switch_clears_old_rows_and_does_not_fall_back`.
         {
             let first = document("first");
             let second = document("second");
@@ -641,7 +639,6 @@ mod tests {
             assert_eq!(session.refresh(&context), Err(HistoryError::Stale));
         }
 
-        // Case `unknown_selection_cannot_materialize_another_documents_change`.
         {
             let doc = document("first");
             let mut foreign = document("foreign");
@@ -671,7 +668,6 @@ mod tests {
 
     #[test]
     fn standalone_history_sessions_invalidate_on_replacement_and_revocation() {
-        // Case `replacing_same_record_or_app_document_invalidates_old_session`.
         {
             let first = document("first");
             let replacement = document("replacement");
@@ -700,7 +696,6 @@ mod tests {
             }
         }
 
-        // Case `revocation_is_checked_on_cached_refresh_select_and_compare`.
         {
             let doc = document("private");
             let identity = uuid::Uuid::new_v4();

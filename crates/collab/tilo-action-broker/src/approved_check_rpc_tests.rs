@@ -183,7 +183,6 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
     }
     tokio::task::LocalSet::new().run_until(async {
         let room = signed_worker::OriginalRoom::new(tilo_user_identity::DeviceCapabilities::primary(), None, None);
-        // Replace the broker without retaining a second writer for its journal.
         drop(room.state.journal.lock().unwrap().as_mut().unwrap().take());
         let fanout = Arc::new(FanoutState::new());
         let (state, bridge) = CapnpBrokerState::new_configured(
@@ -238,7 +237,7 @@ async fn approved_check_rpc_native_target_requires_live_launcher_connection() {
             "fresh opaque address retains authenticated stable identity and reaches the real host service gate");
         let foreign_route = CrdtRoute::record(&room.route.app_id, &room.route.cluster_id, "foreign-record");
         let foreign = rpc.join_channel(&foreign_route.channel_key(), &signed_worker::presentation(&room.route.cluster_id, &room.cert, &room.key)).await.unwrap();
-        assert!(foreign.approved_check(&request).await.unwrap_err().to_string().contains("target action or contract mismatch"), "same process and app cannot send an accepted invocation over a foreign record channel");
+        assert!(foreign.approved_check(&request).await.unwrap_err().to_string().contains("no retained target invocation"), "same process and app cannot send an accepted invocation over a foreign record channel: that record's own hold was never handed it");
         assert!(connection.handle.cancel_published_invocation(wire).await.is_err(),
             "certificate-owned jobs reject legacy actor-only cancellation");
         let host = state.journal.lock().unwrap().as_ref().unwrap().as_ref().unwrap().host();

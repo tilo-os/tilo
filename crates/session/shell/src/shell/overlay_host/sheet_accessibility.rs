@@ -18,33 +18,26 @@ use crate::shell::quick_settings::WifiPasswordPrompt;
 const WIFI_PASSWORD_PREFIX: &str = "wifi-password:";
 const FILE_PICKER_PREFIX: &str = "file-picker:";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WifiPasswordPart {
-    Field,
-    Cancel,
-    Connect,
-}
-
-impl WifiPasswordPart {
-    const fn slug(self) -> &'static str {
-        match self {
-            Self::Field => "field",
-            Self::Cancel => "cancel",
-            Self::Connect => "connect",
-        }
+/// Give every keyed node of the Wi-Fi prompt an action target carrying its
+/// key path and the prompt it belongs to, so an action aimed at one prompt
+/// can never type into or submit another, even for the same network.
+fn route_wifi_prompt(children: &mut [AccessNode], prompt: u64, path: &mut Vec<u64>) {
+    for child in children {
+        let Some(key) = child.key else {
+            continue;
+        };
+        path.push(key);
+        let encoded = path
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join("/");
+        let target = format!("{WIFI_PASSWORD_PREFIX}{encoded}#{prompt}");
+        child.semantic_key = Some(target.clone());
+        child.action_target = Some(target);
+        route_wifi_prompt(&mut child.children, prompt, path);
+        path.pop();
     }
-
-    fn from_slug(slug: &str) -> Option<Self> {
-        [Self::Field, Self::Cancel, Self::Connect]
-            .into_iter()
-            .find(|part| part.slug() == slug)
-    }
-}
-
-/// Named by the prompt as well as the part, so an action aimed at one
-/// prompt can never type into or submit another, even for the same network.
-fn wifi_password_target(prompt: u64, part: WifiPasswordPart) -> String {
-    format!("{WIFI_PASSWORD_PREFIX}{}#{prompt}", part.slug())
 }
 
 /// Give every node of the chooser's own semantic tree an action target
@@ -118,7 +111,6 @@ impl ShellOverlayHost {
         let mut sheets = Vec::new();
         let mut waiting = None;
         sheets.extend(self.directory_sheet.accessibility());
-        sheets.extend(self.peer_sync_overlay.accessibility());
         if self.file_picker_place().dialog_rect().is_some()
             && let Some(mut picker) = self
                 .file_picker_overlay
@@ -199,76 +191,17 @@ impl ShellOverlayHost {
 
     /// The Quick Settings prompt for a protected network's password: the
     /// network it joins, the password as password text, progress and the
-    /// last failure as live text, and its buttons.
+    /// last failure as live text, and its buttons — the shared password
+    /// prompt's own parts, in a dialog named by the network.
     pub(super) fn wifi_password_accessibility(&self, prompt: &WifiPasswordPrompt) -> AccessNode {
-        let target = |part| wifi_password_target(prompt.id, part);
-        let (cancel, connect) = self.qs_password_button_rects();
-        let mut children = vec![
-            self.wifi_password_field_accessibility(prompt)
-                .with_action_target(target(WifiPasswordPart::Field)),
-        ];
-        if let Some(error) = prompt.error.as_ref() {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(error.clone())
-                    .with_live(Politeness::Assertive),
-            );
-        } else if prompt.connecting {
-            children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(t("qs-connecting"))
-                    .with_live(Politeness::Polite),
-            );
-        }
-        children.push(
-            AccessNode::new(Role::Button)
-                .with_name(t("portal-cancel"))
-                .with_action_target(target(WifiPasswordPart::Cancel))
-                .with_bounds(cancel)
-                .with_state(AccessState::new().focusable(true)),
-        );
-        children.push(
-            AccessNode::new(Role::Button)
-                .with_name(if prompt.connecting {
-                    t("qs-connecting")
-                } else {
-                    t("portal-connect")
-                })
-                .with_action_target(target(WifiPasswordPart::Connect))
-                .with_bounds(connect)
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .disabled(!prompt.can_submit(self.wifi_password_input.value())),
-                ),
-        );
+        let mut children = self.wifi_prompt.access_node().children;
+        route_wifi_prompt(&mut children, prompt.id, &mut Vec::new());
         AccessNode::new(Role::Dialog)
             .with_name(prompt.ssid.clone())
             .with_description(t("qs-wifi-protected"))
-            .with_bounds(self.qs_password_field_rect().union(connect).union(cancel))
+            .with_bounds(self.qs_password_rect())
             .with_state(AccessState::new().modal(true).busy(prompt.connecting))
             .with_children(children)
-    }
-
-    /// The passphrase field as the field itself publishes it — password
-    /// text, never its value, whether or not it is shown on screen — placed
-    /// where it is painted.
-    fn wifi_password_field_accessibility(&self, prompt: &WifiPasswordPrompt) -> AccessNode {
-        let mut field = ui::widget::Widget::accessibility(&self.wifi_password_input)
-            .unwrap_or_else(|| AccessNode::new(Role::TextInput));
-        field.value = None;
-        field.text_selection = None;
-        field.state = AccessState {
-            protected: true,
-            required: true,
-            invalid: prompt.error.is_some(),
-            read_only: prompt.connecting,
-            busy: prompt.connecting,
-            ..field.state.focusable(true).focused(true)
-        };
-        field
-            .with_name(t("portal-network-password"))
-            .with_bounds(self.qs_password_field_rect())
     }
 
     /// Route an action aimed at a sheet's node. `None` when the target is
@@ -281,9 +214,6 @@ impl ShellOverlayHost {
         state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> Option<bool> {
-        if target == "task-direction" {
-            return Some(self.room_activity.perform_task_direction_action(action));
-        }
         if crate::shell::portal_dialog::accessibility::is_sheet_target(target) {
             return Some(
                 self.portal_dialogs
@@ -299,18 +229,6 @@ impl ShellOverlayHost {
             };
             if let Some(request) = outcome.request {
                 self.run_directory_request(request);
-            }
-            return Some(outcome.consumed);
-        }
-        if crate::shell::peer_sync_overlay::is_accessibility_target(target) {
-            let Some(outcome) = self
-                .peer_sync_overlay
-                .perform_accessibility_action(target, action)
-            else {
-                return Some(false);
-            };
-            if let Some(request) = outcome.request {
-                self.run_peer_sync_request(&request, outcome.copy_result);
             }
             return Some(outcome.consumed);
         }
@@ -335,10 +253,14 @@ impl ShellOverlayHost {
     }
 
     fn perform_wifi_password_action(&mut self, rest: &str, action: &Action) -> bool {
-        let Some((part, id)) = rest.split_once('#') else {
+        let Some((path, id)) = rest.split_once('#') else {
             return false;
         };
-        let Some(part) = WifiPasswordPart::from_slug(part) else {
+        let Ok(path) = path
+            .split('/')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+        else {
             return false;
         };
         let Some(chrome) = self.chrome.clone() else {
@@ -349,48 +271,32 @@ impl ShellOverlayHost {
             .quick_settings
             .wifi_password
             .as_ref()
-            .map(|prompt| (prompt.id.to_string() == id, prompt.connecting));
-        let (Some((true, connecting)), true) = (current, self.wifi_password_prompt_up()) else {
+            .is_some_and(|prompt| prompt.id.to_string() == id);
+        if !current || !self.wifi_password_prompt_up() || !self.sync_wifi_password_input() {
             return false;
-        };
-        match (part, action) {
-            (_, Action::ScrollIntoView | Action::Focus)
-            | (WifiPasswordPart::Field, Action::Activate) => true,
-            (WifiPasswordPart::Cancel, Action::Activate) => {
-                self.cancel_wifi_password();
-                true
-            }
-            (WifiPasswordPart::Connect, Action::Activate) => {
-                self.sync_wifi_password_input();
-                let password = self.wifi_password_input.value();
-                let ready = chrome
-                    .borrow()
-                    .quick_settings
-                    .wifi_password
-                    .as_ref()
-                    .is_some_and(|prompt| prompt.can_submit(password));
-                if ready {
-                    self.submit_wifi_password();
-                }
-                ready
-            }
-            (WifiPasswordPart::Field, Action::SetValue(value)) if !connecting => {
-                if !self.sync_wifi_password_input() {
-                    return false;
-                }
-                let typed: String = value.chars().filter(|ch| !ch.is_control()).collect();
-                self.wifi_password_input.set_text(&typed);
-                self.wifi_password_input.set_cursor_pos(typed.len());
-                let mut state = chrome.borrow_mut();
-                if let Some(prompt) = state.quick_settings.wifi_password.as_mut() {
-                    // Typing clears a rejection message; it was about the
-                    // old value.
-                    prompt.error = None;
-                }
-                state.bump();
-                true
-            }
-            _ => false,
         }
+        if matches!(action, Action::ScrollIntoView) {
+            return true;
+        }
+        // The prompt's field is local: the scratch document is never
+        // written and never leaves this call.
+        let mut scratch = automerge::AutoCommit::new();
+        let applied = self.wifi_prompt.perform_access_action(
+            action,
+            &path,
+            &mut ui::widget::Edits::lend(&mut scratch),
+            &automerge::ROOT,
+        );
+        if self.wifi_prompt.error().is_none() {
+            let mut state = chrome.borrow_mut();
+            if let Some(prompt) = state.quick_settings.wifi_password.as_mut() {
+                // Typing clears a rejection message; it was about the old
+                // value.
+                prompt.error = None;
+            }
+            state.bump();
+        }
+        self.settle_wifi_prompt();
+        applied
     }
 }

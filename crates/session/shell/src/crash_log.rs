@@ -5,6 +5,12 @@
 //! outside a terminal (greetd, a .desktop double-click) discards stderr, so
 //! without the file "the shell just disappeared" is unactionable.
 //!
+//! The same directory keeps the record of a desktop that stopped responding
+//! ([`render_freeze`], `<timestamp>-<pid>-freeze.log`, written by the main
+//! loop's watchdog), so everything that ended a session is in one place on
+//! this computer, and nothing leaves it unless the person sends it.
+//! `shell::crash_notice` tells the person once, at the next start.
+//!
 //! The backtrace is symbolized in the field because release binaries keep
 //! their symbol table (see `[profile.release]` in the workspace `Cargo.toml`):
 //! each frame names its function, and a build with debug info adds
@@ -58,16 +64,21 @@ pub struct Panic<'a> {
     pub backtrace: &'a str,
 }
 
+/// The binary a record names and its build id, or what stands in for them.
+fn identity(build: &BuildInfo) -> (String, &str) {
+    let executable = build
+        .executable
+        .as_deref()
+        .map_or_else(|| "<unknown>".to_owned(), |path| path.display().to_string());
+    (executable, build.build_id.as_deref().unwrap_or("<none>"))
+}
+
 /// Render the report written for a panic.
 #[must_use]
 pub fn render(title: &str, build: &BuildInfo, panic: &Panic<'_>) -> String {
     let mut body = String::new();
     let rule = "=".repeat(title.chars().count());
-    let executable = build
-        .executable
-        .as_deref()
-        .map_or_else(|| "<unknown>".to_owned(), |path| path.display().to_string());
-    let build_id = build.build_id.as_deref().unwrap_or("<none>");
+    let (executable, build_id) = identity(build);
     // Writing to a String cannot fail.
     let _ = write!(
         body,
@@ -93,6 +104,89 @@ pub fn render(title: &str, build: &BuildInfo, panic: &Panic<'_>) -> String {
     body
 }
 
+/// Where the records live: the private `tilo/crashes` directory of the
+/// person's cache, created if missing. `None` without a home cache directory,
+/// or when the path is not a private directory of this user's: a shared
+/// fallback such as `/tmp` would let another user plant the path.
+#[must_use]
+pub fn directory() -> Option<PathBuf> {
+    tilo_paths::cache_dir()
+        .map(|cache| cache.join("tilo").join("crashes"))
+        .filter(|dir| tilo_files::native::private::directory(dir).is_ok())
+}
+
+/// The local time now, as a record's file name starts with it. Names sort in
+/// the order the records were written.
+#[must_use]
+pub fn file_timestamp() -> String {
+    // format: machine (the crash report's file name)
+    chrono::Local::now().format(FILE_TIMESTAMP).to_string()
+}
+
+/// How a record's file name writes its local time.
+pub const FILE_TIMESTAMP: &str = "%Y-%m-%d-%H%M%S";
+
+/// The end of a freeze record's file name; a panic's ends in `.log` alone.
+pub const FREEZE_SUFFIX: &str = "-freeze.log";
+
+/// The heading of a freeze record.
+pub const FREEZE_TITLE: &str = "tilo desktop freeze";
+
+/// What a freeze record says about a main loop that stopped for good.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Freeze<'a> {
+    /// Local time the watchdog judged the loop hung, already formatted.
+    pub timestamp: &'a str,
+    /// The compositor thread's id.
+    pub tid: i32,
+    /// How long it had slept without running when judged hung.
+    pub blocked_for: std::time::Duration,
+    /// The watchdog's report: what the thread waited in, then every thread
+    /// with its stack.
+    pub report: &'a str,
+}
+
+/// Render the record written for a desktop that stopped responding.
+#[must_use]
+pub fn render_freeze(build: &BuildInfo, freeze: &Freeze<'_>) -> String {
+    let mut body = String::new();
+    let rule = "=".repeat(FREEZE_TITLE.chars().count());
+    let (executable, build_id) = identity(build);
+    // Writing to a String cannot fail.
+    let _ = write!(
+        body,
+        "{FREEZE_TITLE}\n\
+         {rule}\n\
+         timestamp: {}\n\
+         version:   {}\n\
+         binary:    {executable}\n\
+         build-id:  {build_id}\n\
+         thread:    {}\n\
+         stalled:   {:.1} s\n\
+         outcome:   the compositor ended and the session returned to the login screen\n\n\
+         {}\n",
+        freeze.timestamp,
+        build.version,
+        freeze.tid,
+        freeze.blocked_for.as_secs_f64(),
+        freeze.report,
+    );
+    body
+}
+
+/// Write `body` as the new record `name` in `dir`: a private file, created
+/// only if it does not exist, never through a link.
+///
+/// # Errors
+///
+/// The file exists already or could not be created or written.
+pub fn write_record(dir: &Path, name: &str, body: &str) -> std::io::Result<PathBuf> {
+    use std::io::Write as _;
+    let path = dir.join(name);
+    tilo_files::native::private::create_new(&path)?.write_all(body.as_bytes())?;
+    Ok(path)
+}
+
 /// Install a panic hook that writes a crash report and then chains to the
 /// previous hook, so a developer running from a terminal still sees the
 /// usual panic output.
@@ -102,14 +196,11 @@ pub fn render(title: &str, build: &BuildInfo, panic: &Panic<'_>) -> String {
 /// stderr copy is made: a shared fallback such as `/tmp` would let another user
 /// plant the path.
 pub fn install(title: &'static str) {
-    let dir = tilo_paths::cache_dir()
-        .map(|cache| cache.join("tilo").join("crashes"))
-        .filter(|dir| tilo_files::native::private::directory(dir).is_ok());
+    let dir = directory();
     let build = BuildInfo::current();
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        // format: machine (the crash report's file name)
-        let timestamp = chrono::Local::now().format("%Y-%m-%d-%H%M%S").to_string();
+        let timestamp = file_timestamp();
         let backtrace = std::backtrace::Backtrace::force_capture().to_string();
         let message = info
             .payload()
@@ -141,12 +232,9 @@ pub fn install(title: &'static str) {
             },
         );
         if let Some(dir) = &dir {
-            use std::io::Write as _;
-            let path = dir.join(format!("{timestamp}-{}.log", std::process::id()));
-            let wrote = tilo_files::native::private::create_new(&path)
-                .and_then(|mut file| file.write_all(body.as_bytes()))
-                .is_ok();
-            if wrote {
+            let name = format!("{timestamp}-{}.log", std::process::id());
+            let path = dir.join(&name);
+            if write_record(dir, &name, &body).is_ok() {
                 eprintln!("\n[tilo] crash log written to {}", path.display());
             } else {
                 eprintln!("\n[tilo] FAILED to write crash log to {}", path.display());
@@ -322,6 +410,51 @@ mod tests {
              message:   boom\n\n\
              backtrace:\n   0: shell::x::f\n             at ./crates/session/shell/src/x.rs:1:2\n"
         );
+    }
+
+    #[test]
+    fn a_freeze_record_names_the_binary_and_keeps_the_stacks() {
+        let build = BuildInfo {
+            version: "0.1.0",
+            executable: Some(PathBuf::from("/usr/bin/tilo-shell")),
+            build_id: Some("abc123".to_owned()),
+        };
+        let record = render_freeze(
+            &build,
+            &Freeze {
+                timestamp: "2026-10-24-225201",
+                tid: 412,
+                blocked_for: std::time::Duration::from_millis(26_400),
+                report: "main loop hung\nthread 412 (shell)\n   0: shell::x::wait",
+            },
+        );
+        assert!(record.starts_with(FREEZE_TITLE), "{record}");
+        for line in [
+            "timestamp: 2026-10-24-225201\n",
+            "binary:    /usr/bin/tilo-shell\n",
+            "build-id:  abc123\n",
+            "thread:    412\n",
+            "stalled:   26.4 s\n",
+            "   0: shell::x::wait\n",
+        ] {
+            assert!(record.contains(line), "{line:?} in:\n{record}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_record_is_private_and_never_replaced() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        tilo_files::native::private::directory(dir.path()).unwrap();
+        let path = write_record(dir.path(), "2026-10-24-225201-1-freeze.log", "first").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(write_record(dir.path(), "2026-10-24-225201-1-freeze.log", "second").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
     }
 
     #[test]

@@ -191,7 +191,11 @@ severity = "warn"
 # that `tilo-app dev` reloads through; no web or release build links it.
 # `provider-settings-ui` is the SDK's portable host-capability control panel,
 # shared by Settings and the standalone provider app; it owns no native service.
-allowed-packages = ["tilo-app", "runtime-dylib", "provider-settings-ui"]
+# `tilo-rich-text` is the SDK's rich text for apps: the resource type, its
+# actions and the editor that views it, portable to every target.
+# `tilo-page-raster` is the SDK's page pipeline for document viewers: the
+# render queue, bitmap cache and tiles, portable to every target.
+allowed-packages = ["tilo-app", "runtime-dylib", "provider-settings-ui", "tilo-rich-text", "tilo-page-raster"]
 # `vendor/*` holds forks of third-party crates (winit, vello, …), which stand
 # in for the upstream crate an app would otherwise depend on.
 # `crates/runtime/engines/*` are engine libraries beside the runtime,

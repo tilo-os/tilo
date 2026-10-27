@@ -37,11 +37,6 @@ pub struct DbSearchIndex {
 
 impl DbSearchIndex {
     /// Refresh the catalogue from the live session.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when two rows of the snapshot name one resource. The
-    /// previous valid snapshot remains available.
     pub fn sync(&self, session: &Session) -> Result<(), String> {
         let revision = revision(session);
         let state = self.state.read_recover();

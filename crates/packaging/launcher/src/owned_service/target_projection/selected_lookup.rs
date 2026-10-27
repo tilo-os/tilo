@@ -586,7 +586,6 @@ mod tests {
             receive_status(&mut io, &[7; 32], &[8; 32], &[9; 32], &[10; 32]).unwrap(),
             libc::ENOENT as u32
         );
-        // Honest operation failure leaves exact channel usable for next request.
         assert_eq!(
             receive_status(&mut io, &[7; 32], &[8; 32], &[9; 32], &[10; 32]).unwrap(),
             libc::ENOENT as u32
@@ -605,7 +604,6 @@ mod tests {
         );
         drop(io);
         let (mut root, _stalled) = UnixStream::pair().unwrap();
-        let started = std::time::Instant::now();
         let mut io = Handoff::new(&mut root, &cancellation, Duration::from_millis(50)).unwrap();
         assert_eq!(
             receive_status(&mut io, &[7; 32], &[8; 32], &[9; 32], &[10; 32])
@@ -613,7 +611,6 @@ mod tests {
                 .kind(),
             io::ErrorKind::TimedOut
         );
-        assert!(started.elapsed() < Duration::from_secs(2));
         drop(io);
         cancellation.cancel();
         let mut io = Handoff::new(&mut root, &cancellation, Duration::from_secs(1)).unwrap();

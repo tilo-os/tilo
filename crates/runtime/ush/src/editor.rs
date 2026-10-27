@@ -19,7 +19,10 @@ const EXECUTABLE_LIMIT: u64 = 16 * 1024 * 1024;
 pub struct GuestEditor {
     pub producer: Arc<editor::Socket>,
     pub module: PathBuf,
-    pub rc: PathBuf,
+    /// What the shell's rc file runs before any of the person's files
+    /// ([`crate::shell_start::bash_rc`]): loading the producer, or closing
+    /// its descriptor when that fails.
+    pub prelude: String,
 }
 
 pub(crate) struct Prepared {
@@ -91,21 +94,17 @@ impl Prepared {
         let (socket, producer) = editor::Socket::pair()?;
         process_binding::arm(&socket)?;
         socket.read_timeout(Some(Duration::from_secs(3)))?;
-        let rc = plan.session_dir.join("editor-rc");
         let fd = producer.as_fd().as_raw_fd();
         // Initialization and CLOEXEC happen before any user's shell configuration.
         // Unsupported loading closes the capability before ordinary startup resumes.
-        fs::write(
-            &rc,
-            format!(
-                "if enable -f {GUEST_DIR}/producer.so tilo_editable; then\n  tilo_editable {fd} || exec {fd}<&-\nelse\n  exec {fd}<&-\nfi\nif [ -f \"$HOME/.bashrc\" ]; then . \"$HOME/.bashrc\"; fi\n"
-            ),
-        )?;
+        let prelude = format!(
+            "if enable -f {GUEST_DIR}/producer.so tilo_editable; then\n  tilo_editable {fd} || exec {fd}<&-\nelse\n  exec {fd}<&-\nfi\n"
+        );
         Ok(Some(Self {
             guest: GuestEditor {
                 producer: Arc::new(producer),
                 module,
-                rc,
+                prelude,
             },
             socket: Arc::new(socket),
             qualified_bash,

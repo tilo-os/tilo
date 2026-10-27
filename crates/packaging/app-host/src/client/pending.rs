@@ -5,21 +5,21 @@ use std::pin::Pin;
 use std::task::Poll;
 
 use super::{
-    BlockingClient, FlatpakStatus, InstalledPackage, ListedPackage, PackageAbout, WirePinning,
-    parse_id, text_result,
+    BlockingClient, CatalogueError, FlatpakStatus, InstalledPackage, ListedPackage, PackageAbout,
+    WirePinning, catalogue_refusal, parse_id, text_result,
 };
 
-type ReadFuture<T> = Pin<Box<dyn Future<Output = Result<T, String>>>>;
+type ReadFuture<T, E> = Pin<Box<dyn Future<Output = Result<T, E>>>>;
 
 /// One typed read polled on the client that created it.
 /// Dropping it stops observing that response without opening another transport.
 #[must_use]
-pub struct PendingRead<T> {
-    future: Option<ReadFuture<T>>,
+pub struct PendingRead<T, E = String> {
+    future: Option<ReadFuture<T, E>>,
 }
 
-impl<T> PendingRead<T> {
-    fn new(future: impl Future<Output = Result<T, String>> + 'static) -> Self {
+impl<T, E> PendingRead<T, E> {
+    fn new(future: impl Future<Output = Result<T, E>> + 'static) -> Self {
         Self {
             future: Some(Box::pin(future)),
         }
@@ -27,7 +27,7 @@ impl<T> PendingRead<T> {
 
     /// Pump the existing connection once and return a completed response.
     /// Subsequent polls after completion return `None`.
-    pub fn poll(&mut self, host: &BlockingClient) -> Option<Result<T, String>> {
+    pub fn poll(&mut self, host: &BlockingClient) -> Option<Result<T, E>> {
         let future = self.future.as_mut()?;
         let outcome = host.local.block_on(&host.runtime, async {
             tokio::task::yield_now().await;
@@ -44,11 +44,11 @@ impl<T> PendingRead<T> {
 }
 
 impl BlockingClient {
-    pub(super) fn complete<T>(&self, mut read: PendingRead<T>) -> Result<T, String> {
+    pub(super) fn complete<T, E: From<String>>(&self, mut read: PendingRead<T, E>) -> Result<T, E> {
         let future = read
             .future
             .take()
-            .ok_or_else(|| "app-host read already completed".to_string())?;
+            .ok_or_else(|| E::from("app-host read already completed".to_string()))?;
         self.local.block_on(&self.runtime, future)
     }
 
@@ -136,7 +136,7 @@ impl BlockingClient {
         })
     }
     /// Begin the same typed registry catalogue read without waiting for its response.
-    pub fn begin_registry_catalogue(&self, registry: &str) -> PendingRead<String> {
+    pub fn begin_registry_catalogue(&self, registry: &str) -> PendingRead<String, CatalogueError> {
         let client = self.client.clone();
         let registry = registry.to_owned();
         PendingRead::new(async move {
@@ -146,22 +146,26 @@ impl BlockingClient {
                 .send()
                 .promise
                 .await
-                .map_err(|error| error.to_string())?;
-            let entries = text_result(
-                response
-                    .get()
-                    .map_err(|error| error.to_string())?
-                    .get_entries(),
-            )?;
+                .map_err(|error| failed(&error))?;
+            let results = response.get().map_err(|error| failed(&error))?;
+            if let Some(refused) = catalogue_refusal(results.get_refusal(), results.get_detail()) {
+                return Err(refused);
+            }
+            let entries = text_result(results.get_entries())?;
             if entries.len() > 4 * 1024 * 1024 {
-                return Err("verified repository catalogue exceeds the response limit".into());
+                return Err(CatalogueError::Failed(
+                    "verified repository catalogue exceeds the response limit".into(),
+                ));
             }
             Ok(entries)
         })
     }
     /// Begin reading the catalogue the host last verified from `registry`,
     /// which needs no network and so answers while a fresh read is pending.
-    pub fn begin_last_verified_catalogue(&self, registry: &str) -> PendingRead<String> {
+    pub fn begin_last_verified_catalogue(
+        &self,
+        registry: &str,
+    ) -> PendingRead<String, CatalogueError> {
         let client = self.client.clone();
         let registry = registry.to_owned();
         PendingRead::new(async move {
@@ -171,21 +175,26 @@ impl BlockingClient {
                 .send()
                 .promise
                 .await
-                .map_err(|error| error.to_string())?;
-            let entries = text_result(
-                response
-                    .get()
-                    .map_err(|error| error.to_string())?
-                    .get_entries(),
-            )?;
+                .map_err(|error| failed(&error))?;
+            let results = response.get().map_err(|error| failed(&error))?;
+            if let Some(refused) = catalogue_refusal(results.get_refusal(), results.get_detail()) {
+                return Err(refused);
+            }
+            let entries = text_result(results.get_entries())?;
             if entries.len() > 4 * 1024 * 1024 {
-                return Err("verified repository catalogue exceeds the response limit".into());
+                return Err(CatalogueError::Failed(
+                    "verified repository catalogue exceeds the response limit".into(),
+                ));
             }
             Ok(entries)
         })
     }
     /// Begin the same typed flatpak catalogue read without waiting for its response.
-    pub fn begin_flatpak_catalogue(&self, remote: &str, user_managed: bool) -> PendingRead<String> {
+    pub fn begin_flatpak_catalogue(
+        &self,
+        remote: &str,
+        user_managed: bool,
+    ) -> PendingRead<String, CatalogueError> {
         let client = self.client.clone();
         let remote = remote.to_owned();
         PendingRead::new(async move {
@@ -196,14 +205,12 @@ impl BlockingClient {
                 .send()
                 .promise
                 .await
-                .map_err(|error| error.to_string())?;
-            response
-                .get()
-                .map_err(|e| e.to_string())?
-                .get_rows()
-                .map_err(|e| e.to_string())?
-                .to_string()
-                .map_err(|e| e.to_string())
+                .map_err(|error| failed(&error))?;
+            let results = response.get().map_err(|error| failed(&error))?;
+            if let Some(refused) = catalogue_refusal(results.get_refusal(), results.get_detail()) {
+                return Err(refused);
+            }
+            Ok(text_result(results.get_rows())?)
         })
     }
     /// Begin the same typed flatpak status read without waiting for its response.
@@ -224,4 +231,8 @@ impl BlockingClient {
             })
         })
     }
+}
+
+fn failed(error: &capnp::Error) -> CatalogueError {
+    CatalogueError::Failed(error.to_string())
 }

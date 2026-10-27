@@ -332,12 +332,12 @@ pub enum Resolution {
     Ours,
     /// Auto-resolved: only `theirs` changed this base region.
     Theirs,
-    /// A conflict the user has resolved by taking ours.
     TookOurs,
-    /// A conflict the user has resolved by taking theirs.
     TookTheirs,
     /// A conflict the user has resolved by taking both (ours then theirs).
     TookBoth,
+    /// A change resolved with text of its own ([`MergeHunk::written`]).
+    Written,
     /// A still-open conflict.
     Conflict,
 }
@@ -345,6 +345,167 @@ pub enum Resolution {
 impl Resolution {
     pub fn is_conflict(&self) -> bool {
         matches!(self, Resolution::Conflict)
+    }
+}
+
+/// A file's prevailing line ending.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Ending {
+    #[default]
+    Lf,
+    CrLf,
+}
+
+impl Ending {
+    fn as_str(self) -> &'static str {
+        match self {
+            Ending::Lf => "\n",
+            Ending::CrLf => "\r\n",
+        }
+    }
+}
+
+/// How one line ends, relative to the file it came from: a line that ends
+/// the way its file mostly does follows the merged file's ending, a line
+/// that ends otherwise keeps its own. A file converted wholesale therefore
+/// merges as one change to the ending, while a deliberate odd line in a
+/// mixed file survives the merge byte for byte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Term {
+    /// The file's prevailing ending. A last line without an ending is one
+    /// too: whether the merged file ends in a newline is decided once, for
+    /// the whole file ([`MergeModel::final_newline`]).
+    #[default]
+    Native,
+    /// `\n` in a file that mostly ends lines with `\r\n`.
+    Lf,
+    /// `\r\n` in a file that mostly ends lines with `\n`.
+    CrLf,
+}
+
+impl Term {
+    fn as_str(self, ending: Ending) -> &'static str {
+        match self {
+            Term::Native => ending.as_str(),
+            Term::Lf => "\n",
+            Term::CrLf => "\r\n",
+        }
+    }
+}
+
+/// The value both sides agree on, or the one a side changed from base; ours
+/// when both changed it differently.
+fn merge3<T: PartialEq + Copy>(base: T, ours: T, theirs: T) -> T {
+    if ours == base { theirs } else { ours }
+}
+
+/// [`merge3`] over what each file says, where a file with nothing to say
+/// (no line endings, no lines) agrees with the others.
+fn merge_said<T: PartialEq + Copy>(
+    base: Option<T>,
+    ours: Option<T>,
+    theirs: Option<T>,
+    or: T,
+) -> T {
+    let b = base.or(theirs).or(ours).unwrap_or(or);
+    merge3(b, ours.unwrap_or(b), theirs.unwrap_or(b))
+}
+
+/// One input of a merge split into lines: the text the merge compares and,
+/// beside it, how each line ended.
+struct Parsed {
+    lines: Vec<String>,
+    /// How each line ends, `None` for a last line without a newline.
+    raw: Vec<Option<Ending>>,
+    /// How each line ends relative to `ending`.
+    terms: Vec<Term>,
+    /// The ending the file speaks for, `None` when no line ends: its
+    /// prevailing ending, or for a side of a merge the one
+    /// [`Parsed::ending_against`] finds.
+    ending: Option<Ending>,
+    /// Whether the last line ends, `None` for an empty file.
+    final_newline: Option<bool>,
+}
+
+impl Parsed {
+    fn new(s: &str) -> Self {
+        let mut lines = Vec::new();
+        let mut raw = Vec::new();
+        for piece in s.split_inclusive('\n') {
+            let (text, end) = match piece.strip_suffix('\n') {
+                Some(text) => match text.strip_suffix('\r') {
+                    Some(text) => (text, Some(Ending::CrLf)),
+                    None => (text, Some(Ending::Lf)),
+                },
+                None => (piece, None),
+            };
+            lines.push(text.to_owned());
+            raw.push(end);
+        }
+        let crlf = raw.iter().filter(|e| **e == Some(Ending::CrLf)).count();
+        let lf = raw.iter().filter(|e| **e == Some(Ending::Lf)).count();
+        let ending = match (crlf, lf) {
+            (0, 0) => None,
+            (crlf, lf) if crlf > lf => Some(Ending::CrLf),
+            _ => Some(Ending::Lf),
+        };
+        let mut parsed = Self {
+            lines,
+            raw,
+            terms: Vec::new(),
+            ending: None,
+            final_newline: (!s.is_empty()).then_some(s.ends_with('\n')),
+        };
+        parsed.relate_to(ending);
+        parsed
+    }
+
+    /// Speak for `ending`: a line that ends otherwise keeps its own ending.
+    fn relate_to(&mut self, ending: Option<Ending>) {
+        self.ending = ending;
+        self.terms = self
+            .raw
+            .iter()
+            .map(|end| match end {
+                Some(end) if Some(*end) != ending => match end {
+                    Ending::Lf => Term::Lf,
+                    Ending::CrLf => Term::CrLf,
+                },
+                _ => Term::Native,
+            })
+            .collect();
+    }
+
+    /// The ending this side gives the file it shares with `base`, aligned by
+    /// `ops`: base's, unless most of the lines it keeps from base now end
+    /// differently, so the side converted the file. Lines a side adds or
+    /// removes never change it, so pasting a few Windows lines into a Unix
+    /// file leaves the other side's lines alone. A side that keeps no
+    /// ended line of base speaks for its own prevailing ending.
+    fn ending_against(&self, base: &Parsed, ops: &[similar::DiffOp]) -> Option<Ending> {
+        let (mut kept, mut converted) = (0usize, 0usize);
+        for op in ops {
+            if let similar::DiffOp::Equal {
+                old_index,
+                new_index,
+                len,
+            } = *op
+            {
+                let was = base.raw.get(old_index..old_index + len).unwrap_or(&[]);
+                let now = self.raw.get(new_index..new_index + len).unwrap_or(&[]);
+                for (was, now) in was.iter().zip(now) {
+                    if let (Some(was), Some(now)) = (was, now) {
+                        kept += 1;
+                        converted += usize::from(was != now);
+                    }
+                }
+            }
+        }
+        if kept == 0 || base.ending.is_none() || converted * 2 > kept {
+            self.ending
+        } else {
+            base.ending
+        }
     }
 }
 
@@ -358,6 +519,11 @@ pub struct MergeHunk {
     pub resolution: Resolution,
     /// True when this hunk is a real divergence (vs. a passthrough equal run).
     pub is_change: bool,
+    /// The lines a [`Resolution::Written`] hunk contributes.
+    pub written: Vec<String>,
+    /// How each line of `base`, `ours` and `theirs` ends. A clean run carries
+    /// the endings merged line by line on all three.
+    terms: [Vec<Term>; 3],
 }
 
 impl MergeHunk {
@@ -365,18 +531,90 @@ impl MergeHunk {
     /// resolution. Conflicts contribute their `ours` side as a provisional
     /// best-effort (so the buffer is always renderable) but report unresolved.
     pub fn resolved_lines(&self) -> Vec<String> {
-        match self.resolution {
-            Resolution::Unchanged => self.base.clone(),
+        let mut out = Vec::new();
+        self.contribute(self.resolution, &self.written, &mut out);
+        out.into_iter().map(|(line, _)| line.to_owned()).collect()
+    }
+
+    /// Append the lines `resolution` takes, with how each ends, to `out`.
+    fn contribute<'a>(
+        &'a self,
+        resolution: Resolution,
+        written: &'a [String],
+        out: &mut Vec<(&'a str, Term)>,
+    ) {
+        let [base, ours, theirs] = &self.terms;
+        let mut side = |lines: &'a [String], terms: &'a [Term]| {
+            out.extend(
+                lines
+                    .iter()
+                    .map(String::as_str)
+                    .zip(terms.iter().copied().chain(std::iter::repeat(Term::Native))),
+            );
+        };
+        match resolution {
+            Resolution::Unchanged => side(&self.base, base),
             // Conflict is provisional: show ours until the user decides.
-            Resolution::Ours | Resolution::TookOurs | Resolution::Conflict => self.ours.clone(),
-            Resolution::Theirs | Resolution::TookTheirs => self.theirs.clone(),
-            Resolution::TookBoth => {
-                let mut v = self.ours.clone();
-                v.extend(self.theirs.clone());
-                v
+            Resolution::Ours | Resolution::TookOurs | Resolution::Conflict => {
+                side(&self.ours, ours);
             }
+            Resolution::Theirs | Resolution::TookTheirs => side(&self.theirs, theirs),
+            Resolution::TookBoth => {
+                side(&self.ours, ours);
+                side(&self.theirs, theirs);
+            }
+            // Text of one's own ends lines the way the merged file does.
+            Resolution::Written => side(written, &[]),
         }
     }
+}
+
+/// Lines with how each ends, as one side contributes them.
+#[derive(Clone, Debug, Default)]
+struct Run {
+    lines: Vec<String>,
+    terms: Vec<Term>,
+}
+
+impl Run {
+    fn of(side: &Parsed, from: usize, len: usize) -> Self {
+        let range = from..from + len;
+        Self {
+            lines: side
+                .lines
+                .get(range.clone())
+                .map(<[String]>::to_vec)
+                .unwrap_or_default(),
+            terms: side
+                .terms
+                .get(range)
+                .map(<[Term]>::to_vec)
+                .unwrap_or_default(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
+    fn push(&mut self, line: &str, term: Term) {
+        self.lines.push(line.to_owned());
+        self.terms.push(term);
+    }
+
+    fn extend(&mut self, other: &Run) {
+        self.lines.extend(other.lines.iter().cloned());
+        self.terms.extend(other.terms.iter().copied());
+    }
+}
+
+/// What one side did with a base line.
+#[derive(Clone, Copy)]
+enum SideAt<'a> {
+    /// Carried it through, ending it this way.
+    Kept(Term),
+    /// Replaced it with these lines (none for a deletion).
+    Replaced(&'a Run),
 }
 
 /// Mutable state threaded through the base/gap sweep in [`MergeModel::compute`]
@@ -384,10 +622,10 @@ impl MergeHunk {
 #[derive(Default)]
 struct MergeBuilder {
     hunks: Vec<MergeHunk>,
-    clean_run: Vec<String>,
-    seg_base: Vec<String>,
-    seg_ours: Vec<String>,
-    seg_theirs: Vec<String>,
+    clean_run: Run,
+    seg_base: Run,
+    seg_ours: Run,
+    seg_theirs: Run,
     seg_any_ours: bool,
     seg_any_theirs: bool,
     seg_open: bool,
@@ -403,24 +641,27 @@ impl MergeBuilder {
         if self.clean_run.is_empty() {
             return;
         }
-        let lines = std::mem::take(&mut self.clean_run);
+        let Run { lines, terms } = std::mem::take(&mut self.clean_run);
         self.hunks.push(MergeHunk {
             base: lines.clone(),
             ours: lines.clone(),
             theirs: lines,
             resolution: Resolution::Unchanged,
             is_change: false,
+            written: Vec::new(),
+            terms: [terms.clone(), terms.clone(), terms],
         });
     }
 
     /// Close the currently-open divergent segment (if any) into a hunk,
-    /// classifying it as an auto-resolve or a real conflict.
+    /// classifying it as an auto-resolve or a real conflict. Only the text
+    /// decides: two sides that differ in how lines end agree.
     fn close_segment(&mut self) {
         if !self.seg_open {
             return;
         }
         let resolution = if self.seg_any_ours && self.seg_any_theirs {
-            if self.seg_ours == self.seg_theirs {
+            if self.seg_ours.lines == self.seg_theirs.lines {
                 Resolution::Ours
             } else {
                 Resolution::Conflict
@@ -430,12 +671,17 @@ impl MergeBuilder {
         } else {
             Resolution::Theirs
         };
+        let base = std::mem::take(&mut self.seg_base);
+        let ours = std::mem::take(&mut self.seg_ours);
+        let theirs = std::mem::take(&mut self.seg_theirs);
         self.hunks.push(MergeHunk {
-            base: std::mem::take(&mut self.seg_base),
-            ours: std::mem::take(&mut self.seg_ours),
-            theirs: std::mem::take(&mut self.seg_theirs),
+            base: base.lines,
+            ours: ours.lines,
+            theirs: theirs.lines,
             resolution,
             is_change: true,
+            written: Vec::new(),
+            terms: [base.terms, ours.terms, theirs.terms],
         });
         self.seg_any_ours = false;
         self.seg_any_theirs = false;
@@ -444,43 +690,41 @@ impl MergeBuilder {
 
     /// Fold in the insertions (if any) sitting in the gap before a base line
     /// (or the trailing gap when called for the tail).
-    fn push_gap(&mut self, ours_ins: &[String], theirs_ins: &[String]) {
+    fn push_gap(&mut self, ours_ins: &Run, theirs_ins: &Run) {
         if ours_ins.is_empty() && theirs_ins.is_empty() {
             return;
         }
         self.flush_clean();
         self.seg_open = true;
-        self.seg_ours.extend(ours_ins.iter().cloned());
-        self.seg_theirs.extend(theirs_ins.iter().cloned());
+        self.seg_ours.extend(ours_ins);
+        self.seg_theirs.extend(theirs_ins);
         self.seg_any_ours |= !ours_ins.is_empty();
         self.seg_any_theirs |= !theirs_ins.is_empty();
     }
 
-    /// Fold in one base line: either it passes through clean, or it (and its
-    /// per-side replacements) join the open divergent segment.
-    fn push_line(&mut self, base_line: &str, orep: Option<&[String]>, trep: Option<&[String]>) {
-        if orep.is_none() && trep.is_none() {
+    /// Fold in one base line: either it passes through clean, its ending
+    /// merged from the three, or it (and its per-side replacements) join the
+    /// open divergent segment.
+    fn push_line(&mut self, (line, term): (&str, Term), ours: SideAt<'_>, theirs: SideAt<'_>) {
+        if let (SideAt::Kept(o), SideAt::Kept(t)) = (ours, theirs) {
             self.close_segment();
-            self.clean_run.push(base_line.to_string());
+            self.clean_run.push(line, merge3(term, o, t));
             return;
         }
         self.flush_clean();
         self.seg_open = true;
-        self.seg_base.push(base_line.to_string());
-        // Replacement (None => keep base line on that side).
-        match orep {
-            Some(lines) => {
-                self.seg_ours.extend(lines.iter().cloned());
-                self.seg_any_ours = true;
+        self.seg_base.push(line, term);
+        for (seg, any, at) in [
+            (&mut self.seg_ours, &mut self.seg_any_ours, ours),
+            (&mut self.seg_theirs, &mut self.seg_any_theirs, theirs),
+        ] {
+            match at {
+                SideAt::Replaced(run) => {
+                    seg.extend(run);
+                    *any = true;
+                }
+                SideAt::Kept(term) => seg.push(line, term),
             }
-            None => self.seg_ours.push(base_line.to_string()),
-        }
-        match trep {
-            Some(lines) => {
-                self.seg_theirs.extend(lines.iter().cloned());
-                self.seg_any_theirs = true;
-            }
-            None => self.seg_theirs.push(base_line.to_string()),
         }
     }
 
@@ -497,6 +741,10 @@ impl MergeBuilder {
 #[derive(Clone, Debug, Default)]
 pub struct MergeModel {
     pub hunks: Vec<MergeHunk>,
+    /// How the merged file mostly ends its lines.
+    ending: Ending,
+    /// Whether the merged file ends in a newline.
+    final_newline: bool,
 }
 
 impl MergeModel {
@@ -507,39 +755,46 @@ impl MergeModel {
     /// either side touched into hunks. Keeping replacements and insertions in
     /// separate slots is what prevents trailing/boundary inserts from being
     /// double-counted.
+    ///
+    /// Lines compare by their text alone. How they end is merged beside it:
+    /// the file's prevailing ending and whether it ends in a newline are each
+    /// taken from the side that changed them, and every line keeps its own
+    /// ending where it differs from its file's.
     pub fn compute(base: &str, ours: &str, theirs: &str) -> Self {
-        let base_lines: Vec<String> = split_lines(base);
-        let ours_align = SideAlign::build(&base_lines, &split_lines(ours));
-        let theirs_align = SideAlign::build(&base_lines, &split_lines(theirs));
+        let base = Parsed::new(base);
+        let (ours, ours_align) = SideAlign::of(&base, ours);
+        let (theirs, theirs_align) = SideAlign::of(&base, theirs);
 
-        let n = base_lines.len();
+        let n = base.lines.len();
         let mut builder = MergeBuilder::new();
+        let empty = Run::default();
 
         // Interleave gaps and base lines: gap(0), line(0), gap(1), line(1),
         // …, line(n-1), gap(n). A "unit" is either a gap insertion region or a
         // base line. The builder classifies each unit as clean or divergent,
         // and coalesces consecutive divergent units into a single hunk.
         for i in 0..=n {
-            let oi = ours_align
-                .inserts_before
-                .get(i)
-                .map_or(&[][..], Vec::as_slice);
-            let ti = theirs_align
-                .inserts_before
-                .get(i)
-                .map_or(&[][..], Vec::as_slice);
-            builder.push_gap(oi, ti);
+            builder.push_gap(
+                ours_align.inserts_before.get(i).unwrap_or(&empty),
+                theirs_align.inserts_before.get(i).unwrap_or(&empty),
+            );
 
-            let Some(base_line) = base_lines.get(i) else {
+            let Some(line) = base.lines.get(i) else {
                 break;
             };
-            let orep = ours_align.replace.get(i).and_then(Option::as_deref);
-            let trep = theirs_align.replace.get(i).and_then(Option::as_deref);
-            builder.push_line(base_line, orep, trep);
+            let term = base.terms.get(i).copied().unwrap_or_default();
+            builder.push_line((line, term), ours_align.at(i), theirs_align.at(i));
         }
 
         Self {
             hunks: builder.finish(),
+            ending: merge_said(base.ending, ours.ending, theirs.ending, Ending::Lf),
+            final_newline: merge_said(
+                base.final_newline,
+                ours.final_newline,
+                theirs.final_newline,
+                true,
+            ),
         }
     }
 
@@ -575,13 +830,41 @@ impl MergeModel {
         self.conflict_count() == 0
     }
 
-    /// The merged output as a single string with trailing newline per line.
+    /// The merged output, each line ending as merged and the file ending in
+    /// a newline when the merge says it does.
     pub fn merged_text(&self) -> String {
-        let mut out = String::new();
-        for h in &self.hunks {
-            for line in h.resolved_lines() {
-                out.push_str(&line);
-                out.push('\n');
+        self.text(None)
+    }
+
+    /// The merged output with `hunk` resolved as `resolution` (and, for
+    /// [`Resolution::Written`], with `written`), every other hunk keeping
+    /// its current resolution.
+    pub fn merged_text_with(
+        &self,
+        hunk: usize,
+        resolution: Resolution,
+        written: &[String],
+    ) -> String {
+        self.text(Some((hunk, resolution, written)))
+    }
+
+    fn text(&self, substitute: Option<(usize, Resolution, &[String])>) -> String {
+        let mut lines = Vec::new();
+        for (i, h) in self.hunks.iter().enumerate() {
+            match substitute {
+                Some((at, resolution, written)) if at == i => {
+                    h.contribute(resolution, written, &mut lines);
+                }
+                _ => h.contribute(h.resolution, &h.written, &mut lines),
+            }
+        }
+        let size = lines.iter().map(|(line, _)| line.len() + 2).sum();
+        let mut out = String::with_capacity(size);
+        let last = lines.len().saturating_sub(1);
+        for (i, (line, term)) in lines.into_iter().enumerate() {
+            out.push_str(line);
+            if i < last || self.final_newline {
+                out.push_str(term.as_str(self.ending));
             }
         }
         out
@@ -596,51 +879,63 @@ impl MergeModel {
     }
 }
 
-/// Split into lines, dropping the line terminator. Empty input → empty vec.
-fn split_lines(s: &str) -> Vec<String> {
-    if s.is_empty() {
-        return Vec::new();
-    }
-    s.lines().map(std::string::ToString::to_string).collect()
-}
-
 /// One side of the merge aligned against base.
 ///
-/// * `replace[i]` — `Some(lines)` when base line `i` was modified or deleted on
-///   this side (`lines` is the replacement, possibly empty for a deletion);
-///   `None` when base line `i` is carried through unchanged.
+/// * `replace[i]` — `Some(run)` when base line `i` was modified or deleted on
+///   this side (`run` is the replacement, possibly empty for a deletion);
+///   `None` when base line `i` is carried through unchanged, ending as
+///   `kept[i]` says.
 /// * `inserts_before[g]` — lines this side inserts in gap `g`, where gap `g`
 ///   sits *before* base line `g` (and gap `n` is the trailing append region).
 ///   Length is `base.len() + 1`.
 struct SideAlign {
-    replace: Vec<Option<Vec<String>>>,
-    inserts_before: Vec<Vec<String>>,
+    replace: Vec<Option<Run>>,
+    kept: Vec<Term>,
+    inserts_before: Vec<Run>,
 }
 
 impl SideAlign {
-    fn build(base: &[String], side: &[String]) -> Self {
-        let n = base.len();
-        let mut replace: Vec<Option<Vec<String>>> = vec![None; n];
-        let mut inserts_before: Vec<Vec<String>> = vec![Vec::new(); n + 1];
+    /// `text` parsed as a side of a merge with `base`, its endings related
+    /// to the ending it gives the merged file, and aligned against base.
+    fn of(base: &Parsed, text: &str) -> (Parsed, Self) {
+        let mut side = Parsed::new(text);
+        // Diff the split lines themselves, so an op's indices are the
+        // indices of `base.lines` and `side.lines`: re-splitting a joined
+        // text would also break at a lone `\r` inside a line.
+        let ops = similar::capture_diff_slices(Algorithm::Patience, &base.lines, &side.lines);
+        side.relate_to(side.ending_against(base, &ops));
+        let align = Self::build(base.lines.len(), &side, &ops);
+        (side, align)
+    }
 
-        let base_text = join(base);
-        let side_text = join(side);
-        let diff = TextDiff::configure()
-            .algorithm(Algorithm::Patience)
-            .diff_lines(&base_text, &side_text);
+    fn build(n: usize, side: &Parsed, ops: &[similar::DiffOp]) -> Self {
+        let mut replace: Vec<Option<Run>> = vec![None; n];
+        let mut kept: Vec<Term> = vec![Term::Native; n];
+        let mut inserts_before: Vec<Run> = vec![Run::default(); n + 1];
 
         // Walk the structured ops. Each op carries a base (old) range and a
         // side (new) range.
-        for op in diff.ops() {
+        for op in ops {
             use similar::DiffOp::{Delete, Equal, Insert, Replace};
             match *op {
-                Equal { .. } => {}
+                Equal {
+                    old_index,
+                    new_index,
+                    len,
+                } => {
+                    let terms = side.terms.get(new_index..new_index + len).unwrap_or(&[]);
+                    if let Some(slots) = kept.get_mut(old_index..old_index + len) {
+                        for (slot, term) in slots.iter_mut().zip(terms) {
+                            *slot = *term;
+                        }
+                    }
+                }
                 Delete {
                     old_index, old_len, ..
                 } => {
                     if let Some(slice) = replace.get_mut(old_index..old_index + old_len) {
                         for slot in slice {
-                            *slot = Some(Vec::new());
+                            *slot = Some(Run::default());
                         }
                     }
                 }
@@ -649,13 +944,9 @@ impl SideAlign {
                     new_index,
                     new_len,
                 } => {
-                    let lines = side
-                        .get(new_index..new_index + new_len)
-                        .map(<[String]>::to_vec)
-                        .unwrap_or_default();
                     // Insertion attaches to the gap before base line old_index.
                     if let Some(slot) = inserts_before.get_mut(old_index.min(n)) {
-                        slot.extend(lines);
+                        slot.extend(&Run::of(side, new_index, new_len));
                     }
                 }
                 Replace {
@@ -664,24 +955,21 @@ impl SideAlign {
                     new_index,
                     new_len,
                 } => {
-                    let lines = side
-                        .get(new_index..new_index + new_len)
-                        .map(<[String]>::to_vec)
-                        .unwrap_or_default();
+                    let run = Run::of(side, new_index, new_len);
                     // The whole replacement maps onto the first replaced base
                     // line; the remaining replaced base lines become deletions
                     // so the segment spans the entire base range.
                     if old_len == 0 {
                         if let Some(slot) = inserts_before.get_mut(old_index.min(n)) {
-                            slot.extend(lines);
+                            slot.extend(&run);
                         }
                     } else {
                         if let Some(slot) = replace.get_mut(old_index) {
-                            *slot = Some(lines);
+                            *slot = Some(run);
                         }
                         if let Some(slice) = replace.get_mut(old_index + 1..old_index + old_len) {
                             for slot in slice {
-                                *slot = Some(Vec::new());
+                                *slot = Some(Run::default());
                             }
                         }
                     }
@@ -691,18 +979,18 @@ impl SideAlign {
 
         Self {
             replace,
+            kept,
             inserts_before,
         }
     }
-}
 
-fn join(lines: &[String]) -> String {
-    let mut s = String::new();
-    for l in lines {
-        s.push_str(l);
-        s.push('\n');
+    /// What this side did with base line `i`.
+    fn at(&self, i: usize) -> SideAt<'_> {
+        match self.replace.get(i).and_then(Option::as_ref) {
+            Some(run) => SideAt::Replaced(run),
+            None => SideAt::Kept(self.kept.get(i).copied().unwrap_or_default()),
+        }
     }
-    s
 }
 
 #[cfg(test)]
@@ -891,13 +1179,11 @@ mod tests {
                 merged: None,
                 conflict_sides: Some((vec!["OURS"], vec!["THEIRS"])),
                 takes: vec![
-                    // Taking theirs changes the output.
                     Take {
                         resolution: Resolution::TookTheirs,
                         fully_resolved: Some(true),
                         merged: vec!["a", "THEIRS", "c"],
                     },
-                    // Taking both concatenates ours then theirs.
                     Take {
                         resolution: Resolution::TookBoth,
                         fully_resolved: None,
@@ -963,6 +1249,162 @@ mod tests {
                 assert_eq!(m.merged_lines(), take.merged, "{label}: merged lines");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod line_ending_tests {
+    use super::*;
+
+    /// A merge writes back the bytes its inputs end lines with: Windows line
+    /// endings, a last line without a newline, and the odd line of a mixed
+    /// file all survive, so a merged file differs from its inputs only where
+    /// their text does.
+    #[test]
+    fn a_merge_keeps_each_sides_line_endings_and_final_newline() {
+        let cases = [
+            (
+                "Windows line endings",
+                "a\r\nb\r\nc\r\n",
+                "a\r\nB\r\nc\r\n",
+                "a\r\nb\r\nc\r\nd\r\n",
+                "a\r\nB\r\nc\r\nd\r\n",
+            ),
+            (
+                "no newline at the end",
+                "a\nb\nc",
+                "A\nb\nc",
+                "a\nb\nC",
+                "A\nb\nC",
+            ),
+            (
+                "a line appended after a last line without a newline",
+                "a\nb",
+                "a\nb\nc",
+                "x\nb",
+                "x\nb\nc",
+            ),
+            (
+                "Windows line endings and no newline at the end",
+                "a\r\nb\r\nc",
+                "A\r\nb\r\nc",
+                "a\r\nb\r\nC",
+                "A\r\nb\r\nC",
+            ),
+            (
+                "one side adds the final newline, the other edits",
+                "a\nb",
+                "a\nb\n",
+                "A\nb",
+                "A\nb\n",
+            ),
+            (
+                "one side drops the final newline, the other edits",
+                "a\r\nb\r\n",
+                "A\r\nb\r\n",
+                "a\r\nb",
+                "A\r\nb",
+            ),
+            (
+                "the odd line of a mixed file keeps its ending",
+                "a\nb\r\nc\nd\n",
+                "A\nb\r\nc\nd\n",
+                "a\nb\r\nc\nD\n",
+                "A\nb\r\nc\nD\n",
+            ),
+            (
+                "an edited odd line of a mixed file keeps its ending",
+                "a\nb\r\nc\nd\n",
+                "a\nB\r\nc\nd\n",
+                "a\nb\r\nc\nD\n",
+                "a\nB\r\nc\nD\n",
+            ),
+            (
+                "one side converts every line, the other edits one",
+                "a\nb\nc\n",
+                "a\r\nb\r\nc\r\n",
+                "a\nb\nC\n",
+                "a\r\nb\r\nC\r\n",
+            ),
+            (
+                "lines pasted with other endings leave the edited lines alone",
+                "a\nx\n",
+                "A\nx\n",
+                "a\nx\nb\r\nc\r\nd\r\n",
+                "A\nx\nb\r\nc\r\nd\r\n",
+            ),
+            (
+                "deleting the lines that set the ending leaves the edited lines alone",
+                "a\r\nx\r\nb\r\nc\r\nd\ne\nf\n",
+                "A\r\nx\r\nb\r\nc\r\nd\ne\nf\n",
+                "a\r\nx\r\nd\ne\nf\n",
+                "A\r\nx\r\nd\ne\nf\n",
+            ),
+        ];
+        for (name, base, ours, theirs, merged) in cases {
+            let m = MergeModel::compute(base, ours, theirs);
+            assert_eq!(m.conflict_count(), 0, "{name}: no conflict");
+            assert_eq!(m.merged_text(), merged, "{name}: merged bytes");
+            let swapped = MergeModel::compute(base, theirs, ours);
+            assert_eq!(swapped.merged_text(), merged, "{name}: either way round");
+        }
+    }
+
+    /// Merging a file with itself, or with an unchanged copy, gives back its
+    /// exact bytes.
+    #[test]
+    fn an_unchanged_file_merges_to_its_own_bytes() {
+        for text in [
+            "",
+            "x",
+            "x\n",
+            "\n",
+            "\r\n\r\n",
+            "a\r\nb\r\nc",
+            "a\nb\r\nc\n",
+            "a\r\nb\nc\r\nd",
+            "carriage\r alone\n",
+        ] {
+            let m = MergeModel::compute(text, text, text);
+            assert_eq!(m.merged_text(), text, "{text:?}");
+            assert_eq!(m.change_count(), 0, "{text:?}");
+        }
+    }
+
+    /// Lines that differ only in how they end are the same line: the same
+    /// edit made on a Windows and a Unix copy is no conflict, and a real
+    /// conflict between them resolves to bytes in the file's own endings.
+    #[test]
+    fn conflicts_are_decided_on_the_text_and_resolve_to_the_files_endings() {
+        let same = MergeModel::compute("a\nb\n", "a\r\nSAME\r\n", "a\nSAME\n");
+        assert_eq!(same.conflict_count(), 0);
+        assert_eq!(same.merged_text(), "a\r\nSAME\r\n");
+
+        let m = MergeModel::compute("a\r\nb\r\nc", "a\r\nO\r\nc", "a\r\nT\r\nc");
+        let conflict = m
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .expect("a conflict");
+        assert_eq!(m.merged_text(), "a\r\nO\r\nc", "ours until decided");
+        let take =
+            |resolution, written: &[String]| m.merged_text_with(conflict, resolution, written);
+        assert_eq!(take(Resolution::TookTheirs, &[]), "a\r\nT\r\nc");
+        assert_eq!(take(Resolution::TookBoth, &[]), "a\r\nO\r\nT\r\nc");
+        let written = ["W1".to_owned(), "W2".to_owned()];
+        assert_eq!(take(Resolution::Written, &written), "a\r\nW1\r\nW2\r\nc");
+
+        // Ours ends without a newline; taking both puts a line after it.
+        let tail = MergeModel::compute("a\n", "a\nb", "a\nc");
+        let conflict = tail
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .expect("a conflict");
+        assert_eq!(
+            tail.merged_text_with(conflict, Resolution::TookBoth, &[]),
+            "a\nb\nc"
+        );
     }
 }
 

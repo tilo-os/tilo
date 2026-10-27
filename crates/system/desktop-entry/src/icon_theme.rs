@@ -50,7 +50,7 @@ pub enum IconFormat {
 impl IconFormat {
     const ALL: [Self; 2] = [Self::Png, Self::Svg];
 
-    fn extension(self) -> &'static str {
+    pub(crate) fn extension(self) -> &'static str {
         match self {
             Self::Png => "png",
             Self::Svg => "svg",

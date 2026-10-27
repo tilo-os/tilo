@@ -14,15 +14,16 @@ use crate::native_timers::{
 use crate::resource::ClocksEffect;
 use crate::schedule::{DueEvent, OnThisDevice, shell_activity};
 use crate::transport::{ShellCommand, ShellSnapshot};
-use chrono::{Offset, Utc};
+use chrono::{Datelike, Offset, TimeZone, Utc};
 use std::{collections::BTreeSet, time::Duration};
 use ui::framework::{Actions, Dispatcher, Setting};
 use ui::icons::Icon;
 use ui::prelude::Id;
+use ui::widget::Filterable;
 use ui::widget::primitives::{Fact, Facts};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
-    Button, Card, CardGrid, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable,
+    Button, Card, Column, Columns, Container, Element, ModelView, ProgressBar, Row, Scrollable,
     Spacer, Text, TextInput, TextInputKind, TimePicker, TimeValue, Widget,
 };
 
@@ -40,7 +41,7 @@ pub(crate) struct Shown {
 impl Shown {
     /// The present as wall clocks show it.
     fn now(&self) -> chrono::DateTime<Utc> {
-        self.pinned_now.unwrap_or_else(Utc::now)
+        self.pinned_now.unwrap_or_else(wall_now)
     }
 
     /// The local time of day the "Here" clock shows: a capture's pinned
@@ -51,6 +52,37 @@ impl Shown {
             |pinned| pinned.naive_utc(),
         )
     }
+
+    /// The present on this device's clock, a capture's pinned moment read as
+    /// local wall time so next-ring labels are stable too.
+    fn local_now(&self) -> chrono::DateTime<chrono::Local> {
+        self.pinned_now.map_or_else(chrono::Local::now, |pinned| {
+            chrono::Local.from_utc_datetime(&pinned.naive_utc())
+        })
+    }
+}
+
+/// When `alarm` rings next, in words. A disabled alarm says so; an enabled
+/// one says "today", "tomorrow" or the weekday, then its time.
+pub(crate) fn next_ring(
+    alarm: &crate::model::Alarm,
+    now: chrono::DateTime<chrono::Local>,
+) -> String {
+    if !alarm.enabled {
+        return "Off".into();
+    }
+    let Some(next) = crate::schedule::next_occurrence(alarm, None, now) else {
+        return "No next ring".into();
+    };
+    let today = now.date_naive();
+    let day = if next.date_naive() == today {
+        "today".to_owned()
+    } else if next.date_naive() == today.succ_opt().unwrap_or(today) {
+        "tomorrow".to_owned()
+    } else {
+        ui::format::weekday_short(next.date_naive().weekday())
+    };
+    format!("Next {day}, {}", ui::clock::time_of_day(&next.time()))
 }
 
 /// How the window's controls reach the resource and the device.
@@ -73,11 +105,14 @@ impl Controls {
     }
 }
 
+/// A button whose press acts on this device alone: what it changes in the
+/// clocks it submits as the record's own verbs, decided there, so a guest
+/// presses it as the room's owner does.
 fn button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
     Box::new(
         Button::new(id, label)
             .control_size(ui::widget::ControlSize::Large)
-            .on_effect(f),
+            .on_own_device_effect(f),
     )
 }
 
@@ -86,7 +121,7 @@ fn primary_button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
         Button::new(id, label)
             .role(ui::widget::ButtonRole::Primary)
             .control_size(ui::widget::ControlSize::Large)
-            .on_effect(f),
+            .on_own_device_effect(f),
     )
 }
 
@@ -192,13 +227,19 @@ fn offset_from_here(seconds: i32) -> String {
     }
 }
 
+/// A time zone as a place: the city, then the part of the world it is in
+/// ("New York, Americas"). The database's region is a continent or ocean,
+/// so "America" names the two continents together.
 fn timezone_label(zone: &str) -> String {
     let city = zone.rsplit('/').next().unwrap_or(zone).replace('_', " ");
-    let region = zone.split('/').next().unwrap_or_default();
+    let region = match zone.split('/').next().unwrap_or_default() {
+        "America" => "Americas",
+        region => region,
+    };
     if region.is_empty() || region == city {
         city
     } else {
-        format!("{city}, in {region}")
+        format!("{city}, {region}")
     }
 }
 
@@ -229,122 +270,213 @@ fn timezone_results(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> ModelView<Shown> {
+/// The cities a world clock can be added for: a few well-known ones, or
+/// those the window's search names, less the cities already shown. The
+/// window bar's search narrows them ([`Filterable`]); the page draws no
+/// field of its own.
+struct CityChoices {
+    query: ui::LocalState<String>,
+    view: ModelView<String>,
+}
+
+impl CityChoices {
+    fn new(state: &ui::LocalState<Shown>, controls: &Controls) -> Self {
+        let query = ui::LocalState::new(String::new());
+        let add = controls.dispatcher.clone();
+        let state = state.clone();
+        let view = ModelView::from_state(&query, move |query| {
+            let add = add.clone();
+            let query = query.clone();
+            Box::new(ModelView::from_state_by(
+                &state,
+                |s| {
+                    s.clocks
+                        .world_clocks
+                        .iter()
+                        .map(|(_, clock)| clock.timezone.0.clone())
+                        .collect::<Vec<_>>()
+                },
+                move |s| {
+                    let shown: Vec<&str> = s
+                        .clocks
+                        .world_clocks
+                        .iter()
+                        .map(|(_, clock)| clock.timezone.0.as_str())
+                        .collect();
+                    let mut choices = Row::new().with_padding_rhythm(None, None);
+                    for zone in timezone_results(&query) {
+                        if shown.contains(&zone.as_str()) {
+                            continue;
+                        }
+                        let add = add.clone();
+                        let city = zone.rsplit('/').next().unwrap_or(&zone).replace('_', " ");
+                        let label = timezone_label(&zone);
+                        let id = zone.to_lowercase().replace(['/', '_'], "-");
+                        choices = choices.push(button(
+                            &format!("clocks.world.add.{id}"),
+                            &label,
+                            move || {
+                                add.submit(
+                                    Clocks::ADD_WORLD_CLOCK.with((city.clone(), zone.clone())),
+                                );
+                            },
+                        ));
+                    }
+                    Box::new(choices) as Element
+                },
+            )) as Element
+        });
+        Self { query, view }
+    }
+}
+
+impl Filterable for CityChoices {
+    fn set_filter(&mut self, query: &str) {
+        if self.query.with(|shown| shown != query) {
+            self.query.set(query.to_owned());
+        }
+    }
+}
+
+impl ui::widget::Decorator for CityChoices {
+    type Inner = ModelView<String>;
+
+    fn inner(&self) -> &ModelView<String> {
+        &self.view
+    }
+
+    fn inner_mut(&mut self) -> &mut ModelView<String> {
+        &mut self.view
+    }
+
+    ui::provides!(dyn Filterable; inner = view);
+
+    fn name(&self) -> &'static str {
+        "CityChoices"
+    }
+}
+
+fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> ModelView<(Shown, i64)> {
     let list_controls = controls.clone();
-    ModelView::from_state(state, move |s| {
-        let mut col = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related);
-        if s.clocks.world_clocks.is_empty() {
-            col = col.push(Box::new(
-                Text::new("No cities yet. Add one to compare times at a glance.").dimmed(),
-            ));
-        }
-        for (id, clock) in s.clocks.world_clocks.iter() {
-            let (time, facts) = city_time(&clock.timezone.0, s.now());
-            let row = Row::new()
-                .push(Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .with_rhythm(ui::tokens::Rhythm::Tight)
-                        .push(Box::new(Text::new(&time).with_role(ui::TextRole::Title)))
-                        .push(Box::new(Facts::new(facts))),
-                ))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    list_controls.button(
-                        Button::new(&format!("clocks.world.{id}.remove"), "Remove")
-                            .control_size(ui::widget::ControlSize::Large),
-                        Clocks::REMOVE_WORLD_CLOCK.with(id.clone()),
-                    ),
+    ModelView::from_state_by(
+        state,
+        |s| (s.clone(), minute(s)),
+        move |s| {
+            let mut col = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(ui::tokens::Rhythm::Related);
+            if s.clocks.world_clocks.is_empty() {
+                col = col.push(Box::new(
+                    Text::new("No cities yet. Add one to compare times at a glance.").dimmed(),
                 ));
-            col = col.push(Box::new(clock_card(&clock.city, Box::new(row))));
-        }
-        Box::new(col)
-    })
+            }
+            for (id, clock) in s.clocks.world_clocks.iter() {
+                let (time, facts) = city_time(&clock.timezone.0, s.now());
+                // The time and Remove share one line: the card is as tall as
+                // what it says.
+                let row = Row::new()
+                    .no_wrap()
+                    .push(Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_intrinsic_height()
+                            .with_rhythm(ui::tokens::Rhythm::Tight)
+                            .push(Box::new(Text::new(&time).with_role(ui::TextRole::Title)))
+                            .push(Box::new(Facts::new(facts))),
+                    ))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(
+                        list_controls.button(
+                            Button::new(&format!("clocks.world.{id}.remove"), "Remove")
+                                .control_size(ui::widget::ControlSize::Large),
+                            Clocks::REMOVE_WORLD_CLOCK.with(id.clone()),
+                        ),
+                    ));
+                col = col.push(Box::new(clock_card(&clock.city, Box::new(row))));
+            }
+            Box::new(col)
+        },
+    )
 }
 
 fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     let list = world_clock_list(state, controls);
-    let city_query = ui::LocalState::new(String::new());
-    let result_query = city_query.clone();
-    let add = controls.dispatcher.clone();
-    let choices = ModelView::from_state(&city_query, move |query| {
-        let mut choices = Row::new().with_padding_rhythm(None, None);
-        for zone in timezone_results(query) {
-            let add = add.clone();
-            let clear = result_query.clone();
-            let city = zone.rsplit('/').next().unwrap_or(&zone).replace('_', " ");
-            let label = timezone_label(&zone);
-            let id = zone.to_lowercase().replace(['/', '_'], "-");
-            choices = choices.push(button(
-                &format!("clocks.world.add.{id}"),
-                &label,
-                move || {
-                    add.submit(Clocks::ADD_WORLD_CLOCK.with((city.clone(), zone.clone())));
-                    clear.set(String::new());
-                },
-            ));
-        }
-        Box::new(choices)
-    });
+    let choices = CityChoices::new(state, controls);
     Box::new(
         Column::new()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Section)
+            // Adding a city is the part that needs the width; the time here
+            // stands beside it, and under it once the window is narrow.
             .push(Box::new(
-                Text::new("World clocks")
-                    .with_role(ui::TextRole::LargeTitle)
-                    .with_heading_level(2),
-            ))
-            .push(Box::new(
-                Text::new("Keep the people and places that matter in view.").dimmed(),
-            ))
-            .push(Box::new(
-                CardGrid::new(vec![
+                Columns::new(Box::new(clock_card("Add a city", Box::new(choices)))).aside(
                     Box::new(clock_card(
                         "Here",
-                        Box::new(ModelView::from_state(state, |s| {
-                            let here = s.here();
-                            Box::new(
-                                Column::new()
-                                    .with_no_padding()
-                                    .with_intrinsic_height()
-                                    .with_rhythm(ui::tokens::Rhythm::Tight)
-                                    .push(Box::new(
-                                        Text::new(&ui::clock::time_of_day(&here))
-                                            .with_role(ui::TextRole::Display),
-                                    ))
-                                    .push(Box::new(
-                                        Text::new(&ui::format::day_heading(here.date(), false))
-                                            .dimmed(),
-                                    )),
-                            ) as Element
-                        })),
+                        Box::new(ModelView::from_state_by(
+                            state,
+                            |s| (s.clone(), minute(s)),
+                            |s| {
+                                let here = s.here();
+                                Box::new(
+                                    Column::new()
+                                        .with_no_padding()
+                                        .with_intrinsic_height()
+                                        .with_rhythm(ui::tokens::Rhythm::Tight)
+                                        .push(Box::new(
+                                            Text::new(&ui::clock::time_of_day(&here))
+                                                .with_role(ui::TextRole::Display),
+                                        ))
+                                        .push(Box::new(
+                                            Text::new(&ui::format::day_heading(here.date(), false))
+                                                .dimmed(),
+                                        )),
+                                ) as Element
+                            },
+                        )),
                     )),
-                    Box::new(clock_card(
-                        "Add a city",
-                        Box::new(
-                            Column::new()
-                                .with_no_padding()
-                                .with_intrinsic_height()
-                                .with_rhythm(ui::tokens::Rhythm::Related)
-                                .push(Box::new(
-                                    TextInput::from_state(&city_query)
-                                        .with_id("clocks.world.search")
-                                        .with_kind(TextInputKind::Search)
-                                        .with_placeholder("Search cities or time zones"),
-                                ))
-                                .push(Box::new(choices)),
-                        ),
-                    )),
-                ])
-                .with_card_width(ui::widget::CardWidth::Wide),
+                ),
             ))
             .push(Box::new(list)),
     )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one screen across helpers"
+)]
+/// The repeat-day strip, shared by the new-alarm form and the editor.
+fn repeat_control(selection: &ui::LocalState<BTreeSet<WeekdayKey>>, id: &'static str) -> Element {
+    let source = selection.clone();
+    Box::new(ModelView::from_state(selection, move |selected| {
+        // One multi-select strip: the week reads as one row, wrapping only
+        // when the form is too narrow for it.
+        let selection = source.clone();
+        let segments = WEEKDAYS
+            .iter()
+            .map(|(_, label)| ui::widget::Segment::new(*label))
+            .collect();
+        let chosen = WEEKDAYS
+            .iter()
+            .map(|(day, _)| selected.contains(day))
+            .collect();
+        Box::new(
+            ui::widget::ToggleGroup::multiple(segments, chosen)
+                .control_size(ui::widget::ControlSize::Large)
+                .with_id(id)
+                .with_accessible_name("Repeat on")
+                .on_chosen_change(move |chosen| {
+                    selection.set(
+                        WEEKDAYS
+                            .iter()
+                            .zip(chosen)
+                            .filter(|(_, on)| **on)
+                            .map(|((day, _), _)| *day)
+                            .collect(),
+                    );
+                }),
+        )
+    }))
 }
 
 #[expect(
@@ -355,12 +487,19 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
     let draft = ui::LocalState::new(TimeValue::new(7, 30));
     let draft_label = ui::LocalState::new(String::new());
     let draft_repeat = ui::LocalState::new(BTreeSet::<WeekdayKey>::new());
+    let editing = ui::LocalState::new(None::<Id>);
+    let edit_time = ui::LocalState::new(TimeValue::new(7, 30));
+    let edit_label = ui::LocalState::new(String::new());
+    let edit_repeat = ui::LocalState::new(BTreeSet::<WeekdayKey>::new());
     let add = controls.dispatcher.clone();
     let add_draft = draft.clone();
     let add_label = draft_label.clone();
     let add_repeat = draft_repeat.clone();
-    let repeat_controls = draft_repeat.clone();
     let list_controls = controls.clone();
+    let list_editing = editing.clone();
+    let list_time = edit_time.clone();
+    let list_label = edit_label.clone();
+    let list_repeat = edit_repeat.clone();
     let list = ModelView::from_state(state, move |s| {
         let mut col = Column::new()
             .with_no_padding()
@@ -375,19 +514,47 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
         alarms.sort_by_key(|(id, _)| s.selected_alarm.as_ref() != Some(id));
         for (id, alarm) in alarms {
             let repeat = repeat_summary(&alarm.weekdays());
+            let next = next_ring(alarm, s.local_now());
             let row = Row::new()
+                .align_start()
                 .push(Box::new(
-                    Text::new(&ui::clock::time_of_day(&alarm.local_time()))
-                        .with_role(ui::TextRole::LargeTitle),
-                ))
-                .push(Box::new(
-                    Text::new(&format!(
-                        "{repeat}, currently {}",
-                        if alarm.enabled { "On" } else { "Off" }
-                    ))
-                    .dimmed(),
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_rhythm(ui::tokens::Rhythm::Tight)
+                        .push(Box::new(
+                            Text::new(&ui::clock::time_of_day(&alarm.local_time()))
+                                .with_role(ui::TextRole::LargeTitle),
+                        ))
+                        .push(Box::new(
+                            Text::new(&format!(
+                                "{repeat}, currently {}",
+                                if alarm.enabled { "On" } else { "Off" }
+                            ))
+                            .dimmed(),
+                        ))
+                        .push(Box::new(Text::new(&next).dimmed())),
                 ))
                 .push(Box::new(Spacer::new()))
+                .push(Box::new({
+                    let editing = list_editing.clone();
+                    let edit_time = list_time.clone();
+                    let edit_label = list_label.clone();
+                    let edit_repeat = list_repeat.clone();
+                    let alarm_id = id.clone();
+                    let label = alarm.label.clone();
+                    let hour = alarm.hour;
+                    let minute = alarm.minute;
+                    let weekdays = alarm.weekdays();
+                    Button::new(&format!("clocks.alarm.{id}.edit"), "Edit")
+                        .control_size(ui::widget::ControlSize::Large)
+                        .on_view(move || {
+                            editing.set(Some(alarm_id.clone()));
+                            edit_label.set(label.clone());
+                            edit_time.set(TimeValue::new(hour, minute));
+                            edit_repeat.set(weekdays.clone());
+                        })
+                }))
                 .push(Box::new(
                     list_controls.button(
                         Button::new(
@@ -405,25 +572,88 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         Clocks::REMOVE_ALARM.with(id.clone()),
                     ),
                 ));
-            col = col.push(Box::new(
-                clock_card(&alarm.label, Box::new(row))
-                    .selected(s.selected_alarm.as_ref() == Some(id)),
-            ));
+            col = col.push(Box::new(clock_card(&alarm.label, Box::new(row)).selected(
+                s.selected_alarm.as_ref() == Some(id)
+                    || list_editing.with(|e| e.as_ref() == Some(id)),
+            )));
         }
         Box::new(col)
     });
+    let editor = {
+        let state = state.clone();
+        let controls = controls.clone();
+        let edit_label = edit_label.clone();
+        let edit_time = edit_time.clone();
+        let edit_repeat = edit_repeat.clone();
+        let editing_state = editing.clone();
+        ModelView::from_state(&editing, move |shown_editing| -> Element {
+            let editing = editing_state.clone();
+            let Some(id) = shown_editing.clone() else {
+                return Box::new(Column::new().with_no_padding().with_intrinsic_height())
+                    as Element;
+            };
+            if !state.with(|s| s.clocks.alarms.contains(&id)) {
+                return Box::new(Column::new().with_no_padding().with_intrinsic_height())
+                    as Element;
+            }
+            let save = controls.dispatcher.clone();
+            let save_id = id.clone();
+            let save_label = edit_label.clone();
+            let save_time = edit_time.clone();
+            let save_repeat = edit_repeat.clone();
+            let save_editing = editing.clone();
+            let cancel_editing = editing.clone();
+            Box::new(clock_card(
+                "Edit alarm",
+                Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .push(Box::new(
+                            TextInput::from_state(&edit_label)
+                                .with_id("clocks.alarm.edit.label")
+                                .with_kind(TextInputKind::Name)
+                                .with_placeholder("What is this alarm for?"),
+                        ))
+                        .push(Box::new(Text::new("Time").with_heading_level(3)))
+                        .push(Box::new(
+                            TimePicker::from_state(&edit_time)
+                                .with_id("clocks.alarm.edit.time")
+                                .with_accessible_name("Alarm time"),
+                        ))
+                        .push(Box::new(Text::new("Repeat days").with_heading_level(3)))
+                        .push(repeat_control(&edit_repeat, "clocks.alarm.edit.repeat"))
+                        .push(Box::new(
+                            Row::new()
+                                .with_padding_rhythm(None, None)
+                                .push(primary_button(
+                                    "clocks.alarm.edit.save",
+                                    "Save changes",
+                                    move || {
+                                        let time = save_time.get();
+                                        save.submit(Clocks::EDIT_ALARM.with((
+                                            save_id.clone(),
+                                            bounded_label(&save_label.get(), "Alarm"),
+                                            time.hours,
+                                            time.minutes,
+                                            save_repeat.get().into_iter().collect(),
+                                        )));
+                                        save_editing.set(None);
+                                    },
+                                ))
+                                .push(button("clocks.alarm.edit.cancel", "Cancel", move || {
+                                    cancel_editing.set(None)
+                                })),
+                        )),
+                ),
+            ))
+        })
+    };
     Box::new(
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Section)
-            .push(Box::new(
-                Text::new("Alarms")
-                    .with_role(ui::TextRole::LargeTitle)
-                    .with_heading_level(2),
-            ))
-            .push(Box::new(
-                Text::new("A reliable nudge, exactly when you need it.").dimmed(),
-            ))
             .push(Box::new(list))
+            .push(Box::new(editor))
             .push(Box::new(clock_card(
                 "New alarm",
                 Box::new(
@@ -436,7 +666,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                                 .with_kind(TextInputKind::Name)
                                 .with_placeholder("What is this alarm for?"),
                         ))
-                        .push(Box::new(Text::new("Wake-up time").with_heading_level(3)))
+                        .push(Box::new(Text::new("Time").with_heading_level(3)))
                         .push(Box::new(
                             TimePicker::from_state(&draft)
                                 .with_id("clocks.alarm.time")
@@ -446,46 +676,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                             Text::new("Use the arrows, scroll, or type two digits.").dimmed(),
                         ))
                         .push(Box::new(Text::new("Repeat days").with_heading_level(3)))
-                        .push(Box::new(ModelView::from_state(
-                            &draft_repeat,
-                            move |selected| {
-                                let mut first_row = Row::new();
-                                let mut second_row = Row::new();
-                                for (index, (day, label)) in WEEKDAYS.into_iter().enumerate() {
-                                    let selection = repeat_controls.clone();
-                                    let mut day_button = Button::new(
-                                        &format!("clocks.alarm.repeat.{}", label.to_lowercase()),
-                                        label,
-                                    )
-                                    .control_size(ui::widget::ControlSize::Large)
-                                    .with_accessible_name(&format!("Repeat on {label}"))
-                                    .on_effect(move || {
-                                        selection.update(|days| {
-                                            if !days.remove(&day) {
-                                                days.insert(day);
-                                            }
-                                        });
-                                    });
-                                    if selected.contains(&day) {
-                                        day_button =
-                                            day_button.role(ui::widget::ButtonRole::Primary);
-                                    }
-                                    if index < 4 {
-                                        first_row = first_row.push(Box::new(day_button));
-                                    } else {
-                                        second_row = second_row.push(Box::new(day_button));
-                                    }
-                                }
-                                Box::new(
-                                    Column::new()
-                                        .with_no_padding()
-                                        .with_intrinsic_height()
-                                        .with_rhythm(ui::tokens::Rhythm::Related)
-                                        .push(Box::new(first_row))
-                                        .push(Box::new(second_row)),
-                                )
-                            },
-                        )))
+                        .push(repeat_control(&draft_repeat, "clocks.alarm.repeat"))
                         .push(primary_button("clocks.alarm.add", "Add alarm", move || {
                             let time = add_draft.get();
                             add.submit(Clocks::ADD_ALARM.with((
@@ -507,16 +698,41 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
     reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one card across helpers"
 )]
 fn timer_card(
+    state: &ui::LocalState<Shown>,
     id: &ui::prelude::Id,
     timer: &crate::model::Timer,
     floating: bool,
     controls: &Controls,
 ) -> Element {
-    let now = Utc::now();
+    let now = wall_now();
     let running = timer.is_running(now);
     let finished = timer.is_finished(now);
-    let remaining_ms = millis(timer.remaining(now));
-    let progress = remaining_fraction(remaining_ms, timer.duration_ms);
+    let remaining = {
+        let id = id.clone();
+        move |s: &Shown| {
+            s.clocks
+                .timers
+                .get(&id)
+                .map_or(0, |timer| millis(timer.remaining(s.now())))
+        }
+    };
+    let bar_state = state.clone();
+    let bar_remaining = remaining.clone();
+    let duration_ms = timer.duration_ms;
+    let bar_label = format!("{} remaining", timer.label);
+    // The bar moves with the clock, a second at a time.
+    let bar = ModelView::from_document(
+        move |_, _| bar_state.with(|s| bar_remaining(s) / 1_000),
+        move |&seconds: &u64| {
+            Box::new(
+                ProgressBar::new(remaining_fraction(
+                    seconds.saturating_mul(1_000),
+                    duration_ms,
+                ))
+                .with_label(bar_label.clone()),
+            ) as Element
+        },
+    );
     let toggle = if running {
         Clocks::PAUSE_TIMER.with(id.clone())
     } else {
@@ -535,8 +751,10 @@ fn timer_card(
                 .with_intrinsic_height()
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(
-                            Text::new(&duration(remaining_ms)).with_role(ui::TextRole::Display),
+                        .push(ticking_text(
+                            state,
+                            move |s| duration(remaining(s)),
+                            ui::TextRole::Display,
                         ))
                         .push(Box::new(Spacer::new()))
                         .push(Box::new(
@@ -550,11 +768,9 @@ fn timer_card(
                             .dimmed(),
                         )),
                 ))
-                .push(Box::new(Container::new().with_no_padding().with_child(
-                    Box::new(
-                        ProgressBar::new(progress).with_label(format!("{} remaining", timer.label)),
-                    ),
-                )))
+                .push(Box::new(
+                    Container::new().with_no_padding().with_child(Box::new(bar)),
+                ))
                 .push(Box::new(
                     Row::new()
                         .push(Box::new(
@@ -665,20 +881,35 @@ fn timers_screen(
         presets = presets.push(Box::new(row));
     }
     let list_controls = controls.clone();
-    let list = ModelView::from_state(state, move |s| {
-        if s.clocks.timers.is_empty() {
-            return Box::new(Column::new().with_no_padding().with_intrinsic_height());
-        }
-        let mut col = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related);
-        for (id, timer) in s.clocks.timers.iter() {
-            let floating = s.device.floating_timers.contains(id.as_str());
-            col = col.push(timer_card(id, timer, floating, &list_controls));
-        }
-        Box::new(clock_card("Active timers", Box::new(col)))
-    });
+    let card_state = state.clone();
+    // A timer that runs out reads "Done" and offers a restart: the cards are
+    // rebuilt when one finishes, not only when the timers change.
+    let finished = |s: &Shown| {
+        let now = s.now();
+        s.clocks
+            .timers
+            .values()
+            .map(|timer| timer.is_finished(now))
+            .collect::<Vec<_>>()
+    };
+    let list = ModelView::from_state_by(
+        state,
+        move |s| (s.clone(), finished(s)),
+        move |s| {
+            if s.clocks.timers.is_empty() {
+                return Box::new(Column::new().with_no_padding().with_intrinsic_height());
+            }
+            let mut col = Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(ui::tokens::Rhythm::Related);
+            for (id, timer) in s.clocks.timers.iter() {
+                let floating = s.device.floating_timers.contains(id.as_str());
+                col = col.push(timer_card(&card_state, id, timer, floating, &list_controls));
+            }
+            Box::new(clock_card("Active timers", Box::new(col)))
+        },
+    );
     let add = controls.dispatcher.clone();
     let add_hours = custom_hours.clone();
     let add_minutes = custom_minutes.clone();
@@ -726,81 +957,72 @@ fn timers_screen(
                 )),
         ));
     }
-    let setup = CardGrid::new(vec![
-        Box::new(clock_card(
-            "Quick starts",
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_rhythm(ui::tokens::Rhythm::Related)
-                    .push(Box::new(
-                        Text::new("A focused timer is one tap away.").dimmed(),
-                    ))
-                    .push(Box::new(presets)),
-            ),
-        )),
-        Box::new(clock_card(
-            "Custom timer",
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(
-                        TextInput::from_state(&custom_label)
-                            .with_id("clocks.timer.custom.label")
-                            .with_kind(TextInputKind::Name)
-                            .with_accessible_name("Timer label")
-                            .with_placeholder("What is this timer for?"),
-                    ))
-                    .push(Box::new(duration_fields))
-                    .push(primary_button(
-                        "clocks.timer.custom.add",
-                        "Start timer",
-                        move || {
-                            let Some(secs) = custom_timer_duration_seconds(
-                                &add_hours.get().to_string(),
-                                &add_minutes.get().to_string(),
-                                &add_seconds.get().to_string(),
-                            ) else {
-                                add_error.set(Some(
-                                    "Use whole numbers: hours 0–99 and minutes and seconds 0–59."
-                                        .into(),
-                                ));
-                                return;
-                            };
-                            if secs > 0 {
-                                add.submit(
-                                    Clocks::ADD_TIMER
-                                        .with((bounded_label(&add_label.get(), "Timer"), secs)),
-                                );
-                                add_label.set(String::new());
-                                add_error.set(None);
-                            } else {
-                                add_error.set(Some(
-                                    "Choose a duration greater than zero before starting a timer."
-                                        .into(),
-                                ));
-                            }
-                        },
-                    ))
-                    .push(Box::new(error)),
-            ),
-        )),
-    ])
-    .with_card_width(ui::widget::CardWidth::Wide);
+    // The custom timer is the form that needs the width; the quick starts
+    // stand beside it, and under it once the window is narrow.
+    let setup = Columns::new(Box::new(clock_card(
+        "Custom timer",
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .push(Box::new(
+                    TextInput::from_state(&custom_label)
+                        .with_id("clocks.timer.custom.label")
+                        .with_kind(TextInputKind::Name)
+                        .with_accessible_name("Timer label")
+                        .with_placeholder("What is this timer for?"),
+                ))
+                .push(Box::new(duration_fields))
+                .push(primary_button(
+                    "clocks.timer.custom.add",
+                    "Start timer",
+                    move || {
+                        let Some(secs) = custom_timer_duration_seconds(
+                            &add_hours.get().to_string(),
+                            &add_minutes.get().to_string(),
+                            &add_seconds.get().to_string(),
+                        ) else {
+                            add_error.set(Some(
+                                "Use whole numbers: hours 0–99 and minutes and seconds 0–59."
+                                    .into(),
+                            ));
+                            return;
+                        };
+                        if secs > 0 {
+                            add.submit(
+                                Clocks::ADD_TIMER
+                                    .with((bounded_label(&add_label.get(), "Timer"), secs)),
+                            );
+                            add_label.set(String::new());
+                            add_error.set(None);
+                        } else {
+                            add_error.set(Some(
+                                "Choose a duration greater than zero before starting a timer."
+                                    .into(),
+                            ));
+                        }
+                    },
+                ))
+                .push(Box::new(error)),
+        ),
+    )))
+    .aside(Box::new(clock_card(
+        "Quick starts",
+        Box::new(
+            Column::new()
+                .with_no_padding()
+                .with_intrinsic_height()
+                .with_rhythm(ui::tokens::Rhythm::Related)
+                .push(Box::new(
+                    Text::new("A focused timer is one tap away.").dimmed(),
+                ))
+                .push(Box::new(presets)),
+        ),
+    )));
     Box::new(
         Column::new()
             .with_intrinsic_height()
             .with_rhythm(ui::tokens::Rhythm::Section)
-            .push(Box::new(
-                Text::new("Timers")
-                    .with_role(ui::TextRole::LargeTitle)
-                    .with_heading_level(2),
-            ))
-            .push(Box::new(
-                Text::new("Keep pace with your day, without losing your place.").dimmed(),
-            ))
             .push(Box::new(list))
             .push(Box::new(setup)),
     )
@@ -808,8 +1030,8 @@ fn timers_screen(
 
 fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     let controls = controls.clone();
+    let ticking = state.clone();
     let view = ModelView::from_state(state, move |s| {
-        let now = Utc::now();
         let stopwatch = &s.clocks.stopwatch;
         let running = stopwatch.is_running();
         let floating = s.device.floating_stopwatch;
@@ -824,13 +1046,14 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                 duration(*ms)
             ))));
         }
-        let elapsed_ms = millis(stopwatch.elapsed(now));
         Box::new(Card::new(Box::new(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .push(Box::new(
-                    Text::new(&duration(elapsed_ms)).with_role(ui::TextRole::Display),
+                .push(ticking_text(
+                    &ticking,
+                    |s| duration(millis(s.clocks.stopwatch.elapsed(s.now()))),
+                    ui::TextRole::Display,
                 ))
                 .push(Box::new(
                     Row::new()
@@ -866,7 +1089,11 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                                         .control_size(ui::widget::ControlSize::Large),
                                     Clocks::RESET_STOPWATCH.invoke(),
                                 )
-                                .with_enabled(elapsed_ms != 0 || !stopwatch.laps_ms.is_empty()),
+                                .with_enabled(
+                                    running
+                                        || stopwatch.accumulated_ms != 0
+                                        || !stopwatch.laps_ms.is_empty(),
+                                ),
                         )),
                 ))
                 .push(Box::new(
@@ -892,11 +1119,6 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
     Box::new(
         Column::new()
             .with_rhythm(ui::tokens::Rhythm::Group)
-            .push(Box::new(
-                Text::new("Stopwatch")
-                    .with_role(ui::TextRole::Title)
-                    .with_heading_level(2),
-            ))
             .push(Box::new(view)),
     )
 }
@@ -907,12 +1129,32 @@ pub(crate) const ALARMS: usize = 1;
 pub(crate) const TIMERS: usize = 2;
 pub(crate) const STOPWATCH: usize = 3;
 
+/// The sidebar's sections, each with its own glyph so they tell apart at a
+/// glance: an hourglass counts down, a stopwatch counts up.
+pub(crate) const SECTIONS: [(usize, &str, Icon); 4] = [
+    (WORLD, "World", Icon::Globe),
+    (ALARMS, "Alarms", Icon::AlarmClock),
+    (TIMERS, "Timers", Icon::Hourglass),
+    (STOPWATCH, "Stopwatch", Icon::Timer),
+];
+
+/// What the window's bar names for the open section.
+pub(crate) fn section_title(mode: usize) -> &'static str {
+    match mode {
+        WORLD => "World clocks",
+        ALARMS => "Alarms",
+        STOPWATCH => "Stopwatch",
+        _ => "Timers",
+    }
+}
+
 fn surface(
     mode: &ui::LocalState<usize>,
+    title: &ui::LocalState<String>,
     selection: &ui::LocalState<Option<String>>,
     state: &ui::LocalState<Shown>,
     controls: &Controls,
-    notice: &ui::LocalState<Option<(String, String)>>,
+    notice: &ui::LocalState<Option<DueNotice>>,
     validation_error: &ui::LocalState<Option<String>>,
 ) -> Element {
     let st = state.clone();
@@ -928,7 +1170,7 @@ fn surface(
     let due_notice = ModelView::from_state(notice, move |notice| {
         notice.as_ref().map_or_else(
             || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
-            |(title, body)| {
+            |(title, body, alarm)| {
                 Box::new(
                     Column::new()
                         .with_intrinsic_height()
@@ -939,13 +1181,37 @@ fn surface(
                                     .with_padding_rhythm(None, None)
                                     .push(Box::new(Text::new(body)))
                                     .push(Box::new(Spacer::new()))
-                                    .push(Box::new(
-                                        notice_controls.effect(
+                                    .push({
+                                        let dismiss = notice_controls.effect(
                                             Button::new("clocks.notice.dismiss", "Dismiss")
                                                 .control_size(ui::widget::ControlSize::Large),
                                             &ClocksEffect::DismissNotice,
-                                        ),
-                                    )),
+                                        );
+                                        match alarm {
+                                            Some(alarm) => Box::new(
+                                                Row::new()
+                                                    .with_padding_rhythm(None, None)
+                                                    .push(Box::new(dismiss))
+                                                    .push(Box::new(
+                                                        notice_controls.effect(
+                                                            Button::new(
+                                                                "clocks.notice.snooze",
+                                                                "Snooze 5 minutes",
+                                                            )
+                                                            .control_size(
+                                                                ui::widget::ControlSize::Large,
+                                                            ),
+                                                            &ClocksEffect::SnoozeAlarm {
+                                                                alarm: alarm.as_str().to_owned(),
+                                                                minutes: SNOOZE_MINUTES,
+                                                            },
+                                                        ),
+                                                    )),
+                                            )
+                                                as Element,
+                                            None => Box::new(dismiss) as Element,
+                                        }
+                                    }),
                             ),
                         ))),
                 )
@@ -961,15 +1227,9 @@ fn surface(
         .push(Box::new(due_notice))
         .push(Box::new(page));
     let mode_state = mode.clone();
-    let sections = [
-        (WORLD, "World", Icon::Globe),
-        (ALARMS, "Alarms", Icon::Bell),
-        (TIMERS, "Timers", Icon::Clock),
-        (STOPWATCH, "Stopwatch", Icon::Clock),
-    ];
     let sidebar = ui::widget::NavList::new(vec![ui::widget::NavSection::untitled(
         "screens",
-        sections
+        SECTIONS
             .iter()
             .map(|(id, label, icon)| ui::widget::NavItem::new(id.to_string(), *label).icon(*icon))
             .collect(),
@@ -989,7 +1249,7 @@ fn surface(
             .mode(ui::widget::NavMode::Push)
             .with_pane_state(&ui::LocalState::new(ui::widget::NavPane::Content))
             .sidebar(Box::new(sidebar))
-            .sidebar_header("Clocks", Vec::new())
+            .content_header_bound(title, Vec::new())
             .content(Box::new(
                 Scrollable::new_vertical()
                     .fill_parent_height()
@@ -1001,6 +1261,13 @@ fn surface(
 /// A due alert not yet shown by the platform: tag, title, body and what a
 /// click opens.
 type PendingNotification = (String, String, String, &'static str);
+
+/// The in-app due notice: its title, its body, and the alarm it is for when
+/// it can be snoozed.
+pub(crate) type DueNotice = (String, String, Option<Id>);
+
+/// How long a snoozed alarm waits before ringing again.
+pub(crate) const SNOOZE_MINUTES: u32 = 5;
 
 /// The Clocks surface.
 pub struct ClocksApp {
@@ -1016,12 +1283,14 @@ pub struct ClocksApp {
     /// Whether the section was chosen from the first state presented.
     opened: bool,
     pub(crate) last_notification: Option<(String, String, String)>,
-    pub(crate) notice: ui::LocalState<Option<(String, String)>>,
+    pub(crate) notice: ui::LocalState<Option<DueNotice>>,
     next_clock_tick: ui::time::Instant,
     /// The open section: World, Alarms, Timers, Stopwatch.
     pub(crate) mode: ui::LocalState<usize>,
     /// The retained navigation projects the same mode as the content.
     selection: ui::LocalState<Option<String>>,
+    /// The open section's name, which the window's bar shows.
+    title: ui::LocalState<String>,
     /// The host's notifications, resolved on first use.
     notifications: Option<std::sync::Arc<dyn ui::notify::Notifier>>,
     pub(crate) pending_notifications: Vec<PendingNotification>,
@@ -1046,6 +1315,7 @@ impl ClocksApp {
         let validation_error = ui::LocalState::new(None);
         let mode = ui::LocalState::new(WORLD);
         let selection = ui::LocalState::new(Some(WORLD.to_string()));
+        let title = ui::LocalState::new(section_title(WORLD).to_owned());
         let activations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         if live {
             let sink = activations.clone();
@@ -1060,6 +1330,7 @@ impl ClocksApp {
         Self {
             inner: surface(
                 &mode,
+                &title,
                 &selection,
                 &state,
                 &controls,
@@ -1078,6 +1349,7 @@ impl ClocksApp {
             next_clock_tick: ui::time::now(),
             mode,
             selection,
+            title,
             notifications: None,
             pending_notifications: Vec::new(),
             next_notification_attempt: ui::time::now(),
@@ -1148,9 +1420,9 @@ impl ClocksApp {
                 ..
             } => (native_alarm_id(id.as_str()), *native_scheduled),
         };
-        let (title, body, activation) = match event {
-            DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label, ALARMS_URI),
-            DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label, TIMERS_URI),
+        let (title, body, activation, alarm) = match event {
+            DueEvent::Alarm { id, label, .. } => ("Alarm".to_owned(), label, ALARMS_URI, Some(id)),
+            DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label, TIMERS_URI, None),
         };
         let notification_id = uuid::Uuid::new_v4().simple().to_string();
         if self.live {
@@ -1160,7 +1432,7 @@ impl ClocksApp {
                     .push((tag, title.clone(), body.clone(), activation));
             }
         }
-        self.notice.set(Some((title.clone(), body.clone())));
+        self.notice.set(Some((title.clone(), body.clone(), alarm)));
         if !native.1 {
             self.last_notification = Some((notification_id, title, body));
         }
@@ -1286,7 +1558,7 @@ impl ClocksApp {
     /// Answer a control pressed on the shell's floating clock. Stopwatch
     /// controls never fall through to a timer.
     pub(crate) fn apply_shell_command(&self, command: ShellCommand) {
-        let now = Utc::now();
+        let now = wall_now();
         let timer = command.activity_id.map(ui::prelude::Id::from_raw);
         let running = |shown: &Shown, id: &ui::prelude::Id| {
             shown
@@ -1398,6 +1670,12 @@ impl ClocksApp {
     }
 }
 
+/// The present on the device's wall clock, as the toolkit reads it, so a
+/// test that holds the clock holds every countdown with it.
+pub(crate) fn wall_now() -> chrono::DateTime<Utc> {
+    chrono::DateTime::from_timestamp_millis(ui::time::unix_now_ms_i64()).unwrap_or_default()
+}
+
 /// When a notification service that failed is tried again.
 fn retry_at() -> ui::time::Instant {
     let now = ui::time::now();
@@ -1430,7 +1708,7 @@ impl ui::widget::Decorator for ClocksApp {
         self.refresh_device();
         self.apply_activations();
         if self.live {
-            let now = Utc::now();
+            let now = wall_now();
             for command in crate::transport::take_commands() {
                 self.apply_shell_command(command);
             }
@@ -1442,9 +1720,13 @@ impl ui::widget::Decorator for ClocksApp {
         }
         // Countdowns move every second without any change to the clocks.
         self.state.update(|_| {});
-        let selected = Some(self.mode.get().to_string());
+        let mode = self.mode.get();
+        let selected = Some(mode.to_string());
         if self.selection.get() != selected {
             self.selection.set(selected);
+        }
+        if self.title.with(|title| title != section_title(mode)) {
+            self.title.set(section_title(mode).to_owned());
         }
         self.inner.sync(d, p);
     }
@@ -1468,4 +1750,25 @@ mod tests;
 
 fn clock_card(title: &str, body: Element) -> Card {
     Card::new(body).with_title(title)
+}
+
+/// Text that reads the clock. The views around it are keyed by the clocks,
+/// which stand still while time passes; this one is keyed by what it says,
+/// so the window's every tick can change it, and only it is rebuilt.
+fn ticking_text(
+    state: &ui::LocalState<Shown>,
+    says: impl Fn(&Shown) -> String + 'static,
+    role: ui::TextRole,
+) -> Element {
+    let state = state.clone();
+    Box::new(ModelView::from_document(
+        move |_, _| state.with(&says),
+        move |said: &String| Box::new(Text::new(said).with_role(role)) as Element,
+    ))
+}
+
+/// The minute wall clocks show: a view of the time of day keyed by it is
+/// rebuilt as the minute turns.
+fn minute(s: &Shown) -> i64 {
+    s.now().timestamp().div_euclid(60)
 }

@@ -10,8 +10,9 @@
 //!
 //! Where the room is connected to a service elsewhere (a Discord server it
 //! bridges), the card lists the person's account there under "Linked
-//! accounts" ([`ProfileModel::linked`]): link it, which shows the code to
-//! send from the service with a Copy button, or unlink it. The host runs
+//! accounts" ([`ProfileModel::linked`]): connect it (signing in on the
+//! service's consent page), confirm the account a link from there offers
+//! (Discord's /link), or unlink it. The host runs
 //! those on the connector's room record and tells the card what came of it
 //! ([`ProfileCard::set_linked`]); the card stays open meanwhile.
 
@@ -25,7 +26,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Avatar, AvatarSize, Button, ButtonRole, ColorSwatch, ColorSwatchPicker, Column, Container,
-    Divider, Popover, PopoverSide, Row, Segment, Text, TextInput, ToggleGroup, Widget,
+    Divider, ListRow, Popover, PopoverSide, Row, Segment, Text, TextInput, Toggle, ToggleGroup,
+    Widget,
 };
 use ui::{LocalState, TextRole};
 use vello::kurbo::{Point, Rect};
@@ -33,6 +35,7 @@ use vello::peniko::Color;
 use winit::event::WindowEvent;
 
 use crate::i18n::{t, t_args};
+use tilo_app::linked_accounts::service_icon;
 pub use tilo_app::linked_accounts::{LinkState, LinkedAccount};
 
 /// The words for a status preset.
@@ -100,9 +103,7 @@ pub struct ProfileModel {
     /// The stable identity the avatar's colour and initials derive from
     /// when the person chose no colour.
     pub identity: String,
-    /// The person's colour.
     pub colour: Option<Color>,
-    /// The person may change their name here.
     pub can_rename: bool,
     /// The person has not named themselves yet (`name` is their login
     /// account's): the card asks, once, for the name people here should
@@ -128,6 +129,94 @@ pub struct ProfileModel {
     /// The host keeps the person's status, colour and what people see:
     /// the card offers them.
     pub offers_presence: bool,
+    /// Whether the people here see them at all: a spectator only watches,
+    /// and the card says so in place of how they are seen.
+    pub seen: Seen,
+    /// Whether the desktop's control hints show; `None` where the host has
+    /// none to offer.
+    pub control_hints: Option<bool>,
+    /// The person's root key (hex): the id that stays theirs on every
+    /// device and never changes, shown short with Copy.
+    pub key: Option<String>,
+    /// The card is about someone else: what they say they are doing and
+    /// what this person can do with them. `None` for the person's own card.
+    pub other: Option<OtherPerson>,
+}
+
+/// Someone else, as their card shows them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OtherPerson {
+    /// Their roster id (the device their presence comes from).
+    pub id: String,
+    /// What they are doing: their own words, or a line software wrote,
+    /// which the card marks as automatic.
+    pub status: Option<crate::collaborators::RosterStatus>,
+    /// Where they are ("In Chat"), when it adds to the status.
+    pub place: Option<String>,
+    /// This person follows their view now.
+    pub following: bool,
+    /// The host can follow them (bring forward what they are in).
+    pub can_follow: bool,
+    /// The host can open a direct conversation with them in Chat: their
+    /// root key is known and Chat holds person-only conversations here.
+    pub can_message: bool,
+    /// Their accounts elsewhere, as their profile names them.
+    pub linked: Vec<tilo_app::linked_accounts::ProfileLink>,
+}
+
+/// The most characters a linked account's line holds beside Unlink: the
+/// card is one utility panel wide, so longer is cut short, never wrapped.
+const LINKED_LINE_CHARS: usize = 22;
+
+/// A linked account on one line: its handle, and the name it shows when that
+/// is another, each cut short with an ellipsis to fit
+/// [`LINKED_LINE_CHARS`]; the name is left out before the handle is cut.
+fn linked_line(name: &tilo_app::linked_accounts::AccountName) -> (String, Option<String>) {
+    let cut = |text: &str, room: usize| -> String {
+        if text.chars().count() <= room {
+            return text.to_owned();
+        }
+        let kept: String = text.chars().take(room.saturating_sub(1)).collect();
+        format!("{}…", kept.trim_end())
+    };
+    let handle = cut(&name.handle(), LINKED_LINE_CHARS);
+    let room = LINKED_LINE_CHARS.saturating_sub(handle.chars().count().saturating_add(1));
+    let shown = name
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|shown| !shown.is_empty() && *shown != name.user_name)
+        .filter(|_| room >= 4)
+        .map(|shown| cut(shown, room));
+    (handle, shown)
+}
+
+/// The host actions about the person's picture, which the card offers
+/// beside their avatar rather than in its list of identity actions.
+pub const SET_PHOTO: &str = "set-photo";
+pub const RESET_PHOTO: &str = "reset-photo";
+
+/// A root key shown short: its first eight and last four characters.
+#[must_use]
+pub fn short_key(key: &str) -> String {
+    let key = key.trim();
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 14 {
+        return key.to_owned();
+    }
+    let head: String = chars.iter().take(8).collect();
+    let tail: String = chars.iter().skip(chars.len().saturating_sub(4)).collect();
+    format!("{head}…{tail}")
+}
+
+/// Whether the people here see the person.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Seen {
+    /// They are here: everyone sees them as the card shows.
+    #[default]
+    Here,
+    /// They only watch, as the room's spectator: nobody here sees them.
+    Watching,
 }
 
 /// What the people in one workspace see of the person.
@@ -150,7 +239,10 @@ pub enum ProfileChoice {
     Link(String),
     /// Unlink the person's account with this connector's service.
     Unlink(String),
-    /// Say this availability from now on.
+    /// Link the account this connector's service offers.
+    Accept(String),
+    /// Turn that offer down.
+    Decline(String),
     Availability(ui::Availability),
     /// Say this short status (empty clears it).
     Status(String),
@@ -160,18 +252,110 @@ pub enum ProfileChoice {
     Colour(String),
     /// Let the people in the workspace on screen see this much.
     Visibility(ui::PresenceVisibility),
+    /// Show the desktop's control hints, or not.
+    ControlHints(bool),
+    /// Follow this person (roster id), or stop following them.
+    Follow(String),
+    /// Open a direct conversation in Chat with this person (root key, hex):
+    /// person to person, never through a bridge.
+    Message(String),
 }
 
 impl ProfileChoice {
     /// Whether the card closes on it: a linked account's choice keeps it
     /// open to show what came of it.
     fn closes(&self) -> bool {
-        matches!(self, Self::Rename(_) | Self::Action(_))
+        matches!(
+            self,
+            Self::Rename(_) | Self::Action(_) | Self::Follow(_) | Self::Message(_)
+        )
         // The rest are settings the card goes on showing.
     }
 }
 
 /// The card behind the bar's own avatar.
+/// The card itself as a place keyboard focus can rest: opening the card is
+/// not editing, so focus lands here, on the whole card, rather than in its
+/// name field. A click on the field, or Tab, enters it. It lies under the
+/// card's content, filling it, draws nothing and takes no input; assistive
+/// technology reads it as the card.
+struct CardFocus {
+    rect: Rect,
+    focused: bool,
+    /// What the card is called: theirs, or yours.
+    label: String,
+}
+
+impl CardFocus {
+    fn new(label: String) -> Self {
+        Self {
+            rect: Rect::ZERO,
+            focused: false,
+            label,
+        }
+    }
+}
+
+impl Widget for CardFocus {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        use ui::widget::TaffyTreeExt;
+        let style = taffy::Style {
+            position: taffy::Position::Absolute,
+            inset: taffy::Rect {
+                left: taffy::LengthPercentageAuto::length(0.0),
+                right: taffy::LengthPercentageAuto::length(0.0),
+                top: taffy::LengthPercentageAuto::length(0.0),
+                bottom: taffy::LengthPercentageAuto::length(0.0),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(self.label.clone())
+                .with_semantic_key("profile-card-focus")
+                .with_state(AccessState::new().focusable(true).focused(self.focused)),
+        )
+    }
+
+    fn name(&self) -> &'static str {
+        "ProfileCardFocus"
+    }
+}
+
 pub struct ProfileCard {
     popover: Popover<Container>,
     /// The name being typed.
@@ -186,6 +370,10 @@ pub struct ProfileCard {
     /// changes, and the anchor and viewport it opened at.
     model: Option<ProfileModel>,
     placed: (Rect, Rect),
+    /// The card's widgets were built again (it opened, or a linked account
+    /// changed while open): a layout that still maps the ones they replaced
+    /// must be built again before it reaches them.
+    replaced: bool,
 }
 
 impl Default for ProfileCard {
@@ -199,6 +387,7 @@ impl Default for ProfileCard {
             focus_reset: false,
             model: None,
             placed: (Rect::ZERO, Rect::ZERO),
+            replaced: false,
         }
     }
 }
@@ -223,7 +412,167 @@ impl ProfileCard {
             })
     }
 
-    fn body(&self, model: &ProfileModel) -> Column {
+    /// The person's stable id, short, with a button that copies it whole.
+    fn key_row(key: &str) -> Box<dyn Widget> {
+        let copy = key.to_owned();
+        Box::new(
+            Row::new()
+                .no_wrap()
+                .with_align_items(taffy::AlignItems::Center)
+                .with_justify(taffy::JustifyContent::SpaceBetween)
+                .push(Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_rhythm(ui::tokens::Rhythm::Tight)
+                        .push(Box::new(
+                            Text::new(&t("profile-id"))
+                                .with_role(TextRole::Caption)
+                                .dimmed(),
+                        ))
+                        .push(Box::new(
+                            Text::new(&short_key(key))
+                                .with_id("profile-key")
+                                .with_role(TextRole::Code),
+                        )),
+                ))
+                .push(Box::new(
+                    Button::icon_only("profile-copy-key", Icon::Copy, &t("profile-copy-id"))
+                        .role(ButtonRole::Plain)
+                        .on_click(move || ui::text_selection::clipboard_copy(&copy)),
+                )),
+        )
+    }
+
+    /// What someone says they are doing: their own words plainly, a line
+    /// software wrote marked as automatic.
+    fn status_row(status: &crate::collaborators::RosterStatus) -> Box<dyn Widget> {
+        let written = status.source == crate::collaborators::LineSource::Written;
+        let row = ListRow::new("profile-other-status", status.text.clone()).two_line_title();
+        Box::new(if written {
+            row.secondary(t("profile-status-own-words"))
+        } else {
+            row.mark(Icon::Sparkles)
+                .secondary(t("profile-status-automatic"))
+        })
+    }
+
+    /// Someone else's card: who they are, what they are doing, and what
+    /// this person can do with them.
+    fn other_body(&self, model: &ProfileModel, other: &OtherPerson) -> Column {
+        let mut avatar = Avatar::person(&model.name, &model.identity).size(AvatarSize::Large);
+        if let Some(colour) = model.colour {
+            avatar = avatar.with_presence(colour);
+        }
+        let mut who = Column::new()
+            .with_no_padding()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .push(Box::new(
+                Text::new(&model.name)
+                    .with_id("profile-other-name")
+                    .with_role(TextRole::Subheading)
+                    .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
+            ));
+        if let Some(place) = &other.place {
+            who = who.push(Box::new(
+                Text::new(place).with_role(TextRole::Caption).dimmed(),
+            ));
+        }
+        let header = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(avatar))
+            .push(Box::new(who));
+        let mut body = Column::new()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
+            .push(Box::new(CardFocus::new(t_args(
+                "profile-card-of",
+                &[("name", model.name.clone().into())],
+            ))))
+            .push(Box::new(header));
+        if let Some(status) = &other.status {
+            body = body.push(Self::status_row(status));
+        }
+        for link in &other.linked {
+            body = body.push(Self::linked_to(link));
+        }
+        if let Some(key) = &model.key {
+            body = body
+                .push(Box::new(Divider::horizontal()))
+                .push(Self::key_row(key));
+        }
+        let mut actions = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center);
+        let mut any = false;
+        if other.can_message
+            && let Some(key) = model.key.clone()
+        {
+            let chosen = Rc::clone(&self.chosen);
+            actions = actions.push(Box::new(
+                Button::new("profile-message", &t("profile-message"))
+                    .with_icon(Icon::MessageCircle)
+                    .role(ButtonRole::Primary)
+                    .on_click(move || {
+                        *chosen.borrow_mut() = Some(ProfileChoice::Message(key.clone()));
+                    }),
+            ));
+            any = true;
+        }
+        if other.can_follow {
+            let chosen = Rc::clone(&self.chosen);
+            let id = other.id.clone();
+            let label = if other.following {
+                t("profile-stop-following")
+            } else {
+                t("profile-follow")
+            };
+            actions = actions.push(Box::new(
+                Button::new("profile-follow", &label)
+                    .with_icon(Icon::Eye)
+                    .on_click(move || {
+                        *chosen.borrow_mut() = Some(ProfileChoice::Follow(id.clone()));
+                    }),
+            ));
+            any = true;
+        }
+        if any {
+            body = body
+                .push(Box::new(Divider::horizontal()))
+                .push(Box::new(actions));
+        }
+        body
+    }
+
+    /// Change the picture, and take it away again, where the host offers
+    /// it: beside the avatar, not among the identity actions.
+    fn photo_buttons(&self, model: &ProfileModel) -> Option<Box<dyn Widget>> {
+        let offered = |id: &str| model.actions.iter().find(|action| action.id == id);
+        let set = offered(SET_PHOTO)?;
+        let mut row = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center);
+        for (action, label, icon) in [
+            (Some(set), t("profile-photo-change"), Icon::Camera),
+            (offered(RESET_PHOTO), t("profile-photo-remove"), Icon::X),
+        ] {
+            let Some(action) = action else { continue };
+            let chosen = Rc::clone(&self.chosen);
+            let id = action.id.clone();
+            row = row.push(Box::new(
+                Button::new(&format!("profile-action-{id}"), &label)
+                    .with_icon(icon)
+                    .role(ButtonRole::Plain)
+                    .on_click(move || {
+                        *chosen.borrow_mut() = Some(ProfileChoice::Action(id.clone()));
+                    }),
+            ));
+        }
+        Some(Box::new(row))
+    }
+
+    /// Your avatar, your name (or a field for it) and the hint beneath.
+    fn own_header(&self, model: &ProfileModel) -> Row {
         let mut avatar = Avatar::person(&model.name, &model.identity).size(AvatarSize::Large);
         if let Some(colour) = model.colour {
             avatar = avatar.with_presence(colour);
@@ -252,30 +601,47 @@ impl ProfileCard {
                 t("profile-add-your-name"),
             ))
         } else {
-            Box::new(
-                Text::new(&t("profile-name-hint"))
-                    .with_role(TextRole::Caption)
-                    .dimmed(),
-            )
+            let hint = if model.seen == Seen::Watching {
+                "profile-watching-hint"
+            } else {
+                "profile-name-hint"
+            };
+            Box::new(Text::new(&t(hint)).with_role(TextRole::Caption).dimmed())
         };
         let who = Column::new()
             .with_no_padding()
             .with_rhythm(ui::tokens::Rhythm::Tight)
             .push(name)
             .push(below);
-        let header = Row::new()
+        Row::new()
             .no_wrap()
             .with_align_items(taffy::AlignItems::Center)
             .push(Box::new(avatar))
-            .push(Box::new(who));
+            .push(Box::new(who))
+    }
+
+    fn body(&self, model: &ProfileModel) -> Column {
+        if let Some(other) = &model.other {
+            return self.other_body(model, other);
+        }
+        let header = self.own_header(model);
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
+            // First in the card's focus order: the card opens focused on
+            // itself, not in its name field.
+            .push(Box::new(CardFocus::new(t("profile-card"))))
             .push(Box::new(header));
+        if let Some(photo) = self.photo_buttons(model) {
+            body = body.push(photo);
+        }
+        if let Some(key) = &model.key {
+            body = body.push(Self::key_row(key));
+        }
         if model.offers_presence {
             body = self.presence_sections(body, model);
         } else if model.sharing.is_some() {
-            body = self.push_sharing(body.push(Box::new(Divider::horizontal())), model);
+            body = self.page_sharing(body, model);
         }
         for (group, heading) in [
             (ProfileGroup::Together, None),
@@ -286,6 +652,16 @@ impl ProfileCard {
                 .actions
                 .iter()
                 .filter(|action| action.group == group)
+                // The picture's are offered beside the avatar.
+                .filter(|action| action.id != SET_PHOTO && action.id != RESET_PHOTO)
+                // One clear way to keep who you are: the host's first
+                // (it lists them best first). The rest stay in search, so
+                // three overlapping asks never compete here.
+                .take(if group == ProfileGroup::Identity {
+                    1
+                } else {
+                    usize::MAX
+                })
                 .collect();
             if actions.is_empty() {
                 continue;
@@ -316,10 +692,59 @@ impl ProfileCard {
                     .dimmed(),
             ));
             for account in &model.linked {
-                body = body.push(self.linked_row(account));
+                body = body.push(self.linked_row(account, &model.name));
             }
         }
-        body
+        self.push_control_hints(body, model.control_hints)
+    }
+
+    /// The one setting the desktop's control hints have, below a divider,
+    /// where the host offers them.
+    fn push_control_hints(&self, body: Column, on: Option<bool>) -> Column {
+        let Some(on) = on else {
+            return body;
+        };
+        let body = body.push(Box::new(Divider::horizontal()));
+        let state = LocalState::new(on);
+        let chosen = Rc::clone(&self.chosen);
+        let label = t("profile-control-hints");
+        body.push(Box::new(
+            ListRow::new("profile-control-hints", label.clone()).trailing(Box::new(
+                Toggle::from_state(&state)
+                    .with_id("profile-control-hints-toggle")
+                    .with_accessible_name(&label)
+                    .on_change(move |on| {
+                        *chosen.borrow_mut() = Some(ProfileChoice::ControlHints(on));
+                    }),
+            )),
+        ))
+    }
+
+    /// Where the host keeps only how what they do is shared (a page): what
+    /// they are doing in their own words, and how it is shared.
+    fn page_sharing(&self, body: Column, model: &ProfileModel) -> Column {
+        let body = body
+            .push(Box::new(Divider::horizontal()))
+            .push(Box::new(
+                Text::new(&t("profile-section-status"))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ))
+            .push(Box::new(self.status_field()));
+        self.push_sharing(body, model)
+    }
+
+    /// What they are doing in their own words: Enter says it, an empty
+    /// field clears it.
+    fn status_field(&self) -> TextInput {
+        let chosen = Rc::clone(&self.chosen);
+        TextInput::from_state(&self.status_draft)
+            .with_id("profile-status")
+            .with_placeholder(t("profile-status-placeholder"))
+            .with_accessible_name(t("profile-status"))
+            .on_submit(move |typed| {
+                *chosen.borrow_mut() = Some(ProfileChoice::Status(typed.trim().to_owned()));
+            })
     }
 
     /// Status, colour and what people see: how the person shows to others.
@@ -389,19 +814,11 @@ impl ProfileCard {
                 *chosen.borrow_mut() = Some(ProfileChoice::Availability(*preset));
             }
         });
-        let chosen = Rc::clone(&self.chosen);
-        let status = TextInput::from_state(&self.status_draft)
-            .with_id("profile-status")
-            .with_placeholder(t("profile-status-placeholder"))
-            .with_accessible_name(t("profile-status"))
-            .on_submit(move |typed| {
-                *chosen.borrow_mut() = Some(ProfileChoice::Status(typed.trim().to_owned()));
-            });
         body = body
             .push(Box::new(Divider::horizontal()))
             .push(heading("profile-section-status"))
             .push(Box::new(availability))
-            .push(Box::new(status));
+            .push(Box::new(self.status_field()));
         body = self.push_sharing(body, model);
 
         // Colour: the twelve people colours.
@@ -488,88 +905,210 @@ impl ProfileCard {
             ));
         body
     }
+    /// A dimmed caption a screen reader reads when it changes.
+    fn dimmed(text: &str) -> Box<dyn Widget> {
+        Box::new(
+            Text::new(text)
+                .with_role(TextRole::Caption)
+                .dimmed()
+                .with_live(ui::a11y::Politeness::Polite),
+        )
+    }
 
-    /// One service's row: a button to link, the code to send with Copy, or
-    /// the linked account with Unlink.
-    fn linked_row(&self, account: &LinkedAccount) -> Box<dyn Widget> {
+    /// One service's row: connecting it, the account a link offers with
+    /// Link and Cancel, or the linked account with Unlink, and what went
+    /// wrong last. `me` is the person's name, as the offer asks it.
+    fn linked_row(&self, account: &LinkedAccount, me: &str) -> Box<dyn Widget> {
         let service = || ui::i18n::ArgValue::Text(account.service.clone());
+        let icon = service_icon(&account.app);
         let chosen = Rc::clone(&self.chosen);
         let app = account.app.clone();
-        let (what, button): (Box<dyn Widget>, Button) = match &account.state {
-            LinkState::Unlinked => {
-                return Box::new(
-                    Button::new(
-                        &format!("profile-link-{}", account.app),
-                        &t_args("profile-link", &[("service", service())]),
-                    )
-                    .with_icon(Icon::Link)
-                    .role(ButtonRole::Plain)
-                    .on_click(move || {
-                        *chosen.borrow_mut() = Some(ProfileChoice::Link(app.clone()));
-                    }),
-                );
-            }
-            LinkState::Linking(code) => {
-                let copy = code.code.clone();
-                let chip = Container::new()
-                    .with_background()
-                    .hug()
-                    .with_inset(ui::tokens::Rhythm::Tight)
-                    .with_child(Box::new(
-                        Text::new(&code.code)
-                            .with_id(format!("profile-link-code-{}", account.app))
-                            .with_role(TextRole::Code),
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            // As tall as what it says: filling the card's column pushed
+            // the rows after it out of the card.
+            .with_intrinsic_height();
+        match &account.state {
+            LinkState::Unlinked { connect, elsewhere } => {
+                if *connect {
+                    column = column.push(Box::new(
+                        Button::new(
+                            &format!("profile-link-{}", account.app),
+                            &t_args("profile-link", &[("service", service())]),
+                        )
+                        .with_icon(icon)
+                        .role(ButtonRole::Primary)
+                        .on_click(move || {
+                            *chosen.borrow_mut() = Some(ProfileChoice::Link(app.clone()));
+                        }),
                     ));
-                let row = Row::new()
+                }
+                if let Some(elsewhere) = elsewhere {
+                    column = column.push(Self::dimmed(elsewhere));
+                }
+            }
+            LinkState::Connecting => {
+                column = column.push(Self::dimmed(&t_args(
+                    "profile-connecting",
+                    &[("service", service())],
+                )));
+            }
+            LinkState::Looking => {
+                column = column.push(Self::dimmed(&t_args(
+                    "profile-looking",
+                    &[("service", service())],
+                )));
+            }
+            LinkState::Offered(offer) => {
+                column = self.offered(column, account, offer, me);
+            }
+            LinkState::Linked(name) => {
+                column = column.push(self.linked_as(account, name));
+            }
+        }
+        if let Some(problem) = &account.problem {
+            column = column.push(Box::new(
+                Text::new(problem)
+                    .with_id(format!("profile-link-problem-{}", account.app))
+                    .with_role(TextRole::Caption)
+                    .with_live(ui::a11y::Politeness::Assertive),
+            ));
+        }
+        Box::new(column)
+    }
+
+    /// The account a link offers, asking whether to link it to `me`, with
+    /// Link and Cancel.
+    fn offered(
+        &self,
+        column: Column,
+        account: &LinkedAccount,
+        offer: &tilo_app::linked_accounts::OfferReading,
+        me: &str,
+    ) -> Column {
+        let service = || ui::i18n::ArgValue::Text(account.service.clone());
+        let icon = service_icon(&account.app);
+        let chosen = Rc::clone(&self.chosen);
+        let app = account.app.clone();
+        let declined = Rc::clone(&chosen);
+        let declining = app.clone();
+        column
+            .push(Box::new(
+                Text::new(&t_args(
+                    "profile-link-offer",
+                    &[
+                        ("service", service()),
+                        ("account", ui::i18n::ArgValue::Text(offer.account.label())),
+                        ("name", ui::i18n::ArgValue::Text(me.to_owned())),
+                    ],
+                ))
+                .with_id(format!("profile-link-offer-{}", account.app))
+                .with_live(ui::a11y::Politeness::Polite),
+            ))
+            .push(Self::dimmed(&t_args(
+                "profile-link-offer-why",
+                &[("service", service())],
+            )))
+            .push(Box::new(
+                Row::new()
                     .no_wrap()
                     .with_align_items(taffy::AlignItems::Center)
-                    .with_justify(taffy::JustifyContent::SpaceBetween)
-                    .push(Box::new(chip))
                     .push(Box::new(
-                        Button::new(&format!("profile-copy-{}", account.app), &t("profile-copy"))
-                            .with_icon(Icon::Copy)
-                            .on_click(move || ui::text_selection::clipboard_copy(&copy)),
-                    ));
-                return Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_rhythm(ui::tokens::Rhythm::Tight)
-                        .push(Box::new(
-                            Text::new(&code.instruction).with_live(ui::a11y::Politeness::Polite),
-                        ))
-                        .push(Box::new(row)),
-                );
-            }
-            LinkState::Linked(name) => (
-                Box::new(
-                    Column::new()
-                        .with_no_padding()
-                        .with_rhythm(ui::tokens::Rhythm::Tight)
-                        .push(Box::new(Text::new(&account.service)))
-                        .push(Box::new(
-                            Text::new(&name.label())
-                                .with_id(format!("profile-linked-{}", account.app))
-                                .with_role(TextRole::Caption)
-                                .dimmed(),
-                        )),
-                ),
-                Button::new(
-                    &format!("profile-unlink-{}", account.app),
-                    &t("profile-unlink"),
-                )
-                .with_icon(Icon::Unlink)
-                .on_click(move || {
-                    *chosen.borrow_mut() = Some(ProfileChoice::Unlink(app.clone()));
-                }),
-            ),
-        };
+                        Button::new(
+                            &format!("profile-link-accept-{}", account.app),
+                            &t("profile-link-accept"),
+                        )
+                        .with_icon(icon)
+                        .role(ButtonRole::Primary)
+                        .on_click(move || {
+                            *chosen.borrow_mut() = Some(ProfileChoice::Accept(app.clone()));
+                        }),
+                    ))
+                    .push(Box::new(
+                        Button::new(
+                            &format!("profile-link-decline-{}", account.app),
+                            &t("profile-link-decline"),
+                        )
+                        .role(ButtonRole::Plain)
+                        .on_click(move || {
+                            *declined.borrow_mut() =
+                                Some(ProfileChoice::Decline(declining.clone()));
+                        }),
+                    )),
+            ))
+    }
+
+    /// Someone's account elsewhere: "Linked to @quik2007 on Discord".
+    fn linked_to(link: &tilo_app::linked_accounts::ProfileLink) -> Box<dyn Widget> {
+        let icon = tilo_app::linked_accounts::service_name_icon(&link.service);
+        Box::new(
+            Row::new()
+                .no_wrap()
+                .with_align_items(taffy::AlignItems::Center)
+                .push(Box::new(ui::widget::IconWidget::new(icon)))
+                .push(Box::new(
+                    Text::new(&t_args(
+                        "profile-linked-to",
+                        &[
+                            ("handle", format!("@{}", link.handle).into()),
+                            ("service", link.service.clone().into()),
+                        ],
+                    ))
+                    .with_id(format!(
+                        "profile-other-linked-{}",
+                        link.service.to_lowercase()
+                    ))
+                    .with_role(TextRole::Caption),
+                )),
+        )
+    }
+
+    /// The linked account, with Unlink.
+    fn linked_as(
+        &self,
+        account: &LinkedAccount,
+        name: &tilo_app::linked_accounts::AccountName,
+    ) -> Box<dyn Widget> {
+        let icon = service_icon(&account.app);
+        let chosen = Rc::clone(&self.chosen);
+        let app = account.app.clone();
+        // One line under the section's "Linked accounts": the handle, and
+        // the name the account shows when that is another, muted. Cut
+        // short rather than wrapped; read out whole.
+        let (handle, shown) = linked_line(name);
+        let mut who = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(ui::widget::IconWidget::new(icon)))
+            .push(Box::new(
+                Text::new(&handle)
+                    .with_id(format!("profile-linked-{}", account.app))
+                    .with_spoken(t_args(
+                        "profile-linked-as",
+                        &[("account", ui::i18n::ArgValue::Text(name.label()))],
+                    ))
+                    .with_live(ui::a11y::Politeness::Polite),
+            ));
+        if let Some(shown) = shown {
+            who = who.push(Box::new(Text::new(&shown).dimmed()));
+        }
         Box::new(
             Row::new()
                 .no_wrap()
                 .with_align_items(taffy::AlignItems::Center)
                 .with_justify(taffy::JustifyContent::SpaceBetween)
-                .push(what)
-                .push(Box::new(button)),
+                .push(Box::new(who))
+                .push(Box::new(
+                    Button::new(
+                        &format!("profile-unlink-{}", account.app),
+                        &t("profile-unlink"),
+                    )
+                    .with_icon(Icon::Unlink)
+                    .on_click(move || {
+                        *chosen.borrow_mut() = Some(ProfileChoice::Unlink(app.clone()));
+                    }),
+                )),
         )
     }
 
@@ -584,10 +1123,15 @@ impl ProfileCard {
         .side(PopoverSide::Below)
         .aligned(ui::widget::PanelAlign::Trailing)
         .confined_to_viewport()
-        .with_label(t("profile-card"));
+        .with_label(if model.other.is_some() {
+            t_args("profile-card-of", &[("name", model.name.clone().into())])
+        } else {
+            t("profile-card")
+        });
         self.popover.set_viewport(viewport);
         self.popover.set_anchor(anchor);
         self.popover.set_open(true);
+        self.replaced = true;
     }
 
     /// Open the card for `model` under `anchor` (the own avatar) within
@@ -612,10 +1156,25 @@ impl ProfileCard {
         self.focus_reset = true;
     }
 
+    /// Keep the open card under `anchor` within `viewport` as they move:
+    /// a card opened while the page was still finding its size goes where
+    /// it belongs once it has. Whether it moved.
+    pub fn follow_anchor(&mut self, anchor: Rect, viewport: Rect) -> bool {
+        if !self.is_open() || self.placed == (anchor, viewport) || anchor.is_zero_area() {
+            return false;
+        }
+        self.placed = (anchor, viewport);
+        self.popover.set_viewport(viewport);
+        self.popover.set_anchor(anchor);
+        self.replaced = true;
+        true
+    }
+
     /// What came of a linked account's choice (a link made its code, an
     /// account was linked or unlinked): the open card shows `linked` now.
+    /// They are the person's own, so someone else's card stays as it is.
     pub fn set_linked(&mut self, linked: Vec<LinkedAccount>) {
-        let Some(model) = self.model.as_mut() else {
+        let Some(model) = self.model.as_mut().filter(|model| model.other.is_none()) else {
             return;
         };
         if model.linked == linked {
@@ -628,12 +1187,12 @@ impl ProfileCard {
             // where it is and the pointer it is tracking.
             let body = Box::new(self.body(&model));
             self.popover.content_mut().set_child(body);
+            self.replaced = true;
             // The control chosen is gone; focus goes back into the card.
             self.focus_reset = true;
         }
     }
 
-    /// The linked accounts the card shows.
     pub fn linked(&self) -> &[LinkedAccount] {
         self.model.as_ref().map_or(&[], |model| &model.linked)
     }
@@ -739,6 +1298,10 @@ impl Widget for ProfileCard {
         std::mem::take(&mut self.focus_reset) | self.popover.take_focus_reset()
     }
 
+    fn take_structure_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.replaced) | self.popover.take_structure_dirty()
+    }
+
     fn traps_focus(&self) -> bool {
         self.is_open()
     }
@@ -799,14 +1362,30 @@ mod tests {
             app: "so.tilo.discord".into(),
             service: "Discord".into(),
             state,
+            problem: None,
         }
     }
 
-    fn code() -> tilo_app::linked_accounts::LinkCode {
-        tilo_app::linked_accounts::LinkCode {
-            code: "ABCDEFGHJKLM".into(),
-            instruction: "In Discord, type /link with this code. It works for 10 minutes.".into(),
+    fn unlinked() -> LinkState {
+        LinkState::Unlinked {
+            connect: true,
+            elsewhere: Some("In the Discord server, type /link to link from there.".into()),
         }
+    }
+
+    fn ada_account() -> tilo_app::linked_accounts::AccountName {
+        tilo_app::linked_accounts::AccountName {
+            user_name: "ada.l".into(),
+            display_name: Some("Ada L".into()),
+        }
+    }
+
+    fn offered() -> LinkState {
+        LinkState::Offered(tilo_app::linked_accounts::OfferReading {
+            service: "Discord".into(),
+            account: ada_account(),
+            started_here: false,
+        })
     }
 
     /// The card open with `linked`, in a frame that clicks.
@@ -833,6 +1412,46 @@ mod tests {
         let harness = ui::headless::Framed::harness_mut(frame);
         harness.poll_frame().unwrap();
         harness.inspection_json().unwrap()
+    }
+
+    /// Opening the card is not editing: focus rests on the card itself, and
+    /// Tab (or a click) enters the name field.
+    #[test]
+    fn the_card_opens_focused_on_itself_and_tab_enters_the_name() {
+        // The card's keyboard stops in tree order, as both shells' focus
+        // order walks them; a trap that opens focuses the first.
+        fn stops(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {
+            if widget.is_focusable()
+                && let Some(node) = widget.accessibility()
+            {
+                out.push(node);
+            }
+            for child in widget.children() {
+                stops(child, out);
+            }
+        }
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &model(),
+            Rect::new(1200.0, 2.0, 1220.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let mut order = Vec::new();
+        stops(&card, &mut order);
+        let names: Vec<_> = order.iter().map(|node| node.name.clone()).collect();
+        let first = order.first().expect("the open card has keyboard stops");
+        assert_eq!(
+            first.semantic_key.as_deref(),
+            Some("profile-card-focus"),
+            "the card opens focused on itself, not its name field: {names:?}"
+        );
+        assert_eq!(first.name, Some(t("profile-card")));
+        assert_eq!(
+            order.get(1).and_then(|node| node.name.clone()),
+            Some(t("profile-name")),
+            "Tab enters the name field: {names:?}"
+        );
     }
 
     /// A person who has not named themselves is asked, gently, in the card:
@@ -863,51 +1482,393 @@ mod tests {
         assert!(said.contains(&t("profile-name-hint")));
     }
 
+    /// A spectator's card says nobody here sees them, and asks nothing
+    /// about what they share.
+    #[test]
+    fn a_spectators_card_says_nobody_sees_them() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ProfileModel {
+                name: "Spectator".into(),
+                can_rename: false,
+                seen: Seen::Watching,
+                sharing: None,
+                ..model()
+            },
+            Rect::new(1200.0, 2.0, 1220.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let mut card =
+            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
+        let said = says(&mut card);
+        assert!(said.contains(&t("profile-watching-hint")), "{said}");
+        assert!(!said.contains(&t("profile-name-hint")), "{said}");
+        assert!(!said.contains(&t("profile-sharing")), "{said}");
+    }
+
+    /// Of the host's ways to keep who you are, the card offers one: the
+    /// first, which the host lists best first. Devices stay as listed.
+    #[test]
+    fn the_card_offers_one_way_to_keep_your_identity() {
+        ui::i18n::I18nManager::init("en-US");
+        let identity = |id: &str, title: &str| ProfileAction {
+            id: id.into(),
+            title: title.into(),
+            group: ProfileGroup::Identity,
+            icon: Icon::Fingerprint,
+        };
+        let mut actions = vec![
+            identity("keep-identity", "Keep your name and work"),
+            identity("save-recovery-key", "Save a recovery key"),
+            identity("sign-in-passkey", "Sign in with a passkey"),
+        ];
+        actions.extend(
+            model()
+                .actions
+                .into_iter()
+                .filter(|a| a.group == ProfileGroup::Devices),
+        );
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ProfileModel { actions, ..model() },
+            Rect::new(1200.0, 2.0, 1220.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let mut frame =
+            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
+        let said = says(&mut frame);
+        assert!(said.contains("Keep your name and work"), "{said}");
+        assert!(!said.contains("Save a recovery key"), "{said}");
+        assert!(!said.contains("Sign in with a passkey"), "{said}");
+        assert!(said.contains("Pair a new device"), "{said}");
+    }
+
     #[test]
     fn no_linked_accounts_section_without_a_connected_service() {
         let mut frame = framed(Vec::new());
         assert!(!says(&mut frame).contains("Linked accounts"));
-        let mut frame = framed(vec![discord(LinkState::Unlinked)]);
+        let mut frame = framed(vec![discord(unlinked())]);
         assert!(says(&mut frame).contains("Linked accounts"));
     }
 
     #[test]
-    fn linking_keeps_the_card_open_and_shows_the_code_to_copy() {
-        let mut frame = framed(vec![discord(LinkState::Unlinked)]);
+    fn connect_keeps_the_card_open_and_says_where_it_goes() {
+        let mut frame = framed(vec![discord(unlinked())]);
+        let said = says(&mut frame);
+        assert!(said.contains("Connect Discord"), "{said}");
+        assert!(said.contains("type /link"), "the other way in: {said}");
         click(&mut frame, "profile-link-so.tilo.discord");
         assert_eq!(
             frame.take_choice(),
             Some(ProfileChoice::Link("so.tilo.discord".into()))
         );
-        assert!(frame.is_open(), "the card waits for the code");
-        frame.set_linked(vec![discord(LinkState::Linking(code()))]);
+        assert!(frame.is_open(), "the card waits for the consent page");
+        frame.set_linked(vec![discord(LinkState::Connecting)]);
         let said = says(&mut frame);
-        assert!(
-            said.contains("In Discord, type /link with this code") && said.contains("ABCDEFGHJKLM"),
-            "{said}"
-        );
-        assert!(said.contains("profile-copy-so.tilo.discord"), "{said}");
-        assert!(frame.is_open());
+        assert!(said.contains("Opening Discord"), "{said}");
         assert_eq!(frame.draft(), "Kim", "the name field keeps what it had");
     }
 
     #[test]
-    fn a_linked_account_offers_unlink() {
-        let mut frame = framed(vec![discord(LinkState::Linked(
-            tilo_app::linked_accounts::AccountName {
-                user_name: "ada.l".into(),
-                display_name: Some("Ada L".into()),
+    fn a_service_without_sign_in_only_says_how_to_link_from_there() {
+        let mut frame = framed(vec![discord(LinkState::Unlinked {
+            connect: false,
+            elsewhere: Some("In the Discord server, type /link to link from there.".into()),
+        })]);
+        let said = says(&mut frame);
+        assert!(!said.contains("profile-link-so.tilo.discord"), "{said}");
+        assert!(said.contains("type /link"), "{said}");
+    }
+
+    /// A link from Discord's /link asks before it links: the account it
+    /// offers and the person it links to, with Link and Cancel.
+    #[test]
+    fn an_offered_account_asks_before_it_links() {
+        let mut frame = framed(vec![discord(offered())]);
+        let said = says(&mut frame);
+        assert!(
+            said.contains("Link Discord Ada L · @ada.l to Kim?"),
+            "{said}"
+        );
+        click(&mut frame, "profile-link-accept-so.tilo.discord");
+        assert_eq!(
+            frame.take_choice(),
+            Some(ProfileChoice::Accept("so.tilo.discord".into()))
+        );
+        click(&mut frame, "profile-link-decline-so.tilo.discord");
+        assert_eq!(
+            frame.take_choice(),
+            Some(ProfileChoice::Decline("so.tilo.discord".into()))
+        );
+        assert!(frame.is_open());
+    }
+
+    /// A page's own card with a linked account keeps its status field its
+    /// height, and its rows follow one another: a linked row that outgrew
+    /// its first measure squashed the field above it to nothing.
+    #[test]
+    fn a_linked_card_keeps_its_status_field() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ProfileModel {
+                linked: vec![discord(LinkState::Linked(
+                    tilo_app::linked_accounts::AccountName {
+                        user_name: "quinn.davis".into(),
+                        display_name: Some("Quinn".into()),
+                    },
+                ))],
+                sharing: Some(ui::StatusSharing::Automatic),
+                status: "Sketching".into(),
+                control_hints: Some(true),
+                ..model()
             },
-        ))]);
-        assert!(says(&mut frame).contains("Ada L · ada.l"), "shown by name");
+            Rect::new(1350.0, 2.0, 1370.0, 22.0),
+            Rect::new(0.0, 0.0, 1440.0, 900.0),
+        );
+        let mut frame =
+            ui::headless::Framed::new(ui::State::new(), card, (1440, 900), Theme::dark());
+        let harness = ui::headless::Framed::harness_mut(&mut frame);
+        harness.poll_frame().unwrap();
+        let targets = harness.targets();
+        let at = |name: &str| {
+            *targets
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} is laid out: {targets:?}"))
+        };
+        let status = at("profile-status");
+        let sharing = at("profile-sharing");
+        let unlink = at("profile-unlink-so.tilo.discord");
+        let hints = at("profile-control-hints-toggle");
+        assert!(status.height() > 0.0, "the status field has its height");
+        assert!(status.y1 <= sharing.y0, "{status:?} above {sharing:?}");
+        assert!(sharing.y1 <= unlink.y0, "{sharing:?} above {unlink:?}");
+        assert!(unlink.y1 <= hints.y0, "{unlink:?} above {hints:?}");
+        // The linked row is one line, and the switch follows it closely,
+        // inside the viewport: no gap where a wrapped line was measured.
+        let linked = at("profile-linked-so.tilo.discord");
+        assert!(linked.height() < 2.0 * 16.0 * 1.2, "one line: {linked:?}");
+        assert!(
+            hints.y0 - unlink.y1 < 72.0,
+            "the switch follows the linked row: {unlink:?} then {hints:?}"
+        );
+        assert!(hints.y1 <= 900.0, "the switch is on screen: {hints:?}");
+    }
+
+    #[test]
+    fn a_linked_line_is_cut_short_never_wrapped() {
+        let account = |user: &str, shown: Option<&str>| tilo_app::linked_accounts::AccountName {
+            user_name: user.into(),
+            display_name: shown.map(str::to_owned),
+        };
+        assert_eq!(
+            linked_line(&account("quinn.davis", Some("Quinn"))),
+            ("@quinn.davis".into(), Some("Quinn".into()))
+        );
+        assert_eq!(
+            linked_line(&account("quinn.davis", Some("quinn.davis"))),
+            ("@quinn.davis".into(), None),
+            "the name only when it is another"
+        );
+        let (handle, shown) =
+            linked_line(&account("a_very_long_discord_username_x", Some("Someone")));
+        assert_eq!(handle.chars().count(), LINKED_LINE_CHARS);
+        assert!(handle.ends_with('…'), "{handle}");
+        assert_eq!(shown, None, "the name gives way first");
+        let (handle, shown) = linked_line(&account("quinn", Some("Quinn Davis-Montgomery")));
+        assert_eq!(handle, "@quinn");
+        let shown = shown.expect("room for some of the name");
+        assert!(shown.ends_with('…'), "{shown}");
+        assert!(handle.chars().count() + 1 + shown.chars().count() <= LINKED_LINE_CHARS);
+    }
+
+    #[test]
+    fn a_linked_account_offers_unlink() {
+        let mut frame = framed(vec![discord(LinkState::Linked(ada_account()))]);
+        let said = says(&mut frame);
+        assert!(
+            said.contains("@ada.l") && said.contains("Ada L"),
+            "shown by handle and name: {said}"
+        );
         click(&mut frame, "profile-unlink-so.tilo.discord");
         assert_eq!(
             frame.take_choice(),
             Some(ProfileChoice::Unlink("so.tilo.discord".into()))
         );
         assert!(frame.is_open());
-        frame.set_linked(vec![discord(LinkState::Unlinked)]);
-        assert_eq!(frame.linked(), [discord(LinkState::Unlinked)]);
+        frame.set_linked(vec![discord(unlinked())]);
+        assert_eq!(frame.linked(), [discord(unlinked())]);
+    }
+
+    #[test]
+    fn what_went_wrong_is_said_on_the_row() {
+        let mut frame = framed(vec![LinkedAccount {
+            problem: Some("This link ran out after ten minutes. Run /link again.".into()),
+            ..discord(unlinked())
+        }]);
+        assert!(says(&mut frame).contains("ran out after ten minutes"));
+    }
+
+    /// Hosts the card as a shell does: the linked accounts change during a
+    /// frame's update, not through the harness's own access to its root
+    /// (which lays out from scratch).
+    struct Shell {
+        card: ProfileCard,
+        next: Rc<RefCell<Option<Vec<LinkedAccount>>>>,
+    }
+
+    impl Widget for Shell {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            self.card.build_layout(taffy, theme, map)
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            self.card.apply_layout(taffy, node, origin);
+        }
+
+        fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+            let linked = self.next.borrow_mut().take();
+            let changed = linked.is_some();
+            if let Some(linked) = linked {
+                self.card.set_linked(linked);
+            }
+            self.card.update(state, path) | changed
+        }
+
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+            self.card.handle_event(event, ctx);
+        }
+
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![&self.card]
+        }
+
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            vec![&mut self.card]
+        }
+
+        fn needs_redraw(&self) -> bool {
+            self.next.borrow().is_some() || self.card.needs_redraw()
+        }
+
+        fn name(&self) -> &'static str {
+            "Shell"
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.card.get_rect()
+        }
+    }
+
+    /// The card builds its widgets again when a linked account changes.
+    /// A layout kept from before would still point at the ones they
+    /// replaced, freed: the page read them as garbage once their memory was
+    /// reused (after an app's code loaded), and trapped in an indirect call.
+    #[test]
+    fn a_rebuilt_card_is_laid_out_again_before_a_frame_reaches_it() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ProfileModel {
+                linked: vec![discord(unlinked())],
+                ..model()
+            },
+            Rect::new(1200.0, 2.0, 1220.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let next = Rc::new(RefCell::new(None));
+        let shell = Shell {
+            card,
+            next: Rc::clone(&next),
+        };
+        let mut frame =
+            ui::headless::Framed::new(ui::State::new(), shell, (1280, 720), Theme::dark());
+        let harness = ui::headless::Framed::harness_mut(&mut frame);
+        harness.poll_frame().unwrap();
+        let before = harness.rebuilt_frames();
+        *next.borrow_mut() = Some(vec![discord(offered())]);
+        assert!(harness.poll_frame().unwrap(), "the change is drawn");
+        assert!(
+            harness.rebuilt_frames() > before,
+            "the frame lays the rebuilt card out again instead of keeping the old layout"
+        );
+        assert!(harness.inspection_json().unwrap().contains("@ada.l"));
+    }
+
+    /// The linked accounts the host hears about are the person's own. While
+    /// someone else's card is open (opened from an author in Chat) they keep
+    /// arriving, the first answer a couple of seconds after opening: the
+    /// card is not built again under the pointer for them, it stays open
+    /// as it was and goes on answering presses.
+    #[test]
+    fn someone_elses_card_stays_as_it_was_when_your_linked_accounts_arrive() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            &ada(true, crate::collaborators::LineSource::Generated),
+            Rect::new(600.0, 300.0, 602.0, 302.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        let next = Rc::new(RefCell::new(None));
+        let shell = Shell {
+            card,
+            next: Rc::clone(&next),
+        };
+        let mut frame =
+            ui::headless::Framed::new(ui::State::new(), shell, (1280, 720), Theme::dark());
+        let harness = ui::headless::Framed::harness_mut(&mut frame);
+        harness.poll_frame().unwrap();
+        let before = harness.rebuilt_frames();
+        *next.borrow_mut() = Some(vec![discord(unlinked())]);
+        harness.poll_frame().unwrap();
+        assert_eq!(
+            harness.rebuilt_frames(),
+            before,
+            "nothing of the card was built again"
+        );
+        let said = harness.inspection_json().unwrap();
+        assert!(!said.contains("Linked accounts"), "{said}");
+        harness.click_named("profile-follow").unwrap();
+        harness.poll_frame().unwrap();
+        let card = &mut frame.card;
+        assert!(card.is_open(), "the card stays open");
+        assert_eq!(
+            card.take_choice(),
+            Some(ProfileChoice::Follow("ada-device".into()))
+        );
+    }
+
+    /// Where the host keeps only how what they do is shared (a page), the
+    /// card still has the field for what they are doing in their own
+    /// words, holding what they said; a spectator's has none.
+    #[test]
+    fn a_page_card_offers_what_they_are_doing_in_their_own_words() {
+        ui::i18n::I18nManager::init("en-US");
+        let open = |sharing| {
+            let mut card = ProfileCard::new();
+            card.toggle(
+                &ProfileModel {
+                    sharing,
+                    offers_presence: false,
+                    status: "Reviewing the launch plan".into(),
+                    ..model()
+                },
+                Rect::new(1200.0, 2.0, 1220.0, 22.0),
+                Rect::new(0.0, 0.0, 1280.0, 720.0),
+            );
+            ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
+        };
+        let said = says(&mut open(Some(ui::StatusSharing::Automatic)));
+        assert!(said.contains("profile-status"), "{said}");
+        assert!(said.contains("Reviewing the launch plan"), "{said}");
+        let said = says(&mut open(None));
+        assert!(!said.contains("profile-status"), "{said}");
     }
 
     fn opened() -> ProfileCard {
@@ -952,9 +1913,144 @@ mod tests {
     }
 
     #[test]
+    fn an_open_card_follows_its_avatar_once_the_page_has_its_size() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        let tiny = Rect::new(0.0, 0.0, 40.0, 40.0);
+        card.toggle(&model(), Rect::new(10.0, 0.0, 30.0, 20.0), tiny);
+        let (avatar, page) = (
+            Rect::new(1340.0, 4.0, 1364.0, 28.0),
+            Rect::new(0.0, 0.0, 1440.0, 900.0),
+        );
+        assert!(
+            card.follow_anchor(avatar, page),
+            "moves to where it belongs"
+        );
+        assert!(!card.follow_anchor(avatar, page), "and stays");
+        assert!(
+            !card.follow_anchor(Rect::ZERO, page),
+            "not to an avatar not drawn"
+        );
+        card.close();
+        assert!(
+            !card.follow_anchor(avatar, tiny),
+            "a closed card stays closed"
+        );
+    }
+
+    #[test]
     fn toggling_again_closes() {
         let mut card = opened();
         card.toggle(&model(), Rect::ZERO, Rect::new(0.0, 0.0, 800.0, 600.0));
         assert!(!card.is_open());
+    }
+
+    const ADA_KEY: &str = "a6d40c19e7b25f83c1d9e0a4b7f26c58d3e1a9b0c7f4e2d6a8b5c3e1f0d9a7c2";
+
+    fn ada(can_message: bool, status: crate::collaborators::LineSource) -> ProfileModel {
+        ProfileModel {
+            name: "Ada".into(),
+            identity: "ada-device".into(),
+            key: Some(ADA_KEY.into()),
+            other: Some(OtherPerson {
+                id: "ada-device".into(),
+                status: Some(crate::collaborators::RosterStatus {
+                    text: "Reviewing the checklist".into(),
+                    source: status,
+                }),
+                place: None,
+                following: false,
+                can_follow: true,
+                can_message,
+                linked: Vec::new(),
+            }),
+            ..ProfileModel::default()
+        }
+    }
+
+    fn framed_model(model: &ProfileModel) -> ui::headless::Framed<ProfileCard> {
+        ui::i18n::I18nManager::init("en-US");
+        let mut card = ProfileCard::new();
+        card.toggle(
+            model,
+            Rect::new(1000.0, 2.0, 1020.0, 22.0),
+            Rect::new(0.0, 0.0, 1280.0, 720.0),
+        );
+        ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark())
+    }
+
+    #[test]
+    fn someone_elses_card_says_who_they_are_and_offers_writing_and_following() {
+        let mut frame = framed_model(&ada(true, crate::collaborators::LineSource::Generated));
+        let said = says(&mut frame);
+        assert!(said.contains("Ada’s profile"), "{said}");
+        assert!(said.contains("a6d40c19…a7c2"), "the id, short: {said}");
+        assert!(said.contains("Written automatically"), "{said}");
+        // Nothing of the person's own card: no name field, no identity.
+        assert!(!said.contains("Your name"), "{said}");
+        click(&mut frame, "profile-message");
+        assert_eq!(
+            frame.take_choice(),
+            Some(ProfileChoice::Message(ADA_KEY.into()))
+        );
+
+        let mut frame = framed_model(&ada(false, crate::collaborators::LineSource::Written));
+        let said = says(&mut frame);
+        assert!(said.contains("In their own words"), "{said}");
+        assert!(
+            !said.contains("\"Message\""),
+            "no conversation to open: {said}"
+        );
+        click(&mut frame, "profile-follow");
+        assert_eq!(
+            frame.take_choice(),
+            Some(ProfileChoice::Follow("ada-device".into()))
+        );
+    }
+
+    #[test]
+    fn your_own_card_shows_your_id_and_your_pictures_buttons() {
+        let mut own = model();
+        own.key = Some(ADA_KEY.into());
+        for id in [SET_PHOTO, RESET_PHOTO] {
+            own.actions.push(ProfileAction {
+                id: id.into(),
+                title: id.into(),
+                group: ProfileGroup::Identity,
+                icon: Icon::Fingerprint,
+            });
+        }
+        let mut frame = framed_model(&own);
+        let said = says(&mut frame);
+        assert!(said.contains("Change picture"), "{said}");
+        assert!(said.contains("Remove picture"), "{said}");
+        assert!(said.contains("Copy ID"), "{said}");
+        click(&mut frame, "profile-action-set-photo");
+        assert_eq!(
+            frame.take_choice(),
+            Some(ProfileChoice::Action(SET_PHOTO.into()))
+        );
+        assert_eq!(short_key("abc"), "abc");
+    }
+
+    #[test]
+    fn someone_elses_card_names_their_linked_accounts() {
+        let mut model = ada(true, crate::collaborators::LineSource::Written);
+        let mut frame = framed_model(&model);
+        assert!(!says(&mut frame).contains("Linked to"));
+        if let Some(other) = &mut model.other {
+            other.linked = vec![tilo_app::linked_accounts::ProfileLink {
+                service: "Discord".into(),
+                handle: "quik2007".into(),
+                picture: None,
+            }];
+        }
+        let mut frame = framed_model(&model);
+        let said = says(&mut frame);
+        assert!(said.contains("Linked to @quik2007 on Discord"), "{said}");
+        assert!(
+            !said.contains("Unlink"),
+            "only their own card unlinks: {said}"
+        );
     }
 }

@@ -1,7 +1,7 @@
 # Idle wakeups, headless, 2026-10-09
 
 The first measured number for "how often does an idle desktop wake the
-machine". The raw tables are in `idle-wakeups-2026-10-09.json`. The current
+machine". The raw tables are in [`idle-wakeups-2026-10-09.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/idle-wakeups-2026-10-09.json). The current
 value comes from the scheduled lane's `wakeups.*` records, not from this page
 (see [README.md](README.md)).
 

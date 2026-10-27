@@ -8,6 +8,9 @@
 # `~/Books`, `~/Documents`, `~/Downloads`, `/var/workspace`
 # (override `EBOOK_LIBRARY_DIR`).
 #
+# The network (`network.http`) searches Project Gutenberg's catalogue beside
+# the library and fetches a free book a person gets from it.
+#
 
 
 [package]
@@ -27,10 +30,10 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["clipboard", "files.open", "files.paths", "app-files", "settings", "threads", "media.decode"]
+optional = ["clipboard", "files.open", "files.paths", "app-files", "settings", "threads", "media.decode", "network.http"]
 
 [resources]
-kinds = ["ebook.library", "tilo.rich-text"]
+kinds = ["ebook.library", "tilo.rich-text", "settings.books-catalogues"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -64,8 +67,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
+collab = "optional@10"
+tilo-fs = "optional@10"
 
 [entrypoint]
 bin             = "bin/ebook"

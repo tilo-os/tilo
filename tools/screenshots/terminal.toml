@@ -1,12 +1,12 @@
-# Terminal: a session through its actions; the scratch profile's shell.
+# Terminal: sessions of the app's own scenarios (never a shell of the
+# machine the shots run on).
 
 [[situation]]
 name = "session"
-title = "A fresh session"
+title = "A shell session"
+scenario = "shell"
 
 [[situation]]
-name = "typed-command"
-title = "A command at the prompt, not yet run"
-
-[[situation.steps]]
-invoke = { resource = "terminal.session", action = "send", confirm = true, args = { text = "du -sh ~/Documents/* | sort -h | tail -5" } }
+name = "tui"
+title = "A full-screen program"
+scenario = "tui"

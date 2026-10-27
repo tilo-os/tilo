@@ -51,6 +51,8 @@ mod host_commands;
 pub(crate) const HISTORY_ACTION_RESOURCE: &str = history_actions::RESOURCE;
 #[cfg(test)]
 mod history_actions_tests;
+#[cfg(test)]
+mod host_worker_pump_tests;
 mod model_lifecycle;
 mod participants;
 mod published_invocations;
@@ -59,6 +61,7 @@ mod retirement_assembly;
 mod retirement_lifecycle_tests;
 pub use document_history::DocumentHistorySnapshot;
 include!("app/floating.rs");
+mod retained_layout;
 mod runtime;
 mod window_bar;
 use runtime::{
@@ -88,6 +91,8 @@ pub const WINDOW_LOST: &str = "the window stopped without being closed";
 /// launcher reports it as a failed launch rather than a clean exit.
 pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
 
+#[cfg(feature = "native")]
+mod content_zoom;
 #[cfg(feature = "native")]
 mod input_publication;
 mod local_action_persistence;
@@ -198,6 +203,10 @@ pub enum UserEvent {
     /// The soft keyboard queued edits for the focused field.
     #[cfg(all(feature = "native", target_os = "android"))]
     PlatformTextInput,
+    /// The shell opens one more window of the app in this process
+    /// ([`crate::window_door`]).
+    #[cfg(feature = "native")]
+    OpenWindow(crate::window_door::PendingWindow),
 }
 
 #[cfg(feature = "native")]
@@ -256,7 +265,6 @@ mod continuation_tests {
 
     #[test]
     fn vanished_continuations_clear_the_durable_projection() {
-        // Case `continuation_disappearance_clears_the_durable_projection`.
         {
             let request = continuation_publication("ebook".into(), None, true);
             assert!(matches!(
@@ -758,7 +766,7 @@ impl AppConstructionInputs {
             profiler: crate::profiling::FrameProfiler::from_env,
             floating_surface_client:
                 crate::floating_surface::FloatingSurfaceServiceClient::for_window,
-            startup_presence_scope: PresenceKey::for_local_workspace,
+            startup_presence_scope: crate::presence::local_workspace_key,
             surface_id: ConstructionValue::Lazy(crate::local_surface_id),
         }
     }
@@ -820,8 +828,6 @@ impl App {
     }
 
     /// Mount an already prepared component with explicit presentation and local services.
-    /// # Errors
-    /// Returns the original component recovery owners when mounting is refused.
     pub fn from_component(
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
@@ -925,6 +931,10 @@ impl App {
         app.autofocus_on_structure_change = behaviour.autofocus_on_structure_change;
         app.appearance_reconcile = behaviour.appearance_reconcile;
         app.set_capture_protected(behaviour.capture_protected);
+        app.floating.window_record = Some((
+            binding.checkout.id.route().to_owned(),
+            binding.checkout.kind.as_str().to_owned(),
+        ));
         if let Some(app_id) = input_surface_id {
             app.window.app_id = Some(app_id);
         }
@@ -970,6 +980,13 @@ impl App {
             theme,
             text_renderer,
         }
+    }
+
+    /// The window's root widget, for a test that drives a live window and
+    /// looks at what it mounted.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn root_widget_mut(&mut self) -> &mut dyn Widget {
+        self.root_widget.as_mut()
     }
 
     /// Capture/close embedded components while the host still owns their trees.
@@ -1394,10 +1411,6 @@ impl App {
 
     /// Fallible form of [`Self::from_factory`]. A failed factory closes all
     /// capabilities it created before returning the error.
-    ///
-    /// # Errors
-    ///
-    /// Returns the error produced by `factory`.
     pub fn try_from_factory<E>(
         state: State,
         factory: impl FnOnce() -> Result<Box<dyn Widget>, E>,
@@ -1557,13 +1570,22 @@ impl App {
                 } else {
                     base
                 };
+                // The window's content zoom multiplies the person's UI
+                // scale: everything reflows at the new size, and their text
+                // size stays on top of it.
                 let theme = base
                     .with_component_scales(
                         self.accessibility.text_scale,
-                        self.accessibility.ui_scale,
+                        self.accessibility.ui_scale * self.accessibility.zoom.factor(),
                     )
                     .with_reduce_motion(self.accessibility.a11y.reduce_motion);
-                self.accessibility.ui_scale = theme.ui_scale;
+                // The person's own scale as the theme took it (the zoom is
+                // kept apart, so taking it out never drifts).
+                self.accessibility.ui_scale = if self.accessibility.ui_scale.is_finite() {
+                    self.accessibility.ui_scale.clamp(0.5, 3.0)
+                } else {
+                    1.0
+                };
                 theme
             }
             PaletteSource::Owned { .. } => self
@@ -1574,7 +1596,7 @@ impl App {
                 .with_a11y(
                     &self.accessibility.a11y,
                     self.accessibility.text_scale,
-                    self.accessibility.ui_scale,
+                    self.accessibility.ui_scale * self.accessibility.zoom.factor(),
                 ),
         };
         self.text_renderer
@@ -1706,6 +1728,65 @@ impl App {
     /// Publish the live resource/action tree through the session broker.
     /// Level-triggered at the wire, diffed here so an unchanged frame emits
     /// nothing; publishing an empty list explicitly withdraws a closed tree.
+
+    /// [`Self::directory_explicit_visibility`] of `resources` and everything
+    /// under them, by resource id, found in one walk of the widget tree.
+    fn directory_explicit_visibilities(
+        &self,
+        resources: &[tilo_actions::Resource],
+    ) -> std::collections::HashMap<String, tilo_actions::ActionAddress> {
+        fn ids<'a>(resources: &'a [tilo_actions::Resource], out: &mut Vec<&'a str>) {
+            for resource in resources {
+                out.push(resource.id.as_str());
+                ids(&resource.children, out);
+            }
+        }
+        let mut all = Vec::new();
+        ids(resources, &mut all);
+        let targets: Vec<_> = all
+            .iter()
+            .map(|id| {
+                self.actions
+                    .bound_publication
+                    .target(&tilo_actions::ActionAddress::new(*id, ""))
+                    .ok()
+                    .flatten()
+            })
+            .collect();
+        let wanted: Vec<_> = all
+            .iter()
+            .zip(&targets)
+            .map(|(id, target)| {
+                (
+                    target.as_ref().map(|target| target.binding.clone()),
+                    target
+                        .as_ref()
+                        .map_or(*id, |target| target.address.address.resource.as_str())
+                        .to_owned(),
+                )
+            })
+            .collect();
+        let found = crate::bound_dispatch::publication_visibilities(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+            &wanted,
+        );
+        all.into_iter()
+            .zip(targets)
+            .zip(found)
+            .filter_map(|((id, target), address)| {
+                let mut address = address?;
+                if let Some(target) = &target {
+                    address.resource = self
+                        .actions
+                        .bound_publication
+                        .alias(&target.binding, &address.resource)
+                        .ok()?;
+                }
+                Some((id.to_owned(), address))
+            })
+            .collect()
+    }
 
     fn directory_explicit_visibility(
         &self,
@@ -1996,6 +2077,25 @@ impl App {
         self.accessibility.window
     }
 
+    /// The shape of this window's surface, laid out over `window` (logical)
+    /// and drawn with `transform`: rounded at the radius the shell draws
+    /// the window with, square while it is fullscreen or drawn edge to
+    /// edge. `None` when no shell said how it draws the window.
+    #[cfg(feature = "native")]
+    #[must_use]
+    pub fn window_surface(
+        &self,
+        window: vello::kurbo::Rect,
+        transform: vello::kurbo::Affine,
+    ) -> Option<crate::theme::SurfaceShape> {
+        let radius = if self.window.fullscreen_active {
+            0.0
+        } else {
+            f64::from(self.accessibility.window.corner_radius?)
+        };
+        Some(crate::theme::SurfaceShape::rounded(window, radius).transformed(transform))
+    }
+
     /// What a standalone app read from its host OS, through the same door as
     /// a settings pane's intent. The caller applies each host change once, so
     /// a contrast toggle made in the app holds until the host changes again.
@@ -2073,6 +2173,16 @@ impl App {
             self.layout.request_rebuild();
             return true;
         }
+        // The debounce spares a settings file a stat on every pass. A source
+        // the host provides (the shell's records over the app's channel)
+        // says its revision in one atomic read and wakes this loop when it
+        // rings, so its change lands on the wake it caused rather than on
+        // some later input after the debounce.
+        if settings_store::installed_source().is_some()
+            && let Some(due) = now.checked_sub(Duration::from_millis(750))
+        {
+            self.last_theme_store_check = due;
+        }
         self.reconcile_configured_theme_with(
             crate::time::now(),
             settings_store::stamp,
@@ -2112,11 +2222,31 @@ impl App {
         // Region & Formats change with the same settings stamp: dates and
         // numbers re-render in the new formats (the i18n revision moves).
         crate::format::region::refresh();
+        // So does the interface language: the copy relabels in it.
+        crate::i18n::follow_configured_language();
         self.accessibility.base_theme = self
             .floating
             .host_theme
             .clone()
             .unwrap_or_else(Theme::configured);
+        // The comforts the base theme leaves to its host: contrast, text
+        // size, interface scale and motion, as the person set them now, not
+        // as the launcher passed them when the window opened.
+        // A comfort the document does not name keeps the value this window
+        // has (one an app or a pane set).
+        let comforts = Theme::configured_comforts();
+        if let Some(on) = comforts.high_contrast {
+            self.accessibility.a11y.high_contrast = on;
+        }
+        if let Some(on) = comforts.reduce_motion {
+            self.accessibility.a11y.reduce_motion = on;
+        }
+        if let Some(scale) = comforts.text_scale {
+            self.accessibility.text_scale = scale;
+        }
+        if let Some(scale) = comforts.ui_scale {
+            self.accessibility.ui_scale = scale;
+        }
         self.theme_schedule =
             Theme::automatic_schedule_from(settings_store::settings_path().as_deref())
                 .map(|schedule| (schedule, schedule.is_night(crate::theme::local_moment())));
@@ -2133,29 +2263,16 @@ impl App {
         self.accessibility.a11y.screen_reader = self.accessibility.screen_reader.is_some();
     }
 
-    /// The smallest-area matching rect wins, so a nested child beats its
-    /// enclosing container. Works off `node_map` rather than walking
-    /// `children` so it still reaches widgets nested under containers with
-    /// private child storage.
+    /// [`crate::widget::cursor`]'s rule over every laid-out widget. Works
+    /// off `node_map` rather than walking `children` so it still reaches
+    /// widgets nested under containers with private child storage.
     #[cfg(feature = "native")]
     fn resolve_cursor(&self, point: Point) -> Option<CursorIcon> {
-        let mut best: Option<(f64, CursorIcon)> = None;
+        let mut pick = crate::widget::cursor::CursorPick::default();
         for &node in self.layout.node_map.keys() {
-            let Ok((rect, icon)) = self.inspect_node(node, |widget| {
-                (widget.get_rect(), widget.cursor_shape(point))
-            }) else {
-                continue;
-            };
-            if rect.contains(point)
-                && let Some(icon) = icon
-            {
-                let area = (rect.width() * rect.height()).max(0.0);
-                if best.is_none_or(|(a, _)| area < a) {
-                    best = Some((area, icon));
-                }
-            }
+            let _ = self.inspect_node(node, |widget| pick.offer(widget, point));
         }
-        best.map(|(_, icon)| icon)
+        pick.icon()
     }
 
     /// Whether a laid-out widget claims raw per-finger touch at `point`
@@ -2168,6 +2285,33 @@ impl App {
             })
             .unwrap_or(false)
         })
+    }
+
+    /// What a contact beginning at `point` (logical coords) means: raw for a
+    /// widget that reads fingers itself, else what the widget under it
+    /// claims ([`crate::widget::Widget::touch_claim`]), else ordinary pointer
+    /// emulation.
+    #[cfg(feature = "native")]
+    fn touch_claim_at(&self, point: Point) -> crate::interaction::TouchClaim {
+        use crate::interaction::TouchClaim;
+        if self.claims_raw_touch_at(point) {
+            return TouchClaim::Raw;
+        }
+        self.layout
+            .node_map
+            .keys()
+            .find_map(|&node| {
+                self.inspect_node(node, |widget| {
+                    if widget.get_rect().contains(point) {
+                        widget.touch_claim(point)
+                    } else {
+                        TouchClaim::Pointer
+                    }
+                })
+                .ok()
+                .filter(|claim| *claim != TouchClaim::Pointer)
+            })
+            .unwrap_or(TouchClaim::Pointer)
     }
 
     /// Mirrors [`Self::resolve_cursor`]: smallest-area widget under `point`
@@ -2193,28 +2337,13 @@ impl App {
         if !self.input.interaction.supports_hover() {
             return None;
         }
-        let mut best: Option<(
-            f64,
-            vello::kurbo::Rect,
-            String,
-            crate::widget::tooltip::TooltipSide,
-        )> = None;
-        for &node in self.layout.node_map.keys() {
-            let Ok(target) = self.inspect_node(node, |widget| {
-                widget
-                    .tooltip_target_at(point)
-                    .map(|(rect, tip)| (rect, tip, widget.tooltip_side()))
-            }) else {
-                continue;
-            };
-            if let Some((rect, tip, side)) = target {
-                let area = (rect.width() * rect.height()).max(0.0);
-                if best.as_ref().is_none_or(|(a, _, _, _)| area < *a) {
-                    best = Some((area, rect, tip, side));
-                }
-            }
-        }
-        best.map(|(_, rect, label, side)| (rect, label, side))
+        crate::widget::tooltip::smallest_target(self.layout.node_map.keys().filter_map(|&node| {
+            self.inspect_node(node, |widget| {
+                crate::widget::tooltip::placed_target_at(widget, point)
+            })
+            .ok()
+            .flatten()
+        }))
     }
 }
 
@@ -2422,6 +2551,7 @@ impl App {
         // The map built now describes the tree as it is: a replacement the
         // widgets reported before is part of it, not a change after it.
         self.take_composition_dirty();
+        self.layout.remount = false;
         tilo_startup_metrics::span("init-layout-history", || self.build_history_presentation());
         tilo_startup_metrics::span("init-layout-focus-order", || {
             self.update_focusable_order();
@@ -2457,6 +2587,7 @@ impl App {
 
     /// The root's structure flag, and framework History's: it is composed
     /// as a separate root, so its replaced controls are not the app's.
+    #[track_caller]
     pub(crate) fn take_composition_dirty(&mut self) -> bool {
         let root = self.take_root_structure_dirty();
         let history = self
@@ -2473,12 +2604,103 @@ impl App {
     /// call; a change they do not describe
     /// ([`crate::widget::StructureChange::Rebuild`]) leaves the rebuild that
     /// follows undescribed.
+    #[track_caller]
     pub(crate) fn take_root_structure_dirty(&mut self) -> bool {
         let change = self.root_widget.take_structure_change();
         if change == crate::widget::StructureChange::Rebuild {
             self.layout.rebuild_described = false;
+            #[cfg(test)]
+            {
+                self.layout.undescribed_by = Some(std::panic::Location::caller());
+            }
         }
-        change.rebuilds()
+        // A widget that replaced children without saying so is found here.
+        let stale = self.layout_maps_stale();
+        // A change the widgets carry out in place leaves every admitted
+        // pointer valid: the next layout pass remounts it.
+        if change == crate::widget::StructureChange::Children && !stale {
+            self.layout.remount = true;
+            self.layout.layout_dirty = true;
+            return false;
+        }
+        change.rebuilds() || stale
+    }
+
+    /// How many times the layout tree was rebuilt, and how many times widgets
+    /// changed it in place: a test asks whether a change kept the tree.
+    #[doc(hidden)]
+    pub fn layout_tree_changes(&self) -> (u64, u64) {
+        (self.layout.rebuilds, self.layout.remounts)
+    }
+
+    /// Carry out the change the root's widgets make in place
+    /// ([`crate::widget::StructureChange::Children`]) in the retained tree,
+    /// admitting what they mounted, and sync them. Returns `false` when it
+    /// could not be carried out in place, and the caller rebuilds the tree.
+    #[cfg(feature = "native")]
+    pub(crate) fn remount_in_place(&mut self) -> bool {
+        self.layout.remount = false;
+        if self.layout.structure_dirty
+            || self.layout.root_node.is_none()
+            || self.history.as_ref().is_some_and(|history| {
+                !history.live_interactive() || history.returning_live() || history.review_is_open()
+            })
+            || self.close_admission.dialog.is_some()
+        {
+            return false;
+        }
+        let _entry = self.enter_wake_scope();
+        // Components a widget replaced report their close here, as before a
+        // rebuild.
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
+        let mut remount = crate::widget::Remount::new(
+            &mut self.layout.taffy,
+            &self.theme,
+            &mut self.layout.node_map,
+        );
+        let applied = self.root_widget.remount_children(&mut remount);
+        let (mounted, unmounted) = remount.finish();
+        // The rows it mounted are checked against the live tree at once, as
+        // a build's are, so the next structure check finds the maps live.
+        self.admit_layout_maps();
+        // A change no widget carried out, or any other beside it, needs the
+        // whole tree.
+        if !applied
+            || self.root_widget.take_structure_change() != crate::widget::StructureChange::None
+        {
+            return false;
+        }
+        self.bindings.forget(&unmounted);
+        for (parent, child) in mounted {
+            // SAFETY: App exclusively owns this tree, its maps and widgets;
+            // the remount above admitted `child` into both.
+            if !unsafe {
+                self.bindings.admit_mounted(
+                    parent,
+                    child,
+                    &self.layout.taffy,
+                    &self.layout.node_map,
+                )
+            } {
+                return false;
+            }
+        }
+        self.layout.remounts = self.layout.remounts.wrapping_add(1);
+        self.layout.layout_dirty = true;
+        // Fresh controls have not seen where the pointer is.
+        self.input.pointer_replay.mark_unsettled();
+        // The mounted widgets are synced before they are measured, as a
+        // rebuild syncs its fresh ones; a sync that replaces delegates
+        // needs the whole tree after all.
+        self.root_widget.sync(&self.state.doc, &self.state.root);
+        self.needs_sync = false;
+        if self.take_composition_dirty() {
+            return false;
+        }
+        self.invalidate_widget_resource_cache();
+        true
     }
 
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
@@ -2528,6 +2750,8 @@ impl App {
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
         self.layout.rebuilds = self.layout.rebuilds.wrapping_add(1);
+        // The widgets carry out a change pending in place in this build.
+        self.layout.remount = false;
         // Fresh controls have not seen where the pointer is.
         self.input.pointer_replay.mark_unsettled();
         self.layout.taffy = TaffyTree::new();
@@ -2536,10 +2760,19 @@ impl App {
         );
         self.bindings.clear();
         self.layout.node_map.clear();
+        self.layout.adopted.clear();
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("rebuild.build");
         self.build_history_presentation();
+        #[cfg(test)]
+        drop(probe);
         self.layout.structure_dirty = false;
         self.layout.layout_dirty = true;
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("rebuild.focus");
         self.update_focusable_order();
+        #[cfg(test)]
+        drop(probe);
 
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
@@ -2590,13 +2823,18 @@ impl App {
 
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("rebuild.sync");
         self.root_widget.sync(&self.state.doc, &self.state.root);
+        #[cfg(test)]
+        drop(probe);
         self.needs_sync = false;
         // This rebuild's frame presents a durability the sync just took up;
         // it is not another structure change.
         let _ =
             crate::component_lifecycle::take_save_status_presentation(self.root_widget.as_mut());
-        if self.root_widget.take_structure_dirty() {
+        // A sync that replaced delegates without saying so is found too.
+        if self.root_widget.take_structure_dirty() | self.layout_maps_stale() {
             // Fresh sync can replace delegates. Rebuild before any map access.
             self.layout.request_rebuild();
             self.bindings.clear();
@@ -2815,7 +3053,6 @@ mod generic_floating_activity_tests {
 
     #[test]
     fn floating_activity_pumps_and_proxies_until_the_exact_primary_frame() {
-        // Case `generic_pip_activity_edge_dismisses_without_touching_native_surfaces`.
         {
             let previous = HashSet::from([
                 "browser.media-pip".to_string(),
@@ -2840,7 +3077,6 @@ mod generic_floating_activity_tests {
             );
         }
 
-        // Case `native_float_allocation_follows_the_complete_soft_chrome`.
         {
             let compact = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 292.0));
             let expanded = native_floating_logical_size(Rect::new(80.0, 40.0, 456.0, 352.0));
@@ -2848,7 +3084,6 @@ mod generic_floating_activity_tests {
             assert_eq!((expanded.width, expanded.height), (376.0, 312.0));
         }
 
-        // Case `ownership_proxy_waits_for_the_exact_primary_frame_to_present`.
         {
             let gates = HashMap::from([
                 ("waiting".to_string(), None),
@@ -2972,6 +3207,9 @@ mod number_input_layout_tests;
 #[cfg(test)]
 #[path = "app/history_tests.rs"]
 pub(crate) mod framework_history_tests;
+#[cfg(test)]
+#[path = "app/tree_record_tests.rs"]
+mod tree_record_tests;
 
 #[cfg(test)]
 #[path = "app/person_record_tests.rs"]
@@ -2985,6 +3223,10 @@ mod committed_document;
 #[path = "app/document_routes.rs"]
 mod document_routes;
 
+#[cfg(feature = "broker-transport")]
+#[path = "app/record_routes.rs"]
+pub mod record_routes;
+
 #[cfg(test)]
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
@@ -2996,6 +3238,10 @@ mod participant_invocation_tests;
 #[cfg(test)]
 #[path = "app/large_document_tests.rs"]
 mod large_document_tests;
+
+#[cfg(all(test, feature = "native"))]
+#[path = "app/scroll_cost_tests.rs"]
+mod scroll_cost_tests;
 
 #[cfg(test)]
 mod render_retry_tests {
@@ -3116,7 +3362,6 @@ mod legacy_owner_routing_tests {
 
     #[test]
     fn legacy_owner_routing_resolves_current_aliases_and_rejects_drained_errors() {
-        // Case `semantic_targets_resolve_current_legacy_aliases_across_disjoint_roots`.
         {
             let store = crate::record::RecordStore::in_memory();
             let first = crate::record::RecordCheckout::new(
@@ -3514,6 +3759,7 @@ mod private_continuity_route_tests {
 #[cfg(test)]
 pub(crate) mod ordinary_confirmation_tests {
     include!("app/deferred_invocation_tests.rs");
+    include!("app/state_tick_tests.rs");
     use super::*;
     use crate::history_mode::*;
     use std::{cell::RefCell, rc::Rc};
@@ -3527,7 +3773,8 @@ pub(crate) mod ordinary_confirmation_tests {
     impl Widget for Fixture {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources
+            dyn crate::resources::PublishesResources,
+            dyn crate::widget::ResourceOperations
         );
 
         crate::testing::delegate_widget_methods!(
@@ -3547,11 +3794,15 @@ pub(crate) mod ordinary_confirmation_tests {
         fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
             vec![self.child.as_mut()]
         }
+    }
+
+    impl crate::widget::ResourceOperations for Fixture {
         fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-            let mut handlers = self.child.resource_operation_handlers();
+            let mut handlers = crate::widget::resource_operation_handlers(&*self.child);
             handlers.insert("fixture.control".into());
             handlers
         }
+
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
@@ -3562,7 +3813,8 @@ pub(crate) mod ordinary_confirmation_tests {
                 .unscoped()
                 .filter(|request| request.type_id == "fixture.control")
             else {
-                return self.child.start_operation(
+                return crate::widget::start_operation(
+                    &mut *self.child,
                     op,
                     &mut crate::widget::Edits::lend(doc.document_mut()),
                     path,
@@ -3877,8 +4129,29 @@ pub(crate) mod ordinary_confirmation_tests {
         fn activate(&mut self, label: &str) {
             self.act(label, crate::a11y::Action::Activate);
         }
+        /// Type `value` into the field for the name, called by its label.
         fn value(&mut self, value: &str) {
-            self.act("Confirmation", crate::a11y::Action::SetValue(value.into()));
+            let label = match self {
+                Self::Native(app) => {
+                    app.build_a11y_tree_update(1.0)
+                        .nodes
+                        .into_iter()
+                        .find_map(|(_, node)| {
+                            node.label()
+                                .filter(|l| confirmation_field(l))
+                                .map(str::to_owned)
+                        })
+                }
+                Self::FrameHarness(driver) => {
+                    driver.a11y_nodes().into_iter().find_map(|(_, node)| {
+                        node.label()
+                            .filter(|l| confirmation_field(l))
+                            .map(str::to_owned)
+                    })
+                }
+            }
+            .expect("the field for the name is published");
+            self.act(&label, crate::a11y::Action::SetValue(value.into()));
         }
         fn frame(&mut self) {
             match self {
@@ -3919,11 +4192,39 @@ pub(crate) mod ordinary_confirmation_tests {
                     .and_then(|(_, node)| node.label().map(str::to_owned)),
             }
         }
+        /// Whether a node labelled `label` is published.
+        fn published(&mut self, label: &str) -> bool {
+            let nodes = match self {
+                Self::Native(app) => app.build_a11y_tree_update(1.0).nodes,
+                Self::FrameHarness(driver) => driver.a11y_nodes(),
+            };
+            nodes
+                .into_iter()
+                .any(|(_, node)| node.label() == Some(label))
+        }
+        /// Whether the published button labelled `label` is disabled.
+        fn disabled(&mut self, label: &str) -> bool {
+            let nodes = match self {
+                Self::Native(app) => app.build_a11y_tree_update(1.0).nodes,
+                Self::FrameHarness(driver) => driver.a11y_nodes(),
+            };
+            nodes
+                .into_iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .is_some_and(|(_, node)| node.is_disabled())
+        }
+        /// The button that goes ahead: Confirm for a question, the
+        /// action's own verb ("Run") where a name is typed.
         fn submit_id(&mut self) -> accesskit::NodeId {
-            match self {
-                Self::Native(app) => named(app, "Confirm"),
-                Self::FrameHarness(driver) => driver.a11y_node_named("Confirm").unwrap(),
-            }
+            let nodes = match self {
+                Self::Native(app) => app.build_a11y_tree_update(1.0).nodes,
+                Self::FrameHarness(driver) => driver.a11y_nodes(),
+            };
+            nodes
+                .into_iter()
+                .find(|(_, node)| matches!(node.label(), Some("Run fixture" | "Run")))
+                .map(|(id, _)| id)
+                .expect("the button that goes ahead is published")
         }
         fn stale(&mut self, id: accesskit::NodeId) {
             match self {
@@ -3977,11 +4278,11 @@ pub(crate) mod ordinary_confirmation_tests {
                 app.layout.taffy.total_node_count(),
                 app.root_widget.get_rect(),
             ));
-            let field = named(app, "Confirmation");
-            app.dispatch_a11y_action(
-                field,
-                &crate::a11y::Action::SetValue(format!("draft {index}")),
+            let event = crate::synthetic_input::key_input(
+                &Key::Character(format!("draft {index}").into()),
+                ElementState::Pressed,
             );
+            assert!(app.action_palette_handle_key(&event));
             app.controlled_local_idle_for_test();
             layout(app);
             samples.push((
@@ -3999,7 +4300,7 @@ pub(crate) mod ordinary_confirmation_tests {
     }
 
     #[test]
-    fn ordinary_confirmation_unsigned_history_stays_visible_without_moving_content() {
+    fn ordinary_confirmation_history_outcome_stays_visible_without_moving_content() {
         let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
         let mut host = Host::new(true, root);
         let Host::Native(app) = &mut host else {
@@ -4015,57 +4316,68 @@ pub(crate) mod ordinary_confirmation_tests {
         assert_eq!(app.document_sync_status(), None);
         assert_eq!(app.root_widget.get_rect(), original);
         // An edit actually recorded without an authenticated publication is
-        // unsigned history, and that is shown in the existing History bar.
+        // still the person's change, saved here: nothing to say.
         let input = app.begin_local_input_capture();
         crate::action_host::ActionHost::new()
             .try_dispatch(&mut app.state.doc, "fixture.edit", &FixtureEdit)
             .unwrap();
         drop(input);
         app.drain_local_input_capture();
+        assert_eq!(app.document_sync_status(), None);
+        // A change that definitively could not be saved to the history says
+        // so, in the existing History bar.
+        app.local_input_capture_failed("refused for the test");
         layout(app);
         let status = app
             .document_sync_status()
-            .expect("an unmanaged edit is unsigned history")
+            .expect("a change not saved to the history says so")
             .into_owned();
         assert_eq!(
             status,
-            crate::i18n::I18nManager::lookup_plain("history-local-action-unsigned")
+            crate::i18n::I18nManager::lookup_plain("history-local-action-not-saved")
         );
         let tree = app.build_a11y_tree_update(1.0);
         let (_, node) = tree
             .nodes
             .iter()
             .find(|(_, node)| node.label() == Some(status.as_str()))
-            .expect("unsigned history is published in the existing History bar");
+            .expect("the outcome is published in the existing History bar");
         assert!(node.bounds().is_some_and(|bounds| bounds.width() > 0.0));
         assert_eq!(app.root_widget.get_rect(), original);
         assert!(ledger.borrow().is_empty());
     }
 
-    fn published_confirmation_instruction(host: &mut Host) -> String {
+    /// Whether `label` names the labelled field for a name to type.
+    fn confirmation_field(label: &str) -> bool {
+        label.starts_with("Type ") && label.ends_with(" to confirm")
+    }
+    fn published_confirmation_instruction(host: &mut Host, question: &str) -> String {
         match host {
             Host::Native(app) => app
                 .build_a11y_tree_update(1.0)
                 .nodes
                 .into_iter()
-                .find(|(_, node)| node.label() == Some("Confirmation"))
-                .and_then(|(_, node)| node.description().map(str::to_owned))
-                .expect("native published field describes how to confirm"),
+                .find(|(_, node)| node.label() == Some(question))
+                .and_then(|(_, node)| node.label().map(str::to_owned))
+                .expect("native published dialog states the exact question"),
             Host::FrameHarness(driver) => {
-                fn access(node: &crate::a11y::AccessNode) -> Option<String> {
-                    if node.name.as_deref() == Some("Confirmation") {
-                        return node.description.clone();
+                fn access(node: &crate::a11y::AccessNode, question: &str) -> Option<String> {
+                    if node.name.as_deref() == Some(question) {
+                        return node.name.clone();
                     }
-                    node.children.iter().find_map(access)
+                    node.children.iter().find_map(|n| access(n, question))
                 }
-                fn widget(node: &crate::headless::InspectionNode) -> Option<String> {
+                fn widget(
+                    node: &crate::headless::InspectionNode,
+                    question: &str,
+                ) -> Option<String> {
                     node.semantics
                         .as_ref()
-                        .and_then(access)
-                        .or_else(|| node.children.iter().find_map(widget))
+                        .and_then(|n| access(n, question))
+                        .or_else(|| node.children.iter().find_map(|n| widget(n, question)))
                 }
-                widget(&driver.inspection().root)
-                    .expect("FrameHarness published field describes how to confirm")
+                widget(&driver.inspection().root, question)
+                    .expect("FrameHarness published dialog states the exact question")
             }
         }
     }
@@ -4076,19 +4388,35 @@ pub(crate) mod ordinary_confirmation_tests {
                 phrase: "APPLY EXACT".into(),
             },
         ] {
+            let phrase = matches!(policy, tilo_actions::ConfirmationPolicy::Phrase { .. });
             let (root, ledger, _) = fixture(policy);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
             assert!(ledger.borrow().is_empty());
-            let instruction = published_confirmation_instruction(&mut host);
-            let value = instruction
-                .strip_prefix("Type ")
-                .and_then(|s| s.strip_suffix(" to confirm"))
-                .filter(|s| !s.is_empty())
-                .expect("published instruction contains a discoverable confirmation phrase");
+            // The published question names the action; its button goes
+            // ahead. An irreversible action that names what it destroys asks
+            // for that name in a labelled field first, its verb disabled
+            // until then.
+            let question = if phrase {
+                "Run APPLY EXACT?"
+            } else {
+                "Run fixture?"
+            };
+            let instruction = published_confirmation_instruction(&mut host, question);
+            assert_eq!(instruction, question);
+            if phrase {
+                assert!(
+                    host.published("Type APPLY EXACT to confirm"),
+                    "the field for the name is labelled"
+                );
+                assert!(host.disabled("Run"), "not without the name");
+                assert!(ledger.borrow().is_empty(), "not without the name");
+                host.value("APPLY EXACT");
+            } else {
+                assert!(!host.published("Type APPLY EXACT to confirm"));
+            }
             let stale = host.submit_id();
-            host.value(value);
-            host.activate("Confirm");
+            host.activate(if phrase { "Run" } else { "Run fixture" });
             assert_eq!(
                 &*ledger.borrow(),
                 &[serde_json::json!({"payload":"original"})]
@@ -4122,11 +4450,20 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("Emit request");
                 assert!(ledger.borrow().is_empty());
                 let stale = host.submit_id();
-                host.value("wrong");
-                host.activate("Confirm");
-                assert!(ledger.borrow().is_empty());
-                host.value(phrase);
-                host.activate("Confirm");
+                // A question goes ahead with its button; a name to type goes
+                // ahead only once it is typed exactly, with the action's verb.
+                let submit = if phrase == "CONFIRM" {
+                    "Run fixture"
+                } else {
+                    "Run"
+                };
+                if phrase != "CONFIRM" {
+                    host.value("wrong");
+                    assert!(host.disabled(submit), "not the name it asks for");
+                    assert!(ledger.borrow().is_empty(), "not the name it asks for");
+                    host.value(phrase);
+                }
+                host.activate(submit);
                 assert_eq!(
                     &*ledger.borrow(),
                     &[serde_json::json!({"payload":"original"})]
@@ -4143,13 +4480,11 @@ pub(crate) mod ordinary_confirmation_tests {
             let mut host = Host::new(native, root);
             host.activate("Emit request");
             let stale = host.submit_id();
-            host.value("CONFIRM");
             host.activate("Cancel");
             host.activate("Emit request");
-            host.value("CONFIRM");
             host.stale(stale);
             assert!(ledger.borrow().is_empty());
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(ledger.borrow().len(), 1);
         }
     }
@@ -4247,8 +4582,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 if mutation == "revoked" {
                     host.revoke();
                 }
-                host.value("CONFIRM");
-                host.activate("Confirm");
+                host.activate("Run fixture");
                 assert!(ledger.borrow().is_empty(), "{native}:{mutation}");
             }
         }
@@ -4297,8 +4631,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     let mut host = Host::new(native, root);
                     host.activate("Emit request");
                     epoch.store(later, Ordering::SeqCst);
-                    host.value("CONFIRM");
-                    host.activate("Confirm");
+                    host.activate("Run fixture");
                     assert!(ledger.borrow().is_empty());
                 }
             }
@@ -4310,20 +4643,17 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            host.value("CONFIRM");
             let stale = host.submit_id();
             host.activate("History");
             assert!(ledger.borrow().is_empty());
             host.activate("History");
             assert!(ledger.borrow().is_empty());
             host.stale(stale);
-            host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert!(ledger.borrow().is_empty());
             host.activate("Cancel");
             host.activate("Emit request");
-            host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(ledger.borrow().len(), 1);
         }
     }
@@ -4340,7 +4670,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 .unwrap()
                 .insert("payload".into(), serde_json::json!("successor-selection"));
             host.key("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(
                 &*ledger.borrow(),
                 &[serde_json::json!({"payload":"original"})]
@@ -4372,8 +4702,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         }
                         _ => {}
                     }
-                    host.value("CONFIRM");
-                    host.activate("Confirm");
+                    host.activate("Run fixture");
                     assert_eq!(
                         ledger.borrow().len(),
                         usize::from(case == "positive"),
@@ -4403,7 +4732,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 model.sync(&automerge::AutoCommit::new(), &automerge::ROOT);
                 let mut host = Host::new(native, old_guard.managed(Box::new(model)));
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 let stale = host.submit_id();
                 changed.set(true);
                 host.frame();
@@ -4477,13 +4805,14 @@ pub(crate) mod ordinary_confirmation_tests {
                 layout(&mut app);
             }
             assert!(ledger.borrow().is_empty());
-            let named_action_target = named(&mut app, "Confirmation");
-            app.dispatch_a11y_action(
-                named_action_target,
-                &crate::a11y::Action::SetValue("CONFIRM".into()),
+            assert!(
+                app.action_palette_handle_key(&crate::synthetic_input::key_input(
+                    &Key::Character("CONFIRM".into()),
+                    ElementState::Pressed,
+                ))
             );
             layout(&mut app);
-            let named_action_target = named(&mut app, "Confirm");
+            let named_action_target = named(&mut app, "Run fixture");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
             layout(&mut app);
             assert_eq!(
@@ -4511,7 +4840,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 });
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 host.activate("History");
                 if changed {
                     resources.borrow_mut()[0].actions[0].type_mut().label =
@@ -4519,8 +4847,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 }
                 host.activate("History");
                 assert!(ledger.borrow().is_empty());
-                host.value("CONFIRM");
-                host.activate("Confirm");
+                host.activate("Run fixture");
                 assert_eq!(
                     ledger.borrow().len(),
                     usize::from(!changed),
@@ -4572,8 +4899,7 @@ pub(crate) mod ordinary_confirmation_tests {
             assert!(state(&mut host).peek_last_undo().is_none());
             let before = state(&mut host).doc.get_heads();
             host.activate("Emit request");
-            host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             let author = match &host {
                 Host::Native(app) => app.collaboration.local_author.clone(),
                 Host::FrameHarness(_) => crate::permissions::UserId("fixture".into()),
@@ -4610,12 +4936,12 @@ pub(crate) mod ordinary_confirmation_tests {
         }
     }
     #[test]
-    fn ordinary_confirmation_modal_focus_tracks_actual_field() {
+    fn ordinary_confirmation_modal_focus_tracks_its_action_button() {
         for native in [true, false] {
             let (root, _, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+            assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
         }
     }
     #[test]
@@ -4625,8 +4951,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                host.value("CONFIRM");
-                let label = if cancel { "Cancel" } else { "Confirm" };
+                let label = if cancel { "Cancel" } else { "Run fixture" };
                 let nodes = match &mut host {
                     Host::Native(app) => app.build_a11y_tree_update(1.0).nodes,
                     Host::FrameHarness(driver) => driver.a11y_nodes(),
@@ -4665,17 +4990,17 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            host.value("CONFIRM");
-            for key in [NamedKey::Tab, NamedKey::Tab] {
-                let event =
-                    crate::synthetic_input::key_input(&Key::Named(key), ElementState::Pressed);
-                match &mut host {
-                    Host::Native(app) => {
-                        assert!(app.action_palette_handle_event(&event, 1.0));
-                        layout(app)
-                    }
-                    Host::FrameHarness(driver) => driver.send(&event),
+            // The question opens on Confirm; one Tab reaches Cancel.
+            let event = crate::synthetic_input::key_input(
+                &Key::Named(NamedKey::Tab),
+                ElementState::Pressed,
+            );
+            match &mut host {
+                Host::Native(app) => {
+                    assert!(app.action_palette_handle_event(&event, 1.0));
+                    layout(app)
                 }
+                Host::FrameHarness(driver) => driver.send(&event),
             }
             assert_eq!(host.focused_label().as_deref(), Some("Cancel"));
             let event = crate::synthetic_input::key_input(
@@ -4718,7 +5043,6 @@ pub(crate) mod ordinary_confirmation_tests {
                 };
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
-                host.value("CONFIRM");
                 let stale = host.submit_id();
                 host.activate("History");
                 assert_eq!(
@@ -4738,10 +5062,11 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("History");
                 assert!(ledger.borrow().is_empty());
                 host.stale(stale);
-                host.activate("Confirm");
-                assert!(ledger.borrow().is_empty(), "old typed evidence was cleared");
-                host.value("CONFIRM");
-                host.activate("Confirm");
+                // Back from History the question is asked again; going ahead
+                // runs the original request once, however Confirm is reached.
+                if ledger.borrow().is_empty() {
+                    host.activate("Run fixture");
+                }
                 assert_eq!(
                     &*ledger.borrow(),
                     &[serde_json::json!({"payload":"original"})]
@@ -4751,8 +5076,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 fresh = fresh.with_continuation_identity(|_| None);
                 resources.borrow_mut()[0].actions[0] = fresh;
                 host.activate("Emit request");
-                host.value("CONFIRM");
-                host.activate("Confirm");
+                host.activate("Run fixture");
                 assert_eq!(
                     &*ledger.borrow(),
                     &[
@@ -4782,8 +5106,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     handler: ContinuationKey::new("later", [b"handler"]),
                 })
             });
-            host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(ledger.borrow().len(), 1);
         }
     }
@@ -4795,7 +5118,7 @@ pub(crate) mod ordinary_confirmation_tests {
             host.act("Emit request", crate::a11y::Action::Focus);
             assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
             host.activate("Emit request");
-            assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+            assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
             if let Host::Native(app) = &host {
                 assert!(app.actions.ordinary_palette_return_focus.is_some());
             }
@@ -4814,7 +5137,7 @@ pub(crate) mod ordinary_confirmation_tests {
         host.act("Emit request", crate::a11y::Action::Focus);
         assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
         host.activate("Emit request");
-        assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+        assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
         let Host::Native(app) = &mut host else {
             unreachable!()
         };
@@ -4927,7 +5250,6 @@ pub(crate) mod ordinary_confirmation_tests {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(true, root);
             host.activate("Emit request");
-            host.value("CONFIRM");
             let Host::Native(app) = &mut host else {
                 unreachable!()
             };
@@ -4937,7 +5259,7 @@ pub(crate) mod ordinary_confirmation_tests {
             } else {
                 old.close();
             }
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert!(ledger.borrow().is_empty());
         }
     }
@@ -4951,8 +5273,8 @@ pub(crate) mod ordinary_confirmation_tests {
         app.controlled_local_idle_for_test();
         layout(&mut app);
         assert!(ledger.borrow().is_empty());
-        named(&mut app, "Confirmation");
-        named(&mut app, "Confirm");
+        named(&mut app, "Run fixture?");
+        named(&mut app, "Run fixture");
         named(&mut app, "Cancel");
     }
     #[test]
@@ -4972,10 +5294,10 @@ pub(crate) mod ordinary_confirmation_tests {
             .unwrap();
         assert!(ledger.borrow().is_empty());
         assert!(
-            driver.a11y_node_named("Confirmation").is_some(),
-            "actual palette field must be published"
+            driver.a11y_node_named("Run fixture?").is_some(),
+            "the actual dialog question must be published"
         );
-        assert!(driver.a11y_node_named("Confirm").is_some());
+        assert!(driver.a11y_node_named("Run fixture").is_some());
         assert!(driver.a11y_node_named("Cancel").is_some());
     }
 }

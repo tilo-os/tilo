@@ -1,4 +1,6 @@
 agent-provider-no-authority = Only an administrator of this computer can add or change model providers.
+agent-provider-admin-only-title = Model providers are set up by an administrator
+agent-provider-admin-only-message = Hosted AI models come from providers such as Anthropic or an OpenAI-compatible service. Only an administrator of this computer can connect one. Once they do, its models work in every app that uses AI.
 agent-fit-excellent = Excellent fit
 agent-fit-good = Good fit
 agent-fit-tight = Will run, with limits
@@ -65,8 +67,24 @@ agent-model-storage = Storage
 agent-progress-downloading = Downloading { $name }
 agent-progress-installing = Installing { $name }
 agent-download-progress = { $done } of { $total } downloaded. You can leave this page.
-agent-add-anthropic = Add Anthropic
-agent-add-compatible = Add compatible API
+agent-add-provider = Add provider
+agent-add-provider-placeholder = Choose a provider
+agent-preset-unknown = That provider can't be added here.
+agent-test-connection = Test connection
+agent-test-connected = { $count ->
+        [one] Connected. The provider offers one model.
+       *[other] Connected. The provider offers { $count } models.
+    }
+agent-test-no-models = Connected, but the provider lists no models. Type the model ID above.
+agent-test-no-list = This provider doesn't list its models. Check the URL, or type the model ID above.
+agent-test-key-refused = The provider refused the key or sign-in. Check it, then test again.
+agent-test-unreachable = Can't reach the provider. Check the URL and your connection.
+agent-test-rate-limited = The provider is limiting requests. Wait a moment, then test again.
+agent-test-no-credits = The provider's account has no credits left.
+agent-test-failed = The provider didn't answer as expected. Check the URL and the protocol.
+agent-choose-model = Model
+agent-choose-model-placeholder = Choose a model
+agent-model-invalid = Enter a model ID on one line.
 agent-placeholder-name = Provider name
 agent-placeholder-url = https://provider.example/v1
 agent-placeholder-model = Model ID
@@ -161,3 +179,73 @@ agent-ready-running-caption = The model is ready and running on this device.
 agent-ready-stopped-caption = The model is downloaded. Start it when needed.
 agent-rec-waiting-caption = A recommendation will appear when the model service is available.
 agent-sign-in-custody = Sign-in credentials are managed by system accounts, not an API key.
+agent-models-agents-title = Agents
+agent-models-agents-caption = These agents plan with a model of their own; the rest use the default. Choose an agent's model in its workspace settings.
+agent-model-of-provider = { $model } from { $provider }
+agent-model-unavailable = Its provider is switched off: it plans with no model until you switch it on or choose another.
+agent-model-use-default = Use the default
+agent-model-choice-incomplete = Name both the provider and its model, or neither to use the default.
+
+agent-hub-title = Models from Hugging Face
+agent-hub-caption = Search Hugging Face with the window's search, open any model by its name or link, or add a GGUF file of your own. A model is data: it runs in Tilo's signed runtimes on this device, and its license is shown before anything downloads.
+agent-hub-format = Format
+agent-hub-reference = Add by name or link
+agent-hub-reference-hint = owner/model or a huggingface.co link
+agent-hub-show = Show
+agent-hub-file = Add a GGUF model file from this device. You choose it, and the model store keeps its own copy.
+agent-hub-file-choose = Choose a model file
+agent-hub-file-filter = GGUF models
+agent-hub-file-chooser-gone = The file chooser closed without answering.
+agent-hub-add-file = Add file
+agent-hub-working = Asking Hugging Face…
+agent-hub-search-error = Can't search Hugging Face: { $error }
+agent-hub-no-results = No models match.
+agent-hub-result-downloads = { $downloads ->
+    [one] { $downloads } download
+   *[other] { $downloads } downloads
+}
+agent-hub-result-likes = { $likes ->
+    [one] { $likes } like
+   *[other] { $likes } likes
+}
+agent-hub-result-license = License: { $license }
+agent-hub-gated = Its terms must be accepted on Hugging Face first
+agent-hub-model-title = From Hugging Face
+agent-hub-model-error = Can't read the model from Hugging Face: { $error }
+agent-hub-gated-caption = Its owner asks you to accept the model's terms on Hugging Face. Accept them there with the account signed in or whose token is stored on this device.
+agent-hub-gated-token-caption = Its owner asks you to accept the model's terms on Hugging Face. Accept them there, then sign in to Hugging Face below.
+agent-hub-open-page = Open model page
+agent-hub-no-variants = This model has no GGUF or safetensors files Tilo can run.
+agent-hub-no-runtime = No signed runtime on this device runs this format yet. It can be downloaded now and started once one is available.
+agent-hub-download = Download
+agent-hub-variant = Variant
+agent-hub-format-gguf = GGUF for llama.cpp
+agent-hub-format-shards = GGUF in { $count } parts for llama.cpp
+agent-hub-format-safetensors = safetensors for vLLM
+agent-hub-fit-accelerator = Fits in accelerator memory
+agent-hub-fit-accelerator-and-memory = Shares accelerator and system memory
+agent-hub-fit-memory = Runs on the processor from system memory
+agent-hub-fit-too-large = Needs about { $size } of memory
+agent-hub-fit-processor-too-small = Running on the processor needs 8 GB of memory and four threads
+agent-hub-fit-no-storage = Not enough free storage
+agent-hub-token-title = Hugging Face token
+agent-hub-token-caption = Gated models download with your Hugging Face account. Sign in, or paste an access token; either stays in this device's vault and is sent only to huggingface.co.
+agent-hub-token-paste-caption = Or paste an access token from your Hugging Face settings.
+agent-hub-sign-in-code = Sign in with a code
+agent-hub-sign-out = Sign out
+agent-hub-signed-in-as = Signed in to Hugging Face as { $account }.
+agent-hub-sign-in-ended = The Hugging Face sign-in of { $account } has ended. Sign in again.
+agent-hub-token = Access token
+agent-hub-token-hint = hf_…
+agent-hub-token-save = Save token
+agent-hub-token-remove = Remove token
+agent-hub-token-stored = A token is stored on this device.
+agent-hub-token-none = No token is stored on this device.
+agent-hub-token-read-error = Can't tell whether a token is stored: { $error }
+agent-hub-token-empty = Enter a token first.
+agent-hub-token-saved = Hugging Face token saved on this device.
+agent-hub-token-removed = Hugging Face token removed from this device.
+agent-hub-changed = The model changed since it was shown; show it again.
+agent-hub-query-empty = Enter what to search for.
+agent-hub-format-unknown = Choose gguf or safetensors.
+agent-hub-unavailable = The local model service can't do this here.

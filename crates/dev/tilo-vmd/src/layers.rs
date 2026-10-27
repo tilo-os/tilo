@@ -375,7 +375,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn layer_imports_are_content_addressed_and_atomic() {
-        // Phase `labeler_sees_the_staged_tree_before_publication`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = LayerStore::new(root.path());
@@ -411,7 +410,6 @@ mod tests {
             assert_eq!(store.list().unwrap().len(), 1);
             assert_eq!(store.list().unwrap()[0].hash, hash);
         }
-        // Phase `identical_content_is_one_layer`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = LayerStore::new(root.path());
@@ -445,7 +443,6 @@ mod tests {
                 0
             );
         }
-        // Phase `different_content_different_hash`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = LayerStore::new(root.path());
@@ -473,7 +470,6 @@ mod tests {
             assert_ne!(a, b);
             assert_ne!(a, c);
         }
-        // Phase `rejected_import_leaves_nothing`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = LayerStore::new(root.path());
@@ -500,7 +496,6 @@ mod tests {
             );
             assert_eq!(fs::read_dir(root.path().join("layers")).unwrap().count(), 0);
         }
-        // Phase `directory_import_matches_tar_import`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = LayerStore::new(root.path());
@@ -541,7 +536,6 @@ mod tests {
 
     #[test]
     fn layer_lookup_listing_and_collection() {
-        // Phase `collect_removes_only_old_unreferenced_layers`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = LayerStore::new(root.path());
@@ -581,7 +575,6 @@ mod tests {
             assert!(store.require(&drop).is_err());
             assert!(store.require(&keep).is_ok());
         }
-        // Phase `files_lists_what_the_slot_sees_with_digests`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = LayerStore::new(root.path());
@@ -602,7 +595,6 @@ mod tests {
             assert!(files[0].executable);
             assert!(store.files("0".repeat(64).as_str()).is_err());
         }
-        // Phase `unknown_hash_is_not_found`.
         {
             let root = tempfile::tempdir().unwrap();
             let store = LayerStore::new(root.path());

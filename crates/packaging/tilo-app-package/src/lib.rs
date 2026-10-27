@@ -62,7 +62,7 @@ pub use blobs::{
     BlobFetcher, BlobHash, BlobSink, BlobSource, Collection, CollectionDecodeError, DiscardBlobs,
     HashingReader, OpenBlob, PackageFetcher,
 };
-pub use id::{Kind, PackageId, ParsePackageIdError};
+pub use id::{Kind, LANGUAGE_PACK_ID_PREFIX, PackageId, ParsePackageIdError, language_pack_locale};
 pub use image::{
     ImageError, ImageSpec, TREE_FILE, TreeSpec, image_manifest, seal_image, seal_image_for,
 };
@@ -138,12 +138,19 @@ pub const MAX_APP_PAYLOAD_ENTRIES: usize = 4096;
 /// their payload hosted as chunked objects (see [`chunks`]).
 pub const MAX_RUNTIME_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 
+/// Distinct payload bytes a `kind = "language-pack"` package may reference:
+/// one language's catalogues for every app, text.
+pub const MAX_LANGUAGE_PACK_PAYLOAD_BYTES: u64 = 16 * 1024 * 1024;
+
 /// The ceiling on the distinct payload bytes the package `manifest`
 /// describes may reference: its [`app_size_limit`] for an application,
 /// [`MAX_RUNTIME_PAYLOAD_BYTES`] for a runtime, `None` for other kinds.
 pub fn payload_size_limit(manifest: &Manifest) -> Option<u64> {
     if manifest.package.kind == Kind::Runtime {
         return Some(MAX_RUNTIME_PAYLOAD_BYTES);
+    }
+    if manifest.package.kind == Kind::LanguagePack {
+        return Some(MAX_LANGUAGE_PACK_PAYLOAD_BYTES);
     }
     app_size_limit(manifest)
 }

@@ -6,6 +6,7 @@ use cosmic_text::{
 };
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
 use vello::peniko::{Color, Fill, FontData as Font, StyleRef};
@@ -14,6 +15,7 @@ use crate::text_break::{LineBreakKind, OffsetMap, line_break_opportunities};
 
 mod cache;
 pub use cache::PreparedText;
+mod row_ink;
 use cache::{CacheKey, CacheQuery, TextCache};
 use tilo_lock::RwLockRecover as _;
 
@@ -66,10 +68,23 @@ fn browser_assets_for_missing(character: char) -> &'static [&'static str] {
                 0x2300..=0x26FF | 0x2700..=0x27BF | 0x2B00..=0x2BFF | 0x1F000..=0x1F02F
             ) {
                 &["NotoSansSymbols[wght].ttf", "NotoSansSymbols2-Regular.ttf"]
+            } else if matches!(
+                code,
+                0x02B0..=0x036F | 0x1DC0..=0x1DFF | 0x2070..=0x209F | 0x2100..=0x218F
+            ) {
+                // Modifier letters, the combining marks Latin, Greek and
+                // Cyrillic take, super- and subscripts, letterlike symbols
+                // and number forms.
+                &["NotoSans[wght].ttf"]
             } else {
                 &[]
             }
         }
+        // The UI faces cover the Latin, Greek and Cyrillic text people
+        // write; Noto Sans, fetched the first time text needs it, has the
+        // rest of those scripts (phonetic letters, archaic Greek and
+        // Cyrillic, spacing modifiers).
+        Script::Latin | Script::Greek | Script::Cyrillic => &["NotoSans[wght].ttf"],
         _ => &[],
     }
 }
@@ -198,6 +213,23 @@ fn share_host_font_database(font_system: &FontSystem) {
 /// machine has them installed. Only when no catalog loads does it fall back
 /// to the system's fonts alone with the generic families pinned to the
 /// product names.
+/// Why a capture in this process would set text in the host's faces instead of
+/// the product's, when it would: no root holds this build's catalog. `None`
+/// when the catalog is there, when a host supplied its own database (the
+/// compositor's renderers), and under test. A capture that cannot set text in
+/// the product's faces must fail rather than produce frames that look almost
+/// right: every overflow, truncation and hinting judgement made from them is
+/// about a font the product does not ship.
+#[cfg(all(feature = "native", not(test)))]
+pub fn font_catalog_problem() -> Option<String> {
+    if HOST_FONT_DATABASE.read_recover().is_some() {
+        return None;
+    }
+    crate::font_catalog::catalog_root()
+        .is_none()
+        .then(crate::font_catalog::catalog_missing_message)
+}
+
 #[cfg(not(test))]
 pub fn configured_font_system() -> FontSystem {
     let host = HOST_FONT_DATABASE.read_recover().clone();
@@ -222,7 +254,10 @@ pub fn configured_font_system() -> FontSystem {
         database.set_sans_serif_family(UI_SANS_FAMILY);
         database.set_serif_family(UI_SERIF_FAMILY);
         database.set_monospace_family(UI_MONOSPACE_FAMILY);
-        (font_system.locale().to_owned(), font_system.db().clone())
+        (
+            font_system.locale().to_owned(),
+            crate::font_catalog::mapped(font_system.db()),
+        )
     });
     FontSystem::new_with_locale_and_db(locale.clone(), database.clone())
 }
@@ -1288,11 +1323,6 @@ pub struct TextFlowRegion {
 
 impl TextFlowRegion {
     /// Build a closed polygon. Points are local to the Text widget's origin.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for fewer than three points, non-finite coordinates,
-    /// or a polygon whose bounding box has no area.
     pub fn polygon(points: impl IntoIterator<Item = Point>) -> Result<Self, TextFlowRegionError> {
         use std::hash::{Hash, Hasher};
 
@@ -1372,7 +1402,7 @@ impl TextFlowRegion {
                 crossings.push(first.x + t * (second.x - first.x));
             }
         }
-        crossings.sort_by(f64::total_cmp);
+        crossings.compact_sort_by(f64::total_cmp);
         crossings
             .chunks_exact(2)
             .filter_map(|pair| {
@@ -1865,6 +1895,47 @@ impl skrifa::outline::OutlinePen for InkBoundsPen {
     fn close(&mut self) {}
 }
 
+/// The identity of the fonts a renderer shapes with
+/// ([`TextRenderer::font_epoch`]).
+#[derive(Clone, Debug)]
+pub struct FontEpoch(Arc<()>);
+
+impl PartialEq for FontEpoch {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for FontEpoch {}
+
+/// A renderer's fonts, locale, text scale and letter forms, to send to a
+/// thread that measures text the same way ([`TextRenderer::measuring_seed`]).
+pub struct MeasuringSeed {
+    locale: String,
+    db: cosmic_text::fontdb::Database,
+    text_scale: f32,
+    distinct_letters: bool,
+    epoch: FontEpoch,
+}
+
+impl MeasuringSeed {
+    /// The fonts of the renderer this came from.
+    pub fn epoch(&self) -> &FontEpoch {
+        &self.epoch
+    }
+
+    /// A renderer of its own for the thread this is called on.
+    pub fn into_renderer(self) -> TextRenderer {
+        let mut renderer = TextRenderer::with_font_system(FontSystem::new_with_locale_and_db(
+            self.locale,
+            self.db,
+        ));
+        renderer.set_text_scale(self.text_scale);
+        renderer.set_distinct_letters(self.distinct_letters);
+        renderer
+    }
+}
+
 pub struct TextRenderer {
     pub font_system: FontSystem,
     pub swash_cache: SwashCache,
@@ -2046,13 +2117,16 @@ impl TextRenderer {
     /// cached metric/layout identity before another frame can be drawn.
     /// # Errors
     /// Propagates canonical manifest, hash, size, and face validation errors.
+    /// `sha256` is the page's digest of `bytes`
+    /// ([`crate::font_catalog::FontCatalog::install_browser_asset`]).
     pub fn install_browser_font(
         &mut self,
         name: &str,
         bytes: Vec<u8>,
+        sha256: &str,
     ) -> Result<bool, crate::font_catalog::FontCatalogError> {
         let catalog = crate::font_catalog::FontCatalog::product("", self.font_system.locale());
-        let changed = catalog.install_browser_asset(&mut self.font_system, name, bytes)?;
+        let changed = catalog.install_browser_asset(&mut self.font_system, name, bytes, sha256)?;
         self.browser_font_assets.insert(name.to_owned());
         if changed {
             share_host_font_database(&self.font_system);
@@ -2181,6 +2255,25 @@ impl TextRenderer {
         (self.hits, self.misses)
     }
 
+    /// The fonts this renderer shapes with, as an identity that changes
+    /// whenever they do.
+    pub fn font_epoch(&self) -> FontEpoch {
+        FontEpoch(Arc::clone(&self.layout_epoch))
+    }
+
+    /// What a renderer on another thread needs to measure text exactly as
+    /// this one does. Cheap here: the fonts are shared, and the worker builds
+    /// its font system ([`MeasuringSeed::into_renderer`]).
+    pub fn measuring_seed(&self) -> MeasuringSeed {
+        MeasuringSeed {
+            locale: self.font_system.locale().to_owned(),
+            db: self.font_system.db().clone(),
+            text_scale: self.text_scale,
+            distinct_letters: self.distinct_letters,
+            epoch: self.font_epoch(),
+        }
+    }
+
     pub(crate) fn layout_epoch(&self) -> &Arc<()> {
         self.sync_distinct_letters();
         &self.layout_epoch
@@ -2280,7 +2373,9 @@ impl TextRenderer {
     ) -> (f32, f32) {
         let scaled_style = self.scaled_style(input.style);
         let style = &scaled_style;
-        self.note_browser_explicit_family(style);
+        if let Some(label) = self.emoji_label(input.text, max_width, style) {
+            return (label.width(), label.height());
+        }
         let max_width = self.collapse_unused_max_width(input, max_width, style, warm_shape);
         self.measure_style_cached(input, max_width, style, warm_shape)
     }
@@ -2354,7 +2449,6 @@ impl TextRenderer {
             }
             return cached;
         }
-        // Paint may already have shaped this string under the same key.
         let shape_key = input.key(max_width, self.generation, self.text_scale);
         if let Some(shaped) = self
             .shape_cache
@@ -2778,6 +2872,10 @@ impl TextRenderer {
     ) {
         let scaled_style = self.scaled_style(input.style);
         let style = &scaled_style;
+        if let Some(label) = self.emoji_label(input.text, max_width, style) {
+            self.draw_rich(scene, &label, transform, color);
+            return;
+        }
         let max_width = self.collapse_unused_max_width(input, max_width, style, true);
         let runs = self.shaped_query(input, max_width, style);
         self.paint_runs(scene, &runs, color, transform);
@@ -2791,6 +2889,11 @@ impl TextRenderer {
         max_width: Option<f32>,
         style: &TextStyle,
     ) -> PreparedBuffer {
+        // The faces text needs are noted where it is shaped, not on every
+        // measure: a cached measure or shape was noted when this generation
+        // shaped it, and a font installed or failed starts a new one. Asking
+        // the catalog on every measure was a third of laying out a page of
+        // cards.
         self.note_browser_explicit_family(style);
         let line_height = style.line_height_px();
         let metrics = Metrics::new(style.size, line_height);
@@ -2917,6 +3020,9 @@ impl TextRenderer {
 
     pub(crate) fn note_browser_rich_layout(&mut self, layout: &crate::richtext::RichTextLayout) {
         self.note_browser_font_demands(&layout.buffer);
+        for face in &layout.faces {
+            self.note_browser_explicit_family(face);
+        }
     }
 
     pub(crate) fn browser_color_emoji_installed(&self) -> bool {
@@ -3040,7 +3146,6 @@ impl TextRenderer {
         style: &TextStyle,
     ) -> Arc<Vec<GlyphRun>> {
         let text = input.text;
-        self.note_browser_explicit_family(style);
         let key = input.key(max_width, self.generation, self.text_scale);
         if let Some(shaped) = self.shape_cache.get(&key).or_else(|| key.uncached_shape()) {
             self.shape_hits = self.shape_hits.saturating_add(1);
@@ -3265,8 +3370,10 @@ impl TextRenderer {
 
         // Glyphs batch by face, shaped weight, color, size and baseline shift.
         for run in layout.buffer.layout_runs() {
-            self.draw_rich_run(scene, &run, layout, transform, color, None);
+            let paint = RunPaint { color, paint: None };
+            self.draw_rich_run(scene, &run, layout, transform, paint, None);
         }
+        layout.paint_inline_emoji(scene, transform);
 
         draw_rich_underlines(scene, layout, transform, color);
         draw_rich_strikes(scene, layout, transform, color);
@@ -3283,15 +3390,77 @@ impl TextRenderer {
         color: Color,
         clip: Rect,
     ) {
+        self.draw_rich_in_clip_painted(scene, layout, transform, color, clip, None);
+    }
+
+    /// [`Self::draw_rich_in_clip`], each glyph in the colour `paint` gives
+    /// the byte it starts at, where it gives one: syntax colours applied as
+    /// the visible rows paint, so the paragraph is shaped without them and
+    /// an edit reshapes only the lines it touched.
+    pub fn draw_rich_in_clip_painted(
+        &mut self,
+        scene: &mut Scene,
+        layout: &crate::richtext::RichTextLayout,
+        transform: Affine,
+        color: Color,
+        clip: Rect,
+        paint: Option<&dyn Fn(usize) -> Option<Color>>,
+    ) {
+        self.draw_rich_in_clip_painted_leaving_out(
+            scene,
+            layout,
+            transform,
+            color,
+            (clip, &[]),
+            paint,
+        );
+    }
+
+    /// [`Self::draw_rich_in_clip_painted`] inside `clip`, but for the rows
+    /// of the logical lines `leave_out` (ascending), whose pixels the frame
+    /// keeps ([`crate::draw_cull`]).
+    pub(crate) fn draw_rich_in_clip_painted_leaving_out(
+        &mut self,
+        scene: &mut Scene,
+        layout: &crate::richtext::RichTextLayout,
+        transform: Affine,
+        color: Color,
+        (clip, leave_out): (Rect, &[usize]),
+        paint: Option<&dyn Fn(usize) -> Option<Color>>,
+    ) {
         draw_rich_backgrounds(scene, layout, transform);
-        for run in layout.buffer.layout_runs() {
+        // Every row whose ink can reach the clip, however far it hangs past
+        // its band; the glyph batches whose own ink misses it drop below.
+        let reach = self.rich_ink_reach(layout);
+        let rows: Box<dyn Iterator<Item = cosmic_text::LayoutRun<'_>>> =
+            match clip_in_layout(transform, clip) {
+                Some((top, bottom, pad)) => Box::new(layout.rows_reaching(
+                    top,
+                    bottom,
+                    crate::richtext::InkReach {
+                        above: reach.above + pad,
+                        below: reach.below + pad,
+                    },
+                )),
+                None => Box::new(layout.buffer.layout_runs()),
+            };
+        for run in rows {
             // A long block repeats this for every page slice it spans; skip
-            // whole visual lines before any per-glyph work or glyph encoding.
-            if rich_run_outside_clip(&run, transform, clip) {
+            // whole visual lines before any per-glyph work or glyph encoding,
+            // and stop at the first below the clip: rows run downward.
+            if rich_run_outside_clip(&run, transform, clip, reach) {
+                if rich_run_below_clip(&run, transform, clip, reach) {
+                    break;
+                }
                 continue;
             }
-            self.draw_rich_run(scene, &run, layout, transform, color, Some(clip));
+            if leave_out.binary_search(&run.line_i).is_ok() {
+                continue;
+            }
+            let paint_run = RunPaint { color, paint };
+            self.draw_rich_run(scene, &run, layout, transform, paint_run, Some(clip));
         }
+        layout.paint_inline_emoji(scene, transform);
         draw_rich_underlines(scene, layout, transform, color);
         draw_rich_strikes(scene, layout, transform, color);
     }
@@ -3304,11 +3473,11 @@ impl TextRenderer {
         run: &cosmic_text::LayoutRun<'_>,
         layout: &crate::richtext::RichTextLayout,
         transform: Affine,
-        color: Color,
+        paint: RunPaint<'_>,
         clip: Option<Rect>,
     ) {
-        if !self.draw_uniform_rich_run(scene, run, layout, transform, color, clip) {
-            self.draw_rich_run_copied(scene, run, layout, transform, color, clip);
+        if !self.draw_uniform_rich_run(scene, run, layout, transform, paint, clip) {
+            self.draw_rich_run_copied(scene, run, layout, transform, paint, clip);
         }
     }
 
@@ -3319,15 +3488,28 @@ impl TextRenderer {
         run: &cosmic_text::LayoutRun<'_>,
         layout: &crate::richtext::RichTextLayout,
         transform: Affine,
-        color: Color,
+        paint: RunPaint<'_>,
         clip: Option<Rect>,
     ) -> bool {
-        if layout.hanging_punctuation.first || layout.hanging_punctuation.last {
+        // An inline emoji's glyphs are left out for its picture.
+        if layout.hanging_punctuation.first
+            || layout.hanging_punctuation.last
+            || !layout.inline_emoji.is_empty()
+        {
             return false;
         }
         let Some(first) = run.glyphs.first() else {
             return false;
         };
+        let first_color = paint.of(layout, run.line_i, first);
+        if paint.paint.is_some()
+            && run
+                .glyphs
+                .iter()
+                .any(|glyph| paint.of(layout, run.line_i, glyph) != first_color)
+        {
+            return false;
+        }
         let shift = layout.baseline_at(layout.glyph_global_byte(run.line_i, first.start));
         #[allow(
             clippy::float_cmp,
@@ -3348,7 +3530,7 @@ impl TextRenderer {
             face_id: first.font_id,
             glyphs: run.glyphs,
             size: first.font_size,
-            color: resolve_rich_color(color, first.color_opt),
+            color: first_color,
             line_y: run.line_y + shift.offset(first.font_size),
             variations: &layout.font_variations,
         };
@@ -3362,16 +3544,17 @@ impl TextRenderer {
         run: &cosmic_text::LayoutRun<'_>,
         layout: &crate::richtext::RichTextLayout,
         transform: Affine,
-        color: Color,
+        paint: RunPaint<'_>,
         clip: Option<Rect>,
     ) {
+        let color = paint.color;
         use crate::richtext::BaselineShift;
         let exercised_hyphen = run
             .glyphs
             .last()
             .filter(|glyph| run.text.get(glyph.start..glyph.end) == Some("\u{ad}"));
         let mut face: Option<cosmic_text::fontdb::ID> = None;
-        let mut cur_color: Option<cosmic_text::Color> = None;
+        let mut cur_color: Option<Color> = None;
         let mut cur_weight: Option<Weight> = None;
         let mut cur_shift = BaselineShift::None;
         // Avoid repeated growth for ordinary lines without reserving an
@@ -3385,11 +3568,15 @@ impl TextRenderer {
                 continue;
             }
             let global_byte = layout.glyph_global_byte(run.line_i, g.start);
+            if layout.in_inline_emoji(global_byte) {
+                continue;
+            }
             let g_shift = layout.baseline_at(global_byte);
+            let g_color = paint.at(global_byte, g);
             // Glyphs batch by face, shaped weight, color, size and baseline shift.
             let changed = face != Some(g.font_id)
                 || cur_weight != Some(g.font_weight)
-                || cur_color != g.color_opt
+                || cur_color != Some(g_color)
                 || (g.font_size - batch_size).abs() > f32::EPSILON
                 || cur_shift != g_shift;
             if let Some(face_id) = face
@@ -3401,7 +3588,7 @@ impl TextRenderer {
                     face_id,
                     glyphs: &batch,
                     size: batch_size,
-                    color: resolve_rich_color(color, cur_color),
+                    color: cur_color.unwrap_or(color),
                     line_y: run.line_y + dy,
                     variations: &layout.font_variations,
                 };
@@ -3410,7 +3597,7 @@ impl TextRenderer {
             }
             face = Some(g.font_id);
             cur_weight = Some(g.font_weight);
-            cur_color = g.color_opt;
+            cur_color = Some(g_color);
             cur_shift = g_shift;
             size = g.font_size;
             batch_size = g.font_size;
@@ -3426,7 +3613,7 @@ impl TextRenderer {
                 face_id: f,
                 glyphs: &batch,
                 size,
-                color: resolve_rich_color(color, cur_color),
+                color: cur_color.unwrap_or(color),
                 line_y: run.line_y + dy,
                 variations: &layout.font_variations,
             };
@@ -3550,10 +3737,6 @@ impl TextRenderer {
         };
         let cached = self.ink_bounds.entry(key).or_default();
         let entry_count = &mut self.ink_bounds_entries;
-        let coefficients = transform
-            .as_coeffs()
-            .iter()
-            .fold(1.0_f64, |m, v| m.max(v.abs()));
         glyphs.iter().all(|glyph| {
             let bounds = if let Some(bounds) = cached.get(&glyph.glyph_id) {
                 *bounds
@@ -3577,20 +3760,7 @@ impl TextRenderer {
             #[allow(clippy::arithmetic_side_effects, reason = "rectangle translation is floating-point arithmetic; nonfinite bounds are rejected below")]
             let local = bounds + vello::kurbo::Vec2::new(x, y);
             let projected = transform.transform_rect_bbox(local);
-            let magnitude = [
-                local.x0,
-                local.y0,
-                local.x1,
-                local.y1,
-                projected.x0,
-                projected.y0,
-                projected.x1,
-                projected.y1,
-            ]
-            .iter()
-            .fold(1.0_f64, |m, v| m.max(v.abs()));
-            // Include pixel coverage and accumulated f32 transform/position rounding.
-            let padding = 2.0 + 32.0 * f64::from(f32::EPSILON) * magnitude * coefficients;
+            let padding = ink_padding(local, projected, transform);
             let ink = projected.inflate(padding, padding);
             [ink.x0, ink.y0, ink.x1, ink.y1]
                 .iter()
@@ -3624,25 +3794,26 @@ impl TextRenderer {
 }
 
 /// Whether a visual line cannot put ink inside `clip` (final scene space),
-/// judged on its vertical extent only (alignment moves runs horizontally).
-/// The line box is widened by two line heights above and below, which covers
-/// ascenders, descenders and stacked marks; non-finite geometry and
-/// transforms that rotate or shear are never culled.
+/// judged on its vertical extent only (alignment moves runs horizontally):
+/// its band widened by how far any row's ink reaches past its own
+/// (`reach`, [`TextRenderer::rich_ink_reach`]) and by the pixels that ink
+/// covers. Non-finite geometry and transforms that rotate or shear are
+/// never culled.
 pub(crate) fn rich_run_outside_clip(
     run: &cosmic_text::LayoutRun<'_>,
     transform: Affine,
     clip: Rect,
+    reach: crate::richtext::InkReach,
 ) -> bool {
     let [_, shear_y, shear_x, _, _, _] = transform.as_coeffs();
     if shear_x != 0.0 || shear_y != 0.0 {
         return false;
     }
-    let margin = f64::from(run.line_height.max(1.0)) * 2.0;
     let local = Rect::new(
         0.0,
-        f64::from(run.line_top) - margin,
+        f64::from(run.line_top) - f64::from(reach.above),
         0.0,
-        f64::from(run.line_top + run.line_height) + margin,
+        f64::from(run.line_top + run.line_height) + f64::from(reach.below),
     );
     let screen = transform.transform_rect_bbox(local);
     // An invalid clip draws everything, as the per-glyph cull does.
@@ -3654,7 +3825,105 @@ pub(crate) fn rich_run_outside_clip(
     {
         return false;
     }
+    let screen = screen.inflate(0.0, ink_padding(local, screen, transform));
     screen.y1 < clip.y0 || screen.y0 > clip.y1
+}
+
+/// The pixels around ink bounds (`local`, drawn at `screen` through
+/// `transform`) that can still take coverage from it, with the f32 rounding
+/// of positions and transforms. The rounding grows with the coordinates on
+/// either side of `transform` and with its scale; its translation is
+/// already in the on-screen coordinates, so it does not scale the rounding
+/// again (a field scrolled far down would otherwise pad its rows and glyphs
+/// by thousands of pixels and draw ink far outside the clip).
+fn ink_padding(local: Rect, screen: Rect, transform: Affine) -> f64 {
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    let coefficients = [a, b, c, d].iter().fold(1.0_f64, |m, v| m.max(v.abs()));
+    let magnitude = [
+        local.x0, local.y0, local.x1, local.y1, screen.x0, screen.y0, screen.x1, screen.y1,
+    ]
+    .iter()
+    .fold(1.0_f64, |m, v| m.max(v.abs()));
+    2.0 + 32.0 * f64::from(f32::EPSILON) * magnitude * coefficients
+}
+
+/// The colour a rich run's glyphs paint in: their shaped colour over the
+/// block's `color`, unless `paint` gives the byte a glyph starts at one.
+#[derive(Clone, Copy)]
+struct RunPaint<'p> {
+    color: Color,
+    paint: Option<&'p dyn Fn(usize) -> Option<Color>>,
+}
+
+impl RunPaint<'_> {
+    fn at(&self, global_byte: usize, glyph: &cosmic_text::LayoutGlyph) -> Color {
+        self.paint
+            .and_then(|paint| paint(global_byte))
+            .unwrap_or_else(|| resolve_rich_color(self.color, glyph.color_opt))
+    }
+
+    fn of(
+        &self,
+        layout: &crate::richtext::RichTextLayout,
+        line: usize,
+        glyph: &cosmic_text::LayoutGlyph,
+    ) -> Color {
+        if self.paint.is_none() {
+            return resolve_rich_color(self.color, glyph.color_opt);
+        }
+        self.at(layout.glyph_global_byte(line, glyph.start), glyph)
+    }
+}
+
+/// The rows `clip` (on screen) shows of a layout drawn with `transform`, as
+/// a span of the layout's y, when the transform keeps rows upright, and the
+/// pixels ink covers around its bounds there ([`ink_padding`]) in the same
+/// units.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "on-screen offsets in logical pixels are far inside f32"
+)]
+fn clip_in_layout(transform: Affine, clip: Rect) -> Option<(f32, f32, f32)> {
+    let [_, shear_y, shear_x, scale_y, _, translate_y] = transform.as_coeffs();
+    // An invalid clip draws everything, as the per-row cull does.
+    let valid = [clip.x0, clip.y0, clip.x1, clip.y1, translate_y, scale_y]
+        .iter()
+        .all(|value| value.is_finite())
+        && clip.x0 <= clip.x1
+        && clip.y0 <= clip.y1;
+    (valid && shear_x == 0.0 && shear_y == 0.0 && scale_y > 0.0).then(|| {
+        let (top, bottom) = (
+            (clip.y0 - translate_y) / scale_y,
+            (clip.y1 - translate_y) / scale_y,
+        );
+        let local = Rect::new(0.0, top, 0.0, bottom);
+        let pad = ink_padding(local, clip, transform) / scale_y;
+        (top as f32, bottom as f32, pad as f32)
+    })
+}
+
+/// Whether `run` lies wholly below `clip` under an upright `transform`
+/// (no shear, no flip), so every later row of its paragraph does too.
+fn rich_run_below_clip(
+    run: &cosmic_text::LayoutRun<'_>,
+    transform: Affine,
+    clip: Rect,
+    reach: crate::richtext::InkReach,
+) -> bool {
+    let [_, shear_y, shear_x, scale_y, _, _] = transform.as_coeffs();
+    shear_x == 0.0
+        && shear_y == 0.0
+        && scale_y > 0.0
+        && rich_run_outside_clip(run, transform, clip, reach)
+        && transform
+            .transform_rect_bbox(Rect::new(
+                0.0,
+                f64::from(run.line_top),
+                0.0,
+                f64::from(run.line_top),
+            ))
+            .y0
+            > clip.y1
 }
 
 #[cfg(test)]
@@ -3695,7 +3964,6 @@ mod tests {
 
     #[test]
     fn renderer_font_system_pins_families_weights_and_fallbacks() {
-        // Case `explicit_catalog_constructs_the_production_renderer_and_caches`.
         {
             let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
                 crate::font_catalog::checkout_root(),
@@ -3710,7 +3978,6 @@ mod tests {
             assert_eq!(renderer.misses, 1);
         }
 
-        // Case `product_font_system_pins_every_generic_family`.
         {
             let font_system = crate::font_catalog::fixture_font_system();
             let database = font_system.db();
@@ -3722,7 +3989,6 @@ mod tests {
             );
         }
 
-        // Case `shipped_fallback_policy_shapes_representative_scripts`.
         {
             let mut renderer = crate::font_catalog::fixture_renderer();
             let style = TextStyle::new(18.0);
@@ -3771,7 +4037,6 @@ mod tests {
             let fams = tr.system_families();
             assert!(!fams.is_empty(), "the system font db exposes some families");
 
-            // Both generic families measure to a positive advance for real text.
             let (ws, _) = tr.measure_font(
                 "Reading",
                 20.0,
@@ -3832,7 +4097,7 @@ mod tests {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let style = TextStyle::new(18.0);
@@ -3840,6 +4105,7 @@ mod tests {
             ("مَرْحَبًا", "NotoSansArabic[wght].ttf"),
             ("東京", "NotoSansCJK-VF.ttc"),
             ("🙂", "Noto-COLRv1.ttf"),
+            ("ƀ ϰ Ѧ ʰ", "NotoSans[wght].ttf"),
         ] {
             let before = renderer.shape_buffer(text, None, &style).buffer;
             assert!(
@@ -3853,7 +4119,13 @@ mod tests {
             let old_generation = renderer.generation;
             assert!(
                 renderer
-                    .install_browser_font(expected, std::fs::read(root.join(expected)).unwrap())
+                    .install_browser_font(
+                        expected,
+                        std::fs::read(root.join(expected)).unwrap(),
+                        &crate::font_catalog::test_sha256(
+                            &std::fs::read(root.join(expected)).unwrap()
+                        )
+                    )
                     .unwrap()
             );
             assert_ne!(
@@ -3873,11 +4145,57 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_font_whose_page_digest_differs_from_the_build_is_refused() {
+        let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+        let root = crate::font_catalog::checkout_root();
+        let fonts = catalog
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
+            .unwrap();
+        let mut renderer = TextRenderer::with_browser_font_system(fonts);
+        let name = "NotoSansMath-Regular.ttf";
+        let bytes = std::fs::read(root.join(name)).unwrap();
+        let has_math = |renderer: &TextRenderer| {
+            renderer.font_system.db().faces().any(|face| {
+                face.families
+                    .iter()
+                    .any(|family| family.0 == UI_MATH_FAMILY)
+            })
+        };
+        let generation = renderer.generation;
+        let mut wrong = crate::font_catalog::test_sha256(&bytes);
+        wrong.replace_range(..1, if wrong.starts_with('0') { "1" } else { "0" });
+        let error = renderer
+            .install_browser_font(name, bytes.clone(), &wrong)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("SHA-256 mismatch"), "{error}");
+        let short = bytes[..bytes.len() - 1].to_vec();
+        let error = renderer
+            .install_browser_font(
+                name,
+                short.clone(),
+                &crate::font_catalog::test_sha256(&short),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("SHA-256 mismatch"), "{error}");
+        assert_eq!(
+            renderer.generation, generation,
+            "a refused font changes nothing"
+        );
+        assert!(!has_math(&renderer), "a refused font is not installed");
+
+        let digest = crate::font_catalog::test_sha256(&bytes);
+        assert!(renderer.install_browser_font(name, bytes, &digest).unwrap());
+        assert!(has_math(&renderer));
+    }
+
+    #[test]
     fn browser_explicit_math_family_demands_its_face_while_core_emoji_stays_loaded() {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let math = TextStyle::new(18.0).with_family(FontChoice::Named(UI_MATH_FAMILY.to_owned()));
@@ -3907,6 +4225,9 @@ mod tests {
             .install_browser_font(
                 "NotoSansMath-Regular.ttf",
                 std::fs::read(root.join("NotoSansMath-Regular.ttf")).unwrap(),
+                &crate::font_catalog::test_sha256(
+                    &std::fs::read(root.join("NotoSansMath-Regular.ttf")).unwrap(),
+                ),
             )
             .unwrap();
         let after = renderer.shape_buffer("x", None, &math).buffer;
@@ -3952,6 +4273,9 @@ mod tests {
             .install_browser_font(
                 "Noto-COLRv1.ttf",
                 std::fs::read(root.join("Noto-COLRv1.ttf")).unwrap(),
+                &crate::font_catalog::test_sha256(
+                    &std::fs::read(root.join("Noto-COLRv1.ttf")).unwrap(),
+                ),
             )
             .unwrap();
         for emoji in ["‼️", "✈️", "⌚"] {
@@ -3984,7 +4308,7 @@ mod tests {
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let root = crate::font_catalog::checkout_root();
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let style = TextStyle::new(18.0);
@@ -4041,7 +4365,6 @@ mod tests {
     )]
     #[test]
     fn line_breaking_follows_script_rules_hyphenation_and_polygon_flow() {
-        // Case `custom_hyphenator_inserts_source_mapped_discretionary_breaks`.
         {
             let style = TextStyle::new(18.0).with_hyphenator(Arc::new(EveryThirdByte));
             let map = style.hyphenation.offset_map("customizable");
@@ -4058,7 +4381,6 @@ mod tests {
             }
         }
 
-        // Case `polygon_flow_computes_conservative_spans_and_clips_paint`.
         {
             use vello_encoding::DrawTag;
 
@@ -4114,7 +4436,6 @@ mod tests {
             assert!(begin.zip(end).is_some_and(|(begin, end)| begin < end));
         }
 
-        // Case `wrap_lines_uses_cjk_opportunities_without_spaces`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "東京京都大阪名古屋";
@@ -4125,7 +4446,6 @@ mod tests {
             assert!(lines.iter().all(|line| !line.is_empty()));
         }
 
-        // Case `wrap_lines_respects_non_breaking_space`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "10\u{a0}km away";
@@ -4135,7 +4455,6 @@ mod tests {
             assert_eq!(lines.join(" "), text);
         }
 
-        // Case `wrap_lines_uses_dictionary_breaks_for_thai`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "ทุกสองสัปดาห์";
@@ -4146,7 +4465,6 @@ mod tests {
             assert_eq!(lines.concat(), text);
         }
 
-        // Case `measure_and_draw_use_dictionary_breaks_for_thai`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let style = TextStyle::new(18.0);
@@ -4169,12 +4487,11 @@ mod tests {
                 .flat_map(|run| run.glyphs.iter())
                 .map(|glyph| (glyph.y / style.line_height_px()).round() as i32)
                 .collect();
-            rows.sort_unstable();
+            rows.compact_sort();
             rows.dedup();
             assert_eq!(rows.len(), 3, "paint geometry must match measured wrapping");
         }
 
-        // Case `automatic_hyphenation_wraps_and_paints_only_exercised_breaks`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "extensive";
@@ -4229,7 +4546,6 @@ mod tests {
             assert_eq!((w1, h1), (w2, h2), "cached value must equal recomputed");
         }
 
-        // Case `measure_cache_keys_on_size`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let _ = tr.measure("abc", 12.0, None);
@@ -4240,7 +4556,6 @@ mod tests {
             assert_eq!(misses, 2);
         }
 
-        // Case `hyphenation_policy_participates_in_measurement_cache_identity`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let text = "extensive";
@@ -4274,7 +4589,6 @@ mod tests {
 
     #[test]
     fn style_is_shared_by_measurement_and_drawing_including_backgrounds() {
-        // Case `style_line_height_controls_layout_and_cache_identity`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let compact = TextStyle::new(20.0).with_line_height(1.2);
@@ -4294,7 +4608,6 @@ mod tests {
             assert_eq!(misses, 2);
         }
 
-        // Case `style_is_shared_by_measurement_and_drawing`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let style = TextStyle::new(18.0)
@@ -4419,7 +4732,6 @@ mod tests {
 
     #[test]
     fn elide_and_clamp_truncate_at_grapheme_boundaries() {
-        // Case `elide_returns_text_unchanged_when_it_fits`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let s = "short";
@@ -4429,7 +4741,6 @@ mod tests {
             assert!(!out.ends_with('\u{2026}'), "no ellipsis when it fits");
         }
 
-        // Case `elide_truncates_and_appends_ellipsis`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let s = "the quick brown fox jumps over the lazy dog";
@@ -4451,7 +4762,6 @@ mod tests {
             );
         }
 
-        // Case `elide_never_splits_a_grapheme_and_drops_space_before_the_ellipsis`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             // "e" + combining acute, repeated: a char-wise cut could strand the
@@ -4476,7 +4786,6 @@ mod tests {
             }
         }
 
-        // Case `elide_keeps_the_longest_prefix_that_fits`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let s = "the quick brown fox jumps over the lazy dog";
@@ -4499,7 +4808,6 @@ mod tests {
             }
         }
 
-        // Case `elide_measures_in_the_given_style`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let s = "fn render_scene(scene: &mut Scene, transform: Affine)";
@@ -4518,7 +4826,6 @@ mod tests {
             assert_eq!(tr.elide_to_width("abc", 14.0, 0.0), "");
         }
 
-        // Case `clamp_to_lines_caps_line_count_and_elides_last`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let paragraph = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
@@ -4538,7 +4845,6 @@ mod tests {
             );
         }
 
-        // Case `clamp_to_lines_degenerate_cases`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             assert!(
@@ -4555,7 +4861,6 @@ mod tests {
             assert!(one[0].ends_with('\u{2026}'), "single-line clamp elides");
         }
 
-        // Case `clamp_to_lines_no_overflow_keeps_all`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let lines = tr.clamp_to_lines("two words", &TextStyle::new(14.0), 1000.0, 3);
@@ -4732,7 +5037,6 @@ mod tests {
 
     #[test]
     fn font_features_and_variation_axes_shape_and_measure() {
-        // Case `advanced_features_are_part_of_shaping_and_measurement`.
         {
             let mut renderer = crate::font_catalog::fixture_renderer();
             let base = TextStyle::new(32.0).with_family(FontChoice::Serif);
@@ -4772,7 +5076,6 @@ mod tests {
             assert_eq!(misses, 2, "feature settings must not collide in the cache");
         }
 
-        // Case `feature_numeric_and_variation_builders_replace_their_own_settings`.
         {
             let style = TextStyle::new(20.0)
                 .with_font_feature(OpenTypeTag::KERNING, 0)
@@ -4815,7 +5118,6 @@ mod tests {
             );
         }
 
-        // Case `variable_axes_are_normalized_in_the_faces_native_axis_order`.
         {
             let renderer = crate::font_catalog::fixture_renderer();
             let face = renderer
@@ -4850,7 +5152,6 @@ mod tests {
 
     #[test]
     fn text_and_ui_scale_apply_once_to_metrics_and_caches() {
-        // Case `text_scale_one_is_metric_identity_and_invalid_values_are_safe`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let base = tr.measure("Accessible calendar", 18.0, None);
@@ -4865,7 +5166,6 @@ mod tests {
             assert_eq!(tr.text_scale, 0.5, "undersized scales are bounded");
         }
 
-        // Case `text_scale_changes_measure_and_shape_cache_together`.
         {
             let mut tr = crate::font_catalog::fixture_renderer();
             let base = tr.measure("Calendar", 20.0, None);
@@ -4905,7 +5205,6 @@ mod tests {
             );
         }
 
-        // Case `custom_canvas_styles_remain_renderer_relative_at_supported_scales`.
         {
             for scale in [1.0, 1.25, 1.5, 2.0] {
                 let mut renderer = crate::font_catalog::fixture_renderer();
@@ -4938,7 +5237,6 @@ mod tests {
             }
         }
 
-        // Case `resolved_styles_keep_metrics_and_glyph_geometry_across_renderer_scales`.
         {
             let text = "Tracked resolved text";
             let mut resolved = TextStyle::new(28.0).with_letter_spacing(3.0);
@@ -4997,7 +5295,6 @@ mod tests {
             }
         }
 
-        // Case `resolved_theme_style_applies_ui_and_text_scale_once`.
         {
             let role = crate::tokens::TextRole::Caption;
             let base = crate::theme::Theme::dark().text(role).size;
@@ -5010,7 +5307,6 @@ mod tests {
             let (_, height) = renderer.measure_style("Scale once", None, &resolved);
             assert!((height - base * 1.25 * 2.0 * resolved.line_height).abs() < 0.001);
 
-            // Content text ignores the renderer's accessibility scale too.
             let content = TextStyle::content(19.0);
             let (_, content_height) = renderer.measure_style("Page", None, &content);
             assert!((content_height - 19.0 * content.line_height).abs() < 0.001);

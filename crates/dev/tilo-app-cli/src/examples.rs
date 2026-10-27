@@ -54,7 +54,7 @@ pub const ALL: &[Example] = &[
     Example {
         name: "counter",
         concept: "resources and actions",
-        summary: "A number set at its path and changed by verbs, all checked by the model, with undo, a confirmed reset and a viewer role.",
+        summary: "A number set at its path and changed by verbs, all checked by the model, with undo, a reset Undo takes back and a viewer role.",
         web: true,
         files: example_files_with_common!("counter", "surface.toml"),
     },
@@ -168,10 +168,6 @@ impl Example {
 }
 
 /// An unknown example name, with the names there are.
-///
-/// # Errors
-///
-/// Returns an error naming every example when `name` is not one of them.
 pub fn find(name: &str) -> Result<&'static Example> {
     Example::named(name).with_context(|| {
         let names = ALL

@@ -69,7 +69,6 @@ fn the_note_actions_button_opens_the_note_menu_anchored_to_itself() {
         );
         app.harness().click_at(button.x, button.y);
         assert!(menu_open(&mut app), "width {width}");
-        // The menu lays its rows out when it paints.
         let _ = app.harness().render_rgba();
         let (menu, anchor) = surface(&mut app, |notes| notes.note_menu_rects_for_test())
             .expect("an open menu has a rect");
@@ -119,7 +118,6 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
                 dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Escape));
                 assert!(!menu_open(&mut app));
             }
-            // Keyboard activation of New child note follows the shared action path.
             let before = crate::framework_support::shown(&app).pages().len();
             let parent = surface(&mut app, |notes| notes.selected_for_test()).unwrap();
             dispatch(

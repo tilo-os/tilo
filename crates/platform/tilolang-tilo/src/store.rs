@@ -965,12 +965,26 @@ fn field_of(m: &Mutation) -> String {
     }
 }
 
-/// The edit a mutation makes below the resource `at`, and the id of the item it inserts.
+/// The place an item goes when the program named position `index`: before the item it saw
+/// there, the one being moved left out, else the end. Read as the runtime reads a position.
+fn beside(listing: &Listing, index: usize, moving: Option<&str>) -> tilo_resource::At {
+    listing
+        .items
+        .iter()
+        .filter(|id| Some(&***id) != moving)
+        .nth(index)
+        .map_or(tilo_resource::At::End, |id| {
+            tilo_resource::At::Before(Id::from_raw(id.to_string()))
+        })
+}
+
+/// The edit a mutation makes below the resource `at`, placing an inserted or moved item at
+/// `place`, and the id of the item it inserts.
 fn edit_of(
     at: &ResourceRef,
     m: &Mutation,
     new_id: &str,
-    length: usize,
+    place: tilo_resource::At,
 ) -> Result<(Edit<DynRecord>, Option<String>), StoreError> {
     let (field, op, item) = match m {
         Mutation::SetRegister { field, value } => (
@@ -982,7 +996,7 @@ fn edit_of(
         ),
         Mutation::AddCounter { field, delta } => (field, EditOp::Add { by: *delta }, None),
         Mutation::SetText { field, text } => (field, EditOp::Replace { text: text.clone() }, None),
-        Mutation::CollInsert { field, item, index } => {
+        Mutation::CollInsert { field, item, .. } => {
             let schema = lookup(&item.ty)
                 .ok_or_else(|| not_found(format!("type {} is not registered", item.ty)))?;
             let empty = DynRecord::empty(schema).map_err(backend)?;
@@ -990,7 +1004,7 @@ fn edit_of(
                 field,
                 EditOp::InsertItem {
                     id: Some(Id::from_raw(new_id)),
-                    at: index.unwrap_or(length),
+                    at: place,
                     value: empty.to_json(),
                 },
                 Some(new_id.to_owned()),
@@ -1003,11 +1017,11 @@ fn edit_of(
             },
             None,
         ),
-        Mutation::CollMove { field, item, index } => (
+        Mutation::CollMove { field, item, .. } => (
             field,
             EditOp::MoveTo {
                 id: Id::from_raw(item.clone()),
-                at: *index,
+                at: place,
             },
             None,
         ),
@@ -1106,16 +1120,30 @@ impl Store for TiloStore {
             };
             (edit, None, None)
         } else {
-            let length = match m {
-                Mutation::CollInsert { field, .. } => inner
-                    .cache
-                    .borrow_mut()
-                    .listing(&inner.mirror, (&app, &ty), at, field)?
-                    .len(),
-                _ => 0,
+            // A position the program counted is named by the item it saw there, so a concurrent
+            // insert, removal or sort elsewhere does not shift where the item lands.
+            let place = match m {
+                Mutation::CollInsert {
+                    field,
+                    index: Some(index),
+                    ..
+                } => Some((field, *index, None)),
+                Mutation::CollMove { field, item, index } => Some((field, *index, Some(item))),
+                _ => None,
+            };
+            let place = match place {
+                None => tilo_resource::At::End,
+                Some((field, index, moving)) => {
+                    let listing =
+                        inner
+                            .cache
+                            .borrow_mut()
+                            .listing(&inner.mirror, (&app, &ty), at, field)?;
+                    beside(&listing, index, moving.map(String::as_str))
+                }
             };
             let new_id = inner.fresh("i");
-            let (edit, item) = edit_of(at, m, &new_id, length)?;
+            let (edit, item) = edit_of(at, m, &new_id, place)?;
             let edit = DynEdit::Edit {
                 id: at.doc.clone(),
                 edit,

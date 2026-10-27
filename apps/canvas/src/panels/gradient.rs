@@ -459,7 +459,6 @@ fn kind_picker(
             kinds.iter().position(|k| *k == kind).unwrap_or(0),
         )
         .fill()
-        .with_style(ui::widget::toggle_group::SegmentedStyle::Tabs)
         // Published as the control's own select action, so assistive
         // technology and agents choose a fill kind the way a tap does.
         .on_view("canvas-fill-kind", move |index| {

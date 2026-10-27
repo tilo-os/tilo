@@ -278,7 +278,7 @@ mod tests {
         state.remote_input_firewall.publish_view(ShellView::new(
             vec![(surface, Rect::new(0.0, 0.0, 1920.0, 1080.0))],
             Some(surface),
-            false,
+            crate::shell::input_policy::InputCapture::NONE,
             false,
         ));
     }
@@ -637,7 +637,7 @@ mod tests {
             let loc2 = state.seat.get_pointer().unwrap().current_location();
             assert_eq!((loc2.x, loc2.y), (150.0, 175.0));
         }
-        // Phase `personal_fabric_motion_reaches_seat_but_yields_to_kill_switch`.
+        // Phase `personal_fabric_motion_goes_to_the_event_loop_but_yields_to_kill_switch`.
         {
             use crate::compositor::state::State;
             use crate::shell::device_fabric::FabricInputEvent;
@@ -654,16 +654,18 @@ mod tests {
                 &controller,
                 FabricInputEvent::PointerMotion { x: 320, y: 180 }
             ));
-            let loc = state.seat.get_pointer().unwrap().current_location();
-            assert_eq!((loc.x, loc.y), (320.0, 180.0));
+            assert_eq!(
+                state.take_personal_fabric_input(),
+                vec![FabricInputEvent::PointerMotion { x: 320, y: 180 }],
+                "admitted input is delivered as this device's own"
+            );
 
             state.remote_input_firewall.engage_kill_switch();
             assert!(!state.apply_personal_fabric_input(
                 &controller,
                 FabricInputEvent::PointerMotion { x: 640, y: 360 }
             ));
-            let unchanged = state.seat.get_pointer().unwrap().current_location();
-            assert_eq!((unchanged.x, unchanged.y), (320.0, 180.0));
+            assert!(state.take_personal_fabric_input().is_empty());
         }
         // Phase `apply_remote_desktop_keycode_reaches_keyboard`.
         // A `RemoteDesktop` `NotifyKeyboardKeycode` reaches the seat keyboard, appearing in `pressed_keys()` after press and clearing on release.

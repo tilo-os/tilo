@@ -320,10 +320,6 @@ pub fn set_profile_value(
 
 /// Seed the namespace's settings with the host's JSON object unless it has
 /// stored settings. `true` when the host's document was taken.
-///
-/// # Errors
-///
-/// Rejects an unknown namespace or a document that is not an object.
 #[wasm_bindgen]
 pub fn provide_settings(profile: &str, device: &str, settings: &str) -> Result<bool, JsValue> {
     crate::settings::provide(&cached(profile, device)?, settings).map_err(error)

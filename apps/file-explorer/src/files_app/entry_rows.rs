@@ -49,6 +49,8 @@ pub(super) struct EntryRowFacts {
     open_with: Option<OpenWithFacts>,
     /// `AirDrop` can send it: a file, with `AirDrop` available.
     airdrop_file: bool,
+    /// For an app in the Applications place, how it leaves.
+    app_removal: Option<runtime_portal::tools::AppRemoval>,
 }
 
 /// The entry rows last published, by entry, under the context they share.
@@ -105,10 +107,19 @@ impl FileExplorerWidget {
 
     /// What `entry`'s row shows that the window holds about it, now.
     pub(super) fn entry_row_facts(&self, context: &RowContext, entry: &Entry) -> EntryRowFacts {
+        if crate::applications::is_app(&entry.path) {
+            return EntryRowFacts {
+                converted: None,
+                open_with: None,
+                airdrop_file: false,
+                app_removal: Some(self.app_removal(&entry.path)),
+            };
+        }
         EntryRowFacts {
             converted: self.converted_description(&entry.path),
             open_with: self.open_with_facts(entry),
             airdrop_file: context.airdrop && entry.path.is_file(),
+            app_removal: None,
         }
     }
 
@@ -149,6 +160,39 @@ impl FileExplorerWidget {
     }
 }
 
+/// An app's row in the Applications place: open it, and uninstall it (or
+/// remove it from the person's apps), which the shell asks about first.
+fn app_row(
+    mut resource: Resource,
+    resource_id: &str,
+    removal: runtime_portal::tools::AppRemoval,
+) -> Resource {
+    use crate::effects::{FilesEffect, row_action};
+    use runtime_portal::tools::AppRemoval;
+    resource.actions.push(row_action(
+        &FilesEffect::OpenItem {
+            item: resource_id.to_owned(),
+        },
+        "open",
+        t("files-menu-open"),
+    ));
+    let (id, label) = match removal {
+        AppRemoval::UninstallWithData | AppRemoval::Uninstall => {
+            ("uninstall", t("files-menu-uninstall"))
+        }
+        AppRemoval::RemoveFromApps => ("remove-from-apps", t("files-menu-remove-from-apps")),
+        AppRemoval::None => return resource,
+    };
+    resource.actions.push(row_action(
+        &FilesEffect::UninstallApp {
+            app: resource_id.to_owned(),
+        },
+        id,
+        label,
+    ));
+    resource
+}
+
 /// Construct the complete action contract for one already-projected row.
 /// This is intentionally separate from `resources`: a folder can have far
 /// more rows than an action directory should enumerate, while an exact
@@ -172,6 +216,9 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
         },
         entry.name.clone(),
     );
+    if let Some(removal) = facts.app_removal {
+        return app_row(resource, &resource_id, removal);
+    }
     if context.recent {
         resource.actions.push(row_action(
             &FilesEffect::RevealRecent { entry: id() },
@@ -219,6 +266,24 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Reso
             "import-converted",
             t("files-mounted-copy"),
         ));
+    }
+    // A file whose bytes no device delivered says so where an agent and a
+    // screen reader look, before anyone opens it and waits for nothing.
+    if resource.presentation.is_none()
+        && entry
+            .availability
+            .as_ref()
+            .is_some_and(fs_protocol::AvailabilityProjectionV1::unavailable)
+    {
+        let detail = t("files-unavailable-offline");
+        resource.presentation = Some(ui::tilo_actions::ResourcePresentation {
+            detail: Some(detail.clone()),
+            badge: Some(t("files-unavailable")),
+            preview: None,
+        });
+        if let Some(open) = resource.actions.last_mut() {
+            open.type_mut().description = Some(detail);
+        }
     }
     if let Some(open_with) = &facts.open_with {
         append_open_with_actions(open_with, &resource_id, &mut resource);

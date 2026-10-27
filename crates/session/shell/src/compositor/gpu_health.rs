@@ -136,6 +136,17 @@ pub fn record_dmabuf(advertised: Result<&std::path::Path, &str>) {
     });
 }
 
+/// The compositor's GPU stopped working mid-session and could not be brought
+/// back, so the desktop now draws in software.
+pub fn record_gpu_lost(reason: &str) {
+    update(|record| {
+        record.problems.push(format!(
+            "the GPU stopped working and could not be brought back; the desktop draws in \
+             software until the next session: {reason}"
+        ));
+    });
+}
+
 /// Watch one line of an app's stderr for the adapter it reports.
 pub fn observe_app_line(package_id: &str, line: &str) {
     let Some(report) = line.strip_prefix(ui::gpu::ADAPTER_LINE_PREFIX) else {

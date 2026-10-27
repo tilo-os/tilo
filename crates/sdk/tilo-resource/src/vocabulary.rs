@@ -36,6 +36,7 @@ trait AnyAction {
     fn write_json(&self, out: &mut Vec<u8>) -> Result<(), serde_json::Error>;
     fn need(&self) -> ActionNeed;
     fn risk(&self) -> RiskLevel;
+    fn undoable(&self) -> bool;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
@@ -62,13 +63,20 @@ impl<R: Resource> AnyAction for Typed<R> {
         tilo_actions::Action::risk(&self.0)
     }
 
+    fn undoable(&self) -> bool {
+        tilo_actions::undo_takes_back(
+            tilo_actions::Action::action_kind(&self.0),
+            tilo_actions::Action::change_kind(&self.0),
+            tilo_actions::Action::irreversible(&self.0),
+        )
+    }
+
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         Box::new(self.0)
     }
 }
 
 impl Built {
-    /// `action`, an action of `R`.
     #[must_use]
     pub fn of<R: Resource>(action: R::Action) -> Self {
         Self(Box::new(Typed::<R>(action)))
@@ -89,6 +97,12 @@ impl Built {
     #[must_use]
     pub fn risk(&self) -> RiskLevel {
         self.0.risk()
+    }
+
+    /// Whether Undo takes it back: a person's change of the document alone.
+    #[must_use]
+    pub fn undoable(&self) -> bool {
+        self.0.undoable()
     }
 
     /// Encoded under its resource's registry type id.
@@ -138,6 +152,9 @@ pub struct Declaration {
     pub params: Vec<ActionParam>,
     /// What the action is able to do. See [`tilo_actions::ActionContract::kind`].
     pub kind: ActionKind,
+    /// Whether one invocation's kind is decided by its arguments, `kind`
+    /// being the least it is: every gate asks the action built from them.
+    pub by_arguments: bool,
     /// The one field it writes, if only one. See [`Resource::field_of`].
     pub field: Option<&'static str>,
     pub destructive: bool,
@@ -166,6 +183,11 @@ pub struct Declaration {
     /// ([`Resource::ACTION_TYPE`]).
     pub action_type: &'static str,
     pub build: Builds,
+    /// The resource's own published action this one invokes, and the
+    /// arguments it fixes of it: a bound field edit is the resource's field
+    /// edit of that edit, a bound verb that verb with its bound values. What
+    /// another provider keeping the resource runs it as.
+    pub invokes: Option<(String, serde_json::Map<String, serde_json::Value>)>,
 }
 
 impl AsRef<Self> for Declaration {
@@ -190,6 +212,7 @@ impl Declaration {
             description: None,
             params,
             kind: ActionKind::Undoable,
+            by_arguments: false,
             field: None,
             destructive: false,
             result: None,
@@ -200,6 +223,7 @@ impl Declaration {
             resource: vocabulary.kind,
             action_type: vocabulary.action_type,
             build,
+            invokes: None,
         }
     }
 }
@@ -215,6 +239,8 @@ pub struct Vocabulary {
     pub action_type: &'static str,
     /// [`Resource::EDITS`].
     pub edits: bool,
+    /// [`Resource::RECORD_TABLE`].
+    pub(crate) record_table: Option<&'static crate::table::ModelTable>,
     pub(crate) type_id: fn() -> TypeId,
     pub(crate) shape: fn() -> Option<Shape>,
     pub(crate) op_schemas: fn() -> Vec<(String, serde_json::Value)>,
@@ -232,6 +258,17 @@ pub struct Vocabulary {
 }
 
 impl Vocabulary {
+    /// The field edit `edit` a caller sent, its path read from the record's
+    /// root ([`Edit::past_record_name`]): the record answers to the last
+    /// part of its kind and to its label.
+    pub(crate) fn rooted_edit(&self, edit: Edit<()>) -> Result<Edit<()>, String> {
+        let Some(shape) = (self.shape)() else {
+            return Ok(edit);
+        };
+        let kind = self.kind.rsplit('.').next().unwrap_or(self.kind);
+        edit.past_record_name(shape, &[kind, self.label])
+    }
+
     /// Every declaration of the resource. They depend on its type alone, so
     /// each thread builds them once per generation of app code
     /// ([`reset_type_schemas`](crate::reset_type_schemas)) and answers the
@@ -297,6 +334,7 @@ impl<R: Resource> VocabularyOf<R> {
         label: R::LABEL,
         action_type: R::ACTION_TYPE,
         edits: R::EDITS,
+        record_table: R::RECORD_TABLE,
         type_id: TypeId::of::<R>,
         shape: R::shape,
         op_schemas: R::op_schemas,
@@ -310,7 +348,6 @@ impl<R: Resource> VocabularyOf<R> {
     };
 }
 
-/// The vocabulary of `R`.
 #[must_use]
 pub fn vocabulary<R: Resource>() -> &'static Vocabulary {
     &VocabularyOf::<R>::VOCABULARY

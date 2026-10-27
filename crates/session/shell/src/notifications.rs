@@ -223,6 +223,15 @@ impl CloseReason {
     }
 }
 
+/// A sender-supplied `image-data` hint, decoded and bounded: straight-alpha
+/// RGBA, row-major, `width * height * 4` bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncomingImageData {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 /// One notification that crossed the bridge from a `Notify` call, before
 /// it is mapped into a [`tilo_desktop::notifications::Notification`] toast by the chrome pump.
 #[derive(Clone, Debug)]
@@ -231,6 +240,15 @@ pub struct IncomingNotification {
     pub dbus_id: u32,
     /// Sending application's human-readable name (the `app_name` arg).
     pub app_name: String,
+    /// The sender's own icon name, absolute path, or `image-path` hint. A
+    /// lower-trust hint than a launcher-verified app id, and only ever used
+    /// for pixels.
+    pub app_icon: Option<String>,
+    /// The freedesktop `desktop-entry` hint, also only an artwork hint.
+    pub desktop_entry: Option<String>,
+    /// Decoded `image-data`: straight-alpha RGBA, already bounded. Only ever
+    /// pixels, never identity or policy.
+    pub image_data: Option<IncomingImageData>,
     /// Single-line summary (becomes the toast title).
     pub summary: String,
     /// Optional multi-line body (becomes the toast body).
@@ -312,6 +330,10 @@ struct BridgeInner {
     closed_events: Vec<(u32, CloseReason)>,
     /// Toast action activated in the compositor → `ActionInvoked` signal.
     action_events: Vec<(u32, String)>,
+    /// The `xdg_activation_v1` token the compositor minted for an action the
+    /// person activated, sent as `ActivationToken` just before that
+    /// action's `ActionInvoked`, so the app can bring its window forward.
+    action_tokens: HashMap<u32, String>,
     #[cfg(target_os = "linux")]
     schedule_controller: Option<ScheduledActionController>,
     scheduled_actions: Vec<ScheduledActionRequest>,
@@ -346,6 +368,7 @@ impl std::fmt::Debug for BridgeInner {
             .field("ongoing_owners", &self.ongoing_owners.len())
             .field("closed_events", &self.closed_events.len())
             .field("action_events", &self.action_events.len())
+            .field("action_tokens", &self.action_tokens.len())
             .field("scheduled_targets", &self.scheduled_targets.len())
             .field("scheduled_actions", &self.scheduled_actions.len())
             .field(
@@ -704,8 +727,24 @@ impl NotificationBridge {
 
     /// compositor → app: record that a toast action was activated, to be emitted as `ActionInvoked`.
     pub fn note_action(&self, id: u32, action_key: impl Into<String>) {
+        self.note_action_with_token(id, action_key, None);
+    }
+
+    /// [`Self::note_action`] for an action the person activated, with the
+    /// activation token the compositor minted for it: emitted as
+    /// `ActivationToken` before the `ActionInvoked`, as the notification
+    /// specification (1.2) has it, so the app's window can come forward.
+    pub fn note_action_with_token(
+        &self,
+        id: u32,
+        action_key: impl Into<String>,
+        activation_token: Option<String>,
+    ) {
         if let Ok(mut g) = self.inner.lock() {
             let action_key = action_key.into();
+            if let Some(token) = activation_token {
+                g.action_tokens.insert(id, token);
+            }
             g.action_events.push((id, action_key.clone()));
             for tap in &g.action_taps {
                 tap(id, &action_key);
@@ -729,6 +768,15 @@ impl NotificationBridge {
             .lock()
             .map(|mut g| std::mem::take(&mut g.closed_events))
             .unwrap_or_default()
+    }
+
+    /// signal emitter: the activation token minted for notification `id`'s
+    /// activated action, once.
+    pub fn take_action_token(&self, id: u32) -> Option<String> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|mut g| g.action_tokens.remove(&id))
     }
 
     /// signal emitter: take every queued action event.
@@ -1177,6 +1225,83 @@ fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
         .map(|value| value.min(9_999))
 }
 
+/// A bounded text hint used only to find artwork, never as identity.
+#[cfg(any(test, target_os = "linux"))]
+fn parse_icon_hint(hints: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    let value = hints
+        .get(key)?
+        .try_clone()
+        .ok()
+        .and_then(|value| String::try_from(value).ok())?;
+    let value = value.trim();
+    (!value.is_empty() && value.len() <= 4096 && !value.chars().any(char::is_control))
+        .then(|| value.to_string())
+}
+
+/// Decode the freedesktop `image-data` hint, rejecting anything that is not
+/// 8-bit RGB/RGBA at a size chrome can paint.
+#[cfg(any(test, target_os = "linux"))]
+fn parse_image_data(hints: &HashMap<String, OwnedValue>) -> Option<IncomingImageData> {
+    let structure =
+        zbus::zvariant::Structure::try_from(hints.get("image-data")?.try_clone().ok()?).ok()?;
+    let mut fields = structure.into_fields();
+    if fields.len() != 7 {
+        return None;
+    }
+    let width = i32::try_from(fields.remove(0)).ok()?;
+    let height = i32::try_from(fields.remove(0)).ok()?;
+    let rowstride = i32::try_from(fields.remove(0)).ok()?;
+    let _has_alpha = bool::try_from(fields.remove(0)).ok()?;
+    let bits = i32::try_from(fields.remove(0)).ok()?;
+    let channels = i32::try_from(fields.remove(0)).ok()?;
+    let bytes = fields.remove(0).downcast::<Vec<u8>>().ok()?;
+    let (width, height, rowstride) = (
+        u32::try_from(width).ok()?,
+        u32::try_from(height).ok()?,
+        usize::try_from(rowstride).ok()?,
+    );
+    let channels = usize::try_from(channels).ok()?;
+    if bits != 8
+        || !(3..=4).contains(&channels)
+        || width == 0
+        || height == 0
+        || width > 512 // allow-breakpoint: an icon's pixel size, not a layout
+        || height > 512 // allow-breakpoint: an icon's pixel size, not a layout
+        || rowstride < (width as usize).checked_mul(channels)?
+    {
+        return None;
+    }
+    let needed = rowstride.checked_mul(height as usize)?;
+    if bytes.len() < needed {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(
+        (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?,
+    );
+    for row in 0..height as usize {
+        let line = bytes.get(row * rowstride..row * rowstride + rowstride)?;
+        for pixel in 0..width as usize {
+            let at = pixel * channels;
+            let r = *line.get(at)?;
+            let g = *line.get(at + 1)?;
+            let b = *line.get(at + 2)?;
+            let a = if channels == 4 {
+                *line.get(at + 3)?
+            } else {
+                255
+            };
+            rgba.extend_from_slice(&[r, g, b, a]);
+        }
+    }
+    Some(IncomingImageData {
+        width,
+        height,
+        rgba,
+    })
+}
+
 #[cfg(any(test, target_os = "linux"))]
 fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String> {
     let value = hints
@@ -1317,7 +1442,7 @@ impl NotificationService {
                     .workspaces
                     .iter()
                     .find(|workspace| workspace.id == caller.workspace_id)
-                    .map(|workspace| workspace.room.to_string())
+                    .map(|workspace| workspace.room().to_string())
                     .ok_or_else(denied)?;
                 return Ok(scheduled::Owner { caller, room });
             }
@@ -1536,12 +1661,12 @@ fn systemd_escape(value: &str) -> String {
     })
 }
 
-/// One `Notify` call's spec arguments; `app_icon` is accepted on the wire
-/// and ignored.
+/// One `Notify` call's spec arguments.
 #[cfg(target_os = "linux")]
 struct NotifyRequest {
     app_name: String,
     replaces_id: u32,
+    app_icon: String,
     summary: String,
     body: String,
     actions: Vec<String>,
@@ -1567,11 +1692,12 @@ type NotifyArgs = (
 #[cfg(target_os = "linux")]
 impl From<NotifyArgs> for NotifyRequest {
     fn from(
-        (app_name, replaces_id, _app_icon, summary, body, actions, hints, expire_timeout): NotifyArgs,
+        (app_name, replaces_id, app_icon, summary, body, actions, hints, expire_timeout): NotifyArgs,
     ) -> Self {
         Self {
             app_name,
             replaces_id,
+            app_icon,
             summary,
             body,
             actions,
@@ -1664,6 +1790,15 @@ const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.No
   <signal name="ActionInvoked">
     <arg name="id" type="u"/>
     <arg name="action_key" type="s"/>
+  </signal>
+  <!--
+   `ActivationToken(id, activation_token)` — emitted just before `ActionInvoked`
+   for an action the person activated: an `xdg_activation_v1` token the app
+   uses to bring its window forward.
+   -->
+  <signal name="ActivationToken">
+    <arg name="id" type="u"/>
+    <arg name="activation_token" type="s"/>
   </signal>
 </interface>
 "#;
@@ -1760,6 +1895,7 @@ impl NotificationService {
         let NotifyRequest {
             app_name,
             replaces_id,
+            app_icon,
             summary,
             body,
             actions,
@@ -1791,10 +1927,18 @@ impl NotificationService {
         let ongoing_owner = ongoing
             .then(|| sender.as_ref().map(ToString::to_string))
             .flatten();
+        let app_icon = (!app_icon.trim().is_empty())
+            .then(|| app_icon.trim().to_string())
+            .or_else(|| parse_icon_hint(&hints, "image-path"));
+        let desktop_entry = parse_icon_hint(&hints, "desktop-entry");
+        let image_data = parse_image_data(&hints);
         self.bridge.push_incoming_with_sharing(
             IncomingNotification {
                 dbus_id: id,
                 app_name,
+                app_icon,
+                desktop_entry,
+                image_data,
                 summary,
                 body,
                 actions: pair_actions(&actions),
@@ -1906,6 +2050,17 @@ impl NotificationService {
             .await
     }
 
+    /// `ActivationToken(id, activation_token)` — emitted just before
+    /// `ActionInvoked` for an action the person activated.
+    async fn activation_token(
+        ctxt: &SignalEmitter<'_>,
+        id: u32,
+        activation_token: String,
+    ) -> zbus::Result<()> {
+        ctxt.emit(Self::name(), "ActivationToken", &(id, activation_token))
+            .await
+    }
+
     /// `ActionInvoked(id, action_key)` — emitted when the user activates an action on a toast.
     async fn action_invoked(
         ctxt: &SignalEmitter<'_>,
@@ -1935,12 +2090,6 @@ impl ServerHandle {
 ///
 /// **Production** passes `zbus::Connection::session()`. **Tests** pass an
 /// in-process p2p connection; `request_name` is best-effort there since p2p connections have no broker.
-///
-/// # Errors
-///
-/// Returns an error if registering [`NotificationService`] at
-/// [`OBJECT_PATH`] fails. A failed [`BUS_NAME`] request is logged, not
-/// propagated.
 #[cfg(target_os = "linux")]
 pub async fn serve_notifications(
     connection: zbus::Connection,
@@ -1989,6 +2138,9 @@ pub fn spawn_signal_emitter(
                 let _ = NotificationService::notification_closed(&ctxt, id, reason.code()).await;
             }
             for (id, key) in actions {
+                if let Some(token) = bridge.take_action_token(id) {
+                    let _ = NotificationService::activation_token(&ctxt, id, token).await;
+                }
                 let _ = NotificationService::action_invoked(&ctxt, id, key).await;
             }
         }
@@ -2032,6 +2184,64 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn image_data_hints_are_decoded_and_bounded() {
+        use zbus::zvariant::{OwnedValue, Value};
+        let mut hints = HashMap::new();
+        hints.insert(
+            "image-data".to_string(),
+            OwnedValue::try_from(Value::new((
+                2_i32,
+                1_i32,
+                8_i32,
+                true,
+                8_i32,
+                4_i32,
+                vec![255_u8, 0, 0, 255, 0, 255, 0, 255],
+            )))
+            .unwrap(),
+        );
+        let image = parse_image_data(&hints).expect("RGBA is decoded");
+        assert_eq!((image.width, image.height), (2, 1));
+        assert_eq!(image.rgba, [255, 0, 0, 255, 0, 255, 0, 255]);
+
+        // Three channels gain an opaque alpha.
+        hints.insert(
+            "image-data".to_string(),
+            OwnedValue::try_from(Value::new((
+                1_i32,
+                1_i32,
+                4_i32,
+                false,
+                8_i32,
+                3_i32,
+                vec![1_u8, 2, 3, 0],
+            )))
+            .unwrap(),
+        );
+        assert_eq!(
+            parse_image_data(&hints).map(|image| image.rgba),
+            Some(vec![1, 2, 3, 255])
+        );
+
+        // More than 8 bits per sample is not something the card can paint.
+        hints.insert(
+            "image-data".to_string(),
+            OwnedValue::try_from(Value::new((
+                1_i32,
+                1_i32,
+                4_i32,
+                false,
+                16_i32,
+                3_i32,
+                vec![0_u8; 32],
+            )))
+            .unwrap(),
+        );
+        assert!(parse_image_data(&hints).is_none());
+    }
+
     #[test]
     fn bridge_messages_round_trip_and_hints_are_bounded() {
         // Phase `alloc_id_is_monotonic_and_never_zero`.
@@ -2043,13 +2253,15 @@ mod tests {
             assert_ne!(c, 0);
             assert!(c > a, "ids must be monotonic: {a} then {c}");
         }
-        // Phase `incoming_round_trips_through_bridge`.
         {
             let b = NotificationBridge::new();
             assert_eq!(b.pending_incoming_len(), 0);
             b.push_incoming(IncomingNotification {
                 dbus_id: 1,
                 app_name: "App".into(),
+                app_icon: None,
+                desktop_entry: None,
+                image_data: None,
                 summary: "Hi".into(),
                 body: "There".into(),
                 actions: vec![],
@@ -2067,18 +2279,15 @@ mod tests {
             let drained = b.drain_incoming();
             assert_eq!(drained.len(), 1);
             assert_eq!(drained[0].summary, "Hi");
-            // Drain is destructive.
             assert_eq!(b.pending_incoming_len(), 0);
             assert!(b.drain_incoming().is_empty());
         }
-        // Phase `close_request_round_trips`.
         {
             let b = NotificationBridge::new();
             b.request_close(42);
             assert_eq!(b.drain_close_requests(), vec![42]);
             assert!(b.drain_close_requests().is_empty());
         }
-        // Phase `closed_and_action_events_round_trip`.
         {
             let b = NotificationBridge::new();
             b.note_closed(7, CloseReason::Expired);
@@ -2086,13 +2295,11 @@ mod tests {
             assert_eq!(b.drain_closed_events(), vec![(7, CloseReason::Expired)]);
             assert_eq!(b.drain_action_events(), vec![(7, "default".to_string())]);
         }
-        // Phase `close_reason_codes_match_spec`.
         {
             assert_eq!(CloseReason::Expired.code(), 1);
             assert_eq!(CloseReason::Dismissed.code(), 2);
             assert_eq!(CloseReason::Closed.code(), 3);
         }
-        // Phase `pair_actions_unflattens_and_drops_dangling_key`.
         {
             let actions = vec![
                 "default".to_string(),
@@ -2110,18 +2317,15 @@ mod tests {
                 ]
             );
         }
-        // Phase `parse_urgency_defaults_to_normal`.
         {
             let hints: HashMap<String, OwnedValue> = HashMap::new();
             assert_eq!(parse_urgency(&hints), 1);
         }
-        // Phase `parse_urgency_reads_critical_byte`.
         {
             let mut hints: HashMap<String, OwnedValue> = HashMap::new();
             hints.insert("urgency".to_string(), OwnedValue::from(2u8));
             assert_eq!(parse_urgency(&hints), 2);
         }
-        // Phase `tilo_hints_are_bounded_before_they_reach_chrome`.
         {
             let mut hints = HashMap::new();
             hints.insert("x-tilo-badge-count".into(), OwnedValue::from(u32::MAX));
@@ -2175,7 +2379,6 @@ mod tests {
 
     #[test]
     fn continuity_projection_commands_and_routes_are_allowlisted_and_expire() {
-        // Phase `continuity_projection_redacts_and_local_only_never_registers`.
         {
             let bridge = NotificationBridge::new();
             assert!(
@@ -2200,7 +2403,6 @@ mod tests {
             assert!(projected.body.is_empty());
             assert!(projected.body_redacted);
         }
-        // Phase `continuity_commands_are_live_allowlisted_and_retire_once`.
         {
             let bridge = NotificationBridge::new();
             let id = bridge
@@ -2237,7 +2439,6 @@ mod tests {
                 2_001,
             ));
         }
-        // Phase `continuity_routes_expire_and_restart_epoch_invalidates_them`.
         {
             let first = NotificationBridge::new();
             let id = first
@@ -2281,7 +2482,6 @@ mod tests {
 
     #[test]
     fn remote_inbox_keys_dedupes_prunes_and_bounds_by_source() {
-        // Phase `remote_inbox_keys_identical_ids_by_authenticated_source`.
         {
             let bridge = NotificationBridge::new();
             let projection = remote_projection(9, "Same id");
@@ -2293,7 +2493,6 @@ mod tests {
             assert_eq!(bridge.remote_continuity_len(), 1);
             assert!(!bridge.retire_remote_continuity("attacker", remote_projection(9, "x").id));
         }
-        // Phase `remote_inbox_dedupes_and_replaces_one_source_record`.
         {
             let bridge = NotificationBridge::new();
             let first = remote_projection(2, "First");
@@ -2311,7 +2510,6 @@ mod tests {
             };
             assert_eq!(notification.projection.title, "Replacement");
         }
-        // Phase `offline_source_is_pruned_without_retiring_online_sibling`.
         {
             let bridge = NotificationBridge::new();
             let id = remote_projection(12, "Shared id").id;
@@ -2343,7 +2541,6 @@ mod tests {
             );
             assert!(bridge.retire_remote_continuity("tablet", id));
         }
-        // Phase `remote_inbox_is_bounded_and_evicts_oldest`.
         {
             let bridge = NotificationBridge::new();
             for index in 0..=MAX_CONTINUITY_NOTIFICATIONS {
@@ -2366,7 +2563,6 @@ mod tests {
 
     #[test]
     fn remote_records_route_live_actions_expire_and_fail_closed() {
-        // Phase `remote_commands_validate_live_action_and_route_exact_origin`.
         {
             let bridge = NotificationBridge::new();
             let projection = remote_projection(3, "Action");
@@ -2400,7 +2596,6 @@ mod tests {
             );
             assert_eq!(bridge.remote_continuity_len(), 0);
         }
-        // Phase `remote_expiry_and_retire_emit_local_removal`.
         {
             let bridge = NotificationBridge::new();
             let projection = remote_projection(4, "Expires");
@@ -2417,7 +2612,6 @@ mod tests {
                 }]
             );
         }
-        // Phase `remote_record_carries_provenance_and_is_never_projectable`.
         {
             let bridge = NotificationBridge::new();
             assert!(bridge.receive_continuity_projection(
@@ -2434,7 +2628,6 @@ mod tests {
             assert_eq!(notification.source_label, "Quinten's phone");
             assert!(!notification.is_projectable());
         }
-        // Phase `malformed_sharing_hint_fails_closed`.
         {
             let hints = HashMap::from([(
                 "x-tilo-device-sharing".to_string(),
@@ -2449,7 +2642,6 @@ mod tests {
 
     #[test]
     fn flatpak_identity_requires_matching_scope_runtime_and_install() {
-        // Phase `systemd_escape_and_scope_match_handle_flatpak_ids_without_indexing`.
         {
             assert_eq!(systemd_escape("org.example.App"), "org.example.App");
             assert_eq!(systemd_escape("org.example App"), "org.example\\x20App");
@@ -2462,7 +2654,6 @@ mod tests {
                 "org.example App"
             ));
         }
-        // Phase `foreign_flatpak_identity_requires_matching_runtime_cgroup_and_install`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let app_id = "org.example.Chat";
@@ -2714,7 +2905,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     async fn dbus_server_round_trips_notifications_with_attribution() {
-        // Phase `notify_round_trips_with_caller_attribution`.
         {
             let bridge = NotificationBridge::new();
             let callers = CallerMap::new();
@@ -2770,7 +2960,6 @@ mod tests {
             assert_eq!(caller.workspace_id, WorkspaceId(7));
             assert_eq!(caller.app_id.as_str(), "org.example.app");
         }
-        // Phase `replaces_id_is_preserved`.
         {
             let bridge = NotificationBridge::new();
             let (_server, client) = bring_up_pair(bridge.clone(), CallerMap::new()).await;
@@ -2793,7 +2982,6 @@ mod tests {
             assert_eq!(inc[0].dbus_id, 99);
             assert_eq!(inc[0].expire_timeout, 0, "never-expire timeout preserved");
         }
-        // Phase `close_notification_enqueues_close_request`.
         {
             let bridge = NotificationBridge::new();
             let (_server, client) = bring_up_pair(bridge.clone(), CallerMap::new()).await;
@@ -2805,7 +2993,6 @@ mod tests {
                 .expect("call CloseNotification");
             assert_eq!(bridge.drain_close_requests(), vec![5]);
         }
-        // Phase `get_capabilities_and_server_information`.
         {
             let bridge = NotificationBridge::new();
             let (_server, client) = bring_up_pair(bridge, CallerMap::new()).await;

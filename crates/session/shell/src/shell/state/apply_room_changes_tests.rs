@@ -24,8 +24,7 @@ fn hosted_room() -> (WorkspaceTree, WorkspaceId, RoomId) {
 fn joiner(room: RoomId) -> (WorkspaceTree, WorkspaceId) {
     let mut guest = WorkspaceTree::default();
     guest.set_salt_override(0x2222);
-    let ws = guest.append_empty_workspace("Mine");
-    assert!(guest.set_room(ws, room), "the guest joins the room");
+    let ws = guest.join_room("Mine", room).expect("joins the room");
     (guest, ws)
 }
 
@@ -288,4 +287,109 @@ fn a_continuation_room_is_pinned_to_the_person_and_governed_only_if_theirs() {
     earlier.local_person = Some(person);
     assert!(earlier.adopt_continuation_room(room, "Laptop"));
     assert_eq!(earlier.room_authority(room), RoomAuthority::Person(person));
+}
+
+/// A batch admitted without the tree held ([`WorkspaceTree::merge_room_changes`])
+/// installs on top of what the room's document gained meanwhile, and a
+/// batch whose sender lost the right to write meanwhile is refused.
+#[test]
+fn a_batch_admitted_off_the_tree_installs_on_what_the_room_gained_meanwhile() {
+    let (mut host, ws, room) = hosted_room();
+    let editor = [0x44; 32];
+    let person = person_id_of(editor).expect("a root names a person");
+    host.admit_in_workspace(ws, &OWNER.to_string(), &person, CapRole::Editor)
+        .expect("the owner admits a member");
+    host.sync_room_doc(room);
+    let from_editor = PeerOrigin::hub(3);
+    host.authenticated_persons
+        .insert(from_editor.clone(), editor);
+
+    let mut doc = host
+        .room_docs
+        .get(&room)
+        .expect("the host's room document")
+        .clone()
+        .with_actor(automerge::ActorId::random());
+    let heads = doc.get_heads();
+    let contents = match doc
+        .get(ROOT, projection::ROOM_CONTENTS_KEY)
+        .expect("readable")
+    {
+        Some((_, contents)) => contents,
+        None => doc
+            .put_object(ROOT, projection::ROOM_CONTENTS_KEY, ObjType::Map)
+            .expect("contents"),
+    };
+    let strip = doc
+        .put_object(
+            &contents,
+            projection::contents_key(compose_id(0x4444, 1)).as_str(),
+            ObjType::Map,
+        )
+        .expect("strip");
+    doc.put(&strip, "name", "Member's strip").expect("name");
+    doc.commit();
+    let edit = changes_since(&mut doc, &heads);
+    let edit_heads = doc.get_heads();
+
+    let basis = host
+        .room_batch_basis(room, &from_editor)
+        .expect("the host takes batches for its room");
+    let admitted = basis.admit(&edit, &from_editor);
+    // Meanwhile the host renames its room.
+    host.desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.id == ws)
+        .expect("the room's workspace")
+        .name = "Renamed meanwhile".into();
+    host.sync_room_doc(room);
+    let renamed = host.room_heads(room);
+    assert!(
+        host.install_room_batch(&basis, admitted, &edit, &from_editor)
+            .expect("the batch parses")
+    );
+    assert!(
+        holds_changes(&mut host, room, &edit_heads),
+        "the batch landed"
+    );
+    assert!(
+        holds_changes(&mut host, room, &renamed),
+        "so did the rename"
+    );
+    assert_eq!(
+        host.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == ws)
+            .map(|workspace| workspace.name.as_str()),
+        Some("Renamed meanwhile")
+    );
+
+    // A sender demoted while its batch was admitted is admitted again, and
+    // refused.
+    let held = host.room_heads(room);
+    let basis = host
+        .room_batch_basis(room, &from_editor)
+        .expect("the host takes batches for its room");
+    let mut doc = host
+        .room_docs
+        .get(&room)
+        .expect("room")
+        .clone()
+        .with_actor(automerge::ActorId::random());
+    let heads = doc.get_heads();
+    doc.put(&strip, "name", "Edited again").expect("name");
+    doc.commit();
+    let again = changes_since(&mut doc, &heads);
+    let admitted = basis.admit(&again, &from_editor);
+    assert!(admitted.is_ok(), "an editor may write");
+    host.authenticated_persons
+        .insert(from_editor.clone(), [0x55; 32]);
+    assert!(
+        !host
+            .install_room_batch(&basis, admitted, &again, &from_editor)
+            .expect("the batch parses")
+    );
+    assert_eq!(host.room_heads(room), held, "nothing of it is stored");
 }

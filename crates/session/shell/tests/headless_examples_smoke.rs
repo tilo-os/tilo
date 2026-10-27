@@ -32,7 +32,7 @@ fn repo_root() -> PathBuf {
 
 /// The compositor Cargo built for this integration-test run.
 fn shell_binary() -> PathBuf {
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_shell"));
+    let binary = tilo_test_env::package_binary!("shell");
     assert!(
         binary.exists(),
         "expected compositor binary at {}",

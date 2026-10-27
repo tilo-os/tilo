@@ -9,7 +9,7 @@
 
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, PermissionsExt};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 
 pub use tilo_control::{
@@ -22,12 +22,9 @@ pub use tilo_control::{
 /// fresh 0700 staging directory next to `path`, restricted to 0600 there, and
 /// only then renamed into place, so it is never reachable with wider
 /// permissions, even briefly and even when `path` is in a shared directory.
-/// A stale socket at `path` is replaced; anything else there is refused.
-///
-/// # Errors
-///
-/// Returns the filesystem error, or `AlreadyExists` when `path` names
-/// something other than a socket.
+/// A stale socket at `path` is replaced. A socket another process still
+/// answers on is that process's (another session sharing the runtime
+/// directory) and is refused, as is anything that is not a socket.
 pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
     let parent = path
         .parent()
@@ -52,6 +49,12 @@ pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
                 format!("{} exists and is not a socket", path.display()),
             ));
         }
+        Ok(_) if UnixStream::connect(path).is_ok() => {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!("{} already has a live listener", path.display()),
+            ));
+        }
         Ok(_) | Err(_) => {}
     }
 
@@ -74,12 +77,10 @@ pub fn bind_private(path: &Path) -> io::Result<UnixListener> {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
-    use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
 
     #[test]
     fn control_socket_is_private_replaces_only_stale_sockets() {
-        // Phase `default_lives_under_an_absolute_runtime_dir_only`.
         {
             assert_eq!(
                 default_socket_path(Some("/run/user/1000".into())),
@@ -98,7 +99,6 @@ mod tests {
             assert_eq!(admin_socket_path(Some("run/user".into())), None);
         }
 
-        // Phase `bound_socket_is_private_and_reachable`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let path = default_socket_path(Some(runtime.path().into())).unwrap();
@@ -112,14 +112,12 @@ mod tests {
             assert_eq!(socket.permissions().mode() & 0o777, 0o600);
             assert_eq!(socket.uid(), rustix::process::geteuid().as_raw());
             UnixStream::connect(&path).unwrap();
-            // The staging directory is gone.
             assert_eq!(
                 std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
                 1
             );
         }
 
-        // Phase `a_stale_socket_is_replaced`.
         {
             let runtime = tempfile::tempdir().unwrap();
             let path = runtime.path().join("control.sock");
@@ -130,7 +128,21 @@ mod tests {
             UnixStream::connect(&path).unwrap();
         }
 
-        // Phase `a_file_or_link_at_the_path_is_left_alone`.
+        // Phase `a_socket_another_session_answers_on_is_left_to_it`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let path = runtime.path().join("device-unlock.sock");
+            let theirs = bind_private(&path).unwrap();
+            let error = bind_private(&path).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
+            theirs.set_nonblocking(true).unwrap();
+            let _client = UnixStream::connect(&path).unwrap();
+            assert!(
+                theirs.accept().is_ok(),
+                "the first session still answers on its socket"
+            );
+        }
+
         {
             let runtime = tempfile::tempdir().unwrap();
             let file = runtime.path().join("notes.txt");

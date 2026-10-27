@@ -18,12 +18,6 @@ pub type Stream = tokio::net::UnixStream;
 #[cfg(not(unix))]
 pub type Stream = tokio::io::DuplexStream;
 
-/// Connect to the local service socket at `path`.
-///
-/// # Errors
-///
-/// Returns the connection error, or `Unsupported` where [`SUPPORTED`] is
-/// `false`.
 #[cfg_attr(
     not(unix),
     expect(

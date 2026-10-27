@@ -36,9 +36,9 @@ use tilo_desktop::emoji_picker::EmojiPicker;
 use tilo_desktop::window_switcher::{WindowAddress, WindowSwitcher, WindowThumbnails};
 
 use super::tab_menu::{TabMenuLayer, TabMenuTarget};
-use crate::shell::TabMenuAction;
 use crate::shell::display_confirm::DisplayConfirmPrompt;
 use crate::shell::power_menu::PowerMenu;
+use crate::shell::window_menu::WindowMenuAction;
 
 /// Every shell overlay, topmost first. Declaration order *is* the stacking
 /// order: input is offered to open layers in it, assistive technology reads
@@ -67,7 +67,6 @@ pub(crate) enum LayerId {
     Overview,
     WorkspaceSettings,
     Collaborators,
-    RoomActivity,
     QuickSettings,
     /// The now-playing card beside the Quick Settings root page.
     NowPlaying,
@@ -75,7 +74,7 @@ pub(crate) enum LayerId {
 }
 
 impl LayerId {
-    pub(crate) const ALL: [Self; 16] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::DisplayConfirmation,
         Self::WindowSwitcher,
         Self::Dictation,
@@ -88,7 +87,6 @@ impl LayerId {
         Self::Overview,
         Self::WorkspaceSettings,
         Self::Collaborators,
-        Self::RoomActivity,
         Self::QuickSettings,
         Self::NowPlaying,
         Self::ShortcutHelp,
@@ -144,7 +142,9 @@ impl LayerGeometry<'_> {
     /// placed by: the display holding `anchor` (the control, caret or
     /// pointer it was opened from), else the focused one — the display
     /// the person is working on, which follows the pointer across
-    /// displays — else the whole viewport, which is the one display.
+    /// displays — else the first display, the primary. Never the whole
+    /// viewport while there are displays: across two of them it straddles
+    /// the seam. The viewport only stands in before any display is known.
     pub(crate) fn display_for(&self, anchor: Option<Rect>) -> Rect {
         anchor
             .and_then(|anchor| {
@@ -154,6 +154,7 @@ impl LayerGeometry<'_> {
                     .find(|display| display.contains(anchor.center()))
             })
             .or(self.focused_output)
+            .or_else(|| self.outputs.first().copied())
             .unwrap_or(self.viewport)
     }
 }
@@ -176,8 +177,11 @@ pub(crate) enum LayerIntent {
     /// answers with [`TabMenuLayer::settle`].
     TabMenu {
         target: TabMenuTarget,
-        action: TabMenuAction,
+        action: WindowMenuAction,
     },
+    /// Tell an agent about the thing the shell's context menu was opened on
+    /// ([`TabMenuLayer::take_thing`]).
+    TellAgent,
     /// Start a session lifecycle action through the one session executor
     /// that the typed `session.*` actions also reach.
     Session(os_actions::SessionAction),
@@ -232,7 +236,6 @@ impl<'a, 'e> LayerCx<'a, 'e> {
     }
 }
 
-/// What a layer paints with.
 pub(crate) struct LayerPaint<'a> {
     pub scene: &'a mut Scene,
     pub transform: Affine,
@@ -424,12 +427,6 @@ impl OverlayStack {
             .any(ShellLayer::dismiss)
     }
 
-    pub(crate) fn is_animating(&self, now: Instant) -> bool {
-        self.layers()
-            .into_iter()
-            .any(|layer| layer.is_animating(now))
-    }
-
     /// Advance every layer's clock; `true` when any of them changed.
     pub(crate) fn tick(&mut self, now: Instant) -> bool {
         self.layers_mut()
@@ -561,7 +558,12 @@ mod tests {
             focused_output: None,
         };
         assert_eq!(geometry.display_for(caret(2000.0)), right);
-        assert_eq!(geometry.display_for(None), viewport);
+        assert_eq!(
+            geometry.display_for(None),
+            left,
+            "with no display focused, the first (primary) display: never the \
+             whole viewport, which straddles the seam"
+        );
         geometry.focused_output = Some(right);
         assert_eq!(geometry.display_for(caret(10.0)), left);
         assert_eq!(geometry.display_for(caret(9000.0)), right);

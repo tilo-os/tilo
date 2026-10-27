@@ -142,7 +142,6 @@ Comment=Create images and edit photographs\n";
     /// .flatpakref fields, fallbacks, group/comment handling, conversion and argument scanning.
     #[test]
     fn flatpakref_parsing_and_install_conversion() {
-        // Case `parses_install_fields`.
         {
             let parsed = FlatpakRef::parse(SAMPLE, "/tmp/gimp.flatpakref").unwrap();
             assert_eq!(parsed.app_id, "org.gimp.GIMP");
@@ -153,7 +152,6 @@ Comment=Create images and edit photographs\n";
             assert_eq!(parsed.source_path, PathBuf::from("/tmp/gimp.flatpakref"));
         }
 
-        // Case `requires_name_and_applies_fallbacks`.
         {
             assert!(FlatpakRef::parse("[Flatpak Ref]\nTitle=Nameless\n", "x").is_none());
             let parsed = FlatpakRef::parse("[Flatpak Ref]\nName=org.example.App\n", "x").unwrap();
@@ -161,7 +159,6 @@ Comment=Create images and edit photographs\n";
             assert_eq!(parsed.branch, "stable");
         }
 
-        // Case `ignores_other_groups_and_ini_comments`.
         {
             let parsed = FlatpakRef::parse(
                 "Name=wrong\n[Other]\nName=also.wrong\n[Flatpak Ref]\n; note\nName=real.Id\n",
@@ -171,7 +168,6 @@ Comment=Create images and edit photographs\n";
             assert_eq!(parsed.app_id, "real.Id");
         }
 
-        // Case `conversion_keeps_reference_path_for_confirmed_install`.
         {
             let item = FlatpakRef::parse(SAMPLE, "/tmp/gimp.flatpakref")
                 .unwrap()

@@ -12,7 +12,10 @@
 //! app-owned durable mutation.
 
 use crate::widget::{AppModel, ModelPath};
+
+mod feed;
 use chrono::{Datelike, NaiveDate};
+pub use feed::{DateFeed, DateShown};
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -60,6 +63,10 @@ pub struct DatePicker {
     marked: HashSet<NaiveDate>,
     /// The day the host calls today; `None` reads the toolkit clock.
     today: Option<NaiveDate>,
+    /// The app's day, when the app feeds the picker ([`DateFeed`]).
+    feed: Option<DateFeed>,
+    /// The feed's revision the picker last read.
+    feed_seen: Option<u64>,
 }
 
 impl DatePicker {
@@ -79,6 +86,8 @@ impl DatePicker {
             navigator: false,
             marked: HashSet::new(),
             today: None,
+            feed: None,
+            feed_seen: None,
         }
     }
 
@@ -349,6 +358,15 @@ impl Widget for DatePicker {
             self.selected = date;
             self.month_view = (date.year(), date.month());
         }
+        self.pull_feed();
+    }
+
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        self.pull_feed()
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn build_layout(
@@ -570,19 +588,27 @@ impl Widget for DatePicker {
     }
 
     /// Value is the selected date in ISO `YYYY-MM-DD` form; `expanded` is
-    /// left unset since the grid is rendered inline.
+    /// left unset since the grid is rendered inline. A picker the app feeds
+    /// ([`DateFeed`]) is addressed: what it chooses goes to the app's feed,
+    /// so it is a bound control, reached by its name.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::ComboBox)
-                .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
-                .with_value(self.selected.format("%Y-%m-%d").to_string())
-                .with_state(
-                    AccessState::new()
-                        .focusable(self.is_focusable())
-                        .focused(self.is_focused()),
-                ),
-        )
+        let node = AccessNode::new(Role::ComboBox)
+            .with_optional_name(self.accessible_name.as_ref().map(|name| crate::i18n!(name)))
+            .with_value(self.selected.format("%Y-%m-%d").to_string())
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused()),
+            );
+        Some(if self.feed.is_some() {
+            node.with_action_target(format!(
+                "date-picker:{}",
+                self.accessible_name.as_deref().unwrap_or("date")
+            ))
+        } else {
+            node
+        })
     }
 
     fn perform_action(
@@ -820,6 +846,36 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
+
+    /// A month the app feeds hands what is chosen to the app, so the
+    /// native app contract finds it bound, addressed by its name.
+    #[test]
+    fn a_fed_month_is_a_bound_control() {
+        let feed = DateFeed::new();
+        let day = NaiveDate::from_ymd_opt(2024, 6, 1).unwrap();
+        feed.show(DateShown {
+            selected: day,
+            today: day,
+            marked: Vec::new(),
+        });
+        let host = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            DatePicker::new(day)
+                .navigator()
+                .with_accessible_name("Month")
+                .fed_by(&feed),
+            (400, 400),
+            Theme::dark(),
+        );
+        let audit = host.native_app_audit();
+        assert!(audit.issues.is_empty(), "{audit:?}");
+        assert_eq!(
+            host.root::<DatePicker>()
+                .accessibility()
+                .and_then(|node| node.action_target),
+            Some("date-picker:Month".to_owned())
+        );
+    }
 
     #[test]
     fn clicking_a_date_focuses_the_grid_for_keyboard_navigation() {

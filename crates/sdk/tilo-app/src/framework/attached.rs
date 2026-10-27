@@ -68,7 +68,7 @@ struct Beside {
 }
 
 /// One record held in its app's view, attached and never drawn. See the
-/// [module docs](self).
+/// module docs.
 pub struct AttachedView {
     definition: &'static ApplicationDefinition,
     checkout: RecordCheckout,
@@ -238,6 +238,7 @@ impl AttachedView {
         } = view;
         let invoker = &invoker;
         let me = invoker.actor.as_str();
+        let joined_at = (!created).then(|| heads_of(&document)).transpose()?;
         let cache = PortableStorage::new("attached-views", DEVICE)?;
         let key = if checkout.id.is_package_primary() {
             StorageKey::Primary {
@@ -296,6 +297,9 @@ impl AttachedView {
         .map_err(|error| error.to_string())?;
         let landed = Landed::default();
         frame.set_action_transport(Box::new(landed.clone()))?;
+        if let Some(joined_at) = &joined_at {
+            refuse_written_on_open(definition, &records, &checkout, joined_at)?;
+        }
         let mut frontier = DocumentFrontier::default();
         if let Some(heads) = records.with(&checkout.id, ui_core::automerge::AutoCommit::get_heads) {
             frontier.advance(heads);
@@ -325,7 +329,6 @@ impl AttachedView {
         self.definition
     }
 
-    /// The record the view holds.
     #[must_use]
     pub const fn checkout(&self) -> &RecordCheckout {
         &self.checkout
@@ -398,15 +401,24 @@ impl AttachedView {
         confirmed: bool,
         appearance: Option<tilo_actions::Appearance>,
     ) -> Result<ActionOutput, DoorError> {
-        // The task may name the person the participant acts for now.
-        let invoker = self
-            .context
+        let invoker = self.invoker_appearing(appearance);
+        self.invoke_as(invoker, address, arguments, confirmed)
+    }
+
+    /// Whom [`Self::invoke_appearing`] admits an operation for: the
+    /// participant, or the person the task says it acts for now, showing
+    /// `appearance`.
+    #[must_use]
+    pub fn invoker_appearing(
+        &self,
+        appearance: Option<tilo_actions::Appearance>,
+    ) -> tilo_actions::ActionInvoker {
+        self.context
             .as_ref()
             .and_then(|context| context.invoker.clone())
             .filter(|invoker| invoker.actor == self.invoker.actor)
             .unwrap_or_else(|| self.invoker.clone())
-            .with_appearance(appearance);
-        self.invoke_as(invoker, address, arguments, confirmed)
+            .with_appearance(appearance)
     }
 
     /// [`Self::invoke`] for `invoker`, whom the host admitted for this one
@@ -424,6 +436,78 @@ impl AttachedView {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
     ) -> Result<ActionOutput, DoorError> {
+        let (_, started) = self.start_as(invoker, address, arguments, confirmed)?;
+        self.frame.relayout();
+        Ok(started.completed().unwrap_or_default())
+    }
+
+    /// [`Self::invoke_as`], waiting up to `within` for an operation that
+    /// runs as a job (rendering a picture, exporting a file's worth) to end
+    /// and answering with what it ended as, where [`Self::invoke_as`]
+    /// answers a job at once with nothing: for a host that hands an
+    /// effect's result back to whoever asked, an agent planning its next
+    /// step on it. A job still running when `within` is up is cancelled.
+    ///
+    /// # Errors
+    /// As [`Self::invoke_as`]; the job's failure or cancellation, or that it
+    /// did not end in time.
+    pub fn invoke_as_awaiting(
+        &mut self,
+        invoker: tilo_actions::ActionInvoker,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+        within: ui_core::time::Duration,
+    ) -> Result<ActionOutput, DoorError> {
+        let (invocation, started) = self.start_as(invoker, address, arguments, confirmed)?;
+        if let Some(output) = started.completed() {
+            self.frame.relayout();
+            return Ok(output);
+        }
+        let ended = |frame: &FrameHarness| {
+            frame
+                .job_updates(invocation)
+                .iter()
+                .find(|update| update.is_terminal())
+                .cloned()
+        };
+        self.frame
+            .wait_until(within, |frame| ended(frame).is_some());
+        match ended(&self.frame) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                Err(DoorError::Failed(error.message))
+            }
+            Some(_) => Err(DoorError::Failed(format!(
+                "{} was cancelled",
+                address.action
+            ))),
+            None => {
+                let _ = self.frame.cancel_job(invocation);
+                Err(DoorError::Failed(format!(
+                    "{} did not finish within {} seconds",
+                    address.action,
+                    within.as_secs()
+                )))
+            }
+        }
+    }
+
+    /// Start the operation `address` names for `invoker`, as
+    /// [`Self::invoke_as`] does: its invocation, and whether it finished.
+    fn start_as(
+        &mut self,
+        invoker: tilo_actions::ActionInvoker,
+        address: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+    ) -> Result<
+        (
+            tilo_actions::InvocationId,
+            ui_core::host_operation::ResourceOperationStart,
+        ),
+        DoorError,
+    > {
         if !tilo_actions::door::survey(&self.resources())
             .iter()
             .any(|entry| &entry.address == address)
@@ -437,7 +521,7 @@ impl AttachedView {
             &tilo_actions::ActionContext::default()
                 .with_app(self.definition.app_id(), self.definition.title()),
         );
-        let (_, started) = self.frame.start_bound_job_within(
+        self.frame.start_bound_job_within(
             Some(invoker),
             Some(&ambient),
             &ui_core::bound_dispatch::BoundActionAddress {
@@ -446,9 +530,7 @@ impl AttachedView {
             },
             arguments,
             confirmed,
-        )?;
-        self.frame.relayout();
-        Ok(started.completed().unwrap_or_default())
+        )
     }
 
     /// Perform `invoke`, an action of the record's resource `R` built from
@@ -590,9 +672,6 @@ impl AttachedView {
     /// Merge a peer's change into the view's record. Incremental changes
     /// that build on nothing this record holds belong to another record (or
     /// arrived ahead of what they build on) and are left alone: `Ok(false)`.
-    ///
-    /// # Errors
-    /// Returns why the record store refused the peer's document.
     pub fn merge(&mut self, mutation: &DocumentMutation) -> Result<bool, String> {
         if let DocumentMutation::Incremental(bytes) = mutation {
             let mut incoming = ui_core::automerge::AutoCommit::new();
@@ -674,7 +753,6 @@ impl AttachedView {
             .collect()
     }
 
-    /// Read `record`, one the view holds beside its own.
     pub fn read_record<R>(
         &self,
         record: &ui_core::record::RecordId,
@@ -710,10 +788,6 @@ impl AttachedView {
     /// not yet (a part another device started). Changes that build on
     /// nothing the part holds are left alone: `Ok(false)`. Whether it
     /// changed.
-    ///
-    /// # Errors
-    /// Returns why the record is not one the view holds beside its own, or
-    /// why the record store refused the peer's document.
     pub fn merge_record(
         &mut self,
         record: &ui_core::record::RecordId,
@@ -803,4 +877,69 @@ impl AttachedView {
             }
         }
     }
+}
+
+/// The heads of the record `document` holds: what a participant joining it
+/// was given, past which anything its view writes while it opens is refused
+/// ([`refuse_written_on_open`]).
+fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, String> {
+    ui_core::automerge::AutoCommit::load(document)
+        .map(|mut doc| doc.get_heads())
+        .map_err(|error| error.to_string())
+}
+
+/// Refuse a view that wrote to the record `checkout` names, one its
+/// participant joined at `joined_at`, as it opened ([`written_on_open`]).
+fn refuse_written_on_open(
+    definition: &ApplicationDefinition,
+    records: &RecordStore,
+    checkout: &RecordCheckout,
+    joined_at: &[ui_core::automerge::ChangeHash],
+) -> Result<(), String> {
+    match records.with(&checkout.id, |doc| written_on_open(doc, joined_at)) {
+        Some(Some(wrote)) => Err(format!(
+            "{} wrote to a record it joined as it opened ({wrote}): only the record's \
+             creator writes its initial content, and a participant that joins adds \
+             nothing on open. What the record starts with belongs in the app's seed; \
+             what a participant adds belongs behind a control they use",
+            definition.app_id
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// What the app's view wrote to `doc` past `joined_at` while it opened, named
+/// for the message that refuses it; `None` when it wrote nothing. A storage
+/// migration, or the structure and identity every member derives the same
+/// way, is the framework's and none of the app's.
+///
+/// Refused rather than kept: the view's write would land under the
+/// replication frontier the view starts from, so it would never be sent and
+/// the participant would see a record nobody else does. Deferring it until
+/// the record's content arrives would only move that fork later.
+fn written_on_open(
+    doc: &mut ui_core::automerge::AutoCommit,
+    joined_at: &[ui_core::automerge::ChangeHash],
+) -> Option<String> {
+    use tilo_actions::{ActionContext, Did, FrameworkChange, HistoryOp};
+    let wrote: Vec<String> = doc
+        .get_changes(joined_at)
+        .into_iter()
+        .filter_map(|change| {
+            let message = change.message()?;
+            if message.starts_with(tilo_actions::CONTINUATION_PREFIX)
+                || FrameworkChange::from_change_message(message) == Some(FrameworkChange::Native)
+            {
+                return Some("an edit".to_owned());
+            }
+            Some(match ActionContext::from_change_message(message)?.what? {
+                Did::Verb(verb) => format!("`{}`", verb.action.action),
+                Did::Edit(edit) => format!("an edit of `{}`", edit.field),
+                Did::Group(_) => "a group of edits".to_owned(),
+                Did::History(step) if matches!(step.op, HistoryOp::Migrate { .. }) => return None,
+                Did::History(_) => "a history step".to_owned(),
+            })
+        })
+        .collect();
+    (!wrote.is_empty()).then(|| wrote.join(", "))
 }

@@ -5,7 +5,7 @@
 //! of each; the host supplies content and receives intents.
 
 use super::{
-    Affine, Icon, NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeModel, TreeRowKey, TreeView,
+    Affine, Icon, NodeId, Point, Rect, Scene, TextRenderer, Theme, TreeImpl, TreeModel, TreeRowKey,
 };
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::num::f32_of_f64;
@@ -15,7 +15,6 @@ use crate::widget::{ChipFace, ChipLead, Widget};
 
 /// Prefix of the context menu's semantic targets inside the tree.
 const MENU_TARGET: &str = "menu:";
-/// Semantic target of the heading action.
 pub(super) const HEADING_ACTION_TARGET: &str = "heading-action";
 
 /// A compact action shown at the trailing edge of the hovered row (a "new
@@ -100,7 +99,7 @@ fn is_button_target(target: &str) -> bool {
         || target.starts_with("move:")
 }
 
-impl<T, M: TreeModel> TreeView<T, M> {
+impl<T, M: TreeModel> TreeImpl<T, M> {
     /// Offer a context menu: right click on a row (which selects it) or on
     /// empty space (`None`), the `Menu` key or `Shift+F10` on the focused
     /// row, a row action that [opens the menu](TreeRowAction::opens_context_menu),
@@ -348,7 +347,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
             .collect()
     }
 
-    /// Whether the row actions of `key`'s row are showing.
     pub(super) fn row_actions_visible(&self, key: TreeRowKey) -> bool {
         !self.row_actions.is_empty()
             && matches!(key, TreeRowKey::Node(id) if self.model.shows_row_actions(id))
@@ -604,6 +602,59 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if self.viewport.max_offset() - offset > 0.5 {
             crate::surface::content_edge_fade(scene, transform, body, ContentEdge::Bottom, ground);
         }
+    }
+
+    /// Where [`Self::paint_edge_fades`] paints each fade it paints, by key.
+    pub(super) fn edge_fade_bands(&self) -> Vec<(&'static str, Rect, crate::surface::ContentEdge)> {
+        use crate::surface::ContentEdge;
+        if !self.fill || self.viewport.viewport() <= 0.0 {
+            return Vec::new();
+        }
+        let body = Rect::new(self.rect.x0, self.body_top(), self.rect.x1, self.rect.y1);
+        let reach = crate::surface::CONTENT_FADE_PX.min(body.height() / 3.0);
+        if reach <= 0.0 || body.width() <= 0.0 {
+            return Vec::new();
+        }
+        let offset = self.viewport.offset();
+        let mut bands = Vec::new();
+        if offset > 0.5 {
+            bands.push((
+                "fade-top",
+                Rect::new(body.x0, body.y0, body.x1, body.y0 + reach),
+                ContentEdge::Top,
+            ));
+        }
+        if self.viewport.max_offset() - offset > 0.5 {
+            bands.push((
+                "fade-bottom",
+                Rect::new(body.x0, body.y1 - reach, body.x1, body.y1),
+                ContentEdge::Bottom,
+            ));
+        }
+        bands
+    }
+
+    /// The track [`Self::paint_scroll_thumb`] paints the thumb in, while the
+    /// rows overflow.
+    pub(super) fn scroll_thumb_track(&self, theme: &Theme) -> Option<Rect> {
+        if !self.fill || self.viewport.viewport() <= 0.0 {
+            return None;
+        }
+        let metrics = crate::widget::scrollbar::ScrollMetrics::new(
+            self.viewport.content_extent(),
+            self.viewport.viewport(),
+            self.viewport.offset(),
+        );
+        if !metrics.overflows() {
+            return None;
+        }
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        Some(Rect::new(
+            self.rect.x1 - s1 * 1.5,
+            self.body_top() + s1,
+            self.rect.x1 - s1 / 2.0,
+            self.rect.y1 - s1,
+        ))
     }
 
     /// A quiet scroll thumb at the trailing edge while the rows overflow a

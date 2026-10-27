@@ -7,11 +7,13 @@
 //! surfaces are open), lays the widgets out at their edges beside any live
 //! call or navigation card, and paints them.
 //!
-//! The Super surface is the command palette opened field-only
-//! ([`ui::CommandPalette::set_field_only_while_empty`]) over a light scrim,
-//! with every widget open around it and the time and status under the field. Typing
-//! searches exactly as the palette always has; Escape and a click outside
-//! close it through the palette's own paths.
+//! The Super surface is global search over a light scrim, with every widget
+//! open around it and the time and status under the field. Tapped, it shows
+//! the launcher under the field ([`crate::shell::search::launcher`]); held,
+//! it is the field alone
+//! ([`ui::CommandPalette::set_field_only_while_empty`]), a glance at the
+//! widgets. Typing searches exactly as the palette always has; Escape and a
+//! click outside close it through the palette's own paths.
 //!
 //! Nothing here paints a blurred backdrop: glance forms and cards are the
 //! opaque overlay surface, the scrim one translucent fill, so an idle desk
@@ -46,7 +48,7 @@ use crate::shell::desk_widgets::{
 };
 use crate::shell::input_policy::SuperGesture;
 use crate::shell::now_playing::{NowPlayingView, PlaybackStatus, PlayerSnapshot};
-use crate::shell::quick_settings::now_playing::{NowPlayingCard, paint_artwork};
+use crate::shell::quick_settings::now_playing::{NowPlayingCard, paint_song_at_rest};
 
 /// How strongly the Super surface dims what is behind it, as a share of
 /// the theme's modal scrim: the background stays mostly visible.
@@ -75,8 +77,6 @@ const CALENDAR_ROW: f64 = ui::tokens::Spacing::BASE.s8 as f64;
 const MONITOR_GLANCE: Size = Size::new(176.0, 40.0);
 const MONITOR_HEADER: f64 = ui::tokens::Layout::BASE.row_header as f64;
 const MONITOR_ROW: f64 = ui::tokens::Metrics::BASE.bar_height as f64;
-/// A press that moves this far becomes a drag to another edge.
-const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 
 /// How the Super surface was opened.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,13 +92,8 @@ pub enum SuperSurface {
     Pinned,
 }
 
-/// A press on a widget, and the drag it may become.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Press {
-    id: WidgetId,
-    at: Point,
-    dragging: bool,
-}
+/// A press on a widget, and the drag to another edge it may become.
+type Press = layout::EdgeDrag<WidgetId>;
 
 /// What the host keeps for the desk between frames.
 pub(crate) struct DeskState {
@@ -114,6 +109,9 @@ pub(crate) struct DeskState {
     /// (`ui::motion::Ambient`).
     shown: BTreeMap<WidgetId, ui::motion::Presence>,
     opened: BTreeMap<WidgetId, ui::motion::Presence>,
+    /// Whether another surface owned the screen at the last update: the
+    /// widgets coming back when it goes follow what closed it.
+    covered: bool,
     super_surface: Option<SuperSurface>,
     system_activities: Vec<Rect>,
     music_card: NowPlayingCard,
@@ -139,6 +137,7 @@ impl Default for DeskState {
             edges: BTreeMap::new(),
             shown: BTreeMap::new(),
             opened: BTreeMap::new(),
+            covered: false,
             super_surface: None,
             system_activities: Vec::new(),
             music_card: NowPlayingCard::new(),
@@ -171,13 +170,23 @@ impl ShellOverlayHost {
     /// then the whole surface once Super has been held longer or the
     /// pointer moves. A chord at either stage takes it away without a fade.
     pub fn super_gesture(&mut self, gesture: SuperGesture, doc: &AutoCommit, root: &ObjId) {
+        // While the capture tool is up, Super is held for its chords: nothing
+        // the hold brings up may show over what is being captured.
+        if self.capture_studio.is_open()
+            && matches!(
+                gesture,
+                SuperGesture::Tap | SuperGesture::Peek | SuperGesture::PeekFull
+            )
+        {
+            return;
+        }
         match (gesture, self.desk.super_surface) {
             // A second tap closes the surface, and closes plain search as it
             // always has.
             (SuperGesture::Tap, surface) if surface.is_some() || self.palette_visible => {
                 self.close_super_surface();
             }
-            (SuperGesture::Tap, None) => {
+            (SuperGesture::Tap, None) | (SuperGesture::PeekTaken, Some(SuperSurface::Glimpse)) => {
                 self.open_super_surface(SuperSurface::Pinned, doc, root);
             }
             (SuperGesture::Peek, None) if !self.palette_visible => {
@@ -185,9 +194,6 @@ impl ShellOverlayHost {
             }
             (SuperGesture::PeekFull, Some(SuperSurface::Glimpse)) => {
                 self.open_super_surface(SuperSurface::Peek, doc, root);
-            }
-            (SuperGesture::PeekTaken, Some(SuperSurface::Glimpse)) => {
-                self.open_super_surface(SuperSurface::Pinned, doc, root);
             }
             (
                 SuperGesture::PeekReleased | SuperGesture::PeekCancelled,
@@ -201,10 +207,14 @@ impl ShellOverlayHost {
                     self.close_super_surface();
                 } else {
                     self.desk.super_surface = Some(SuperSurface::Pinned);
+                    self.palette.set_field_only_while_empty(false);
+                    self.palette_layout_dirty = true;
                 }
             }
             (SuperGesture::PeekTaken, Some(SuperSurface::Peek)) => {
                 self.desk.super_surface = Some(SuperSurface::Pinned);
+                self.palette.set_field_only_while_empty(false);
+                self.palette_layout_dirty = true;
             }
             _ => return,
         }
@@ -224,10 +234,13 @@ impl ShellOverlayHost {
     /// Open the Super surface: search with an empty field at the top, every
     /// widget open around it, the time and status.
     pub fn open_super_surface(&mut self, mode: SuperSurface, doc: &AutoCommit, root: &ObjId) {
-        if !self.palette_visible {
-            self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
+        if !self.global_search_open() {
+            self.toggle_global_search();
         }
-        self.palette.set_field_only_while_empty(true);
+        // Tapped, it is global search with the launcher under the field;
+        // held, a glance at the widgets with the field alone.
+        self.palette
+            .set_field_only_while_empty(mode != SuperSurface::Pinned);
         self.palette_layout_dirty = true;
         self.desk.super_surface = Some(mode);
         self.refresh_search_results(doc, root);
@@ -243,7 +256,7 @@ impl ShellOverlayHost {
     /// The hold was a chord after all, or Super came up during the quiet
     /// stage: everything the hold brought is gone at once, with no fade
     /// for the eye to follow while the chord runs.
-    fn cancel_super_surface(&mut self) {
+    pub(super) fn cancel_super_surface(&mut self) {
         self.close_super_surface();
         self.palette_was_visible = false;
         self.palette_transition = ui::motion::Presence::closed();
@@ -340,10 +353,8 @@ impl ShellOverlayHost {
         fullscreen
             || flags.capture
             || LayerId::ALL.into_iter().any(|id| {
-                !matches!(
-                    id,
-                    LayerId::CommandPalette | LayerId::RoomActivity | LayerId::NowPlaying
-                ) && self.overlay_is_open(id, flags)
+                !matches!(id, LayerId::CommandPalette | LayerId::NowPlaying)
+                    && self.overlay_is_open(id, flags)
             })
     }
 
@@ -470,6 +481,21 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Whether another surface owns the screen now, and what the widgets
+    /// showing move as: coming back as a surface over them closes, as that
+    /// close did (a key lands them at once, a click fades them in);
+    /// otherwise on their own.
+    fn desk_cover(&mut self) -> (bool, ui::tokens::MotionSource) {
+        let covered = self.desk_covered();
+        let uncovered = std::mem::replace(&mut self.desk.covered, covered) && !covered;
+        let source = if uncovered {
+            self.input_source
+        } else {
+            ui::tokens::MotionSource::Pointer
+        };
+        (covered, source)
+    }
+
     /// Lay the widgets out and decide their forms at `now`. Returns whether
     /// anything on the desk changed.
     pub(crate) fn update_desk(&mut self, now: Instant) -> bool {
@@ -484,7 +510,7 @@ impl ShellOverlayHost {
             self.end_super_surface();
         }
         self.desk.team_count = self.team_count();
-        let items: Vec<Item> = WidgetId::ALL
+        let items: Vec<Item<WidgetId>> = WidgetId::ALL
             .into_iter()
             .map(|id| {
                 let (glance, open, has_content) = self.widget_sizes(id, now);
@@ -509,9 +535,9 @@ impl ShellOverlayHost {
         // whatever waits beside or below it. Widgets on that edge step past
         // all of it, as past a call card.
         let mut occupied = self.desk.system_activities.clone();
-        let ribbon = self.strip_switcher_zone();
+        let ribbon = self.strip_frame().zone();
         if ribbon.area() > 0.0 {
-            let labels = self.strip_switcher.extent_beside(&self.strip_ribbon());
+            let labels = self.strip_navigator.labels_extent(&self.strip_frame());
             let switcher = if labels.area() > 0.0 {
                 ribbon.union(labels)
             } else {
@@ -528,7 +554,7 @@ impl ShellOverlayHost {
             .as_ref()
             .and_then(|chrome| chrome.borrow().active_strip_id())
             .map(|strip| strip.0);
-        let covered = self.desk_covered();
+        let (covered, shown_source) = self.desk_cover();
         let ctx = Context {
             now,
             prefs: &self.desk.prefs,
@@ -555,7 +581,7 @@ impl ShellOverlayHost {
                 .shown
                 .entry(slot.id)
                 .or_insert_with(ui::motion::Presence::closed)
-                .show(shown, shown_spec(slot.id, asked), motion, source, now);
+                .show(shown, shown_spec(slot.id, asked), motion, shown_source, now);
             // A card only ever opens on purpose: asked for.
             self.desk
                 .opened
@@ -614,7 +640,7 @@ impl ShellOverlayHost {
     /// show it at rest.
     #[cfg(feature = "hosted-test-control")]
     pub fn desk_settling_for_shots(&self) -> bool {
-        self.desk_animating(Instant::now())
+        self.desk_animating(ui::time::now())
     }
 
     /// Lay the desk out at `now` with every widget already where it is
@@ -634,6 +660,21 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Take every desk widget away at once, with no fade: something that
+    /// must not show them has opened (the capture tool, which holds the
+    /// screen still and must not hold a glance the Super of its chord
+    /// brought up).
+    pub(super) fn clear_desk_at_once(&mut self) {
+        for presence in self
+            .desk
+            .shown
+            .values_mut()
+            .chain(self.desk.opened.values_mut())
+        {
+            presence.snap(false);
+        }
+    }
+
     pub(crate) fn desk_animating(&self, now: Instant) -> bool {
         self.desk
             .shown
@@ -645,15 +686,18 @@ impl ShellOverlayHost {
     /// A pointer sample at `p`, in desktop coordinates.
     pub(crate) fn desk_pointer(&mut self, p: Point, now: Instant) {
         self.desk.board.on_pointer(p, now, &self.desk.slots);
-        if let Some(press) = self.desk.press.as_mut()
-            && !press.dragging
-            && (p - press.at).hypot() > DRAG_SLOP
-        {
-            press.dragging = true;
+        if let Some(press) = self.desk.press.as_mut() {
+            press.moved(p);
         }
         if self.update_desk(now) || self.desk.press.is_some_and(|press| press.dragging) {
             self.bump_chrome();
         }
+    }
+
+    /// Where each desk widget waits in its quiet form: what else at the
+    /// edges (the pinned people overlay) steps past.
+    pub(super) fn desk_glances(&self) -> Vec<Rect> {
+        self.desk.slots.iter().map(|slot| slot.glance).collect()
     }
 
     pub(crate) fn desk_pointer_left(&mut self, now: Instant) {
@@ -661,7 +705,7 @@ impl ShellOverlayHost {
     }
 
     /// The widget form under `p`, if one is showing there.
-    fn desk_hit(&self, p: Point) -> Option<(WidgetId, Form, Rect)> {
+    pub(super) fn desk_hit(&self, p: Point) -> Option<(WidgetId, Form, Rect)> {
         self.desk
             .slots
             .iter()
@@ -696,24 +740,19 @@ impl ShellOverlayHost {
                 if form == Form::Open && self.desk_open_click(id, rect, p) {
                     return true;
                 }
-                self.desk.press = Some(Press {
-                    id,
-                    at: p,
-                    dragging: false,
-                });
+                self.desk.press = Some(Press::new(id, p));
                 true
             }
             ElementState::Released => {
                 let Some(press) = self.desk.press.take() else {
                     return false;
                 };
-                if press.dragging {
-                    let edge = layout::nearest_edge(self.overlay_area(), p);
+                if let Some(edge) = press.release(self.overlay_area(), p) {
                     self.set_widget_edge(press.id, edge);
                 } else if self.desk.board.form(press.id) == Form::Glance {
                     self.desk.board.open(press.id);
                 }
-                self.update_desk(Instant::now());
+                self.update_desk(ui::time::now());
                 self.bump_chrome();
                 true
             }
@@ -820,7 +859,7 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Vec<Rect> {
-        let now = Instant::now();
+        let now = ui::time::now();
         self.desk.motion = theme.motion();
         let mut painted = Vec::new();
         let team_showing = self.desk.board.form(WidgetId::Team) != Form::Away
@@ -840,19 +879,20 @@ impl ShellOverlayHost {
         let drag = self
             .desk
             .press
-            .filter(|press| press.dragging)
             .zip(self.last_cursor)
-            .map(|(press, p)| (press.id, p - press.at));
+            .and_then(|(press, p)| Some((press.id, press.shift(p)?)));
         // The strip switcher's labels are where the person is looking: a
         // widget glance under them steps aside while they are open.
         let switcher_card = self
-            .strip_switcher
+            .strip_navigator
             .is_open()
-            .then(|| self.strip_switcher.layout().bounds);
+            .then(|| self.strip_navigator.switcher().layout().bounds);
         for slot in self.desk.slots.clone() {
-            let shown = self.desk.shown.get(&slot.id).map_or(0.0, |t| {
-                shown_opacity(slot.id, t.progress(now), self.desk.motion)
-            });
+            let shown = self
+                .desk
+                .shown
+                .get(&slot.id)
+                .map_or(0.0, |t| shown_opacity(t.progress(now)));
             if shown <= f32::EPSILON || switcher_card.is_some_and(|card| card.overlaps(slot.glance))
             {
                 continue;
@@ -1088,31 +1128,20 @@ fn team_card_height(people: usize) -> f64 {
     TEAM_HEADER + TEAM_ROW * ui::num::f64_of_usize(rows) + more + 8.0
 }
 
-/// How widget `id` comes and goes. The Team widget's faces are people, and
-/// a person shown faintly reads as a ghost: it appears with the standard
-/// Appear motion, whole within its first moments, and is otherwise hidden,
-/// never resting in between; it goes at once, as the others do, so a chord
-/// that cancels a held Super leaves no face fading out behind it. The others
-/// arrive as ambient chrome does.
+/// How widget `id` comes and goes: as ambient chrome does, by opacity in
+/// place, going at once. The Team widget's faces are people, and a person
+/// shown faintly reads as a ghost, so it always arrives as if asked for, at
+/// `fast`, whole as its motion ends and otherwise hidden, never on the slow
+/// unasked fade. Its motion is exactly its fade: a frame it asks for is a
+/// frame that changes.
 fn shown_spec(id: WidgetId, asked: bool) -> ui::motion::MotionSpec {
-    match id {
-        WidgetId::Team => ui::motion::MotionSpec {
-            exit: ui::motion::Pace::Instant,
-            ..ui::motion::Appear::SPEC
-        },
-        _ => ui::motion::Ambient::spec(asked),
-    }
+    ui::motion::Ambient::spec(asked || id == WidgetId::Team)
 }
 
-/// How much of widget `id` shows at `progress` of its coming and going
+/// How much of a widget shows at `progress` of its coming and going
 /// ([`shown_spec`]).
-fn shown_opacity(id: WidgetId, progress: f64, motion: ui::tokens::EffectiveMotion) -> f32 {
-    match id {
-        WidgetId::Team => {
-            ui::motion::Appear::pose(progress, vello::kurbo::Point::ORIGIN, motion).opacity
-        }
-        _ => ui::motion::unit_opacity(progress),
-    }
+fn shown_opacity(progress: f64) -> f32 {
+    ui::motion::unit_opacity(progress)
 }
 
 /// The ground every desk card stands on: the one floating card
@@ -1160,7 +1189,12 @@ fn paint_music_glance(
         Point::new(rect.x0 + 6.0 + 14.0, rect.center().y),
         (28.0, 28.0),
     );
-    paint_artwork(scene, transform, text, theme, art, player, None);
+    paint_song_at_rest(
+        &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+        player,
+        art,
+        None,
+    );
     let glyph = Rect::from_center_size(Point::new(rect.x1 - 20.0, rect.center().y), (14.0, 14.0));
     let icon = if player.status == PlaybackStatus::Playing {
         ui::icons::Icon::Pause

@@ -1,14 +1,18 @@
-//! The capture button over a camera's picture: the shutter.
+//! The capture button: the shutter, over a camera's picture or on the
+//! desktop's capture bar.
 //!
 //! A ring in media ink around a disc (a photo), a dot in danger red (a
-//! video), or a square in danger red inside a red ring (recording). It sits
-//! on the media itself, so it is inked from `colors.media`, never from the
-//! theme's surfaces; it lifts under the pointer, takes your focus ring and
-//! names what pressing it does.
+//! video), a square in danger red inside a red ring (recording), or the
+//! picture-in-picture glyph inside the ring (a live picture in picture).
+//! Over media it is inked from `colors.media`; on chrome
+//! ([`CaptureButtonFace::on_chrome`]) from the ink of the ground it stands
+//! on. It lifts under the pointer, takes your focus ring and names what
+//! pressing it does.
 
 use vello::kurbo::{Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 
+use crate::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::theme::Theme;
 
@@ -21,6 +25,8 @@ pub enum CaptureKind {
     Video,
     /// Stop the recording in progress.
     Recording,
+    /// Float what is chosen as a live picture in picture.
+    Pip,
 }
 
 impl CaptureKind {
@@ -31,6 +37,7 @@ impl CaptureKind {
             Self::Photo => "Take photo",
             Self::Video => "Start recording",
             Self::Recording => "Stop recording",
+            Self::Pip => "Create picture in picture",
         }
     }
 }
@@ -44,6 +51,8 @@ pub struct CaptureButtonFace {
     hovered: bool,
     pressed: bool,
     focused: bool,
+    /// Inked from the theme's ground rather than from the media palette.
+    on_chrome: bool,
 }
 
 impl CaptureButtonFace {
@@ -55,7 +64,16 @@ impl CaptureButtonFace {
             hovered: false,
             pressed: false,
             focused: false,
+            on_chrome: false,
         }
+    }
+
+    /// The button stands on chrome (the capture bar), not on a picture: its
+    /// ring and disc take the primary ink of the theme it is painted with.
+    #[must_use]
+    pub fn on_chrome(mut self, on_chrome: bool) -> Self {
+        self.on_chrome = on_chrome;
+        self
     }
 
     /// Whether the camera is live; a button over no picture is dimmed.
@@ -83,7 +101,6 @@ impl CaptureButtonFace {
         self
     }
 
-    /// The button's diameter in `theme`.
     #[must_use]
     pub fn diameter(theme: &Theme) -> f64 {
         f64::from(theme.tokens.metrics.min_pointer_target) * 2.0
@@ -104,10 +121,13 @@ impl CaptureButtonFace {
         let rect = Self::rect(center, theme);
         let radius = rect.width() / 2.0;
         let ring = f64::from(spacing.s1);
-        let ink = if self.live {
-            colors.media.ink
-        } else {
-            colors.media.ink_dim
+        let ink = match (self.on_chrome, self.live) {
+            (false, true) => colors.media.ink,
+            (false, false) => colors.media.ink_dim,
+            (true, true) => colors.text_primary,
+            (true, false) => colors
+                .text_primary
+                .with_alpha_factor(crate::widget::DISABLED_ALPHA),
         };
         let danger = colors.semantic.danger;
         let recording = self.kind == CaptureKind::Recording;
@@ -157,6 +177,17 @@ impl CaptureButtonFace {
                     ink,
                     None,
                     &Circle::new(center, core),
+                );
+            }
+            CaptureKind::Pip => {
+                let edge = core * std::f64::consts::SQRT_2;
+                crate::icons::draw_icon(
+                    ctx.scene,
+                    ctx.transform,
+                    Rect::from_center_size(center, (edge, edge)),
+                    crate::icons::Icon::PictureInPicture2,
+                    ink,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
         }

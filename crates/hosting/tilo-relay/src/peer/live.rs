@@ -132,11 +132,21 @@ pub(super) async fn handle_voice(
                     workspace_id,
                     grant: Box::new(grant),
                 },
-                Err(reason) => Envelope::VoiceRefused {
-                    workspace_id,
-                    call,
-                    reason,
-                },
+                Err(reason) => {
+                    // Why a call drops: a beat for a participation the host
+                    // forgot, or a fresh join it refused.
+                    tracing::info!(
+                        call = %hex::encode(call),
+                        beat = participation.is_some(),
+                        %reason,
+                        "voice join refused"
+                    );
+                    Envelope::VoiceRefused {
+                        workspace_id,
+                        call,
+                        reason,
+                    }
+                }
             })
         }
         Envelope::VoiceLeave {
@@ -308,18 +318,31 @@ pub(super) async fn handle_presence(
         if peer.role == crate::auth::PeerRole::Device {
             wr.request_checkpoint(&peer.device_public_key);
         }
-        // A spectator's presence asks for its baseline and nothing more:
-        // nobody sees it, and it asks the room for no content.
+        // A spectator's presence asks for its baseline: nobody sees it. In
+        // a public room it reads what members read, so it may also ask the
+        // room for the content those records reference.
         if room_access::watches_only(&wr, peer) {
+            let reads = wr.spectators.is_some_and(|spectators| spectators.public);
+            let authority = wr.room_authority.clone();
+            drop(wr);
+            if reads && let Some(body) = asks {
+                answer_content(
+                    &ws,
+                    authority.as_ref(),
+                    workspace_id,
+                    (*session.own_device_public_key, peer.device_public_key),
+                    body,
+                );
+            }
             return Ok(None);
         }
         wr.fanout_presence(&peer.device_public_key, peer.role, &env, slot);
         let authority = wr.room_authority.clone();
         drop(wr);
-        if let (Some(body), Some(authority)) = (asks, authority) {
+        if let Some(body) = asks {
             answer_content(
                 &ws,
-                &authority,
+                authority.as_ref(),
                 workspace_id,
                 (*session.own_device_public_key, peer.device_public_key),
                 body,
@@ -343,21 +366,29 @@ pub(super) async fn handle_presence(
 /// Answer a member's request for content its room's records reference
 /// from what this host keeps ([`crate::rooms::RoomContent`]), to the
 /// member's device alone, off the connection's task: reading the content
-/// may touch the disk.
+/// may touch the disk. A host that governs no room here keeps none of it,
+/// and says so, so the member stops counting on it.
 fn answer_content(
     ws: &Arc<tokio::sync::Mutex<crate::workspace::WorkspaceRuntime>>,
-    authority: &crate::rooms::RoomAuthority,
+    authority: Option<&crate::rooms::RoomAuthority>,
     workspace_id: u64,
     (host, member): ([u8; 32], [u8; 32]),
     body: Vec<u8>,
 ) {
-    let Some(rooms) = authority.rooms() else {
-        return;
-    };
-    let (ws, room) = (Arc::clone(ws), authority.room().to_owned());
+    let served = authority.and_then(|authority| {
+        authority
+            .rooms()
+            .map(|rooms| (rooms, authority.room().to_owned()))
+    });
+    let ws = Arc::clone(ws);
     tokio::spawn(async move {
-        let Ok(frames) =
-            tokio::task::spawn_blocking(move || rooms.content_answer(&room, &body)).await
+        let Ok(frames) = tokio::task::spawn_blocking(move || match served {
+            Some((rooms, room)) => rooms.content_answer(&room, &body),
+            None => crate::rooms::lacks_answer(&host, &body)
+                .into_iter()
+                .collect(),
+        })
+        .await
         else {
             return;
         };
@@ -403,7 +434,31 @@ pub(super) async fn route_record_content(
     {
         return;
     }
-    if let Some(limits) = session.member_limits
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return;
+    };
+    let runtime = ws.lock().await;
+    // A spectator hands no member content.
+    if room_access::watches_only(&runtime, peer) {
+        return;
+    }
+    // A piece answering the host's own request is the host's to keep.
+    let host = if to == *session.own_device_public_key {
+        runtime
+            .room_authority
+            .as_ref()
+            .and_then(|authority| Some((authority.rooms()?, authority.room().to_owned())))
+    } else {
+        None
+    };
+    // What the host asked for counts against what it keeps of a member's
+    // files (its attachment quotas), so a file as large as it keeps
+    // reaches it; every other piece spends the member's content budget.
+    let asked = host
+        .as_ref()
+        .is_some_and(|(rooms, room)| rooms.host_expects(room, &frame));
+    if !asked
+        && let Some(limits) = session.member_limits
         && peer.user_public_key != *session.own_user_public_key
         && let Err(limited) = limits.admit_content(
             &peer.user_public_key,
@@ -414,18 +469,19 @@ pub(super) async fn route_record_content(
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "dropped record content over the member limit");
         return;
     }
-    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+    if to == *session.own_device_public_key {
+        drop(runtime);
+        if let Some((rooms, room)) = host {
+            let from = peer.device_public_key;
+            tokio::task::spawn_blocking(move || rooms.content_for_host(&room, from, &frame));
+        }
         return;
-    };
+    }
     let stamped = Envelope::RecordContent {
         workspace_id,
         to_device_public_key: to,
         from_device_public_key: peer.device_public_key,
         frame,
     };
-    let runtime = ws.lock().await;
-    // A spectator hands no member content.
-    if !room_access::watches_only(&runtime, peer) {
-        runtime.route_lossy(&to, stamped);
-    }
+    runtime.route_lossy(&to, stamped);
 }

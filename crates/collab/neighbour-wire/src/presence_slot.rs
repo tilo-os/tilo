@@ -132,7 +132,6 @@ mod tests {
             Some(caret),
             app(b"field", PeerPresencePayload::Caret { pos: 9 }).presence_slot()
         );
-        // Typing and the caret at one key are two states, each kept.
         let typing = app(b"field", PeerPresencePayload::Typing { start: 1, end: 2 })
             .presence_slot()
             .unwrap();

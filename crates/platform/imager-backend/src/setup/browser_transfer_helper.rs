@@ -18,7 +18,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-mod completion;
+pub(crate) mod completion;
 
 const RECEIPT: &str = "activation.json";
 const MAX_RECEIPT: usize = 32 * 1024;

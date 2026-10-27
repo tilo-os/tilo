@@ -115,9 +115,6 @@ impl HistoryClient {
     }
     /// Read a bounded page and refuse another identity/account/route or malformed
     /// data before any private content becomes visible in the consumer.
-    ///
-    /// # Errors
-    /// Returns the host's refusal or a mismatched/oversized history response.
     pub async fn read(&self, route: Route) -> Result<HistoryPage, HistoryError> {
         if self.principal.trim().is_empty()
             || self.principal.len() > 256

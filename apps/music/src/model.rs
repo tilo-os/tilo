@@ -524,7 +524,6 @@ mod tests {
 
     #[test]
     fn sample_library_orders_albums_searches_and_cycles_repeat() {
-        // Phase `sample_library_is_populated`.
         {
             let lib = seed::sample_library();
             assert!(lib.artists.len() >= 4);
@@ -533,7 +532,6 @@ mod tests {
             assert!(!lib.playlists.is_empty());
         }
 
-        // Phase `album_tracks_are_ordered`.
         {
             let lib = seed::sample_library();
             for album in lib.albums.keys() {
@@ -544,18 +542,15 @@ mod tests {
             }
         }
 
-        // Phase `search_finds_by_title_and_artist`.
         {
             let lib = seed::sample_library();
             // Every track title should be findable by its own title.
             let some = lib.tracks.values().next().unwrap().clone();
             let res = lib.search(&some.title);
             assert!(res.tracks.contains(&some.id));
-            // Empty query yields nothing.
             assert!(lib.search("   ").is_empty());
         }
 
-        // Phase `repeat_cycles`.
         {
             assert_eq!(RepeatMode::Off.next(), RepeatMode::All);
             assert_eq!(RepeatMode::All.next(), RepeatMode::One);

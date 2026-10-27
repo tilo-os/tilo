@@ -23,6 +23,8 @@ mod canonical_frame;
 #[cfg(feature = "filesystem")]
 pub mod caps_file;
 #[cfg(feature = "filesystem")]
+pub mod change_signal;
+#[cfg(feature = "filesystem")]
 pub mod clock;
 #[cfg(all(feature = "filesystem", target_os = "linux"))]
 pub mod cloud;
@@ -71,6 +73,8 @@ pub mod namespace_persist;
 pub mod native;
 #[cfg(feature = "filesystem")]
 pub mod peer_auth;
+#[cfg(feature = "document-media")]
+pub mod public_content;
 #[cfg(feature = "filesystem")]
 pub mod reachability;
 #[cfg(feature = "filesystem")]
@@ -140,6 +144,8 @@ pub mod transport_gate;
 pub mod unsaved;
 #[cfg(feature = "filesystem")]
 pub mod workspace_authority;
+#[cfg(any(feature = "filesystem", feature = "document-media"))]
+pub mod write_attribution;
 
 #[cfg(test)]
 #[cfg(feature = "filesystem")]
@@ -181,8 +187,8 @@ pub use hydration::Hydrator;
 pub use identity::{
     CertifiedIdentityError, CertifiedMountIdentity, MountIdentity, PeerCredentials,
     RevocationListLoadError, WorkspaceShareIssuerError, identity_paths,
-    load_certified_mount_identity, load_mount_identity, load_revocation_list,
-    load_workspace_share_issuer, revocation_list_path,
+    load_certified_mount_identity, load_certified_mount_identity_once_valid, load_mount_identity,
+    load_revocation_list, load_workspace_share_issuer, revocation_list_path,
 };
 #[cfg(feature = "filesystem")]
 pub use named_share_delivery::{

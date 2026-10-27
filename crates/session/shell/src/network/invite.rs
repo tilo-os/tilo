@@ -155,11 +155,6 @@ pub fn invite_id(token: &str) -> [u8; 32] {
 
 /// Mint an invite for `workspace` with no always-on hosts and no bound
 /// signing identity.
-///
-/// # Errors
-///
-/// Returns an error if `workspace` has no room identity, if `owner_addr`
-/// does not belong to `key`, or if encoding the signed token fails.
 pub fn make_invite_token(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -170,11 +165,6 @@ pub fn make_invite_token(
 }
 
 /// Mint an invite carrying optional always-on workspace hosts.
-///
-/// # Errors
-///
-/// Returns an error if `workspace` has no room identity, if `owner_addr`
-/// does not belong to `key`, or if encoding the signed token fails.
 pub fn make_invite_token_with_hosts(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -272,11 +262,6 @@ pub struct InviteRecipient<'a> {
 
 /// Mint an invite bound to one recipient person identity. The optional name is
 /// signed by the inviter and therefore safe for an offline host to project.
-///
-/// # Errors
-///
-/// Returns an error if the workspace, endpoint, device certificate, or
-/// serialized signed token is invalid.
 pub fn make_invite_token_with_recipient(
     key: &iroh::SecretKey,
     workspace: &Workspace,
@@ -293,7 +278,7 @@ pub fn make_invite_token_with_recipient(
     } = terms;
     let recipient_user_public_key = recipient.map(|recipient| recipient.user_public_key);
     let invitee_name = recipient.and_then(|recipient| recipient.name);
-    if workspace.room.is_nil() {
+    if workspace.room().is_nil() {
         return Err(std::io::Error::other(
             "workspace has no room identity to invite into",
         ));
@@ -320,7 +305,7 @@ pub fn make_invite_token_with_recipient(
     }
     let mut token = PeerInviteToken {
         workspace_id: workspace.id.raw(),
-        room_id: workspace.room.to_string(),
+        room_id: workspace.room().to_string(),
         owner_peer_id: key.public().to_string(),
         owner_addr: owner_addr.clone(),
         host_addrs: host_addrs.to_vec(),
@@ -427,28 +412,24 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
     Ok(token)
 }
 
-/// Validate `token_str` and bind `local`'s workspace to the room it names.
+/// Validate `token_str` and join the room it names as a workspace of its
+/// own: the workspace that is the room, made for it (or the one this device
+/// has of it already). Answers that workspace and the room.
 ///
 /// # Errors
 ///
-/// Returns an error if the token fails [`validate_invite_token`], if it
-/// carries no valid room id, or if `local` names no local workspace to
-/// accept the invite into.
+/// Returns an error if the token fails [`validate_invite_token`], or if it
+/// carries no valid room id or one that is never joined.
 pub fn accept_invite_into(
     tree: &mut WorkspaceTree,
-    local: WorkspaceId,
     token_str: &str,
-) -> Result<RoomId, String> {
+) -> Result<(WorkspaceId, RoomId), String> {
     let token = validate_invite_token(token_str)?;
     let room = RoomId::parse(&token.room_id)
         .ok_or_else(|| "invite carries no valid room id".to_string())?;
-    if tree.room_of(local).is_none() {
-        return Err(format!(
-            "no local workspace {} to accept the invite into",
-            local.raw()
-        ));
-    }
-    tree.set_room(local, room);
+    let local = tree
+        .join_room(&crate::shell::i18n::t("workspace-joined-name"), room)
+        .ok_or_else(|| "invite names a room that is never joined".to_string())?;
     tree.pin_room_authority(room, PeerOrigin::peer_id(&token.owner_peer_id));
     let endpoint: iroh::EndpointId = token
         .owner_peer_id
@@ -468,7 +449,7 @@ pub fn accept_invite_into(
         local,
         Collaborator::new(person.unwrap_or_else(|| handle.clone()), handle).with_session(session),
     );
-    Ok(room)
+    Ok((local, room))
 }
 
 #[cfg(test)]
@@ -486,7 +467,6 @@ mod tests {
 
     #[test]
     fn invitations_round_trip_their_room_hosts_and_roster() {
-        // Phase `round_trip_binds_room_key_and_dialing_address`.
         {
             let key = iroh::SecretKey::from_bytes(&[7; 32]);
             let ws = workspace(99);
@@ -494,11 +474,10 @@ mod tests {
             let encoded = make_invite_token(&key, &ws, &addr, 3600).unwrap();
             let token = validate_invite_token(&encoded).unwrap();
             assert_eq!(token.workspace_id, 99);
-            assert_eq!(token.room_id, ws.room.to_string());
+            assert_eq!(token.room_id, ws.room().to_string());
             assert_eq!(token.owner_addr, addr);
             assert_eq!(token.owner_peer_id, key.public().to_string());
         }
-        // Phase `round_trip_carries_signed_always_on_hosts`.
         {
             let owner = iroh::SecretKey::from_bytes(&[13; 32]);
             let host = iroh::SecretKey::from_bytes(&[14; 32]);
@@ -514,7 +493,6 @@ mod tests {
             let token = validate_invite_token(&encoded).unwrap();
             assert_eq!(token.host_addrs, vec![host_addr]);
         }
-        // Phase `invitations_minted_in_the_same_second_remain_distinct_and_valid`.
         {
             let owner = iroh::SecretKey::from_bytes(&[32; 32]);
             let workspace = workspace(32);
@@ -544,23 +522,30 @@ mod tests {
             validate_invite_token(&first).expect("first remains valid");
             validate_invite_token(&second).expect("second remains valid");
         }
-        // Phase `accepting_invite_adopts_room_and_roster_identity`.
         {
             let key = iroh::SecretKey::from_bytes(&[11; 32]);
             let host = workspace(11);
             let encoded = make_invite_token(&key, &host, &endpoint(&key, 3), 3600).unwrap();
             let mut guest = WorkspaceTree::default();
-            let guest_id = WorkspaceId(4242);
-            guest
-                .desktop
-                .workspaces
-                .push(Workspace::new(guest_id, "guest"));
+            let (guest_id, room) = accept_invite_into(&mut guest, &encoded).unwrap();
+            assert_eq!(room, host.room());
+            assert_eq!(guest.room_of(guest_id), Some(host.room()));
             assert_eq!(
-                accept_invite_into(&mut guest, guest_id, &encoded).unwrap(),
-                host.room
+                guest_id,
+                WorkspaceId::of_room(host.room()),
+                "the room's own workspace"
             );
-            assert_eq!(guest.room_of(guest_id), Some(host.room));
-            assert_eq!(guest.desktop.workspaces[0].collaborators.len(), 1);
+            assert_eq!(
+                guest
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == guest_id)
+                    .unwrap()
+                    .collaborators
+                    .len(),
+                1
+            );
         }
     }
 
@@ -570,7 +555,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn every_signed_invitation_field_is_tamper_evident() {
-        // Phase `home_host_pin_is_signed_and_tamper_evident`.
         {
             use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -621,7 +605,6 @@ mod tests {
                     .contains("signature")
             );
         }
-        // Phase `selected_role_is_signed_and_tamper_evident`.
         {
             let owner = iroh::SecretKey::from_bytes(&[31; 32]);
             let encoded = make_invite_token_with_identity_and_role(
@@ -649,7 +632,6 @@ mod tests {
                     .contains("signature")
             );
         }
-        // Phase `recipient_binding_and_name_are_signature_covered`.
         {
             let owner = iroh::SecretKey::from_bytes(&[18; 32]);
             let workspace = workspace(18);
@@ -681,7 +663,6 @@ mod tests {
             let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
             assert!(validate_invite_token(&forged).is_err());
         }
-        // Phase `an_unsigned_recipient_cannot_be_grafted_onto_a_bearer`.
         {
             let owner = iroh::SecretKey::from_bytes(&[19; 32]);
             let workspace = workspace(19);
@@ -693,7 +674,6 @@ mod tests {
             let forged = B64.encode(serde_json::to_vec(&forged).expect("json"));
             assert!(validate_invite_token(&forged).is_err());
         }
-        // Phase `tampering_any_signed_route_field_is_rejected`.
         {
             let key = iroh::SecretKey::from_bytes(&[8; 32]);
             let encoded = make_invite_token(&key, &workspace(1), &endpoint(&key, 1), 3600).unwrap();
@@ -707,7 +687,6 @@ mod tests {
                     .contains("signature")
             );
         }
-        // Phase `substituted_endpoint_is_rejected`.
         {
             let owner = iroh::SecretKey::from_bytes(&[9; 32]);
             let attacker = iroh::SecretKey::from_bytes(&[10; 32]);
@@ -723,7 +702,6 @@ mod tests {
 
     #[test]
     fn invitation_identity_is_bound_and_unsupported_invites_are_refused() {
-        // Phase `identity_certificate_binds_inviter_person_to_device_endpoint`.
         {
             use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
@@ -753,9 +731,7 @@ mod tests {
             assert_eq!(decoded.owner_device_cert, Some(cert));
 
             let mut tree = WorkspaceTree::default();
-            let local = WorkspaceId(99);
-            tree.desktop.workspaces.push(workspace(99));
-            accept_invite_into(&mut tree, local, &encoded).expect("accept");
+            let (local, _) = accept_invite_into(&mut tree, &encoded).expect("accept");
             let collab_types::caps::Principal::Person(person) =
                 collab_types::caps::Principal::person_from_key(
                     collab_types::crypto::Ed25519PublicKey::from_bytes(
@@ -766,17 +742,19 @@ mod tests {
                 unreachable!()
             };
             assert!(
-                tree.desktop.workspaces[0]
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == local)
+                    .unwrap()
                     .collaborators
                     .iter()
                     .any(|member| member.id == person)
             );
         }
-        // Phase `nil_room_cannot_be_invited`.
         {
             let key = iroh::SecretKey::from_bytes(&[12; 32]);
-            let mut ws = workspace(4);
-            ws.set_room(RoomId::nil());
+            let ws = crate::shell::state::rehomed(&workspace(4), RoomId::nil());
             assert!(make_invite_token(&key, &ws, &endpoint(&key, 4), 3600).is_err());
         }
     }

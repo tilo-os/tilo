@@ -34,6 +34,7 @@ pub use super::xrgb_history::{
 };
 
 mod bridge;
+mod damage;
 mod diagnostics;
 mod output_view;
 mod retained_target;
@@ -48,6 +49,7 @@ mod tests;
 #[cfg(target_os = "linux")]
 mod window_cycle_memory_tests;
 mod xrgb;
+pub(crate) use damage::{coalesce_damage, damage_area};
 use diagnostics::DispatchStageObserver;
 use output_view::OutputSurface;
 pub use output_view::{OutputSignal, OutputTarget, OutputView};
@@ -273,77 +275,6 @@ pub(crate) fn damage_is_profitable(dirty_pixels: u64, full_pixels: u64) -> bool 
     full_pixels != 0 && dirty_pixels.saturating_mul(4) < full_pixels.saturating_mul(3)
 }
 
-/// The pixels `rects` cover, an overlap counted once per rectangle.
-pub(crate) fn damage_area(rects: &[vello::FineDamageRect]) -> u64 {
-    rects.iter().fold(0_u64, |pixels, rect| {
-        pixels.saturating_add(u64::from(rect.width).saturating_mul(u64::from(rect.height)))
-    })
-}
-
-fn damage_union(a: vello::FineDamageRect, b: vello::FineDamageRect) -> vello::FineDamageRect {
-    let x = a.x.min(b.x);
-    let y = a.y.min(b.y);
-    let right = a.x.saturating_add(a.width).max(b.x.saturating_add(b.width));
-    let bottom =
-        a.y.saturating_add(a.height)
-            .max(b.y.saturating_add(b.height));
-    vello::FineDamageRect {
-        x,
-        y,
-        width: right.saturating_sub(x),
-        height: bottom.saturating_sub(y),
-    }
-}
-
-/// `rects` without the ones another contains, merged down to at most `limit` rectangles when
-/// there are more. Each merge joins the pair whose union adds the least area, so a caret blinking
-/// at one place stays one small rectangle however many frames repeated it. Merging only ever
-/// repaints more than the damage, which is correct; it never loses a pixel.
-pub(crate) fn coalesce_damage(
-    rects: Vec<vello::FineDamageRect>,
-    limit: usize,
-) -> Vec<vello::FineDamageRect> {
-    let right = |rect: &vello::FineDamageRect| rect.x.saturating_add(rect.width);
-    let bottom = |rect: &vello::FineDamageRect| rect.y.saturating_add(rect.height);
-    let contains = |outer: &vello::FineDamageRect, inner: &vello::FineDamageRect| {
-        outer.x <= inner.x
-            && outer.y <= inner.y
-            && right(outer) >= right(inner)
-            && bottom(outer) >= bottom(inner)
-    };
-    let mut kept: Vec<vello::FineDamageRect> = Vec::with_capacity(rects.len());
-    for rect in rects {
-        if kept.iter().any(|existing| contains(existing, &rect)) {
-            continue;
-        }
-        kept.retain(|existing| !contains(&rect, existing));
-        kept.push(rect);
-    }
-    let limit = limit.max(1);
-    while kept.len() > limit {
-        let mut best: Option<(u64, usize, usize)> = None;
-        for (i, a) in kept.iter().enumerate() {
-            for (j, b) in kept.iter().enumerate().skip(i.saturating_add(1)) {
-                let union = damage_union(*a, *b);
-                let growth = damage_area(&[union])
-                    .saturating_sub(damage_area(&[*a]).saturating_add(damage_area(&[*b])));
-                if best.is_none_or(|(least, _, _)| growth < least) {
-                    best = Some((growth, i, j));
-                }
-            }
-        }
-        let Some((_, i, j)) = best else { break };
-        let (Some(a), Some(b)) = (kept.get(i).copied(), kept.get(j).copied()) else {
-            break;
-        };
-        kept.swap_remove(j);
-        if let Some(slot) = kept.get_mut(i) {
-            *slot = damage_union(a, b);
-        }
-    }
-    kept
-}
-
 /// Mapped readback layout needed by the direct XRGB swizzle.
 #[derive(Clone, Copy)]
 struct MappedXrgbSource<'a> {
@@ -528,7 +459,10 @@ impl FrameOutput<'_> {
         else {
             return;
         };
-        if let Some(damage) = damage.filter(|_| partial) {
+        if let Some(damage) = damage
+            .filter(|_| partial)
+            .and_then(|damage| Self::copied_by_rect(damage, size))
+        {
             for rect in damage {
                 encoder.copy_texture_to_buffer(
                     wgpu::TexelCopyTextureInfo {
@@ -564,15 +498,32 @@ impl FrameOutput<'_> {
     }
 
     fn copy_bytes(self, size: (u32, u32), damage: Option<&[vello::FineDamageRect]>) -> u64 {
-        match self {
-            Self::GpuOnly => 0,
-            Self::Xrgb { partial: true, .. } if damage.is_some() => {
-                VelloDrmBridge::sparse_damage_readback_bytes(damage.unwrap_or_default())
-            }
-            Self::Xrgb { .. } => u64::from(size.0)
+        let Self::Xrgb { partial, .. } = self else {
+            return 0;
+        };
+        match damage
+            .filter(|_| partial)
+            .and_then(|damage| Self::copied_by_rect(damage, size))
+        {
+            Some(damage) => VelloDrmBridge::sparse_damage_readback_bytes(damage),
+            None => u64::from(size.0)
                 .saturating_mul(u64::from(size.1))
                 .saturating_mul(4),
         }
+    }
+
+    /// `damage` when copying its rectangles one by one moves fewer pixels than copying the
+    /// whole target; `None` when the whole target is the cheaper copy. Damage is admitted to
+    /// the sparse path by the pixels it covers, each once, but every rectangle is its own copy:
+    /// a pile of overlapping ones may cover little and still copy the target many times over.
+    fn copied_by_rect(
+        damage: &[vello::FineDamageRect],
+        (width, height): (u32, u32),
+    ) -> Option<&[vello::FineDamageRect]> {
+        let copied = damage.iter().fold(0_u64, |pixels, rect| {
+            pixels.saturating_add(u64::from(rect.width).saturating_mul(u64::from(rect.height)))
+        });
+        (copied < u64::from(width).saturating_mul(u64::from(height))).then_some(damage)
     }
 
     fn unmap(self) {
@@ -593,6 +544,82 @@ pub struct GpuFrameStats {
     pub completion_markers: usize,
     pub framebuffer_copy_bytes: u64,
     pub framebuffer_staging_bytes: u64,
+}
+
+/// A GPU fault a development session's test control injects into the presenting renderer
+/// (`gpu_fault`), so a test can prove the desktop outlives a GPU that dies under it. The
+/// renderer's next frame applies it to its own device through the vendored HAL's switches
+/// (`vendor/wgpu-hal/TILO-PATCH.md`), so everything after is the production path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InjectedGpuFault {
+    /// The GPU is reset under the frame and works again.
+    Reset,
+    /// The GPU is reset and cannot be brought back: every device opened on it is lost too,
+    /// until the renderer gives it up for software.
+    Dead,
+    /// The GPU stops finishing work, and nothing says so.
+    Hang,
+}
+
+static INJECTED_GPU_FAULT: std::sync::Mutex<Option<InjectedGpuFault>> = std::sync::Mutex::new(None);
+
+/// Have the presenting renderer's next frame suffer `fault` ([`InjectedGpuFault`]).
+pub fn inject_gpu_fault(fault: InjectedGpuFault) {
+    *INJECTED_GPU_FAULT.lock_recover() = Some(fault);
+}
+
+/// The fault a renderer on a device opened on the GPU (not in software) applies now: a reset
+/// or a hang once, a dead GPU to every such device.
+#[cfg(target_os = "linux")]
+fn injected_gpu_fault(in_software: bool) -> Option<InjectedGpuFault> {
+    let mut slot = INJECTED_GPU_FAULT.lock_recover();
+    match *slot {
+        Some(InjectedGpuFault::Dead) => (!in_software).then_some(InjectedGpuFault::Dead),
+        _ => slot.take(),
+    }
+}
+
+/// Whether the GPU was declared dead ([`InjectedGpuFault::Dead`]), so a device opened on it
+/// now (not in software) is lost from its birth.
+#[cfg(target_os = "linux")]
+fn dead_gpu_injected(in_software: bool) -> bool {
+    !in_software && *INJECTED_GPU_FAULT.lock_recover() == Some(InjectedGpuFault::Dead)
+}
+
+/// A renderer's device on `adapter` was lost, after it finished at least one frame or before
+/// (`finished_frames`). Decides what opens next (`ui::gpu::recover`): when that gives the GPU
+/// up, the person is told the desktop keeps working, slower, and the session's GPU record says
+/// why.
+pub fn gpu_lost(
+    adapter: &wgpu::AdapterInfo,
+    finished_frames: bool,
+    reason: &str,
+) -> ui::gpu::Recovery {
+    let given_up_before = ui::gpu::software_fallback().is_some();
+    let recovery = ui::gpu::recover(adapter, finished_frames, reason);
+    if recovery == ui::gpu::Recovery::Software && !given_up_before {
+        crate::shell::graphics_notice::gpu_given_up();
+        #[cfg(target_os = "linux")]
+        crate::compositor::gpu_health::record_gpu_lost(reason);
+    }
+    recovery
+}
+
+/// Drop `paint`'s bridge if its device was lost, so the next frame opens another: on the same
+/// adapter, or in software once the GPU cannot be brought back ([`gpu_lost`]). Never waits for
+/// the GPU. Returns why the device was lost.
+pub fn retire_lost_bridge(paint: &mut Option<VelloDrmBridge>) -> Option<String> {
+    let bridge = paint.as_mut()?;
+    let reason = bridge.device_lost()?;
+    let recovery = gpu_lost(bridge.adapter(), bridge.finished_frames(), &reason);
+    tracing::error!(
+        %reason,
+        ?recovery,
+        "the renderer's GPU device was lost; opening a new one"
+    );
+    *paint = None;
+    Some(reason)
 }
 
 /// Same-device retained Vello output. Sampling is permitted only after successful completion.
@@ -632,6 +659,9 @@ pub struct RetainedGpuTarget {
     base_color: Color,
     /// The target contains a complete settled frame, independent of CPU staging validity.
     retained_target_valid: bool,
+    /// Frames the device finished on this target since its warm-up. A later loss of a device
+    /// that finished any is a GPU reset, not a GPU that cannot draw at all (`ui::gpu::recover`).
+    finished_frames: u64,
     /// Revision associated with the complete retained frame. Legacy full-render APIs do not
     /// carry a revision, so they intentionally clear this even though their target is complete.
     last_successful_revision: Option<u64>,
@@ -669,7 +699,6 @@ pub struct RetainedGpuTarget {
     /// Sparse submissions from the latest paint that actually selected the experimental Area PPT8
     /// shader, including an overflowed sparse attempt before dense recovery.
     last_area_ppt8_sparse_attempts: usize,
-    /// Full submissions from the latest paint that selected the single-workgroup clip leaf.
     last_clip_single_group_full_attempts: usize,
     /// Sparse submissions from the latest paint that selected the single-workgroup clip leaf.
     last_clip_single_group_sparse_attempts: usize,
@@ -708,6 +737,9 @@ pub struct VelloDrmBridge {
     context: RenderContext,
     target: RetainedGpuTarget,
     device_errors: DeviceErrorLatch,
+    /// The device's loss, wgpu's report or work that stopped finishing ([`Self::device_lost`]).
+    loss_watch: ui::gpu::LossWatch,
+    adapter: wgpu::AdapterInfo,
     bgra_blitter: TextureBlitter,
     dispatch_stage_observer: Option<DispatchStageObserver>,
     /// SDR → PQ encode passes, one per HDR scanout format in use.

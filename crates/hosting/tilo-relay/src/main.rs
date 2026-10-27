@@ -13,11 +13,17 @@
 //!   certifies only the browsers whose pairing codes its operator admits
 //!   (`admit <code>` on stdin) and announces each on stdout.
 //! - `--agents` on `run` and `dev` (feature `agents`) — agents on the host,
-//!   with `--agent-model settings|scripted|openai:<url>|cloud:<url>`.
+//!   with `--agent-model settings|scripted|openai:<url>|anthropic:<url>|cloud:<url>`.
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
 //! - `bind-workspace <workspace_id> [--pin]` — add a workspace to
 //!   the config file so the next `run` picks it up.
+//! - `reseal --scratch <dir>` (feature `agents`) — copy the state to
+//!   `<dir>`, seal there what the rooms this relay stewards keep in the
+//!   clear, and check every record, leaving the state as it is.
+//!   `reseal --apply`, with the relay stopped, keeps a verbatim copy of the
+//!   state beside it, records the decision to seal in the state, and seals
+//!   it; from then on the relay seals it at every start.
 
 #![cfg_attr(
     test,
@@ -42,7 +48,9 @@ mod persistent_moderation;
 #[cfg(feature = "agents")]
 mod persistent_room_cli;
 #[cfg(feature = "agents")]
-mod room_seed;
+mod room_chat;
+#[cfg(feature = "agents")]
+mod room_discussions;
 #[cfg(feature = "agents")]
 mod room_strips;
 #[cfg(feature = "web")]
@@ -95,6 +103,30 @@ enum Cmd {
     UnbindWorkspace {
         /// Numeric workspace id.
         id: u64,
+    },
+    /// Seal what the rooms this relay stewards hold in the clear, and check
+    /// every record of them: nothing left in the clear, no change lost.
+    /// Fails when a record is not sealed whole.
+    #[cfg(feature = "agents")]
+    Reseal {
+        /// Do it to a copy of the state made here (a new directory), leaving
+        /// the state as it is.
+        #[arg(long, conflicts_with = "apply", required_unless_present = "apply")]
+        scratch: Option<PathBuf>,
+        /// Decide it for the state itself and do it, after copying the state
+        /// verbatim beside it. The relay must be stopped.
+        #[arg(long)]
+        apply: bool,
+        /// The relay of a persistent room: its `room --state`, instead of the
+        /// relay the config names.
+        #[arg(long, value_name = "DIR", requires_all = ["root_file", "persistent"])]
+        room_state: Option<PathBuf>,
+        /// The persistent room's root key (its `room --root-file`).
+        #[arg(long, value_name = "FILE", requires = "room_state")]
+        root_file: Option<PathBuf>,
+        /// The persistent room's name (its `room --persistent`).
+        #[arg(long, value_name = "NAME", requires = "room_state")]
+        persistent: Option<String>,
     },
 }
 
@@ -153,7 +185,72 @@ fn run() -> anyhow::Result<()> {
         Cmd::Status => cmd_status(&cli.config),
         Cmd::BindWorkspace { id, pin } => cmd_bind(&cli.config, id, pin),
         Cmd::UnbindWorkspace { id } => cmd_unbind(&cli.config, id),
+        #[cfg(feature = "agents")]
+        Cmd::Reseal {
+            scratch,
+            room_state,
+            root_file,
+            persistent,
+            ..
+        } => {
+            let room = match (room_state, root_file, persistent) {
+                (Some(state), Some(root_file), Some(name)) => Some((state, root_file, name)),
+                _ => None,
+            };
+            cmd_reseal(&cli.config, scratch.as_deref(), room)
+        }
     }
+}
+
+#[cfg(feature = "agents")]
+fn cmd_reseal(
+    path: &Path,
+    scratch: Option<&Path>,
+    room: Option<(PathBuf, PathBuf, String)>,
+) -> anyhow::Result<()> {
+    let (state, identity) = if let Some((state, root_file, name)) = room {
+        persistent_room_cli::room_relay(&state, &root_file, &name)?
+    } else {
+        let cfg = load_or_default(path)?;
+        let identity = load_identity(&cfg.identity_root, &cfg.state_root)?;
+        (cfg.state_root, identity)
+    };
+
+    let scratch = scratch.map(Path::to_owned);
+    let (records, backup) = tilo_rt::daemon("tilo-relay")
+        .run(async move {
+            match scratch {
+                Some(copy) => tilo_relay::reseal::scratch(&state, &copy, identity)
+                    .await
+                    .map(|records| (records, None)),
+                None => tilo_relay::reseal::apply(&state, identity)
+                    .await
+                    .map(|applied| (applied.records, Some(applied.backup))),
+            }
+        })?
+        .map_err(anyhow::Error::msg)?;
+    if let Some(backup) = &backup {
+        println!(
+            "the state before it was sealed is kept, verbatim, in {}",
+            backup.display()
+        );
+    }
+    for record in &records {
+        println!(
+            "{} {}/{}: {} entries in the clear with {} changes; now {} in the clear, {} lost",
+            record.workspace_id,
+            record.app,
+            record.record,
+            record.cleartext_before,
+            record.changes_before,
+            record.cleartext_after,
+            record.lost,
+        );
+    }
+    let broken = records.iter().filter(|record| !record.whole()).count();
+    println!("{} records, {broken} not sealed whole", records.len());
+    anyhow::ensure!(broken == 0, "{broken} records not sealed whole");
+    Ok(())
 }
 
 fn cmd_init(path: &std::path::Path) -> anyhow::Result<()> {
@@ -246,6 +343,11 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
 )]
 fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
+    // One relay per state, and nothing else changing it while it runs
+    // (`web_cli::start_relay` takes it in a build with `web`).
+    #[cfg(not(feature = "web"))]
+    let _lock =
+        tilo_relay::state_lock::StateLock::acquire(&cfg.state_root).map_err(anyhow::Error::msg)?;
     tilo_rt::daemon("tilo-relay").run(async move {
         // Every change the relay receives is decided against its app's
         // surface, fetched by hash from the registry.
@@ -329,6 +431,11 @@ async fn wait_for_shutdown() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+// Rooms the binary's own tests govern keep their documents in workers this
+// test executable serves, as `main` does through `dispatch_early`.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 
 #[cfg(test)]
 #[allow(

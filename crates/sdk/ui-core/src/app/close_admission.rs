@@ -437,13 +437,14 @@ impl App {
         let Some(root) = self.layout.root_node else {
             return;
         };
-        let _ = self.layout.taffy.compute_layout_with_measure(
+        let _ = crate::widget::layout::solve_layout(
+            &mut self.layout.taffy,
             root,
             taffy::Size {
                 width: taffy::AvailableSpace::Definite(logical.0 as f32),
                 height: taffy::AvailableSpace::Definite(logical.1 as f32),
             },
-            |known, available, node, _, _| {
+            &mut |known, available, node| {
                 if let Some(ptr) = self.layout.node_map.get(&node) {
                     // SAFETY: the exclusive host owns this newly built dialog
                     // map; changing or dismissing it clears the map first.
@@ -475,7 +476,8 @@ mod tests {
     impl Widget for OwnedRoot {
         crate::provides!(
             dyn crate::resources::PublishesResources,
-            dyn crate::component_lifecycle::ComponentLifecycle
+            dyn crate::component_lifecycle::ComponentLifecycle,
+            dyn crate::widget::ResourceOperations
         );
 
         fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
@@ -520,9 +522,13 @@ mod tests {
         fn get_rect(&self) -> vello::kurbo::Rect {
             self.text.get_rect()
         }
+    }
+
+    impl crate::widget::ResourceOperations for OwnedRoot {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &[crate::widget::resource_actions::OPERATION_TYPE]
         }
+
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
@@ -589,7 +595,6 @@ mod tests {
     }
     #[test]
     fn close_refusal_and_failure_dialogs_persist_until_an_explicit_choice() {
-        // Case `repeated_close_preserves_failure_dialog_until_explicit_retry`.
         {
             use automerge::{ReadDoc, transaction::Transactable};
             let fail = std::rc::Rc::new(std::cell::Cell::new(true));
@@ -646,7 +651,6 @@ mod tests {
             assert!(app.close_admission.ready);
         }
 
-        // Case `disabled_host_writer_still_refuses_close`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -662,7 +666,6 @@ mod tests {
             assert!(!app.close_admission.admitted);
         }
 
-        // Case `stale_save_button_does_not_save_the_replacement_document`.
         {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             let observed = calls.clone();
@@ -710,7 +713,6 @@ mod tests {
             );
         }
 
-        // Case `stale_revision_retires_old_session_only_after_explicit_choice`.
         {
             use automerge::transaction::Transactable;
             let (mut app, dirty) = quit_fixture(false);
@@ -801,7 +803,6 @@ mod tests {
 
     #[test]
     fn native_quit_retains_the_pending_document_session_and_focus() {
-        // Case `native_quit_keep_editing_and_cancelled_save_retain_pending_document`.
         {
             use automerge::{ReadDoc, transaction::Transactable};
             let (mut app, dirty) = quit_fixture(false);
@@ -846,7 +847,6 @@ mod tests {
             assert!(!app.close_admission.admitted);
         }
 
-        // Case `repeated_native_quit_preserves_unsaved_session_addresses_and_focus`.
         {
             let (mut app, dirty) = quit_fixture(false);
             let mut quit = native_quit_request::QuitRequest::new();
@@ -883,7 +883,6 @@ mod tests {
             assert!(dirty.get());
         }
 
-        // Case `native_quit_save_and_discard_share_final_revision_check`.
         {
             use automerge::transaction::Transactable;
             let (mut app, dirty) = quit_fixture(true);
@@ -913,7 +912,6 @@ mod tests {
             assert!(app.close_admission.admitted);
         }
 
-        // Case `modal_control_addresses_survive_moving_the_initialized_app`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),

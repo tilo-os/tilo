@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use accounts::{CredentialGrant, GeneratedPasswordPolicy, SecretId, SecretItem, SecretItemKind};
+use ui::lock::MutexRecover as _;
 use ui::widget::NavPane;
 use vello::kurbo::Rect;
 use zeroize::Zeroizing;
@@ -99,7 +100,6 @@ impl VaultFilter {
 /// What the content column shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Screen {
-    /// The list of items and the open item.
     #[default]
     Vault,
     /// The list of items and the editor of a new or open item.
@@ -131,7 +131,6 @@ pub(crate) enum DraftField {
     CustomFields,
 }
 
-/// The dialog over the window.
 pub(crate) enum Dialog {
     ImportPreview {
         rows: Vec<ImportLogin>,
@@ -380,12 +379,15 @@ pub(crate) struct Core {
     model_revision: Option<u64>,
     pub(crate) custody: Option<&'static str>,
     pub(crate) recovery_error: Option<String>,
-    pub(crate) import_portal: Option<ui::portal::OpenFileChannel>,
+    pub(crate) import_portal: Option<crate::transfer::Choosing>,
     pub(crate) import_parse: Option<std::sync::mpsc::Receiver<Result<Vec<ImportLogin>, String>>>,
-    pub(crate) export_portal: Option<ui::portal::PortalChannel>,
-    pub(crate) backup_portal: Option<ui::portal::PortalChannel>,
-    pub(crate) restore_portal: Option<ui::portal::OpenFileChannel>,
+    pub(crate) export_portal: Option<crate::transfer::Saving>,
+    pub(crate) backup_portal: Option<crate::transfer::Saving>,
+    pub(crate) restore_portal: Option<crate::transfer::Choosing>,
     pub(crate) transfer_poll_deadline: std::cell::Cell<Option<ui::time::Instant>>,
+    /// The vault is still writing an edit: a browser page to its storage,
+    /// or the frame loop's writer thread to the disk.
+    pub(crate) writing: bool,
     pub(crate) backup_password: Zeroizing<String>,
     pub(crate) backup_confirmation: Zeroizing<String>,
     pub(crate) dialog: Option<Dialog>,
@@ -398,6 +400,11 @@ pub(crate) struct Core {
     pub(crate) page_revision: u64,
     /// Bumped whenever the item list or its title changes.
     pub(crate) list_revision: u64,
+    /// The vault is being opened on a thread of its own: a window on the
+    /// compositor's frame loop never waits on the disk for it.
+    pub(crate) opening: bool,
+    /// Wakes the window once the vault is open.
+    wake: std::sync::Arc<std::sync::Mutex<ui::WakeHandle>>,
 }
 
 impl Core {
@@ -427,6 +434,7 @@ impl Core {
             app_grants: Vec::new(),
             app_proposals: Vec::new(),
             model_revision: None,
+            writing: false,
             custody: None,
             recovery_error: None,
             import_portal: None,
@@ -443,15 +451,36 @@ impl Core {
             window: Rect::ZERO,
             page_revision: 0,
             list_revision: 0,
+            opening: false,
+            wake: std::sync::Arc::default(),
         }
     }
 
     /// The vault in `model`: the person's in a live window.
     pub(crate) fn with_model(model: crate::PasswordsModel) -> Self {
         let mut core = Self::empty(Some(model));
-        core.refresh();
-        core.select_first_visible();
+        if core.open_without_waiting() {
+            core.refresh();
+            core.select_first_visible();
+        }
         core
+    }
+
+    /// Whether the vault is open; if not, it is opened on a thread of its
+    /// own and the window shows it on the sync after that finishes.
+    fn open_without_waiting(&mut self) -> bool {
+        let Some(model) = &self.model else {
+            return true;
+        };
+        let wake = std::sync::Arc::clone(&self.wake);
+        let open = model.open_without_waiting(move || wake.lock_recover().wake());
+        self.opening = !open;
+        open
+    }
+
+    /// Wake the window through `wake` once the vault is open.
+    pub(crate) fn wake_through(&self, wake: ui::WakeHandle) {
+        *self.wake.lock_recover() = wake;
     }
 
     /// Fixture items with no vault behind them (captures and tests).
@@ -552,8 +581,6 @@ impl Core {
         self.touch();
     }
 
-    // --- the list ------------------------------------------------------
-
     pub(crate) fn visible(&self) -> Vec<&SecretItem> {
         self.items
             .iter()
@@ -603,7 +630,6 @@ impl Core {
             return false;
         };
         if !listed {
-            // Show the item where it is listed.
             self.filter = VaultFilter::All;
         }
         if self.screen == Screen::Editor {
@@ -645,36 +671,47 @@ impl Core {
         let Some(was) = self.item(id).map(is_favorite) else {
             return;
         };
+        if let Err(error) = self.set_favorite(id, !was) {
+            self.toast(error);
+        }
+    }
+
+    /// Make the item `id` a favorite or not, saying so; nothing changes when
+    /// it already is what was asked.
+    pub(crate) fn set_favorite(&mut self, id: &SecretId, favorite: bool) -> Result<(), String> {
+        let Some(was) = self.item(id).map(is_favorite) else {
+            return Err("That item is no longer in your vault".to_owned());
+        };
+        if was == favorite {
+            return Ok(());
+        }
         if let Some(model) = &mut self.model {
             let Some(mut full) = model.items().into_iter().find(|item| &item.id == id) else {
-                return;
+                return Err("That item is no longer in your vault".to_owned());
             };
-            if was {
-                full.tags.remove("favorite");
-            } else {
+            if favorite {
                 full.tags.insert("favorite".into());
+            } else {
+                full.tags.remove("favorite");
             }
-            if let Err(error) = model.update(&mut full) {
-                self.toast(error);
-                return;
-            }
+            model.update(&mut full)?;
+            self.flush_vault();
             self.refresh();
         } else if let Some(item) = self.items.iter_mut().find(|item| &item.id == id) {
-            if was {
-                item.tags.remove("favorite");
-            } else {
+            if favorite {
                 item.tags.insert("favorite".into());
+            } else {
+                item.tags.remove("favorite");
             }
             self.touch();
         }
-        self.toast(if was {
-            "Removed from favorites"
-        } else {
+        self.toast(if favorite {
             "Added to favorites"
+        } else {
+            "Removed from favorites"
         });
+        Ok(())
     }
-
-    // --- the open item -------------------------------------------------
 
     pub(crate) fn revealed_value(&self, id: &SecretId) -> Option<&str> {
         self.revealed
@@ -806,8 +843,6 @@ impl Core {
         });
     }
 
-    // --- the editor ----------------------------------------------------
-
     pub(crate) fn begin_add(&mut self) {
         self.editing = None;
         self.draft_title.clear();
@@ -893,6 +928,15 @@ impl Core {
     }
 
     pub(crate) fn set_draft(&mut self, field: DraftField, value: &str) {
+        // An edit answers the field's complaint; the next save checks again.
+        if self
+            .draft_error
+            .as_ref()
+            .is_some_and(|(failed, _)| *failed == field)
+        {
+            self.draft_error = None;
+            self.touch_page();
+        }
         match field {
             DraftField::Name => value.clone_into(&mut self.draft_title),
             DraftField::Username => value.clone_into(&mut self.draft_username),
@@ -1081,10 +1125,14 @@ impl Core {
             SecretItemKind::Login | SecretItemKind::ApiKey
         ) {
             for origin in &origins {
-                if item.add_origin(origin).is_err() {
+                // A bare host ("git.tilo.so") means its https site.
+                let added = item.add_origin(origin).is_ok()
+                    || (!origin.contains("://")
+                        && item.add_origin(&format!("https://{origin}")).is_ok());
+                if !added {
                     self.reject(
                         DraftField::Origin,
-                        format!("{origin} is not a full web address, such as https://{origin}"),
+                        format!("{origin} is not a web address, such as https://example.com"),
                     );
                     return;
                 }
@@ -1092,6 +1140,7 @@ impl Core {
         }
         match model.save_item(&mut item) {
             Ok(id) => {
+                self.flush_vault();
                 self.selected = Some(id);
                 self.saved = Some(item.title.clone());
                 self.refresh();
@@ -1124,11 +1173,11 @@ impl Core {
         }
     }
 
-    /// Delete `id` from the vault.
     pub(crate) fn delete(&mut self, id: &SecretId) -> Result<(), String> {
         let result = if let Some(model) = &mut self.model {
             match model.remove(id) {
                 Ok(true) => {
+                    self.flush_vault();
                     self.selected = None;
                     self.refresh();
                     self.close_editor();
@@ -1158,8 +1207,6 @@ impl Core {
             self.touch_page();
         }
     }
-
-    // --- app access ----------------------------------------------------
 
     pub(crate) fn revoke(&mut self, id: &str) -> Result<(), String> {
         let grant = self
@@ -1202,6 +1249,13 @@ impl Core {
             .is_some_and(|revision| Some(revision) != self.model_revision)
     }
     pub(crate) fn refresh_model(&mut self) {
+        if self.opening {
+            if self.open_without_waiting() {
+                self.refresh();
+                self.select_first_visible();
+            }
+            return;
+        }
         let proposals_changed = !self.app_proposals.is_empty()
             && self
                 .model
@@ -1213,13 +1267,14 @@ impl Core {
         }
     }
 
-    // --- import, export, backup ----------------------------------------
-
     pub(crate) fn request_import(&mut self) {
         if self.model.is_none() || self.import_portal.is_some() {
             return;
         }
-        self.import_portal = Some(crate::transfer::import_request().send_open_file());
+        self.import_portal = Some(crate::transfer::Choosing::send(
+            crate::transfer::import_request(),
+            usize::try_from(crate::transfer::MAX_IMPORT_BYTES + 1).unwrap_or(usize::MAX),
+        ));
     }
 
     pub(crate) fn request_export(&mut self) {
@@ -1264,7 +1319,14 @@ impl Core {
         }
         self.dialog = None;
         self.touch_page();
-        self.export_portal = Some(crate::transfer::export_request().send());
+        let saving = crate::transfer::Saving::send(crate::transfer::export_request(), || {
+            self.plaintext_export()
+                .map(|(csv, count)| (Zeroizing::new(csv.as_bytes().to_vec()), count))
+        });
+        match saving {
+            Ok(saving) => self.export_portal = Some(saving),
+            Err(error) => self.toast(error),
+        }
     }
 
     pub(crate) fn clear_backup_form(&mut self) {
@@ -1282,7 +1344,10 @@ impl Core {
 
     pub(crate) fn request_restore(&mut self) {
         if self.model.is_some() && self.restore_portal.is_none() {
-            self.restore_portal = Some(crate::transfer::restore_request().send_open_file());
+            self.restore_portal = Some(crate::transfer::Choosing::send(
+                crate::transfer::restore_request(),
+                crate::transfer::MAX_BACKUP_BYTES + 1,
+            ));
         }
     }
 
@@ -1318,7 +1383,17 @@ impl Core {
         }
         self.dialog = None;
         self.touch_page();
-        self.backup_portal = Some(crate::transfer::backup_request().send());
+        let passphrase = self.backup_password.clone();
+        let saving = crate::transfer::Saving::send(crate::transfer::backup_request(), || {
+            self.encrypted_backup(&passphrase)
+        });
+        match saving {
+            Ok(saving) => self.backup_portal = Some(saving),
+            Err(error) => {
+                self.clear_backup_form();
+                self.toast(error);
+            }
+        }
     }
 
     pub(crate) fn apply_encrypted_restore(&mut self) {
@@ -1338,6 +1413,7 @@ impl Core {
                         restored = restored.saturating_add(1);
                     }
                 }
+                self.flush_vault();
                 self.refresh();
                 self.toast(if restored == count {
                     format!("Restored {restored} items")
@@ -1408,6 +1484,7 @@ impl Core {
                 skipped = skipped.saturating_add(1);
             }
         }
+        self.flush_vault();
         self.refresh();
         self.toast(match (imported, skipped) {
             (1, 0) => "Imported 1 login".to_owned(),
@@ -1416,15 +1493,31 @@ impl Core {
         });
     }
 
-    fn write_plaintext_export(&self, path: &std::path::Path) -> Result<usize, String> {
+    /// The vault as a browser CSV, and how many items it holds.
+    fn plaintext_export(&self) -> Result<(Zeroizing<String>, usize), String> {
         let Some(model) = &self.model else {
             return Err("There is no vault to export".into());
         };
         let items = model.items();
-        let csv = crate::transfer::export_browser_csv(&items);
+        Ok((crate::transfer::export_browser_csv(&items), items.len()))
+    }
+
+    /// The vault as an encrypted backup under `passphrase`, and how many
+    /// items it holds.
+    fn encrypted_backup(&self, passphrase: &str) -> Result<(Zeroizing<Vec<u8>>, usize), String> {
+        let Some(model) = &self.model else {
+            return Err("There is no vault to back up".into());
+        };
+        let items = model.items();
+        let backup = crate::transfer::export_encrypted_backup(&items, passphrase)?;
+        Ok((backup, items.len()))
+    }
+
+    fn write_plaintext_export(&self, path: &std::path::Path) -> Result<usize, String> {
+        let (csv, count) = self.plaintext_export()?;
         tilo_files::native::atomic::write_with_mode(path, csv.as_bytes(), 0o600)
             .map_err(|_| "Could not finish writing the file".to_string())?;
-        Ok(items.len())
+        Ok(count)
     }
 
     fn write_encrypted_backup(
@@ -1432,18 +1525,33 @@ impl Core {
         path: &std::path::Path,
         passphrase: &str,
     ) -> Result<usize, String> {
-        let Some(model) = &self.model else {
-            return Err("There is no vault to back up".into());
-        };
-        let items = model.items();
-        let backup = crate::transfer::export_encrypted_backup(&items, passphrase)?;
+        let (backup, count) = self.encrypted_backup(passphrase)?;
         tilo_files::native::atomic::write_with_mode(path, &backup, 0o600)
             .map_err(|_| "Could not finish writing the backup".to_string())?;
-        Ok(items.len())
+        Ok(count)
+    }
+
+    /// Learn whether the vault's last edits are kept yet: a browser page
+    /// writes its storage asynchronously, and on the frame loop a writer
+    /// thread writes the disk, so a save is kept a moment after it shows. A
+    /// failed write is said, not dropped.
+    pub(crate) fn flush_vault(&mut self) {
+        let Some(model) = self.model.as_mut() else {
+            self.writing = false;
+            return;
+        };
+        match model.flush() {
+            Ok(kept) => self.writing = !kept,
+            Err(error) => {
+                self.writing = false;
+                self.toast(format!("Couldn't keep your last change: {error}"));
+            }
+        }
     }
 
     pub(crate) fn transfers_pending(&self) -> bool {
-        self.import_portal.is_some()
+        self.writing
+            || self.import_portal.is_some()
             || self.import_parse.is_some()
             || self.export_portal.is_some()
             || self.backup_portal.is_some()
@@ -1455,18 +1563,23 @@ impl Core {
         reason = "drains each transfer channel in turn; keeping the states together keeps the vault update ordering visible"
     )]
     pub(crate) fn poll_transfers(&mut self) {
+        use crate::transfer::{Chosen, Saving};
         use std::sync::mpsc::TryRecvError;
-        use ui::portal::{OpenFileOutcome, PortalOutcome};
+        use ui::portal::{PortalOutcome, SaveOutcome};
 
         if self.copy.failed() {
             self.toast("Could not copy to the clipboard. Try again.");
         }
 
+        if self.writing {
+            self.flush_vault();
+        }
+
         if let Some(rx) = self.restore_portal.as_ref() {
             match rx.try_recv() {
-                Ok(OpenFileOutcome::Opened(opened)) => {
+                Ok(Chosen::Opened(file)) => {
                     self.restore_portal = None;
-                    match crate::transfer::read_encrypted_backup(opened.into_file()) {
+                    match crate::transfer::read_encrypted_backup(file) {
                         Ok(bytes) => {
                             self.clear_backup_form();
                             self.dialog = Some(Dialog::Restore { bytes, error: None });
@@ -1475,8 +1588,8 @@ impl Core {
                         Err(error) => self.toast(error),
                     }
                 }
-                Ok(OpenFileOutcome::Cancelled) => self.restore_portal = None,
-                Ok(OpenFileOutcome::Failed(error)) => {
+                Ok(Chosen::Cancelled) => self.restore_portal = None,
+                Ok(Chosen::Failed(error)) => {
                     self.restore_portal = None;
                     self.toast(format!("Could not open the file chooser: {error}"));
                 }
@@ -1489,9 +1602,8 @@ impl Core {
         }
         if let Some(rx) = self.import_portal.as_ref() {
             match rx.try_recv() {
-                Ok(OpenFileOutcome::Opened(opened)) => {
+                Ok(Chosen::Opened(file)) => {
                     self.import_portal = None;
-                    let file = opened.into_file();
                     let (tx, rx) = std::sync::mpsc::channel();
                     let spawned = ui::rt::spawn_thread("passwords-csv-parser", move || {
                         let _ = tx.send(crate::transfer::parse_browser_csv(file));
@@ -1501,8 +1613,8 @@ impl Core {
                         Err(error) => self.toast(format!("Could not read the file: {error}")),
                     }
                 }
-                Ok(OpenFileOutcome::Cancelled) => self.import_portal = None,
-                Ok(OpenFileOutcome::Failed(error)) => {
+                Ok(Chosen::Cancelled) => self.import_portal = None,
+                Ok(Chosen::Failed(error)) => {
                     self.import_portal = None;
                     self.toast(format!("Could not open the file chooser: {error}"));
                 }
@@ -1532,7 +1644,46 @@ impl Core {
                 Err(TryRecvError::Empty) => {}
             }
         }
-        if let Some(rx) = self.export_portal.as_ref() {
+        if let Some(Saving::Contents(rx, _)) = self.export_portal.as_ref() {
+            match rx.try_recv() {
+                Ok(SaveOutcome::Saved | SaveOutcome::Cancelled) => self.export_portal = None,
+                Ok(SaveOutcome::Failed(error)) => {
+                    self.export_portal = None;
+                    self.toast(format!("Could not save the file: {error}"));
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.export_portal = None;
+                    self.toast("The save dialog closed unexpectedly");
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(Saving::Contents(rx, count)) = self.backup_portal.as_ref() {
+            let count = *count;
+            match rx.try_recv() {
+                Ok(SaveOutcome::Saved) => {
+                    self.backup_portal = None;
+                    self.clear_backup_form();
+                    self.toast(format!("Backed up {count} items"));
+                }
+                Ok(SaveOutcome::Cancelled) => {
+                    self.backup_portal = None;
+                    self.clear_backup_form();
+                }
+                Ok(SaveOutcome::Failed(error)) => {
+                    self.backup_portal = None;
+                    self.clear_backup_form();
+                    self.toast(format!("Could not save the backup: {error}"));
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.backup_portal = None;
+                    self.clear_backup_form();
+                    self.toast("The save dialog closed unexpectedly");
+                }
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(Saving::Path(rx)) = self.export_portal.as_ref() {
             match rx.try_recv() {
                 Ok(PortalOutcome::Opened(mut path)) => {
                     self.export_portal = None;
@@ -1560,7 +1711,7 @@ impl Core {
                 Err(TryRecvError::Empty) => {}
             }
         }
-        if let Some(rx) = self.backup_portal.as_ref() {
+        if let Some(Saving::Path(rx)) = self.backup_portal.as_ref() {
             match rx.try_recv() {
                 Ok(PortalOutcome::Opened(mut path)) => {
                     self.backup_portal = None;
@@ -1626,8 +1777,6 @@ impl Core {
         .flatten()
         .min()
     }
-
-    // --- requests and operations ----------------------------------------
 
     /// Apply a control's request.
     pub(crate) fn apply(&mut self, request: Request) {
@@ -1795,6 +1944,9 @@ impl Core {
                 }
             }
             PasswordsEffect::Delete { item } => self.delete(&SecretId(item))?,
+            PasswordsEffect::Favorite { item, favorite } => {
+                self.set_favorite(&SecretId(item), favorite)?;
+            }
             PasswordsEffect::Import => self.request_import(),
             PasswordsEffect::Export => self.request_export(),
             PasswordsEffect::Filter { filter } => {
@@ -1808,8 +1960,6 @@ impl Core {
         }
         Ok(())
     }
-
-    // --- resources --------------------------------------------------------
 
     /// Live vault rows, one per item: what agents, scripts and the palette
     /// may do with it. A row names the item by its opaque id and kind only;

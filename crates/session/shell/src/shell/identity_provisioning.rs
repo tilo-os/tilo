@@ -53,10 +53,6 @@ struct StoredBrokerIdentity {
 
 impl PairingBrokerServer {
     /// Start a short-lived localhost broker for one pairing ceremony.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if TLS identity generation or socket binding fails.
     pub fn start(authority: SharedPairingChannel, nonce: [u8; 16]) -> io::Result<Self> {
         Self::start_on(authority, nonce, (std::net::Ipv4Addr::LOCALHOST, 0).into())
     }
@@ -64,10 +60,6 @@ impl PairingBrokerServer {
     /// Bind the authority to an explicitly selected network interface. The
     /// caller advertises the resulting address in the QR payload; the random
     /// channel nonce is the bearer authenticator checked on every request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if TLS identity generation or socket binding fails.
     pub fn start_on(
         authority: SharedPairingChannel,
         nonce: [u8; 16],
@@ -87,10 +79,6 @@ impl PairingBrokerServer {
     }
 
     /// Start an ephemeral localhost broker limited to invite redemption.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if TLS identity generation or socket binding fails.
     pub fn start_invites(
         authority: SharedPairingChannel,
         invite_authority_root: impl Into<PathBuf>,
@@ -457,11 +445,6 @@ fn serve_pairing_request(
 /// and other hosts. Relative values are rejected: turning one into an
 /// identity path using the compositor's working directory would make key
 /// placement depend on the display manager.
-///
-/// # Errors
-///
-/// Returns an error if neither input identifies a home data directory, or if
-/// the selected directory is relative.
 pub fn host_identity_root(
     xdg_data_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
@@ -509,15 +492,17 @@ fn host_files_environment(
         ));
     }
     let cache = state.join("tilo/files");
+    let storage = runtime.join("tilo/files-storage");
     let runtime = runtime.join("tilo/files-workspace");
     Ok(vec![
         ("TILO_FS_CONTENT_PEER_CACHE_DIR", cache.clone()),
         ("TILO_WORKSPACE_ROOTS", cache.join("mount")),
         ("TILO_AUTHORITY_SOCKET_DIR", runtime.clone()),
         ("TILO_FS_BLOB_SOCKET", runtime.join("fs-blobs.sock")),
+        ("TILO_FS_STORAGE_DIR", storage),
         (
             "TILO_FS_AUTHORITY_PUBLISHER",
-            PathBuf::from("/usr/bin/tilo-relay-admin"),
+            PathBuf::from("/usr/libexec/tilo/tilo-relay-admin"),
         ),
     ])
 }
@@ -639,6 +624,29 @@ pub struct DiskIdentityStore {
 /// It is deliberately one-way: an unavailable existing key can request the
 /// recovery surface, but no environment value can bypass identity checks.
 pub const IDENTITY_RECOVERY_ENV: &str = "TILO_IDENTITY_RECOVERY";
+
+/// What startup found when the existing identity's certificate was refused
+/// for the clock's reading alone: the identity is intact and the session
+/// waits for the clock rather than offering recovery. Set once, before the
+/// compositor starts, by the same probe that decides recovery.
+static IDENTITY_CLOCK_REFUSAL: std::sync::Mutex<Option<tilo_user_identity::CertificateClockError>> =
+    std::sync::Mutex::new(None);
+
+/// Record that the existing identity waits for the clock (see
+/// [`identity_clock_refusal`]).
+pub fn await_clock_for_identity(refusal: tilo_user_identity::CertificateClockError) {
+    *IDENTITY_CLOCK_REFUSAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(refusal);
+}
+
+/// The clock refusal startup recorded for the existing identity, if any.
+pub fn identity_clock_refusal() -> Option<tilo_user_identity::CertificateClockError> {
+    IDENTITY_CLOCK_REFUSAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
 
 /// Whether an existing schema-2 identity should be recovered interactively.
 ///
@@ -793,11 +801,6 @@ pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
 
 /// Wraps `InviteEnvelope::from_url` plus the signature check so a
 /// caller doesn't need to remember both steps.
-///
-/// # Errors
-///
-/// Returns an error if `url` doesn't parse as an invite envelope, or if
-/// its signature doesn't verify.
 pub fn parse_invite_url(url: &str) -> Result<InviteEnvelope, IdentityFlowError> {
     let env = InviteEnvelope::from_url(url)?;
     env.verify_signature()?;
@@ -1055,6 +1058,13 @@ mod tests {
             PathBuf::from("/run/user/1000/tilo/files-workspace")
         );
         assert_eq!(environment[3].1, environment[2].1.join("fs-blobs.sock"));
+        assert_eq!(
+            environment[4],
+            (
+                "TILO_FS_STORAGE_DIR",
+                PathBuf::from("/run/user/1000/tilo/files-storage")
+            )
+        );
         let custom =
             host_files_environment(None, Some("/state".into()), Some("/runtime".into())).unwrap();
         assert_eq!(custom[0].1, PathBuf::from("/state/tilo/files"));
@@ -1258,6 +1268,9 @@ mod tests {
         }
 
         fn invite_redeems_through_independent_tls_endpoint_once() {
+            // The invite's minute must not lapse while a loaded run gets to
+            // its redemption: hold the wall clock that every check here reads.
+            tilo_clock::freeze_wall(tilo_clock::wall());
             let tmp = tempfile::tempdir().expect("tempdir");
             let authority = pairing_channel_at(tmp.path().join("pairing-authority")).unwrap();
             let invite_root = tmp.path().join("invite-redemption-authority");
@@ -1270,7 +1283,7 @@ mod tests {
                     owner_pubkey: owner_public,
                     inviter_label: "Alice".into(),
                     role: collab_types::Role::Editor,
-                    expires_at: SystemTime::now() + Duration::from_secs(60),
+                    expires_at: tilo_clock::wall() + Duration::from_secs(60),
                 },
                 &owner_secret,
                 tilo_identity_ceremony::InviteBrokerLocator {
@@ -1284,7 +1297,7 @@ mod tests {
             tilo_identity_ceremony::build_attestation_from_invite(
                 &invite,
                 invitee,
-                SystemTime::now(),
+                tilo_clock::wall(),
             )
             .unwrap();
             let (_, replay) = collab_types::generate_keypair();
@@ -1292,7 +1305,7 @@ mod tests {
                 tilo_identity_ceremony::build_attestation_from_invite(
                     &invite,
                     replay,
-                    SystemTime::now()
+                    tilo_clock::wall()
                 )
                 .is_err()
             );
@@ -1369,6 +1382,9 @@ mod tests {
         }
 
         fn signed_invite_redeems_after_broker_restart_with_the_same_pin() {
+            // The invite's minute must not lapse while a loaded run gets to
+            // its redemption: hold the wall clock that every check here reads.
+            tilo_clock::freeze_wall(tilo_clock::wall());
             let tmp = tempfile::tempdir().expect("tempdir");
             let authority = pairing_channel_at(tmp.path().join("pairing")).unwrap();
             let tls_dir = tmp.path().join("tls");
@@ -1389,7 +1405,7 @@ mod tests {
                     owner_pubkey: owner_public,
                     inviter_label: "Alice".into(),
                     role: collab_types::Role::Editor,
-                    expires_at: SystemTime::now() + Duration::from_secs(60),
+                    expires_at: tilo_clock::wall() + Duration::from_secs(60),
                 },
                 &owner_secret,
                 tilo_identity_ceremony::InviteBrokerLocator {
@@ -1413,7 +1429,7 @@ mod tests {
             tilo_identity_ceremony::build_attestation_from_invite(
                 &invite,
                 invitee,
-                SystemTime::now(),
+                tilo_clock::wall(),
             )
             .unwrap();
             let (_, replay) = collab_types::generate_keypair();
@@ -1421,7 +1437,7 @@ mod tests {
                 tilo_identity_ceremony::build_attestation_from_invite(
                     &invite,
                     replay,
-                    SystemTime::now()
+                    tilo_clock::wall()
                 )
                 .is_err()
             );

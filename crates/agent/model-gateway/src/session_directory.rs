@@ -136,6 +136,9 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     #[test]
     fn trusted_chat_grant_preserves_narrow_identity() {
+        // The grant expires a minute after this instant, however long the
+        // test takes.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let dir = tempfile::tempdir().unwrap();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let token = "c".repeat(64);
@@ -166,6 +169,9 @@ mod tests {
 
     #[test]
     fn grants_are_private_expiring_and_revocable() {
+        // The grant expires a minute after this instant, however long the
+        // test takes.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let dir = tempfile::tempdir().unwrap();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let authorizer = SessionDirectory::new(dir.path().to_owned()).unwrap();

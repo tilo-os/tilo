@@ -99,7 +99,6 @@ mod tests {
         assert!(!first.same(&second));
         assert_eq!(first.get(), &[1, 2, 3, 4]);
         assert_eq!(second.get(), &[1, 2, 3, 4, 5]);
-        // The copy shares again, through the copy it carries.
         let third = second.share();
         assert_eq!(third.into_inner(), vec![1, 2, 3, 4, 5]);
         assert_eq!(second.into_inner(), vec![1, 2, 3, 4, 5]);

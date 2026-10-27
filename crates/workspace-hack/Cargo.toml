@@ -7,7 +7,7 @@ name = "workspace-hack"
 version = "0.1.0"
 edition = "2024"
 description = "workspace-hack package, managed by hakari"
-license.workspace = true
+license = "MIT"
 publish.workspace = true
 
 # The parts of the file between the BEGIN HAKARI SECTION and END HAKARI SECTION comments
@@ -32,6 +32,7 @@ bit-set = { version = "0.8" }
 bit-vec = { version = "0.8" }
 bitflags = { version = "2", default-features = false, features = ["serde", "std"] }
 block-buffer = { version = "0.12", default-features = false, features = ["zeroize"] }
+bon = { version = "3" }
 buffa = { version = "0.9", default-features = false, features = ["fast-utf8", "json", "std"] }
 bumpalo = { version = "3", features = ["boxed", "collections"] }
 bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "derive", "extern_crate_alloc", "min_const_generics"] }
@@ -94,15 +95,14 @@ ghash = { version = "0.6", default-features = false, features = ["zeroize"] }
 group = { version = "0.13", default-features = false, features = ["alloc"] }
 guillotiere = { version = "0.7", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", features = ["serde"] }
-hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-features = false, features = ["default-hasher", "raw-entry"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
+hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro = { version = "0.7" }
 hayro-cmap = { version = "0.1", default-features = false, features = ["embed-cmaps"] }
 hayro-interpret = { version = "0.7", default-features = false, features = ["embed-cmaps", "embed-fonts"] }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
 hex = { version = "0.4" }
-hickory-proto = { version = "0.26", default-features = false, features = ["access-control"] }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
 hpke-rs = { version = "0.7", default-features = false, features = ["experimental", "hazmat", "rustcrypto", "serialization"] }
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
@@ -128,6 +128,7 @@ libm = { version = "0.2" }
 litemap = { version = "0.8", default-features = false, features = ["serde"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 lru = { version = "0.16" }
+lzma-rust2 = { version = "0.23", default-features = false, features = ["optimization", "std", "xz"] }
 memchr = { version = "2" }
 miniz_oxide = { version = "0.8", features = ["simd"] }
 mio = { version = "1", features = ["net", "os-ext"] }
@@ -143,6 +144,7 @@ p256-594e8ee84c453af0 = { package = "p256", version = "0.13", features = ["ecdh"
 p384-582f2526e08bb6a0 = { package = "p384", version = "0.14", features = ["ecdh"] }
 p384-594e8ee84c453af0 = { package = "p384", version = "0.13" }
 parking_lot = { version = "0.12" }
+pbkdf2 = { version = "0.12" }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
@@ -176,8 +178,8 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
 rqrr = { version = "0.10" }
+rusqlite = { version = "0.37", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
-rustc-hash = { version = "1" }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process", "system"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
@@ -185,7 +187,7 @@ scopeguard = { version = "1" }
 sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value"] }
+serde_json = { path = "../../vendor/serde_json", features = ["alloc", "preserve_order", "raw_value"] }
 sha1 = { version = "0.10", features = ["oid"] }
 sha2-93f6ce9d446188ac = { package = "sha2", version = "0.10" }
 sha2-a6292c17cd707f01 = { package = "sha2", version = "0.11" }
@@ -209,7 +211,7 @@ subtle = { version = "2", features = ["const-generics"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
 sysinfo = { version = "0.36" }
-tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
+tantivy = { version = "0.27", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 tilo-vello-encoding = { path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
@@ -218,7 +220,7 @@ tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream = { version = "0.1" }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml_parser = { version = "1" }
@@ -269,6 +271,7 @@ bit-set = { version = "0.8" }
 bit-vec = { version = "0.8" }
 bitflags = { version = "2", default-features = false, features = ["serde", "std"] }
 block-buffer = { version = "0.12", default-features = false, features = ["zeroize"] }
+bon = { version = "3" }
 buffa = { version = "0.9", default-features = false, features = ["fast-utf8", "json", "std"] }
 bumpalo = { version = "3", features = ["boxed", "collections"] }
 bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "derive", "extern_crate_alloc", "min_const_generics"] }
@@ -334,15 +337,14 @@ ghash = { version = "0.6", default-features = false, features = ["zeroize"] }
 group = { version = "0.13", default-features = false, features = ["alloc"] }
 guillotiere = { version = "0.7", default-features = false, features = ["std"] }
 half = { version = "2", default-features = false, features = ["num-traits"] }
-hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", features = ["serde"] }
-hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-features = false, features = ["default-hasher", "raw-entry"] }
+hashbrown-3575ec1268b04181 = { package = "hashbrown", version = "0.15", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
+hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
 hayro = { version = "0.7" }
 hayro-cmap = { version = "0.1", default-features = false, features = ["embed-cmaps"] }
 hayro-interpret = { version = "0.7", default-features = false, features = ["embed-cmaps", "embed-fonts"] }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
 hex = { version = "0.4" }
-hickory-proto = { version = "0.26", default-features = false, features = ["access-control"] }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
 hpke-rs = { version = "0.7", default-features = false, features = ["experimental", "hazmat", "rustcrypto", "serialization"] }
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
@@ -368,6 +370,7 @@ libm = { version = "0.2" }
 litemap = { version = "0.8", default-features = false, features = ["serde"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 lru = { version = "0.16" }
+lzma-rust2 = { version = "0.23", default-features = false, features = ["optimization", "std", "xz"] }
 memchr = { version = "2" }
 miniz_oxide = { version = "0.8", features = ["simd"] }
 mio = { version = "1", features = ["net", "os-ext"] }
@@ -383,6 +386,7 @@ p256-594e8ee84c453af0 = { package = "p256", version = "0.13", features = ["ecdh"
 p384-582f2526e08bb6a0 = { package = "p384", version = "0.14", features = ["ecdh"] }
 p384-594e8ee84c453af0 = { package = "p384", version = "0.13" }
 parking_lot = { version = "0.12" }
+pbkdf2 = { version = "0.12" }
 peniko = { version = "0.6", features = ["bytemuck"] }
 percent-encoding = { version = "2" }
 phf = { version = "0.13", features = ["macros"] }
@@ -416,8 +420,8 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
 rqrr = { version = "0.10" }
+rusqlite = { version = "0.37", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
-rustc-hash = { version = "1" }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", features = ["event", "fs", "net", "process", "system"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", features = ["std"] }
@@ -425,7 +429,7 @@ scopeguard = { version = "1" }
 sec1 = { version = "0.7", features = ["pem", "std", "subtle"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value"] }
+serde_json = { path = "../../vendor/serde_json", features = ["alloc", "preserve_order", "raw_value"] }
 sha1 = { version = "0.10", features = ["oid"] }
 sha2-93f6ce9d446188ac = { package = "sha2", version = "0.10" }
 sha2-a6292c17cd707f01 = { package = "sha2", version = "0.11" }
@@ -450,7 +454,7 @@ syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-trai
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
 sysinfo = { version = "0.36" }
-tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
+tantivy = { version = "0.27", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
 tilo-vello-encoding = { path = "../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
@@ -460,7 +464,7 @@ tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream = { version = "0.1" }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml_parser = { version = "1" }
@@ -518,7 +522,6 @@ profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
-serde_json = { version = "1", default-features = false, features = ["float_roundtrip"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -527,6 +530,8 @@ toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
+x11rb = { version = "0.13", default-features = false, features = ["res"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 ash = { version = "0.38" }
@@ -552,7 +557,6 @@ profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
-serde_json = { version = "1", default-features = false, features = ["float_roundtrip"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -561,6 +565,8 @@ toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
+x11rb = { version = "0.13", default-features = false, features = ["res"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std"] }
 
 [target.aarch64-unknown-linux-gnu.dependencies]
 ash = { version = "0.38" }
@@ -586,7 +592,6 @@ profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
-serde_json = { version = "1", default-features = false, features = ["float_roundtrip"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -595,6 +600,8 @@ toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
+x11rb = { version = "0.13", default-features = false, features = ["res"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std"] }
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
 ash = { version = "0.38" }
@@ -620,7 +627,6 @@ profiling = { version = "1" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["event", "fs", "mm", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["mm", "pipe", "shm", "stdio", "termios", "time"] }
-serde_json = { version = "1", default-features = false, features = ["float_roundtrip"] }
 serde_spanned = { version = "1", default-features = false, features = ["serde", "std"] }
 tiny-skia = { version = "0.12" }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
@@ -629,5 +635,7 @@ toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["log"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
+x11rb = { version = "0.13", default-features = false, features = ["res"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std"] }
 
 ### END HAKARI SECTION

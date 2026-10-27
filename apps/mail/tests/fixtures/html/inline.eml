@@ -1,0 +1,43 @@
+From: Ana Lima <ana@studio-lima.example>
+To: Sam Rivera <sam@rivera.example>
+Subject: Logo options and this month's numbers
+Message-ID: <logo-v3@studio-lima.example>
+Date: Mon, 29 Jun 2026 13:20:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="rel-1"; type="multipart/alternative"
+
+--rel-1
+Content-Type: multipart/alternative; boundary="alt-1"
+
+--alt-1
+Content-Type: text/plain; charset=utf-8
+
+Hi Sam, here is the logo we picked and the chart for June. Ana
+
+--alt-1
+Content-Type: text/html; charset=utf-8
+
+<div style="font-family:Georgia,serif;font-size:16px;line-height:1.5;color:#222">
+<p>Hi Sam,</p>
+<p>Here is the logo we settled on:</p>
+<p><img src="cid:logo-v3@studio-lima.example" width="64" height="64" alt="The new logo"></p>
+<p>And June in one picture:</p>
+<p><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADwAAAAwCAIAAADCXI5eAAAAWklEQVR42u3UMQ4AEQAEQIVv+r9GfSUvkOAUyCRbbrJTbahfuS4B+kV0TrEXaGho6J/okQ40NPQt6F1XBQ0NDb02Bg0NDQ09jz4NBA0NDQ0NDQ0NDQ0N/Qa6AQSdTZwyZdIFAAAAAElFTkSuQmCC" width="120" height="96" alt="Bars rising through June"></p>
+<p>Ana</p>
+</div>
+
+--alt-1--
+
+--rel-1
+Content-Type: image/png; name="logo.png"
+Content-Transfer-Encoding: base64
+Content-ID: <logo-v3@studio-lima.example>
+Content-Disposition: inline; filename="logo.png"
+
+iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAA80lEQVR42u3a0Q3DIBADUE/QeSul
+q7WrtfnMT+hBjsTnOGIAPyBCcIdv8Q8GGEAOeH7eZQBr1vggAnTlTpcgMfrjtcRHFgPnR89l4Ej6
+4dwNyVxAyqxHVmMKYF70I0sBqvQDBrCl7zWAMH2XAZzp44YQ4JL0W8Mg4PL0EQM4N098I4F8+v8u
+AvjTtw2KAJ7dH/kTUGL6G4sgB6BNv2cwwAADDCACcJ7B7fPYW8gAAwwwIBXgCw0NoPCd2M8qBIDy
+L3MKb6PlX6cV6gMKFZryNTKFKqVCnVihUq/QK6HQrSLSL6TQsSXSMyfStajTN+rW41sCfkWoNDsm
+7lCHAAAAAElFTkSuQmCC
+--rel-1--

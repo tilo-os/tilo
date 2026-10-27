@@ -159,6 +159,7 @@ fn live_shared() -> Shared {
         outgoing,
         incoming,
         _origins: [outgoing_task, incoming_task],
+        wake: Mutex::new(None),
         state: Mutex::new(State {
             status: Status::Live,
             muted: true,
@@ -171,7 +172,9 @@ fn live_shared() -> Shared {
             reading: BTreeMap::from([(NAME.to_owned(), 1)]),
             reading_revision: 1,
             pictures_out: BTreeMap::new(),
+            picture_groups: BTreeMap::new(),
             pictures_revision: 0,
+            keyframes: BTreeSet::new(),
             shown: BTreeMap::new(),
             pictures_in: BTreeMap::new(),
             counters: Counters::default(),

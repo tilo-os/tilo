@@ -1,5 +1,5 @@
 //! Exact application identity and checked mounting. Hosts supply admitted records/services.
-use tilo_desktop_model::{RoomId, Tab, TileContent};
+use tilo_desktop_model::{RoomId, Tab};
 use ui::application::{
     AppComponent, ApplicationCatalog, ApplicationDefinition, HostContext, LaunchTarget,
     RestoreInput,
@@ -39,6 +39,11 @@ pub enum TileResolution {
     },
     /// Retain failed setup owners, including retryable persistence reports.
     Failed(LaunchError),
+    /// The app's record is still being opened off the frame loop (see
+    /// [`LaunchError::is_opening`]): its window reserves the place for the
+    /// app's arrival, and the tab is resolved again on the next
+    /// reconciliation, which the host's storage wake causes.
+    Opening,
 }
 pub trait TileResolver {
     fn resolve(&mut self, request: TileRequest<'_>) -> TileResolution;
@@ -133,6 +138,15 @@ impl<H: ComponentContextSource> TileResolver for ApplicationCatalogTileResolver<
     }
 }
 impl TileResolution {
+    /// Whether the tile holds its record itself (a mounted app, or one still
+    /// opening its own), so the host binds it no scratch record.
+    pub(crate) fn holds_its_own_record(&self) -> bool {
+        matches!(
+            self,
+            Self::Component(_) | Self::App(..) | Self::Retained(_) | Self::Opening
+        )
+    }
+
     pub(crate) fn mount(
         self,
         failures: &mut Vec<LaunchError>,
@@ -188,6 +202,7 @@ impl TileResolution {
                     detail: reason,
                 })
             }
+            Self::Opening => TileHost::new(ui::widget::TileContent::Arriving),
             Self::Failed(error) => {
                 let detail = error.to_string();
                 failures.push(error);
@@ -228,32 +243,4 @@ pub fn app_tile(
     } else {
         app
     }))
-}
-
-pub fn tile_app_kind(tile: &TileContent) -> ui::widget::AppKind {
-    use ui::widget::AppKind as Kind;
-    match tile {
-        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => match kind {
-            tilo_desktop_model::AppKind::Terminal => Kind::Terminal,
-            tilo_desktop_model::AppKind::FileExplorer => Kind::Files,
-            tilo_desktop_model::AppKind::Browser => Kind::Browser,
-            tilo_desktop_model::AppKind::Other(id)
-                if ["Notes", "Word", "Editor"]
-                    .iter()
-                    .any(|known| id.eq_ignore_ascii_case(known))
-                    || ["so.tilo.word-processor", "so.tilo.notes"]
-                        .iter()
-                        .any(|known| id == known) =>
-            {
-                Kind::Editor
-            }
-            _ => Kind::Settings,
-        },
-        // A window wears its own app's glyph, never another app's.
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. }
-        | TileContent::HostedWindow { app_id, .. } => Kind::App(ui::icons::app_glyph(app_id, None)),
-        TileContent::WorkspaceActivity => Kind::Settings,
-    }
 }

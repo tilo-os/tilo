@@ -320,7 +320,6 @@ mod tests {
     #[test]
     fn a_scope_request_names_its_unit_slice_session_and_process() {
         let request = request_args("app-tilo-com.spotify.Client-42.scope", 42, "Spo\ntify");
-        // The foreground tier rides between the session link and the description.
         let tier = crate::priority::tier_properties(
             crate::priority::Tier::Foreground,
             crate::priority::mem_total_bytes(),
@@ -424,7 +423,6 @@ mod tests {
             path
         };
         let pid = std::process::id();
-        // Phase `a_refusal_keeps_the_managers_reason`.
         {
             let busctl = stand_in("refusing-busctl", 1);
             let error = join_with(&busctl, "so.tilo.notes", "Notes", Duration::from_millis(20))
@@ -437,14 +435,12 @@ mod tests {
                 request_args(&format!("app-tilo-so.tilo.notes-{pid}.scope"), pid, "Notes")
             );
         }
-        // Phase `an_accepted_scope_that_never_arrives_times_out`.
         {
             let busctl = stand_in("accepting-busctl", 0);
             let error = join_with(&busctl, "so.tilo.notes", "Notes", Duration::from_millis(20))
                 .expect_err("the process never moved");
             assert!(error.contains("not joined"), "{error}");
         }
-        // Phase `a_missing_front_end_is_reported`.
         {
             let error = join_with(
                 &dir.path().join("absent-busctl"),

@@ -67,7 +67,7 @@ pub(crate) fn imported_daemon_command(
         .ok_or_else(|| invalid("configured daemon has no executable"))? = path
         .join("layers")
         .join(layer)
-        .join("usr/libexec/tilo-vmd")
+        .join("usr/libexec/tilo/tilo-vmd")
         .to_string_lossy()
         .into_owned();
     let mut command = Vec::new();
@@ -398,10 +398,6 @@ impl Remote {
     /// Open tilo-vmd's RPC over the peer network: `line` runs
     /// `tilo-device-admin dial`, whose first line names the device and the
     /// route before the request lines start.
-    ///
-    /// # Errors
-    /// A missing dial helper, a dial that fails (with its exit status and
-    /// what it said), or a protocol mismatch.
     pub fn over_peer(vm: &str, line: &CommandLine) -> Result<(Self, PeerSession), CliError> {
         let mut child = Command::new(&line.program)
             .args(&line.args)
@@ -456,8 +452,6 @@ impl Remote {
         }
     }
 
-    /// # Errors
-    /// Daemon-reported and transport errors.
     pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, CliError> {
         let request = params.into();
         self.client
@@ -673,7 +667,7 @@ mod tests {
     fn imported_daemon_command_preserves_rpc_policy_and_refuses_untrusted_paths() {
         let hash = "ab".repeat(32);
         let command = imported_daemon_command(
-            Some("sudo -n /usr/libexec/tilo-vmd rpc --root /old --expect-domain greetd_t"),
+            Some("sudo -n /usr/libexec/tilo/tilo-vmd rpc --root /old --expect-domain greetd_t"),
             "/var/lib/tilo-vm",
             &hash,
         )
@@ -683,7 +677,7 @@ mod tests {
             [
                 "sudo".to_owned(),
                 "-n".into(),
-                format!("/var/lib/tilo-vm/layers/{hash}/usr/libexec/tilo-vmd"),
+                format!("/var/lib/tilo-vm/layers/{hash}/usr/libexec/tilo/tilo-vmd"),
                 "rpc".into(),
                 "--expect-domain".into(),
                 "greetd_t".into(),
@@ -711,7 +705,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("state");
         let hash = "ab".repeat(32);
-        let binary = root.join("layers").join(&hash).join("usr/libexec/tilo-vmd");
+        let binary = root
+            .join("layers")
+            .join(&hash)
+            .join("usr/libexec/tilo/tilo-vmd");
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         let script = r"#!/usr/bin/env python3
 import json,os,sys
@@ -845,7 +842,6 @@ for line in sys.stdin:
                 "{}",
                 remote[5]
             );
-            // The daemon too, and a shell is a root login shell.
             let rpc = ssh_command(&owner, None, &["tilo-vmd".into(), "rpc".into()], false);
             assert_eq!(rpc.args.last().unwrap(), "'tilo-vmd rpc'");
             let shell = ssh_command(&owner, None, &[], true);

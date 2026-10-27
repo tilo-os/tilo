@@ -13,8 +13,8 @@ use std::io::{Error, ErrorKind};
 
 use serde_json::{Map, Value};
 
-use crate::SettingsSource;
 use crate::continuity::{APP_DEVICE_LOCAL_SECTION, APP_PERSONAL_SECTION, MAX_PERSONAL_VALUE_BYTES};
+use crate::{ChangeOrigin, SettingsSource};
 
 /// Sections every app reads and only their owners write: the person's
 /// region, spelling and accessibility preferences and the desktop's look,
@@ -31,6 +31,72 @@ pub const OWNED_SHARED_KEYS: &[(&str, &str, &[&str])] = &[(
     "appearance",
     &["theme", "custom_theme", "studio"],
 )];
+
+/// The capability an app's manifest declares to edit the whole settings
+/// document as the device's settings app (`[capabilities]`).
+pub const SYSTEM_SETTINGS_CAPABILITY: &str = "settings.system";
+
+/// The packages the image lets edit the whole document, whatever a manifest
+/// says: the device's settings app. As with the launcher's system authority,
+/// the image owns the grant and the package asks for it, so an app that
+/// declares [`SYSTEM_SETTINGS_CAPABILITY`] without being listed here still
+/// reaches only its own entries.
+pub const SYSTEM_SETTINGS_APPS: &[&str] = &["so.tilo.settings"];
+
+/// What an app reaches of the document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// Its own entries, and the shared sections to read.
+    App,
+    /// Every section, to read and write: the device's settings app.
+    System,
+}
+
+impl Reach {
+    /// The reach of `app_id` when its manifest declares `capabilities`.
+    #[must_use]
+    pub fn of(app_id: &str, capabilities: &[impl AsRef<str>]) -> Self {
+        let declared = capabilities
+            .iter()
+            .any(|capability| capability.as_ref() == SYSTEM_SETTINGS_CAPABILITY);
+        if declared && SYSTEM_SETTINGS_APPS.contains(&app_id) {
+            Self::System
+        } else {
+            Self::App
+        }
+    }
+}
+
+/// [`app_view`] at `reach`: the whole document for the system's settings app.
+#[must_use]
+pub fn view_at(document: &Map<String, Value>, app_id: &str, reach: Reach) -> Map<String, Value> {
+    match reach {
+        Reach::App => app_view(document, app_id),
+        Reach::System => document.clone(),
+    }
+}
+
+/// [`update_for_app_by`] at `reach`: the system's settings app writes any
+/// section, merged into what it holds, as the session's own writers do.
+/// `origin` is recorded with each leaf the write changes.
+///
+/// # Errors
+///
+/// As [`update_for_app`] for [`Reach::App`]; the source's own error for
+/// [`Reach::System`].
+pub fn update_at(
+    source: &dyn SettingsSource,
+    app_id: &str,
+    reach: Reach,
+    section: &str,
+    values: Map<String, Value>,
+    origin: &ChangeOrigin,
+) -> std::io::Result<()> {
+    match reach {
+        Reach::App => update_for_app_by(source, app_id, section, values, origin),
+        Reach::System => source.update_section_by(section, values, origin),
+    }
+}
 
 /// The most one write of an app's device-local entry may carry.
 pub const MAX_DEVICE_LOCAL_VALUE_BYTES: usize = 256 * 1024;
@@ -72,11 +138,26 @@ pub fn update_for_app(
     section: &str,
     values: Map<String, Value>,
 ) -> std::io::Result<()> {
+    update_for_app_by(source, app_id, section, values, &ChangeOrigin::default())
+}
+
+/// [`update_for_app`], recording `origin` with each leaf the write changes.
+///
+/// # Errors
+///
+/// As [`update_for_app`].
+pub fn update_for_app_by(
+    source: &dyn SettingsSource,
+    app_id: &str,
+    section: &str,
+    values: Map<String, Value>,
+    origin: &ChangeOrigin,
+) -> std::io::Result<()> {
     if let Some((_, _, owned)) = OWNED_SHARED_KEYS
         .iter()
         .find(|(owner, shared, _)| *owner == app_id && *shared == section)
     {
-        return update_owned_keys(source, app_id, section, owned, values);
+        return update_owned_keys(source, app_id, section, owned, values, origin);
     }
     let limit = match section {
         APP_PERSONAL_SECTION => MAX_PERSONAL_VALUE_BYTES,
@@ -125,7 +206,7 @@ pub fn update_for_app(
     }
     let mut entry = Map::new();
     entry.insert(app_id.to_owned(), Value::Object(stored));
-    source.update_section(section, entry)
+    source.update_section_by(section, entry, origin)
 }
 
 /// Merge `values` into the shared `section` for the app that owns the keys
@@ -136,6 +217,7 @@ fn update_owned_keys(
     section: &str,
     owned: &[&str],
     values: Map<String, Value>,
+    origin: &ChangeOrigin,
 ) -> std::io::Result<()> {
     if let Some(key) = values.keys().find(|key| !owned.contains(&key.as_str())) {
         return Err(Error::new(
@@ -152,7 +234,7 @@ fn update_owned_keys(
             ),
         ));
     }
-    source.update_section(section, values)
+    source.update_section_by(section, values, origin)
 }
 
 #[cfg(test)]
@@ -173,8 +255,56 @@ mod tests {
     }
 
     #[test]
-    fn an_apps_write_reaches_the_record_its_scope_names_and_the_copy() {
+    fn the_system_settings_app_reaches_every_section_and_no_other_app_does() {
         let dir = tempfile::tempdir().unwrap();
+        let session = session(dir.path());
+        let asks = [SYSTEM_SETTINGS_CAPABILITY];
+        assert_eq!(Reach::of("so.tilo.settings", &asks), Reach::System);
+        assert_eq!(Reach::of("so.tilo.settings", &[] as &[&str]), Reach::App);
+        assert_eq!(Reach::of("so.tilo.notes", &asks), Reach::App);
+        update_at(
+            &session,
+            "so.tilo.settings",
+            Reach::System,
+            "appearance",
+            object(json!({"text_scale": 1.3})),
+            &ChangeOrigin::default(),
+        )
+        .unwrap();
+        update_at(
+            &session,
+            "so.tilo.settings",
+            Reach::System,
+            "input",
+            object(json!({"keyboard_layout": "de"})),
+            &ChangeOrigin::default(),
+        )
+        .unwrap();
+        let document = session.load();
+        assert_eq!(document["appearance"]["text_scale"], 1.3);
+        assert_eq!(
+            view_at(&document, "so.tilo.settings", Reach::System),
+            document
+        );
+        assert_eq!(
+            update_at(
+                &session,
+                "so.tilo.notes",
+                Reach::App,
+                "appearance",
+                object(json!({"text_scale": 2.0})),
+                &ChangeOrigin::default(),
+            )
+            .unwrap_err()
+            .kind(),
+            ErrorKind::PermissionDenied
+        );
+        assert!(!view_at(&document, "so.tilo.notes", Reach::App).contains_key("input"));
+    }
+
+    #[test]
+    fn an_apps_write_reaches_the_record_its_scope_names_and_the_copy() {
+        let dir = crate::test_dir();
         let session = session(dir.path());
         let paths = session.paths().clone();
         update_for_app(
@@ -216,7 +346,7 @@ mod tests {
 
     #[test]
     fn an_app_cannot_write_another_apps_entry_or_a_shared_section() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = session(dir.path());
         session
             .update_section(
@@ -257,7 +387,7 @@ mod tests {
 
     #[test]
     fn theme_studio_writes_the_active_theme_and_nothing_else_of_the_look() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = session(dir.path());
         session
             .update_section("appearance", object(json!({"high_contrast": true})))
@@ -306,7 +436,7 @@ mod tests {
 
     #[test]
     fn a_personal_entry_too_large_to_roam_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = session(dir.path());
         let words = vec!["x".repeat(1024); 80];
         let error = update_for_app(

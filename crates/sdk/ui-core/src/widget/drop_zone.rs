@@ -110,7 +110,6 @@ impl<'a> DropZoneFace<'a> {
         self
     }
 
-    /// A drag is hovering over the zone.
     #[must_use]
     pub fn drag_over(mut self, over: bool) -> Self {
         self.drag_over = over;

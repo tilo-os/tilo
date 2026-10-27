@@ -1,0 +1,64 @@
+{
+  "faces": [
+    {
+      "fill": "#f7857d",
+      "ink": "#261615"
+    },
+    {
+      "fill": "#ed914c",
+      "ink": "#24180f"
+    },
+    {
+      "fill": "#d3a329",
+      "ink": "#251e0f"
+    },
+    {
+      "fill": "#a8b540",
+      "ink": "#1e2011"
+    },
+    {
+      "fill": "#6ec272",
+      "ink": "#1a271a"
+    },
+    {
+      "fill": "#00c7a6",
+      "ink": "#122822"
+    },
+    {
+      "fill": "#00c1d1",
+      "ink": "#0f272a"
+    },
+    {
+      "fill": "#38b8f6",
+      "ink": "#14252f"
+    },
+    {
+      "fill": "#81a8ff",
+      "ink": "#181f2c"
+    },
+    {
+      "fill": "#b298f9",
+      "ink": "#1c1826"
+    },
+    {
+      "fill": "#d78adb",
+      "ink": "#211721"
+    },
+    {
+      "fill": "#ee83af",
+      "ink": "#25161b"
+    }
+  ],
+  "text": "#eff2f6",
+  "dim": "#afb1b5",
+  "placeholder": "#84868a",
+  "danger": "#e47c75",
+  "field": "#1c1e21",
+  "field_radius": 8.0,
+  "field_height": 40.0,
+  "avatar": 80.0,
+  "initials_size": 32.0,
+  "name_size": 26.0,
+  "body_size": 14.0,
+  "label_size": 13.0
+}

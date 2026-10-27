@@ -261,7 +261,7 @@ impl Daemon {
         let sockets = dir.join(format!("{name}-s"));
         std::fs::create_dir_all(&sockets).unwrap();
         let binary = std::env::var_os("TILO_FS_TEST_BINARY")
-            .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_fs")), PathBuf::from);
+            .map_or_else(|| tilo_test_env::package_binary!("fs"), PathBuf::from);
         // Only the network namespace changes: the daemon's bind mount must
         // stay visible to this process.
         let mut command = match netns {

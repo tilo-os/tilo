@@ -6,6 +6,7 @@
 )]
 
 use crate::widget::ModelPath;
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -111,7 +112,7 @@ impl Summary {
             .copied()
             .filter(|value| value.is_finite())
             .collect::<Vec<_>>();
-        sorted.sort_by(f64::total_cmp);
+        sorted.compact_sort_by(f64::total_cmp);
         let min = *sorted.first()?;
         let max = *sorted.last()?;
         let q1 = quantile(&sorted, 0.25);

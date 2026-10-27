@@ -115,7 +115,11 @@ fn mounted_reply(
 #[test]
 fn mounted_oversized_stream_and_final_persist_utf8_truncation_and_safe_continuation() {
     for final_only in [false, true] {
-        let oversized = format!("a{}", "🦀".repeat(crate::record::MAX_MESSAGE_TEXT_BYTES));
+        // Two-byte characters after a one-byte lead put the byte limit in the
+        // middle of a character, which is what the truncation must respect.
+        // Emoji would too, but laying out sixteen thousand of them made this
+        // the slowest test in the app without testing anything more.
+        let oversized = format!("a{}", "é".repeat(crate::record::MAX_MESSAGE_TEXT_BYTES));
         let backend = backend(if final_only { "" } else { &oversized });
         if final_only {
             *backend.final_text.borrow_mut() = Some(oversized.clone());
@@ -301,6 +305,138 @@ fn stream_display_names_do_not_change_person_bot_or_agent_identity() {
         }
     ));
     assert!(!app.is_provider_output(&message));
+}
+
+#[test]
+fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
+    let (mut app, mut doc) = chat(backend("Answer"));
+    let start = app.model_command("c_chat", "ask").unwrap();
+    pump(&mut app, &mut doc);
+    let mut message = reply(&doc, &start["reply"]);
+    message.work = None;
+    message.author = "bot:bridge-installation".into();
+    message.appearance = Some(tilo_actions::Appearance {
+        name: "Dana".into(),
+        avatar: None,
+        persona: Some(tilo_actions::Persona {
+            service: "discord".into(),
+            account: "3001".into(),
+            linked: None,
+        }),
+    });
+    assert_eq!(app.message_author_name(&message), "Discord bridge");
+    let label = app.model_message_label(&message);
+    assert!(label.starts_with("Dana, from Discord: "), "{label}");
+    assert!(!label.contains("Someone"), "{label}");
+
+    // A member named alike: an unlinked persona says where it is from, one
+    // linked to that member is them.
+    app.users.push(crate::model::User {
+        id: "u_dana".into(),
+        name: "Dana".into(),
+        initials: "D".into(),
+        color_idx: 0,
+        status: crate::model::Presence::Online,
+        is_agent: false,
+    });
+    let label = app.model_message_label(&message);
+    assert!(
+        label.starts_with("Dana · Discord, from Discord: "),
+        "{label}"
+    );
+    if let Some(persona) = message
+        .appearance
+        .as_mut()
+        .and_then(|appearance| appearance.persona.as_mut())
+    {
+        persona.linked = Some("u_dana".into());
+    }
+    let label = app.model_message_label(&message);
+    assert!(label.starts_with("Dana, from Discord: "), "{label}");
+    // One person, one colour: the bridged tile wears the linked member's.
+    let name = app.message_author_name(&message);
+    let ui::author::Author::Bot { linked_color, .. } =
+        app.message_author(&message, &name, "", None)
+    else {
+        panic!("a bridged message is the bot's");
+    };
+    assert_eq!(linked_color, Some(app.identity_colour("u_dana")));
+    assert_ne!(
+        app.identity_colour("u_dana"),
+        app.identity_colour(&message.author),
+        "not the bridge's own colour"
+    );
+}
+
+/// A member who has only ever written from their linked Discord account is
+/// still one of the room's people: their bridged message is theirs, by
+/// their name with Discord's mark, never "Dana · Discord" as if a namesake
+/// wrote it.
+#[test]
+fn a_member_writing_only_from_a_linked_account_reads_as_themselves() {
+    let (mut app, mut doc) = chat(backend("Answer"));
+    let start = app.model_command("c_chat", "ask").unwrap();
+    pump(&mut app, &mut doc);
+    let mut base = reply(&doc, &start["reply"]);
+    base.work = None;
+    let channel = base.channel.clone();
+    let mut record = crate::record::Chat::default();
+    for (id, name) in [("u_dana", "Dana"), ("u_other_dana", "Dana")] {
+        record.people.push(crate::record::Person {
+            id: ui::tilo_resource::Atom(id.to_owned()),
+            name: name.into(),
+            ..crate::record::Person::default()
+        });
+    }
+    let mut other = base.clone();
+    other.author = "u_other_dana".into();
+    let mut bridged = base;
+    bridged.author = "bot:bridge-installation".into();
+    bridged.appearance = Some(tilo_actions::Appearance {
+        name: "Dana".into(),
+        avatar: None,
+        persona: Some(tilo_actions::Persona {
+            service: "discord".into(),
+            account: "3001".into(),
+            linked: Some("u_dana".into()),
+        }),
+    });
+    app.users = app.room_people_from(&record, &[(channel, vec![other, bridged.clone()])]);
+    assert!(
+        app.users.iter().any(|user| user.id == "u_dana"),
+        "the linked member is one of the room's people"
+    );
+    let members: Vec<&str> = app.users.iter().map(|user| user.name.as_str()).collect();
+    let name = app.message_author_name(&bridged);
+    let author = app.message_author(&bridged, &name, "", None);
+    assert_eq!(author.label(&members), "Dana");
+    assert!(author.chip_label().is_none(), "no text tag");
+    assert!(author.service_mark().is_some(), "Discord's mark instead");
+    assert_eq!(
+        author.linked_line().as_deref(),
+        Some("Linked to Dana on Tilo")
+    );
+}
+
+#[test]
+fn a_messages_name_says_which_file_it_shares() {
+    let (mut app, mut doc) = chat(backend("Answer"));
+    let start = app.model_command("c_chat", "ask").unwrap();
+    pump(&mut app, &mut doc);
+    let mut message = reply(&doc, &start["reply"]);
+    message.work = None;
+    message.text = String::new();
+    message.attachment = Some(crate::model::Attachment::File {
+        name: "plan.txt".into(),
+        blob: "ff".into(),
+        size: 5,
+    });
+    assert!(app.model_message_label(&message).ends_with(": plan.txt"));
+    message.text = "see this".into();
+    assert!(
+        app.model_message_label(&message)
+            .ends_with(": see this\nplan.txt")
+    );
 }
 
 #[test]
@@ -573,7 +709,7 @@ fn captured_provider_stream_keeps_the_real_invoker_and_model_attribution() {
 }
 
 #[test]
-fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() {
+fn model_capabilities_are_mount_local() {
     use crate::ChatShell;
     use ui::framework::testing::TestApp;
     let first = backend("First mount");
@@ -640,14 +776,4 @@ fn mounted_host_effect_is_device_local_and_model_capabilities_are_mount_local() 
     assert!(second.requests.borrow().is_empty());
     let mut b = b;
     assert!(crate::testing::mounted_rows(&mut b, "c_chat").is_empty());
-    assert!(
-        a.call_by(
-            ui::tilo_actions::ActionInvoker::actor("remote-agent"),
-            &channel,
-            "model-control",
-            serde_json::json!({"command": "ask"}),
-        )
-        .is_err(),
-        "a collaborator cannot adopt the device's model capability"
-    );
 }

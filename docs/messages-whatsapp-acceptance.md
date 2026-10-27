@@ -30,8 +30,8 @@ code, credential material or private message contents in screenshots or logs.
    the semantic entry points are:
 
    ```sh
-   tilo-vm control actions invoke applications so.tilo.messages
-   tilo-vm control actions list
+   tilo device control actions invoke applications so.tilo.messages
+   tilo device control actions list
    ```
 
    On a desktop use the installed `tilo-control` with the same arguments. Discover
@@ -110,7 +110,7 @@ service requests remain part of the separately blocked transport qualification.
 ## Private group text and membership changes
 
 `ReadGroupHistory`, `SendGroupText`, `AddGroupMember`, `RemoveGroupMember` and
-`LeaveGroup` are device-only registered actions, backed by the default account
+`LeaveGroup` are registered outside effects, backed by the default account
 supervisor's real SDK client. Read and send require sensitive review; membership
 changes require destructive confirmation. The member view returns an opaque,
 short-lived review tied to the exact service/account, authenticated self PN/LID,

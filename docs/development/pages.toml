@@ -1,0 +1,136 @@
+base = "/docs/development/"
+repository = "https://code.tilo.so/tilo/tilo"
+related_manifests = ["docs/developers/pages.toml"]
+
+[[page]]
+slug = ""
+source = "CONTRIBUTING.md"
+section = "Start"
+nav = "Make a contribution"
+description = "Get a checkout, change an app or crate, test it and open a PR."
+
+[[page]]
+slug = "setup"
+source = "docs/development/setup.md"
+section = "Start"
+nav = "Build prerequisites"
+description = "Rust, Python and native libraries for the package you are building."
+
+[[page]]
+slug = "testing"
+source = "docs/development/testing.md"
+section = "Start"
+nav = "Test a change"
+description = "Run focused checks and understand what still needs CI or hardware."
+
+[[page]]
+slug = "run-desktop"
+source = "docs/development/run-desktop.md"
+section = "Run your change"
+nav = "Desktop in a window"
+description = "Run a private development desktop without replacing your login session."
+
+[[page]]
+slug = "dev-vms"
+source = "docs/development/dev-vms.md"
+section = "Run your change"
+nav = "Development VM"
+description = "Try OS changes using the existing device and VM tooling."
+
+[[page]]
+slug = "host-session"
+source = "docs/development/host-session.md"
+section = "Run your change"
+nav = "Installed Linux session"
+description = "Develop a real Linux login session when nested testing is insufficient."
+
+[[page]]
+slug = "devices"
+source = "docs/development/devices.md"
+section = "Run your change"
+nav = "Devices and boards"
+description = "How a device follows a channel, and how to put your own build on one."
+
+[[page]]
+slug = "linux"
+source = "docs/development/platforms/linux.md"
+section = "Platforms"
+nav = "Linux"
+description = "Native dependencies and host capabilities for Linux development."
+
+[[page]]
+slug = "macos"
+source = "docs/development/platforms/macos.md"
+section = "Platforms"
+nav = "macOS"
+description = "Build apps or run the desktop as a macOS application."
+
+[[page]]
+slug = "windows"
+source = "docs/development/platforms/windows.md"
+section = "Platforms"
+nav = "Windows"
+description = "Native app development and Linux/VM paths for system work."
+
+[[page]]
+slug = "android"
+source = "docs/development/platforms/android.md"
+section = "Platforms"
+nav = "Android"
+description = "Set up the existing Android app toolchain."
+
+[[page]]
+slug = "reference"
+source = "docs/development/README.md"
+section = "Reference"
+nav = "Find a reference"
+description = "Look up platform, testing and runtime instructions."
+
+[[page]]
+slug = "t"
+source = "docs/t.md"
+section = "Reference"
+nav = "t"
+description = "Hosted builds, check selection and main/stable integration."
+
+[[page]]
+slug = "nested-session"
+source = "docs/development/tools/nested-session.md"
+section = "Reference"
+nav = "Nested-session tool"
+description = "Private state, app selection and lifecycle for nested sessions."
+
+[[page]]
+slug = "test-tools"
+source = "docs/development/tools/testing.md"
+section = "Reference"
+nav = "Test tools"
+description = "Find the right test environment or headless tool."
+
+[[page]]
+slug = "git"
+source = "docs/development/tools/git.md"
+section = "Reference"
+nav = "Hooks and generated files"
+description = "Install hooks and handle generated files without manual merge recipes."
+
+[[page]]
+slug = "dependencies"
+source = "docs/development/dependencies.md"
+section = "Reference"
+nav = "Dependencies and features"
+description = "Native libraries, workspace features and dependency changes."
+
+[[page]]
+slug = "test-isolation"
+source = "docs/development/test-isolation.md"
+section = "Reference"
+nav = "Test isolation"
+description = "Keep tests independent of personal data and the desktop session."
+
+[[page]]
+slug = "troubleshooting"
+source = "docs/development/troubleshooting.md"
+section = "Reference"
+nav = "Troubleshooting"
+description = "Diagnose a specific failure rather than rebuilding everything."

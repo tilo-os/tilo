@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The one async runtime model for Tilo processes: an app runtime off the UI thread, bounded daemon runtimes, a CPU pool, a file-I/O pool, named threads, and the host background executors and wake routing."
@@ -31,6 +31,11 @@ tracing.workspace = true
 # `rt-multi-thread` there.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+# Background threads lower their own scheduling priority; a thread reads its
+# own CPU clock.
+[target.'cfg(any(target_os = "linux", target_vendor = "apple"))'.dependencies]
+libc.workspace = true
 
 # In a browser the app runtime is the page's microtask queue.
 [target.'cfg(target_family = "wasm")'.dependencies]

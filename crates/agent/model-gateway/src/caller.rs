@@ -43,6 +43,7 @@ pub(crate) fn permitted(session: &dyn Session, request: &crate::Request) -> bool
         | crate::Request::SetProviderConfig { .. }
         | crate::Request::SecretStatus { .. }
         | crate::Request::CredentialStatus { .. }
+        | crate::Request::ListModels { .. }
         | crate::Request::MigrateApiKey { .. }
         | crate::Request::RemoveLegacyApiKey { .. }
         | crate::Request::SetApiKey { .. }

@@ -77,7 +77,6 @@ impl RangeSet {
         self.ranges = out;
     }
 
-    /// The parts of `r` that are in the set.
     pub fn intersect(&self, r: &Range<u64>) -> Vec<Range<u64>> {
         let lo = self.ranges.partition_point(|x| x.end <= r.start);
         self.ranges
@@ -106,7 +105,6 @@ impl RangeSet {
         out
     }
 
-    /// Whether every byte of `r` is in the set.
     pub fn contains(&self, r: &Range<u64>) -> bool {
         r.start >= r.end || self.missing(r).is_empty()
     }
@@ -122,7 +120,6 @@ mod tests {
 
     #[test]
     fn range_sets_merge_split_and_clip() {
-        // Phase `insert_merges_overlapping_and_touching_ranges`.
         {
             let mut s = RangeSet::new();
             s.insert(10..20);
@@ -138,7 +135,6 @@ mod tests {
                 vec![0..100, 150..160, 200..300]
             );
         }
-        // Phase `remove_splits_and_intersect_clips`.
         {
             let mut s = RangeSet::full(100);
             s.remove(10..20);

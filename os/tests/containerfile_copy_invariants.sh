@@ -78,9 +78,11 @@ containerfile="$repo/os/Containerfile"
 # ReadWritePaths=, which must exist before the unit can start.
 # The user-tmpfiles.d snippets live in /usr/share, the only system path
 # systemd-tmpfiles --user reads.
-# The native runtime host at /usr/bin/tilo-runtime-mcp is a deliberate addition.
+# The native runtime host at /usr/libexec/tilo/tilo-runtime-mcp is a deliberate addition.
 # /usr/bin/bootc from bootc-builder, the base's release patched to find this
 # system's ESP on a disk it shares, and its licence notice are deliberate.
+# tilo-pstore-console.service and the systemd-pstore drop-in that keeps pstore
+# records in the journal are deliberate additions.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
@@ -104,7 +106,7 @@ containerfile="$repo/os/Containerfile"
 # app store and its Chromium engine a signed runtime bundle under
 # /usr/lib/tilo-runtime, both already copied.
 # NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
-# The sibling-unlock client (/usr/bin/tilo-sibling-unlock, through
+# The sibling-unlock client (/usr/libexec/tilo/tilo-sibling-unlock, through
 # components.toml) and its dracut module ship in the rollback-files overlay
 # beside tilo-rollback, which the initramfs carries the same way.
 # The registry's runtime publisher key (/usr/share/tilo/registry-runtime-
@@ -227,7 +229,7 @@ containerfile="$repo/os/Containerfile"
 # from the base image instead of the installer's overlay of os/usr.
 # The VM install proof emitter is compiled too (one more install-helpers row).
 # The gateway's HTTP adapter is installed alongside the socket daemon at
-# /usr/bin/tilo-model-http (one new model-gateway component row).
+# /usr/libexec/tilo/tilo-model-http (one new model-gateway component row).
 # The desktop's wallpapers and their credits arrive from the os-wallpapers
 # stage, which fetches the files the tilo-wallpapers catalog pins: two
 # intentional payload rows, /usr/share/backgrounds/tilo and
@@ -276,7 +278,50 @@ containerfile="$repo/os/Containerfile"
 # with tilo-relay.service, which a home peer enables on this image too.
 # bootc's update timer and service each get a drop-in that lets them run on
 # the composefs backend, which leaves no /run/ostree-booted: two payload rows.
-expected_contract=f2f89e36e1057773efcc7543f20c4f6c3c183c84a6ffe50a2c5baae630277ce2
+# The image is built as layer actions (os/image/layers.toml), so its contract is
+# every stage of their pieces: the side builds' outputs (bootc, doubletake, joycond,
+# xwayland-satellite) arrive through the image-tool-stages image at the same
+# destinations, and the seal's UKI row (/boot/EFI/Linux/) is part of it.
+# The time-zone polkit rule (49-tilo-time-zone.rules) is a deliberate
+# addition beside the other rules, and tilo-identity, the identity command for
+# headless devices, is installed by its identity-cli component at
+# /usr/libexec/tilo/tilo-identity: one payload row each.
+# `tilo device` and `tilo action` are the tilo binary under their own names
+# (/usr/bin/device, /usr/bin/action), with completions linked the same way;
+# `tilo package` and `tilo agent` are linked the same way, and so is each noun's
+# tilo-<noun> name. The programs those nouns drive live in /usr/libexec/tilo/,
+# off PATH; each old /usr/bin name is a link to tilo, which runs the program
+# under that name: two rows per moved program.
+# The public content refresh's user tilo-public-content-refresh.service/.timer
+# ride the existing user-unit COPY instruction; they are the intentional
+# payload rows.
+# NetworkManager's DNS cache (conf.d/25-tilo-dns-cache.conf, dnsmasq caching
+# lookups that a lossy Wi-Fi link would otherwise stall for glibc's 5 s
+# resolver timeout) is one payload row.
+# tilo-deployment-status.socket and its service answer `tilo status` for the
+# device admin: two payload rows.
+# Signing in adds tilo-authd.service, the tilo-auth-legacy PAM service and the
+# sign-in component's tilo-authd, tilo-auth and pam_tilo.so: five payload rows.
+# The boot-signin component's tilo-boot-signin is one more.
+# tilo-clock-floor, its service, timer and shutdown service keep the clock
+# floor PID 1 starts from at chrony's authenticated time: four payload rows
+# riding existing COPY instructions.
+# The device VPN helper's units (tilo-device-vpn.socket, .service and
+# -reset.service) ride the system-unit COPY; its tmpfiles entry, firewalld zone
+# and policy, and NetworkManager drop-in (30-tilo-device-vpn.conf) are four
+# payload rows (docs/device-vpn.md).
+# After the boot loader went back from a deployment that failed its tries,
+# tilo-boot-fallback.service settles bootc on the running one and the session's
+# tilo-boot-fallback-notice (script and user unit) tells the person: three
+# payload rows on the existing recovery-files and user-unit COPY instructions.
+# tilo-update-channel, which names the image the update path follows, travels
+# with tilo-verified-update in the component files: one payload row.
+# tilo-authselect-unchanged rides the libexec COPY: one payload row (the
+# authselect-apply-changes drop-in that uses it is installed by the systemctl RUN).
+# The one sign-in service, tilo-auth, and the polkit-1 and sudo services that
+# take their authentication from it ride the existing PAM COPY: three payload
+# rows.
+expected_contract=b12e85d601eb1b5250e429dc1eaac0044e2f88656dd8b406b6af4442609a120f
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -301,9 +346,9 @@ duplicates="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   exit 1
 }
 
-instructions="$(containerfile_instructions "$containerfile" | awk '
+instructions="$(containerfile_instructions "$containerfile" | awk -v stages=" $(containerfile_image_stages "$containerfile") " '
   $1 == "FROM" { stage=$NF; next }
-  (stage == "rootfs" || stage == "rootfs-base") && $1 ~ /^(ARG|COPY|RUN|ADD|ENV|LABEL|WORKDIR|USER|EXPOSE|VOLUME|STOPSIGNAL|HEALTHCHECK|SHELL|CMD|ENTRYPOINT)$/ { n++ }
+  stage != "" && index(stages, " " stage " ") && $1 ~ /^(ARG|COPY|RUN|ADD|ENV|LABEL|WORKDIR|USER|EXPOSE|VOLUME|STOPSIGNAL|HEALTHCHECK|SHELL|CMD|ENTRYPOINT)$/ { n++ }
   END { print n+0 }
 ')"
 # The existing image used 123; provider selection adds ARG, COPY and its
@@ -329,6 +374,8 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # adds one more (154).
 # NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
 # The offline predefined Flathub descriptor adds one reviewed COPY (156).
+# The image is built as layer actions (os/image/layers.toml): the count is every
+# stage of their pieces, the seal's included, 151 of them.
 [ "$instructions" -le 156 ] || {
   echo "rootfs layer budget exceeded: $instructions instructions (maximum 156)" >&2
   exit 1
@@ -403,7 +450,7 @@ for path in \
 done
 python3 "$repo/os/scripts/install-components.py" relay --dry-run --format json |
   python3 -c 'import json,sys
-rows = [row for row in json.load(sys.stdin) if row["from"].startswith("@manifest/")]
+rows = [row for row in json.load(sys.stdin) if (row["from"] or "").startswith("@manifest/")]
 assert len(rows) == 6, rows
 for row in rows:
     assert row["from"] == "@manifest" + row["to"], row

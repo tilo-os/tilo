@@ -40,21 +40,8 @@ pub struct Select {
     pub d: Option<String>,
     /// Marks or groups.
     pub marks: Option<Vec<String>>,
-    /// Magic wand `[x, y]`: like colour touching it.
-    pub at: Option<[f64; 2]>,
-    /// The photo's main subject, found on-device (with at: the object
-    /// there).
-    pub subject: Option<bool>,
-    /// Units: fit the edge to the picture, soft for fur (subject: 6px).
-    pub refine: Option<f64>,
-    /// Set by subject/refine.
+    /// Set by find-area's subject or refine.
     pub matte: Option<Matte>,
-    /// `#rrggbb`, everywhere.
-    pub colour: Option<String>,
-    /// 0..1, default 0.15.
-    pub tolerance: Option<f64>,
-    /// at or colour: on this layer alone, not as all show.
-    pub layer: Option<String>,
     /// `replace`, `add`, `subtract`, `intersect` or `none` (deselect).
     pub mode: Option<String>,
     /// Units.
@@ -157,15 +144,6 @@ fn check_box(value: [f64; 4], what: &str) -> Result<Rect, Refusal> {
 }
 
 impl Select {
-    /// Whether it asks for colour seen in the artwork, which only the
-    /// window that shows it can find.
-    pub fn looks(&self) -> bool {
-        self.at.is_some()
-            || self.colour.is_some()
-            || self.subject == Some(true)
-            || self.refine.is_some()
-    }
-
     /// Whether it only changes the selection there is (grow, feather,
     /// invert) rather than naming a new area.
     fn looks_unchanged(&self) -> bool {
@@ -212,11 +190,6 @@ impl Select {
     }
 
     pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
-        if self.looks() {
-            return Err(refuse(
-                "at, colour, subject and refine are found in the artwork as the window shows it, where select is invoked; subject and refine through find-area",
-            ));
-        }
         if self.mode.as_deref() == Some("none") {
             doc.selection = None;
             return Ok(());

@@ -1,7 +1,6 @@
 use super::*;
 use std::io::Write as _;
 use std::os::unix::process::CommandExt as _;
-use std::time::Duration;
 
 const CHILD: &str = "TILO_EXECUTING_PEER_TEST_FD";
 const TEST: &str = "process_binding::linux::tests::executing_peer_child";
@@ -14,7 +13,7 @@ fn start() -> u64 {
 fn challenge(socket: &mut UnixStream, nonce: &[u8; 32]) {
     arm(socket).expect("kernel credential delivery");
     socket
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .expect("bounded receive");
     socket
         .write_all(&super::super::MAGIC)
@@ -50,7 +49,8 @@ fn executing_peer_child() {
 fn producer_packets_require_the_original_task_and_no_extra_rights() {
     let (host, mut app) = UnixStream::pair().expect("private producer channel");
     arm(&host).expect("credential delivery");
-    host.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    host.set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
     let (_owned, proof) = UnixStream::pair().expect("current producer proof");
     let nonce = [83; 32];
     send_answer(&app, &nonce, &proof).unwrap();
@@ -201,7 +201,7 @@ fn executing_peer_refuses_wrong_nonce_user_missing_extra_or_non_socket_rights() 
     for case in 0..5 {
         let (host, app) = UnixStream::pair().expect("service pair");
         arm(&host).expect("kernel sender credentials");
-        host.set_read_timeout(Some(Duration::from_secs(5)))
+        host.set_read_timeout(Some(tilo_test_env::hang_bound()))
             .expect("bounded receive");
         let (_owned, proof) = UnixStream::pair().expect("proof pair");
         let file = std::fs::File::open("/dev/null").expect("non-socket proof");

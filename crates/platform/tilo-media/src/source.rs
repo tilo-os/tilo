@@ -214,9 +214,6 @@ pub fn path_to_file_uri(path: &Path) -> std::io::Result<String> {
 }
 
 /// The native path a `file:` URI names: the inverse of [`path_to_file_uri`].
-///
-/// # Errors
-/// Returns an error for a malformed URI or one that names no local file.
 #[cfg(any(unix, windows))]
 pub fn file_uri_to_path(uri: &str) -> std::io::Result<PathBuf> {
     let invalid = |message: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, message);
@@ -256,7 +253,6 @@ mod tests {
 
     #[test]
     fn sources_resolve_to_absolute_or_workspace_urls() {
-        // Phase `a_relative_path_becomes_an_absolute_file_uri_not_a_hostname`.
         {
             // `file://clips/a.mp4` parses `clips` as a host and is rejected by
             // every GStreamer source element, so the media never plays.
@@ -269,7 +265,6 @@ mod tests {
             );
             assert!(uri.ends_with("/clips/a.mp4"), "path preserved: {uri}");
         }
-        // Phase `remote_uri_passes_through_and_has_no_path`.
         {
             let s = Source::Remote {
                 url: "https://cdn.test/v.webm".into(),
@@ -279,7 +274,6 @@ mod tests {
             assert!(s.is_ready(), "remote is always ready to stream");
             assert!(s.open_reader().is_err(), "remote is not byte-read here");
         }
-        // Phase `workspace_relative_resolves_under_the_mount_root`.
         {
             // Point the mount at a scratch dir so the test needs no real FUSE.
             let dir = std::env::temp_dir().join(format!("tilo-media-src-{}", std::process::id()));
@@ -303,7 +297,6 @@ mod tests {
             drop(env);
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `workspace_absolute_path_is_left_as_is`.
         {
             let path = std::env::temp_dir().join("workspace/media/x.mov");
             assert!(path.is_absolute());
@@ -315,7 +308,6 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn unix_paths_become_percent_encoded_byte_exact_file_urls() {
-        // Phase `local_file_uri_is_percent_encoded`.
         {
             let s = Source::LocalFile(PathBuf::from("/home/a/My Clip.mp4"));
             assert_eq!(s.to_uri().unwrap(), "file:///home/a/My%20Clip.mp4");
@@ -334,7 +326,6 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn windows_paths_become_file_urls_and_device_paths_are_refused() {
-        // Phase `windows_drive_unc_and_verbatim_paths_become_file_urls`.
         {
             for (path, expected) in [
                 (
@@ -357,7 +348,6 @@ mod tests {
                 assert_eq!(path_to_file_uri(Path::new(path)).unwrap(), expected);
             }
         }
-        // Phase `windows_device_paths_are_rejected_as_media_urls`.
         {
             let error = path_to_file_uri(Path::new(r"\\.\COM1")).unwrap_err();
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);

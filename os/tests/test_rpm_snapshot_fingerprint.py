@@ -9,9 +9,12 @@ import re
 import shutil
 import subprocess
 import tempfile
+import sys
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools/ci"))
+import t_matrix  # noqa: E402
 spec = importlib.util.spec_from_file_location(
     "fingerprint", ROOT / "os/dev/rpm-snapshot-fingerprint.py"
 )
@@ -24,16 +27,31 @@ RESOLVE = ROOT / "os/dev/resolve-rpm-snapshot.sh"
 
 class Fingerprint(unittest.TestCase):
     def _clone(self, temporary: str) -> Path:
+        # The fingerprint and its resolver read only os/; copying the whole
+        # checkout made each test scale with whatever else it holds.
         repo = Path(temporary) / "repo"
         shutil.copytree(
-            ROOT,
-            repo,
-            ignore=shutil.ignore_patterns(
-                ".git", "target", "os/output", "node_modules", "__pycache__"
-            ),
+            ROOT / "os",
+            repo / "os",
+            ignore=shutil.ignore_patterns("output", "__pycache__"),
             symlinks=True,
         )
         return repo
+
+    @staticmethod
+    def _source_files():
+        """Regular files of the checkout, never descending into build output."""
+        skipped = {ROOT / ".git", ROOT / "target", ROOT / "os/output"}
+        for directory, subdirectories, files in os.walk(ROOT):
+            base = Path(directory)
+            subdirectories[:] = [
+                name for name in subdirectories
+                if base / name not in skipped and name != "node_modules"
+            ]
+            for name in files:
+                path = base / name
+                if path.is_file() and not path.is_symlink():
+                    yield path
 
     def test_package_set_change_changes_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -63,12 +81,8 @@ class Fingerprint(unittest.TestCase):
 
     def test_no_committed_file_names_an_rpms_digest(self) -> None:
         pinned = []
-        for path in ROOT.rglob("*"):
-            if not path.is_file() or path.is_symlink():
-                continue
+        for path in self._source_files():
             relative = path.relative_to(ROOT).as_posix()
-            if relative.startswith(("target/", ".git/", "os/output/")):
-                continue
             if relative.endswith((
                 ".png", ".jpg", ".webp", ".ico", ".woff2", ".ttf",
                 ".bin", ".tar", ".gz", ".xz", ".rpm", ".so",
@@ -133,19 +147,57 @@ class Fingerprint(unittest.TestCase):
             self.assertNotIn("rpms-snapshot.env", combined)
 
     def test_image_builds_resolve_standalone_signed_snapshot(self) -> None:
-        build = (ROOT / ".forgejo/workflows/build-image.yml").read_text(encoding="utf-8")
-        relay = (ROOT / ".forgejo/workflows/release-relay.yml").read_text(encoding="utf-8")
-        snapshot = (ROOT / ".forgejo/workflows/build-rpms.yml").read_text(encoding="utf-8")
-        for consumer in (build, relay):
-            self.assertIn("Resolve the exact signed RPM snapshot fingerprint", consumer)
-            self.assertIn("./os/dev/resolve-rpm-snapshot.sh", consumer)
-            self.assertIn("rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}", consumer)
-            self.assertNotIn("uses: ./.forgejo/workflows/build-rpms.yml", consumer)
-            self.assertNotIn("os/rpms-snapshot.env", consumer)
-        self.assertIn("needs.ensure-rpms.result == 'success'", build)
-        self.assertIn("--tag \"$FINGERPRINT_TAG\"", snapshot)
-        self.assertNotIn("open-snapshot-pr.py", snapshot)
-        self.assertNotIn("reconcile-snapshot-pins.py", snapshot)
+        # The relay and the env-runtime install from the snapshot t's rpm-snapshot check
+        # resolves and verifies, never from a pin file.
+        checks = {check["name"]: check for check in t_matrix.checks(ROOT)}
+        self.assertEqual(checks["rpm-snapshot"]["run"],
+                         "bash tools/ci/publish/rpm-snapshot-ref.sh /target/publish/rpm-snapshot")
+        resolver = (ROOT / "tools/ci/publish/rpm-snapshot-ref.sh").read_text(encoding="utf-8")
+        self.assertIn('ref=$(bash "$repo_root/os/dev/resolve-rpm-snapshot.sh")', resolver)
+        self.assertNotIn("rpms-snapshot.env", resolver)
+        for consumer in ("image-relay", "image-env-runtime-tree-x86_64", "image-env-runtime-tree-aarch64"):
+            with self.subTest(consumer=consumer):
+                self.assertIn("rpm-snapshot", checks[consumer]["needs"])
+                self.assertIn("/target/publish/rpm-snapshot", checks[consumer]["run"])
+        # Stable publishes a new package set before resolving it, in the same run; elsewhere the
+        # builds fall back to the run's own image-rpms of their architecture.
+        self.assertEqual(checks["rpm-snapshot"].get("optional_needs"), ["publish-rpms"])
+        self.assertEqual(checks["publish-rpms"]["on"], ["stable"])
+        self.assertIn("image-rpms-x86_64", checks["image-relay"]["needs"])
+        for arch in ("x86_64", "aarch64"):
+            tree = checks[f"image-env-runtime-tree-{arch}"]
+            self.assertIn(f"image-rpms-{arch}", tree["needs"])
+            self.assertIn(f"/target/publish/rpms/{arch}", tree["run"])
+        self.assertIn("/target/publish/relay/rpms-source", checks["image-relay"]["outputs"])
+        # The snapshot is published once per package-set fingerprint, never proposed as a pin.
+        self.assertIn("'once:set-{fingerprint}'", checks["publish-rpms"]["run"])
+        for name in ("image-rpms-x86_64", "provenance-rpms", "sign-rpms", "publish-rpms"):
+            self.assertNotIn("open-snapshot-pr.py", checks[name]["run"])
+        for script in ("rpms-build.sh", "rpms-provenance.sh"):
+            text = (ROOT / "tools/ci/publish" / script).read_text(encoding="utf-8")
+            self.assertNotIn("open-snapshot-pr.py", text)
+            self.assertNotIn("reconcile-snapshot-pins.py", text)
+
+    def test_only_a_build_of_the_published_snapshot_is_signed(self) -> None:
+        # lib.sh require_published_snapshot, which oci-sign.sh and a publisher's env-runtime
+        # seal run on what the build recorded (snapshot_for_build).
+        published = "registry.tilo.so/tilo/rpms@sha256:" + "b" * 64
+        cases = {published: 0, "unsigned image-rpms-x86_64 sha256:" + "c" * 64: 1}
+        for source, code in cases.items():
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as tmp:
+                recorded = Path(tmp) / "rpms-source"
+                recorded.write_text(source + "\n", encoding="utf-8")
+                result = subprocess.run(
+                    ["bash", "-c", '. "$1"; require_published_snapshot "$2"', "bash",
+                     str(ROOT / "tools/ci/publish/lib.sh"), str(recorded)],
+                    capture_output=True, text=True, env={**os.environ, "TMPDIR": tmp})
+                self.assertEqual(result.returncode != 0, bool(code), result.stderr)
+                if code:
+                    self.assertIn("refusing to sign or publish", result.stderr)
+        sign = (ROOT / "tools/ci/publish/oci-sign.sh").read_text(encoding="utf-8")
+        self.assertIn('require_published_snapshot "$out/rpms-source"', sign)
+        runtime = (ROOT / "tools/ci/publish/env-runtime.sh").read_text(encoding="utf-8")
+        self.assertIn('require_published_snapshot "$trees/env-runtime-rpms-$arch.txt"', runtime)
 
 
 if __name__ == "__main__":

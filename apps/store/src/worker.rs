@@ -136,8 +136,11 @@ pub struct Snapshot {
     /// Enabled native repositories that have not answered the current
     /// refresh, so installed apps they list are described only locally.
     pub unanswered_repositories: Vec<String>,
+    /// Enabled native repositories whose catalogue is authentic but expired,
+    /// so the Store says so instead of calling them unreachable.
+    pub expired_repositories: Vec<String>,
     /// Who blocked which app, as the worker last read the block list.
-    pub blocks: app_catalogue::BlockList,
+    pub blocks: ui::registry::BlockList,
     /// The app Update all is updating now, so its row shows the progress.
     pub updating: Option<String>,
 }
@@ -325,14 +328,16 @@ struct State {
     catalogue_error: Option<String>,
     /// See [`Snapshot::unanswered_repositories`].
     unanswered_repositories: Vec<String>,
+    /// See [`Snapshot::expired_repositories`].
+    expired_repositories: Vec<String>,
     details: LruCache<String, StoreItem>,
     /// The current palette/action directory. Rebuilding it is linear in a
     /// catalogue snapshot, so it belongs on this serialized worker rather
     /// than in the UI's snapshot-drain loop.
     directory: StoreDirectory,
     /// Apps blocked by the person, a workspace or the device's administrator:
-    /// the same list desktop search hides them by (`app_catalogue::BlockList`).
-    blocks: app_catalogue::BlockList,
+    /// the same list desktop search hides them by (`ui::registry::BlockList`).
+    blocks: ui::registry::BlockList,
     /// The person's repositories as the last refresh read them. Kept here so
     /// publishing the directory never asks the host again: each ask runs
     /// `app repo list` on the host.
@@ -371,8 +376,9 @@ fn initial_state(
         flatpak_error: None,
         catalogue_error: None,
         unanswered_repositories: Vec::new(),
+        expired_repositories: Vec::new(),
         details: LruCache::new(CACHE_CAP),
-        blocks: app_catalogue::BlockList::load(),
+        blocks: ui::registry::BlockList::load(),
         directory,
         registries: Vec::new(),
         flathub: crate::catalogue::flathub::load(),
@@ -569,6 +575,7 @@ fn poll_refresh(
             flatpak_error: state.flatpak_error.clone(),
             operation_error: state.catalogue_error.clone(),
             unanswered_repositories: state.unanswered_repositories.clone(),
+            expired_repositories: state.expired_repositories.clone(),
             blocks: state.blocks.clone(),
             updating: None,
         })
@@ -657,6 +664,10 @@ fn runtime_details(
     selected.ok_or_else(|| ui::i18n!("store-runtime-unavailable"))
 }
 
+#[expect(
+    clippy::suspicious_operation_groupings,
+    reason = "an installed package matches an offer by its package id, which the offer names package_id"
+)]
 fn runtime_item(
     offer: app_cli::CatalogueApp,
     installed: &[app_host::client::ListedPackage],
@@ -759,6 +770,7 @@ fn handle(
                 flatpak_error: state.flatpak_error.clone(),
                 operation_error: None,
                 unanswered_repositories: state.unanswered_repositories.clone(),
+                expired_repositories: state.expired_repositories.clone(),
                 blocks: state.blocks.clone(),
                 updating: None,
             };
@@ -1317,6 +1329,7 @@ fn update_all(
             flatpak_error: state.flatpak_error.clone(),
             operation_error: None,
             unanswered_repositories: state.unanswered_repositories.clone(),
+            expired_repositories: state.expired_repositories.clone(),
             blocks: state.blocks.clone(),
             updating: Some(item.id.clone()),
         };
@@ -1394,6 +1407,7 @@ fn send_tracked(
             .or_else(|| state.catalogue_error.clone())
             .or_else(|| state.flatpak_error.clone()),
         unanswered_repositories: state.unanswered_repositories.clone(),
+        expired_repositories: state.expired_repositories.clone(),
         blocks: state.blocks.clone(),
         updating: None,
     })
@@ -1522,9 +1536,10 @@ mod tests {
             flatpak_error: None,
             catalogue_error: None,
             unanswered_repositories: Vec::new(),
+            expired_repositories: Vec::new(),
             details: LruCache::new(CACHE_CAP),
             directory,
-            blocks: app_catalogue::BlockList::empty(),
+            blocks: ui::registry::BlockList::empty(),
             registries: Vec::new(),
             flathub: None,
             force_refresh: false,
@@ -1968,7 +1983,6 @@ mod tests {
         assert!(outcome.unwrap().is_ok());
         assert_eq!(installs.load(Ordering::SeqCst), 1);
         assert!(state.imported_package.is_none() && state.refresh_requested);
-        // A later source change revokes the previously reviewed file.
         handle(
             Request::ImportPackage(crate::package_import::Input::Bytes(bytes)),
             &mut state,
@@ -2021,17 +2035,27 @@ mod tests {
     #[test]
     fn worker_cache_is_non_blocking_and_keeps_the_authoritative_directory() {
         // Case `request_and_drain_are_non_blocking`.
+        // The worker is held inside its host connection until released, so
+        // both calls returning at all proves neither waits on the worker.
         {
-            let worker = StoreWorker::spawn(StoreDirectory::default(), WakeHandle::new());
-            let started = ui::time::now();
+            let (release, held) = mpsc::channel::<()>();
+            let worker = StoreWorker::spawn_with_host(
+                StoreDirectory::default(),
+                WakeHandle::new(),
+                move || {
+                    let _ = held.recv();
+                    Err("held".into())
+                },
+            );
             assert!(worker.request(Request::Detail("editor".into())));
-            assert!(started.elapsed() < Duration::from_millis(50));
-            let started = ui::time::now();
-            let _ = worker.try_snapshot();
-            assert!(started.elapsed() < Duration::from_millis(20));
+            assert!(
+                worker.try_snapshot().is_none(),
+                "the held worker has answered nothing yet"
+            );
+            assert!(worker.has_pending());
+            release.send(()).unwrap();
         }
 
-        // Case `filtered_snapshot_never_truncates_authoritative_action_directory`.
         {
             let directory = StoreDirectory::default();
             let state = state_with_items(
@@ -2069,7 +2093,6 @@ mod tests {
             );
         }
 
-        // Case `authoritative_catalogue_replacement_updates_and_removes_directory_rows`.
         {
             let directory = StoreDirectory::default();
             let mut state = state_with_items(

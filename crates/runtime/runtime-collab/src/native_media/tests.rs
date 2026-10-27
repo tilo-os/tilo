@@ -333,18 +333,34 @@ fn a_pictures_answer_carries_whole_objects_in_base64_and_nothing_shows_outside_a
 }
 
 #[test]
-fn a_roster_names_cameras_and_screens_only_of_its_people() {
+fn a_roster_names_cameras_screens_and_the_muted_only_of_its_people() {
     let mut roster = Roster {
         channel_id: "voice".into(),
         people: vec![person(1), person(2)],
         cameras: vec![person(2)],
         screens: vec![person(1)],
+        muted: vec![person(1), person(2)],
+        ..Roster::default()
     };
     assert!(roster.valid());
     roster.cameras = vec![person(3)];
     assert!(!roster.valid(), "someone not in the call shows no camera");
     roster.cameras = vec![person(2), person(1)];
     assert!(!roster.valid(), "sorted");
+    roster.cameras.clear();
+    roster.muted = vec![person(3)];
+    assert!(
+        !roster.valid(),
+        "someone not in the call is not muted in it"
+    );
+    roster.muted = vec![person(2), person(2)];
+    assert!(!roster.valid(), "distinct");
+    roster.muted.clear();
+    let json = serde_json::to_string(&roster).unwrap();
+    assert!(
+        !json.contains("muted"),
+        "written only when someone is muted"
+    );
 }
 
 #[test]
@@ -384,4 +400,167 @@ fn a_picture_names_its_coded_unit_and_refuses_one_that_does_not_hold_together() 
     picture.object.pop();
     picture.object[0] = 2;
     assert_eq!(picture.unit(), None, "another version");
+}
+
+fn guest(account: &str, name: &str) -> Guest {
+    Guest {
+        id: Guest::id_of("discord", account),
+        name: name.into(),
+        avatar: Some("ab".repeat(32)),
+        service: "discord".into(),
+        linked: None,
+        muted: false,
+    }
+}
+
+/// A change that leaves a roster invalid.
+type Breaking = fn(&mut Roster);
+
+#[test]
+fn a_bridged_call_names_its_guests_and_bridges_apart_from_its_people() {
+    let mut snapshot = Snapshot::unavailable();
+    snapshot.state = State::Idle;
+    snapshot.issue = None;
+    snapshot.rosters = vec![Roster {
+        channel_id: "voice".into(),
+        people: vec![person(1)],
+        guests: vec![
+            guest("80351110224678912", "Dana"),
+            Guest {
+                linked: Some(person(1)),
+                muted: true,
+                avatar: None,
+                ..guest("90351110224678912", "Ben")
+            },
+        ],
+        bridges: vec!["discord".into()],
+        ..Roster::default()
+    }];
+    snapshot.speaking = vec![person(1), "discord:80351110224678912".into()];
+    let bytes = snapshot.encode().unwrap();
+    assert_eq!(Snapshot::decode(&bytes).unwrap(), snapshot);
+
+    let plain = Roster {
+        channel_id: "voice".into(),
+        people: vec![person(1)],
+        ..Roster::default()
+    };
+    let text = serde_json::to_string(&plain).unwrap();
+    assert!(
+        !text.contains("guests") && !text.contains("bridges"),
+        "an app that knows neither reads an unbridged roster as before: {text}"
+    );
+
+    let roster = &snapshot.rosters[0];
+    let broken: [(&str, Breaking); 8] = [
+        ("unsorted", |r| r.guests.reverse()),
+        ("an unbridged service", |r| r.bridges.clear()),
+        ("an empty name", |r| r.guests[0].name.clear()),
+        ("an untrimmed name", |r| r.guests[0].name = " Dana".into()),
+        ("a name too long", |r| r.guests[0].name = "x".repeat(81)),
+        ("an id of another service", |r| {
+            r.guests[0].service = "slack".into();
+        }),
+        ("an avatar that is no hash", |r| {
+            r.guests[0].avatar = Some("tilo-demo://bo".into());
+        }),
+        ("a linked member who is no person", |r| {
+            r.guests[0].linked = Some("ana".into());
+        }),
+    ];
+    for (why, breaking) in broken {
+        let mut invalid = roster.clone();
+        breaking(&mut invalid);
+        assert!(!invalid.valid(), "{why}");
+    }
+    let alone = Roster {
+        channel_id: "voice".into(),
+        bridges: vec!["discord".into()],
+        ..Roster::default()
+    };
+    assert!(alone.valid(), "a bridged call with nobody in it yet");
+
+    for speaking in [
+        vec!["discord:".to_owned()],
+        vec!["Discord:1".to_owned()],
+        vec!["discord:1 2".to_owned()],
+        vec!["discord:2".to_owned(), "discord:1".to_owned()],
+    ] {
+        let mut invalid = snapshot.clone();
+        invalid.speaking = speaking;
+        assert!(invalid.encode().is_err());
+    }
+}
+
+#[test]
+fn a_volume_is_a_local_bounded_query_for_one_participant() {
+    for participant in [person(1), "discord:80351110224678912".into()] {
+        let request = Request::new(Command::SetVolume {
+            participant,
+            percent: MAX_VOLUME_PERCENT,
+        });
+        assert!(request.dispatch_valid(), "it changes nobody else's call");
+        assert!(!request.carries_intent());
+        assert_eq!(
+            Request::decode(&request.encode().unwrap()).unwrap(),
+            request
+        );
+    }
+    for (participant, percent) in [
+        (person(1), MAX_VOLUME_PERCENT + 1),
+        ("ana".to_owned(), 100),
+        (String::new(), 100),
+    ] {
+        assert!(
+            Request::new(Command::SetVolume {
+                participant,
+                percent
+            })
+            .encode()
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn deafened_is_muted_in_a_call_and_said_only_when_set() {
+    let command = Request::new(Command::SetDeafened { deafened: true });
+    assert_eq!(
+        Request::decode(&command.encode().unwrap()).unwrap(),
+        command
+    );
+    assert!(
+        String::from_utf8(command.encode().unwrap())
+            .unwrap()
+            .contains(r#"{"op":"set_deafened","deafened":true}"#)
+    );
+    let mut snapshot = Snapshot::unavailable();
+    snapshot.deafened = true;
+    assert!(
+        snapshot.encode().is_err(),
+        "nobody is deafened outside a call"
+    );
+    snapshot.state = State::Live;
+    snapshot.issue = None;
+    assert!(snapshot.encode().is_ok());
+    snapshot.muted = false;
+    assert!(snapshot.encode().is_err(), "a deafened person is muted");
+    snapshot.deafened = false;
+    assert!(
+        !String::from_utf8(snapshot.encode().unwrap())
+            .unwrap()
+            .contains("deafened"),
+        "written only when set"
+    );
+
+    let mut roster = Roster {
+        channel_id: "voice".into(),
+        people: vec![person(1), person(2)],
+        muted: vec![person(1)],
+        deafened: vec![person(1)],
+        ..Roster::default()
+    };
+    assert!(roster.valid());
+    roster.deafened = vec![person(2)];
+    assert!(!roster.valid(), "the deafened are among the muted");
 }

@@ -321,7 +321,6 @@ pub struct DmabufInput<'a> {
     pub height: u32,
 }
 
-/// One plane of a [`DmabufInput`].
 #[cfg(unix)]
 pub struct DmabufInputPlane<'a> {
     pub fd: std::os::fd::BorrowedFd<'a>,
@@ -454,7 +453,6 @@ pub fn crop_frame(frame: crate::Frame, width: u32, height: u32) -> crate::Frame 
 /// itself.
 pub type PictureWake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
-/// One decoded picture from a [`RealtimeDecoder`].
 #[derive(Clone, Debug)]
 pub struct DecodedPicture {
     pub frame: crate::Frame,
@@ -497,7 +495,6 @@ impl CodecCapabilities {
         self.hardware_decode.contains(&codec) || self.software_decode.contains(&codec)
     }
 
-    /// Wire labels for one of the sets.
     pub fn labels(set: &BTreeSet<StreamCodec>) -> Vec<String> {
         set.iter().map(|c| c.wire_label().to_string()).collect()
     }
@@ -885,7 +882,6 @@ mod tests {
                 "nothing a legacy peer can decode"
             );
         }
-        // Phase `no_receivers_means_the_senders_own_best`.
         {
             let sender = caps(&[Vp9], &[], &[H264]);
             assert_eq!(negotiate(&sender, &[]).unwrap().codec, Vp9);
@@ -902,7 +898,6 @@ mod tests {
             );
             assert_eq!(negotiate_hdr(&caps(&[], &[], &[Av1]), &[rx]), None);
         }
-        // Phase `labels_skip_codecs_this_build_does_not_know`.
         {
             let parsed = CodecCapabilities::parse_labels(&["av1", "h266", "h264"]);
             assert_eq!(parsed, BTreeSet::from([Av1, H264]));
@@ -912,7 +907,6 @@ mod tests {
 
     #[test]
     fn realtime_bitstreams_and_frame_layouts_are_read_exactly() {
-        // Phase `keyframe_probes_read_each_codecs_own_header`.
         {
             assert!(is_keyframe(H264, &[0, 0, 0, 1, 0x67, 0, 0, 1, 0x65]));
             assert!(!is_keyframe(H264, &[0, 0, 1, 0x41]));
@@ -944,7 +938,6 @@ mod tests {
             c.input = InputFormat::P010;
             assert!(c.validate().is_err(), "H.264 is 8-bit only here");
         }
-        // Phase `cropping_removes_encoder_padding_from_packed_and_planar_pictures`.
         {
             use crate::frame::{FramePayload, PlanarFormat, PlanarImage, PlaneData};
             use std::sync::Arc;
@@ -1005,7 +998,6 @@ mod tests {
             };
             assert_eq!(crop_frame(small, 8, 8).width, 2);
         }
-        // Phase `frame_lengths_match_each_layout`.
         {
             assert_eq!(InputFormat::Rgba.frame_len(4, 2), Some(32));
             assert_eq!(InputFormat::Nv12.frame_len(4, 2), Some(12));

@@ -106,25 +106,14 @@ fn publish(path: &Path, room: Option<&str>) -> bool {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, Instant};
 
     /// Wait for the writer thread to leave `path` reading `expected`
-    /// (`None`: absent); fail after a few seconds.
+    /// (`None`: absent). A loaded test machine can starve the writer for
+    /// seconds, so only the shared hang bound calls it stuck.
     fn eventually(path: &Path, expected: Option<&str>) {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(5))
-            .expect("deadline in range");
-        loop {
-            let found = std::fs::read_to_string(path).ok();
-            if found.as_deref() == expected {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "workspace-id reads {found:?}, expected {expected:?}"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::hang::wait_until(format_args!("workspace-id to read {expected:?}"), || {
+            std::fs::read_to_string(path).ok().as_deref() == expected
+        });
     }
 
     #[test]
@@ -135,7 +124,6 @@ mod tests {
 
         published.follow(Some("room-a".into()));
         published.follow(Some("room-b".into()));
-        // The newest room wins.
         eventually(&path, Some("room-b"));
         let mode = std::fs::metadata(&path)
             .expect("metadata")

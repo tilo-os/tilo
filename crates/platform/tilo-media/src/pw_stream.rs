@@ -5,7 +5,7 @@
 //! which the first sample of the block will leave the speaker. That time comes
 //! from `pw_stream_get_time`: the cycle's timestamp plus the delay to the
 //! device plus whatever is still queued in the stream, so a
-//! [`SyncPlayout`](crate::sync_playout::SyncPlayout) behind it can schedule
+//! [`SyncPlayout`] behind it can schedule
 //! against the moment the listener hears a sample rather than the moment it
 //! was written.
 //!
@@ -73,7 +73,6 @@ pub fn monotonic_now_ns() -> i64 {
     0
 }
 
-/// `frames` at `rate` as nanoseconds.
 pub fn frames_to_ns(frames: i64, rate: u32) -> i64 {
     let ns = i128::from(frames)
         .saturating_mul(i128::from(NS_PER_SECOND))
@@ -573,7 +572,6 @@ impl TargetLinkGuard {
     }
 }
 
-/// Trims `bytes` to whole frames of `stride` bytes.
 pub fn whole_frames(bytes: &[u8], stride: usize) -> &[u8] {
     let whole = bytes
         .len()
@@ -586,7 +584,7 @@ pub fn whole_frames(bytes: &[u8], stride: usize) -> &[u8] {
 /// Plays one buffer so that its first frame leaves the speaker at a chosen
 /// local time: the playback half of a timed measurement such as an acoustic
 /// sweep. Frames scheduled before the stream could play them are reported
-/// through [`ScheduledBuffer::late_by_ns`] rather than silently shifted.
+/// through [`ScheduleProgress::late_by_ns`] rather than silently shifted.
 #[derive(Debug)]
 pub struct ScheduledBuffer {
     samples: Arc<[f32]>,
@@ -936,9 +934,6 @@ pub struct ObservedPlayback {
 }
 
 /// Open an output on the observer's exact connection, pinned to its sink.
-///
-/// # Errors
-/// Fails when native support, the observed daemon or the selected output is unavailable.
 #[cfg(unix)]
 pub fn open_observed_playback(
     config: &PlaybackConfig,
@@ -972,10 +967,6 @@ pub trait CaptureStream: Send {
 /// Opens audio streams. [`native_streams`] is the real one.
 pub trait AudioStreams: Send + Sync {
     /// Starts a stream that pulls from `source`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the stream could not be created or connected.
     fn open_playback(
         &self,
         config: &PlaybackConfig,
@@ -983,10 +974,6 @@ pub trait AudioStreams: Send + Sync {
     ) -> Result<Box<dyn PlaybackStream>, StreamError>;
 
     /// Starts recording `config.target`.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the stream could not be created or connected.
     fn open_capture(&self, config: &CaptureConfig) -> Result<Box<dyn CaptureStream>, StreamError>;
 }
 

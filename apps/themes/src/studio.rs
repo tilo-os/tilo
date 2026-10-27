@@ -466,6 +466,19 @@ fn base_document(studio: &Studio, base: &str) -> Result<ThemeDocument, Refusal> 
         .ok_or_else(|| Refusal::new(format!("no preset or theme is called {base:?}")))
 }
 
+impl Studio {
+    /// The theme a new one starting from `base` (a preset id or a theme id)
+    /// is before anything changes it: the base's roles, named as its copy.
+    ///
+    /// # Errors
+    /// Refuses a base that is no preset and no theme.
+    pub fn draft(&self, base: &str) -> Result<Theme, Refusal> {
+        let mut theme = Theme::from_document(&base_document(self, base)?);
+        theme.name = format!("{} copy", theme.name);
+        Ok(theme)
+    }
+}
+
 #[resource(kind = "themes.studio", label = "Themes")]
 impl Studio {
     /// Start a theme from a preset or from one of your themes.
@@ -479,9 +492,48 @@ impl Studio {
         if self.themes.contains(&id) || Preset::find(id.as_str()).is_some() {
             return Err(Refusal::from("a theme with that id already exists"));
         }
-        let mut theme = Theme::from_document(&base_document(self, &base)?);
-        theme.name = format!("{} copy", theme.name);
+        let theme = self.draft(&base)?;
         self.themes.push(id, theme);
+        Ok(())
+    }
+
+    /// Import a theme document under `id`, after checking it is admitted
+    /// and keeps every contrast floor.
+    #[action]
+    pub fn import_theme(
+        &mut self,
+        #[param("Id for the imported theme")] id: String,
+        #[param("The theme document, as JSON")] document: String,
+    ) -> Result<(), Refusal> {
+        let mut document: ThemeDocument = serde_json::from_str(&document)
+            .map_err(|error| Refusal::new(format!("not a theme document: {error}")))?;
+        document
+            .validate()
+            .map_err(|reason| Refusal::new(reason.to_owned()))?;
+        let findings = document.findings();
+        if !findings.is_empty() {
+            return Err(Refusal::new(format!(
+                "Too little contrast: {}",
+                findings
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
+        }
+        let id = Id::from_raw(if id.trim().is_empty() {
+            document.id.clone()
+        } else {
+            id.trim().to_owned()
+        });
+        if id.as_str().trim().is_empty() {
+            return Err(Refusal::from("an imported theme needs an id"));
+        }
+        if self.themes.contains(&id) || Preset::find(id.as_str()).is_some() {
+            return Err(Refusal::from("a theme with that id already exists"));
+        }
+        document.id.clone_from(&id.as_str().to_owned());
+        self.themes.push(id, Theme::from_document(&document));
         Ok(())
     }
 
@@ -684,5 +736,39 @@ mod tests {
         }
         studio.apply_confirmed(Studio::DELETE.with(id)).unwrap();
         assert_eq!(studio.state().unwrap().themes.len(), 1);
+    }
+    fn document_json(document: &ThemeDocument) -> String {
+        serde_json::to_string(document).unwrap()
+    }
+
+    #[test]
+    fn an_imported_theme_is_written_only_when_it_is_admitted_and_legible() {
+        let mut studio = Replica::<Studio>::new();
+        let document = Preset::DarkSoft.document();
+        studio
+            .apply(Studio::IMPORT_THEME.with(("ember".to_owned(), document_json(&document))))
+            .unwrap();
+        let state = studio.state().unwrap();
+        let imported = state.themes.get(&Id::from_raw("ember")).unwrap();
+        assert_eq!(imported.name, document.name);
+        assert!(
+            studio
+                .apply(Studio::IMPORT_THEME.with(("ember".to_owned(), document_json(&document),)))
+                .is_err(),
+            "an imported theme cannot overwrite one of yours"
+        );
+
+        let mut murky = Preset::Light.document();
+        murky.palette.ink.secondary = 0.85;
+        let refused = studio
+            .apply(Studio::IMPORT_THEME.with(("murky".to_owned(), document_json(&murky))))
+            .expect_err("an illegible theme is not imported");
+        assert!(refused.to_string().contains("Too little contrast"));
+
+        assert!(
+            studio
+                .apply(Studio::IMPORT_THEME.with(("broken".to_owned(), "{not json".to_owned(),)))
+                .is_err()
+        );
     }
 }

@@ -8,7 +8,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::io;
 const DOMAIN: &[u8] = b"tilo-retained-external-replacement-prepare-v1\0";
-pub const LIMIT: usize = 4096;
+pub use tilo_fs_client::external_history::LIMIT;
 fn refused() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
 }
@@ -45,8 +45,6 @@ struct SigningView<'a> {
     archive_binding_digest: [u8; 32],
 }
 impl PreparedReceipt {
-    /// # Errors
-    /// Returns canonical bounded bytes for the actual certified daemon signer.
     pub fn signing_bytes(&self) -> io::Result<Vec<u8>> {
         if self.schema != 1
             || !id(&self.operation_id)
@@ -594,8 +592,7 @@ mod tests {
     }
 }
 
-mod reservation;
-pub use reservation::{
+pub use tilo_fs_client::external_history::{
     NativeReplacementPurpose, NativeReservationDescription, NativeReservationFacts,
     NativeReservationLocator,
 };

@@ -27,7 +27,6 @@ use crate::{
 pub struct OffloadRequest {
     /// The room (workspace) it was invoked in.
     pub room: String,
-    /// The app that publishes the action.
     pub app_id: String,
     /// The invoked action.
     pub address: ActionAddress,
@@ -42,7 +41,6 @@ pub struct OffloadRequest {
 pub enum Offloaded {
     /// Another device ran it; this is what a local run returns.
     Ran {
-        /// The action's output.
         output: ActionOutput,
         /// The device that ran it, as the offloader names devices.
         device: String,
@@ -77,10 +75,6 @@ pub trait ActionOffload: Send + Sync {
 /// parameters among `params` ([`ActionParam::is_content`],
 /// [`ActionParam::is_content_list`]), in declaration order: a bare hash or a
 /// `tilo.content:` address each.
-///
-/// # Errors
-///
-/// Names the parameter whose argument is not content.
 pub fn content_inputs(
     params: &[ActionParam],
     arguments: &serde_json::Map<String, serde_json::Value>,
@@ -122,11 +116,6 @@ pub fn content_inputs(
 
 /// [`content_inputs`] of an invocation's wire `argument`: its named
 /// arguments ([`ARGUMENTS_JSON_PREFIX`]), or none.
-///
-/// # Errors
-///
-/// When the argument is not named arguments, or names something that is not
-/// content.
 pub fn argument_inputs(
     params: &[ActionParam],
     argument: Option<&str>,
@@ -169,7 +158,6 @@ mod tests {
         assert!(params[0].is_content_list() && !params[0].is_content());
         assert!(params[2].is_content() && !params[2].is_content_list());
 
-        // On the wire, as named arguments.
         let wire = format!(
             "{ARGUMENTS_JSON_PREFIX}{}",
             serde_json::to_string(arguments).unwrap()

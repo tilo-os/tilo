@@ -30,6 +30,7 @@ fields = [
   { path = "distribution_defaults", type = "Option<ui::theme::DistributionDefaults>", readonly = true },
   { path = "forced_colors", type = "bool" },
   { path = "distinct_letters", type = "Option<bool>" },
+  { path = "language", type = "Option<String>" },
 ]
 
 [[resources.verbs]]
@@ -118,6 +119,13 @@ params = [
   { name = "rate", required = true, schema = { type = "number" } },
 ]
 
+[[resources.verbs]]
+id = "choose-layout"
+kind = "undoable"
+params = [
+  { name = "layout", required = true, schema = { type = "string" } },
+]
+
 [[resources]]
 kind = "settings.text-assistance"
 label = "Spelling and text"
@@ -132,14 +140,15 @@ fields = [
 [[resources]]
 kind = "settings.power"
 label = "Power"
-version = 1
+version = 2
 person = true
 fields = [
   { path = "auto_suspend", type = "bool" },
   { path = "suspend_minutes", type = "u32" },
-  { path = "saver_suspend_minutes", type = "u32" },
-  { path = "balanced_suspend_minutes", type = "u32" },
-  { path = "performance_suspend_minutes", type = "u32" },
+  { path = "battery_suspend_minutes", type = "Option<u32>" },
+  { path = "saver_suspend_minutes", type = "Option<u32>" },
+  { path = "balanced_suspend_minutes", type = "Option<u32>" },
+  { path = "performance_suspend_minutes", type = "Option<u32>" },
   { path = "blank_minutes", type = "u32" },
   { path = "lock_minutes", type = "u32" },
   { path = "lid_close_action", type = "PowerActionPref" },
@@ -147,6 +156,20 @@ fields = [
   { path = "low_battery_percent", type = "u32" },
   { path = "critical_battery_percent", type = "u32" },
   { path = "critical_action", type = "PowerActionPref" },
+]
+
+[[resources.verbs]]
+id = "set-suspend-plugged-in"
+kind = "undoable"
+params = [
+  { name = "minutes", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "set-suspend-on-battery"
+kind = "undoable"
+params = [
+  { name = "minutes", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
 ]
 
 [[resources]]
@@ -322,6 +345,7 @@ fields = [
   { path = "config", type = "ProviderConfig", readonly = true, stored = "record" },
   { path = "config.profiles", type = "Vec<ProviderProfile>" },
   { path = "config.default_profile", type = "Option<String>" },
+  { path = "config.agent_models", type = "BTreeMap<String, AgentModel>" },
 ]
 
 [[resources]]
@@ -331,6 +355,15 @@ version = 1
 person = true
 fields = [
   { path = "handlers", type = "BTreeMap<String, String>", readonly = true },
+]
+
+[[resources]]
+kind = "settings.clock"
+label = "Clock"
+version = 1
+person = true
+fields = [
+  { path = "automatic_zone", type = "bool" },
 ]
 
 [[resources]]

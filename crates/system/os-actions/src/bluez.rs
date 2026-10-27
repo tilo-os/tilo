@@ -55,11 +55,6 @@ fn client() -> Result<&'static BluezClient, String> {
 ///
 /// Blocking; call it from a worker thread, never from the UI thread or
 /// inside an async task.
-///
-/// # Errors
-///
-/// Returns an error message if the Bluetooth runtime or `org.bluez` D-Bus
-/// connection is unavailable.
 pub fn shared_client() -> Result<BluezClient, String> {
     client().cloned()
 }
@@ -69,6 +64,54 @@ where
     F: std::future::Future<Output = Result<T, zbus::Error>>,
 {
     crate::block_on(async { f.await.map_err(|e| tilo_bluez::error_text(&e)) })
+}
+
+/// Following `BlueZ` for [`follow_changes`]; it stops when this is dropped.
+#[derive(Debug)]
+pub struct BluetoothFollow {
+    task: tilo_rt::JoinHandle<()>,
+}
+
+impl Drop for BluetoothFollow {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Call `on_change` on the app runtime each time `BlueZ` reports a change a
+/// Bluetooth page shows ([`BluezClient::watch_changes`]): headphones that
+/// connect by themselves, a device paired from quick settings. It listens
+/// on a connection of its own, so following never waits for, or holds up,
+/// the shared client's calls. Nothing polls.
+///
+/// # Errors
+///
+/// When the app runtime cannot start. A system bus that cannot be reached
+/// is logged and followed no further.
+pub fn follow_changes(
+    on_change: impl Fn() + Send + Sync + 'static,
+) -> Result<BluetoothFollow, String> {
+    // Not generic past here: the runtime holds the follower, its D-Bus
+    // connection and its tasks once, rather than every app calling it.
+    follow_changes_boxed(Box::new(on_change))
+}
+
+fn follow_changes_boxed(on_change: Box<dyn Fn() + Send + Sync>) -> Result<BluetoothFollow, String> {
+    let runtime = tilo_rt::try_app().map_err(|error| error.to_string())?;
+    let task = runtime.spawn(async move {
+        let watched = async { BluezClient::connect().await?.watch_changes().await }.await;
+        let mut changes = match watched {
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::warn!(%error, "could not follow Bluetooth's changes");
+                return;
+            }
+        };
+        while changes.changed().await.is_some() {
+            on_change();
+        }
+    });
+    Ok(BluetoothFollow { task })
 }
 
 const BLUETOOTH_CLASS: &str = "/sys/class/bluetooth";
@@ -90,11 +133,6 @@ fn has_adapter_in(root: &Path) -> bool {
 }
 
 /// The adapter every operation here targets.
-///
-/// # Errors
-///
-/// Returns an error message if the Bluetooth runtime or `org.bluez` D-Bus connection is
-/// unavailable, the call fails, or no Bluetooth adapter is present.
 pub fn adapter_path() -> Result<String, String> {
     let c = client()?;
     block(async { c.default_adapter().await })?
@@ -105,50 +143,30 @@ pub fn adapter_path() -> Result<String, String> {
 /// Every device `BlueZ` knows about — paired or merely seen — newest signal
 /// first. Unlike the paired-only list, this is what a "nearby devices" view
 /// needs.
-///
-/// # Errors
-///
-/// Returns an error message if the Bluetooth runtime or `org.bluez` D-Bus connection is
-/// unavailable or the call fails.
 pub fn devices() -> Result<Vec<DeviceInfo>, String> {
     let c = client()?;
     block(async { c.devices().await })
 }
 
 /// Only the devices that completed pairing.
-///
-/// # Errors
-///
-/// Returns an error message if the Bluetooth runtime or `org.bluez` D-Bus connection is
-/// unavailable or the call fails.
 pub fn paired_devices() -> Result<Vec<DeviceInfo>, String> {
     let c = client()?;
     block(async { c.paired_devices().await })
 }
 
 /// Begin scanning. Runs until [`stop_scan`], or until the process exits.
-///
-/// # Errors
-///
-/// Returns an error message if [`adapter_path`] fails or the call to start discovery fails.
 pub fn start_scan() -> Result<(), String> {
     let c = client()?;
     let adapter = adapter_path()?;
     block(async { c.start_discovery(&adapter).await })
 }
 
-/// # Errors
-///
-/// Returns an error message if [`adapter_path`] fails or the call to stop discovery fails.
 pub fn stop_scan() -> Result<(), String> {
     let c = client()?;
     let adapter = adapter_path()?;
     block(async { c.stop_discovery(&adapter).await })
 }
 
-/// # Errors
-///
-/// Returns an error message if [`adapter_path`] fails or the underlying call fails.
 pub fn is_scanning() -> Result<bool, String> {
     let c = client()?;
     let adapter = adapter_path()?;
@@ -159,10 +177,6 @@ pub fn is_scanning() -> Result<bool, String> {
 ///
 /// The bounded form exists because an unbounded scan costs radio time on
 /// every device nearby, not just this one.
-///
-/// # Errors
-///
-/// Returns an error message if [`start_scan`] or the subsequent [`devices`] call fails.
 pub fn scan_for(window: Duration) -> Result<Vec<DeviceInfo>, String> {
     start_scan()?;
     std::thread::sleep(window);
@@ -176,11 +190,6 @@ pub fn scan_for(window: Duration) -> Result<Vec<DeviceInfo>, String> {
 /// Blocks for as long as the pairing takes, which includes however long the
 /// user spends comparing a passkey, so callers must not run this on a thread
 /// that is painting.
-///
-/// # Errors
-///
-/// Returns an error message if [`adapter_path`] fails, or pairing, trusting, or connecting
-/// fails (including a rejected or timed-out passkey).
 pub fn pair(device_path: &str) -> Result<tilo_bluez::PairOutcome, String> {
     let c = client()?;
     let adapter = adapter_path()?;
@@ -188,29 +197,16 @@ pub fn pair(device_path: &str) -> Result<tilo_bluez::PairOutcome, String> {
 }
 
 /// Abort a pairing that is in flight.
-///
-/// # Errors
-///
-/// Returns an error message if the Bluetooth runtime or `org.bluez` D-Bus connection is
-/// unavailable or the call fails.
 pub fn cancel_pairing(device_path: &str) -> Result<(), String> {
     let c = client()?;
     block(async { c.cancel_pairing(device_path).await })
 }
 
-/// # Errors
-///
-/// Returns an error message if the Bluetooth runtime or `org.bluez` D-Bus connection is
-/// unavailable or the connect call fails.
 pub fn connect(device_path: &str) -> Result<(), String> {
     let c = client()?;
     block(async { c.connect_device(device_path).await })
 }
 
-/// # Errors
-///
-/// Returns an error message if the Bluetooth runtime or `org.bluez` D-Bus connection is
-/// unavailable or the disconnect call fails.
 pub fn disconnect(device_path: &str) -> Result<(), String> {
     let c = client()?;
     block(async { c.disconnect_device(device_path).await })
@@ -218,20 +214,12 @@ pub fn disconnect(device_path: &str) -> Result<(), String> {
 
 /// Forget a device: drops the bond, the keys and the trust, so it must pair
 /// again from scratch.
-///
-/// # Errors
-///
-/// Returns an error message if [`adapter_path`] fails or the call to remove the device fails.
 pub fn forget(device_path: &str) -> Result<(), String> {
     let c = client()?;
     let adapter = adapter_path()?;
     block(async { c.remove_device(&adapter, device_path).await })
 }
 
-/// # Errors
-///
-/// Returns an error message if the Bluetooth runtime or `org.bluez` D-Bus connection is
-/// unavailable or the call fails.
 pub fn set_trusted(device_path: &str, trusted: bool) -> Result<(), String> {
     let c = client()?;
     block(async { c.set_trusted(device_path, trusted).await })
@@ -239,30 +227,18 @@ pub fn set_trusted(device_path: &str, trusted: bool) -> Result<(), String> {
 
 /// Rename a device through `BlueZ`'s Device1.Alias property. No parallel local
 /// nickname store is maintained.
-///
-/// # Errors
-///
-/// Returns an error message if the Bluetooth runtime or `org.bluez` D-Bus connection is
-/// unavailable or the call fails.
 pub fn set_alias(device_path: &str, alias: &str) -> Result<(), String> {
     let c = client()?;
     block(async { c.set_alias(device_path, alias).await })
 }
 
 /// Power the controller on or off.
-///
-/// # Errors
-///
-/// Returns an error message if [`adapter_path`] fails or the call to set powered state fails.
 pub fn set_powered(on: bool) -> Result<(), String> {
     let c = client()?;
     let adapter = adapter_path()?;
     block(async { c.set_powered(&adapter, on).await })
 }
 
-/// # Errors
-///
-/// Returns an error message if [`adapter_path`] fails or the underlying call fails.
 pub fn is_powered() -> Result<bool, String> {
     let c = client()?;
     let adapter = adapter_path()?;
@@ -274,11 +250,6 @@ pub fn is_powered() -> Result<bool, String> {
 /// Deliberately not called anywhere by default. A permanently discoverable
 /// adapter is a standing invitation, and Tilo pairs by scanning *outward*
 /// rather than by advertising itself.
-///
-/// # Errors
-///
-/// Returns an error message if [`adapter_path`] fails or the call to set discoverable state
-/// fails.
 pub fn set_discoverable(on: bool) -> Result<(), String> {
     let c = client()?;
     let adapter = adapter_path()?;

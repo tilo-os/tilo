@@ -196,7 +196,6 @@ impl Apps {
         }
     }
 
-    /// The installed GUI app `app_id`.
     fn launchable(&self, app_id: &str) -> Result<InstalledApp, String> {
         let app = self
             .installed()
@@ -269,7 +268,7 @@ impl Apps {
         app: &str,
         workspace: &tilo_desktop_model::Workspace,
     ) -> Result<Option<u64>, String> {
-        let launch = self.start(app, &workspace.room.to_string())?;
+        let launch = self.start(app, &workspace.room().to_string())?;
         let ticket = self.launched.ticket(launch.pid);
         let launched = Arc::clone(&self.launched);
         std::thread::Builder::new()
@@ -291,6 +290,7 @@ impl LauncherServices for Apps {
         apps.sort_by(|a, b| a.display_name.cmp(&b.display_name));
         apps.into_iter()
             .map(|app| LaunchableApplication {
+                capabilities: Vec::new(),
                 package_id: app.package_id,
                 display_name: app.display_name,
                 unconfined: false,
@@ -591,8 +591,8 @@ fn launcher_candidates() -> Vec<PathBuf> {
     {
         out.push(dir.join("tilo-launcher"));
     }
+    out.push(PathBuf::from("/usr/libexec/tilo/tilo-launcher"));
     out.push(PathBuf::from("/usr/libexec/tilo-launcher"));
-    out.push(PathBuf::from("/usr/bin/tilo-launcher"));
     out
 }
 

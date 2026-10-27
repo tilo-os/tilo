@@ -22,10 +22,6 @@ struct WireRequest {
 pub struct LaunchRequest(WireRequest);
 impl LaunchRequest {
     /// Decode a bounded request using the closed launch schema.
-    ///
-    /// # Errors
-    /// Returns an error for empty or oversized input, invalid JSON, unknown or
-    /// duplicate fields, unsupported schema, or invalid identifiers and labels.
     pub fn decode(bytes: &[u8]) -> io::Result<Self> {
         let refused = || {
             io::Error::new(

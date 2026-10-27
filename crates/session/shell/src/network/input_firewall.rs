@@ -20,7 +20,7 @@ use vello::kurbo::{Point, Rect};
 
 use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
-use crate::shell::input_policy::{ChordMods, chord_key_for_evdev, shell_owns_chord};
+use crate::shell::input_policy::{ChordMods, InputCapture, chord_key_for_evdev, shell_owns_chord};
 
 /// How long local input keeps the remote side out — the host reaching for their own input is an unambiguous takeover.
 pub const PHYSICAL_PRIORITY_WINDOW: Duration = Duration::from_millis(500);
@@ -34,7 +34,6 @@ pub const RATE_WINDOW: Duration = Duration::from_secs(1);
 /// Clicks inside [`CLICK_BURST_WINDOW`] still tolerated before the next one is a burst.
 pub const CLICK_BURST_LIMIT: usize = 10;
 
-/// The window a click burst is measured over.
 pub const CLICK_BURST_WINDOW: Duration = Duration::from_millis(100);
 
 /// How long a peer stays blocked after a click burst — long enough to break an automated storm, short enough not to lock out a trackpad fumble.
@@ -141,10 +140,11 @@ pub struct ShellView {
     chrome_regions: Vec<(SurfaceId, Rect)>,
     /// Optional interactive bounds; the full tile remains the coordinate basis.
     input_regions: Vec<(SurfaceId, Rect)>,
-    /// The surface holding keyboard focus, or `None` when shell chrome owns it.
     keyboard_focus: Option<SurfaceId>,
-    /// Shell chrome (overlay, palette, permission prompt) is drawn over the tiles and taking input.
-    chrome_captures: bool,
+    /// What shell chrome (an overlay, the palette, a prompt, a file
+    /// chooser's sheet) holds back from the tiles: the decision local input
+    /// follows ([`crate::shell::input_policy::input_capture`]).
+    capture: InputCapture,
     /// An overlay is open, so the shell grabs `Escape`.
     overlay_open: bool,
     /// The session lock is up; nothing on screen belongs to anyone until the host authenticates.
@@ -160,7 +160,7 @@ impl ShellView {
     pub fn new(
         tiles: Vec<(SurfaceId, Rect)>,
         keyboard_focus: Option<SurfaceId>,
-        chrome_captures: bool,
+        capture: InputCapture,
         overlay_open: bool,
     ) -> Self {
         Self {
@@ -168,7 +168,7 @@ impl ShellView {
             chrome_regions: Vec::new(),
             input_regions: Vec::new(),
             keyboard_focus,
-            chrome_captures,
+            capture,
             overlay_open,
             session_locked: false,
             observed: true,
@@ -214,10 +214,10 @@ impl ShellView {
         self.observed
     }
 
-    /// Whether trusted compositor chrome currently occludes client content
-    /// and owns the seat. Remote input must be denied while this is true.
-    pub fn chrome_captures_input(&self) -> bool {
-        self.chrome_captures
+    /// Whether shell chrome holds the keyboard: no key from another device
+    /// reaches a window, nor may one move the keyboard's focus.
+    pub fn captures_keyboard(&self) -> bool {
+        self.capture.keyboard
     }
 
     /// The on-screen rect of `surface`, if it is currently on screen.
@@ -366,7 +366,6 @@ impl RemoteInputFirewall {
         self.peers.clear();
     }
 
-    /// Whether the kill switch is latched.
     pub fn kill_switch_engaged(&self) -> bool {
         self.kill_switch
     }
@@ -577,7 +576,7 @@ impl RemoteInputFirewall {
         text: &str,
         now: Instant,
     ) -> Result<(), Denial> {
-        if self.view.chrome_captures || self.view.keyboard_focus != Some(surface) {
+        if self.view.capture.keyboard || self.view.keyboard_focus != Some(surface) {
             return Err(Denial::FocusMuted);
         }
         if text.is_empty() || text.len() > MAX_REMOTE_TEXT_BYTES {
@@ -597,8 +596,9 @@ impl RemoteInputFirewall {
             return Err(Denial::OutsideRegion);
         }
         let global = (rect.x0 + local.0, rect.y0 + local.1);
-        // Z-order: chrome drawn over the tiles takes the whole screen, so nothing beneath it is topmost anywhere.
-        if self.view.chrome_captures {
+        // Z-order: chrome holding the pointer here (a modal over the whole
+        // screen, a file chooser's sheet and its window) is on top of it.
+        if self.view.capture.pointer.at(Point::new(global.0, global.1)) {
             return Err(Denial::Occluded);
         }
         // Otherwise ask the live tile order — trusting the share record instead is
@@ -620,7 +620,7 @@ impl RemoteInputFirewall {
     ) -> Result<(), Denial> {
         let overlay_open = self.view.overlay_open;
         let focus = self.view.keyboard_focus;
-        let chrome_captures = self.view.chrome_captures;
+        let keyboard_held = self.view.capture.keyboard;
 
         let state = self.peer_mut(peer);
         // Track the peer's own modifier stream first, so a modifier this event presses counts towards its own chord.
@@ -632,7 +632,7 @@ impl RemoteInputFirewall {
 
         // Focus guard: a keystroke injects only while the shared surface holds
         // keyboard focus, checked before the chord table so a peer can't type into a private window.
-        if chrome_captures || focus != Some(surface) {
+        if keyboard_held || focus != Some(surface) {
             return Err(Denial::FocusMuted);
         }
 
@@ -735,7 +735,7 @@ mod tests {
         ShellView::new(
             vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
             Some(SHARED),
-            false,
+            InputCapture::NONE,
             false,
         )
     }
@@ -748,7 +748,6 @@ mod tests {
 
     #[test]
     fn pointer_motion_is_admitted_only_inside_visible_shared_regions() {
-        // Phase `a_firewall_that_has_seen_no_layout_refuses_everything`.
         {
             let mut fw = RemoteInputFirewall::new();
             let verdict = fw.review(
@@ -759,7 +758,6 @@ mod tests {
             );
             assert_eq!(verdict, Err(Denial::NoView));
         }
-        // Phase `motion_inside_the_region_is_translated_into_output_space`.
         {
             let mut fw = firewall();
             let out = fw
@@ -772,7 +770,6 @@ mod tests {
                 .expect("inside the tile");
             assert_eq!(out, InputEvent::PointerMotion { x: 110.0, y: 70.0 });
         }
-        // Phase `motion_outside_the_region_is_refused`.
         {
             let mut fw = firewall();
             for (x, y) in [(-1.0, 10.0), (10.0, -1.0), (400.0, 10.0), (10.0, 300.0)] {
@@ -788,7 +785,6 @@ mod tests {
                 );
             }
         }
-        // Phase `motion_is_refused_where_another_surface_is_on_top`.
         {
             let mut fw = RemoteInputFirewall::new();
             // The private surface is enumerated first, so it is in front.
@@ -798,7 +794,7 @@ mod tests {
                     (SHARED, Rect::new(100.0, 50.0, 500.0, 350.0)),
                 ],
                 Some(SHARED),
-                false,
+                InputCapture::NONE,
                 false,
             ));
             assert_eq!(
@@ -811,13 +807,12 @@ mod tests {
                 Err(Denial::Occluded),
             );
         }
-        // Phase `chrome_drawn_over_the_tiles_occludes_every_shared_surface`.
         {
             let mut fw = RemoteInputFirewall::new();
             fw.publish_view(ShellView::new(
                 vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
                 Some(SHARED),
-                true,
+                InputCapture::ALL,
                 false,
             ));
             assert_eq!(
@@ -849,7 +844,7 @@ mod tests {
         unfocused.publish_view(ShellView::new(
             vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
             Some(PRIVATE),
-            false,
+            InputCapture::NONE,
             false,
         ));
         assert_eq!(
@@ -906,7 +901,6 @@ mod tests {
 
     #[test]
     fn buttons_need_a_current_valid_coordinate() {
-        // Phase `a_button_without_a_prior_motion_has_no_coordinate_and_is_refused`.
         {
             let mut fw = firewall();
             assert_eq!(
@@ -922,7 +916,6 @@ mod tests {
                 Err(Denial::NoPointerPosition),
             );
         }
-        // Phase `pointer_leave_invalidates_the_peers_click_coordinate`.
         {
             let mut fw = firewall();
             let now = Instant::now();
@@ -954,7 +947,6 @@ mod tests {
                 Err(Denial::NoPointerPosition)
             );
         }
-        // Phase `button_rechecks_surface_local_position_after_nonzero_origin_motion`.
         {
             let mut fw = firewall();
             let now = Instant::now();
@@ -988,7 +980,6 @@ mod tests {
 
     #[test]
     fn keys_reach_the_seat_only_while_the_shared_surface_has_focus() {
-        // Phase `a_focus_grab_naming_a_surface_the_share_does_not_cover_is_refused`.
         {
             let mut fw = firewall();
             assert_eq!(
@@ -1001,13 +992,12 @@ mod tests {
                 Err(Denial::SurfaceMismatch),
             );
         }
-        // Phase `keys_are_muted_while_the_host_focuses_another_surface`.
         {
             let mut fw = RemoteInputFirewall::new();
             fw.publish_view(ShellView::new(
                 vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
                 Some(PRIVATE),
-                false,
+                InputCapture::NONE,
                 false,
             ));
             assert_eq!(
@@ -1024,7 +1014,6 @@ mod tests {
                 Err(Denial::FocusMuted),
             );
         }
-        // Phase `an_ordinary_key_reaches_the_seat_when_the_shared_surface_has_focus`.
         {
             let mut fw = firewall();
             assert!(
@@ -1086,7 +1075,6 @@ mod tests {
                 Err(Denial::SystemChord),
             );
         }
-        // Phase `ctrl_alt_delete_is_refused`.
         {
             let mut fw = firewall();
             let now = Instant::now();
@@ -1116,7 +1104,6 @@ mod tests {
                 Err(Denial::SystemChord),
             );
         }
-        // Phase `alt_tab_is_refused`.
         {
             let mut fw = firewall();
             let now = Instant::now();
@@ -1144,7 +1131,6 @@ mod tests {
                 Err(Denial::SystemChord),
             );
         }
-        // Phase `print_screen_is_kept_on_the_host`.
         {
             let mut fw = firewall();
             assert_eq!(
@@ -1161,7 +1147,6 @@ mod tests {
                 Err(Denial::SystemChord),
             );
         }
-        // Phase `the_super_key_never_reaches_the_seat`.
         {
             let mut fw = firewall();
             assert_eq!(
@@ -1208,7 +1193,6 @@ mod tests {
         reason = "the rate-budget phase compares admission verdicts to literal booleans; each phase keeps one former test's body verbatim"
     )]
     fn rate_limits_local_priority_and_kill_switch_block_the_peer() {
-        // Phase `tests_mod_the_hundred_and_twenty_first_event_in_a_second_is_dropped`.
         {
             let mut fw = firewall();
             let t0 = Instant::now();
@@ -1235,7 +1219,6 @@ mod tests {
                 ),
                 Err(Denial::RateLimited),
             );
-            // A second later the window has rolled and the peer is served again.
             let later = t0 + RATE_WINDOW + Duration::from_millis(1);
             assert!(
                 fw.review(
@@ -1247,7 +1230,6 @@ mod tests {
                 .is_ok(),
             );
         }
-        // Phase `an_eleventh_click_inside_a_hundred_milliseconds_blocks_the_peer`.
         {
             let mut fw = firewall();
             let t0 = Instant::now();
@@ -1309,7 +1291,6 @@ mod tests {
                 .is_ok(),
             );
         }
-        // Phase `local_input_blocks_the_remote_side_for_five_hundred_milliseconds`.
         {
             let mut fw = firewall();
             let t0 = Instant::now();
@@ -1320,7 +1301,6 @@ mod tests {
             );
             assert_eq!(fw.host_override(t0 + PHYSICAL_PRIORITY_WINDOW), None);
         }
-        // Phase `the_kill_switch_latches_until_it_is_cleared`.
         {
             let mut fw = firewall();
             assert_eq!(fw.host_override(Instant::now()), None);
@@ -1334,11 +1314,9 @@ mod tests {
             fw.clear_kill_switch();
             assert_eq!(fw.host_override(Instant::now()), None);
         }
-        // Phase `a_denied_event_still_costs_the_peer_its_rate_budget`.
         {
             let mut fw = firewall();
             let t0 = Instant::now();
-            // Every one of these is refused on the region check.
             for i in 0..MAX_EVENTS_PER_SECOND {
                 let at = t0 + Duration::from_micros(i as u64);
                 assert_eq!(
@@ -1405,7 +1383,7 @@ mod production_path {
         state.remote_input_firewall.publish_view(ShellView::new(
             vec![(SHARED, TILE)],
             Some(SHARED),
-            false,
+            InputCapture::NONE,
             false,
         ));
         let _ = state.remote_seats.seat_mut(PEER).enter(SHARED);
@@ -1516,7 +1494,7 @@ mod production_path {
             state.remote_input_firewall.publish_view(ShellView::new(
                 vec![(PRIVATE, TILE), (SHARED, TILE)],
                 Some(SHARED),
-                false,
+                InputCapture::NONE,
                 false,
             ));
 
@@ -1617,7 +1595,7 @@ mod production_path {
                     (PRIVATE, Rect::new(600.0, 50.0, 900.0, 350.0)),
                 ],
                 Some(PRIVATE),
-                false,
+                InputCapture::NONE,
                 false,
             ));
 
@@ -1781,7 +1759,7 @@ mod production_path {
             state.remote_input_firewall.publish_view(ShellView::new(
                 vec![(SHARED, TILE)],
                 Some(SHARED),
-                false,
+                InputCapture::NONE,
                 false,
             ));
             assert_eq!(
@@ -1835,13 +1813,18 @@ mod production_path {
         {
             let mut state = staged();
 
-            // Exactly the event the unlocked staging accepts.
             state
                 .review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y: 10.0 })
                 .expect("the same event is accepted while the session is unlocked");
 
             state.remote_input_firewall.publish_view(
-                ShellView::new(vec![(SHARED, TILE)], Some(SHARED), false, false).locked(true),
+                ShellView::new(
+                    vec![(SHARED, TILE)],
+                    Some(SHARED),
+                    InputCapture::NONE,
+                    false,
+                )
+                .locked(true),
             );
 
             let verdict = state.review_remote_input(
@@ -1876,7 +1859,6 @@ mod production_path {
             assert_eq!(verdict, Err(Denial::PhysicalPriority));
             assert_eq!(pointer_at(&state), before);
         }
-        // Phase `physical_priority_mutes_new_actions_but_allows_held_input_cleanup`.
         {
             const SHIFT: u32 = 42;
             const A: u32 = 30;
@@ -1990,7 +1972,13 @@ mod production_path {
     fn a_locally_held_pointer_refuses_peer_pointer_input_but_not_keys() {
         let mut state = staged();
         state.remote_input_firewall.publish_view(
-            ShellView::new(vec![(SHARED, TILE)], Some(SHARED), false, false).pointer_held(true),
+            ShellView::new(
+                vec![(SHARED, TILE)],
+                Some(SHARED),
+                InputCapture::NONE,
+                false,
+            )
+            .pointer_held(true),
         );
         for event in [
             InputEvent::PointerMotion { x: 10.0, y: 10.0 },

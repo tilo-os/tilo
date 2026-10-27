@@ -556,7 +556,6 @@ fn idle_sync_does_not_rewrite_tree_json() {
         let saved = std::fs::read_to_string(dir.path().join("tree.json")).unwrap();
         assert!(saved.contains("todo.md"), "{saved}");
 
-        // What was persisted is what a restart lists, without the server.
         mount.volume.shutdown();
         drop(mount);
         server.set_offline(true);
@@ -638,15 +637,14 @@ fn idle_polls_back_off_and_reset_on_activity() {
         "seven idle passes ran in {elapsed:?}: the poll did not back off"
     );
 
-    // The loop now waits at least 0.9 * 1280 ms. Listing the mount brings
-    // the next pass back within the poll interval.
-    let touched = std::time::Instant::now();
+    // The loop now waits at least 0.9 * 1280 ms. Listing the mount cuts
+    // that wait to the poll interval.
+    let cut = mount.volume.idle_waits_cut();
     mount.volume.readdir(ROOT_INO).unwrap();
     wait_for_passes(8);
-    let reset = touched.elapsed();
     assert!(
-        reset < Duration::from_millis(800),
-        "the next pass came {reset:?} after local activity"
+        mount.volume.idle_waits_cut() > cut,
+        "local activity did not cut the idle wait short"
     );
 
     mount.volume.shutdown();
@@ -775,30 +773,30 @@ fn sync_now_cuts_backoff_and_syncs_immediately() {
     let server = FakeDav::generic();
     server.put("readme.txt", b"hello");
     let dir = tempfile::tempdir().unwrap();
-    // A 30 s poll: after one failure the loop waits 60 s, after two 120 s.
-    let mount = mount_volume(&server, dir.path());
+    // A 300 s poll: after a failure the loop waits its 300 s cap, longer
+    // than any test waits, so only a cut back-off syncs within the test.
+    let mount = mount_polling(
+        &server,
+        dir.path(),
+        Duration::from_secs(300),
+        DEFAULT_IDLE_POLL_MAX,
+    );
     server.set_offline(true);
     let workers = mount.volume.spawn_workers();
     wait_until("the first failed pass", || {
         mount.health.lock().unwrap().contains(&MountHealth::Offline)
     });
     // A second failure, from a sync asked for while still offline: the
-    // loop now backs off 120 s.
+    // loop backs off again.
     let _ = server.requests();
     dispatch(&mount.volume, ToMount::SyncNow, &no_reply());
     wait_until("the second failed pass", || !server.requests().is_empty());
 
     server.set_offline(false);
-    let asked = std::time::Instant::now();
     dispatch(&mount.volume, ToMount::SyncNow, &no_reply());
-    wait_until("a healthy pass", || {
+    wait_until("sync now to cut the back-off short", || {
         mount.health.lock().unwrap().last() == Some(&MountHealth::Healthy)
     });
-    let took = asked.elapsed();
-    assert!(
-        took < Duration::from_secs(1),
-        "sync now took {took:?}; the back-off was not cut short"
-    );
     assert_eq!(names(&mount.volume, ""), ["readme.txt"]);
 
     mount.volume.shutdown();
@@ -819,7 +817,8 @@ fn pause_stops_uploads_until_resume() {
     dispatch(&mount.volume, ToMount::Pause, &no_reply());
     assert!(mount.volume.is_paused());
     write_file(&mount.volume, "new.txt", b"written while paused");
-    std::thread::sleep(Duration::from_millis(300));
+    // Background write-back uploads only through this.
+    assert_eq!(mount.volume.upload_pending_unless_paused().unwrap(), 0);
     assert_eq!(server.get("new.txt"), None, "a paused mount uploaded");
     assert_eq!(mount.volume.pending(), 1, "the edit is queued, not lost");
     // Reads still work while paused.
@@ -834,6 +833,126 @@ fn pause_stops_uploads_until_resume() {
     for worker in workers {
         worker.join().unwrap();
     }
+}
+
+/// The server, with something done to the volume the moment an upload
+/// begins: what a user or Settings can do while one is on the wire.
+struct DuringUpload {
+    dav: DavSource,
+    hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl DuringUpload {
+    fn new(server: &FakeDav) -> Arc<Self> {
+        Arc::new(Self {
+            dav: DavSource::new(server.config(), Arc::new(StaticCredential(credential()))).unwrap(),
+            hook: Mutex::new(None),
+        })
+    }
+
+    fn once(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.hook.lock().unwrap() = Some(Box::new(hook));
+    }
+}
+
+impl CloudSource for DuringUpload {
+    fn capabilities(&self) -> cloud_source::Capabilities {
+        self.dav.capabilities()
+    }
+    fn root(&self) -> cloud_source::ItemId {
+        self.dav.root()
+    }
+    fn stat(&self, id: &cloud_source::ItemId) -> cloud_source::Result<cloud_source::Item> {
+        self.dav.stat(id)
+    }
+    fn list(&self, folder: &cloud_source::ItemId) -> cloud_source::Result<Vec<cloud_source::Item>> {
+        self.dav.list(folder)
+    }
+    fn changes(
+        &self,
+        cursor: Option<&cloud_source::Cursor>,
+    ) -> cloud_source::Result<cloud_source::ChangePage> {
+        self.dav.changes(cursor)
+    }
+    fn read(
+        &self,
+        id: &cloud_source::ItemId,
+        range: Option<std::ops::Range<u64>>,
+        expect: Option<&cloud_source::Revision>,
+    ) -> cloud_source::Result<cloud_source::Download> {
+        self.dav.read(id, range, expect)
+    }
+    fn begin_upload(
+        &self,
+        target: cloud_source::UploadTarget,
+        size: u64,
+    ) -> cloud_source::Result<Box<dyn cloud_source::UploadSession>> {
+        let hook = self.hook.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+        self.dav.begin_upload(target, size)
+    }
+    fn create_folder(
+        &self,
+        parent: &cloud_source::ItemId,
+        name: &str,
+    ) -> cloud_source::Result<cloud_source::Item> {
+        self.dav.create_folder(parent, name)
+    }
+    fn move_item(
+        &self,
+        id: &cloud_source::ItemId,
+        new_parent: &cloud_source::ItemId,
+        new_name: &str,
+        expect: Option<&cloud_source::Revision>,
+    ) -> cloud_source::Result<cloud_source::Item> {
+        self.dav.move_item(id, new_parent, new_name, expect)
+    }
+    fn delete(
+        &self,
+        id: &cloud_source::ItemId,
+        expect: Option<&cloud_source::Revision>,
+    ) -> cloud_source::Result<()> {
+        self.dav.delete(id, expect)
+    }
+}
+
+#[test]
+fn a_pause_during_a_new_files_upload_leaves_the_volume_synced() {
+    let server = FakeDav::nextcloud();
+    let dir = tempfile::tempdir().unwrap();
+    let source = DuringUpload::new(&server);
+    let volume = oauth_volume(Arc::clone(&source) as Arc<dyn CloudSource>, dir.path());
+    volume.sync_once().unwrap();
+
+    write_file(&volume, "new.txt", b"written by a POSIX tool");
+    let paused = Arc::downgrade(&volume);
+    source.once(move || paused.upgrade().unwrap().pause());
+    // The upload began before the pause, so it lands; the file then has its
+    // server id and nothing of it is left to send.
+    assert_eq!(volume.upload_pending_unless_paused().unwrap(), 1);
+    assert_eq!(server.get("new.txt").unwrap(), b"written by a POSIX tool");
+    assert_eq!(volume.pending(), 0, "the sent change is still queued");
+    volume.prepare_import().unwrap();
+}
+
+#[test]
+fn a_write_closed_during_an_upload_is_sent_after_it() {
+    let server = FakeDav::nextcloud();
+    server.put("doc.txt", b"version one");
+    let dir = tempfile::tempdir().unwrap();
+    let source = DuringUpload::new(&server);
+    let volume = oauth_volume(Arc::clone(&source) as Arc<dyn CloudSource>, dir.path());
+    volume.sync_once().unwrap();
+
+    write_file(&volume, "doc.txt", b"version two");
+    let editor = Arc::downgrade(&volume);
+    source.once(move || write_file(&editor.upgrade().unwrap(), "doc.txt", b"version three"));
+    assert_eq!(volume.upload_pending().unwrap(), 2);
+    assert_eq!(server.get("doc.txt").unwrap(), b"version three");
+    assert_eq!(volume.pending(), 0);
+    volume.prepare_import().unwrap();
 }
 
 #[test]
@@ -1064,7 +1183,6 @@ fn the_control_socket_lists_mounts_without_credentials() {
             Err(error) => error.to_string(),
             Ok(reply) => format!("served: {reply:?}"),
         });
-        // The file socket answers them.
         let revisions = CloudClient::connect(&files_socket).unwrap().file(
             "files-1",
             FileRequest::Revisions {
@@ -1232,7 +1350,7 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
     let mut service = CloudService::new(
         service_config(root, home.path()),
         Box::new(fs::cloud::ProcessLauncher {
-            executable: env!("CARGO_BIN_EXE_fs").into(),
+            executable: tilo_test_env::package_binary!("fs"),
             ready_timeout: Duration::from_secs(30),
         }),
     );

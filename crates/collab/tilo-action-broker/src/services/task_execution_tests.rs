@@ -1,13 +1,9 @@
-//! Exercise the live policy check with a real admitted task command path.
-use super::NativeTaskActionRequirement;
+use super::{NativeTaskActionRequirement, TrackerRun};
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath, roles::AgentPreset};
 use tilo_automerge::ApplyIncoming;
-use tilo_peer_state::{
-    SeedState, StatePeer, seed_room,
-    workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand},
-};
+use tilo_peer_state::{SeedState, StatePeer, seed_room};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 fn certificate(root: u8, device: u8) -> DeviceCert {
@@ -30,22 +26,10 @@ fn certificate(root: u8, device: u8) -> DeviceCert {
 fn approved_run_cannot_exceed_its_starters_live_action_permission() {
     let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let (mut peer, starter, key, now) = policy_fixture(room);
-    let authority = WorkspaceTaskAuthority::Person {
-        caller: starter.clone(),
-    };
-    let requirement = approve_task(&mut peer, &authority, now);
+    let requirement = approve_task(&starter);
     assert_exact_binding(&peer, room, now, &requirement);
-    assert_frozen_starter(&mut peer, room, &starter, &key, now, &requirement);
-    assert_independent_task_grants(&mut peer, room, &key, now, &authority, &requirement);
-    assert_live_starter_revocation(
-        &mut peer,
-        room,
-        &starter,
-        &key,
-        now,
-        &authority,
-        &requirement,
-    );
+    assert_independent_task_grants(&mut peer, room, &key, now, &requirement);
+    assert_live_starter_revocation(&mut peer, room, &starter, &key, now, &requirement);
 }
 
 /// An action the agent's grants answer "ask" for pauses the run for its
@@ -54,8 +38,7 @@ fn approved_run_cannot_exceed_its_starters_live_action_permission() {
 fn a_run_is_told_an_action_asks_first() {
     let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let (mut peer, starter, key, now) = policy_fixture(room);
-    let authority = WorkspaceTaskAuthority::Person { caller: starter };
-    let requirement = approve_task(&mut peer, &authority, now);
+    let requirement = approve_task(&starter);
     let grant = |id: &str, answer| {
         Grant::new(
             id,
@@ -69,7 +52,7 @@ fn a_run_is_told_an_action_asks_first() {
     peer.governance_mut()
         .put_governed_grants(&[grant("agent-asks", Answer::Ask)], &key, now)
         .unwrap();
-    let asks = requirement.check(&peer, room, "scribe", now).unwrap_err();
+    let asks = requirement.check_run(&peer, room, now).unwrap_err();
     assert!(asks.contains("asks a person first"), "{asks}");
     assert!(asks.contains("agent-asks"), "{asks}");
     assert!(
@@ -79,8 +62,66 @@ fn a_run_is_told_an_action_asks_first() {
     peer.governance_mut()
         .put_governed_grants(&[grant("agent-denied", Answer::Deny)], &key, now)
         .unwrap();
-    let denied = requirement.check(&peer, room, "scribe", now).unwrap_err();
+    let denied = requirement.check_run(&peer, room, now).unwrap_err();
     assert!(denied.contains("not allowed"), "{denied}");
+}
+
+/// A change the run can take back needs no approval: a person's grant that
+/// asks them when they press the action never pauses a run they started,
+/// while a change that cannot be undone still does.
+#[test]
+fn a_change_the_run_can_take_back_just_happens() {
+    let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let (mut peer, starter, key, now) = policy_fixture(room);
+    let requirement = approve_task(&starter);
+    let grant = |id: &str, kinds| {
+        Grant::new(
+            id,
+            Subject::person(hex::encode(starter.user_public_key)),
+            action_node(room, &requirement),
+            kinds,
+            Answer::Ask,
+            Subject::person("governor"),
+        )
+    };
+    peer.governance_mut()
+        .put_governed_grants(&[grant("starter-asks-notes", KindSet::ALL)], &key, now)
+        .unwrap();
+    requirement.check_run(&peer, room, now).unwrap();
+
+    // What cannot be taken back still pauses for the person.
+    let mut sends = approve_task(&starter);
+    sends.need.kind = tilo_action_policy::ActionKind::Outside;
+    let asks = sends.check_run(&peer, room, now).unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
+
+    // And an answer asking the agent first still asks: the run does not
+    // undo the agent's own grants by taking them back either.
+    peer.governance_mut()
+        .put_governed_grants(
+            &[
+                grant("starter-asks-notes", KindSet::ALL),
+                Grant::new(
+                    "agent-asks-notes",
+                    Subject::agent("scribe"),
+                    action_node(room, &requirement),
+                    KindSet::UNDOABLE,
+                    Answer::Ask,
+                    Subject::person("governor"),
+                ),
+            ],
+            &key,
+            now,
+        )
+        .unwrap();
+    let asks = requirement.check_run(&peer, room, now).unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
 }
 
 fn policy_fixture(room: &str) -> (StatePeer, DeviceCert, SigningKey, std::time::SystemTime) {
@@ -149,51 +190,20 @@ fn admitted_fixture(
     (peer, starter, key, now)
 }
 
-fn approve_task(
-    peer: &mut StatePeer,
-    authority: &WorkspaceTaskAuthority,
-    now: std::time::SystemTime,
-) -> NativeTaskActionRequirement {
-    let (_, result) = peer
-        .workspace_mut()
-        .apply_workspace_task_command(
-            uuid::Uuid::from_u128(1),
-            [1; 32],
-            authority,
-            &WorkspaceTaskCommand::QueueInstruction {
-                title: "Inspect notes".into(),
-                instruction: "Private complete instruction".into(),
-                assigned_agent: "scribe".into(),
-                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-            },
-            now,
-        )
-        .unwrap();
-    let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = result else {
-        panic!("queue result")
-    };
-    peer.workspace_mut()
-        .apply_workspace_task_command(
-            uuid::Uuid::from_u128(2),
-            [2; 32],
-            authority,
-            &WorkspaceTaskCommand::ApproveRun {
-                task_id: task_id.clone(),
-                agent_id: "scribe".into(),
-                expected_run_epoch: 0,
-                after_revision: 0,
-            },
-            now,
-        )
-        .unwrap();
+/// The issue whose run the fixtures check.
+const ISSUE: &str = "tasks.tracker/issues/1";
+
+/// The requirement of an action the agent's run of [`ISSUE`] takes, the
+/// run approved by `starter`.
+fn approve_task(starter: &DeviceCert) -> NativeTaskActionRequirement {
     NativeTaskActionRequirement {
-        binding: Some(super::NativeTaskBinding {
-            task_id,
+        binding: super::NativeTaskBinding {
+            task_id: ISSUE.into(),
             agent_id: "scribe".into(),
             epoch: 1,
             revision: 0,
-            starter: None,
-        }),
+            starter: Some(hex::encode(starter.user_public_key)),
+        },
         app: "so.tilo.notes".into(),
         resource_kind: "document".into(),
         resource: "notes:release".into(),
@@ -204,7 +214,44 @@ fn approve_task(
             privileged: false,
         },
         consequential: false,
+        attended: false,
         confirmed: false,
+    }
+}
+
+/// Checking a requirement against the going run its binding names.
+trait CheckRun {
+    fn check_run(
+        &self,
+        peer: &StatePeer,
+        room: &str,
+        now: std::time::SystemTime,
+    ) -> Result<(), String>;
+}
+
+impl CheckRun for NativeTaskActionRequirement {
+    fn check_run(
+        &self,
+        peer: &StatePeer,
+        room: &str,
+        now: std::time::SystemTime,
+    ) -> Result<(), String> {
+        let binding = &self.binding;
+        let run = TrackerRun {
+            issue: binding.task_id.clone(),
+            title: "Inspect notes".into(),
+            instruction: "Inspect notes".into(),
+            agent: "scribe".into(),
+            epoch: 1,
+            starter: binding.starter.clone().unwrap_or_default(),
+            active: true,
+            budget: None,
+            subject: None,
+            model: None,
+            directions: Vec::new(),
+            question: None,
+        };
+        self.check_tracker(peer, room, &run, now)
     }
 }
 
@@ -214,16 +261,13 @@ fn assert_exact_binding(
     now: std::time::SystemTime,
     requirement: &NativeTaskActionRequirement,
 ) {
-    requirement.check(peer, room, "scribe", now).unwrap();
-    let mut unbound = requirement.clone();
-    unbound.binding = None;
-    assert!(unbound.check(peer, room, "scribe", now).is_err());
+    requirement.check_run(peer, room, now).unwrap();
     let mut stale = requirement.clone();
-    stale.binding.as_mut().unwrap().epoch = 2;
-    assert!(stale.check(peer, room, "scribe", now).is_err());
+    stale.binding.epoch = 2;
+    assert!(stale.check_run(peer, room, now).is_err());
     let mut privileged = requirement.clone();
     privileged.need.privileged = true;
-    assert!(privileged.check(peer, room, "scribe", now).is_err());
+    assert!(privileged.check_run(peer, room, now).is_err());
 }
 
 fn action_node(room: &str, requirement: &NativeTaskActionRequirement) -> TreePath {
@@ -237,82 +281,15 @@ fn action_node(room: &str, requirement: &NativeTaskActionRequirement) -> TreePat
     )
 }
 
-fn assert_frozen_starter(
-    peer: &mut StatePeer,
-    room: &str,
-    starter: &DeviceCert,
-    key: &SigningKey,
-    now: std::time::SystemTime,
-    requirement: &NativeTaskActionRequirement,
-) {
-    let node = action_node(room, requirement);
-    // A later grant to the starter cannot widen an already running task.
-    peer.governance_mut()
-        .put_governed_grants(
-            &[Grant::new(
-                "starter-new-outside",
-                Subject::person(hex::encode(starter.user_public_key)),
-                node,
-                KindSet::OUTSIDE,
-                Answer::Allow,
-                Subject::person("governor"),
-            )],
-            key,
-            now,
-        )
-        .unwrap();
-    let mut widened = requirement.clone();
-    widened.need.kind = tilo_action_policy::ActionKind::Outside;
-    // The frozen starter asked first for outside effects: the later Allow
-    // does not let the run take one unasked, it pauses for the person.
-    let error = widened.check(peer, room, "scribe", now).unwrap_err();
-    assert!(
-        NativeTaskActionRequirement::awaits_confirmation(&error),
-        "{error}"
-    );
-}
-
 fn assert_independent_task_grants(
     peer: &mut StatePeer,
     room: &str,
     key: &SigningKey,
     now: std::time::SystemTime,
-    authority: &WorkspaceTaskAuthority,
     requirement: &NativeTaskActionRequirement,
 ) {
-    // A second task for the same agent has an independent grant set.
-    let (_, queued) = peer
-        .workspace_mut()
-        .apply_workspace_task_command(
-            uuid::Uuid::from_u128(3),
-            [3; 32],
-            authority,
-            &WorkspaceTaskCommand::QueueInstruction {
-                title: "Other work".into(),
-                instruction: "Other instruction".into(),
-                assigned_agent: "scribe".into(),
-                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-            },
-            now,
-        )
-        .unwrap();
-    let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id: other } = queued else {
-        panic!("queue result")
-    };
-    peer.workspace_mut()
-        .apply_workspace_task_command(
-            uuid::Uuid::from_u128(4),
-            [4; 32],
-            authority,
-            &WorkspaceTaskCommand::ApproveRun {
-                task_id: other.clone(),
-                agent_id: "scribe".into(),
-                expected_run_epoch: 0,
-                after_revision: 0,
-            },
-            now,
-        )
-        .unwrap();
+    // Another issue run by the same agent has an independent grant set.
+    let other = "tasks.tracker/issues/2".to_owned();
     peer.governance_mut()
         .put_governed_grants(
             &[Grant::new(
@@ -327,10 +304,10 @@ fn assert_independent_task_grants(
             now,
         )
         .unwrap();
-    requirement.check(peer, room, "scribe", now).unwrap();
+    requirement.check_run(peer, room, now).unwrap();
     let mut other_requirement = requirement.clone();
-    other_requirement.binding.as_mut().unwrap().task_id = other;
-    assert!(other_requirement.check(peer, room, "scribe", now).is_err());
+    other_requirement.binding.task_id = other;
+    assert!(other_requirement.check_run(peer, room, now).is_err());
 }
 
 fn assert_live_starter_revocation(
@@ -339,7 +316,6 @@ fn assert_live_starter_revocation(
     starter: &DeviceCert,
     key: &SigningKey,
     now: std::time::SystemTime,
-    authority: &WorkspaceTaskAuthority,
     requirement: &NativeTaskActionRequirement,
 ) {
     peer.governance_mut()
@@ -369,29 +345,10 @@ fn assert_live_starter_revocation(
     );
     assert!(
         requirement
-            .check(peer, room, "scribe", now)
+            .check_run(peer, room, now)
             .unwrap_err()
             .contains("starter")
     );
-    for command in [
-        WorkspaceTaskCommand::DirectionForRun {
-            task_id: requirement.binding.as_ref().unwrap().task_id.clone(),
-            run_epoch: 1,
-            after_revision: 0,
-            text: "Continue".into(),
-        },
-        WorkspaceTaskCommand::CancelForRun {
-            task_id: requirement.binding.as_ref().unwrap().task_id.clone(),
-            run_epoch: 1,
-            after_revision: 0,
-        },
-    ] {
-        let error = peer
-            .workspace_mut()
-            .apply_workspace_task_command(uuid::Uuid::new_v4(), [9; 32], authority, &command, now)
-            .unwrap_err();
-        assert!(error.contains("every execution permission"), "{error}");
-    }
 }
 
 #[test]
@@ -399,10 +356,9 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     let room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     let (mut peer, starter, key, now) = policy_fixture(room);
-    let authority = WorkspaceTaskAuthority::Person { caller: starter };
-    let requirement = approve_task(&mut peer, &authority, now);
+    let requirement = approve_task(&starter);
     let awaits = |requirement: &NativeTaskActionRequirement, peer: &StatePeer| {
-        let error = requirement.check(peer, room, "scribe", now).unwrap_err();
+        let error = requirement.check_run(peer, room, now).unwrap_err();
         NativeTaskActionRequirement::awaits_confirmation(&error)
     };
 
@@ -412,7 +368,7 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
     purge.consequential = true;
     assert!(awaits(&purge, &peer));
     purge.confirmed = true;
-    purge.check(&peer, room, "scribe", now).unwrap();
+    purge.check_run(&peer, room, now).unwrap();
 
     // The person tells the agent Notes asks first.
     let scope = AnswerScope::app("so.tilo.notes");
@@ -435,11 +391,11 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
     assert!(awaits(&requirement, &peer));
     let mut confirmed = requirement.clone();
     confirmed.confirmed = true;
-    confirmed.check(&peer, room, "scribe", now).unwrap();
+    confirmed.check_run(&peer, room, now).unwrap();
 
     // Not allowed: refused outright, confirmed or not.
     set(Answer::Deny, &mut peer);
-    let error = confirmed.check(&peer, room, "scribe", now).unwrap_err();
+    let error = confirmed.check_run(&peer, room, now).unwrap_err();
     assert!(
         !NativeTaskActionRequirement::awaits_confirmation(&error),
         "{error}"
@@ -462,7 +418,68 @@ fn an_action_asking_first_pauses_until_confirmed_and_deny_still_refuses() {
         .unwrap();
     let mut purge = requirement;
     purge.consequential = true;
-    purge.check(&peer, room, "scribe", now).unwrap();
+    purge.check_run(&peer, room, now).unwrap();
+}
+
+/// An action is decided by its kind and the person's answers alone: an agent
+/// reads where reading is allowed, and an effect reaching outside the
+/// document (writing a file, say) asks first. An attended action (a chooser,
+/// a sign-in, a secret shown) asks every time: even "Always allow this"
+/// does not let the agent run it unasked, and Deny still refuses it.
+#[test]
+fn an_attended_action_asks_every_time_and_ordinary_kinds_follow_the_answers() {
+    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    let room = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+    let (mut peer, starter, key, now) = policy_fixture(room);
+    let requirement = approve_task(&starter);
+    let awaits = |requirement: &NativeTaskActionRequirement, peer: &StatePeer| {
+        requirement
+            .check_run(peer, room, now)
+            .err()
+            .is_some_and(|error| NativeTaskActionRequirement::awaits_confirmation(&error))
+    };
+
+    let mut read = requirement.clone();
+    read.need.kind = tilo_action_policy::ActionKind::Read;
+    read.check_run(&peer, room, now).unwrap();
+
+    let mut save = requirement.clone();
+    save.action = "save".into();
+    save.need.kind = tilo_action_policy::ActionKind::Outside;
+    assert!(awaits(&save, &peer), "an outside effect asks first");
+    save.confirmed = true;
+    save.check_run(&peer, room, now).unwrap();
+
+    let mut choose = requirement;
+    choose.action = "open-file".into();
+    choose.need.kind = tilo_action_policy::ActionKind::Read;
+    choose.consequential = true;
+    choose.attended = true;
+    let answer = |answer: Answer, peer: &mut StatePeer| {
+        peer.governance_mut()
+            .put_governed_grants(
+                &[agent_answers::grant(
+                    room,
+                    "scribe",
+                    (
+                        &AnswerScope::action("so.tilo.notes", "document", "open-file"),
+                        tilo_action_policy::ActionKind::Read,
+                    ),
+                    answer,
+                    Subject::person("governor"),
+                )],
+                &key,
+                now,
+            )
+            .unwrap();
+    };
+    answer(Answer::Allow, &mut peer);
+    assert!(awaits(&choose, &peer), "always allowing it still asks");
+    choose.confirmed = true;
+    choose.check_run(&peer, room, now).unwrap();
+    answer(Answer::Deny, &mut peer);
+    assert!(choose.check_run(&peer, room, now).is_err());
+    assert!(!awaits(&choose, &peer), "deny refuses outright");
 }
 
 /// A task a person starts runs on their behalf: an agent admitted with the
@@ -475,22 +492,20 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
         let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         let (mut peer, starter, key, now) =
             admitted_fixture(room, collab_types::Role::Editor, Some(preset));
-        let authority = WorkspaceTaskAuthority::Person { caller: starter };
-        let requirement = approve_task(&mut peer, &authority, now);
+        let requirement = approve_task(&starter);
         requirement
-            .check(&peer, room, "scribe", now)
+            .check_run(&peer, room, now)
             .unwrap_or_else(|error| panic!("{preset:?}: {error}"));
 
         // Outside effects still ask first by default.
         let mut outside = requirement.clone();
         outside.need.kind = tilo_action_policy::ActionKind::Outside;
-        let asks = outside.check(&peer, room, "scribe", now).unwrap_err();
+        let asks = outside.check_run(&peer, room, now).unwrap_err();
         assert!(
             NativeTaskActionRequirement::awaits_confirmation(&asks),
             "{asks}"
         );
 
-        // The person's Deny for the agent still refuses.
         peer.governance_mut()
             .put_governed_grants(
                 &[agent_answers::grant(
@@ -507,10 +522,9 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
                 now,
             )
             .unwrap();
-        let denied = requirement.check(&peer, room, "scribe", now).unwrap_err();
+        let denied = requirement.check_run(&peer, room, now).unwrap_err();
         assert!(denied.contains("not allowed"), "{denied}");
 
-        // On its own, outside any task, the agent keeps its preset's limits.
         let policy =
             tilo_desktop_model::projection::room_policy_of(peer.admitted_room().unwrap(), room);
         let own = tilo_action_policy::Authority::person(policy.party_of(Subject::agent("scribe")))
@@ -521,6 +535,101 @@ fn a_run_takes_its_starters_changes_whatever_preset_admitted_its_agent() {
             );
         assert_eq!(own.answer, Answer::Deny, "{preset:?}");
     }
+}
+
+/// A grant naming the issue decides for its runs as the agent's own do: an
+/// outside action the agent's delegation asks about runs once the issue is
+/// allowed it in that app, in that issue's runs alone.
+#[test]
+fn a_grant_naming_the_issue_lets_its_runs_act_without_asking() {
+    let room = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    let (mut peer, starter, key, now) = admitted_fixture(
+        room,
+        collab_types::Role::Editor,
+        Some(AgentPreset::Operator),
+    );
+    let notes = TreePath::room(room).app("so.tilo.notes");
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "starter-sends-notes",
+                Subject::person(hex::encode(starter.user_public_key)),
+                notes.clone(),
+                KindSet::OUTSIDE,
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    let mut outside = approve_task(&starter);
+    outside.need.kind = tilo_action_policy::ActionKind::Outside;
+    let asks = outside.check_run(&peer, room, now).unwrap_err();
+    assert!(asks.contains("agent's grants"), "{asks}");
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "issue-allows-notes",
+                Subject::task(ISSUE),
+                notes,
+                KindSet::OUTSIDE,
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    outside.check_run(&peer, room, now).unwrap();
+    let mut other = outside;
+    other.binding.task_id = "tasks.tracker/issues/2".into();
+    let asks = other.check_run(&peer, room, now).unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
+
+    // "Allow for this issue" answers the one action, so an action whose
+    // contract confirms runs unasked too, in that issue's runs alone.
+    let mut purge = approve_task(&starter);
+    purge.consequential = true;
+    let asks = purge.check_run(&peer, room, now).unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
+    peer.governance_mut()
+        .put_governed_grants(
+            &[tilo_action_policy::agent_answers::answer_grant(
+                room,
+                Subject::task(ISSUE),
+                (
+                    &tilo_action_policy::agent_answers::AnswerScope::action(
+                        "so.tilo.notes",
+                        "document",
+                        "append",
+                    ),
+                    tilo_action_policy::ActionKind::Undoable,
+                ),
+                Answer::Allow,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    purge.check_run(&peer, room, now).unwrap();
+    purge.binding.task_id = "tasks.tracker/issues/2".into();
+    let asks = purge.check_run(&peer, room, now).unwrap_err();
+    assert!(
+        NativeTaskActionRequirement::awaits_confirmation(&asks),
+        "{asks}"
+    );
 }
 
 /// The starter's own rights bound the run, whatever the agent was admitted
@@ -548,30 +657,17 @@ fn a_run_never_exceeds_a_starter_who_may_not_change_the_note() {
             now,
         )
         .unwrap();
-    let authority = WorkspaceTaskAuthority::Person { caller: starter };
-    let requirement = approve_task(&mut peer, &authority, now);
-    let refused = requirement.check(&peer, room, "scribe", now).unwrap_err();
+    let requirement = approve_task(&starter);
+    let refused = requirement.check_run(&peer, room, now).unwrap_err();
     assert!(refused.contains("starter"), "{refused}");
 
-    let (mut peer, commenter, _key, now) = admitted_fixture(
+    let (peer, commenter, _key, now) = admitted_fixture(
         room,
         collab_types::Role::Commenter,
         Some(AgentPreset::Operator),
     );
-    let refused = peer
-        .workspace_mut()
-        .apply_workspace_task_command(
-            uuid::Uuid::from_u128(1),
-            [1; 32],
-            &WorkspaceTaskAuthority::Person { caller: commenter },
-            &WorkspaceTaskCommand::QueueInstruction {
-                title: "Translate".into(),
-                instruction: "Translate this in place".into(),
-                assigned_agent: "scribe".into(),
-                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-            },
-            now,
-        )
+    let refused = approve_task(&commenter)
+        .check_run(&peer, room, now)
         .unwrap_err();
-    assert!(refused.contains("write authority"), "{refused}");
+    assert!(refused.contains("starter"), "{refused}");
 }

@@ -5,9 +5,7 @@
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
-use ui::text_render::FontChoice;
 use ui::tilo_resource::Invoke;
-use ui::widget::EditableLabel;
 use ui::widget::{ButtonRole, ControlSize};
 
 use super::icon_button;
@@ -16,51 +14,9 @@ use crate::model::Artwork;
 use crate::selection::{Combine, Select, UseSelection};
 use crate::tools::{Sheet, Tools, ViewRequest};
 
-/// The editable artwork title and its current zoom occupy an intrinsically
-/// measured header slot beside the individually measured commands.
-pub fn title(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -> Element {
-    let zoom_tools = tools.clone();
-    let zoom = cx.switch(compact, move |_, compact| {
-        if *compact {
-            Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element
-        } else {
-            zoom_readout(&zoom_tools)
-        }
-    });
-    // Finish editing the title as one resource action and undo step.
-    let titled = cx.value(|art: &Artwork| art.title.clone());
-    let title = cx.switch(&titled, |cx, title| {
-        Box::new(
-            cx.actions().bind(
-                EditableLabel::new(title)
-                    .edits_on_click()
-                    .with_placeholder(ui::i18n::I18nManager::lookup_plain("canvas-untitled"))
-                    .with_font_family(FontChoice::Serif)
-                    .with_text_role(TextRole::Heading)
-                    .with_id("canvas-title")
-                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                        "canvas-label-artwork-title",
-                    )),
-                Artwork::SET_TITLE,
-            ),
-        ) as Element
-    });
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_width()
-            .with_intrinsic_height()
-            .push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_align_items(ui::taffy::AlignItems::Center)
-                    .push(title)
-                    .push(zoom),
-            ))
-            .push(notice(cx, tools)),
-    )
-}
-
+/// The artwork's commands, as the window bar's slots (`bar::WindowBar`). The
+/// row they stood in — the title, the zoom readout, the notice under both —
+/// is the bar's now, so nothing of it is drawn here.
 /// Individual shared controls let the shell move each command into More
 /// without laying a wider private row beneath its inspector and History.
 pub fn header(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -> Vec<Element> {
@@ -112,24 +68,33 @@ pub fn header(cx: &ViewCx<Artwork>, tools: &Tools, compact: &LocalState<bool>) -
 pub(crate) fn add_picture(tools: &Tools, size: ControlSize) -> Element {
     let picking = tools.picking.clone();
     let name = ui::i18n::I18nManager::lookup_plain("canvas-add-picture");
-    let title = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-title");
-    let confirm = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-confirm");
-    let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
     Box::new(
         Button::icon_only("canvas-add-picture", Icon::Image, &name)
             .control_size(size)
             .on_view(move || {
-                let request = ui::portal::PickRequest::open(&title, &confirm)
-                    .filter(
-                        ui::portal::FileFilter::new(&kinds)
-                            .mimetype("image/png")
-                            .mimetype("image/jpeg")
-                            .mimetype("image/webp"),
-                    )
-                    .send_contents();
-                *picking.borrow_mut() = Some(request);
+                *picking.borrow_mut() = Some(pick_request());
             }),
     )
+}
+
+/// The chooser that places a picture on the artwork, as the window bar's slot
+/// and the header's button both ask for it.
+pub(crate) fn pick_picture(tools: &Tools) {
+    *tools.picking.borrow_mut() = Some(pick_request());
+}
+
+fn pick_request() -> ui::portal::ContentsChannel {
+    let title = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-title");
+    let confirm = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-confirm");
+    let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
+    ui::portal::PickRequest::open(&title, &confirm)
+        .filter(
+            ui::portal::FileFilter::new(&kinds)
+                .mimetype("image/png")
+                .mimetype("image/jpeg")
+                .mimetype("image/webp"),
+        )
+        .send_contents()
 }
 
 /// What of the artwork the strip over the canvas follows: whether there is
@@ -241,7 +206,8 @@ impl Command {
             id: id.to_owned(),
             bind: Box::new(move |button, cx| {
                 let dispatch = cx.dispatcher();
-                Box::new(button.on_effect(move || {
+                // The effect it hands on decides who may run it.
+                Box::new(button.on_own_device_effect(move || {
                     dispatch.effect(&crate::resource::ViewOp::FindArea { area: select() });
                 }))
             }),
@@ -688,29 +654,6 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
 
 /// What the last open, save or export came to, in a caption under the
 /// title: one line, cut short where it would crowd the header.
-fn notice(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
-    cx.switch(&tools.notice, |_, notice| {
-        let Some(said) = notice else {
-            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
-        };
-        let shown = if said.chars().count() > NOTICE_LETTERS {
-            let cut: String = said.chars().take(NOTICE_LETTERS - 1).collect();
-            format!("{}…", cut.trim_end())
-        } else {
-            said.clone()
-        };
-        Box::new(
-            Text::new(&shown)
-                .with_role(TextRole::Caption)
-                .dimmed()
-                .with_live(ui::a11y::Politeness::Polite),
-        )
-    })
-}
-
-/// The most letters of a notice shown beside the title.
-const NOTICE_LETTERS: usize = 44;
-
 /// A button opening one of the window's dialogs.
 fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
     let sheet = tools.sheet.clone();
@@ -783,24 +726,6 @@ fn menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
 pub(crate) const RECENT: &str = "recent:";
 /// How many recent artworks the menu offers.
 const MENU_RECENTS: usize = 5;
-
-/// Zoom out, how near the artwork is now, zoom in, and fit it to the
-/// window.
-fn zoom_readout(tools: &Tools) -> Element {
-    let zoom = tools.zoom.clone();
-    Box::new(
-        Text::dynamic(move || {
-            let percent = zoom.with(|zoom| zoom * 100.0);
-            if percent < 10.0 {
-                format!("{percent:.1}%")
-            } else {
-                format!("{percent:.0}%")
-            }
-        })
-        .with_role(TextRole::Caption)
-        .numeric(),
-    )
-}
 
 /// A button asking the canvas for a change of view: a view action, so an
 /// agent zooms the way a person does.

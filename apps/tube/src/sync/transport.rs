@@ -224,8 +224,6 @@ impl GrayjaySession {
         self.remote_version
     }
 
-    // -- handshake ---------------------------------------------------------
-
     /// Raw-socket version exchange that precedes the Noise handshake.
     fn version_check(stream: &mut Stream) -> SyncResult<i32> {
         stream
@@ -245,11 +243,6 @@ impl GrayjaySession {
     /// Connect as the Noise **initiator** to a peer whose static public key we
     /// already hold (from pairing). If `pairing_code` is set, its bytes travel
     /// encrypted inside a `Noise_N` sub-handshake in the first frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid peer metadata, a failed Noise handshake, or
-    /// a socket read/write failure.
     pub fn connect_initiator(
         stream: impl Into<Stream>,
         device: &DeviceKey,
@@ -457,8 +450,6 @@ impl GrayjaySession {
             device_name: device_name.to_string(),
         })
     }
-
-    // -- low level framing --------------------------------------------------
 
     /// Encrypt one plaintext frame and write `[len u32][ciphertext]`.
     fn write_encrypted(&mut self, plaintext: &[u8]) -> SyncResult<()> {
@@ -1227,10 +1218,11 @@ mod tests {
             // state-exchange with a known subscriptions package.
             let rkey = responder_key;
             let expect_initiator = initiator_pub;
+            let (frame_read, read_back) = std::sync::mpsc::channel::<()>();
             let handle = thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let mut session = GrayjaySession::accept_responder(
                     stream,
@@ -1243,7 +1235,6 @@ mod tests {
                 let deadline = tilo_test_env::hang_deadline();
                 session.complete_authorization(deadline).unwrap();
 
-                // Expect the state-exchange request.
                 let mut asked = false;
                 for _ in 0..8 {
                     if let Incoming::Data {
@@ -1276,14 +1267,14 @@ mod tests {
                 session
                     .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json)
                     .unwrap();
-                // keep the socket open briefly so the initiator can read the frame
-                thread::sleep(Duration::from_millis(200));
+                // Closing with unread input would reset the connection before
+                // the initiator read the frame: hold it until it has.
+                let _ = read_back.recv_timeout(tilo_test_env::hang_bound());
             });
 
-            // Initiator side.
             let stream = TcpStream::connect(addr).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut session = GrayjaySession::connect_initiator(
                 stream,
@@ -1300,7 +1291,6 @@ mod tests {
             let name = session.complete_authorization(deadline).unwrap();
             assert_eq!(name, "responder");
 
-            // Ask for state, then read the subscriptions package back.
             request_all_subscriptions(&mut session, &initiator_key);
 
             let mut urls = Vec::new();
@@ -1320,6 +1310,7 @@ mod tests {
                     break;
                 }
             }
+            drop(frame_read);
             handle.join().unwrap();
             assert_eq!(
                 urls,
@@ -1344,7 +1335,7 @@ mod tests {
             let handle = thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 // Responder only proceeds if the pairing code matches.
                 let mut session =
@@ -1358,7 +1349,7 @@ mod tests {
 
             let stream = TcpStream::connect(addr).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut session = GrayjaySession::connect_initiator(
                 stream,
@@ -1409,10 +1400,11 @@ mod tests {
             let rkey = responder_key;
             let expect_initiator = initiator_pub;
             let json_for_thread = json;
+            let (frame_read, read_back) = std::sync::mpsc::channel::<()>();
             let handle = thread::spawn(move || {
                 let (stream, _) = listener.accept().unwrap();
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .set_read_timeout(Some(tilo_test_env::hang_bound()))
                     .unwrap();
                 let mut session =
                     GrayjaySession::accept_responder(stream, &rkey, "responder", |peer, _code| {
@@ -1424,12 +1416,13 @@ mod tests {
                 session
                     .send_data(sync_opcode::SYNC_SUBSCRIPTIONS, &json_for_thread)
                     .unwrap();
-                thread::sleep(Duration::from_millis(300));
+                // Held until the initiator read the stream, as above.
+                let _ = read_back.recv_timeout(tilo_test_env::hang_bound());
             });
 
             let stream = TcpStream::connect(addr).unwrap();
             stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             let mut session = GrayjaySession::connect_initiator(
                 stream,
@@ -1456,6 +1449,7 @@ mod tests {
                     break;
                 }
             }
+            drop(frame_read);
             handle.join().unwrap();
             assert_eq!(got, expected_len);
         }
@@ -1487,7 +1481,6 @@ mod tests {
             let b = GrayjaySyncTransport::parse_blob(&wrapped).unwrap();
             assert_eq!(a, b);
         }
-        // Case `pairing_metadata_is_bounded_before_network_or_persistence`.
         {
             assert!(
                 GrayjaySyncTransport::parse_blob(&"x".repeat(MAX_PAIRING_BLOB_BYTES + 1)).is_err()
@@ -1501,7 +1494,6 @@ mod tests {
             .unwrap();
             assert!(GrayjaySyncTransport::parse_blob(&too_many_addresses).is_err());
         }
-        // Case `gzip_expansion_is_bounded`.
         {
             let compressed = gzip_compress(&vec![0; MAX_SYNC_PAYLOAD_BYTES + 1]).unwrap();
             let error = gzip_decompress(&compressed).unwrap_err();

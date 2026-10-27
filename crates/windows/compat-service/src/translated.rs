@@ -825,7 +825,6 @@ mod tests {
 
     #[test]
     fn translated_launches_replace_inherited_overrides_and_allow_listed_modes() {
-        // Phase `native_dxvk_overrides_apply_only_to_managed_wine_applications`.
         {
             for mode in [WineMode::Win32, WineMode::Win64] {
                 let mut boot = Command::new("/bin/true");
@@ -865,7 +864,6 @@ mod tests {
             GuestEnvironment::Unchanged.apply(&mut proton);
             assert_eq!(proton.get_envs().count(), 0);
         }
-        // Phase `inherited_socket_and_rootfs_overrides_are_replaced`.
         {
             let mut child = Command::new("/usr/bin/env");
             child
@@ -900,7 +898,6 @@ mod tests {
             );
             assert!(!environment.contains("/attacker/"));
         }
-        // Phase `command_mode_is_required_and_allow_listed`.
         {
             for arguments in [
                 vec![],
@@ -913,7 +910,6 @@ mod tests {
                 );
             }
         }
-        // Phase `guest_status_preserves_exit_codes_and_signals`.
         {
             assert_eq!(exit_code(ExitStatus::from_raw(23 << 8)), 23);
             assert_eq!(
@@ -924,20 +920,21 @@ mod tests {
     }
 
     fn sleeping_server() -> ManagedChild {
-        ManagedChild::new(Command::new("/bin/sleep").arg("5").spawn().unwrap(), false)
+        ManagedChild::new(
+            Command::new("/bin/sleep").arg("3600").spawn().unwrap(),
+            false,
+        )
     }
 
     #[test]
     fn translated_readiness_requires_a_bounded_clean_eof_from_a_live_server() {
-        // Phase `readiness_requires_eof_from_a_live_server`.
         {
             let (read, write) = readiness_pipe().unwrap();
             let mut server = sleeping_server();
             drop(write);
-            wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap();
+            wait_for_ready(&read, &mut server.child, tilo_test_env::hang_bound()).unwrap();
             assert!(server.child.try_wait().unwrap().is_none());
         }
-        // Phase `readiness_is_bounded_when_server_keeps_pipe_open`.
         {
             let (read, _write) = readiness_pipe().unwrap();
             let mut server = sleeping_server();
@@ -945,22 +942,21 @@ mod tests {
                 wait_for_ready(&read, &mut server.child, Duration::from_millis(10)).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         }
-        // Phase `unexpected_readiness_bytes_are_rejected`.
         {
             let (read, write) = readiness_pipe().unwrap();
             File::from(write).write_all(b"unexpected").unwrap();
             let mut server = sleeping_server();
             let error =
-                wait_for_ready(&read, &mut server.child, Duration::from_millis(200)).unwrap_err();
+                wait_for_ready(&read, &mut server.child, tilo_test_env::hang_bound()).unwrap_err();
             assert!(error.to_string().contains("invalid FEXServer readiness"));
         }
-        // Phase `server_exit_is_not_readiness`.
         {
             let (read, write) = readiness_pipe().unwrap();
             drop(write);
             let mut server = Command::new("/bin/true").spawn().unwrap();
             server.wait().unwrap();
-            let error = wait_for_ready(&read, &mut server, Duration::from_millis(200)).unwrap_err();
+            let error =
+                wait_for_ready(&read, &mut server, tilo_test_env::hang_bound()).unwrap_err();
             assert!(error.to_string().contains("before readiness"));
         }
     }

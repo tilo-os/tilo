@@ -72,7 +72,6 @@ pub type LaunchId = [u8; 16];
 /// Which synced environment record a session was opened from.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentRecordRef {
-    /// Workspace the record lives in.
     pub workspace_id: u64,
     /// The record's id within that workspace.
     pub record_id: String,
@@ -140,7 +139,6 @@ pub struct DirectoryGrant {
 pub struct EnvironmentSpec {
     /// Display name.
     pub name: String,
-    /// The `env-runtime` release and its images.
     pub runtime: RuntimeImages,
     /// Tools built for that release, in the record's order (topmost
     /// last). A tool may lack an image for some architecture; a node of
@@ -148,7 +146,6 @@ pub struct EnvironmentSpec {
     pub tools: Vec<ToolImage>,
     /// Directories granted into the guest.
     pub grants: Vec<DirectoryGrant>,
-    /// Whether the home is kept.
     pub home: HomePolicy,
 }
 
@@ -157,7 +154,6 @@ pub struct EnvironmentSpec {
 pub struct PtySize {
     /// Columns.
     pub cols: u16,
-    /// Rows.
     pub rows: u16,
 }
 
@@ -174,7 +170,6 @@ impl PtySize {
 pub enum SessionRequest {
     /// Start a new session from an environment record.
     Open {
-        /// The record the session belongs to.
         record: EnvironmentRecordRef,
         /// The record's resolved contents.
         spec: EnvironmentSpec,
@@ -185,7 +180,6 @@ pub enum SessionRequest {
     },
     /// Re-attach to a running session, replaying its scrollback.
     Attach {
-        /// The session to re-attach to.
         session: SessionId,
         /// The re-attaching terminal's size.
         size: PtySize,
@@ -264,7 +258,6 @@ pub enum StreamOpen {
     LegacyLaunch {
         /// [`ENVIRONMENT_PROTOCOL_VERSION`].
         version: u16,
-        /// Workspace the session runs in.
         workspace_id: u64,
         /// The session that asked.
         session: SessionId,
@@ -279,7 +272,6 @@ pub enum StreamOpen {
     ComputeContent {
         /// [`ENVIRONMENT_PROTOCOL_VERSION`].
         version: u16,
-        /// Workspace the job runs in.
         workspace_id: u64,
         /// The job naming the digest.
         job_id: [u8; 16],
@@ -294,7 +286,6 @@ pub enum StreamOpen {
     ComputeContentProof {
         /// [`ENVIRONMENT_PROTOCOL_VERSION`].
         version: u16,
-        /// Workspace the job runs in.
         workspace_id: u64,
         /// The job naming the digest as an input.
         job_id: [u8; 16],
@@ -348,7 +339,6 @@ pub enum ContentReply {
 /// Member → worker, after the session opened.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientFrame {
-    /// Bytes typed into the terminal.
     Input(#[serde(with = "serde_bytes")] Vec<u8>),
     /// The terminal was resized.
     Resize(PtySize),
@@ -395,7 +385,6 @@ pub enum QuotaKind {
 pub enum ServerFrame {
     /// The session is running and this stream is attached to it.
     Opened {
-        /// The session's id, for re-attachment.
         session: SessionId,
         /// Whether this re-attached to an existing session.
         resumed: bool,
@@ -403,7 +392,6 @@ pub enum ServerFrame {
         #[serde(with = "serde_bytes")]
         scrollback: Vec<u8>,
     },
-    /// Guest output.
     Output(#[serde(with = "serde_bytes")] Vec<u8>),
     /// The guest ended; the session is gone.
     Exited {
@@ -424,7 +412,6 @@ pub enum ServerFrame {
     /// record had no image of this tool for that architecture. The member's
     /// device records it.
     ToolBuilt {
-        /// The environment the tool was built for.
         record: EnvironmentRecordRef,
         /// The tool, with the image built here.
         tool: ToolImage,
@@ -447,7 +434,6 @@ pub enum WorkerStreamOpen {
     Environment {
         /// [`ENVIRONMENT_PROTOCOL_VERSION`].
         version: u16,
-        /// Workspace that admitted the member.
         workspace_id: u64,
         /// The certified member.
         member: MemberIdentity,
@@ -461,7 +447,6 @@ pub enum WorkerStreamOpen {
     Legacy {
         /// [`ENVIRONMENT_PROTOCOL_VERSION`].
         version: u16,
-        /// Workspace that admitted the member.
         workspace_id: u64,
         /// The member the app runs for.
         member: MemberIdentity,
@@ -509,7 +494,6 @@ pub enum WorkerStreamOpen {
 /// Which guest OS a legacy app needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum LegacyGuestOs {
-    /// The Linux legacy VM.
     Linux,
     /// The Windows legacy VM.
     Windows,
@@ -518,7 +502,6 @@ pub enum LegacyGuestOs {
 /// A legacy app launch, as the environment's broker asked for it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LegacyLaunch {
-    /// The guest OS.
     pub guest: LegacyGuestOs,
     /// The app (shim name or installed id).
     pub app: String,
@@ -594,7 +577,6 @@ pub struct LegacyUsage {
 pub enum WindowFrame {
     /// A launch from one of the member's relay environments started.
     Launched {
-        /// The launch.
         launch: LaunchId,
         /// The session it was launched from.
         session: SessionId,
@@ -603,7 +585,6 @@ pub enum WindowFrame {
     },
     /// One encoded [`crate::legacy_window::Frame`] of the launch's windows.
     Window {
-        /// The launch.
         launch: LaunchId,
         /// The encoded frame.
         #[serde(with = "serde_bytes")]
@@ -611,7 +592,6 @@ pub enum WindowFrame {
     },
     /// The launch ended.
     Exited {
-        /// The launch.
         launch: LaunchId,
         /// Exit code, when reported.
         code: Option<i32>,
@@ -624,7 +604,6 @@ pub enum WindowFrame {
 /// Member → relay (→ KVM worker): input for one legacy window.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WindowInput {
-    /// The launch whose window it is.
     pub launch: LaunchId,
     /// The window's surface within that launch.
     pub surface: u64,

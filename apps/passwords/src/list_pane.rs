@@ -66,7 +66,7 @@ impl ListPane {
     fn list(&self, rows: Rows, filter: VaultFilter) -> VirtualList<Rows> {
         let requests = Rc::clone(&self.requests);
         let activate = Rc::clone(&self.requests);
-        VirtualList::with_selection_delegate(rows, 64.0, move |rows, index, id, _, _| {
+        VirtualList::with_selection_delegate(rows, 64.0, move |rows, index, id, _| {
             let Some(row) = rows.item(index) else {
                 return Box::new(ListRow::new(format!("passwords.item:{id}"), ""));
             };
@@ -105,6 +105,11 @@ impl ListPane {
     }
 
     fn empty(&self, core: &Core) -> EmptyState {
+        if core.opening {
+            return EmptyState::new("Opening your vault")
+                .with_icon(Icon::Shield)
+                .busy();
+        }
         let vault_empty = core.items.is_empty();
         let title = if vault_empty {
             "Your vault is empty"
@@ -121,11 +126,7 @@ impl ListPane {
         if !vault_empty {
             return empty;
         }
-        let requests = Rc::clone(&self.requests);
-        empty
-            .with_action("New item")
-            .with_action_id("passwords.empty.new")
-            .on_effect(move || requests.borrow_mut().push(Request::NewItem))
+        vault_empty_state(&self.requests)
     }
 
     /// Rebuild what the core changed: the rows of a new revision, a fresh
@@ -222,4 +223,20 @@ impl ui::widget::Decorator for ListPane {
     fn name(&self) -> &'static str {
         "PasswordsList"
     }
+}
+
+/// What an empty vault shows, across the whole window
+/// ([`ui::widget::NavShell::nothing_listed`]) or in the list: what the vault
+/// keeps, and New item.
+pub(crate) fn vault_empty_state(requests: &Requests) -> EmptyState {
+    let requests = Rc::clone(requests);
+    EmptyState::new("Your vault is empty")
+        .with_icon(Icon::Shield)
+        .with_message(
+            "Logins, secure notes, Wi-Fi passwords and API keys you save are encrypted and \
+             kept here.",
+        )
+        .with_action("New item")
+        .with_action_id("passwords.empty.new")
+        .on_own_device_effect(move || requests.borrow_mut().push(Request::NewItem))
 }

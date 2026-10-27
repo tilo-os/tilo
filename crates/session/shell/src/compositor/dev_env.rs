@@ -177,7 +177,6 @@ mod tests {
             DEV_OVERRIDES_RELEASE_BUILD,
             !cfg!(debug_assertions) && cfg!(feature = "dev-overrides")
         );
-        // Phase `ignored_vars_are_reported_only_when_the_gate_is_closed`.
         {
             let env = |name: &str| match name {
                 "TILO_TEST_CONTROL" => Some("/run/user/1000/ctl.sock".into()),

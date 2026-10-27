@@ -10,11 +10,15 @@
 #                       the Typst editor's fonts), with sizes and hashes
 #   build.json          revision, tools, profile and output hashes
 #
-# usage: build.sh OUTPUT_DIR [--profile release|dev|quick] [--[no-]wasm-opt]
+# usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt]
 #                 [--bundle runtime|desktop] [--no-split] [--update]
+#                 [--wasm-only | --wasm-from WASM_DIR]
 # `--profile release` compiles with Cargo's `wasm-release` profile and runs
 # wasm-opt (binaryen) unless `--no-wasm-opt`; `dev` skips it unless `--wasm-opt`.
-# `quick` is the development loop's: Cargo's `wasm-dev` profile (no debug
+# `assert` is release optimisation with the assertions and overflow checks a
+# dev build keeps (`wasm-assert`): qualification and performance measurement
+# run on it, so a faster bundle is never one that stopped checking. `quick`
+# is the development loop's: Cargo's `wasm-dev` profile (no debug
 # information, light optimisation), whose much smaller module wasm-bindgen
 # and the splitter get through in half the time, and no wasm-opt.
 # `--bundle desktop` builds crates/browser/tilo-web-desktop instead: the same
@@ -29,13 +33,19 @@
 # copied again, and fonts, data, the compute module and the MoQ library are
 # kept. A loop that edits only web/*.mjs takes seconds; one that edits Rust,
 # the compile, wasm-bindgen and, unless `--no-split`, the split.
+# `--wasm-only` builds only what Cargo compiles (pkg/ with the compute module,
+# data/ and apps.json) and records how in wasm.json; it reads no git
+# metadata, so a build cache can key it by its sources alone. `--wasm-from`
+# assembles the bundle around such a directory instead of compiling: the
+# pages, locales, fonts and MoQ library from this tree, and build.json for
+# this tree's revision. A change to the pages alone then compiles nothing.
 # Needs the wasm32-unknown-unknown target and a wasm-bindgen CLI matching the
 # crate's pinned wasm-bindgen.
 set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop] [--no-split] [--update]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR]'
 out=${1:?$usage}
 shift
 profile=release
@@ -43,6 +53,8 @@ optimize=
 bundle=runtime
 split=1
 update=0
+wasm_only=0
+wasm_from=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) profile=${2:?--profile needs a value}; shift 2 ;;
@@ -51,18 +63,26 @@ while [[ $# -gt 0 ]]; do
     --bundle) bundle=${2:?--bundle needs a value}; shift 2 ;;
     --no-split) split=0; shift ;;
     --update) update=1; shift ;;
+    --wasm-only) wasm_only=1; shift ;;
+    --wasm-from) wasm_from=${2:?--wasm-from needs a directory}; shift 2 ;;
     *) echo "unknown argument: $1" >&2; echo "$usage" >&2; exit 2 ;;
   esac
 done
 case "$profile" in
   release) cargo_profile=wasm-release artifact=wasm-release optimize=${optimize:-1} ;;
+  assert) cargo_profile=wasm-assert artifact=wasm-assert optimize=${optimize:-1} ;;
   dev) cargo_profile=dev artifact=debug optimize=${optimize:-0} ;;
   quick) cargo_profile=wasm-dev artifact=wasm-dev optimize=${optimize:-0} ;;
   *) echo "unsupported profile: $profile" >&2; exit 2 ;;
 esac
-# A release bundle is always built whole from source and split: what ships.
-[[ $profile != release || ( $split == 1 && $update == 0 ) ]] || {
+# A release or qualification bundle is always built whole from source and
+# split: what ships, and what is measured.
+[[ $profile != release && $profile != assert || ( $split == 1 && $update == 0 ) ]] || {
   echo '--no-split and --update are for dev and quick bundles' >&2; exit 2;
+}
+[[ $wasm_only == 0 || -z $wasm_from ]] || { echo '--wasm-only and --wasm-from exclude each other' >&2; exit 2; }
+[[ $update == 0 || ( $wasm_only == 0 && -z $wasm_from ) ]] || {
+  echo '--update builds whole bundles; not with --wasm-only or --wasm-from' >&2; exit 2;
 }
 case "$bundle" in
   runtime) package=tilo-browser-runtime ;;
@@ -70,10 +90,14 @@ case "$bundle" in
   *) echo "unsupported bundle: $bundle" >&2; exit 2 ;;
 esac
 # The splitter reads the linked module's symbol table, which `wasm-release`
-# strips; `wasm-split` is that profile with the table kept.
+# and `wasm-assert` strip; `wasm-split` and `wasm-assert-split` are those
+# profiles with the table kept.
 bindgen_flags=()
 if [[ $bundle == desktop ]]; then
-  [[ $profile == release ]] && cargo_profile=wasm-split artifact=wasm-split
+  case $profile in
+    release) cargo_profile=wasm-split artifact=wasm-split ;;
+    assert) cargo_profile=wasm-assert-split artifact=wasm-assert-split ;;
+  esac
   bindgen_flags=(--keep-lld-exports --no-demangle)
 fi
 [[ "$out" == /* ]] || { echo 'OUTPUT_DIR must be absolute' >&2; exit 2; }
@@ -98,19 +122,26 @@ if [[ "${TILO_USE_ZIG:-0}" == 1 ]]; then
   export AR_wasm32_unknown_unknown="$repo/crates/hosting/tilo-relay/scripts/wasm-ar.sh"
 fi
 bindgen=${WASM_BINDGEN:-wasm-bindgen}
-pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$crate/Cargo.toml")
-[[ "$("$bindgen" --version)" == "wasm-bindgen $pinned" ]] || {
-  echo "wasm-bindgen CLI must be $pinned to match the crate" >&2; exit 2;
-}
-# A development bundle may be built from a tree without its git metadata (a
-# build container's synced copy); it records an unknown revision. A release
-# bundle names the commit it was built from.
-if [[ $profile != release ]] && ! git rev-parse HEAD >/dev/null 2>&1; then
-  git() { [[ $1 == rev-parse ]] && echo unknown; return 0; }
+if [[ -z $wasm_from ]]; then
+  pinned=$(sed -n 's/^wasm-bindgen = "=\(.*\)"$/\1/p' "$crate/Cargo.toml")
+  [[ "$("$bindgen" --version)" == "wasm-bindgen $pinned" ]] || {
+    echo "wasm-bindgen CLI must be $pinned to match the crate" >&2; exit 2;
+  }
 fi
-revision=$(git rev-parse HEAD)
-source_status=$(git status --porcelain)
+if [[ $wasm_only == 0 ]]; then
+  # A development bundle may be built from a tree without its git metadata (a
+  # build container's synced copy); it records an unknown revision. A release
+  # bundle names the commit it was built from.
+  if [[ $profile != release && $profile != assert ]] && ! git rev-parse HEAD >/dev/null 2>&1; then
+    git() { [[ $1 == rev-parse ]] && echo unknown; return 0; }
+  fi
+  revision=$(git rev-parse HEAD)
+  source_status=$(git status --porcelain)
+fi
 
+# What Cargo compiles: pkg/ (the runtime's module, split for the desktop, and
+# the compute module), data/ and apps.json, and the tools that made them.
+build_wasm() {
 if [[ $bundle == desktop ]]; then
   python3 tools/web/generate_web_desktop.py --check
 fi
@@ -118,7 +149,7 @@ cargo build --locked -p "$package" --lib --target wasm32-unknown-unknown --profi
 # Read Cargo's artifact location; never redirect it.
 target_dir=$(cargo metadata --format-version 1 --no-deps --offline |
   python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-mkdir -p "$out/pkg" "$out/fonts"
+mkdir -p "$out/pkg"
 linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
 # The linked module this pkg/ was made from, and how; empty when there is
 # no module to read (a wasm-bindgen that makes its output itself), so
@@ -142,8 +173,9 @@ else
     bash "$repo/tools/web/wasm-split/split.sh" --unsplit "$next"
   fi
   if [[ -d "$out/pkg/compute" ]]; then mv "$out/pkg/compute" "$next/compute"; fi
-  # A release bundle ships exactly what it was built from; no stamp.
-  if [[ $profile != release && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
+  # A release or qualification bundle ships exactly what it was built from; no
+  # stamp.
+  if [[ $profile != release && $profile != assert && -n "$made_from" ]]; then printf '%s\n' "$made_from" > "$next/.made-from"; fi
   rm -rf "$out/pkg"
   mv "$next" "$out/pkg"
 fi
@@ -153,8 +185,12 @@ fi
 if [[ $bundle == desktop ]] && ! kept data/typst; then
   # The Typst editor's fonts, which only native builds embed; the editor asks
   # for them by name when it opens (crates/platform/tilo-typst-fonts).
-  typst_assets=$(cargo metadata --format-version 1 --locked --offline --filter-platform wasm32-unknown-unknown |
-    python3 -c 'import json,os,sys; print(next(os.path.dirname(p["manifest_path"]) for p in json.load(sys.stdin)["packages"] if p["name"]=="typst-assets"))')
+  # The sources the build above compiled typst-assets from, as its dep-info
+  # names them. Not `cargo metadata`: that reads every package the lockfile
+  # names, for every platform, so offline it fails on any the build never
+  # fetched.
+  typst_assets=$(python3 "$repo/tools/web/crate_source.py" typst-assets \
+    "$target_dir/wasm32-unknown-unknown/$artifact" "$repo/Cargo.lock")
   mkdir -p "$out/data/typst"
   cp "$typst_assets"/files/fonts/*.otf "$typst_assets"/files/fonts/*.ttf "$out/data/typst/"
   cp "$typst_assets/NOTICE" "$out/data/typst/NOTICE.txt"
@@ -183,8 +219,53 @@ compute_opt=--no-wasm-opt
 compute_profile=$profile
 [[ $profile == quick ]] && compute_profile=dev
 if ! kept pkg/compute; then
-  bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$compute_profile" "$compute_opt"
+  bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --profile "$compute_profile" "$compute_opt" --module-only
 fi
+rustc_version=$(rustc --version)
+bindgen_version=$("$bindgen" --version)
+wasm_opt_version=
+if [[ $optimize == 1 ]]; then wasm_opt_version=$(wasm-opt --version); fi
+}
+
+if [[ -z $wasm_from ]]; then
+  build_wasm
+else
+  wasm_from=$(cd "$wasm_from" && pwd)
+  # How the module was built, which build.json records, and that it is the
+  # bundle and profile asked for.
+  read_wasm=$(python3 - "$wasm_from/wasm.json" "$bundle" "$profile" <<'PY'
+import json, shlex, sys
+w = json.load(open(sys.argv[1]))
+if (w['bundle'], w['profile']) != (sys.argv[2], sys.argv[3]):
+    sys.exit(f"--wasm-from: {sys.argv[1]} is a {w['profile']} {w['bundle']} module, not {sys.argv[3]} {sys.argv[2]}")
+for name, key in [('rustc_version', 'rustc'), ('bindgen_version', 'wasmBindgen'), ('cargo_profile', 'cargoProfile'),
+                  ('wasm_opt_version', 'wasmOptVersion'), ('wasm_opt_flags', 'wasmOptFlags')]:
+    print(f'{name}={shlex.quote(w.get(key, ""))}')
+print(f"optimize={1 if w['wasmOpt'] else 0}")
+PY
+  ) || exit 2
+  eval "$read_wasm"
+  mkdir -p "$out"
+  cp -R "$wasm_from/pkg" "$out/pkg"
+  [[ ! -d $wasm_from/data ]] || cp -R "$wasm_from/data" "$out/data"
+  [[ ! -f $wasm_from/apps.json ]] || cp "$wasm_from/apps.json" "$out/apps.json"
+fi
+if [[ $wasm_only == 1 ]]; then
+  python3 - "$out/wasm.json" "$bundle" "$profile" "$cargo_profile" "$rustc_version" "$bindgen_version" "$optimize" \
+    "$wasm_opt_version" "$wasm_opt_flags" <<'PY'
+import json, sys
+path, bundle, profile, cargo_profile, rustc, bindgen, optimize, opt_version, opt_flags = sys.argv[1:]
+wasm = dict(bundle=bundle, profile=profile, cargoProfile=cargo_profile, rustc=rustc, wasmBindgen=bindgen,
+            wasmOpt=optimize == '1')
+if wasm['wasmOpt']:
+    wasm.update(wasmOptVersion=opt_version, wasmOptFlags=opt_flags)
+open(path, 'w').write(json.dumps(wasm, indent=2) + '\n')
+PY
+  echo "wasm: $out ($profile $bundle)"
+  exit 0
+fi
+bash "$repo/crates/browser/tilo-browser-compute/scripts/build.sh" "$out" --assets-only
+mkdir -p "$out/fonts"
 moq_kept=0
 kept media-moq-library.mjs && moq_kept=1
 find "$crate/web" -maxdepth 1 -name '*.mjs' ! -name '*.test.mjs' ! -name media-moq-library.mjs -exec cp {} "$out/" \;
@@ -246,9 +327,7 @@ fi
 [[ "$(git rev-parse HEAD)" == "$revision" && "$(git status --porcelain)" == "$source_status" ]] || {
   echo 'Source changed during build; discard output' >&2; exit 1;
 }
-wasm_opt_version=
-[[ $optimize == 1 ]] && wasm_opt_version=$(wasm-opt --version)
-python3 - "$out" "$revision" "$source_status" "$profile" "$(rustc --version)" "$("$bindgen" --version)" "$optimize" \
+python3 - "$out" "$revision" "$source_status" "$profile" "$rustc_version" "$bindgen_version" "$optimize" \
   "$cargo_profile" "$bundle" "$wasm_opt_version" "$wasm_opt_flags" <<'PY'
 import hashlib, json, pathlib, sys
 out = pathlib.Path(sys.argv[1])

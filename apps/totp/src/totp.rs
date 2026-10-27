@@ -134,6 +134,25 @@ pub fn current_code(account: &Account) -> String {
     code_at(account, unix_now())
 }
 
+/// Why this device's clock may generate codes every server rejects, when it
+/// What to tell a person whose codes are being rejected, when the machine says
+/// its clock is not synchronised. The question is the platform's: a device whose
+/// clock is minutes out produces codes nothing accepts, and nothing in an
+/// authenticator can tell. `None` when the clock is synchronised, and when the
+/// platform cannot say either way: a warning nobody can act on is noise.
+pub fn clock_drift_warning() -> Option<&'static str> {
+    if cfg!(test) || ui::time::wall_frozen() {
+        return None;
+    }
+    match ui::time::is_synchronised() {
+        Some(false) => Some(
+            "This device\u{2019}s clock is not synchronised; codes may be rejected. \
+             Turn on automatic time, then try again.",
+        ),
+        Some(true) | None => None,
+    }
+}
+
 /// Group a code for readability: 6 digits → "123 456", 8 → "1234 5678",
 /// otherwise split in the middle. Masked placeholder strings pass
 /// through grouped the same way.
@@ -207,7 +226,6 @@ mod tests {
             assert_eq!(code_at(&a, 2_000_000_000.0), "69279037");
         }
 
-        // Case `code_is_stable_within_a_period_and_rotates_after`.
         {
             let a = acc("JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30);
             // 100s and 119s both fall in the [90, 120) step (counter 3), so the
@@ -218,7 +236,6 @@ mod tests {
             assert_ne!(code_at(&a, 100.0), code_at(&a, 130.0));
         }
 
-        // Case `progress_and_remaining_track_the_clock`.
         {
             let a = acc("JBSWY3DPEHPK3PXP", Algorithm::Sha1, 6, 30);
             // Exactly at a step boundary: full period remaining.
@@ -263,13 +280,11 @@ mod tests {
             }
         }
 
-        // Case `invalid_secret_yields_masked_placeholder`.
         {
             let a = acc("not valid base32 !!!", Algorithm::Sha1, 6, 30);
             assert_eq!(code_at(&a, 0.0), "••••••");
         }
 
-        // Case `group_code_inserts_a_thin_space`.
         {
             assert_eq!(
                 group_code("123456")

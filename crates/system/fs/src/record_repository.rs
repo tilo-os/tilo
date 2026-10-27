@@ -109,7 +109,6 @@ struct StoredRecord {
     pending_restore: Option<Uuid>,
     replica: RecordReplica,
     envelopes: Vec<RecordEnvelopeV1>,
-    /// The log position of each envelope, or [`PENDING`].
     positions: Vec<u64>,
     /// Envelopes not yet in the log.
     pending: usize,
@@ -801,11 +800,6 @@ impl RecordRepository {
     /// Open a changeset scope on this thread: `actor`'s envelopes applied
     /// from this thread are kept in memory (visible to the local publisher
     /// only) until [`Self::commit_changeset`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if another thread has a scope open, or the state
-    /// lock is poisoned.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the scope lock covers checking and installing the scope"
@@ -846,10 +840,6 @@ impl RecordRepository {
     /// it in one durable transaction. Returns `None` when the scope wrote
     /// nothing. On failure the envelopes stay pending, hidden from peers,
     /// and the next scope of the same actor carries them.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when signing or the log write fails.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the records lock spans signing and the durable write, so nothing changes the batch meanwhile"
@@ -924,11 +914,6 @@ impl RecordRepository {
 
     /// Seed admission fences before exposing a reopened repository to writers.
     /// Caller retains J; this method only acquires R. No second durable owner.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the record state is poisoned, a prepared
-    /// participant record is missing, or it is fenced by another transaction.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "all admission fences are seeded under one R lease"
@@ -1073,11 +1058,6 @@ impl RecordRepository {
     }
 
     /// Open the repository at `root` and replay its operation log.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for I/O, a damaged log, or any repository bound
-    /// violation.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, RecordRepositoryError> {
         let root = root.into();
         std::fs::create_dir_all(&root)?;
@@ -1199,11 +1179,6 @@ impl RecordRepository {
     /// Apply an already-signed envelope through the supplied live authorizer,
     /// persist the candidate state, then publish it in memory. If validation,
     /// authorization or persistence fails, the live repository is unchanged.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when validation, authorization, capacity, locking, or
-    /// durable persistence fails.
     pub fn apply<A: RecordAuthorizer + ?Sized>(
         &self,
         key: RecordRepositoryKey,
@@ -1285,11 +1260,6 @@ impl RecordRepository {
     ///
     /// Inside this thread's changeset scope, the local author's batch is
     /// accepted in memory and written when the changeset commits.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid batch/key/workspace data, authorization or
-    /// replication rejection, capacity limits, poisoned state, or persistence.
     pub fn apply_batch<A: RecordAuthorizer + ?Sized>(
         &self,
         key: RecordRepositoryKey,
@@ -1384,12 +1354,6 @@ impl RecordRepository {
     /// durable transaction, or none of them. `envelopes` must be exactly
     /// the envelopes its leaves name; ones this device already holds (the
     /// same bytes) are skipped.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid signature or root, envelopes that do
-    /// not match the leaves, another changeset under the same id, a
-    /// divergent stream, any replication rejection, or a failed write.
     #[allow(
         clippy::too_many_lines,
         clippy::significant_drop_tightening,
@@ -1520,11 +1484,6 @@ impl RecordRepository {
     }
 
     /// The envelopes one leaf of a durable changeset names.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for poisoned state, or when this device does not
-    /// hold every envelope the leaf names.
     pub fn changeset_leaf_envelopes(
         &self,
         changeset: &SignedChangesetV1,
@@ -1560,10 +1519,6 @@ impl RecordRepository {
     /// What a peer that holds each stream up to `after_sequence` is missing,
     /// as whole changesets and runs of envelopes outside any changeset, in
     /// the order they entered this device's log.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for poisoned state.
     pub fn pull_units(
         &self,
         workspace_id: Uuid,
@@ -1641,10 +1596,6 @@ impl RecordRepository {
 
     /// Inspect the exact participant set without projecting a partial commit.
     /// Differing signed manifests under one transaction ID fail closed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for poisoned state or inconsistent signed manifests.
     #[cfg(test)]
     #[allow(
         clippy::significant_drop_tightening,
@@ -1696,11 +1647,6 @@ impl RecordRepository {
     /// log transaction. Memory is published only after they are durable. A
     /// crash after the journal write leaves an invisible prepared record
     /// which exact retry completes from the journal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid transaction/journal state, failed
-    /// preconditions, authorization/capacity failure, or persistence I/O.
     pub fn apply_transaction<A: RecordAuthorizer + ?Sized>(
         &self,
         journal: &mut RecordTransactionJournal,
@@ -1735,11 +1681,6 @@ impl RecordRepository {
     /// Bounded per-record, per-actor inventory for workspace record-mesh
     /// anti-entropy. Callers must perform workspace-root read authorization
     /// before invoking this method.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid page limit, poisoned state, or envelope
-    /// encoding failure while computing a prefix digest.
     pub fn inventory_page(
         &self,
         workspace_id: Uuid,
@@ -1763,11 +1704,6 @@ impl RecordRepository {
     /// `[lower, upper)` (unbounded where `None`), optionally only streams
     /// whose actor is `person`, in stream-key order. This is the item set of
     /// range-based reconciliation; callers authorise the requester first.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for poisoned state or envelope encoding failure
-    /// while computing a prefix digest.
     pub fn stream_cursors_in(
         &self,
         workspace_id: Uuid,
@@ -1817,11 +1753,6 @@ impl RecordRepository {
     }
 
     /// Return a bounded contiguous durable suffix for one actor stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid bounds, poisoned state, unknown record, or
-    /// a cursor ahead of durable state.
     pub fn envelopes_after(
         &self,
         key: RecordRepositoryKey,
@@ -1853,11 +1784,6 @@ impl RecordRepository {
     /// Recompute the authenticated durable prefix cursor through an exact
     /// sequence. This detects equal-watermark divergence before a mesh peer
     /// accepts a suffix based on a different history.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for poisoned/unknown state, an invalid cursor, or
-    /// envelope prefix encoding failure.
     pub fn stream_cursor(
         &self,
         key: RecordRepositoryKey,
@@ -1891,11 +1817,6 @@ impl RecordRepository {
 
     /// Return a bounded record snapshot after a fresh read/certification
     /// decision. The repository's version limit makes the clone bounded.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for poisoned/unknown state, denied authorization, or
-    /// inconsistent transaction projection.
     pub fn snapshot<A: RecordAuthorizer + ?Sized>(
         &self,
         key: RecordRepositoryKey,
@@ -2004,7 +1925,6 @@ impl RecordRepository {
         (current, written)
     }
 
-    /// Counts a concurrent-head check of one record.
     #[cfg(test)]
     pub(crate) fn note_concurrent_head_check(&self) {
         self.concurrent_head_checks
@@ -2018,7 +1938,6 @@ impl RecordRepository {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Stable keys for one workspace's records.
     pub(crate) fn reconciliation_keys(&self, workspace_id: Uuid) -> Vec<RecordRepositoryKey> {
         self.records
             .lock_recover()
@@ -3331,9 +3250,7 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn signed_transactions_merges_and_batches_project_whole_and_survive_restart() {
-        // Phase `transactions_and_batches_complete_exactly_and_survive_restart`.
         {
-            // Phase `later_signed_edit_and_binding_survive_completed_transaction_projection_and_reopen`.
             {
                 let fixture = Fixture::new();
                 let repository = RecordRepository::open(&fixture.root).unwrap();
@@ -3437,7 +3354,6 @@ mod tests {
                 assert_eq!(snapshot.content_revision, Some(later_revision));
                 assert_eq!(snapshot.binding, Some(later_binding));
             }
-            // Phase `transaction_stays_incomplete_until_every_exact_commit_and_survives_restart`.
             {
                 let fixture = Fixture::new();
                 let replaced = FileRecordId::new();
@@ -3537,7 +3453,6 @@ mod tests {
                         .complete
                 );
             }
-            // Phase `atomic_batch_inventory_and_suffix_survive_restart`.
             {
                 let fixture = Fixture::new();
                 let repo = RecordRepository::open(&fixture.root).unwrap();
@@ -3581,7 +3496,6 @@ mod tests {
                     digest
                 );
             }
-            // Phase `invalid_late_batch_operation_commits_no_prefix`.
             {
                 let fixture = Fixture::new();
                 let repo = RecordRepository::open(&fixture.root).unwrap();
@@ -3603,7 +3517,6 @@ mod tests {
                 assert_eq!(repo.logged_operations().unwrap(), 0);
             }
         }
-        // Phase `completed_single_record_merge_projects_atomically_and_survives_restart`.
         {
             for codec in [
                 ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
@@ -3772,7 +3685,6 @@ mod tests {
                 );
             }
         }
-        // Phase `keep_both_remote_participant_orders_never_project_one_half`.
         {
             for source_first in [true, false] {
                 let fixture = Fixture::new();
@@ -3945,7 +3857,6 @@ mod tests {
                 }
             }
         }
-        // Phase `journaled_repository_commit_projects_neither_half_and_replays_exactly`.
         {
             let fixture = Fixture::new();
             let replaced = FileRecordId::new();
@@ -4174,7 +4085,6 @@ mod tests {
 
     #[test]
     fn invalid_or_unauthorized_operations_fail_closed_without_publishing() {
-        // Phase `read_only_authorizer_cannot_create_durable_state`.
         {
             let fixture = Fixture::new();
             let repo = RecordRepository::open(&fixture.root).unwrap();
@@ -4191,7 +4101,6 @@ mod tests {
             assert!(repo.is_empty());
             assert_eq!(repo.logged_operations().unwrap(), 0);
         }
-        // Phase `immutable_version_collision_does_not_replace_persisted_state`.
         {
             let fixture = Fixture::new();
             let repo = RecordRepository::open(&fixture.root).unwrap();
@@ -4219,7 +4128,6 @@ mod tests {
                 }]
             );
         }
-        // Phase `out_of_order_and_duplicate_operations_fail_closed`.
         {
             let fixture = Fixture::new();
             let repo = RecordRepository::open(&fixture.root).unwrap();
@@ -4253,7 +4161,6 @@ mod tests {
                 ))
             ));
         }
-        // Phase `cross_record_state_is_rejected_on_apply`.
         {
             let fixture = Fixture::new();
             let repo = RecordRepository::open(&fixture.root).unwrap();
@@ -4305,7 +4212,6 @@ mod tests {
         for (key, envelopes) in &batches {
             repo.apply_batch(*key, envelopes, &auth).unwrap();
         }
-        // The local publisher sees the batch ...
         assert_eq!(repo.highest_sequence(fixture.key, &fixture.actor), Some(2));
         // ... peers see none of it.
         assert!(
@@ -4351,7 +4257,6 @@ mod tests {
         assert_eq!(signed.leaves.len(), 2);
         signed.verify().unwrap();
         assert_eq!(repo.logged_operations().unwrap(), 3);
-        // An empty scope commits nothing.
         repo.begin_changeset(fixture.key.workspace_id, fixture.actor)
             .unwrap();
         assert!(
@@ -4375,7 +4280,6 @@ mod tests {
             panic!("expected the changeset");
         };
         assert_eq!(**served, *signed);
-        // The next changeset of this device continues the sequence.
         reopened
             .begin_changeset(fixture.key.workspace_id, fixture.actor)
             .unwrap();
@@ -4425,7 +4329,6 @@ mod tests {
             peer.apply_changeset(workspace, &signed, &swapped, &auth)
                 .is_err()
         );
-        // A forged leaf breaks the signed root.
         let mut forged = (*signed).clone();
         forged.leaves[0].digest[0] ^= 1;
         assert!(

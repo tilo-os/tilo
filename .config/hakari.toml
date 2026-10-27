@@ -6,7 +6,7 @@
 # packages then compiles each shared dependency identically, so CI slots and
 # sccache reuse one build instead of one per package set. After changing a
 # dependency or its features, run `cargo hakari generate` and
-# `cargo hakari manage-deps`; CI / fast quality fails until both are clean.
+# `cargo hakari manage-deps`; t's `hakari` check fails until both are clean.
 
 hakari-package = "workspace-hack"
 dep-format-version = "4"
@@ -59,7 +59,11 @@ platforms = [
 # their dependencies are unified and verified like any other crate. X11
 # builds add only X11 crates on top: what x11rb and x11-dl ask of shared
 # crates (libc, once_cell, rustix, tracing, ...) is within the hack's union.
-workspace-members = ["frame-link", "tilo-winit-x11"]
+#
+# workspace-unify depends on every library with the features the whole
+# workspace builds it with (tools/ci/workspace_unify.py): counted, it would be
+# every crate's union at once, and the hack would take all of them.
+workspace-members = ["frame-link", "tilo-winit-x11", "workspace-unify"]
 # Every managed member builds every crate listed in the hack, so none may need
 # a system library: server containers (tilo-relay, registry-server) and cross
 # builds have no desktop development packages. Media stays optional
@@ -90,9 +94,15 @@ third-party = [
     { name = "iroh-dns" },
     { name = "iroh-metrics" },
     { name = "iroh-relay" },
-    # A git-pinned YouTube client only the Tube app uses; server images and
+    # A vendored YouTube client only the Tube app uses; server images and
     # the builder canary must not compile it.
-    { name = "rustypipe", git = "https://code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" },
+    { name = "rustypipe", path = "vendor/rustypipe" },
+    # The model gateway's pinned Rig turns on serde_json's `float_roundtrip`
+    # (and ordered-float). Counted, the hack handed them to every Linux build,
+    # so every app compiled serde_json's slow-path float parser into its own
+    # JSON decoding: 13 to 28 KB of each aarch64 tapp (Monitor 1,168,896 ->
+    # 1,141,248 B). The gateway still builds them as Rig asks.
+    { name = "rig-core", path = "vendor/rig-core" },
 ]
 
 [final-excludes]
@@ -109,8 +119,10 @@ third-party = [
 # - install-profile-model is also built by the isolated tools/imager-profile
 #   workspace, which must not resolve the application workspace.
 # - tilo-advisory-lock is the builder image's sccache canary, compiled cold into
-#   an empty namespace (build-ci-builder.yml); it must stay small.
+#   an empty namespace (tools/ci/publish/ci-builder-canary.sh); it must stay small.
 workspace-members = [
+    # resolves the others' features and builds nothing (tools/ci/workspace_unify.py)
+    "workspace-unify",
     # tilo-desktop-model and its member dependencies
     "collab-types",
     "desktop-policy",
@@ -120,6 +132,8 @@ workspace-members = [
     "tilo-automerge",
     "tilo-clock",
     "tilo-lock",
+    "tilo-sort",
+    "tilo-face",
     "tilo-content",
     "tilo-desktop-model",
     "wire-frame",

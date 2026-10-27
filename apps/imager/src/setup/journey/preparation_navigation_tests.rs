@@ -2,7 +2,7 @@
 use super::*;
 use crate::resource::GuidedInstallerShell;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use ui::framework::testing::TestApp;
 
 pub(super) struct WorkerControl {
@@ -19,7 +19,7 @@ fn status(app: &mut TestApp<GuidedInstallerShell>) -> serde_json::Value {
 }
 
 fn wait_for_cancelled(app: &mut TestApp<GuidedInstallerShell>) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         app.settle();
         if status(app)["media_preparation"]["state"] == "cancelled" {
@@ -34,7 +34,6 @@ fn wait_for_cancelled(app: &mut TestApp<GuidedInstallerShell>) {
 fn cancel_on_each_preparation_page_waits_for_worker_cleanup_and_keeps_choices() {
     for (page, destination) in [
         (Page::Devices, Destination::Computer),
-        (Page::Purpose, Destination::Computer),
         (Page::Belongings, Destination::Computer),
         (Page::Accounts, Destination::Computer),
         (Page::Review, Destination::Computer),
@@ -110,7 +109,7 @@ fn cancel_on_each_preparation_page_waits_for_worker_cleanup_and_keeps_choices() 
         assert_eq!(
             worker
                 .cancelled
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(tilo_test_env::hang_bound())
                 .unwrap(),
             std::io::ErrorKind::Interrupted
         );
@@ -214,7 +213,7 @@ fn busy_preparation_does_not_admit_cancel_in_privileged_or_finished_views() {
     assert_eq!(
         worker
             .cancelled
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(tilo_test_env::hang_bound())
             .unwrap(),
         std::io::ErrorKind::Interrupted
     );

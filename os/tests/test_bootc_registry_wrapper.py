@@ -9,12 +9,13 @@ import sys
 from types import SimpleNamespace
 import threading
 import tempfile
-import time
 import unittest
 from unittest.mock import mock_open, patch
 
 DEV=Path(__file__).resolve().parents[1]/'dev'
 sys.path.insert(0, str(DEV))
+sys.path.insert(0, str(DEV.parent.parent/'tools/tests'))
+from hang import HANG_BOUND  # noqa: E402
 spec=importlib.util.spec_from_file_location('wrapper',DEV/'bootc-registry-wrapper.py')
 wrapper=importlib.util.module_from_spec(spec);spec.loader.exec_module(wrapper)
 
@@ -215,19 +216,26 @@ class WrapperLifecycleTests(unittest.TestCase):
                 self.assertEqual(wrapper.run_bootc(SOURCE,DIGEST,argv),23)
             popen.assert_called_once_with(argv)
         with self.subTest(phase="background_heartbeat_stops_and_joins"):
-            child=self.Child(on_wait=lambda:time.sleep(.035))
+            # bootc runs until the heartbeat has checked the source at least once.
+            beat=threading.Event()
+            def beating(*_args,**_kwargs):
+                beat.set();return True
+            child=self.Child(on_wait=lambda:self.assertTrue(beat.wait(HANG_BOUND)))
             with patch.object(wrapper,'require_bound_source'), patch.object(wrapper,'warm',return_value=True), \
-                    patch.object(wrapper,'inspect_digest',return_value=True) as inspect, \
+                    patch.object(wrapper,'inspect_digest',side_effect=beating) as inspect, \
                     patch.object(wrapper.subprocess,'Popen',return_value=child):
                 self.assertEqual(wrapper.run_bootc(
                     SOURCE,DIGEST,[wrapper.INSTALLER_BOOTC,'install'],heartbeat_interval=.005),0)
             self.assertGreater(inspect.call_count,0)
             self.assertFalse(any(t.name=='tilo-registry-heartbeat' for t in threading.enumerate()))
         with self.subTest(phase="heartbeat_failure_does_not_replace_bootc_result"):
-            child=self.Child(17,on_wait=lambda:time.sleep(.02))
             failure=wrapper.subprocess.TimeoutExpired(['/usr/bin/skopeo'],10)
+            beat=threading.Event()
+            def failing(*_args,**_kwargs):
+                beat.set();raise failure
+            child=self.Child(17,on_wait=lambda:self.assertTrue(beat.wait(HANG_BOUND)))
             with patch.object(wrapper,'require_bound_source'), patch.object(wrapper,'warm',return_value=True), \
-                    patch.object(wrapper,'inspect_digest',side_effect=failure) as inspect, \
+                    patch.object(wrapper,'inspect_digest',side_effect=failing) as inspect, \
                     patch.object(wrapper.subprocess,'Popen',return_value=child):
                 self.assertEqual(wrapper.run_bootc(
                     SOURCE,DIGEST,[wrapper.INSTALLER_BOOTC,'install'],heartbeat_interval=.005),17)

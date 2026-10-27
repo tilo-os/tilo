@@ -444,7 +444,6 @@ impl VideoCompositor {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        // Read the accumulation the previous pass wrote.
                         resource: wgpu::BindingResource::TextureView(ping_pong(
                             &accum.views,
                             i + 1,

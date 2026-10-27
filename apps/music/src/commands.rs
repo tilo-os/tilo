@@ -6,6 +6,11 @@
 //! - `--bench [SCENARIO:]FRAMES` renders a screenshot scenario (the sample
 //!   library's Home by default) `FRAMES` times headlessly and reports the
 //!   per-frame CPU cost of sync, layout and draw.
+//! - `--bench-search [QUERY,QUERY,...]` measures the query view's contract:
+//!   how long the library's results take after a keystroke (over the sample
+//!   library and a library of ten thousand songs), and, typed at a person's
+//!   pace against the real catalogue, how long its first rows take (p50 and
+//!   p95), each keystroke's query cancelling the one before.
 //! - `--probe-spotify-engine VALUE` (the value is ignored) runs native Spotify
 //!   playback's self-check without an account, network or audio device. In a
 //!   release build that code is in `libtilo_spotify_engine.so`, so the check
@@ -26,6 +31,10 @@ pub const COMMANDS: &[Command] = &[
     Command {
         option: "--bench",
         run: bench,
+    },
+    Command {
+        option: "--bench-search",
+        run: bench_search,
     },
     Command {
         option: "--probe-spotify-engine",
@@ -107,6 +116,219 @@ fn bench(value: &str) -> Result<(), String> {
         at(1.0),
     );
     Ok(())
+}
+
+/// The queries `--bench-search` types when given none.
+const BENCH_QUERIES: &str =
+    "aurora,daft punk,radiohead,billie eilish,beatles,taylor swift,bonobo,nils frahm";
+
+/// How long a person takes between two keystrokes, typing a search.
+#[cfg(feature = "live")]
+const KEYSTROKE: std::time::Duration = std::time::Duration::from_millis(180);
+
+/// The value at `fraction` of sorted `samples`.
+fn percentile(samples: &[f64], fraction: f64) -> f64 {
+    if samples.is_empty() {
+        return f64::NAN;
+    }
+    let at = ((samples.len() as f64 - 1.0) * fraction).round() as usize;
+    samples
+        .get(at.min(samples.len() - 1))
+        .copied()
+        .unwrap_or(f64::NAN)
+}
+
+fn report(name: &str, samples: &mut [f64]) {
+    samples.sort_by(f64::total_cmp);
+    println!(
+        "{name}: n={}  p50={:.1}ms  p95={:.1}ms  max={:.1}ms",
+        samples.len(),
+        percentile(samples, 0.5),
+        percentile(samples, 0.95),
+        samples.last().copied().unwrap_or(f64::NAN),
+    );
+}
+
+/// A library of the sample's songs and `extra` more, for the local timing.
+fn bench_library(extra: usize) -> crate::model::Library {
+    let mut lib = crate::seed::sample_library();
+    let words = [
+        "night", "light", "river", "glass", "paper", "ghost", "tide", "harbor", "neon", "pulse",
+        "string", "summer", "winter", "drive", "frame", "echo", "violet", "static", "garden",
+        "orbit",
+    ];
+    let word = |n: usize| words.get(n % words.len()).copied().unwrap_or("song");
+    for n in 0..extra {
+        let id = format!("bench_{n}");
+        let title = format!("{} {} {}", word(n), word(n / words.len()), n);
+        let album = format!("al_bench_{}", n / 12);
+        let artist = format!("ar_bench_{}", n / 120);
+        lib.artists
+            .entry(artist.clone())
+            .or_insert_with(|| crate::model::Artist {
+                id: artist.clone(),
+                name: format!("Bench Artist {}", n / 120),
+                genre: String::new(),
+                monthly_listeners: 0,
+            });
+        lib.albums
+            .entry(album.clone())
+            .or_insert_with(|| crate::model::Album {
+                id: album.clone(),
+                title: format!("{} Album {}", word(n / 12), n / 12),
+                artist_id: artist.clone(),
+                year: 2000 + u32::try_from(n % 25).unwrap_or(0),
+            });
+        lib.tracks.insert(
+            id.clone(),
+            crate::model::Track {
+                id,
+                title,
+                album_id: album,
+                artist_id: artist,
+                track_no: u32::try_from(n % 12).unwrap_or(0) + 1,
+                duration_s: 200,
+                yt_id: String::new(),
+                plays: 0,
+            },
+        );
+    }
+    lib
+}
+
+/// Every prefix of `query`, as a person types it.
+fn prefixes(query: &str) -> Vec<String> {
+    query
+        .char_indices()
+        .map(|(at, c)| query.get(..at + c.len_utf8()).unwrap_or(query).to_owned())
+        .collect()
+}
+
+fn bench_search(value: &str) -> Result<(), String> {
+    use ui::framework::views::{QueryEngine, QuerySpec};
+    let queries: Vec<&str> = if value.trim().is_empty() {
+        BENCH_QUERIES.split(',').collect()
+    } else {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .collect()
+    };
+    if queries.is_empty() {
+        // Only commas: nothing to type.
+        return Err(format!("--bench-search: no queries in {value:?}"));
+    }
+    for (name, extra) in [("sample library", 0), ("10k-song library", 10_000)] {
+        let lib = bench_library(extra);
+        let mut engine = QueryEngine::new(crate::views::kinds());
+        let started = ui::time::now();
+        engine.sync_local(crate::views::library_items(&lib));
+        println!(
+            "local index of {name}: {} songs indexed in {:.1}ms",
+            lib.tracks.len(),
+            ui::time::now()
+                .saturating_duration_since(started)
+                .as_secs_f64()
+                * 1000.0
+        );
+        let mut samples = Vec::new();
+        for query in &queries {
+            for prefix in prefixes(query) {
+                engine.set_query(QuerySpec::text(prefix));
+                if let Some(local) = engine.timings().local {
+                    samples.push(local.as_secs_f64() * 1000.0);
+                }
+            }
+        }
+        report(&format!("local first results, {name}"), &mut samples);
+    }
+    bench_remote(&queries);
+    Ok(())
+}
+
+#[cfg(feature = "live")]
+fn bench_remote(queries: &[&str]) {
+    use std::sync::Arc;
+    use ui::framework::views::{QueryEngine, QuerySpec, RemoteSource};
+    let source: Arc<dyn RemoteSource> = Arc::new(crate::views::CatalogueSource::new(|| {
+        crate::backend::preferred_backend(|note| println!("{note}"))
+    }));
+    let mut engine = QueryEngine::new(crate::views::kinds()).with_remote(Arc::clone(&source));
+    engine.sync_local(crate::views::library_items(&crate::seed::sample_library()));
+    // Focusing the field warms the connection before the first character.
+    let warm_started = ui::time::now();
+    source.warm();
+    println!(
+        "warm ({}): {:.1}ms",
+        source.label(),
+        ui::time::now()
+            .saturating_duration_since(warm_started)
+            .as_secs_f64()
+            * 1000.0
+    );
+    let mut first = Vec::new();
+    let mut done = Vec::new();
+    let mut superseded = 0usize;
+    let mut failed = 0usize;
+    for query in queries {
+        let typed = prefixes(query);
+        for (at, prefix) in typed.iter().enumerate() {
+            let last = at + 1 == typed.len();
+            let window = if last {
+                std::time::Duration::from_secs(5)
+            } else {
+                KEYSTROKE
+            };
+            engine.set_query(QuerySpec::text(prefix.clone()));
+            let since = ui::time::now();
+            let mut got_first = false;
+            while ui::time::now().saturating_duration_since(since) < window {
+                engine.poll();
+                let timings = engine.timings();
+                if !got_first && let Some(Some(time)) = timings.remote_first.first() {
+                    first.push(time.as_secs_f64() * 1000.0);
+                    got_first = true;
+                }
+                if let Some(Some(time)) = timings.remote_done.first() {
+                    done.push(time.as_secs_f64() * 1000.0);
+                    break;
+                }
+                if let Some(section) = engine.results().remote.first()
+                    && (section.state.is_none() || section.failure().is_some())
+                {
+                    failed += 1;
+                    break;
+                }
+                let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(1));
+            }
+            if !got_first {
+                superseded += 1;
+            }
+            // The rest of the keystroke's time passes before the next one.
+            if let Some(rest) =
+                KEYSTROKE.checked_sub(ui::time::now().saturating_duration_since(since))
+            {
+                let _ = ui::rt::sleep_thread(rest);
+            }
+        }
+        println!(
+            "  {query:?}: {} rows from the catalogue",
+            engine
+                .results()
+                .remote
+                .first()
+                .map_or(0, |section| section.rows().count())
+        );
+    }
+    report("remote first rows per keystroke", &mut first);
+    report("remote whole answer per keystroke", &mut done);
+    println!("keystrokes without rows before the next one: {superseded}; unreachable: {failed}");
+}
+
+#[cfg(not(feature = "live"))]
+fn bench_remote(_queries: &[&str]) {
+    println!("remote: this build has no live catalogue (`live` feature)");
 }
 
 /// Prove the live streaming path from the terminal. Real search + real audio

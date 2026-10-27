@@ -2,8 +2,9 @@
 //!
 //! The catalog is one directory of unmodified font files plus a
 //! `manifest.toml` that pins every file by size and SHA-256. Source metadata lives in
-//! `crates/sdk/ui-core/assets/fonts`; builds prepare the pinned font bytes in
-//! a verified artifact cache. The OS image installs its catalog once,
+//! `crates/sdk/ui-core/assets/fonts`; a build fetches the pinned font bytes into
+//! a verified artifact cache and prepares this crate's catalog from it in its
+//! own `OUT_DIR`. The OS image installs its catalog once,
 //! at [`INSTALLED_ROOT`], where fontconfig and every Tilo process that sets
 //! text find the same bytes. This crate owns the manifest's schema and the
 //! checks that tie an installed directory to the build that reads it: the
@@ -34,11 +35,21 @@ pub const MANIFEST: &str = include_str!("../manifest.toml");
 /// extra configuration.
 pub const INSTALLED_ROOT: &str = "/usr/share/fonts/tilo";
 
-/// The catalog in this source checkout.
+/// The catalog this build prepared from the source checkout, in this crate's
+/// `OUT_DIR`: it is part of the build's output, so wherever the build is
+/// reused the catalog is too.
 #[must_use]
 pub fn checkout_root() -> PathBuf {
     PathBuf::from(env!("TILO_CHECKOUT_FONT_ROOT"))
 }
+
+/// `TILO_FONT_CATALOG`: the catalog to read instead of the compiled-in
+/// checkout path, for a binary built somewhere else and run here. Without it
+/// such a run silently sets every frame in the host's faces, which looks
+/// almost right and is wrong in a way that only shows up in the review of a
+/// screenshot. The toolkit reads it into `HostPaths::font_catalog`, which is
+/// where a reader takes it from.
+pub const OVERRIDE_ENV: &str = "TILO_FONT_CATALOG";
 
 /// The installed catalog when the system has one, otherwise the checkout's
 /// (a development or test run outside the image). `None` when neither
@@ -48,6 +59,35 @@ pub fn locate() -> Option<PathBuf> {
     [PathBuf::from(INSTALLED_ROOT), checkout_root()]
         .into_iter()
         .find(|root| root.join("manifest.toml").is_file())
+}
+
+/// The first root holding a catalog *this build* pins, checked without reading
+/// a font: a root whose manifest is not the one compiled in is passed over, so
+/// an older image under a newer checkout is not mistaken for the product's.
+#[must_use]
+pub fn find_root(roots: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    roots.into_iter().find(|root| {
+        std::fs::read_to_string(root.join("manifest.toml"))
+            .is_ok_and(|manifest| manifest == MANIFEST)
+    })
+}
+
+/// The catalogs prepared into a font artifact cache
+/// (`tools/font-catalog.py`), newest-named first is irrelevant: they are named
+/// by what they were prepared from, so any of them is a candidate and
+/// [`find_root`] says which ones this build can read.
+#[must_use]
+pub fn prepared_catalogs(cache: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(cache.join("catalogs")) else {
+        return Vec::new();
+    };
+    let mut roots: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    roots.sort();
+    roots
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -175,10 +215,6 @@ pub fn manifest_sha256() -> String {
 
 /// Check that `root` holds the catalog this build was made against: its
 /// `manifest.toml` must be byte-identical to [`MANIFEST`].
-///
-/// # Errors
-///
-/// When the manifest is missing, unreadable or different.
 pub fn check_manifest(root: &Path) -> Result<(), Error> {
     let path = root.join("manifest.toml");
     let shipped = std::fs::read(&path).map_err(|e| Error::at(&path, e))?;
@@ -313,10 +349,6 @@ mod immutable {
 impl Asset {
     /// The file's path under `root`, refusing a manifest entry that would
     /// leave the catalog directory.
-    ///
-    /// # Errors
-    ///
-    /// When the entry is absolute or climbs out of `root`.
     pub fn path_in(&self, root: &Path) -> Result<PathBuf, Error> {
         let relative = Path::new(&self.file);
         if !relative
@@ -333,10 +365,6 @@ impl Asset {
 
     /// Check the file under `root` against its pinned size and SHA-256 and
     /// return its path.
-    ///
-    /// # Errors
-    ///
-    /// When the file is missing, not a regular file, or differs.
     pub fn verify(&self, root: &Path) -> Result<PathBuf, Error> {
         self.verify_with(root, Trust::Verify)
     }
@@ -345,10 +373,6 @@ impl Asset {
     /// allows and return its path. Under [`Trust::Immutable`] a file that is
     /// itself [immutable](file_is_immutable) is checked by type and size and
     /// not read; any other file is hashed as under [`Trust::Verify`].
-    ///
-    /// # Errors
-    ///
-    /// When the file is missing, not a regular file, or differs.
     pub fn verify_with(&self, root: &Path, trust: Trust) -> Result<PathBuf, Error> {
         self.verify_probed(root, trust, file_is_immutable)
     }
@@ -379,10 +403,6 @@ impl Asset {
 
     /// Check bytes already read from this asset's file (at `path`, for the
     /// error) against its pinned size and SHA-256.
-    ///
-    /// # Errors
-    ///
-    /// When the bytes differ.
     pub fn verify_bytes(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
         if bytes.len() as u64 != self.bytes {
             return Err(Error::at(
@@ -394,10 +414,6 @@ impl Asset {
     }
 
     /// Compare a lowercase hex SHA-256 with the pinned one.
-    ///
-    /// # Errors
-    ///
-    /// When they differ.
     pub fn check_digest(&self, path: &Path, actual: &str) -> Result<(), Error> {
         if actual == self.sha256 {
             Ok(())

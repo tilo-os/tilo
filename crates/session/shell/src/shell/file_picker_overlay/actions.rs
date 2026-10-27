@@ -15,11 +15,14 @@ pub(crate) struct Subject {
     pub app: AppId,
 }
 
+/// Where an operation's answer goes; its ticket reads it from there.
+pub(super) type Reply = Rc<RefCell<Option<Result<serde_json::Value, String>>>>;
+
 pub(super) struct Command {
     pub subject: uuid::Uuid,
     pub state: Option<String>,
     pub operation: PickerOperation,
-    pub reply: Rc<RefCell<Option<Result<serde_json::Value, String>>>>,
+    pub reply: Reply,
 }
 
 #[derive(Default)]

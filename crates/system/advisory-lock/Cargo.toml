@@ -3,7 +3,7 @@ name = "tilo-advisory-lock"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "One advisory file-lock guard that unlocks explicitly on drop."
@@ -19,6 +19,7 @@ rustix = { workspace = true, features = ["fs", "std"] }
 [dev-dependencies]
 libc.workspace = true
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

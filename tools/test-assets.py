@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Resolve immutable test assets into a verified cache; support prewarmed offline runs."""
+"""Resolve immutable test assets into a verified cache; support prewarmed offline runs.
+
+A seed is a read-only cache another step filled, laid out as the cache is
+(`<sha256>/<file>`): t's `test-assets` check fills one with every manifest the build
+scripts name, and the builds that ship (the OS compile, the app release, the
+tilo-vm packs) take it as TILO_TEST_ASSET_SEED, so they never reach the network
+for an asset it holds. Each seed entry is verified like any cached one; only an
+asset no seed holds is fetched, into the writable cache.
+"""
 import argparse
 import hashlib
 import json
@@ -46,7 +54,20 @@ def verify(path, row):
         raise ValueError(f"test asset SHA-256 mismatch: {path}")
 
 
-def cached_asset(row, cache, offline, opener):
+def seeded_asset(row, seeds):
+    """The verified copy of `row` in the first seed that holds it; `None` when none does."""
+    for seed in seeds:
+        path = Path(seed) / row["sha256"] / row["file"]
+        if path.exists():
+            verify(path, row)
+            return path.resolve()
+    return None
+
+
+def cached_asset(row, cache, offline, opener, seeds=()):
+    seeded = seeded_asset(row, seeds)
+    if seeded is not None:
+        return seeded
     path = Path(cache) / row["sha256"] / row["file"]
     if path.exists():
         verify(path, row)
@@ -75,13 +96,18 @@ def cached_asset(row, cache, offline, opener):
     return path.resolve()
 
 
-def resolve(path, cache, offline=False, filename=None, opener=urlopen):
+def resolve(path, cache, offline=False, filename=None, opener=urlopen, seeds=()):
     rows = manifest(path)
     if filename is not None:
         rows = [row for row in rows if row["file"] == filename]
         if not rows:
             raise ValueError(f"test asset not declared: {filename}")
-    return [cached_asset(row, cache, offline, opener) for row in rows]
+    return [cached_asset(row, cache, offline, opener, seeds) for row in rows]
+
+
+def seeds_from(value):
+    """The seed directories TILO_TEST_ASSET_SEED names, separated as PATH is."""
+    return [Path(part) for part in (value or "").split(os.pathsep) if part]
 
 
 def prune_identical_candidates(path, root):
@@ -97,19 +123,23 @@ def prune_identical_candidates(path, root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path)
+    parser.add_argument("manifest", type=Path, nargs="+")
     parser.add_argument("--cache-root", type=Path, default=Path(os.environ.get(
         "TILO_TEST_ASSET_CACHE", str(Path(__file__).resolve().parents[1] / "target/test-assets"))))
     parser.add_argument("--offline", action="store_true", default=os.environ.get("TILO_TEST_ASSETS_OFFLINE") == "1")
+    parser.add_argument("--seed", type=Path, action="append", default=seeds_from(os.environ.get("TILO_TEST_ASSET_SEED")),
+                        help="a read-only cache to take verified assets from first (repeatable)")
     parser.add_argument("--file")
     parser.add_argument("--prune-identical-candidates", type=Path)
     args = parser.parse_args()
     try:
         if args.prune_identical_candidates is not None:
-            prune_identical_candidates(args.manifest, args.prune_identical_candidates)
+            for path in args.manifest:
+                prune_identical_candidates(path, args.prune_identical_candidates)
             return
-        for path in resolve(args.manifest, args.cache_root, args.offline, args.file):
-            print(path)
+        for manifest_path in args.manifest:
+            for path in resolve(manifest_path, args.cache_root, args.offline, args.file, seeds=args.seed):
+                print(path)
     except (ValueError, OSError, TypeError, KeyError) as error:
         parser.exit(1, f"Tilo test assets: {error}\n")
 

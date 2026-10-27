@@ -130,11 +130,6 @@ impl RecordSubscriptionStore {
     }
 
     /// Open and validate a subscription store at an explicit validation time.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for insecure permissions, oversized/malformed state,
-    /// invalid links, duplicate keys, or persistence I/O failure.
     pub fn open_at(
         path: impl Into<PathBuf>,
         now_ms: u64,
@@ -191,11 +186,6 @@ impl RecordSubscriptionStore {
 
     /// Insert a validated V2 link. Returns `false` for an exact replay and
     /// rejects a different link attempting to occupy the same record key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the link is invalid, collides with an existing
-    /// key, capacity is exhausted, or persistence fails.
     pub fn insert(&self, link: FileShareLinkV2) -> Result<bool, RecordSubscriptionStoreError> {
         self.insert_at(link, unix_now_ms())
     }
@@ -258,10 +248,6 @@ impl RecordSubscriptionStore {
     }
 
     /// Record a successful subscription refresh.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the subscription is unknown or persistence fails.
     pub fn record_success(
         &self,
         key: RecordSubscriptionKey,
@@ -274,10 +260,6 @@ impl RecordSubscriptionStore {
     }
 
     /// Record a coarse, secret-free subscription failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the subscription is unknown or persistence fails.
     pub fn record_error(
         &self,
         key: RecordSubscriptionKey,
@@ -491,7 +473,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn subscriptions_persist_privately_fail_closed_and_never_disclose_secrets() {
-        // Phase `restart_preserves_link_and_status_in_owner_only_file`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("subscriptions.json");
@@ -529,7 +510,6 @@ mod tests {
             assert_eq!(subscription.last_success_at_ms, Some(52_000));
             assert_eq!(subscription.last_error, None);
         }
-        // Phase `malformed_oversized_duplicate_and_collision_state_fail_closed`.
         {
             let temp = tempfile::tempdir().unwrap();
             let malformed = temp.path().join("malformed.json");
@@ -580,7 +560,6 @@ mod tests {
                 Err(RecordSubscriptionStoreError::DuplicateCollision(_))
             ));
         }
-        // Phase `debug_and_errors_never_disclose_uri_or_secret`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("subscriptions.json");
@@ -606,7 +585,6 @@ mod tests {
             assert!(!error.contains(&uri));
             assert!(!error.contains(&secret));
         }
-        // Phase `expired_links_remain_visible_after_restart_but_cannot_be_inserted`.
         {
             let temp = tempfile::tempdir().unwrap();
             let path = temp.path().join("subscriptions.json");

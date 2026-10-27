@@ -507,11 +507,6 @@ fn next_retry_delay(current: std::time::Duration, publisher_missing: bool) -> st
 /// `timeout` passes. The worker's retirement is signalled, so this returns as
 /// soon as publication settles. Exports still queued on the state writer,
 /// which schedule publications, are waited for first.
-///
-/// # Errors
-///
-/// On timeout, or if the queue is poisoned, returns a report of the queue
-/// state and the recent publisher attempts, including their stderr.
 pub fn wait_for_fs_authority_publication_idle(timeout: std::time::Duration) -> Result<(), String> {
     if !crate::shell::durable_writer::global().flush_timeout(timeout) {
         return Err("capability exports are still queued on the state writer".into());
@@ -565,31 +560,62 @@ mod tests {
         use std::os::fd::AsFd;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
-        use std::time::Duration;
 
-        /// Run a wait on its own thread, so the test can act while it blocks.
-        fn waiting(
-            publisher: std::path::PathBuf,
-            superseded: Arc<AtomicBool>,
-        ) -> (std::sync::mpsc::Receiver<Wait>, Arc<std::os::fd::OwnedFd>) {
-            let wake = Arc::new(new_eventfd().expect("an eventfd"));
-            let (done, outcome) = std::sync::mpsc::channel();
-            let thread_wake = Arc::clone(&wake);
-            std::thread::spawn(move || {
-                let check = || superseded.load(Ordering::SeqCst);
-                let _ = done.send(wait(&publisher, thread_wake.as_fd(), &check));
-            });
-            (outcome, wake)
+        /// A wait running on its own thread, so the test can act while it
+        /// blocks.
+        struct Waiting {
+            outcome: std::sync::mpsc::Receiver<Wait>,
+            wake: Arc<std::os::fd::OwnedFd>,
+            /// One message each time the wait asks whether it is superseded:
+            /// first once its watch is in place, then after each wake.
+            checks: std::sync::mpsc::Receiver<()>,
+        }
+
+        impl Waiting {
+            fn start(publisher: std::path::PathBuf, superseded: Arc<AtomicBool>) -> Self {
+                let wake = Arc::new(new_eventfd().expect("an eventfd"));
+                let (done, outcome) = std::sync::mpsc::channel();
+                let (checked, checks) = std::sync::mpsc::channel();
+                let thread_wake = Arc::clone(&wake);
+                std::thread::spawn(move || {
+                    let check = || {
+                        let _ = checked.send(());
+                        superseded.load(Ordering::SeqCst)
+                    };
+                    let _ = done.send(wait(&publisher, thread_wake.as_fd(), &check));
+                });
+                let waiting = Self {
+                    outcome,
+                    wake,
+                    checks,
+                };
+                // A created file is reported from here on, even if it lands
+                // before the poll.
+                waiting.checked("the watch to be in place");
+                waiting
+            }
+
+            fn checked(&self, what: &str) {
+                tilo_test_env::recv(what, &self.checks);
+            }
+
+            /// Wake the wait and see it ask again, so everything the watch
+            /// queued before the wake has been read.
+            fn round_trip(&self) {
+                signal(self.wake.as_fd());
+                self.checked("the wait to take a wake");
+            }
+
+            fn outcome(&self) -> Wait {
+                tilo_test_env::recv("the wait to end", &self.outcome)
+            }
         }
 
         #[test]
         fn creating_the_publisher_ends_the_wait_and_nothing_else_in_its_directory_does() {
             let dir = tempfile::tempdir().unwrap();
             let publisher = dir.path().join("fs");
-            let (outcome, _wake) = waiting(publisher.clone(), Arc::default());
-            // Wait until the watch is in place: a created file is then
-            // reported even if it lands before the poll.
-            std::thread::sleep(Duration::from_millis(100));
+            let waiting = Waiting::start(publisher.clone(), Arc::default());
             // The directory's other entries being created, written, opened
             // and run must not end the wait (the regression: a watch that
             // reports opens woke a busy shard 47 times a second).
@@ -597,17 +623,16 @@ mod tests {
             std::fs::write(&other, b"#!/bin/sh\n").unwrap();
             let _ = std::fs::read(&other).unwrap();
             let _ = std::fs::read_dir(dir.path()).unwrap().count();
+            // The first wake's turn reads those events; asking again after a
+            // second wake means they did not end the wait.
+            waiting.round_trip();
+            waiting.round_trip();
             assert!(
-                outcome.recv_timeout(Duration::from_millis(300)).is_err(),
+                waiting.outcome.try_recv().is_err(),
                 "an unrelated entry ended the wait for the publisher"
             );
             std::fs::write(&publisher, b"#!/bin/sh\n").unwrap();
-            assert_eq!(
-                outcome
-                    .recv_timeout(tilo_test_env::hang_bound())
-                    .expect("creating the publisher ends the wait"),
-                Wait::Created
-            );
+            assert_eq!(waiting.outcome(), Wait::Created);
         }
 
         #[test]
@@ -615,32 +640,24 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let staging = tempfile::tempdir_in(dir.path()).unwrap();
             let publisher = dir.path().join("fs");
-            let (outcome, _wake) = waiting(publisher.clone(), Arc::default());
-            std::thread::sleep(Duration::from_millis(100));
+            let waiting = Waiting::start(publisher.clone(), Arc::default());
             let staged = staging.path().join("fs");
             std::fs::write(&staged, b"#!/bin/sh\n").unwrap();
             std::fs::rename(&staged, &publisher).unwrap();
-            assert_eq!(
-                outcome.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
-                Wait::Created
-            );
+            assert_eq!(waiting.outcome(), Wait::Created);
         }
 
         #[test]
         fn a_newer_projection_ends_the_wait_at_once() {
             let dir = tempfile::tempdir().unwrap();
             let superseded = Arc::new(AtomicBool::new(false));
-            let (outcome, wake) = waiting(dir.path().join("fs"), Arc::clone(&superseded));
-            std::thread::sleep(Duration::from_millis(100));
-            // A wake with nothing newer queued keeps waiting.
-            signal(wake.as_fd());
-            assert!(outcome.recv_timeout(Duration::from_millis(200)).is_err());
+            let waiting = Waiting::start(dir.path().join("fs"), Arc::clone(&superseded));
+            // A wake with nothing newer queued keeps waiting: had it ended
+            // the wait, the outcome below would not be `Superseded`.
+            waiting.round_trip();
             superseded.store(true, Ordering::SeqCst);
-            signal(wake.as_fd());
-            assert_eq!(
-                outcome.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
-                Wait::Superseded
-            );
+            signal(waiting.wake.as_fd());
+            assert_eq!(waiting.outcome(), Wait::Superseded);
         }
 
         #[test]
@@ -653,7 +670,6 @@ mod tests {
                 wait(&dir.path().join("missing/fs"), wake.as_fd(), &never),
                 Wait::Unwatchable
             );
-            // A bare name is looked up on PATH.
             assert_eq!(
                 wait(std::path::Path::new("fs"), wake.as_fd(), &never),
                 Wait::Unwatchable
@@ -673,13 +689,9 @@ mod tests {
             let parent = tempfile::tempdir().unwrap();
             let dir = parent.path().join("bin");
             std::fs::create_dir(&dir).unwrap();
-            let (outcome, _wake) = waiting(dir.join("fs"), Arc::default());
-            std::thread::sleep(Duration::from_millis(100));
+            let waiting = Waiting::start(dir.join("fs"), Arc::default());
             std::fs::remove_dir(&dir).unwrap();
-            assert_eq!(
-                outcome.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
-                Wait::Unwatchable
-            );
+            assert_eq!(waiting.outcome(), Wait::Unwatchable);
         }
     }
 }

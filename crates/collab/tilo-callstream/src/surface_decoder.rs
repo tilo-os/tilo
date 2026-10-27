@@ -374,12 +374,10 @@ mod tests {
 
     #[test]
     fn decoder_output_shapes_for_empty_and_decoded_input() {
-        // Phase `empty_input_decodes_nothing`.
         {
             let mut dec = VideoDecoder::h264();
             assert!(dec.decode(&[]).is_none());
         }
-        // Phase `decoded_pixels_variant_predicates`.
         {
             let rgba = DecodedPixels::Rgba8(vec![0u8; 4]);
             assert!(rgba.is_rgba());
@@ -396,7 +394,6 @@ mod tests {
 
     #[test]
     fn wire_labels_and_cicp_select_codec_output_and_colorimetry() {
-        // Phase `wire_labels_pick_the_codec_and_the_output`.
         {
             let d = VideoDecoder::for_stream("h264", 0).expect("h264");
             assert_eq!(d.codec(), StreamCodec::H264);
@@ -412,7 +409,6 @@ mod tests {
                 Ok(_) => panic!("an unknown label must not build a decoder"),
             }
         }
-        // Phase `cicp_maps_onto_the_wire_colorimetry`.
         {
             assert_eq!(
                 colorimetry_from(StreamColor::BT709),
@@ -431,7 +427,6 @@ mod tests {
             assert_eq!(pq.matrix, MatrixCoefficients::Bt2020NonConstant);
             assert!(pq.is_hdr());
         }
-        // Phase `an_announced_hdr_colorimetry_is_kept_for_a_stream_that_signals_none`.
         {
             let mut dec = VideoDecoder::new(StreamCodec::Av1, true);
             dec.set_stream_colorimetry(Some(Colorimetry::hdr10()));

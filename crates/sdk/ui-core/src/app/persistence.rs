@@ -9,8 +9,6 @@ impl App {
     ///     .run();
     /// ```
     #[must_use]
-    /// # Panics
-    /// Fails closed if the host storage lifetime counter is exhausted.
     #[allow(
         clippy::expect_used,
         reason = "storage identity must fail closed rather than wrap and admit an old owner"
@@ -159,6 +157,13 @@ impl App {
     #[cfg(test)]
     pub(crate) fn collaboration_manager(&self) -> &CollaborationManager {
         &self.collaboration.manager
+    }
+
+    /// The window's collaboration, for a test of what it does once the
+    /// transport fails.
+    #[cfg(test)]
+    pub(crate) fn collaboration_manager_mut(&mut self) -> &mut CollaborationManager {
+        &mut self.collaboration.manager
     }
 
     pub fn record_tick(&mut self) -> bool {

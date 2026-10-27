@@ -22,8 +22,6 @@ use collab_types::{
     sign_event, sign_op, verify_event, verify_op,
 };
 
-// ---------- helpers ----------
-
 fn fake_pk(byte: u8) -> Ed25519PublicKey {
     Ed25519PublicKey::from_bytes([byte; 32])
 }
@@ -38,8 +36,6 @@ fn t(secs: u64) -> SystemTime {
         .unwrap()
 }
 
-// ---------- round-trips for every wire type ----------
-
 /// Encodes `value`, decodes it back and asserts equality, naming the case.
 fn assert_round_trips<T>(case: &str, value: &T)
 where
@@ -50,8 +46,6 @@ where
     assert_eq!(value, &back, "case {case}");
 }
 
-/// Every wire type round-trips through `canonical_bytes` /
-/// `from_canonical_bytes`, and encoding is deterministic.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -226,8 +220,6 @@ fn every_wire_type_round_trips_deterministically() {
     assert_eq!(a, b);
 }
 
-// ---------- tamper detection: decode failure ----------
-
 /// Decoding demands exactly the encoded bytes: trailing bytes and any
 /// truncation are rejected.
 #[test]
@@ -354,7 +346,6 @@ fn tampering_breaks_decode_or_signature() {
             seq,
         );
         sign_op(&mut op, &sk).unwrap();
-        // Untampered verifies.
         assert!(verify_op(&op).is_ok(), "case {case}");
         tamper(&mut op);
         assert!(verify_op(&op).is_err(), "case {case}");

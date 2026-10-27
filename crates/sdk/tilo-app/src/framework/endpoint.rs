@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
+use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::taffy::{NodeId, Style, TaffyTree};
 use ui_core::theme::Theme;
 use ui_core::vello::kurbo::{Point, Rect};
@@ -52,6 +52,8 @@ impl<E: Effect> EffectEndpoint<E> {
 }
 
 impl<E: Effect> Widget for EffectEndpoint<E> {
+    ui_core::provides!(dyn ResourceOperations);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -72,6 +74,24 @@ impl<E: Effect> Widget for EffectEndpoint<E> {
         self.rect = Rect::from_origin_size(origin, (0.0, 0.0));
     }
 
+    fn needs_redraw(&self) -> bool {
+        false
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
+    fn name(&self) -> &'static str {
+        "EffectEndpoint"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl<E: Effect> ResourceOperations for EffectEndpoint<E> {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         self.handled
     }
@@ -93,21 +113,5 @@ impl<E: Effect> Widget for EffectEndpoint<E> {
             invoker: ui_core::invocation_scope::current_invoker(),
         };
         (self.handle)(effect, &caller).map(|output| Some(ResourceOperationStart::Completed(output)))
-    }
-
-    fn needs_redraw(&self) -> bool {
-        false
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        false
-    }
-
-    fn name(&self) -> &'static str {
-        "EffectEndpoint"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }

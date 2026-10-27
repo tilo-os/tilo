@@ -97,6 +97,9 @@ pub struct ResultsTable {
     table: DataTable<RowIndex>,
     /// The column a header click asked to sort by, until the next event.
     clicked: Rc<Flag<Option<usize>>>,
+    /// How the view tells the app which row is chosen, so the window bar's
+    /// Copy row and Ctrl+C act on it.
+    link: Option<crate::link::Link>,
     result: Option<Arc<QueryResult>>,
     sort: Option<(usize, bool)>,
     /// The header band the table resolved for the theme it was built with.
@@ -163,12 +166,27 @@ impl ResultsTable {
         Self {
             table: Self::table_for(None, &clicked, name),
             clicked,
+            link: None,
             result: None,
             sort: None,
             header: 0.0,
             body: 0.0,
             name: name.to_owned(),
         }
+    }
+
+    /// Report the chosen row through `link`, so the rest of the window knows
+    /// what "copy this row" means, and mark rows as choosable.
+    #[must_use]
+    pub fn reporting_to(mut self, link: &crate::link::Link) -> Self {
+        self.link = Some(link.clone());
+        let ask = link.clone();
+        self.table = std::mem::replace(&mut self.table, DataTable::new(Vec::new()))
+            .selectable(true)
+            .on_row_click(move |row, _, _| {
+                ask.ask(crate::link::Intent::SelectRow(Some(row)));
+            });
+        self
     }
 
     fn table_for(
@@ -373,7 +391,6 @@ mod tests {
             "text compares without regard to case: a, B, c"
         );
 
-        // A new result starts unsorted.
         table.bind(Some(result()));
         assert_eq!(table.sorted(), None);
     }
@@ -467,7 +484,7 @@ mod tests {
             vec![Cell::Real(9_223_372_036_854_775_808.0)],
             vec![Cell::Real(f64::INFINITY)],
             vec![Cell::Real(f64::NAN)],
-            vec![Cell::Text("".into())],
+            vec![Cell::Text(String::new())],
             vec![Cell::Text("11".into())],
             vec![Cell::Text("A".into()), Cell::Text("a".into())],
             vec![Cell::Blob(10), Cell::Text("BINARY, 10 BYTES".into())],

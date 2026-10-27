@@ -58,10 +58,6 @@ impl HostPairing {
     /// Bind the broker the exchange runs through. This must happen before
     /// the payload is shown: the endpoint and exact certificate are part of
     /// every packet's authenticated transcript.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid endpoint or certificate.
     pub fn attach_broker(
         &mut self,
         endpoint: impl Into<String>,
@@ -74,11 +70,6 @@ impl HostPairing {
     /// threshold identity once the new device's reply has been verified and
     /// the host's own reply acknowledged; the caller must persist it before
     /// reporting success.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the new device's packet fails authentication or
-    /// the DKG rejects it.
     pub fn poll(
         &mut self,
         broker: &PairingHandshake,
@@ -128,11 +119,6 @@ impl HostPairing {
 
 /// Run the new device's half of a pairing through the exact pinned broker
 /// `payload` names, blocking until the host's reply arrives.
-///
-/// # Errors
-///
-/// Returns an error when the broker endpoint or pin is invalid, or any
-/// authenticated DKG exchange fails or times out.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn pair_with_host(payload: &PairingPayload) -> Result<ThresholdIdentity, IdentityFlowError> {
     pair_through(payload, &payload.remote_broker()?)
@@ -215,9 +201,15 @@ mod tests {
         let mut host = host();
         let broker = PairingHandshake::new();
         let payload = host.payload().clone();
+        // The pairer's own deadline is held, so only the host's progress,
+        // bounded by the hang bound below, decides when it is answered.
         let pairer = {
             let broker = broker.clone();
-            std::thread::spawn(move || pair_through(&payload, &broker))
+            std::thread::spawn(move || {
+                tilo_clock::testing::with_monotonic_time(tilo_clock::now(), || {
+                    pair_through(&payload, &broker)
+                })
+            })
         };
         let deadline = tilo_test_env::hang_deadline();
         let host_identity = loop {
@@ -233,7 +225,6 @@ mod tests {
             pairer_identity.group_public_key()
         );
 
-        // A reply authenticated under another payload's transcript is refused.
         let mut forged = self::host();
         let mut rng = UnwrapErr(SysRng);
         let mut pairer = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();

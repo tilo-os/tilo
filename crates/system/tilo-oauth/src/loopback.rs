@@ -15,9 +15,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::{OAuthError, RedirectPorts};
+use crate::{OAuthError, Redirect, RedirectPorts};
 
-/// Path the provider redirects to.
 pub const REDIRECT_PATH: &str = "/oauth";
 
 const WAITING: u8 = 0;
@@ -29,6 +28,7 @@ pub struct LoopbackServer {
     listener: TcpListener,
     address: SocketAddr,
     stop: Arc<AtomicU8>,
+    redirect: Redirect,
 }
 
 /// Ends a pending [`LoopbackServer::wait_for_code`] from another thread.
@@ -101,7 +101,17 @@ impl LoopbackServer {
             listener,
             address,
             stop: Arc::new(AtomicU8::new(WAITING)),
+            redirect: Redirect::default(),
         })
+    }
+
+    /// Redirect to `redirect`'s host and path instead of
+    /// `127.0.0.1` and [`REDIRECT_PATH`]. The listener stays on
+    /// `127.0.0.1`, where a browser's `localhost` arrives.
+    #[must_use]
+    pub fn at(mut self, redirect: &Redirect) -> Self {
+        self.redirect = redirect.clone();
+        self
     }
 
     pub fn port(&self) -> u16 {
@@ -110,7 +120,12 @@ impl LoopbackServer {
 
     /// The exact redirect URI to send in the authorization request.
     pub fn redirect_uri(&self) -> String {
-        format!("http://127.0.0.1:{}{REDIRECT_PATH}", self.address.port())
+        format!(
+            "http://{}:{}{}",
+            self.redirect.host,
+            self.address.port(),
+            self.redirect.path
+        )
     }
 
     pub fn canceller(&self) -> LoopbackCancel {
@@ -161,7 +176,7 @@ impl LoopbackServer {
                 _ => {}
             }
             let line = read_request_line(&mut stream);
-            match parse_redirect_line(&line) {
+            match parse_redirect_at(&line, &self.redirect.path) {
                 Some(RedirectResult::Code { code, state }) => {
                     if state != expected_state {
                         respond(
@@ -230,9 +245,13 @@ fn respond(stream: &mut TcpStream, message: &str) {
 /// Parse the request line of the redirect (`GET /oauth?code=…&state=… HTTP/1.1`).
 /// `None` for a request that is not the redirect.
 pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
+    parse_redirect_at(line, REDIRECT_PATH)
+}
+
+fn parse_redirect_at(line: &str, expected_path: &str) -> Option<RedirectResult> {
     let target = line.split_whitespace().nth(1)?;
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    if path != REDIRECT_PATH {
+    if path != expected_path {
         return None;
     }
     let mut code = None;
@@ -309,6 +328,29 @@ mod tests {
             .unwrap();
         assert_eq!(code, "THECODE");
         assert!(browser.join().unwrap().contains("close this tab"));
+    }
+
+    #[test]
+    fn a_registered_host_and_path_are_the_redirect() {
+        let redirect = Redirect {
+            host: "localhost".into(),
+            path: "/auth/callback".into(),
+        };
+        let server = LoopbackServer::bind().unwrap().at(&redirect);
+        let port = server.port();
+        assert_eq!(
+            server.redirect_uri(),
+            format!("http://localhost:{port}/auth/callback")
+        );
+        let browser = std::thread::spawn(move || {
+            browser_get(port, "/oauth?code=WRONG_PATH&state=S");
+            browser_get(port, "/auth/callback?code=C&state=S")
+        });
+        assert_eq!(
+            server.wait_for_code("S", tilo_test_env::hang_bound()),
+            Ok("C".into())
+        );
+        browser.join().unwrap();
     }
 
     #[test]

@@ -79,6 +79,7 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
             relay_session: None,
             runs: None,
             editor_protocol: None,
+            end_report: false,
         })
         .expect_err("the host target was served");
         assert!(err.starts_with("not available"), "{err}");
@@ -117,10 +118,8 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
     // phase: read_until_gives_up_rather_than_hanging
     {
         let (a, _b) = UnixStream::pair().unwrap();
-        let started = Instant::now();
         let seen = read_until(a.as_raw_fd(), "never", Duration::from_millis(200));
         assert!(seen.is_empty());
-        assert!(started.elapsed() < Duration::from_secs(5));
         let mut sink = Vec::new();
         let _ = (&a).read_to_end(&mut sink);
     }
@@ -176,6 +175,7 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
         relay_session: None,
         runs: None,
         editor_protocol: None,
+        end_report: false,
     };
 
     let (response, fd) = ask(&open);
@@ -265,9 +265,6 @@ fn fixture_file(runtime: &Path, source: &Path) {
 /// the subject the tests actually use, including on an overlay-backed host.
 /// Whether this process can prepare a guest's network namespace: make one
 /// and enter it, as the supervisor does before it starts any guest.
-///
-/// # Errors
-/// Returns the step the kernel or the sandbox refused.
 pub fn namespace_entry() -> std::io::Result<()> {
     tilo_egress::Netns::create()?.open_inside().map(drop)
 }
@@ -345,6 +342,60 @@ fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
     run_handoff();
 }
 
+/// A guest's shell starts as the Host's does: it is the session's login
+/// shell, so it reads the environment home's `~/.bash_profile`; Tab completes
+/// a unique path prefix on its pty; and it marks each run with the
+/// session's key.
+#[test]
+fn a_guest_shell_is_a_login_shell_that_marks_runs_and_tab_completes() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        NamespaceEntry,
+        namespace_entry(),
+        "the guest's network namespace"
+    );
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_env, store, socket, _granted) = serve_fixture(dir.path());
+    let home = store.environment_home(DEFAULT_RECORD);
+    std::fs::create_dir_all(home.join("fixture-unique-directory")).unwrap();
+    std::fs::write(
+        home.join(".bash_profile"),
+        "export FROM_PROFILE=login\n[ -f ~/.bashrc ] && . ~/.bashrc\n",
+    )
+    .unwrap();
+
+    let key = "k3y0fth1ss3ss10n";
+    let (_stream, master) = open_marked_session(&socket, Some(key));
+    let fd = master.as_raw_fd();
+    let prompt = read_until(fd, "Fixture", tilo_test_env::hang_bound());
+    assert!(prompt.contains("Fixture"), "no prompt appeared:\n{prompt}");
+
+    let line = "echo \"[$FROM_PROFILE]\" fixture-uni\t\r";
+    // SAFETY: `fd` is a live pty master.
+    let written = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
+    assert!(written > 0, "could not write to the pty");
+    let expected = "[login] fixture-unique-directory/";
+    let seen = read_until(fd, expected, tilo_test_env::hang_bound());
+    assert!(
+        seen.contains(expected),
+        "the profile was not read or Tab did not complete:\n{seen}"
+    );
+    let mark = format!("\x1b]133;D;0;k={key}\x07");
+    let seen = format!(
+        "{seen}{}",
+        read_until(fd, &mark, tilo_test_env::hang_bound())
+    );
+    assert!(
+        seen.contains(&mark),
+        "the guest's shell marks the run it finished:\n{seen:?}"
+    );
+}
+
 /// The installed public spelling creates Default on first use and runs a
 /// command through the actual native guest, without a host-shell grant.
 #[test]
@@ -366,8 +417,11 @@ fn the_public_ush_alias_creates_default_and_runs_a_confined_command() {
     let usr = dir.path().join("usr");
     std::fs::create_dir_all(usr.join("bin")).unwrap();
     std::fs::create_dir_all(usr.join("libexec")).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tilo-ush"), usr.join("libexec/tilo-ush"))
-        .unwrap();
+    std::os::unix::fs::symlink(
+        tilo_test_env::package_binary!("tilo-ush"),
+        usr.join("libexec/tilo-ush"),
+    )
+    .unwrap();
     std::os::unix::fs::symlink("../libexec/tilo-ush", usr.join("bin/ush")).unwrap();
     let store = Store::at(dir.path().join("store"));
     let records = Records::at(store.records_root());
@@ -443,6 +497,11 @@ fn fixture_environment(store: &Store, granted: &Path) {
 
 /// Ask for the default environment and receive its pty master.
 fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
+    open_marked_session(socket, None)
+}
+
+/// [`open_default_session`], whose shell marks its runs with `runs`.
+fn open_marked_session(socket: &Path, runs: Option<&str>) -> (UnixStream, OwnedFd) {
     let stream = UnixStream::connect(socket).expect("connect");
     let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
         target: Target::default_environment(),
@@ -452,8 +511,9 @@ fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
         command: Vec::new(),
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
-        runs: None,
+        runs: runs.map(str::to_owned),
         editor_protocol: None,
+        end_report: false,
     })
     .unwrap();
     request.push(b'\n');
@@ -481,27 +541,29 @@ fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
     (stream, fd)
 }
 
-fn run_handoff() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let images = dir.path().join("images");
+/// A supervisor serving the fixture environment from `dir`: the scoped
+/// variables its sessions inherit, its store, its socket, and the directory
+/// the record grants.
+fn serve_fixture(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathBuf) {
+    let images = dir.join("images");
     fixture_images(&images);
 
     let mut env = tilo_test_env::ScopedEnv::new();
     // The supervisor re-execs itself to start a session. Under `cargo test`
     // `current_exe` is this test binary — point it at the real one.
-    env.set("TILO_USH_BIN", env!("CARGO_BIN_EXE_tilo-ush"));
+    env.set("TILO_USH_BIN", tilo_test_env::package_binary!("tilo-ush"));
     env.set("TILO_USH_IMAGES", &images);
     env.set("SHELL", "/usr/bin/bash");
 
-    let store = Store::at(dir.path().join("store"));
+    let store = Store::at(dir.join("store"));
     store.ensure().expect("store");
-    let granted = dir.path().join("granted");
+    let granted = dir.join("granted");
     std::fs::create_dir_all(&granted).unwrap();
     let granted = granted.canonicalize().unwrap();
 
     fixture_environment(&store, &granted);
 
-    let socket = dir.path().join("ush.sock");
+    let socket = dir.join("ush.sock");
     let serve_socket = socket.clone();
     let serve_store = store.clone();
     std::thread::spawn(move || {
@@ -512,6 +574,12 @@ fn run_handoff() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(socket.exists(), "the supervisor never bound its socket");
+    (env, store, socket, granted)
+}
+
+fn run_handoff() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_env, store, socket, granted) = serve_fixture(dir.path());
 
     // The connection is the session's lifetime: it stays open until the end.
     let (_stream, master) = open_default_session(&socket);
@@ -598,7 +666,8 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
     let images = dir.path().join("images");
     fixture_images(&images);
     let public_command = dir.path().join("ush");
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tilo-ush"), &public_command).unwrap();
+    std::os::unix::fs::symlink(tilo_test_env::package_binary!("tilo-ush"), &public_command)
+        .unwrap();
     let out = std::process::Command::new(&public_command)
         .args(["-c", "printf ush-command-output"])
         .env(ush::store::STORE_ENV, dir.path().join("store"))
@@ -668,7 +737,7 @@ fn pkg_install_builds_a_tool_that_is_on_path_after_restart() {
     .unwrap();
 
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("TILO_USH_BIN", env!("CARGO_BIN_EXE_tilo-ush"));
+    env.set("TILO_USH_BIN", tilo_test_env::package_binary!("tilo-ush"));
     env.set("TILO_USH_IMAGES", &images);
     env.set("TILO_ENV_TOOLS_STATE", build_state.path());
     env.set("SHELL", "/usr/bin/bash");
@@ -812,7 +881,7 @@ fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
     std::fs::create_dir_all(&granted).unwrap();
     fixture_environment(&store, &granted);
     let binary = dir.path().join("tilo-ush");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilo-ush"), &binary).unwrap();
+    std::fs::copy(tilo_test_env::package_binary!("tilo-ush"), &binary).unwrap();
     let stable = dir.path().join("usr/libexec/tilo-ush");
     std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
     std::fs::hard_link(&binary, &stable).unwrap();

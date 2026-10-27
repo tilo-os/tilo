@@ -149,8 +149,6 @@ pub fn minimum_system_volume_bytes(volume: &SystemVolume) -> u64 {
 
 /// Supported Btrfs minimum plus explicit retained headroom, rounded upward.
 /// Overflow refuses the plan instead of manufacturing a smaller bound.
-/// # Errors
-/// Returns an error if the retained shrink bound overflows.
 pub fn minimum_linux_btrfs_bytes(volume: &LinuxBtrfsVolume) -> Result<u64, PlanError> {
     volume
         .supported_min_bytes
@@ -430,8 +428,6 @@ impl Capacity {
 /// Partition GUIDs are pre-generated only when [`Basis::sets_partition_guids`]. The loader path defaults to the
 /// fallback path for this build's architecture; callers holding the bundle's
 /// `boot_binding.efi_path` apply it with [`with_loader_path`].
-/// # Errors
-/// Returns an error for unsupported geometry, invalid sizes or insufficient space.
 pub fn compute(basis: &Basis, requirements: Requirements) -> Result<Plan, PlanError> {
     let g = Geometry::of(&basis.disk)?;
     if requirements.target_bytes < MIN_TARGET_BYTES {
@@ -531,8 +527,6 @@ pub fn compute(basis: &Basis, requirements: Requirements) -> Result<Plan, PlanEr
 /// Tilo sizes the Review stepper may offer for `basis`, given staging sizes
 /// (`requirements.target_bytes` is ignored). Both bounds are 1 MiB aligned,
 /// and `compute` accepts every aligned size between them.
-/// # Errors
-/// Returns an error for unsupported geometry, overflowing sizes or insufficient space.
 pub fn target_bounds(basis: &Basis, requirements: Requirements) -> Result<TargetBounds, PlanError> {
     let g = Geometry::of(&basis.disk)?;
     let staging = checked_requirement_sum(
@@ -786,7 +780,6 @@ pub(crate) mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn linux_plan_uses_one_aligned_free_extent() {
-        // Phase `linux_uses_the_largest_free_extent_at_its_start`.
         {
             let s = 512;
             let mib = MIB / s;
@@ -823,7 +816,6 @@ pub(crate) mod tests {
             );
         }
 
-        // Phase `linux_refuses_when_no_single_extent_fits_even_if_the_sum_would`.
         {
             let s = 512;
             let mib = MIB / s;
@@ -861,7 +853,6 @@ pub(crate) mod tests {
             );
         }
 
-        // Phase `linux_exact_fit_uses_every_aligned_lba_and_one_more_mib_fails`.
         {
             let s = 512;
             let mib = MIB / s;
@@ -896,7 +887,6 @@ pub(crate) mod tests {
             ));
         }
 
-        // Phase `linux_unaligned_neighbours_round_inward`.
         {
             let s = 512;
             let mib = MIB / s;
@@ -939,7 +929,6 @@ pub(crate) mod tests {
             assert_eq!(plan.staging_esp.extent().lbas(), 600 * 256);
         }
 
-        // Phase `empty_linux_disk_starts_at_the_first_aligned_mib`.
         {
             let basis = linux_basis(512, 128 * GIB, Vec::new());
             let r = req(64 * GIB);
@@ -952,7 +941,6 @@ pub(crate) mod tests {
     /// Size rounding, minimums, reserve, bounds and full disks.
     #[test]
     fn plan_sizes_reserves_and_bounds_are_exact() {
-        // Phase `staging_sizes_round_up_to_whole_mib`.
         {
             let basis = linux_basis(512, 128 * GIB, Vec::new());
             let r = Requirements {
@@ -967,7 +955,6 @@ pub(crate) mod tests {
             assert_eq!(plan.target_extent.lbas() * 512, 35 * GIB + MIB);
         }
 
-        // Phase `target_below_installer_minimum_is_refused`.
         {
             let basis = linux_basis(512, 256 * GIB, Vec::new());
             assert!(matches!(
@@ -983,7 +970,6 @@ pub(crate) mod tests {
             assert_eq!(system_volume_reserve(0), 20 * GIB);
         }
 
-        // Phase `target_bounds_max_is_exactly_what_compute_accepts`.
         {
             for basis in [
                 windows_basis(512, 400, 100, true),
@@ -1005,7 +991,6 @@ pub(crate) mod tests {
             }
         }
 
-        // Phase `no_space_on_a_full_disk`.
         {
             let s = 512;
             let basis = linux_basis(
@@ -1031,7 +1016,6 @@ pub(crate) mod tests {
     /// Partition map consistency, system volume, digest and loader path.
     #[test]
     fn plans_require_consistent_maps_and_bind_digest_and_loader() {
-        // Phase `inconsistent_partition_maps_are_unsupported`.
         {
             let s = 512;
             let overlap = linux_basis(
@@ -1069,7 +1053,6 @@ pub(crate) mod tests {
             ));
         }
 
-        // Phase `system_volume_must_match_the_partition_map`.
         {
             let mut basis = windows_basis(512, 400, 100, true);
             basis.system_volume.as_mut().unwrap().size_bytes += MIB;
@@ -1085,7 +1068,6 @@ pub(crate) mod tests {
             ));
         }
 
-        // Phase `plan_digest_is_stable_and_sensitive`.
         {
             let basis = windows_basis(512, 400, 100, true);
             let plan = compute(&basis, req(64 * GIB)).unwrap();
@@ -1096,7 +1078,6 @@ pub(crate) mod tests {
             assert_eq!(round.digest().unwrap(), plan.digest().unwrap());
         }
 
-        // Phase `loader_path_comes_from_the_bundle_binding`.
         {
             let basis = linux_basis(512, 128 * GIB, Vec::new());
             let plan = with_loader_path(
@@ -1214,7 +1195,6 @@ pub(crate) mod tests {
     /// Windows shrink planning.
     #[test]
     fn windows_plan_shrinks_c_only_by_the_safe_shortfall() {
-        // Phase `windows_shrinks_c_by_exactly_the_shortfall_before_winre`.
         {
             // 512 GiB disk, C: ends at 400 GiB, WinRE right after; tail free.
             let basis = windows_basis(512, 400, 100, true);
@@ -1242,7 +1222,6 @@ pub(crate) mod tests {
             assert_eq!(plan.basis.host_os(), HostOs::Windows);
         }
 
-        // Phase `windows_uses_unallocated_space_after_c_before_shrinking`.
         {
             // C: ends at 400 GiB; no WinRE; a 112 GiB free tail covers everything.
             let basis = windows_basis(512, 400, 100, false);
@@ -1256,7 +1235,6 @@ pub(crate) mod tests {
             );
         }
 
-        // Phase `windows_shrinks_only_the_part_not_already_free`.
         {
             // 20 GiB free after C:, WinRE after that.
             let s = 512;
@@ -1280,7 +1258,6 @@ pub(crate) mod tests {
             );
         }
 
-        // Phase `windows_refuses_a_shrink_that_leaves_c_too_full`.
         {
             // C: ~400 GiB with 300 GiB used: reserve 45 GiB, so C: keeps 345 GiB
             // and only ~55 GiB can be carved: less than the ~104.6 GiB needed.
@@ -1298,7 +1275,6 @@ pub(crate) mod tests {
             assert!(available_bytes > 50 * GIB);
         }
 
-        // Phase `windows_refuses_below_supported_minimum`.
         {
             let mut basis = windows_basis(512, 400, 50, true);
             // Unmovable files: the supported minimum dominates the free rule.

@@ -10,7 +10,7 @@
 //! Interaction is reported to the app as [`ListEvent`]s
 //! ([`AccountList::take_events`]): clicking a row selects it, clicking its
 //! code copies it, and the hover actions edit, reorder and delete it. With no
-//! accounts the list shows an [`EmptyState`] whose action asks to add one.
+//! accounts the list is empty; the view's empty state stands over it.
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -23,9 +23,8 @@ use ui::text_render::{TextKind, TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent,
-    EventCtx, Interaction, ListRowFace, ProgressRingFace, ProgressRingSize, RowAction, RowLeading,
-    ScrollRegion, Tone,
+    AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, EventCtx, Interaction, ListRowFace,
+    ProgressRingFace, ProgressRingSize, RowAction, RowLeading, ScrollRegion, Tone,
 };
 
 use crate::model::{Account, AccountId, account_color};
@@ -41,6 +40,8 @@ const CODE_PROBE: &str = "0000\u{2009}0000";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListEvent {
     Copy(AccountId),
+    /// Show this row's code for a few seconds, then veil it again.
+    Reveal(AccountId),
     Select(AccountId),
     Edit(AccountId),
     MoveUp(AccountId),
@@ -48,8 +49,6 @@ pub enum ListEvent {
     Delete(AccountId),
     /// Install the key for a shared account that has none on this device.
     SetUp(AccountId),
-    /// The empty list's action.
-    Add,
 }
 
 /// Which part of a row the pointer is over.
@@ -209,7 +208,8 @@ pub struct AccountList {
     metrics: Option<Metrics>,
     layouts: Vec<RowLayout>,
     /// The empty state's action, once painted.
-    empty_action: Rect,
+    /// The one row whose code is shown, and when the veil returns.
+    revealed: Option<(AccountId, ui::time::Instant)>,
 }
 
 impl Default for AccountList {
@@ -232,7 +232,7 @@ impl AccountList {
             events: Vec::new(),
             metrics: None,
             layouts: Vec::new(),
-            empty_action: Rect::ZERO,
+            revealed: None,
         }
     }
 
@@ -287,6 +287,18 @@ impl AccountList {
             .filter(|rect| rect.intersect(self.rect).area() > 0.0)
     }
 
+    /// Show `id`'s code for a short while. The code is unreadable at a
+    /// glance by design; this is the deliberate reveal.
+    pub fn show_code(&mut self, id: AccountId) {
+        self.revealed = Some((id, ui::time::now() + ui::time::Duration::from_secs(10)));
+    }
+
+    /// Whether `id`'s code is shown now.
+    pub fn is_revealed(&self, id: AccountId) -> bool {
+        self.revealed
+            .is_some_and(|(shown, until)| shown == id && ui::time::now() < until)
+    }
+
     /// Scroll so the row of `id` is fully inside the viewport.
     pub fn reveal(&mut self, id: AccountId) {
         let Some(m) = self.metrics else { return };
@@ -301,8 +313,6 @@ impl AccountList {
             top + m.row_h + 2.0 * m.edge,
         ));
     }
-
-    // ---- geometry shared by painting and hit-testing -------------------
 
     fn content_height(&self) -> f64 {
         self.metrics
@@ -446,8 +456,6 @@ impl AccountList {
         Some((row, Zone::Body))
     }
 
-    // ---- painting ------------------------------------------------------
-
     pub fn draw(&mut self, ctx: &mut PaintCtx<'_>) {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
@@ -455,10 +463,8 @@ impl AccountList {
         let theme = ctx.theme;
         if self.accounts.is_empty() {
             self.metrics = None;
-            self.paint_empty(ctx);
             return;
         }
-        self.empty_action = Rect::ZERO;
         self.layout(ctx.text, theme);
         let Some(m) = self.metrics else { return };
         let now = totp::unix_now();
@@ -592,6 +598,7 @@ impl AccountList {
         now: f64,
         hovered: bool,
     ) {
+        let shown = self.is_revealed(account.id);
         let Some(layout) = self.layouts.get(i) else {
             return;
         };
@@ -609,7 +616,11 @@ impl AccountList {
                 theme,
             );
         }
-        let code = totp::group_code(&totp::code_at(account, now));
+        let code = if shown {
+            totp::group_code(&totp::code_at(account, now))
+        } else {
+            totp::group_code(&"\u{2022}".repeat(account.digits.clamp(4, 10) as usize))
+        };
         let style = code_style(theme);
         let (width, height) = ctx.text.measure_style(&code, None, &style);
         let ring_x1 = self.at(i, layout.code).x1 - m.edge;
@@ -624,7 +635,8 @@ impl AccountList {
         );
         if hovered {
             let side = f64::from(theme.tokens.metrics.icon_md);
-            Icon::Copy.draw(
+            let icon = if shown { Icon::Copy } else { Icon::Eye };
+            icon.draw(
                 ctx.scene,
                 ctx.transform,
                 Rect::from_center_size(ring.center(), (side, side)),
@@ -650,22 +662,15 @@ impl AccountList {
         face.paint(ctx, ring);
     }
 
-    fn paint_empty(&mut self, ctx: &mut PaintCtx<'_>) {
-        let content = EmptyStateContent {
-            icon: Some(Icon::Shield),
-            message: Some("Scan a QR code or paste a setup link to see its one-time codes here."),
-            action_label: Some("Add account"),
-            ..EmptyStateContent::new("No accounts yet")
-        };
-        let action = EmptyState::paint(ctx, self.rect, &content, self.last_mouse);
-        self.empty_action = action.unwrap_or(Rect::ZERO);
-    }
-
-    // ---- input ---------------------------------------------------------
-
     /// Whether the scroll bar's fade needs frames now.
     pub fn needs_animation_frame(&self) -> bool {
         self.scroller.needs_animation_frame(&self.theme)
+    }
+
+    /// Step a glide after a flick to the frame's time, from the app's
+    /// `update`; returns whether the rows moved.
+    pub fn advance_scroll(&mut self) -> bool {
+        self.scroller.advance()
     }
 
     /// When the scroll bar starts to fade.
@@ -716,10 +721,6 @@ impl AccountList {
     fn press(&mut self, handled: &mut bool) {
         let p = self.last_mouse;
         if self.accounts.is_empty() {
-            if self.empty_action.contains(p) {
-                self.events.push(ListEvent::Add);
-                *handled = true;
-            }
             return;
         }
         let Some((i, zone)) = self.hit(p) else { return };
@@ -729,7 +730,8 @@ impl AccountList {
         let id = account.id;
         let event = match zone {
             Zone::Body => ListEvent::Select(id),
-            Zone::Code => ListEvent::Copy(id),
+            Zone::Code if self.is_revealed(id) => ListEvent::Copy(id),
+            Zone::Code => ListEvent::Reveal(id),
             Zone::SetUp => ListEvent::SetUp(id),
             Zone::Action(index) => match commands(i, self.accounts.len()).get(index) {
                 Some(command) => command.event(id),
@@ -847,8 +849,20 @@ mod tests {
             let copy = list.at(row, list.layouts[row].code).center();
             assert!(dispatch(&mut list, &cursor_at(copy)));
             assert!(dispatch(&mut list, &left_press()));
-            assert_eq!(list.take_events(), vec![ListEvent::Copy(id)]);
+            assert_eq!(
+                list.take_events(),
+                vec![ListEvent::Reveal(id)],
+                "codes are veiled at rest; the first press reveals this row"
+            );
             assert_eq!(list.selected(), Some(id));
+            // The app grants the reveal the event asked for.
+            list.show_code(id);
+            assert!(dispatch(&mut list, &left_press()));
+            assert_eq!(
+                list.take_events(),
+                vec![ListEvent::Copy(id)],
+                "once revealed, the same control copies"
+            );
             for (index, command) in commands(row, list.len()).iter().enumerate() {
                 let point = list.at(row, list.layouts[row].actions[index]).center();
                 dispatch(&mut list, &cursor_at(point));

@@ -44,7 +44,6 @@ enum ExitState {
     Ready,
 }
 
-/// The root of a Browser window.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "layout invalidation, address focus, close admission and native fullscreen observations are independent flags; exit admission already uses ExitState"
@@ -70,11 +69,23 @@ pub struct BrowserWindow {
     observed_content_fullscreen: bool,
     fullscreen_hint_deadline: Option<Instant>,
     fullscreen_hint: Option<Box<dyn Widget>>,
+    /// This window among the profile's open Browser windows, in every
+    /// process: closing the last of them is the Browser closing.
+    open_window: Option<crate::storage::OpenWindow>,
 }
 
 impl BrowserWindow {
     /// A window showing `page`. `focus_address` puts the caret in the
     /// address field, for a window opened without a page to show.
+    /// Count this window among the open windows of the profile at `root`
+    /// instead of the Browser's own.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn counted_in(mut self, root: &std::path::Path) -> Self {
+        self.open_window = crate::storage::open_window(root).ok();
+        self
+    }
+
     pub fn new(page: BrowserWidget, focus_address: bool) -> Self {
         Self {
             page: Box::new(page),
@@ -93,6 +104,8 @@ impl BrowserWindow {
             observed_content_fullscreen: false,
             fullscreen_hint_deadline: None,
             fullscreen_hint: None,
+            open_window: crate::storage::data_dir()
+                .and_then(|root| crate::storage::open_window(&root).ok()),
         }
     }
 
@@ -119,6 +132,15 @@ impl BrowserWindow {
         store: ui::storage::Settings<crate::downloads::Stored>,
     ) {
         self.page.attach_downloads(store);
+    }
+
+    /// Keep the widths extensions' side panels are dragged to in this
+    /// device's settings.
+    pub(crate) fn attach_side_panel_widths(
+        &mut self,
+        store: ui::storage::Settings<crate::extension_controller::SidePanelWidths>,
+    ) {
+        self.page.attach_side_panel_widths(store);
     }
 
     /// Keep the page's visits in the person's browsing history.
@@ -511,7 +533,6 @@ impl Widget for BrowserWindow {
                     meta: modifiers.super_key(),
                 });
         }
-        self.page.set_window_scale(ctx.scale_factor);
         if let WindowEvent::KeyboardInput { event: key, .. } = event {
             if self.exit_state == ExitState::Choice
                 && key.state == ElementState::Pressed
@@ -571,6 +592,13 @@ impl Widget for BrowserWindow {
     ) {
         self.page
             .draw_overlay(scene, transform, tr, theme, presence);
+    }
+    /// The window paints nothing of its own: its damage is its children's,
+    /// so a caret blinking in the page repaints the caret, not the window.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        for child in self.children() {
+            child.collect_damage(regions);
+        }
     }
     fn children(&self) -> Vec<&dyn Widget> {
         if self.immersive() {
@@ -823,7 +851,16 @@ impl FloatingSurfaceProvider for BrowserWindow {
 
 impl Drop for BrowserWindow {
     fn drop(&mut self) {
-        self.page.clear_history_on_workspace_exit();
+        // "Clear browsing data on exit" clears the person's history when the
+        // Browser closes: its last window, not each tab. The history is the
+        // person's on every device, and a tab closing is no exit.
+        if self
+            .open_window
+            .take()
+            .is_some_and(crate::storage::OpenWindow::close)
+        {
+            self.page.clear_history_on_workspace_exit();
+        }
     }
 }
 
@@ -997,7 +1034,6 @@ mod tests {
     /// A window is one page: other pages are desktop tabs.
     #[test]
     fn other_pages_are_desktop_tabs_never_tabs_of_this_window() {
-        // Phase `the_window_has_no_tab_strip`.
         {
             let (mut window, _engine) = window();
             let rects = layout_rects(&mut window);
@@ -1013,7 +1049,6 @@ mod tests {
             assert_ne!(accessibility.role, ui::a11y::Role::TabBar);
         }
 
-        // Phase `a_link_opened_in_a_new_tab_asks_the_desktop_for_a_tab_beside`.
         {
             let _ = ui::shell_tabs::take_requests();
             let (mut window, engine) = window();
@@ -1042,7 +1077,6 @@ mod tests {
             );
         }
 
-        // Phase `a_page_that_closes_itself_closes_its_desktop_tab`.
         {
             let _ = ui::shell_tabs::take_requests();
             let (mut window, engine) = window();
@@ -1054,7 +1088,6 @@ mod tests {
             );
         }
 
-        // Phase `the_desktop_tab_chords_never_reach_the_page`.
         {
             use winit::keyboard::ModifiersState;
             let (mut window, engine) = window();
@@ -1084,7 +1117,6 @@ mod tests {
     /// Content full screen hint lifetime and exit routes.
     #[test]
     fn content_fullscreen_owner_hint_and_exit_follow_the_root_window() {
-        // Phase `content_fullscreen_hides_the_chrome_and_shows_the_hint`.
         {
             let (mut window, engine) = window();
             engine.emit(WebViewEvent::FullscreenChanged(true));
@@ -1115,7 +1147,6 @@ mod tests {
             assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
         }
 
-        // Phase `ordinary_os_fullscreen_keeps_browser_chrome_and_has_no_hint`.
         {
             let (mut window, _engine) = window();
             window.on_fullscreen_changed(true);
@@ -1125,7 +1156,6 @@ mod tests {
             assert!(!rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
         }
 
-        // Phase `input_is_held_until_the_immersive_tree_is_rebuilt`.
         {
             let (mut window, engine) = window();
             window.on_fullscreen_changed(true);
@@ -1141,7 +1171,6 @@ mod tests {
             ));
         }
 
-        // Phase `fullscreen_hint_lifetime_is_exactly_three_seconds`.
         {
             let entered = ui::time::now();
             let deadline = entered + FULLSCREEN_HINT_DURATION;
@@ -1216,7 +1245,6 @@ mod tests {
                 error: String::new(),
             };
 
-        // Phase `fullscreen_download_close_exposes_both_exit_choices`.
         {
             let (mut window, engine) = window();
             let mut doc = AutoCommit::new();
@@ -1247,7 +1275,6 @@ mod tests {
             assert_eq!(engine.sent(&WebViewCommand::CancelAllDownloads), 0);
         }
 
-        // Phase `cancelling_waits_for_the_native_owner_before_quitting`.
         {
             let (mut window, engine) = window();
             let mut doc = AutoCommit::new();
@@ -1297,7 +1324,6 @@ mod tests {
             );
         }
 
-        // Phase `a_window_without_downloads_closes_at_once`.
         {
             let (mut window, _engine) = window();
             assert_eq!(
@@ -1421,9 +1447,7 @@ mod tests {
     /// How a person reaches the address field before typing.
     #[derive(Clone, Copy, Debug)]
     enum Reach {
-        /// A new window starts in the field.
         Launch,
-        /// A click into the field.
         Click,
         /// Ctrl+L.
         Shortcut,
@@ -1481,10 +1505,6 @@ mod tests {
         navigated(&engine)
     }
 
-    // USER REQUIREMENT (2026-10-19): "typing a URL or search term and pressing
-    // Enter does nothing, and there is no arrow/go button" -- Enter and the go
-    // button both commit the field: an address opens over https, anything
-    // else searches.
     #[test]
     fn enter_or_the_go_button_opens_an_address_or_searches() {
         let mut failures = Vec::new();
@@ -1512,6 +1532,97 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Puts the window bar back to unhosted when a test ends, however it
+    /// ends: the bar's state is the thread's.
+    struct Hosted;
+    impl Hosted {
+        fn bar() -> Self {
+            ui::window_toolbar::set_hosted(true);
+            Self
+        }
+    }
+    impl Drop for Hosted {
+        fn drop(&mut self) {
+            ui::window_toolbar::set_hosted(false);
+            let _ = ui::window_toolbar::take_events();
+        }
+    }
+
+    #[test]
+    fn hosted_the_bar_lists_the_only_suggestions_and_each_opens_where_it_says() {
+        use ui::window_toolbar::ToolbarEvent;
+        // (what the person chooses, what must open)
+        type Opened = fn(&str) -> bool;
+        let cases: [(&str, Opened); 3] = [
+            // Enter on what was typed: the bar commits the text.
+            ("typed", |url| {
+                url == "https://youtube.com/" || url == "https://youtube.com"
+            }),
+            // The first row: open the address.
+            ("go", |url| {
+                url == "https://youtube.com/" || url == "https://youtube.com"
+            }),
+            // The search row: search for the words, though they read as an
+            // address.
+            ("search", |url| {
+                url::Url::parse(url).is_ok_and(|url| {
+                    url.host_str() == Some("duckduckgo.com")
+                        && url.query_pairs().any(|(_, value)| value == "youtube.com")
+                })
+            }),
+        ];
+        for (choice, opened) in cases {
+            let _hosted = Hosted::bar();
+            let engine = PageEngine::new();
+            engine.emit(WebViewEvent::UriChanged("https://duckduckgo.com/".into()));
+            engine.emit(WebViewEvent::LoadFinished);
+            crate::browser_widget::test_window_engine::install(engine.clone());
+            let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::new()
+                .expect("Browser opens");
+            let harness = app.harness();
+            for _ in 0..3 {
+                harness.relayout();
+            }
+            ui::window_toolbar::deliver(ToolbarEvent::Edit {
+                text: "youtube.com".into(),
+            });
+            harness.relayout();
+            harness.relayout();
+            let suggestions = ui::window_toolbar::declared()
+                .and_then(|toolbar| toolbar.location)
+                .map(|location| location.suggestions)
+                .unwrap_or_default();
+            assert!(
+                suggestions.len() >= 2,
+                "the bar lists the browser's suggestions: {suggestions:?}"
+            );
+            assert_eq!(suggestions[0].label, "youtube.com");
+            assert_eq!(suggestions[0].icon.as_deref(), Some("globe"));
+            assert!(
+                !harness
+                    .targets()
+                    .contains_key("browser.address_suggestions")
+                    || harness.targets()["browser.address_suggestions"].area() <= 0.0,
+                "the window lists no suggestions of its own while the bar does"
+            );
+            let text = match choice {
+                "typed" => "youtube.com".to_owned(),
+                "go" => suggestions[0].value.clone(),
+                _ => suggestions
+                    .iter()
+                    .find(|row| row.icon.as_deref() == Some("search"))
+                    .expect("a search row")
+                    .value
+                    .clone(),
+            };
+            ui::window_toolbar::deliver(ToolbarEvent::Commit { text });
+            harness.relayout();
+            app.settle();
+            let urls = navigated(&engine);
+            assert!(urls.iter().any(|url| opened(url)), "{choice}: {urls:?}");
+        }
     }
 
     /// In a Tilo session the address is the window bar's location
@@ -1547,7 +1658,17 @@ mod tests {
                     .iter()
                     .map(|action| action.id.as_str())
                     .collect::<Vec<_>>(),
-                ["reload", "bookmark", "library"]
+                [
+                    "reload",
+                    "bookmark",
+                    "library",
+                    "page",
+                    "zoom",
+                    "extensions",
+                    "privacy",
+                    "settings"
+                ],
+                "the row's buttons, then the More menu's commands"
             );
             ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Commit {
                 text: typed.into(),
@@ -1568,5 +1689,146 @@ mod tests {
             };
             assert!(ok, "{typed}: {urls:?}");
         }
+    }
+
+    /// The keys the engine host gives no extension's command because the
+    /// Browser keeps them (`chromium/src/browser_keeps.inc`) are exactly
+    /// the keys a command could hold that the Browser answers before its
+    /// page sees them: every such key is pressed here through the window's
+    /// own handling, and one the page never gets is the Browser's. The list
+    /// is checked for the platform the test runs on.
+    #[test]
+    fn the_engine_keeps_from_extensions_exactly_the_keys_the_browser_answers() {
+        use winit::keyboard::ModifiersState as M;
+        let mac = cfg!(target_os = "macos");
+        let platform = if mac { "mac " } else { "linux " };
+        // A key as a manifest spells it on this platform: its modifiers as
+        // the window holds them, and its name.
+        let parse = |spec: &str| {
+            let mut held = M::empty();
+            let mut key = String::new();
+            for token in spec.split('+') {
+                match token {
+                    "Ctrl" if mac => held |= M::SUPER,
+                    "Ctrl" | "MacCtrl" => held |= M::CONTROL,
+                    "Alt" => held |= M::ALT,
+                    "Shift" => held |= M::SHIFT,
+                    name => name.clone_into(&mut key),
+                }
+            }
+            (held, key)
+        };
+        // Each entry for this platform, and whether the host answers it
+        // itself rather than the Browser.
+        let listed: Vec<((M, String), bool)> = include_str!("../chromium/src/browser_keeps.inc")
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with('"'))
+            .map(|line| line.trim_end_matches(',').trim_matches('"'))
+            .filter_map(|entry| entry.strip_prefix(platform))
+            .map(|entry| match entry.strip_suffix(" (host)") {
+                Some(spec) => (parse(spec), true),
+                None => (parse(entry), false),
+            })
+            .collect();
+        assert!(listed.len() > 10, "the list was read: {listed:?}");
+
+        // The key the window is handed for `key` held with Shift or not,
+        // on a US layout, as the engine host reads it back.
+        let logical = |key: &str, shift: bool| -> Key {
+            let named = |named| Key::Named(named);
+            match key {
+                "Comma" => Key::Character(if shift { "<" } else { "," }.into()),
+                "Period" => Key::Character(if shift { ">" } else { "." }.into()),
+                "Space" => named(NamedKey::Space),
+                "Home" => named(NamedKey::Home),
+                "End" => named(NamedKey::End),
+                "PageUp" => named(NamedKey::PageUp),
+                "PageDown" => named(NamedKey::PageDown),
+                "Delete" => named(NamedKey::Delete),
+                "Tab" => named(NamedKey::Tab),
+                "Up" => named(NamedKey::ArrowUp),
+                "Down" => named(NamedKey::ArrowDown),
+                "Left" => named(NamedKey::ArrowLeft),
+                "Right" => named(NamedKey::ArrowRight),
+                digit if digit.bytes().all(|b| b.is_ascii_digit()) && shift => {
+                    let index = usize::from(digit.as_bytes()[0] - b'0');
+                    Key::Character(")!@#$%^&*("[index..=index].into())
+                }
+                letter if shift => Key::Character(letter.to_ascii_uppercase().into()),
+                other => Key::Character(other.to_ascii_lowercase().into()),
+            }
+        };
+        // Whether the window answers `key` held with `held`: its page,
+        // which has the keyboard, never gets it.
+        let answers = |key: Key, held: M| {
+            let (mut window, engine) = window();
+            let (tree, root, _nodes) = layout(&mut window);
+            assert!(window.page_mut().focus_control("browser.surface"));
+            let pressed = |engine: &PageEngine| {
+                engine
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|command| matches!(command, WebViewCommand::Key { down: true, .. }))
+                    .count()
+            };
+            let before = pressed(&engine);
+            let event = key_event_with_state(key, ElementState::Pressed);
+            dispatch(&mut window, (&tree, root), &event, held);
+            pressed(&engine) == before
+        };
+        // The page has the keyboard: a key nobody keeps reaches it.
+        assert!(!answers(Key::Character("y".into()), M::ALT | M::SHIFT));
+
+        let keys = ('A'..='Z').chain('0'..='9').map(String::from).chain(
+            [
+                "Comma", "Period", "Space", "Home", "End", "PageUp", "PageDown", "Delete", "Tab",
+                "Up", "Down", "Left", "Right",
+            ]
+            .map(String::from),
+        );
+        // The modifiers a manifest can give a key on this platform: Ctrl or
+        // Alt (on macOS Command or Control, or both, or Option), maybe
+        // Shift; never Ctrl with Alt.
+        let sets = if mac {
+            vec![M::SUPER, M::SUPER | M::CONTROL, M::CONTROL, M::ALT]
+        } else {
+            vec![M::CONTROL, M::ALT]
+        };
+        let mut drift = Vec::new();
+        for key in keys {
+            for held in sets.iter().flat_map(|&held| [held, held | M::SHIFT]) {
+                let entry = |host: bool| {
+                    listed
+                        .iter()
+                        .any(|((m, k), h)| *h == host && *m == held && *k == key)
+                };
+                let answered = answers(logical(&key, held.shift_key()), held);
+                if entry(true) {
+                    if answered {
+                        drift.push(format!(
+                            "{held:?} {key}: the host's, yet the Browser answers it"
+                        ));
+                    }
+                } else if answered != entry(false) {
+                    drift.push(format!(
+                        "{held:?} {key}: the Browser {} it, the list {}",
+                        if answered {
+                            "answers"
+                        } else {
+                            "leaves the page"
+                        },
+                        if entry(false) { "keeps it" } else { "does not" },
+                    ));
+                }
+            }
+        }
+        assert!(
+            drift.is_empty(),
+            "chromium/src/browser_keeps.inc and the Browser's own keys differ:\n{}",
+            drift.join("\n")
+        );
     }
 }

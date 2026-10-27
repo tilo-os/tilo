@@ -139,7 +139,6 @@ fn normalise_host(host: &str) -> String {
 pub enum NetHostPattern {
     /// `*`: every host.
     Any,
-    /// A host or a domain.
     Named(HostPattern),
 }
 
@@ -277,7 +276,6 @@ impl EgressPolicy {
         found
     }
 
-    /// Whether `host` may be reached at all.
     pub fn permits(&self, host: &str) -> bool {
         self.allows(host).is_some()
     }
@@ -355,7 +353,6 @@ mod tests {
                 subdomains,
             }))
         };
-        // Phase `every_spelling_parses_to_one_meaning`.
         {
             assert_eq!(NetHostPattern::parse("*"), Ok(NetHostPattern::Any));
             assert_eq!(NetHostPattern::parse(" * "), Ok(NetHostPattern::Any));
@@ -381,7 +378,6 @@ mod tests {
                 Ok(".example.com".to_owned())
             );
         }
-        // Phase `addresses_and_junk_are_refused`.
         {
             for address in ["10.0.0.5", "::1", "[::1]", "1.1.1.1"] {
                 assert_eq!(
@@ -447,7 +443,6 @@ mod tests {
                 );
             }
         }
-        // Phase `only_an_exact_grant_names_a_host`.
         {
             let exact = EgressPolicy::from_grants(["localhost"]);
             assert!(exact.names_exactly("LOCALHOST."));

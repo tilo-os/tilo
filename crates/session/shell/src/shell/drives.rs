@@ -18,12 +18,18 @@
 //!   ([`os_actions::ToolIntent::OpenDrive`]); the answer arrives here.
 //! - An opened drive opens in Files, which is granted the drive for this
 //!   session through the workspace's own grants, like the home folder.
+//! - Files does not ask on a timer. It waits (the broker's `drivesChanged`)
+//!   on a revision that moves whenever the list it would be given changes,
+//!   and then asks for the list once. A machine whose drives stay put never
+//!   wakes Files.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+use tokio::sync::watch;
 
 use ntfs_mount::protocol::{
     self, Consent, Drive, Mode, Mounted, Placement, ReadOnlyReason, RememberOffer, Request,
@@ -96,9 +102,12 @@ pub(crate) fn start(wake: crate::session_runtime::Wake) {
 
 /// The drives as Files lists them.
 pub fn listed() -> Vec<DriveEntry> {
-    shared()
-        .drives
-        .lock_recover()
+    entries(&shared().drives.lock_recover())
+}
+
+/// `drives` as Files is given them.
+fn entries(drives: &[Drive]) -> Vec<DriveEntry> {
+    drives
         .iter()
         .take(MAX_LISTED_DRIVES)
         .map(|drive| DriveEntry {
@@ -111,14 +120,75 @@ pub fn listed() -> Vec<DriveEntry> {
         .collect()
 }
 
+/// When the list Files is given may have changed: a revision that names
+/// nothing.
+struct ListRevision {
+    /// Starts at 1, so a first wait (from 0) answers at once and Files
+    /// fetches its first list.
+    changes: watch::Sender<u64>,
+}
+
+impl ListRevision {
+    fn new() -> Self {
+        Self {
+            changes: watch::Sender::new(1),
+        }
+    }
+
+    /// Put `drives` in `slot`, and move the revision when the list Files
+    /// would be given differs from the one before. A refresh that finds
+    /// the same drives moves nothing, so nobody wakes.
+    fn replace(&self, slot: &Mutex<Vec<Drive>>, drives: Vec<Drive>) {
+        let changed = {
+            let mut held = slot.lock_recover();
+            let changed = entries(&held) != entries(&drives);
+            *held = drives;
+            changed
+        };
+        if changed {
+            self.changes
+                .send_modify(|revision| *revision = revision.wrapping_add(1).max(1));
+        }
+    }
+
+    /// Resolves once the revision moves past `after`, with the revision to
+    /// wait from next. Subscribed now, not when first polled, so a change
+    /// in between is still seen.
+    fn wait(&self, after: u64) -> impl std::future::Future<Output = u64> + Send + 'static {
+        let mut changes = self.changes.subscribe();
+        async move {
+            loop {
+                let current = *changes.borrow_and_update();
+                if current != after {
+                    return current;
+                }
+                if changes.changed().await.is_err() {
+                    // The revision outlives every wait and never closes.
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    }
+}
+
+/// The revision Files' waits follow.
+fn revision() -> &'static ListRevision {
+    static REVISION: OnceLock<ListRevision> = OnceLock::new();
+    REVISION.get_or_init(ListRevision::new)
+}
+
+/// Resolves once the list [`listed`] gives may have changed since `after`
+/// (0 at first, then what the previous wait returned), with the value to
+/// wait from next. While no drive comes, goes, opens or closes it stays
+/// pending and costs no wakeup.
+pub fn changed(after: u64) -> impl std::future::Future<Output = u64> + Send + 'static {
+    revision().wait(after)
+}
+
 /// Open `drive`, asking the person first unless a remembered choice
 /// applies and the request comes `from_files`: Files asks when the person
 /// clicks the drive there, which is the only moment a remembered drive opens
 /// without a question. Anything else asking is answered by the sheet.
-///
-/// # Errors
-///
-/// When the drive is unknown or drives are unavailable in this session.
 pub fn request_open(drive: &str, from_files: bool) -> Result<(), String> {
     if !shared()
         .drives
@@ -416,7 +486,7 @@ impl Worker {
             .collect();
         self.asked
             .retain(|id| drives.iter().any(|drive| drive.id == *id));
-        *shared().drives.lock_recover() = drives;
+        revision().replace(&shared().drives, drives);
         for drive in arrived {
             self.asked.insert(drive.id.clone());
             if let Some(consent) = self.ask(&drive) {
@@ -702,9 +772,7 @@ mod tests {
             open(&mut worker);
             let _ = done.send(worker);
         });
-        finished
-            .recv_timeout(Duration::from_secs(20))
-            .expect("the drive opened without asking")
+        tilo_test_env::recv("the drive to open without asking", &finished)
     }
 
     #[test]
@@ -728,12 +796,16 @@ mod tests {
             asked: HashSet::new(),
             next_sheet: 0,
         };
+        let first = poll_once(&mut Box::pin(changed(0))).expect("a first wait answers at once");
+        let mut plugged = Box::pin(changed(first));
         worker.refresh();
         assert!(
             listed()
                 .iter()
                 .any(|drive| drive.id == "nvme0n1p3:1" && drive.internal)
         );
+        let seen = poll_once(&mut plugged).expect("a drive found tells a waiting Files");
+        let mut opened = Box::pin(changed(seen));
         assert!(
             !crate::shell::portal_dialog::PortalDialogController::new(queue.clone()).pump(),
             "an internal drive is not asked about until someone opens it"
@@ -749,6 +821,10 @@ mod tests {
         worker.open_requested("nvme0n1p3:1", false);
         answered.join().unwrap();
         assert_eq!(*mounted.lock().unwrap(), vec![Mode::Open]);
+        // The worker looks again after each open, as `run` does.
+        worker.refresh();
+        let open = poll_once(&mut opened).expect("an opened drive tells a waiting Files");
+        let mut closed = Box::pin(changed(open));
         assert!(drain_reveal_paths().contains(&PathBuf::from("/run/media/person/Windows")));
 
         // Closed, then clicked in Files again: opens lazily, no sheet.
@@ -758,6 +834,11 @@ mod tests {
         assert_eq!(
             protocol::call(&socket, close.clone(), ASK_TIMEOUT).unwrap(),
             Response::Done
+        );
+        worker.refresh();
+        assert!(
+            poll_once(&mut closed).is_some(),
+            "a closed drive tells a waiting Files"
         );
         let mut worker = without_a_sheet(worker, |worker| {
             worker.open_requested("nvme0n1p3:1", false);
@@ -779,6 +860,72 @@ mod tests {
 
     fn drain_reveal_paths() -> Vec<PathBuf> {
         std::mem::take(&mut *shared().reveals.lock_recover())
+    }
+
+    /// Poll `wait` once: its answer if it has one now.
+    fn poll_once(
+        wait: &mut std::pin::Pin<Box<impl std::future::Future<Output = u64>>>,
+    ) -> Option<u64> {
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match std::future::Future::poll(wait.as_mut(), &mut cx) {
+            std::task::Poll::Ready(change) => Some(change),
+            std::task::Poll::Pending => None,
+        }
+    }
+
+    #[test]
+    fn files_hears_once_per_change_to_its_list_and_never_for_a_refresh_alone() {
+        type Edit = fn(&mut Vec<Drive>);
+        let revision = ListRevision::new();
+        let slot = Mutex::new(Vec::new());
+        let mut after =
+            poll_once(&mut Box::pin(revision.wait(0))).expect("a first wait answers at once");
+
+        let mut wait = Box::pin(revision.wait(after));
+        revision.replace(&slot, Vec::new());
+        assert_eq!(poll_once(&mut wait), None, "no drives, still none");
+
+        let changes: [(&str, Edit); 5] = [
+            ("a stick is plugged in", |drives| {
+                drives.push(drive(Placement::External, Mode::OpenSafely));
+            }),
+            ("it opens", |drives| {
+                drives[0].mounted = Some(Mounted {
+                    path: "/run/media/person/Stick".into(),
+                    mode: Mode::OpenSafely,
+                    read_only: None,
+                });
+            }),
+            ("it is renamed", |drives| drives[0].label = "Photos".into()),
+            ("it closes", |drives| drives[0].mounted = None),
+            ("it is taken out", Vec::clear),
+        ];
+        let mut drives = Vec::new();
+        for (what, edit) in changes {
+            edit(&mut drives);
+            revision.replace(&slot, drives.clone());
+            let change = poll_once(&mut wait).unwrap_or_else(|| panic!("{what}: Files hears"));
+            assert_ne!(change, after, "{what}");
+            assert_ne!(change, 0, "{what}: never reads as a first wait");
+            after = change;
+            wait = Box::pin(revision.wait(after));
+            revision.replace(&slot, drives.clone());
+            assert_eq!(poll_once(&mut wait), None, "{what}: heard once");
+        }
+
+        // What Files is not shown moves nothing.
+        drives.push(drive(Placement::External, Mode::OpenSafely));
+        revision.replace(&slot, drives.clone());
+        after = poll_once(&mut wait).expect("plugged in again");
+        let mut wait = Box::pin(revision.wait(after));
+        drives[0].needs_consent = false;
+        drives[0].preselect = Mode::Open;
+        revision.replace(&slot, drives);
+        assert_eq!(
+            poll_once(&mut wait),
+            None,
+            "how the sheet would ask is not in Files' list"
+        );
     }
 
     #[test]

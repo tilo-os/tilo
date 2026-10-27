@@ -31,7 +31,6 @@ pub enum Blend {
     Multiply,
 }
 
-/// One tunable of an engine.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ParamSpec {
     pub id: String,
@@ -73,7 +72,6 @@ impl Settings {
         settings
     }
 
-    /// These settings with `overrides` on top.
     #[must_use]
     pub fn with(&self, overrides: &BTreeMap<String, f32>) -> Self {
         let mut settings = self.clone();

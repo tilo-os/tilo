@@ -1,9 +1,10 @@
-# System monitor: its tabs through the processes' actions, showing the
-# machine the shots run on.
+# System monitor: its tabs over the processes of the app's own scenario,
+# through the processes' actions (never the machine the shots run on).
 
 [[situation]]
 name = "processes"
 title = "The process list"
+scenario = "flat"
 
 [[situation.steps]]
 invoke = { resource = "monitor.processes", action = "show-tab", args = { tab = "processes" } }
@@ -11,16 +12,9 @@ invoke = { resource = "monitor.processes", action = "show-tab", args = { tab = "
 [[situation]]
 name = "resources"
 title = "Resource graphs"
-
-[[situation.steps]]
-invoke = { resource = "monitor.processes", action = "show-tab", args = { tab = "resources" } }
+scenario = "resources"
 
 [[situation]]
-name = "filtered"
-title = "Processes filtered by name"
-
-[[situation.steps]]
-invoke = { resource = "monitor.processes", action = "show-tab", args = { tab = "processes" } }
-
-[[situation.steps]]
-invoke = { resource = "monitor.processes", action = "filter", args = { query = "python" } }
+name = "tree"
+title = "Processes as a tree"
+scenario = "tree-expanded"

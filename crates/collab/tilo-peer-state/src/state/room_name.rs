@@ -21,11 +21,6 @@ impl PeerGovernance<'_> {
 impl PeerGovernanceMut<'_> {
     /// Rename the room to `name`, authored by the governor `key`. Naming it
     /// what it is already called changes nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer or the change is
-    /// refused.
     pub fn author_room_name(
         self,
         name: &str,

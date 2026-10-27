@@ -7,13 +7,52 @@ use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, Location, RelaySummary, SessionTarget};
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
 
-/// One row of the target picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TargetMenuRow {
     Open(SessionTarget),
     /// Run the current environment here or on a relay.
     RunOn(Location),
     Manage,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickerRow {
+    label: String,
+    /// It is where the tab's session runs: the row carries the check.
+    current: bool,
+    /// A separator stands above it.
+    separated: bool,
+    row: TargetMenuRow,
+}
+
+impl TargetMenuRow {
+    /// The row as the window bar's picker commits it.
+    fn encode(&self) -> String {
+        match self {
+            Self::Open(target) => format!("open:{}", target.encode()),
+            Self::RunOn(location) => format!(
+                "run-on:{}",
+                serde_json::to_string(location).unwrap_or_default()
+            ),
+            Self::Manage => "manage".to_owned(),
+        }
+    }
+
+    /// The row a window bar's picker committed; anything malformed or
+    /// invalid is none.
+    fn decode(raw: &str) -> Option<Self> {
+        if raw == "manage" {
+            return Some(Self::Manage);
+        }
+        if let Some(target) = raw.strip_prefix("open:") {
+            return SessionTarget::decode(target).map(Self::Open);
+        }
+        let location = raw.strip_prefix("run-on:")?;
+        serde_json::from_str::<Location>(location)
+            .ok()
+            .filter(Location::is_valid)
+            .map(Self::RunOn)
+    }
 }
 
 /// The environments panel: list, create and rename.
@@ -117,7 +156,10 @@ fn target_label(
                 Location::Relay { .. } => format!("{name} on {}", location_label(location, relays)),
             }
         }
-        SessionTarget::Legacy { vm } => format!("{vm} ({})", t("terminal-target-legacy")),
+        SessionTarget::Legacy { vm } => crate::i18n::t_args(
+            "terminal-target-legacy",
+            &[("vm", ui::i18n::ArgValue::Text(vm.clone()))],
+        ),
     }
 }
 
@@ -190,7 +232,7 @@ impl TerminalWidget {
     }
 
     fn header_h(&self) -> f64 {
-        if self.sessions.target.is_some() {
+        if self.sessions.target.is_some() && !self.bar_shows_target() {
             self.chrome_header_h
         } else {
             0.0
@@ -256,7 +298,9 @@ impl TerminalWidget {
         attach: Option<&str>,
     ) {
         self.sessions.target = Some(target.clone());
-        // Dropping the platform lifetime also shuts down reader-held clones.
+        // The session this replaces ends: that closes no window. Dropping the
+        // platform lifetime also shuts down reader-held clones.
+        self.end_session_exit();
         self.service_lifetime = None;
         if let Some(result) =
             self.sessions
@@ -286,6 +330,7 @@ impl TerminalWidget {
         match result {
             Ok(backend) => {
                 self.record_relay_session(backend.relay_session.clone());
+                self.tell_window_session(backend.supervisor_session.clone());
                 self.attach_backend(backend);
                 // A process stands behind the grid from now on.
                 self.headless = false;
@@ -322,6 +367,14 @@ impl TerminalWidget {
                 self.show_status(&reason);
                 self.sessions.state = OpenState::Failed(reason);
             }
+        }
+        // A reconnect attempt settled, one way or the other.
+        self.settle_reconnect();
+        // The window bar's picker names the places there are; they are
+        // listed off the UI thread.
+        if self.bar_shows_target() {
+            self.sessions
+                .refresh_environments_in_background(Arc::clone(&self.waker));
         }
         request_terminal_wake(&self.waker);
     }
@@ -388,6 +441,17 @@ impl TerminalWidget {
                 let reason = t("terminal-host-denied");
                 self.show_status(&reason);
                 self.sessions.state = OpenState::Failed(reason);
+                // A refusal is not where the tab runs: reopened (the next
+                // login restores it), it goes where a new tab would rather
+                // than put the same question to the person unasked.
+                if self
+                    .recorded_target
+                    .as_ref()
+                    .is_some_and(SessionTarget::is_host)
+                {
+                    let back = self.sessions.default_target();
+                    self.record_target(&back);
+                }
             }
             None => {}
         }
@@ -454,6 +518,9 @@ impl TerminalWidget {
             self.handle_environments_panel_event(event, ctx);
             return true;
         }
+        if self.route_start_failure(event, ctx) {
+            return true;
+        }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -484,7 +551,9 @@ impl TerminalWidget {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(label) = self.chip_label() else {
+        // Where the window bar names the target, the content holds only the
+        // terminal.
+        let Some(label) = self.chip_label().filter(|_| !self.bar_shows_target()) else {
             self.chip_rect = Rect::ZERO;
             return;
         };
@@ -526,17 +595,18 @@ impl TerminalWidget {
         }
     }
 
-    /// Open the target picker under the chip.
-    pub fn open_target_menu(&mut self) {
-        self.sessions.refresh_environments();
+    /// The target picker's rows, in order: the targets (the current one
+    /// marked), "Run on" this device or one of the person's relays for the
+    /// environment the tab runs, then "Manage environments…", each group
+    /// after a separator. The same rows in the window bar's picker and in
+    /// the picker the tab opens itself.
+    fn target_picker_rows(&self) -> Vec<PickerRow> {
         let targets = crate::target::picker_targets(
             &self.sessions.environments,
             true,
             &self.sessions.legacy_vms,
         );
-        let mut menu = ContextMenu::new();
-        menu.set_platform_conventions(self.conventions);
-        let mut rows = Vec::with_capacity(targets.len() + 1);
+        let mut rows = Vec::with_capacity(targets.len() + 2);
         // Picking another environment keeps it where the current one runs.
         let here = self
             .sessions
@@ -549,37 +619,71 @@ impl TerminalWidget {
                 Some(location) => target.at(location),
                 None => target,
             };
-            let current = self.sessions.target.as_ref() == Some(&target);
-            let label = target_label(&target, &self.sessions.environments, &self.sessions.relays);
-            menu.push(MenuItem::action(label, || {}).with_checked(current));
-            rows.push(Some(TargetMenuRow::Open(target)));
+            rows.push(PickerRow {
+                label: target_label(&target, &self.sessions.environments, &self.sessions.relays),
+                current: self.sessions.target.as_ref() == Some(&target),
+                separated: false,
+                row: TargetMenuRow::Open(target),
+            });
         }
-        // "Run on": this device or one of the person's relays, for the
-        // environment the tab runs.
         if let Some(here) = here.filter(|_| !self.sessions.relays.is_empty()) {
-            menu.push(MenuItem::separator());
-            rows.push(None);
             let places =
                 std::iter::once(Location::ThisDevice).chain(self.sessions.relays.iter().map(|r| {
                     Location::Relay {
                         relay: r.relay.clone(),
                     }
                 }));
-            for place in places {
-                let label = format!(
-                    "{}{} {}",
-                    if place == here { "✓ " } else { "" },
-                    t("terminal-run-on"),
-                    location_label(&place, &self.sessions.relays)
-                );
-                menu.push(MenuItem::action(label, || {}));
-                rows.push(Some(TargetMenuRow::RunOn(place)));
+            for (index, place) in places.enumerate() {
+                rows.push(PickerRow {
+                    label: format!(
+                        "{} {}",
+                        t("terminal-run-on"),
+                        location_label(&place, &self.sessions.relays)
+                    ),
+                    current: place == here,
+                    separated: index == 0,
+                    row: TargetMenuRow::RunOn(place),
+                });
             }
         }
-        menu.push(MenuItem::separator());
-        rows.push(None);
-        menu.push(MenuItem::action(t("terminal-target-manage"), || {}));
-        rows.push(Some(TargetMenuRow::Manage));
+        rows.push(PickerRow {
+            label: t("terminal-target-manage"),
+            current: false,
+            separated: true,
+            row: TargetMenuRow::Manage,
+        });
+        rows
+    }
+
+    fn choose_picker_row(&mut self, row: TargetMenuRow) {
+        match row {
+            TargetMenuRow::Open(target) => {
+                let _ = self.switch_target(&target, Requester::Person);
+            }
+            TargetMenuRow::RunOn(location) => {
+                if let Some(target) = self.sessions.target.clone() {
+                    let _ = self.switch_target(&target.at(location), Requester::Person);
+                }
+            }
+            TargetMenuRow::Manage => self.open_environments_panel(),
+        }
+    }
+
+    /// Open the target picker under the chip.
+    pub fn open_target_menu(&mut self) {
+        self.sessions.refresh_environments();
+        let mut menu = ContextMenu::new();
+        menu.set_platform_conventions(self.conventions);
+        let picker = self.target_picker_rows();
+        let mut rows = Vec::with_capacity(picker.len() + 2);
+        for (index, row) in picker.into_iter().enumerate() {
+            if row.separated && index > 0 {
+                menu.push(MenuItem::separator());
+                rows.push(None);
+            }
+            menu.push(MenuItem::action(row.label, || {}).with_checked(row.current));
+            rows.push(Some(row.row));
+        }
         menu.set_viewport(Some(self.rect));
         let anchor = if self.chip_rect.width() > 0.0 {
             self.chip_rect
@@ -630,24 +734,14 @@ impl TerminalWidget {
         let Some(rows) = self.target_menu_rows.take() else {
             return false;
         };
-        match rows.get(index).cloned().flatten() {
-            Some(TargetMenuRow::Open(target)) => {
-                let _ = self.switch_target(&target, Requester::Person);
-            }
-            Some(TargetMenuRow::RunOn(location)) => {
-                if let Some(target) = self.sessions.target.clone() {
-                    let _ = self.switch_target(&target.at(location), Requester::Person);
-                }
-            }
-            Some(TargetMenuRow::Manage) => self.open_environments_panel(),
-            None => {}
+        if let Some(row) = rows.get(index).cloned().flatten() {
+            self.choose_picker_row(row);
         }
         true
     }
 
     // --- the environments panel
 
-    /// Open the environments panel.
     pub fn open_environments_panel(&mut self) {
         self.sessions.refresh_environments();
         let placeholder = t("terminal-env-name-placeholder");

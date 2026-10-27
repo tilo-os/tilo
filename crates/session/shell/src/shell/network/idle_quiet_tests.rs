@@ -40,9 +40,11 @@ const IDLE: Duration = Duration::from_secs(60);
 /// Measured blocking on CI (focused, #4138): main `f744af88ad` 6.12 to
 /// 6.98/s (runs 92709-92713); with the upkeep tick and the gossip sweep
 /// armed only while there are peers, which this pair has, 5.84 to 7.17/s
-/// (runs 92724, 92787-92796). What remains is the two network runtimes'
-/// workers over both desktops: the transport's 5 s keep-alives, the 5 s
-/// upkeep tick and the 10 s sweep both desktops keep while linked.
+/// (runs 92724, 92787-92796). With the fabric on the gossip connection,
+/// the upkeep tick armed only while a retry waits and the home-peer files
+/// watched instead of read every 2 s, 4.77/s (t run r124f044c42): the two
+/// network runtimes' workers over both desktops, for the gossip link's 5 s
+/// keep-alives and the 10 s sweep both desktops keep while linked.
 ///
 /// Where the gate runs, loaded, its threads block more than when focused:
 /// nightly's 12.05/s against about 10/s focused on the same code before
@@ -270,7 +272,6 @@ impl AddressRefresher {
         ]); // ifaddrmsg
         message.extend_from_slice(&1_u32.to_ne_bytes()); // lo
         for kind in [2_u16, 1] {
-            // IFA_LOCAL, IFA_ADDRESS
             message.extend_from_slice(&20_u16.to_ne_bytes());
             message.extend_from_slice(&kind.to_ne_bytes());
             message.extend_from_slice(&address);
@@ -306,9 +307,14 @@ impl Drop for AddressRefresher {
 /// Every thread of this process except the one driving the desktops'
 /// frame loops, whose 10 Hz is the simulation's and not the session's.
 pub(super) fn session_threads(driver: Option<u32>) -> Vec<tilo_test_env::idle::ThreadSample> {
+    session_threads_but(&[driver])
+}
+
+/// This process's threads but the ones named in `left_out`.
+fn session_threads_but(left_out: &[Option<u32>]) -> Vec<tilo_test_env::idle::ThreadSample> {
     let mut threads = tilo_test_env::idle::sample_process(std::process::id())
         .expect("sample this process's threads");
-    threads.retain(|thread| Some(thread.tid) != driver);
+    threads.retain(|thread| !left_out.contains(&Some(thread.tid)));
     threads
 }
 
@@ -379,10 +385,10 @@ impl Desktop {
             tree,
             presence,
             ctx: PresenceCtx::default(),
-            // Both show the room's one shared tab in the same place.
             desk: Desk {
                 tiles: vec![(SHARED_TAB, vello::kurbo::Rect::new(0.0, 0.0, 800.0, 600.0))],
                 pointer: None,
+                strip: None,
             },
             repaints: 0,
         }
@@ -405,7 +411,7 @@ fn workspace_name(tree: &WorkspaceTreeHandle, room: RoomId) -> Option<String> {
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .map(|workspace| workspace.name.clone())
 }
 
@@ -534,6 +540,11 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
         DeviceCapabilities::member(),
     );
     assert!(second_net.join_default_workspace());
+    // What each person chose to show there, as the desktop says on start:
+    // until it does, nothing of them leaves.
+    for net in [&first_net, &second_net] {
+        net.set_presence_visibility(&room.to_string(), ui::PresenceVisibility::WhereIAm);
+    }
 
     let mut first = Desktop::new(Arc::clone(&first_net), first_tree);
     let mut second = Desktop::new(Arc::clone(&second_net), second_tree.clone());
@@ -730,12 +741,18 @@ fn a_lone_idle_desktop_keeps_its_network_runtime_asleep() {
     let driver = refresher.as_ref().map(|(tid, _)| *tid);
     std::thread::sleep(Duration::from_millis(500));
 
-    // Nothing drives this desktop, so every thread of the process counts.
-    let before = session_threads(driver);
+    // Nothing drives this desktop, so every thread of the process counts
+    // but the router simulation's and this one, which only sleeps and reads
+    // `/proc`: a loaded runner blocks it on page faults, which is the runner
+    // and not the desktop.
+    let measurer = Some(tilo_test_env::idle::current_thread_id().expect("this thread's id"));
+    let left_out = [driver, measurer];
+    let before = session_threads_but(&left_out);
     let started = Instant::now();
     std::thread::sleep(LONE_IDLE);
     let measured = started.elapsed();
-    let wakeups = tilo_test_env::idle::Wakeups::between(before, session_threads(driver), measured);
+    let wakeups =
+        tilo_test_env::idle::Wakeups::between(before, session_threads_but(&left_out), measured);
     stop.store(true, std::sync::atomic::Ordering::Release);
     if let Some((_, thread)) = refresher {
         let refreshes = thread.join().unwrap();

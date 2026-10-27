@@ -10,7 +10,6 @@
 )]
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::{Value, json};
 use shortcuts::{APP_ID, App, Workbench};
@@ -223,8 +222,8 @@ impl ActionHost for FakeHost {
         None
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
-        Ok(())
+    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Pending<Result<(), ActionHostError>> {
+        Pending::ready(Ok(()))
     }
 }
 
@@ -269,12 +268,26 @@ fn act(app: &mut TestApp<App>, target: &str, action: &Action) {
         .unwrap_or_else(|error| panic!("{target}: {error}"));
 }
 
+/// Press the window's action `id` in its bar, once the bar offers it.
+fn press_bar(app: &mut TestApp<App>, id: &str) {
+    app.settle();
+    let offered = ui::window_toolbar::declared().is_some_and(|bar| {
+        bar.actions
+            .iter()
+            .any(|action| action.id == id && action.enabled)
+    });
+    assert!(offered, "the window bar offers {id}");
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.to_owned() });
+    app.settle();
+}
+
 #[test]
 fn the_app_starts_empty_and_reads_the_door_as_itself() {
     let (host, _guard, mut app) = open();
     assert!(app.state().drafts.is_empty(), "no seeded drafts");
     app.harness()
-        .wait_for_named("new-shortcut", tilo_test_env::hang_bound())
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
         host.callers
@@ -291,6 +304,73 @@ fn the_app_starts_empty_and_reads_the_door_as_itself() {
 }
 
 #[test]
+fn the_window_bar_names_the_page_and_holds_its_actions() {
+    let (_host, _guard, mut app) = open();
+    app.harness()
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
+        .expect("the library shows");
+    let bar = |app: &mut TestApp<App>| {
+        app.settle();
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let location = bar.location.map(|location| location.label);
+        let actions: Vec<(String, bool)> = bar
+            .actions
+            .into_iter()
+            .map(|action| (action.id, action.enabled))
+            .collect();
+        (location, actions)
+    };
+    let (location, actions) = bar(&mut app);
+    assert_eq!(location.as_deref(), Some("Overview"));
+    assert_eq!(
+        actions,
+        [
+            ("new-shortcut".to_owned(), true),
+            ("reload".to_owned(), true)
+        ]
+    );
+    for drawn in ["new-shortcut", "reload"] {
+        assert!(
+            !app.harness().targets().contains_key(drawn),
+            "the window draws no {drawn} of its own"
+        );
+    }
+
+    press_bar(&mut app, "new-shortcut");
+    assert_eq!(app.state().drafts.len(), 1, "New shortcut starts a draft");
+    let (location, actions) = bar(&mut app);
+    assert_eq!(
+        location.as_deref(),
+        Some("New shortcut"),
+        "the draft is open"
+    );
+    assert!(
+        actions.contains(&("review-save".to_owned(), false)),
+        "a draft without steps cannot be saved yet: {actions:?}"
+    );
+    press_bar(&mut app, "discard-draft");
+    assert!(app.state().drafts.is_empty(), "Discard draft discards it");
+}
+
+#[test]
+fn the_bar_duplicates_the_open_draft() {
+    let (_host, _guard, mut app) = open();
+    app.harness()
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
+        .expect("the library shows");
+    press_bar(&mut app, "new-shortcut");
+    press_bar(&mut app, "duplicate-shortcut");
+    assert_eq!(app.state().drafts.len(), 2, "Duplicate starts a variant");
+    assert!(
+        app.state()
+            .drafts
+            .values()
+            .any(|draft| draft.name == "New shortcut copy"),
+        "the copy is named after the draft"
+    );
+}
+
+#[test]
 fn every_operation_is_a_published_action() {
     let (_host, _guard, mut app) = open();
     let resources = app.harness().resources();
@@ -300,6 +380,8 @@ fn every_operation_is_a_published_action() {
         .expect("the drafts are a published resource");
     for action in [
         "new-draft",
+        "duplicate-draft",
+        "duplicate-shortcut",
         "draft-shortcut",
         "set-schedule",
         "add-step",
@@ -398,7 +480,7 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
         .expect("the draft checks");
 
     // Review what it may do, then save.
-    act(&mut app, "review-save", &Action::Activate);
+    press_bar(&mut app, "review-save");
     app.harness()
         .wait_for_named("shortcuts-save-sheet", tilo_test_env::hang_bound())
         .expect("the sheet shows");
@@ -455,7 +537,7 @@ fn with_agent() -> FakeHost {
 fn drafting_is_hidden_without_the_agent() {
     let (_host, _guard, mut app) = open();
     app.harness()
-        .wait_for_named("new-shortcut", tilo_test_env::hang_bound())
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
         .expect("the library shows");
     assert!(
         !app.harness().targets().contains_key("describe-shortcut"),
@@ -507,10 +589,10 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
     );
 
     act(&mut app, "open-drafted", &Action::Activate);
-    // Let the open land.
-    let _ = app
-        .harness()
-        .wait_until(Duration::from_millis(300), |_| false);
+    tilo_test_env::wait_until("the drafted shortcut to open", || {
+        app.settle();
+        !app.state().drafts.is_empty()
+    });
     let drafts: Vec<_> = app.state().drafts.values().cloned().collect();
     assert_eq!(drafts.len(), 1, "opened as a draft");
     let shortcut = drafts[0].shortcut(Vec::new());
@@ -574,9 +656,14 @@ fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
     );
     act(&mut app, "run-quick-note", &Action::Activate);
 
-    let _ = app
-        .harness()
-        .wait_until(Duration::from_millis(300), |_| false);
+    tilo_test_env::wait_until("the shortcut's run to be invoked", || {
+        app.settle();
+        host.invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.target.address.action == "run")
+    });
     let runs: Vec<_> = host
         .invoked
         .lock()
@@ -661,7 +748,7 @@ fn morning_refresh_draft_requires_schedule_choice_and_keyboard_save_review() {
     render_morning_matrix(&mut app, &output, "draft");
     app.harness().set_theme(ui::Theme::light());
     app.harness().resize((1600, 1000)).unwrap();
-    act(&mut app, "review-save", &Action::Activate);
+    press_bar(&mut app, "review-save");
     app.harness()
         .expect(
             &SemanticExpectation::named("schedule-review-0")
@@ -754,4 +841,36 @@ fn inspection_node<'a>(
     node.children
         .iter()
         .find_map(|child| inspection_node(child, id))
+}
+
+/// The save review tells a first-time user what saving agrees to: the
+/// shortcut may use only the app actions listed, and a shortcut that lists
+/// none says plainly that it can't touch their apps.
+#[test]
+fn the_save_review_says_what_saving_allows() {
+    let (_host, _guard, mut app) = open();
+    app.invoke(Workbench::DRAFT_SHORTCUT.with(json!({
+        "id": "no-actions", "name": "Only a branch", "steps": [{"id": "branch", "step": "if", "cond": {"truthy": {"literal": true}}, "then": []}]
+    })))
+    .unwrap();
+    press_bar(&mut app, "review-save");
+    let explain = ui::i18n!("shortcuts-grant-explain");
+    assert!(
+        explain.contains("app actions listed") && explain.contains("person running it"),
+        "{explain}"
+    );
+    let none = ui::i18n!("shortcuts-grant-none");
+    assert!(none.contains("can't read or change"), "{none}");
+    for (id, text) in [
+        ("shortcuts-grant-explain", explain),
+        ("shortcuts-grant-none", none),
+    ] {
+        app.harness()
+            .expect(
+                &SemanticExpectation::named(id)
+                    .name(text)
+                    .within(tilo_test_env::hang_bound()),
+            )
+            .unwrap_or_else(|error| panic!("the review shows {id}: {error}"));
+    }
 }

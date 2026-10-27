@@ -1,7 +1,4 @@
-//! Exercise policy changes through the production pump and settings watcher.
-
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
 
 use super::{DeviceFabricRuntime, LocalFabricCapabilities};
 use crate::compositor::selection::{
@@ -56,7 +53,7 @@ fn a_settings_revocation_reaches_the_pump_and_removes_only_imported_clipboard_hi
     assert_eq!(clipboard_history(&selection).len(), 2);
 
     write_policy(false);
-    awakened.recv_timeout(Duration::from_secs(2)).unwrap();
+    tilo_test_env::recv("the policy change to wake the runtime", &awakened);
     runtime.pump(&network, &selection, local);
     let history = clipboard_history(&selection);
     assert_eq!(history.len(), 1, "actual pump must revoke imported history");

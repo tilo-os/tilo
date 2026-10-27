@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use tilo_render_protocol::Limits;
 use tilo_render_protocol::channel::{Channel, ChannelError, Received};
-use tilo_render_protocol::control::{AppMessage, Plane, Refusal, ServiceMessage};
+use tilo_render_protocol::control::{AppMessage, Plane, Refusal, Renderer, ServiceMessage};
 use tilo_render_protocol::frame;
 use tilo_render_protocol::shm::Mapping;
 use tilo_render_protocol::{PROTOCOL_VERSION, SurfaceId};
@@ -89,11 +89,6 @@ impl Service {
     }
 
     /// Serve until the broker goes away.
-    ///
-    /// # Errors
-    ///
-    /// When the broker socket fails, or the GPU is lost (the broker starts a
-    /// new service, and apps send their frames again).
     pub fn run(mut self, broker: &Channel) -> Result<(), ChannelError> {
         let device = self
             .gpu
@@ -248,6 +243,7 @@ impl Service {
                         version: version.min(PROTOCOL_VERSION),
                         limits,
                         font_roots,
+                        renderer: renderer(self.gpu.as_ref()),
                     },
                     &[],
                 );
@@ -545,8 +541,13 @@ impl Service {
             return;
         }
         let started = Instant::now();
-        if let Some(gpu) = &self.gpu {
-            let _ = gpu.device.poll(vello::wgpu::PollType::wait_indefinitely());
+        if let Some(gpu) = &self.gpu
+            && !gpu.finish()
+        {
+            // Nothing of this pass was drawn: the GPU stopped or was lost, and `run` ends the
+            // service for the broker to start another; apps send their frames again.
+            self.ready.clear();
+            return;
         }
         let waited = u32::try_from(started.elapsed().as_micros()).unwrap_or(u32::MAX);
         let limits = self.limits;
@@ -592,6 +593,24 @@ impl Service {
     }
 }
 
+/// What draws the frames: the adapter in wgpu's words, or the CPU rasteriser
+/// into shared memory when the service holds no device.
+fn renderer(gpu: Option<&Gpu>) -> Renderer {
+    gpu.map_or_else(
+        || Renderer {
+            name: "CPU rasteriser".to_owned(),
+            device_type: "Cpu".to_owned(),
+            backend: "Shm".to_owned(),
+            driver: "render service".to_owned(),
+        },
+        |gpu| Renderer {
+            name: gpu.adapter.name.clone(),
+            device_type: format!("{:?}", gpu.adapter.device_type),
+            backend: format!("{:?}", gpu.adapter.backend),
+            driver: gpu.adapter.driver.clone(),
+        },
+    )
+}
 fn send(
     (channel, app): (&Channel, &str),
     message: &ServiceMessage,

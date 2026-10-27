@@ -56,15 +56,15 @@ pub mod actions;
 pub(crate) mod address_book;
 pub mod app;
 pub mod attachment_store;
-pub mod autoconfig;
 pub mod avatars;
 pub mod compose;
 pub(crate) mod connect;
+pub mod copies;
 pub mod engine;
 #[cfg(test)]
 #[cfg(feature = "live")]
 pub(crate) mod fake_imap;
-pub mod header;
+pub mod held;
 pub mod html_mail;
 pub mod html_text;
 pub mod i18n;
@@ -75,7 +75,6 @@ pub mod reader;
 pub mod resource;
 pub mod sample;
 pub mod search;
-mod setup_sheet;
 pub mod shortcuts_overlay;
 pub mod sidebar;
 pub mod state;
@@ -84,6 +83,7 @@ pub mod sync;
 pub mod transport;
 pub mod util;
 pub mod validate;
+pub mod window_bar;
 
 pub use app::MailApp;
 pub use resource::{Mail, MailShell};

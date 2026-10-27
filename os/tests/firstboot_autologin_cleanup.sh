@@ -71,4 +71,19 @@ fi
 grep -Fxq 'later greeter config' "$tmp/etc/greetd/config.toml"
 [ -e "$tmp/etc/tilo/firstboot-autologin-pending" ]
 
+# The autologin and a boot sign-in's handoff never both start a session on
+# one boot. The cleanup unit runs exactly on a boot whose greetd read the
+# installer's initial_session, and leaves a directory for the rest of that
+# boot; the greeter offers no handoff while it exists
+# (crates/session/greeter/src/handoff.rs tests that half).
+unit="$repo/os/usr/lib/systemd/system/tilo-firstboot-autologin-cleanup.service"
+grep -Fqx 'ConditionPathExists=/etc/tilo/firstboot-autologin-pending' "$unit"
+grep -Fqx 'RuntimeDirectory=tilo-firstboot-autologin' "$unit"
+grep -Fqx 'RuntimeDirectoryPreserve=yes' "$unit"
+grep -Fqx 'RuntimeDirectoryMode=0755' "$unit"
+grep -Fq 'pub const FIRST_BOOT_AUTOLOGIN: &str = "/run/tilo-firstboot-autologin";' \
+  "$repo/crates/session/greeter/src/handoff.rs"
+grep -Fq 'crate::handoff::FIRST_BOOT_AUTOLOGIN' \
+  "$repo/crates/session/greeter/src/greeter_app.rs"
+
 echo 'first-boot autologin cleanup: ok'

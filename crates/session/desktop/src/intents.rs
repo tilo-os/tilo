@@ -129,7 +129,7 @@ pub fn take_width(group: &mut ui::widget::WindowGroup) -> Option<LocalViewIntent
         .take_pending_width_change()
         .map(|width| LocalViewIntent::Width {
             group: group.id,
-            width: WindowWidth::Fraction(width),
+            width,
         })
 }
 pub fn take_tab_reorder(group: &mut ui::widget::WindowGroup) -> Option<SessionIntent> {

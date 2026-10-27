@@ -2,8 +2,8 @@
 //!
 //! [`ContainersApp`] owns the engine snapshot (containers, images, volumes
 //! and distroboxes mirrored from rootless podman) and presents it in a
-//! [`NavShell`]: the sections are the sidebar, the container list is the
-//! overview and the chosen container is the content (see [`crate::view`]).
+//! [`NavShell`](ui::widget::NavShell): the sections are the sidebar, the container list is the
+//! overview and the chosen container is the content (see `crate::view`).
 //! Dialogs (confirming a removal, asking for a name, the new-container form,
 //! pull progress) are [`ModalDialog`]s mounted beside the shell.
 //!
@@ -31,7 +31,7 @@ use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::Effect as _;
 use ui::time::Instant;
 use ui::tokens::TextRole;
-use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
+use ui::widget::toast::{Notice, ToastKind};
 use ui::widget::{
     AppModel, Column, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text, TextInput,
     Widget,
@@ -92,11 +92,9 @@ impl Confirm {
 /// Kind of text the prompt dialog collects.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PromptKind {
-    /// Create a new named volume.
     NewVolume,
     /// Tag an existing image (the source is in `Prompt::context`).
     TagImage,
-    /// Pull an image by reference.
     PullImage,
 }
 
@@ -181,9 +179,6 @@ pub struct ControlledRefreshRequest {
 
 #[cfg(test)]
 impl ControlledRefreshRequest {
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn snapshot(&self, engine: Engine) -> Result<(), String> {
         self.events
             .send(Bg::Snapshot(engine))
@@ -200,27 +195,18 @@ pub struct ControlledPullRequest {
 
 #[cfg(test)]
 impl ControlledPullRequest {
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn line(&self, line: impl Into<String>) -> Result<(), String> {
         self.events
             .send(Bg::Pull(StreamMsg::Line(line.into())))
             .map_err(|_| "controlled pull receiver disconnected".into())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn done(&self) -> Result<(), String> {
         self.events
             .send(Bg::Pull(StreamMsg::Done))
             .map_err(|_| "controlled pull receiver disconnected".into())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn fail(&self, error: impl Into<String>) -> Result<(), String> {
         self.events
             .send(Bg::Pull(StreamMsg::Failed(error.into())))
@@ -238,10 +224,6 @@ pub struct ControlledCreateRequest {
 impl ControlledCreateRequest {
     /// Deliver the existing post-run refresh event. The current create worker
     /// exposes no classified create success/failure result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the retained application event receiver has closed.
     pub fn post_run_snapshot(&self, engine: Engine) -> Result<(), String> {
         self.events
             .send(Bg::Snapshot(engine))
@@ -380,6 +362,7 @@ impl ContainersApp {
             intents: intents.clone(),
             offsets: view::Offsets::default(),
             sort: ui::LocalState::new(None),
+            detail_title: ui::LocalState::new(String::new()),
         };
         let window = view::window(&parts);
         Self {
@@ -511,7 +494,6 @@ impl ContainersApp {
         self.publish_model();
     }
 
-    /// Show the selected container's `tab`.
     pub(crate) fn show_tab(&mut self, tab: DetailTab) {
         self.view.tab = tab;
         self.parts.offsets.detail.set((0.0, 0.0));
@@ -627,7 +609,6 @@ impl ContainersApp {
         rows
     }
 
-    /// The live row `id`, wherever it is in the engine.
     pub(crate) fn engine_row(&self, id: &str) -> Option<LiveRow> {
         let live = self.engine.live;
         if let Some(container_id) = id
@@ -696,8 +677,6 @@ impl ContainersApp {
     fn connected(&self) -> bool {
         !self.past && (self.engine.live || !self.live)
     }
-
-    // ---- background work ------------------------------------------------
 
     /// Kick a background podman re-probe so stats stay fresh without blocking
     /// the UI thread. No-op offline.
@@ -773,6 +752,7 @@ impl ContainersApp {
                 if newc.logs.is_empty() {
                     newc.logs = old.logs;
                     newc.logs_error = old.logs_error;
+                    newc.logs_fetched_unix_ms = old.logs_fetched_unix_ms;
                 }
                 if newc.env.is_empty() {
                     newc.env = old.env;
@@ -812,9 +792,11 @@ impl ContainersApp {
                 Ok(logs) => {
                     c.logs = logs;
                     c.logs_error = None;
+                    c.logs_fetched_unix_ms = ui::time::try_unix_now_ms();
                 }
                 Err(error) => {
                     c.logs_error = Some(error);
+                    c.logs_fetched_unix_ms = None;
                 }
             }
             self.engine_changed();
@@ -879,8 +861,6 @@ impl ContainersApp {
         }
         self.engine_changed();
     }
-
-    // ---- streaming pull -------------------------------------------------
 
     /// Start a streaming `podman pull` of `reference` on a worker thread and
     /// show its progress. Offline it simulates a quick success so the demo
@@ -956,8 +936,6 @@ impl ContainersApp {
         }
     }
 
-    // ---- image / volume actions ----------------------------------------
-
     /// Remove an image (post-confirmation). Force-removes so an unused tag
     /// goes even if a stopped container references it.
     pub(crate) fn remove_image(&mut self, reference: &str) {
@@ -976,7 +954,6 @@ impl ContainersApp {
         }
     }
 
-    /// Tag an image with a new reference.
     pub(crate) fn tag_image(&mut self, source: &str, new_tag: &str) {
         let new_tag = new_tag.trim();
         if new_tag.is_empty() {
@@ -1135,8 +1112,6 @@ impl ContainersApp {
             self.show_toast(format!("Created a container from {image}"), false);
         }
     }
-
-    // ---- dialogs --------------------------------------------------------
 
     pub(crate) fn set_create_open(&mut self, open: bool) {
         if self.create_open == open {
@@ -1338,8 +1313,6 @@ impl ContainersApp {
         }
     }
 
-    // ---- intents --------------------------------------------------------
-
     /// Apply what the window's controls asked for.
     pub(crate) fn drain_intents(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.show_opened();
@@ -1416,8 +1389,6 @@ impl ContainersApp {
         }
     }
 
-    // ---- view state -----------------------------------------------------
-
     /// Hand the window what it shows, when that changed.
     fn publish_model(&mut self) {
         // A container that left the engine is no longer shown as chosen.
@@ -1428,6 +1399,15 @@ impl ContainersApp {
             return;
         }
         self.published = Some(published);
+        let title = view
+            .selected
+            .as_deref()
+            .and_then(|id| self.engine.find(id))
+            .map(|container| container.name.clone())
+            .unwrap_or_default();
+        if self.parts.detail_title.with(|shown| *shown != title) {
+            self.parts.detail_title.set(title);
+        }
         self.parts.model.set(
             view::Model {
                 engine: Rc::new(self.engine.clone()),
@@ -1469,7 +1449,6 @@ impl ContainersApp {
         }
     }
 
-    /// The dialog on top, if one is open.
     fn top_dialog_mut(&mut self) -> Option<&mut dyn Widget> {
         if let Some(dialog) = self.confirm_dialog.as_mut() {
             return Some(dialog);
@@ -1519,27 +1498,9 @@ impl ContainersApp {
         }
         out
     }
-
-    fn paint_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-    ) {
-        self.toast.paint(
-            scene,
-            transform,
-            tr,
-            theme,
-            window,
-            ToastAnchor::BottomCenter,
-        );
-    }
 }
 
-/// How a finished lifecycle verb reads in a toast.
+/// How a finished lifecycle verb reads in the window bar's notice.
 pub(crate) fn past_tense(action: Action) -> &'static str {
     match action {
         Action::Start => "Started",
@@ -1588,6 +1549,8 @@ impl Widget for ContainersApp {
                 self.rebuild_pull();
             }
             self.toast.expire();
+            // The result says so in the window's bar while it lasts.
+            self.toast.publish();
             self.publish_model();
         }
         self.window.sync(state, path);
@@ -1708,8 +1671,6 @@ impl Widget for ContainersApp {
         for child in self.children_mut() {
             child.draw_overlay(scene, transform, tr, theme, presence);
         }
-        let window = presence.viewport.get().unwrap_or(self.rect);
-        self.paint_toast(scene, transform, tr, theme, window);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1786,16 +1747,12 @@ impl Widget for ContainersApp {
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        let mut root = AccessNode::new(Role::Window)
-            .with_name("Containers")
-            .with_description(&self.engine.connection)
-            .with_bounds(self.rect);
-        root.children.extend(
-            self.toast
-                .access_node()
-                .map(|node| node.with_hashed_key("containers.toast")),
-        );
-        Some(root)
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Containers")
+                .with_description(&self.engine.connection)
+                .with_bounds(self.rect),
+        )
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -1897,12 +1854,12 @@ impl ContainersApp {
                 } else {
                     Vec::new()
                 },
+                logs_fetched_unix_ms: None,
             }],
             ..Engine::default()
         }
     }
 
-    /// Whether the new-container form is open.
     pub fn is_create_open(&self) -> bool {
         self.create_open
     }
@@ -1917,7 +1874,6 @@ impl ContainersApp {
         self.view.selected.as_deref()
     }
 
-    /// The selected container's detail tab.
     pub fn tab(&self) -> DetailTab {
         self.view.tab
     }
@@ -2102,6 +2058,24 @@ mod tests {
         driver.root_mut::<ContainersApp>()
     }
 
+    /// A finished verb says so in the window's bar, not over the list.
+    #[test]
+    fn a_result_is_the_window_bars_notice() {
+        let mut d = driver(staged());
+        app_of(&mut d).show_toast("Stopped web", false);
+        d.relayout();
+        let notice = ui::window_toolbar::notice().expect("the bar shows the result");
+        assert_eq!(notice.text, "Stopped web");
+        assert_eq!(notice.kind, ToastKind::Success);
+        app_of(&mut d).show_toast("Podman isn't running", true);
+        d.relayout();
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| (notice.text, notice.kind)),
+            Some(("Podman isn't running".to_owned(), ToastKind::Error)),
+            "a newer result replaces the older one"
+        );
+    }
+
     #[test]
     fn keys_and_buttons_move_between_sections_and_open_dialogs() {
         let mut d = driver(staged());
@@ -2167,6 +2141,86 @@ mod tests {
         assert!(
             !d.targets().contains_key("detail-close"),
             "with nothing chosen there is nothing to close"
+        );
+    }
+
+    #[test]
+    fn the_section_and_its_commands_are_in_the_window_bar() {
+        let mut d = driver(staged());
+        d.present_in_window_bar();
+        d.relayout();
+        let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+        let app = app_of(&mut d);
+        let chosen = app
+            .selected()
+            .and_then(|id| app.engine.find(id))
+            .map(|container| container.name.clone())
+            .expect("the staged window shows a container");
+        assert_eq!(
+            bar.location
+                .as_ref()
+                .map(|location| location.label.as_str()),
+            Some(chosen.as_str()),
+            "the chosen container names the window"
+        );
+        let names: Vec<&str> = bar
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"Remove"),
+            "the container's verbs are bar actions: {names:?}"
+        );
+        assert!(
+            !d.targets()
+                .keys()
+                .any(|id| id.starts_with("detail-remove-")),
+            "the detail draws no verbs of its own"
+        );
+        assert!(
+            !bar.actions
+                .iter()
+                .any(|action| action.name.contains("Search")),
+            "the bar's own search is the only one: {:?}",
+            bar.actions
+        );
+        let close = bar
+            .actions
+            .iter()
+            .find(|action| action.name == "Close details")
+            .expect("closing the detail is a bar action");
+        assert_eq!(
+            close.icon, "panel-right",
+            "closing the detail shows the pane it closes, not a cross beside the search"
+        );
+        let close = close.id.clone();
+        assert!(
+            !d.targets().contains_key("detail-close"),
+            "the window draws no header row of its own"
+        );
+        d.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: close });
+        // The shell presses the header's button in the frame's settle pass;
+        // the window then dispatches what the button invoked.
+        d.idle();
+        d.relayout();
+        assert!(
+            app_of(&mut d).selected().is_none(),
+            "the bar closed the detail"
+        );
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Containers"),
+            "with nothing chosen the section names the window"
+        );
+
+        d.key("2");
+        d.relayout();
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Images")
         );
     }
 

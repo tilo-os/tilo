@@ -5,11 +5,11 @@ pub use crate::collab_core::{
 };
 pub use crate::route::CrdtRoute;
 use collab_types::{ArtifactId, ChannelState};
+use runtime_collab::event::CollabEvent;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use ui::collaboration::CollabEvent;
 /// Callback an in-process fanout subscriber registers to receive
 /// delivered events. Aliased because the raw `Box<dyn Fn(...)>` shape
 /// recurs across [`RoomSubscription`], [`FanoutState::subscribe_rooms`]
@@ -286,11 +286,49 @@ impl FanoutState {
             .filter(|state| state.is_accepting())
     }
 
+    /// Whether a local app subscribes to exactly `route`'s documents.
+    pub fn holds_route(&self, route: &CrdtRoute) -> bool {
+        self.capnp_state()
+            .is_some_and(|state| state.holds_route(route))
+    }
+
+    /// The records local app windows hold, by the window instance the shell
+    /// launched each for; see [`CapnpBrokerState::window_records`].
+    pub fn window_records(&self) -> Vec<(u64, CrdtRoute)> {
+        self.capnp_state()
+            .map(|state| state.window_records())
+            .unwrap_or_default()
+    }
+
     /// Ask the local apps holding records in `cluster_id` to publish their
     /// snapshots; see [`CapnpBrokerState::request_room_snapshots`].
     pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
         self.capnp_state()
             .map_or(0, |state| state.request_room_snapshots(cluster_id))
+    }
+
+    /// [`Self::fanout_to_route`] for a local app's presence: delivered to
+    /// whoever `scope` (the room) addresses, while in-process subscribers
+    /// are told the `origin` route it came from — which app, which record —
+    /// as the shell needs to know what a window under the pointer shows.
+    pub fn fanout_presence(
+        &self,
+        event: &CollabEvent,
+        except: u64,
+        scope: &CrdtRoute,
+        origin: &CrdtRoute,
+    ) {
+        if self.stopped.load(Ordering::Acquire) || scope.cluster_id.is_empty() {
+            return;
+        }
+        for sub in self.local_subs() {
+            if sub.wants(scope) {
+                (sub.sink)(event, origin);
+            }
+        }
+        if let Some(capnp) = self.capnp_state() {
+            capnp.fanout_to_route(event, except, scope);
+        }
     }
 
     /// Deliver `event` to every typed or in-process subscriber addressed by
@@ -349,7 +387,7 @@ impl SessionFollowDispatcher {
         room: &str,
         app: &str,
         instance: u64,
-        request: ui::collaboration::handoff::HandoffRequest,
+        request: collab_types::handoff::HandoffRequest,
     ) {
         self.fanout.fanout_to_route(
             &CollabEvent::Handoff { request },
@@ -419,11 +457,6 @@ impl AppActionBroker {
     }
     /// Invoke one closed native workspace-membership command as the retained
     /// certified person. The owner still rechecks current Admin authority.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker, published action, or caller custody
-    /// is unavailable.
     pub fn change_workspace_membership(
         &self,
         room: &str,
@@ -523,10 +556,6 @@ impl AppActionBroker {
     }
 
     /// Reusable native broker attachment for an ordinary standalone peer.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker stopped or has no invocation host.
     pub fn peer_action_attachment(
         &self,
     ) -> Result<(crate::peer_actions::PeerActionQueue, uuid::Uuid), String> {
@@ -607,11 +636,6 @@ impl AppActionBroker {
     }
 
     /// Invoke one published application action.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the surface or action is unavailable or dispatch
-    /// to its application connection fails.
     pub fn invoke(
         &self,
         peer_id: u64,
@@ -661,6 +685,23 @@ impl AppActionBroker {
         &self.state
     }
 
+    /// Admit app `caller_app`'s request to open `target` in `room` for the
+    /// running invocation `parent` the broker delivered to it
+    /// ([`CapnpBrokerState::admit_app_open`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`CapnpBrokerState::admit_app_open`].
+    pub fn admit_app_open(
+        &self,
+        caller_app: &str,
+        room: &str,
+        parent: tilo_actions::InvocationId,
+        target: &str,
+    ) -> Result<crate::collab_broker_capnp::AppOpen, String> {
+        self.state.admit_app_open(caller_app, room, parent, target)
+    }
+
     /// Read what each application declared on the action door from
     /// `resolver` from now on.
     pub fn set_app_action_access(&self, resolver: crate::app_actions::AppActionAccessResolver) {
@@ -688,6 +729,25 @@ impl AppActionBroker {
     #[must_use]
     pub fn has_finished_shortcut_runs(&self) -> bool {
         self.state.has_finished_shortcut_runs()
+    }
+
+    /// The shortcut runs going in `room`: what the workspace says is
+    /// running, and what can be stopped.
+    #[must_use]
+    pub fn running_shortcut_runs(&self, room: &str) -> Vec<crate::automation::RunningRun> {
+        self.state.running_shortcut_runs(room)
+    }
+
+    /// Stop the shortcut runs `request` names in `room`, before their next
+    /// step. What they already did stands and stays undoable as one step.
+    #[must_use]
+    pub fn stop_shortcut_runs(
+        &self,
+        room: &str,
+        request: &crate::automation::StopRequest,
+        reason: &str,
+    ) -> Vec<crate::automation::RunningRun> {
+        self.state.stop_shortcut_runs(room, request, reason)
     }
 
     /// Agent runs of workspace tasks that ended since the last call, oldest
@@ -808,14 +868,13 @@ impl AppActionBroker {
             .unwrap_or_default()
     }
 
-    /// Request cooperative cancellation for an owned invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unknown, foreign, or non-cancellable invocation.
+    /// Request cooperative cancellation for an owned invocation, answered
+    /// once the request is durable. Blocks the calling thread for that
+    /// write, so never call it on the broker's loop.
     pub fn cancel(&self, id: u64, actor: &str) -> Result<(), String> {
         self.state
-            .while_live(|state| state.request_cancellation(id, actor))
+            .while_live(|state| state.request_cancellation(id, actor))?
+            .wait_blocking()
     }
 
     pub fn can_cancel(&self, id: u64, actor: &str) -> bool {
@@ -831,23 +890,7 @@ impl AppActionBroker {
             .unwrap_or(false)
     }
 
-    /// Dispatch a task to its assigned live agent. There is intentionally no
-    /// offline queue or application launch fallback in this boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no matching admitted live agent can accept the
-    /// task.
-    pub fn dispatch_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
-        self.state
-            .while_live(|state| state.dispatch_workspace_task(room, task_id))
-    }
-
     /// Prepare a one-use confirmation token for the exact invocation inputs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action disappeared or confirmation evidence is invalid.
     pub fn prepare_confirmation(
         &self,
         peer_id: u64,
@@ -863,10 +906,6 @@ impl AppActionBroker {
     }
 
     /// Start a published action using a previously prepared confirmation token.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action or token is unavailable or invalid.
     pub fn start_confirmed(
         &self,
         peer_id: u64,
@@ -916,10 +955,6 @@ impl BrokerHandle {
     }
 
     /// Connects one local host worker for `route` under `certificate`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker is unavailable or refuses the worker.
     pub fn connect_local_worker(
         &self,
         route: CrdtRoute,
@@ -932,10 +967,6 @@ impl BrokerHandle {
     }
 
     /// Connects one local host worker together with its published-invocation authorizer.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the broker is unavailable or refuses the worker.
     pub fn connect_local_worker_with_authorizer(
         &self,
         route: CrdtRoute,
@@ -958,14 +989,6 @@ impl BrokerHandle {
         self.fanout
             .capnp_state()
             .map(|state| AppActionBroker { state })
-    }
-
-    /// Number of typed connections accepted since this broker started.
-    pub fn peer_count(&self) -> usize {
-        // Saturates rather than truncates on a 32-bit target — this is a
-        // connection count, not an index, so clamping to `usize::MAX`
-        // loses nothing a real desktop session would ever reach.
-        usize::try_from(self.fanout.connections_seen()).unwrap_or(usize::MAX)
     }
 
     /// Fan a `CollabEvent` to the peers `route` addresses. `except`
@@ -1056,11 +1079,6 @@ impl BrokerHandle {
 
     /// Direct one invocation to the exact application connection that
     /// published the addressed operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the action broker, surface, or action is
-    /// unavailable or dispatch to its application connection fails.
     pub fn invoke_published_action(
         &self,
         peer_id: u64,
@@ -1248,5 +1266,35 @@ mod weak_facade_tests {
         assert!(weak.upgrade().is_err());
         drop(broker);
         assert!(weak.upgrade().is_err());
+    }
+}
+
+#[cfg(test)]
+mod presence_origin_tests {
+    use super::*;
+
+    /// The shell learns which record a window shows from its app pointing
+    /// in it: cursor chat over that window is sealed for and placed in that
+    /// record. A local app's presence is delivered room-wide, and the
+    /// shell's subscription is told the app and record it came from.
+    #[test]
+    fn a_local_apps_presence_names_the_app_and_record_it_came_from() {
+        let fanout = FanoutState::new();
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&heard);
+        let _shell = fanout.subscribe_rooms(
+            vec!["room".into()],
+            Box::new(move |_, route| sink.lock().unwrap().push(route.clone())),
+        );
+        let origin = CrdtRoute::record("so.tilo.chat", "room", "derived:main");
+        let event = CollabEvent::RemotePresenceUpdate {
+            user_id: "peer@1".into(),
+            key: ui::presence::PresenceKey::pointer_default(),
+            payload: ui::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+        };
+        fanout.fanout_presence(&event, 0, &origin.to_cluster_scope(), &origin);
+        drop(fanout);
+        let heard = heard.lock().unwrap().clone();
+        assert_eq!(heard, vec![origin]);
     }
 }

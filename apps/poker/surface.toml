@@ -1,0 +1,69 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "so.tilo.poker.table"
+label = "Poker table"
+version = 1
+fields = [
+  { path = "players", type = "BTreeMap<String, Player>" },
+  { path = "hand", type = "Hand", stored = "record" },
+  { path = "hand.number", type = "u64" },
+  { path = "hand.street", type = "Street" },
+  { path = "hand.players", type = "Vec<InHand>" },
+  { path = "hand.button", type = "u32" },
+  { path = "hand.deck", type = "Vec<u8>" },
+  { path = "hand.board", type = "Vec<u8>" },
+  { path = "hand.to_act", type = "Option<u32>" },
+  { path = "hand.current_bet", type = "i64" },
+  { path = "hand.min_raise", type = "i64" },
+  { path = "hand.since_ms", type = "i64" },
+  { path = "hand.awards", type = "Vec<Award>" },
+  { path = "button_seat", type = "u8" },
+]
+
+[[resources.verbs]]
+id = "sit"
+kind = "undoable"
+params = [
+  { name = "seat", required = true, schema = { type = "integer", maximum = 4294967295, minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "leave"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "deal"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "fold"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "call"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "raise"
+kind = "undoable"
+params = [
+  { name = "to", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "all-in"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "show"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "skip"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "rebuy"
+kind = "undoable"
+

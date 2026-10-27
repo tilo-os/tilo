@@ -34,10 +34,6 @@ const POLL: Duration = Duration::from_millis(150);
 /// The session's action door, as the opener sees it.
 pub trait LinkDoor: Send + Sync {
     /// The host and the local person it admits in `room`.
-    ///
-    /// # Errors
-    /// The session has no action broker yet, or this device's person is not
-    /// admitted in `room`.
     fn session(&self, room: &str) -> Result<(Arc<dyn ActionHost + Send + Sync>, Caller), String>;
 }
 
@@ -104,10 +100,6 @@ pub fn view_invocation(
 /// Run `reveal`'s view action through `door`, waiting up to `timeout` for a
 /// just-launched app to publish it. Blocks the calling thread; the opener
 /// runs it off the shell's thread.
-///
-/// # Errors
-/// The door is unavailable, or [`UNAVAILABLE`] for a target it does not
-/// offer by the deadline or refuses.
 pub fn reveal(door: &dyn LinkDoor, reveal: &Reveal, timeout: Duration) -> Result<(), String> {
     let now = Instant::now();
     let deadline = now.checked_add(timeout).unwrap_or(now);

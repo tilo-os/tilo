@@ -30,8 +30,6 @@ notes-menu-delete = Delete
 notes-a11y-new-child-under = New sub-note in
 notes-a11y-more-actions-for = More actions for
 
-notes-view-editor = Editor
-
 ## History: what each change did, by field and by verb
 
 notes-page-body = Edited { $item }
@@ -71,6 +69,7 @@ notes-delete-tag = Deleted the tag { $item }
 notes-keep-image = Kept a picture with the notebook
 notes-place-image = Added a picture to { $item }
 notes-import-markdown = Imported { $title }
+notes-append-to-note = Added to { $title }
 
 ## Keyboard shortcuts sheet
 notes-help-title = Keyboard shortcuts
@@ -135,6 +134,8 @@ notes-no-previous = No earlier note
 notes-no-next = No later note
 notes-link-copied = Copied link to { $title }
 notes-link-unsafe = This link can't be opened safely
+notes-resource-link-invalid = This link does not lead to anything here
+notes-resource-link-open-failed = The link could not be opened
 notes-link-open-failed = The link didn't open
 notes-import-title = Import Markdown
 notes-import-accept = Import
@@ -179,3 +180,7 @@ notes-status-counts = { $notes ->
     [one] 1 word
    *[other] { $words } words
 }
+
+notes-outline = Outline
+notes-outline-empty = No headings
+notes-outline-untitled = Untitled heading

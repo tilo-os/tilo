@@ -65,11 +65,14 @@ pub enum InputAction {
     TouchpadTap { fingers: u8 },
     /// `fingers` move across the touchpad by `dx_mm`, `dy_mm` millimetres over
     /// `duration_ms`: one finger moves the pointer, two scroll, three swipe.
+    /// `press` holds the clickpad down all the way: a drag.
     TouchpadSwipe {
         fingers: u8,
         dx_mm: i16,
         dy_mm: i16,
         duration_ms: u32,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        press: bool,
     },
     /// Press and release the clickpad's physical button.
     TouchpadClick,
@@ -471,6 +474,7 @@ pub fn validate(actions: &[InputAction]) -> Result<(), String> {
                 dx_mm,
                 dy_mm,
                 duration_ms,
+                ..
             } => {
                 touchpad_fingers(*fingers)?;
                 duration(*duration_ms)?;
@@ -651,17 +655,29 @@ mod tests {
             dx_mm: 0,
             dy_mm: -30,
             duration_ms: 300,
+            press: false,
         };
         assert!(validate(std::slice::from_ref(&swipe)).is_ok());
         let text = serde_json::to_string(&swipe).unwrap();
+        assert!(!text.contains("press"), "{text}");
         assert_eq!(serde_json::from_str::<InputAction>(&text).unwrap(), swipe);
+        let drag = InputAction::TouchpadSwipe {
+            fingers: 1,
+            dx_mm: 60,
+            dy_mm: 0,
+            duration_ms: 600,
+            press: true,
+        };
+        let text = serde_json::to_string(&drag).unwrap();
+        assert_eq!(serde_json::from_str::<InputAction>(&text).unwrap(), drag);
         assert!(validate(&[InputAction::TouchpadTap { fingers: 4 }]).is_err());
         assert!(
             validate(&[InputAction::TouchpadSwipe {
                 fingers: 1,
                 dx_mm: 0,
                 dy_mm: 0,
-                duration_ms: 10
+                duration_ms: 10,
+                press: false,
             }])
             .is_err()
         );

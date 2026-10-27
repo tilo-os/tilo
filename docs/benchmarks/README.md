@@ -7,7 +7,7 @@ machine, and they go stale with the next merge. They are not the current value
 of any KPI, and nothing compares against them.
 
 Current values come from the scheduled performance lane
-(`.forgejo/workflows/perf-scheduled.yml`). It writes one record per KPI per run
+(t's `perf-*` checks, tools/ci/perf-scheduled.sh). It writes one record per KPI per run
 to the public generic package `tilo-perf-results`, each record with its verdict
 against the rolling baseline:
 

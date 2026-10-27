@@ -5,7 +5,7 @@
 //! one). Filtering matches keywords as well as labels, so `/h2` finds
 //! "Heading 2"; each row shows the Markdown that makes the same block.
 //!
-//! Not a [`CommandPalette`](crate::widget::CommandPalette): that is a
+//! Not a [`CommandPalette`](crate::CommandPalette): that is a
 //! full-screen search affordance pinned at 360 px, wider than most
 //! paragraph blocks; this is a compact popover anchored at the caret.
 
@@ -16,7 +16,6 @@ use crate::widget::filter_menu::{FilterMenu, MenuEntry, MenuSpec};
 /// What a row of the slash menu does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SlashCommand {
-    /// Make a block of this kind.
     Block(BlockKind),
     /// Link another page, through the editor's link picker.
     LinkPage,
@@ -295,26 +294,22 @@ mod tests {
     fn visibility_resets_filter_and_invisible_menu_ignores_keys() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `new_starts_hidden_with_full_row_set`.
         {
             let m = SlashMenu::new();
             assert!(!m.is_visible());
             assert_eq!(m.visible_len(), entries(false, &[]).len());
         }
 
-        // Case `set_visible_resets_filter_and_cursor_on_hide`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
             m.set_filter("h");
-            // Move cursor to a non-zero index.
             let _ = m.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
             assert!(m.visible_len() > 0);
             m.set_visible(false);
             assert_eq!(m.filter(), "");
         }
 
-        // Case `invisible_menu_ignores_keys`.
         {
             let mut m = SlashMenu::new();
             let consumed = m.handle_key(&char_press("h"));
@@ -327,7 +322,6 @@ mod tests {
     fn filter_narrows_rows_from_typing_ime_and_backspace() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `filter_narrows_to_matching_rows`.
         {
             let mut m = SlashMenu::new();
             m.set_filter("h");
@@ -356,7 +350,6 @@ mod tests {
             );
         }
 
-        // Case `typing_appends_to_filter`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
@@ -366,7 +359,6 @@ mod tests {
             assert_eq!(m.filter(), "h2");
         }
 
-        // Case `ime_preedit_is_visible_but_filters_only_after_commit`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
@@ -396,7 +388,6 @@ mod tests {
             assert_eq!(access.value.as_deref(), Some("h2"));
         }
 
-        // Case `backspace_removes_one_extended_grapheme`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
@@ -406,7 +397,6 @@ mod tests {
             assert!(m.is_visible());
         }
 
-        // Case `backspace_pops_filter`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
@@ -415,11 +405,9 @@ mod tests {
             assert_eq!(m.filter(), "h");
         }
 
-        // Case `backspace_on_empty_filter_closes_menu`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
-            // Filter starts empty.
             let consumed = m.handle_key(&key_press(Key::Named(NamedKey::Backspace), None));
             // Returns false so the parent can interpret as "menu closed,
             // fall through to delete the `/` glyph".
@@ -432,7 +420,6 @@ mod tests {
     fn keyboard_moves_the_cursor_and_commits_or_escapes() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `arrow_keys_move_cursor`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
@@ -457,7 +444,6 @@ mod tests {
             );
         }
 
-        // Case `arrows_wrap_at_either_end`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
@@ -475,7 +461,6 @@ mod tests {
             );
         }
 
-        // Case `tab_commits_like_enter`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
@@ -487,7 +472,6 @@ mod tests {
             );
         }
 
-        // Case `enter_emits_selected_kind_and_closes`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
@@ -499,11 +483,9 @@ mod tests {
                 Some(SlashCommand::Block(BlockKind::Heading(1)))
             );
             assert!(!m.is_visible(), "Enter should close the menu");
-            // Subsequent take is empty.
             assert!(m.take_selection().is_none());
         }
 
-        // Case `escape_closes_without_committing`.
         {
             let mut m = SlashMenu::new();
             m.set_visible(true);
@@ -513,7 +495,6 @@ mod tests {
             assert!(m.take_selection().is_none());
         }
 
-        // Case `filter_number_then_enter_commits_numbered_list`.
         {
             // Typing `/number` narrows to the "Numbered list" row and Enter
             // commits an ordered-list block.
@@ -551,7 +532,6 @@ mod tests {
     fn pointer_and_semantic_activation_commit_the_exact_row() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `synthetic_menu_item_activation_commits_that_exact_filtered_row`.
         {
             let mut menu = SlashMenu::new();
             menu.set_visible(true);
@@ -577,7 +557,6 @@ mod tests {
             assert!(!menu.is_visible());
         }
 
-        // Case `click_at_selects_row_strips_and_closes`.
         {
             let mut m = SlashMenu::new();
             m.set_anchor(Point::new(0.0, 0.0));
@@ -599,7 +578,6 @@ mod tests {
             );
         }
 
-        // Case `click_off_any_row_selects_nothing`.
         {
             let mut m = SlashMenu::new();
             m.set_anchor(Point::new(0.0, 0.0));
@@ -611,7 +589,6 @@ mod tests {
             );
         }
 
-        // Case `hover_at_moves_the_highlight_to_the_row_under_the_pointer`.
         {
             let mut m = SlashMenu::new();
             m.set_anchor(Point::new(0.0, 0.0));

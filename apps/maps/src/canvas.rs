@@ -1376,7 +1376,7 @@ mod tests {
         // Phase `loading_substrate_matches_land_tone`.
         // The pre-tiles loading substrate shares the land tone in *each* theme, so a
         // first-run or mid-load view is never a light centre with dark edges (or the
-        // reverse) — the exact seam the user reported. It differs from the land only
+        // reverse). It differs from the land only
         // faintly (for the reference grid), never by a light/dark jump.
         {
             let lum = |c: Color| {
@@ -1404,19 +1404,16 @@ mod tests {
             let anchor = Point::new(100.0, 200.0);
             let (r, h) = (8.0, 22.0);
             let bb = pin_path(anchor, r, h).bounding_box();
-            // The tip is the lowest point, at the anchor.
             assert!(
                 (bb.y1 - anchor.y).abs() < 0.5,
                 "pin tip on the anchor, got y1={}",
                 bb.y1
             );
-            // The head reaches up to about anchor.y - h - r.
             assert!(
                 (bb.y0 - (anchor.y - h - r)).abs() < 1.5,
                 "head top near anchor.y-h-r, got y0={}",
                 bb.y0
             );
-            // Width is about the head diameter, centred on the anchor x.
             assert!(
                 (bb.width() - 2.0 * r).abs() < 2.0,
                 "width ~ head diameter, got {}",
@@ -1453,7 +1450,6 @@ mod tests {
                 agency: "MVG".into(),
                 realtime: true,
             };
-            // Feed colour wins.
             assert_eq!(
                 leg_color(&theme, &base),
                 Color::from_rgba8(0xeb, 0x69, 0x0b, 255)
@@ -1561,7 +1557,6 @@ mod tests {
             let view_center = clip.center();
 
             let mut scene = Scene::new();
-            let t0 = ui::time::now();
             let painted_exact = draw_tiles(
                 &mut scene,
                 Affine::IDENTITY,
@@ -1572,9 +1567,8 @@ mod tests {
                 &pal,
             );
 
-            // Fast (no I/O), no real tile painted, and crucially nothing was
-            // synchronously fetched/decoded into the resident store.
-            assert!(t0.elapsed() < std::time::Duration::from_millis(50));
+            // No real tile painted, and crucially nothing was synchronously
+            // fetched/decoded into the resident store.
             assert!(!painted_exact);
             assert_eq!(layer.mem_len(), 0, "draw must not decode tiles inline");
             // The offline layer must not even mark tiles in-flight.

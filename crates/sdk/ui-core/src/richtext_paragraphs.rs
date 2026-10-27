@@ -71,10 +71,16 @@ impl<'s> ParagraphCx<'s> {
     /// and its virtual break insertions relative to the paragraph's start.
     /// Lines and attributes are those cosmic-text's rich setter gives the
     /// same paragraph.
-    fn line(&self, fs: &FontSystem, paragraph: &str) -> (BufferLine, Vec<VirtualInsertion>) {
+    fn line(
+        &self,
+        fs: &FontSystem,
+        paragraph: &str,
+        hang: &[VirtualInsertion],
+    ) -> (BufferLine, Vec<VirtualInsertion>) {
         #[cfg(test)]
         PREPARED.with(|count| count.set(count.get().saturating_add(1)));
-        let map = self.style.hyphenation.offset_map(paragraph);
+        let mut map = self.style.hyphenation.offset_map(paragraph);
+        map.add_insertions(hang);
         let shaping = map.shape_text(paragraph);
         let runs: Vec<(&str, Attrs<'s>, Option<crate::text_render::TextKind>)> =
             if shaping.is_empty() {
@@ -130,7 +136,7 @@ impl<'s> ParagraphCx<'s> {
         let mut insertions = Vec::new();
         let mut start = source_start;
         for paragraph in region.split('\n') {
-            let (line, local) = self.line(fs, paragraph);
+            let (line, local) = self.line(fs, paragraph, &[]);
             insertions.extend(local.into_iter().map(|insertion| VirtualInsertion {
                 source: insertion.source.saturating_add(start),
                 ch: insertion.ch,
@@ -229,12 +235,11 @@ impl RichTextLayout {
             })
     }
 
-    /// Whether `style` lays paragraphs out independently: wrapped rows that
-    /// hang under an indent and balanced rows are planned over the whole
-    /// text, and a custom hyphenator sees the whole text.
-    fn paragraphs_apply(style: &TextStyle, max_width: Option<f32>) -> bool {
-        !Self::hangs_wrapped_rows(style, max_width)
-            && style.wrap_mode != crate::text_render::TextWrapMode::Balance
+    /// Whether `style` lays paragraphs out independently: balanced rows are
+    /// planned over the whole text, and a custom hyphenator sees the whole
+    /// text. A wrapped row's hanging indent depends on its own paragraph.
+    fn paragraphs_apply(style: &TextStyle, _max_width: Option<f32>) -> bool {
+        style.wrap_mode != crate::text_render::TextWrapMode::Balance
             && !matches!(
                 style.hyphenation,
                 crate::text_render::Hyphenation::Custom(_)
@@ -289,6 +294,12 @@ impl RichTextLayout {
             Self::reuse_unchanged_paragraphs(&mut buffer, previous.buffer);
         }
         buffer.shape_until_scroll(fs, false);
+        let mut offset_map = offset_map;
+        let hangs = Self::hangs_wrapped_rows(style, Some(width));
+        if hangs {
+            let lines = 0..buffer.lines.len();
+            hang_wrapped_rows(fs, &cx, &mut buffer, &mut offset_map, text, lines);
+        }
         let (line_starts, line_lens) = Self::line_map_of(&buffer);
         Some(Self {
             prepared: Some(RichPreparation {
@@ -299,6 +310,7 @@ impl RichTextLayout {
                 browser_emoji,
                 paragraph_planned: true,
             }),
+            faces: vec![style.clone()],
             buffer,
             line_starts,
             line_lens,
@@ -308,11 +320,14 @@ impl RichTextLayout {
             strikes: Vec::new(),
             backgrounds: Vec::new(),
             baselines: Vec::new(),
+            inline_emoji: Vec::new(),
             discretionary_hyphen_width,
             line_height: style.line_height_px(),
             font_variations: style.resolved_variations(),
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
+            row_tops: std::cell::OnceCell::new(),
+            ink_reach: crate::richtext::InkReachCache::default(),
         })
     }
 
@@ -329,6 +344,8 @@ impl RichTextLayout {
         let Some(prepared) = self.prepared.take() else {
             return false;
         };
+        // The lines below are spliced and wrapped again in place.
+        self.row_tops = std::cell::OnceCell::new();
         let Some(old) = prepared.spans.first().map(|span| span.text.as_str()) else {
             self.prepared = Some(prepared);
             return false;
@@ -360,6 +377,7 @@ impl RichTextLayout {
                     .lines(fs, region, edit.start)
             });
             spliced = first..first.saturating_add(lines.len());
+            self.ink_reach.lines_replaced(first, last, lines.len());
             self.buffer.lines.splice(first..=last, lines);
             self.offset_map.insertions = splice_insertions(
                 &edit,
@@ -381,19 +399,30 @@ impl RichTextLayout {
         };
         // A changed width (or reserved hyphen) wraps every line again, keeping
         // its shape; spliced lines are shaped and wrapped once.
-        self.buffer.set_size(
-            Some(layout_width(
-                width,
-                self.discretionary_hyphen_width,
-                prepared.align,
-            )),
-            None,
-        );
+        let wrap_width = layout_width(width, self.discretionary_hyphen_width, prepared.align);
+        let rewrapped = self.buffer.size().0 != Some(wrap_width);
+        if rewrapped {
+            self.ink_reach.forget();
+        }
+        self.buffer.set_size(Some(wrap_width), None);
         self.buffer.shape_until_scroll(fs, false);
         // Fresh lines are not invalidated ones: cosmic-text shapes them on
         // request, which a clean buffer never makes.
-        for line in spliced {
+        for line in spliced.clone() {
             let _ = self.buffer.line_layout(fs, line);
+        }
+        if Self::hangs_wrapped_rows(&prepared.style, Some(width)) {
+            // A new width wraps every line again; otherwise only the spliced
+            // lines can wrap differently.
+            let lines = if rewrapped {
+                0..self.buffer.lines.len()
+            } else {
+                spliced
+            };
+            let cx = ParagraphCx::new(&prepared.style, prepared.align, prepared.browser_emoji);
+            if hang_wrapped_rows(fs, &cx, &mut self.buffer, &mut self.offset_map, text, lines) {
+                (self.line_starts, self.line_lens) = Self::line_map_of(&self.buffer);
+            }
         }
         let mut prepared = prepared;
         if let Some(span) = prepared.spans.first_mut()
@@ -426,6 +455,7 @@ impl RichTextLayout {
         buffer.shape_until_scroll(fs, false);
         Self {
             prepared: self.prepared.clone(),
+            faces: self.faces.clone(),
             buffer,
             line_starts: self.line_starts.clone(),
             line_lens: self.line_lens.clone(),
@@ -435,15 +465,17 @@ impl RichTextLayout {
             strikes: self.strikes.clone(),
             backgrounds: self.backgrounds.clone(),
             baselines: self.baselines.clone(),
+            inline_emoji: self.inline_emoji.clone(),
             discretionary_hyphen_width: self.discretionary_hyphen_width,
             line_height: self.line_height,
             font_variations: self.font_variations.clone(),
             hanging_punctuation: self.hanging_punctuation,
             fragmentation: self.fragmentation,
+            row_tops: std::cell::OnceCell::new(),
+            ink_reach: self.ink_reach.duplicate(),
         }
     }
 
-    /// The text of a paragraph-planned layout.
     fn paragraph_text(&self) -> Option<&str> {
         self.prepared
             .as_ref()
@@ -497,6 +529,165 @@ impl RichTextLayout {
         }
         (line_starts, line_lens)
     }
+}
+
+/// Hang each wrapped row of `lines` (whole paragraphs of `text`, laid out
+/// in `buffer`) under its paragraph's indentation, as the whole-text build
+/// does: the row's start gets one [`super::WRAP_INDENT`] per column of the
+/// paragraph's leading whitespace, and the paragraph is prepared and
+/// wrapped again until its rows stop moving. `offset_map` takes the new
+/// insertions. Returns whether any line changed.
+fn hang_wrapped_rows(
+    fs: &mut FontSystem,
+    cx: &ParagraphCx<'_>,
+    buffer: &mut Buffer,
+    offset_map: &mut OffsetMap,
+    text: &str,
+    lines: std::ops::Range<usize>,
+) -> bool {
+    let mut changed = false;
+    let mut start = 0usize;
+    for (index, paragraph) in text.split('\n').enumerate() {
+        let paragraph_start = start;
+        start = start.saturating_add(paragraph.len()).saturating_add(1);
+        if index < lines.start {
+            continue;
+        }
+        if index >= lines.end {
+            break;
+        }
+        let end = paragraph_start.saturating_add(paragraph.len());
+        let owned = paragraph_insertions(&offset_map.insertions, paragraph_start..=end);
+        let mut local: Vec<VirtualInsertion> = offset_map
+            .insertions
+            .get(owned)
+            .unwrap_or_default()
+            .iter()
+            .map(|insertion| VirtualInsertion {
+                source: insertion.source.saturating_sub(paragraph_start),
+                ch: insertion.ch,
+            })
+            .collect();
+        let mut rebuilt = false;
+        let room = buffer.size().0.unwrap_or(f32::INFINITY);
+        let (tab, line_height) = (
+            usize::from(buffer.tab_width()).max(1),
+            buffer.metrics().line_height,
+        );
+        for _ in 0..super::WRAP_INDENT_PASSES {
+            let line_text = buffer
+                .lines
+                .get(index)
+                .map_or_else(String::new, |line| line.text().to_owned());
+            let Some(rows) = buffer.line_layout(fs, index) else {
+                break;
+            };
+            let hung: Vec<VirtualInsertion> = local
+                .iter()
+                .filter(|insertion| insertion.ch == super::WRAP_INDENT)
+                .copied()
+                .collect();
+            if rows.len() <= 1 && hung.is_empty() {
+                break;
+            }
+            let wanted = hanging_indents(
+                paragraph,
+                (rows, &line_text),
+                &OffsetMap {
+                    insertions: local.clone(),
+                },
+                tab,
+                (room, line_height),
+            );
+            if wanted == hung {
+                break;
+            }
+            let (line, insertions) = cx.line(fs, paragraph, &wanted);
+            if let Some(slot) = buffer.lines.get_mut(index) {
+                *slot = line;
+            }
+            local = insertions;
+            rebuilt = true;
+        }
+        if rebuilt {
+            changed = true;
+            let owned = paragraph_insertions(&offset_map.insertions, paragraph_start..=end);
+            offset_map.insertions.splice(
+                owned,
+                local.iter().map(|insertion| VirtualInsertion {
+                    source: insertion.source.saturating_add(paragraph_start),
+                    ch: insertion.ch,
+                }),
+            );
+        }
+    }
+    changed
+}
+
+/// The positions in `insertions` (sorted by source) of those inside `bytes`.
+fn paragraph_insertions(
+    insertions: &[VirtualInsertion],
+    bytes: std::ops::RangeInclusive<usize>,
+) -> std::ops::Range<usize> {
+    let start = insertions.partition_point(|insertion| insertion.source < *bytes.start());
+    let end = insertions.partition_point(|insertion| insertion.source <= *bytes.end());
+    start..end.max(start)
+}
+
+/// The hanging indent each wrapped row of one paragraph's `rows` (laid out
+/// from `line_text`, its shaping text, whose virtual insertions `map`
+/// holds) takes: one [`super::WRAP_INDENT`] per column of the paragraph's
+/// leading whitespace (a tab to the next multiple of `tab`), at the row's
+/// start, in paragraph bytes. A row that starts inside the indentation
+/// keeps the edge, and so does a line indented past half the `room`.
+fn hanging_indents(
+    paragraph: &str,
+    (rows, line_text): (&[cosmic_text::LayoutLine], &str),
+    map: &OffsetMap,
+    tab: usize,
+    (room, line_height): (f32, f32),
+) -> Vec<VirtualInsertion> {
+    let mut columns = 0usize;
+    let mut indent_end = 0usize;
+    for ch in paragraph.chars() {
+        match ch {
+            ' ' => columns = columns.saturating_add(1),
+            '\t' => columns = columns.saturating_add(tab - columns % tab),
+            _ => break,
+        }
+        indent_end = indent_end.saturating_add(ch.len_utf8());
+    }
+    let mut wanted = Vec::new();
+    if columns == 0 {
+        return wanted;
+    }
+    for row in rows.iter().skip(1) {
+        let Some(start) = row.glyphs.iter().map(|glyph| glyph.start).min() else {
+            continue;
+        };
+        let at = map.shaped_to_source(start);
+        let indent_w = row
+            .glyphs
+            .iter()
+            .find(|glyph| line_text.get(glyph.start..glyph.end) == Some(" "))
+            .map_or(line_height / 2.0, |glyph| glyph.w);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a column count of one line's indentation"
+        )]
+        let too_deep = columns as f32 * indent_w > room / 2.0;
+        if at <= indent_end || too_deep {
+            continue;
+        }
+        wanted.extend(std::iter::repeat_n(
+            VirtualInsertion {
+                source: at,
+                ch: super::WRAP_INDENT,
+            },
+            columns,
+        ));
+    }
+    wanted
 }
 
 /// Insertions after an edit: those of the old paragraphs replaced by

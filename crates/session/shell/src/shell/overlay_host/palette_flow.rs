@@ -1,6 +1,6 @@
-//! What the search palette does with its results beyond listing them: how
-//! many rows each group shows, the steps that collect an action's arguments,
-//! and the other ways a row can be opened.
+//! What the search palette does with its results beyond listing them: the
+//! steps that collect an action's arguments and the other ways a row can be
+//! opened.
 //!
 //! Pure functions over search results, so the host's event code stays a
 //! thin dispatcher and every decision here is tested without a desktop.
@@ -10,74 +10,87 @@ use ui::widget::command_palette::{ActivationModifier, ArgumentKind, ArgumentSpec
 
 use crate::shell::i18n::t;
 use crate::shell::search::action_api::{ActionParam, ParamType};
-use crate::shell::search::{KindGroup, ResourceKind, SearchResult};
+use crate::shell::search::{ResourceKind, SearchResult};
 
 /// Row id of the row that shows the rest of a group the budget cut short.
 pub(super) const MORE_PREFIX: &str = "more:";
 
+/// Row id of the launcher's "All apps" row: every app, as the Apps chip
+/// lists them.
+pub(super) const ALL_APPS_ID: &str = "all-apps";
+
 /// Row id of one value offered in an argument step.
 pub(super) const CHOICE_PREFIX: &str = "choice:";
-
-/// Keep each group to a fair share of `budget` rows, front to back, except
-/// the kinds in `expanded`, which show everything. A group that lost rows
-/// keeps its `total`, so its header and its "show all" row can say how many
-/// there are. A lone group, or a zero budget, keeps everything.
-pub(super) fn trim_groups(
-    mut groups: Vec<KindGroup>,
-    budget: usize,
-    expanded: &[ResourceKind],
-) -> Vec<KindGroup> {
-    let rows: usize = groups.iter().map(|g| g.results.len()).sum();
-    if budget == 0 || groups.len() < 2 || rows <= budget {
-        return groups;
-    }
-    let n = groups.len();
-    let mut remaining = budget;
-    for (i, group) in groups.iter_mut().enumerate() {
-        if expanded.contains(&group.kind) {
-            remaining = remaining.saturating_sub(group.results.len());
-            continue;
-        }
-        let groups_left = n.saturating_sub(i).max(1);
-        let share = remaining.checked_div(groups_left).unwrap_or(1).max(1);
-        let keep = share.min(group.results.len());
-        group.results.truncate(keep);
-        remaining = remaining.saturating_sub(keep);
-    }
-    groups
-}
-
-/// Whether a group shows fewer rows than it holds.
-pub(super) fn is_capped(group: &KindGroup) -> bool {
-    group.results.len() < group.total
-}
 
 /// How one argument is asked for.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Step {
-    /// Rows to pick from: each value and how it reads.
-    Choices(Vec<(Value, String)>),
-    /// A field of a kind.
+    /// Rows to pick from.
+    Choices(Vec<Choice>),
     Field(ArgumentSpec),
 }
 
-/// The step that asks for `param` of the action titled `title`. Declared
+/// One value offered in an argument step: what it binds, how it reads, a
+/// second line that tells it apart, and for a person (an identity), the key
+/// of their avatar.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Choice {
+    pub value: Value,
+    pub label: String,
+    pub detail: Option<String>,
+    pub person: Option<String>,
+}
+
+impl Choice {
+    fn plain(value: Value, label: String) -> Self {
+        Self {
+            value,
+            label,
+            detail: None,
+            person: None,
+        }
+    }
+}
+
+/// The step that asks for `param` of the action titled `title`. What the
+/// value picks from the workspace (who, where, which grant) is listed as
+/// `picks` finds it there, and a set of declared values as each set; declared
 /// values are rows to pick from; a switch is On or Off; a number steps with
-/// the arrows inside its schema's bounds; a secret is masked.
-pub(super) fn step_for(param: &ActionParam, title: &str) -> Step {
-    if !param.choices.is_empty() {
+/// the arrows inside its schema's bounds; a secret is masked. Nothing is
+/// typed in its encoding.
+pub(super) fn step_for(
+    param: &ActionParam,
+    title: &str,
+    picks: &dyn Fn(tilo_actions::Pick) -> Vec<Choice>,
+) -> Step {
+    if let Some(pick) = param.pick() {
+        return Step::Choices(picks(pick));
+    }
+    if let Some(sets) = sets_of(param) {
+        return Step::Choices(sets);
+    }
+    if !param.choices.is_empty() || param.has_labelled_choices() {
+        // A choice reads as its label: an identity by its name, never by its
+        // fingerprint.
         return Step::Choices(
             param
                 .choices
                 .iter()
-                .filter_map(|choice| Some((value_of(param.ty, choice).ok()?, choice.to_string())))
+                .filter_map(|choice| {
+                    Some(Choice {
+                        value: value_of(param.ty, choice).ok()?,
+                        label: param.choice_label(choice).unwrap_or(choice).to_string(),
+                        detail: None,
+                        person: param.choice_is_person(choice).then(|| choice.to_string()),
+                    })
+                })
                 .collect(),
         );
     }
     if param.ty == ParamType::Boolean {
         return Step::Choices(vec![
-            (Value::Bool(true), t("palette-value-on")),
-            (Value::Bool(false), t("palette-value-off")),
+            Choice::plain(Value::Bool(true), t("palette-value-on")),
+            Choice::plain(Value::Bool(false), t("palette-value-off")),
         ]);
     }
     let bound = |key: &str| {
@@ -122,6 +135,62 @@ pub(super) fn step_for(param: &ActionParam, title: &str) -> Step {
         prefill,
         kind,
     })
+}
+
+/// The values a list of declared values (`items` with an `enum`) can take,
+/// each set in the declared order and read by its values' labels: every
+/// non-empty set of a few values, else each value alone and all of them.
+fn sets_of(param: &ActionParam) -> Option<Vec<Choice>> {
+    const MAX_SET_VALUES: usize = 4;
+    if param.ty != ParamType::Array {
+        return None;
+    }
+    let items = param.schema.as_deref()?.get("items")?;
+    let values: Vec<&str> = items
+        .get("enum")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    let label = |value: &str| {
+        items
+            .get(tilo_actions::CHOICE_LABELS_ANNOTATION)
+            .and_then(|labels| labels.get(value))
+            .and_then(Value::as_str)
+            .unwrap_or(value)
+            .to_owned()
+    };
+    let sets: Vec<Vec<&str>> = if values.len() <= MAX_SET_VALUES {
+        (1..1_usize << values.len())
+            .map(|mask| {
+                values
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| mask & (1 << index) != 0)
+                    .map(|(_, value)| *value)
+                    .collect()
+            })
+            .collect()
+    } else {
+        values
+            .iter()
+            .map(|value| vec![*value])
+            .chain(std::iter::once(values.clone()))
+            .collect()
+    };
+    Some(
+        sets.into_iter()
+            .map(|set| {
+                Choice::plain(
+                    Value::Array(set.iter().map(|value| Value::from(*value)).collect()),
+                    set.iter()
+                        .map(|value| label(value))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                )
+            })
+            .collect(),
+    )
 }
 
 /// `text` as the JSON value a `ty` parameter binds from. Numbers may carry
@@ -202,11 +271,13 @@ pub(super) fn inline_argument(
     let name = param.name.to_string();
     if !param.choices.is_empty() {
         let wanted = fold(&text);
-        let exact = param.choices.iter().find(|c| fold(c) == wanted);
+        // A labelled choice is named by its label ("Alice"), as it reads.
+        let reads = |c: &str| fold(param.choice_label(c).unwrap_or(c));
+        let exact = param.choices.iter().find(|c| reads(c) == wanted);
         let mut prefixed = param
             .choices
             .iter()
-            .filter(|c| fold(c).starts_with(&wanted));
+            .filter(|c| reads(c).starts_with(&wanted));
         let choice = exact.or_else(|| match (prefixed.next(), prefixed.next()) {
             (Some(only), None) => Some(only),
             _ => None,
@@ -274,18 +345,13 @@ impl ParamFlow {
 pub(super) fn opens_a_window(kind: &ResourceKind) -> bool {
     matches!(
         kind,
-        ResourceKind::Application
-            | ResourceKind::HostApplication
-            | ResourceKind::File
-            | ResourceKind::Note
-            | ResourceKind::Record
+        ResourceKind::Application | ResourceKind::File | ResourceKind::Note | ResourceKind::Record
     )
 }
 
 /// What a held modifier does to a row that opens a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Activation {
-    /// As a tab in the focused window's group.
     TabHere,
     /// In its own group right beside the focused window.
     Beside,
@@ -358,64 +424,134 @@ impl SecondaryAction {
 mod tests {
     use super::*;
 
-    fn rows(kind: &ResourceKind, n: usize) -> KindGroup {
-        KindGroup {
-            kind: kind.clone(),
-            total: n,
-            results: (0..n)
-                .map(|i| {
-                    SearchResult::nullary(
-                        kind.clone(),
-                        "test",
-                        format!("{i}"),
-                        format!("Row {i}"),
-                        None,
-                        0,
-                        |_, _, _| {},
-                    )
-                })
-                .collect(),
+    fn no_picks(_: tilo_actions::Pick) -> Vec<Choice> {
+        Vec::new()
+    }
+
+    fn rows_of(params: &[ActionParam]) -> Vec<String> {
+        let id = params.iter().find(|param| param.name == "id").unwrap();
+        match step_for(id, "Use identity in this workspace", &no_picks) {
+            Step::Choices(rows) => rows.into_iter().map(|row| row.label).collect(),
+            Step::Field(_) => Vec::new(),
         }
     }
 
     #[test]
-    fn groups_share_the_budget_and_an_expanded_group_keeps_every_row() {
-        let groups = || {
-            vec![
-                rows(&ResourceKind::Action, 66),
-                rows(&ResourceKind::Application, 3),
-                rows(&ResourceKind::File, 19),
-            ]
+    fn choosing_an_identity_offers_names_and_avatars_never_a_fingerprint() {
+        use crate::shell::search::providers::actions::identity_select_params;
+        let (alice, bob) = ("a1".repeat(32), "b2".repeat(32));
+        let params =
+            identity_select_params(&[(alice.clone(), "Alice".into()), (bob.clone(), "Bob".into())]);
+        let id = params.iter().find(|param| param.name == "id").unwrap();
+        let Step::Choices(rows) = step_for(id, "Use identity in this workspace", &no_picks) else {
+            panic!("the identity is picked from a list, never typed");
         };
-        let trimmed = trim_groups(groups(), 12, &[]);
-        let shown: Vec<usize> = trimmed.iter().map(|g| g.results.len()).collect();
-        assert_eq!(shown, vec![4, 3, 5], "a fair share, what's left rolls on");
-        assert!(trimmed.iter().all(|g| g.total >= g.results.len()));
-        assert!(is_capped(&trimmed[0]) && !is_capped(&trimmed[1]));
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Alice", "Bob"],
+            "each reads as its name"
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.person.clone())
+                .collect::<Vec<_>>(),
+            [Some(alice.clone()), Some(bob)],
+            "each wears its avatar"
+        );
+        assert_eq!(rows[0].value, Value::String(alice), "and binds its id");
+        assert!(
+            !id.description.contains("fingerprint"),
+            "nobody is asked for a fingerprint"
+        );
 
-        let expanded = trim_groups(groups(), 12, &[ResourceKind::File]);
-        let file = expanded
-            .iter()
-            .find(|g| g.kind == ResourceKind::File)
-            .expect("files");
-        assert_eq!(file.results.len(), 19, "show all means all");
+        // The empty picker's next step is an action
+        // "Set up your identity" that starts the first-identity setup, offered
+        // only when the device has no identity.
+        let none = identity_select_params(&[]);
+        let id = none.iter().find(|param| param.name == "id").unwrap();
+        let Step::Choices(rows) = step_for(id, "Use identity in this workspace", &no_picks) else {
+            panic!("with none connected it is still a list, never a field for a fingerprint");
+        };
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Set up your identity"],
+            "the next step, not a spelling hint"
+        );
+        assert_eq!(rows[0].person, None);
+        assert!(
+            none.iter().all(|param| param.name != "confirm"),
+            "setting one up delegates nothing, so nothing is confirmed"
+        );
+        assert!(
+            rows_of(&params)
+                .iter()
+                .all(|label| label != "Set up your identity"),
+            "a device with an identity is not offered another"
+        );
+    }
+
+    #[test]
+    fn who_where_and_which_grant_are_picked_from_the_workspace_never_typed() {
+        let subject = ActionParam::required("subject", ParamType::Object, "Who")
+            .picking(tilo_actions::Pick::Subject);
+        let ada = Choice {
+            value: serde_json::json!({ "person": "ada" }),
+            detail: None,
+            label: "Ada".into(),
+            person: Some("ada".into()),
+        };
+        let picks = |pick| {
+            assert_eq!(pick, tilo_actions::Pick::Subject);
+            vec![ada.clone()]
+        };
+        let Step::Choices(rows) = step_for(&subject, "Grant", &picks) else {
+            panic!("a subject is picked from the workspace's people");
+        };
+        assert_eq!(rows, [ada]);
+
+        let kinds = ActionParam::required("kinds", ParamType::Array, "Which kinds").with_schema(
+            serde_json::json!({
+                "type": "array",
+                "items": {
+                    "enum": ["read", "undoable", "outside"],
+                    "choice_labels": { "read": "reading" },
+                },
+            }),
+        );
+        let Step::Choices(rows) = step_for(&kinds, "Grant", &no_picks) else {
+            panic!("a set of declared values is picked as a set");
+        };
+        assert_eq!(rows.len(), 7, "every non-empty set");
+        assert_eq!(rows[0].value, serde_json::json!(["read"]));
+        assert_eq!(rows[0].label, "reading");
+        assert_eq!(
+            rows[6].value,
+            serde_json::json!(["read", "undoable", "outside"])
+        );
+        assert_eq!(rows[6].label, "reading, undoable, outside");
     }
 
     #[test]
     fn each_parameter_type_gets_its_own_step() {
         let choices = ActionParam::required("minutes", ParamType::Integer, "Minutes")
             .with_choices(["0", "5", "10"]);
-        let Step::Choices(rows) = step_for(&choices, "Lock after") else {
+        let Step::Choices(rows) = step_for(&choices, "Lock after", &no_picks) else {
             panic!("declared values are rows");
         };
-        assert_eq!(rows[1], (Value::from(5), "5".to_string()));
+        assert_eq!(rows[1], Choice::plain(Value::from(5), "5".to_string()));
 
         let switch = ActionParam::required("enabled", ParamType::Boolean, "On or off");
-        assert!(matches!(step_for(&switch, "Wi-Fi"), Step::Choices(rows) if rows.len() == 2));
+        assert!(
+            matches!(step_for(&switch, "Wi-Fi", &no_picks), Step::Choices(rows) if rows.len() == 2)
+        );
 
         let percent = ActionParam::required("percent", ParamType::Integer, "Percent")
             .with_schema(serde_json::json!({"minimum": 0, "maximum": 100, "default": 40}));
-        let Step::Field(spec) = step_for(&percent, "Volume") else {
+        let Step::Field(spec) = step_for(&percent, "Volume", &no_picks) else {
             panic!("a number is a field");
         };
         assert_eq!(spec.prompt, "Volume");
@@ -430,7 +566,7 @@ mod tests {
         );
 
         let secret = ActionParam::required("secret", ParamType::Secret, "Password");
-        let Step::Field(spec) = step_for(&secret, "Unlock") else {
+        let Step::Field(spec) = step_for(&secret, "Unlock", &no_picks) else {
             panic!("a secret is a field");
         };
         assert_eq!(spec.kind, ArgumentKind::Secret);

@@ -331,7 +331,6 @@ impl Drop for Disposable {
             return;
         }
         if let Err(error) = self.close() {
-            // Preserve the owned image and receipt whenever detach is unproven.
             let _recorded = self.receipt("cleanup-unproven");
             let retained = self.root.take().map(tempfile::TempDir::keep);
             eprintln!("native fixture cleanup unproven; retained {retained:?}: {error}");

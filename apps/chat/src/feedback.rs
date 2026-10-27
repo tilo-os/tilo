@@ -10,8 +10,17 @@ use ui::feedback::{Destination, Receipt};
 use ui::tilo_resource::{self, Id};
 
 pub(crate) mod destination_read;
+pub mod message;
 pub(crate) mod receipt_read;
 pub(crate) mod status_read;
+
+/// The reads Chat answers from its committed record: a feedback report's
+/// receipt, status and destination.
+pub static READERS: [ui::semantic_document_read::RegisteredSemanticReader; 3] = [
+    receipt_read::READER,
+    status_read::READER,
+    destination_read::READER,
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model)]
 #[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
@@ -52,6 +61,14 @@ fn refused(reason: impl Into<String>) -> ActionError {
 #[must_use]
 pub fn message_id(report: &str) -> String {
     format!("m_feedback_{report}")
+}
+
+/// The report whose message `message` is ([`message_id`]).
+#[must_use]
+pub fn report_of_message(message: &str) -> Option<&str> {
+    message
+        .strip_prefix("m_feedback_")
+        .filter(|report| !report.is_empty())
 }
 
 /// The report `id` as the record keeps it, its triage oldest first.
@@ -255,6 +272,7 @@ mod tests {
                     text: "The reader loses my position".into(),
                     context: Vec::new(),
                     screenshot: None,
+                    ..Default::default()
                 },
             },
         )

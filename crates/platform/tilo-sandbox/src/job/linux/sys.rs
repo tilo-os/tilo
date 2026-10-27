@@ -20,7 +20,6 @@ pub struct CloneArgs {
     pub cgroup: u64,
 }
 
-/// `CLONE_INTO_CGROUP`.
 pub const CLONE_INTO_CGROUP: u64 = 0x2_0000_0000;
 
 /// `clone3` with `CLONE_VM | CLONE_VFORK` in `args.flags` and no stack of
@@ -87,7 +86,6 @@ pub unsafe fn clone3_vfork(
     ret
 }
 
-/// `struct mount_attr`.
 #[repr(C)]
 #[derive(Default)]
 pub struct MountAttr {

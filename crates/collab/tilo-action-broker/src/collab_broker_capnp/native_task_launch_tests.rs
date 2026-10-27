@@ -1,4 +1,3 @@
-//! Cold activation exercises the host launcher service and the real Writer UI owner.
 use super::*;
 use crate::services::{LaunchPlace, LaunchableApplication, LauncherServices};
 use app_framework::framework::testing::HeadlessApp;
@@ -15,6 +14,7 @@ struct Launcher {
 impl LauncherServices for Launcher {
     fn applications(&self) -> Vec<LaunchableApplication> {
         vec![LaunchableApplication {
+            capabilities: Vec::new(),
             package_id: WRITER.into(),
             display_name: "Writer".into(),
             unconfined: false,
@@ -32,7 +32,7 @@ impl LauncherServices for Launcher {
         record: Option<&str>,
         _place: &LaunchPlace,
     ) -> Result<(), String> {
-        if workspace.room != room()
+        if workspace.room() != room()
             || app != WRITER
             || !(record.is_none() || record == Some("main"))
         {
@@ -198,12 +198,14 @@ struct Writer {
     app: HeadlessApp<WordProcessorApp>,
     channel: channel_handle::Client,
     stream: invocation_stream::Client,
+    peer: u64,
 }
 impl Writer {
     async fn mount(f: &Fixture, changed: bool) -> Self {
         let mut app = HeadlessApp::<WordProcessorApp>::new().unwrap();
         let descriptors = app.actions().unwrap();
-        let channel = f.app_channel(210, WRITER, false);
+        let peer = 210;
+        let channel = f.app_channel(peer, WRITER, false);
         let mut publish = channel.publish_actions_request();
         publish.get().set_app_id(WRITER);
         {
@@ -235,16 +237,16 @@ impl Writer {
             app,
             channel,
             stream,
+            peer,
         }
     }
 
     async fn settle(&mut self, id: u64) {
-        let response = tokio::time::timeout(
-            Duration::from_secs(2),
+        let response = tilo_test_env::within(
+            "the Writer delivery",
             self.stream.read_request().send().promise,
         )
         .await
-        .unwrap()
         .unwrap();
         let wire = response.get().unwrap();
         assert_eq!(wire.get_id(), id);
@@ -282,14 +284,10 @@ impl Writer {
         update.send().promise.await.unwrap();
     }
 
-    async fn assert_no_delivery(&self) {
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(30),
-                self.stream.read_request().send().promise
-            )
-            .await
-            .is_err(),
+    fn assert_no_delivery(&self) {
+        assert_eq!(
+            crate::collab_broker_capnp::unread_invocations(self.peer),
+            0,
             "a refused cold action reached the real UI owner"
         );
     }
@@ -368,7 +366,7 @@ async fn a_cold_package_activates_before_fresh_resource_actions_move_the_writer_
         writer.settle(found.0).await;
         let doc = writer.app.peer_document();
         writer.app.with_surface::<WordProcessorWidget, _>(|widget| {
-            let agent = widget.participant_view_or_default(&tilo_actions::ParticipantId::for_agent_task(&f.task).unwrap(), &doc).unwrap();
+            let agent = widget.participant_view_or_default(&tilo_actions::ParticipantId::for_agent_task(&run.group()).unwrap(), &doc).unwrap();
             assert_eq!(agent.find.query, "governed");
             assert!(agent.anchor.is_some(), "navigation must select the visible match");
             assert_eq!(widget.local_participant_view(), person, "agent navigation must preserve the person's caret");
@@ -492,10 +490,10 @@ async fn retained_actions_activate_the_host_but_changed_fresh_contracts_have_no_
                 result = &mut pending => panic!("retained request answered before host launch: {result:?}"),
             }
             let mut writer = Box::pin(Writer::mount(&f, changed)).await;
-            let result = tokio::time::timeout(Duration::from_secs(2), pending).await.unwrap();
+            let result = tilo_test_env::within("the retained request answer", pending).await;
             if changed {
                 assert!(result.unwrap_err().to_string().contains("contract changed"));
-                writer.assert_no_delivery().await;
+                writer.assert_no_delivery();
                 assert!(!writer.app.harness().inspection_json().unwrap().contains("Retained request visible"));
             } else {
                 writer.settle(result.unwrap().0).await;
@@ -570,23 +568,17 @@ async fn stop_and_revocation_while_a_cold_app_is_waiting_deliver_no_action() {
                     result = &mut pending => panic!("answered before activation: {result:?}"),
                 }
                 if stop {
-                    f.person_command(WorkspaceTaskCommand::CancelForRun {
-                        task_id: f.task.clone(),
-                        run_epoch: 1,
-                        after_revision: 0,
-                    })
-                    .unwrap();
+                    f.stop();
                 } else {
                     permission(&f, false);
                 }
                 let mut writer = Box::pin(Writer::mount(&f, false)).await;
                 assert!(
-                    tokio::time::timeout(Duration::from_secs(2), pending)
+                    tilo_test_env::within("the waiting request answer", pending)
                         .await
-                        .unwrap()
                         .is_err()
                 );
-                writer.assert_no_delivery().await;
+                writer.assert_no_delivery();
                 assert!(
                     !writer
                         .app
@@ -623,26 +615,28 @@ async fn a_capped_authenticated_task_cannot_activate_outside_its_connection_ceil
             let run = delivered(&agent).await;
             let provider = tilo_actions::remote::workspace_provider(&room().to_string());
             let resource = format!("app.{WRITER}");
-            f.native
-                .authorize_action(
-                    &room().to_string(),
-                    "scribe",
-                    &crate::services::NativeTaskActionRequirement {
-                        binding: f
-                            .state
-                            .task_run_for(100, "scribe", run.run_id, &run.lease)
-                            .unwrap()
-                            .native,
-                        app: WRITER.into(),
-                        resource_kind: "applications.app".into(),
-                        resource: resource.clone(),
-                        action: "open".into(),
-                        need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
-                        consequential: false,
-                        confirmed: false,
-                    },
-                )
-                .expect("canonical starter/task authority alone would permit this activation");
+            let issue_run = f.native.runs.lock().unwrap()[0].clone();
+            crate::services::TrackerRuns::authorize_action(
+                f.native.as_ref(),
+                &room().to_string(),
+                &issue_run,
+                &crate::services::NativeTaskActionRequirement {
+                    binding: f
+                        .state
+                        .task_run_for(100, "scribe", run.run_id, &run.lease)
+                        .unwrap()
+                        .native,
+                    app: WRITER.into(),
+                    resource_kind: "applications.app".into(),
+                    resource: resource.clone(),
+                    action: "open".into(),
+                    need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
+                    consequential: false,
+                    attended: false,
+                    confirmed: false,
+                },
+            )
+            .expect("canonical starter/task authority alone would permit this activation");
             f.cap_connection();
             assert!(
                 invoke_provider(
@@ -740,8 +734,9 @@ async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunch
             f.state.invocation_subscribers.lock().unwrap().remove(&210);
             drop(writer);
             once_permission(&f);
-            let retry = tokio::time::timeout(
-                Duration::from_millis(250),
+            // A certain terminal receipt must not wait for the closed publisher.
+            let retry = tilo_test_env::within(
+                "the retry's terminal receipt",
                 invoke_provider_id(
                     &agent,
                     &run,
@@ -753,7 +748,6 @@ async fn once_activation_is_spent_and_completed_retry_after_close_never_relaunch
                 ),
             )
             .await
-            .expect("a certain terminal receipt must not wait for a closed publisher")
             .unwrap();
             assert_eq!(retry, first);
             assert!(
@@ -898,8 +892,8 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                         }
                     }),
                 );
-                let result = tokio::time::timeout(
-                    Duration::from_secs(2),
+                let result = tilo_test_env::within(
+                    "post-custody checks must not re-enter task mutation admission",
                     invoke_provider_id(
                         &agent,
                         &run,
@@ -910,8 +904,7 @@ async fn activation_rechecks_original_caller_and_live_policy_after_custody() {
                         id,
                     ),
                 )
-                .await
-                .expect("post-custody checks must not re-enter task mutation admission");
+                .await;
                 assert!(result.is_err(), "{change} must revoke activation");
                 assert!(crossed.load(std::sync::atomic::Ordering::SeqCst));
                 assert!(
@@ -1003,12 +996,7 @@ async fn activation_uses_the_current_workspace_after_custody() {
                 "Current launch workspace"
             );
             let _writer = Box::pin(Writer::mount(&f, false)).await;
-            assert!(
-                tokio::time::timeout(Duration::from_secs(2), open)
-                    .await
-                    .unwrap()
-                    .is_ok()
-            );
+            assert!(tilo_test_env::within("the activation", open).await.is_ok());
             assert!(launches.try_recv().is_err());
         }))
         .await;
@@ -1028,23 +1016,12 @@ fn ask_first_for_writer(f: &Fixture) {
     );
 }
 
-fn held_confirmation(f: &Fixture) -> Option<tilo_desktop_model::WorkspaceTaskConfirmation> {
-    f.native
-        .owner
-        .workspace_task_snapshot(room())
-        .unwrap()
-        .controls
-        .get(&f.task)
-        .and_then(|control| control.confirmation.clone())
-}
-
 /// A retained action whose grants ask first pauses at a reviewable draft
 /// before anything is launched, as a running application's action does; once
 /// the person confirms, the application is launched for exactly what they
 /// confirmed, opening it included.
 #[tokio::test(flavor = "current_thread")]
 async fn a_retained_action_that_asks_first_pauses_at_a_draft_before_launching() {
-    use tilo_desktop_model::{WorkspaceTaskConfirmationAnswer, WorkspaceTaskConfirmationState};
     tokio::task::LocalSet::new()
         .run_until(Box::pin(async {
             let (f, mut launches) = fixture();
@@ -1073,20 +1050,18 @@ async fn a_retained_action_that_asks_first_pauses_at_a_draft_before_launching() 
                 "{waiting}"
             );
             assert!(launches.try_recv().is_err(), "nothing launched for a draft");
-            let asked = held_confirmation(&f).expect("the run is paused at a draft the person can review");
-            assert!(asked.is_waiting());
+            let asked = super::confirmation::ask(
+                &f,
+                (Document::KIND, "append-paragraph"),
+                arguments.as_object().unwrap(),
+            );
             assert_eq!(asked.app, WRITER);
-            f.person_command(WorkspaceTaskCommand::AnswerConfirmation {
-                task_id: f.task.clone(),
-                run_epoch: 1,
-                confirmation_id: asked.id.clone(),
-                answer: WorkspaceTaskConfirmationAnswer::Confirm { edits: Vec::new() },
-            })
-            .unwrap();
-            assert!(matches!(
-                held_confirmation(&f).unwrap().state,
-                WorkspaceTaskConfirmationState::Confirmed { .. }
-            ));
+            super::confirmation::answer(
+                &f,
+                crate::services::TrackerAnswer::Confirmed {
+                    edits: serde_json::Value::Null,
+                },
+            );
             let pending = invoke_provider_id(
                 &agent,
                 &run,
@@ -1102,9 +1077,7 @@ async fn a_retained_action_that_asks_first_pauses_at_a_draft_before_launching() 
                 result = &mut pending => panic!("confirmed request answered before host launch: {result:?}"),
             }
             let mut writer = Box::pin(Writer::mount(&f, false)).await;
-            let result = tokio::time::timeout(Duration::from_secs(2), pending)
-                .await
-                .unwrap();
+            let result = tilo_test_env::within("the cold request answer", pending).await;
             writer.settle(result.unwrap().0).await;
             assert!(
                 writer

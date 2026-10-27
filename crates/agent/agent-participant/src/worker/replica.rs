@@ -1,6 +1,6 @@
 //! A record held in a confined app worker, as the supervisor uses it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 
 use automerge::AutoCommit;
@@ -8,11 +8,12 @@ use collab_types::DocumentMutation;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
 use tilo_automerge_isolate::{Applied, Dependencies};
+use tilo_content::ContentStore;
 use tilo_relay_protocol::live::LiveAnchor;
 use ui::record::RecordId;
 
 use super::process::Process;
-use super::proto::{Mode, Reply, Request};
+use super::proto::{MAX_CONTENT_ITEM_BYTES, Mode, Reply, Request};
 use crate::apps::{AppCatalogue, AppError, ReplicaActor, Seed};
 use tilo_lock::MutexRecover as _;
 
@@ -20,6 +21,18 @@ use tilo_lock::MutexRecover as _;
 /// of its record, before the record is given up on: a document that crashes
 /// every worker must not keep starting new ones.
 const MAX_REVIVALS: u32 = 2;
+
+/// The most pieces of content the record refers to that are put into its
+/// worker before one effect runs.
+const REFERENCED_CONTENT_ITEMS: usize = 256;
+
+/// The most bytes of such content put into the worker before one effect
+/// runs; the piece that crosses it is the last.
+const REFERENCED_CONTENT_BYTES: usize = 256 * 1024 * 1024;
+
+/// The most values of a record's document read looking for the content it
+/// refers to.
+const MOST_SCANNED_VALUES: usize = 1 << 20;
 
 /// One record of one app, held as a replica of its resource in a confined
 /// app worker ([`crate::worker`]): [`crate::Replica`]'s operations, with the
@@ -32,6 +45,12 @@ const MAX_REVIVALS: u32 = 2;
 /// same way before it is handed back: a whole document must load, and an
 /// increment must apply on top of what the record holds, with nothing
 /// missing. A worker that died is replaced from the mirror.
+///
+/// Lent the room's content store ([`Self::lending`]), the replica carries
+/// content between the room and the worker around each operation: what the
+/// operation names, and before an effect what the record refers to, goes
+/// in before it runs; what the app stored comes out after, hashed again
+/// here before the room keeps it.
 pub struct ConfinedReplica {
     app_id: String,
     room: String,
@@ -39,6 +58,7 @@ pub struct ConfinedReplica {
     /// JSON [`ReplicaActor`], sent again to a revived worker.
     actor: String,
     record: RecordId,
+    content: Option<ContentStore>,
     inner: Mutex<Inner>,
 }
 
@@ -55,6 +75,8 @@ struct Inner {
     beside: BTreeMap<RecordId, AutoCommit>,
     /// An operation ran since the last take of the records beside.
     beside_dirty: bool,
+    /// Content the worker holds, put again into a worker that replaces it.
+    held: BTreeSet<String>,
 }
 
 fn worker_error(reason: impl Into<String>) -> AppError {
@@ -64,12 +86,6 @@ fn worker_error(reason: impl Into<String>) -> AppError {
 impl ConfinedReplica {
     /// Hold a record of `app_id` in `room` as `participant`, in a new
     /// confined worker: [`crate::Replica::open`].
-    ///
-    /// # Errors
-    ///
-    /// Returns why the app is unknown, the record's changes were not
-    /// admitted, or the worker did not start, confine itself or hold the
-    /// record.
     pub fn open(
         catalogue: &AppCatalogue,
         app_id: &str,
@@ -121,6 +137,7 @@ impl ConfinedReplica {
             participant: participant.to_owned(),
             actor,
             record,
+            content: None,
             inner: Mutex::new(Inner {
                 process: Some(process),
                 revivals: 0,
@@ -129,6 +146,7 @@ impl ConfinedReplica {
                 dirty: fresh,
                 beside: BTreeMap::new(),
                 beside_dirty: false,
+                held: BTreeSet::new(),
             }),
         };
         if fresh {
@@ -141,33 +159,38 @@ impl ConfinedReplica {
         Ok(replica)
     }
 
+    /// Lend the record the room's content store: content an operation names
+    /// (and, before an effect, content the record refers to) is put into the
+    /// worker from it, and content the app stores in the worker is kept in
+    /// it, so an export or a look stays in the room.
+    #[must_use]
+    pub fn lending(mut self, content: ContentStore) -> Self {
+        self.content = Some(content);
+        self
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock_recover()
     }
 
-    /// The app's id.
     #[must_use]
     pub fn app_id(&self) -> &str {
         &self.app_id
     }
 
-    /// The record's id, as its durable route names it.
-    #[must_use]
-    pub fn record(&self) -> &str {
-        self.record.as_str()
+    /// Whether an agent holds the record ([`ReplicaActor::Agent`]): only an
+    /// agent's renders go to the host's render service.
+    pub(crate) fn is_agents(&self) -> bool {
+        serde_json::from_str::<ReplicaActor>(&self.actor)
+            .is_ok_and(|actor| matches!(actor, ReplicaActor::Agent))
     }
 
     /// Collaboration route of this record: [`crate::Replica::wire_record`].
     #[must_use]
     pub fn wire_record(&self) -> &str {
-        if self.record.is_package_primary() {
-            ""
-        } else {
-            self.record.as_str()
-        }
+        self.record.route()
     }
 
-    /// The record's id.
     #[must_use]
     pub const fn record_id(&self) -> &RecordId {
         &self.record
@@ -233,6 +256,15 @@ impl ConfinedReplica {
                         _ => return Err(worker_error("the worker answered out of turn")),
                     }
                 }
+                // The content the last worker held went with it.
+                let held = std::mem::take(&mut inner.held);
+                if let Some(content) = &self.content {
+                    for hash in held {
+                        if put_content(&mut process, content, &hash)?.is_some() {
+                            inner.held.insert(hash);
+                        }
+                    }
+                }
                 inner.process = Some(process);
                 inner.dirty = false;
                 inner.beside_dirty = false;
@@ -259,7 +291,9 @@ impl ConfinedReplica {
     pub fn survey(&self) -> Vec<ActionDescriptor> {
         let reply = self.call(&mut self.lock(), &Request::Survey);
         match reply {
-            Ok(Reply::Descriptors(text)) => serde_json::from_str(&text).unwrap_or_default(),
+            Ok(Reply::Descriptors(text)) => {
+                crate::render::offered(serde_json::from_str(&text).unwrap_or_default())
+            }
             _ => Vec::new(),
         }
     }
@@ -324,6 +358,12 @@ impl ConfinedReplica {
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirm: bool,
     ) -> Result<ActionOutput, DoorError> {
+        // A render is made in the host's render service, never the worker.
+        if let Some(rendered) =
+            crate::render::route(self, self.content.as_ref(), address, arguments)
+        {
+            return rendered;
+        }
         let unavailable = |reason: String| DoorError::Unavailable {
             code: "app_worker".into(),
             reason,
@@ -348,7 +388,36 @@ impl ConfinedReplica {
         let mut inner = self.lock();
         inner.dirty = true;
         inner.beside_dirty = true;
-        let reply = self.call(&mut inner, &request);
+        if let Some(content) = &self.content {
+            self.supply(&mut inner, content, &named_content(arguments))
+                .map_err(|error| unavailable(error.to_string()))?;
+            // What the record refers to is the effect's best effort: the
+            // operation still runs, and asks for what it lacks, without it.
+            if let Err(error) = self.supply_referenced(&mut inner, content, address) {
+                tracing::warn!(app = %self.app_id, %error,
+                    "app worker: the content the record refers to was not put");
+            }
+        }
+        let mut reply = self.call(&mut inner, &request);
+        if let Some(content) = &self.content {
+            let wanted = self.gather(&mut inner, content);
+            let failed = !matches!(reply, Ok(Reply::Output(_)));
+            let missing: Vec<String> = wanted
+                .into_iter()
+                .filter(|hash| content.has(hash))
+                .collect();
+            // What the app lacked and the room has: the operation runs once
+            // more with it there.
+            if failed && !missing.is_empty() {
+                for hash in &missing {
+                    inner.held.remove(hash);
+                }
+                if self.supply(&mut inner, content, &missing).is_ok() {
+                    reply = self.call(&mut inner, &request);
+                    self.gather(&mut inner, content);
+                }
+            }
+        }
         drop(inner);
         match reply {
             Ok(Reply::Output(text)) => serde_json::from_str(&text)
@@ -358,6 +427,151 @@ impl ConfinedReplica {
             Ok(_) => Err(unavailable("the worker answered out of turn".into())),
             Err(error) => Err(unavailable(error.to_string())),
         }
+    }
+
+    /// Put the content at `hashes` the room has and the worker does not yet
+    /// hold into the worker.
+    fn supply(
+        &self,
+        inner: &mut Inner,
+        content: &ContentStore,
+        hashes: &[String],
+    ) -> Result<(), AppError> {
+        for hash in hashes {
+            if inner.held.contains(hash) || !content.has(hash) {
+                continue;
+            }
+            self.put_held(inner, content, hash)?;
+        }
+        Ok(())
+    }
+
+    /// Put the content at `hash` into the worker, starting one if none
+    /// runs, and note that it holds it. Its size, when it was put.
+    fn put_held(
+        &self,
+        inner: &mut Inner,
+        content: &ContentStore,
+        hash: &str,
+    ) -> Result<Option<usize>, AppError> {
+        if inner.process.is_none() {
+            // A new worker is given everything held; this one is next.
+            self.revive(inner)?;
+        }
+        let process = inner
+            .process
+            .as_mut()
+            .ok_or_else(|| worker_error("no app worker is running"))?;
+        match put_content(process, content, hash) {
+            Ok(Some(size)) => {
+                inner.held.insert(hash.to_owned());
+                Ok(Some(size))
+            }
+            Ok(None) => Ok(None),
+            Err(error) => {
+                inner.process = None;
+                Err(error)
+            }
+        }
+    }
+
+    /// Before an effect or view runs, put into the worker the content the
+    /// record's document refers to that the room has and the worker does
+    /// not hold: what an effect reads of the record (an export's pictures)
+    /// may have been placed by another participant, in another worker.
+    /// Document operations take nothing more than they name. Bounded by
+    /// [`REFERENCED_CONTENT_ITEMS`] and [`REFERENCED_CONTENT_BYTES`]; what
+    /// is left out is logged.
+    fn supply_referenced(
+        &self,
+        inner: &mut Inner,
+        content: &ContentStore,
+        address: &ActionAddress,
+    ) -> Result<(), AppError> {
+        let missing: Vec<String> = referenced_content(&inner.mirror)
+            .into_iter()
+            .filter(|hash| !inner.held.contains(hash) && content.has(hash))
+            .collect();
+        if missing.is_empty() || !self.is_effect(inner, address)? {
+            return Ok(());
+        }
+        let (mut items, mut bytes) = (0usize, 0usize);
+        for (at, hash) in missing.iter().enumerate() {
+            if items >= REFERENCED_CONTENT_ITEMS || bytes >= REFERENCED_CONTENT_BYTES {
+                tracing::warn!(app = %self.app_id, record = %self.record.as_str(),
+                    skipped = missing.len().saturating_sub(at),
+                    "app worker: the record refers to more content than an effect is given");
+                break;
+            }
+            if let Some(size) = self.put_held(inner, content, hash)? {
+                items = items.saturating_add(1);
+                bytes = bytes.saturating_add(size);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `address` names one of the record's effects or views now,
+    /// rather than a document operation.
+    fn is_effect(&self, inner: &mut Inner, address: &ActionAddress) -> Result<bool, AppError> {
+        match self.call(inner, &Request::Survey)? {
+            Reply::Descriptors(text) => {
+                let offered: Vec<ActionDescriptor> =
+                    serde_json::from_str(&text).map_err(|error| worker_error(error.to_string()))?;
+                Ok(offered.iter().any(|descriptor| {
+                    descriptor.address == *address
+                        && descriptor.kind != tilo_actions::OperationKind::Document
+                }))
+            }
+            Reply::Failed(reason) => Err(worker_error(reason)),
+            _ => {
+                inner.process = None;
+                Err(worker_error("the worker answered out of turn"))
+            }
+        }
+    }
+
+    /// Keep what the app stored in the room's store under the hash its
+    /// bytes have here, and answer the hashes it asked for and lacked.
+    /// Content the room does not keep is reported and left in the worker.
+    fn gather(&self, inner: &mut Inner, content: &ContentStore) -> Vec<String> {
+        let mut wanted = Vec::new();
+        while inner.process.is_some() {
+            let (offered, asked) = match self.call(inner, &Request::TakeContent) {
+                Ok(Reply::Content { offered, wanted }) => (offered, wanted),
+                Ok(Reply::Failed(reason)) => {
+                    tracing::warn!(app = %self.app_id, %reason,
+                        "app worker: its content was not taken");
+                    break;
+                }
+                Ok(_) => {
+                    inner.process = None;
+                    break;
+                }
+                Err(_) => break,
+            };
+            wanted.extend(
+                asked
+                    .into_iter()
+                    .filter(|hash| tilo_content::valid_hash(hash))
+                    .map(|hash| hash.to_ascii_lowercase()),
+            );
+            if offered.is_empty() {
+                break;
+            }
+            for bytes in offered {
+                match content.put(&bytes) {
+                    Ok(hash) => {
+                        inner.held.insert(hash);
+                    }
+                    Err(error) => {
+                        tracing::warn!(app = %self.app_id, %error,
+                            "app worker: stored content was not kept");
+                    }
+                }
+            }
+        }
+        wanted
     }
 
     /// Read the record as the supervisor holds it: everything taken from the
@@ -683,6 +897,134 @@ fn admit_history(doc: &mut AutoCommit, changes: &[Vec<u8>]) -> Result<(), AppErr
         batch.extend_from_slice(change);
     }
     admit_incoming(doc, &batch)
+}
+
+/// Put the content at `hash` from `content` into the worker, answering its
+/// size. `None` when it is not there to put, or too large to cross.
+fn put_content(
+    process: &mut Process,
+    content: &ContentStore,
+    hash: &str,
+) -> Result<Option<usize>, AppError> {
+    let Some(bytes) = content.read(hash) else {
+        return Ok(None);
+    };
+    if bytes.len() > MAX_CONTENT_ITEM_BYTES {
+        tracing::warn!(%hash, "app worker: content is too large to hand over");
+        return Ok(None);
+    }
+    let size = bytes.len();
+    match process
+        .call(&Request::PutContent(bytes))
+        .map_err(worker_error)?
+    {
+        Reply::Stored(stored) if stored == hash => Ok(Some(size)),
+        Reply::Stored(_) => Err(worker_error("the worker kept content under another hash")),
+        Reply::Failed(reason) => {
+            tracing::warn!(%hash, %reason, "app worker: content was not kept");
+            Ok(None)
+        }
+        _ => Err(worker_error("the worker answered out of turn")),
+    }
+}
+
+/// The content `text` names: itself, when it is a bare hash, and every
+/// content address inside it.
+fn content_in(text: &str, named: &mut BTreeSet<String>) {
+    if tilo_content::valid_hash(text) {
+        named.insert(text.to_ascii_lowercase());
+    }
+    for after in text.split(tilo_actions::CONTENT_RESOURCE_KIND).skip(1) {
+        if let Some(hash) = after.strip_prefix(':').and_then(|rest| rest.get(..64))
+            && tilo_content::valid_hash(hash)
+        {
+            named.insert(hash.to_ascii_lowercase());
+        }
+    }
+}
+
+/// The content a record's document refers to: every key, string and text
+/// in it that is a hash or holds a content address, as [`content_in`]
+/// reads one. At most [`MOST_SCANNED_VALUES`] values are read.
+fn referenced_content(doc: &AutoCommit) -> BTreeSet<String> {
+    use automerge::{ObjId, ObjType, ReadDoc as _, ScalarValueRef, ValueRef};
+    fn visit(
+        value: ValueRef<'_>,
+        id: ObjId,
+        named: &mut BTreeSet<String>,
+        objects: &mut Vec<(ObjId, ObjType)>,
+    ) {
+        match value {
+            ValueRef::Object(kind) => objects.push((id, kind)),
+            ValueRef::Scalar(ScalarValueRef::Str(text)) => content_in(&text, named),
+            ValueRef::Scalar(_) => {}
+        }
+    }
+    let mut named = BTreeSet::new();
+    let mut objects = vec![(automerge::ROOT, ObjType::Map)];
+    let mut budget = MOST_SCANNED_VALUES;
+    while let Some((object, kind)) = objects.pop() {
+        match kind {
+            ObjType::Map | ObjType::Table => {
+                for item in doc.map_range(&object, ..) {
+                    if budget == 0 {
+                        break;
+                    }
+                    budget = budget.saturating_sub(1);
+                    content_in(&item.key, &mut named);
+                    let id = item.id();
+                    visit(item.value, id, &mut named, &mut objects);
+                }
+            }
+            ObjType::List => {
+                for item in doc.list_range(&object, ..) {
+                    if budget == 0 {
+                        break;
+                    }
+                    budget = budget.saturating_sub(1);
+                    let id = item.id();
+                    visit(item.value, id, &mut named, &mut objects);
+                }
+            }
+            ObjType::Text => {
+                budget = budget.saturating_sub(1);
+                if let Ok(text) = doc.text(&object) {
+                    content_in(&text, &mut named);
+                }
+            }
+        }
+        if budget == 0 {
+            tracing::warn!("app worker: the record is too large to read whole for its content");
+            break;
+        }
+    }
+    named
+}
+
+/// The content an operation's arguments name: every string that is a
+/// content address or a bare hash, and every address inside a longer one.
+fn named_content(arguments: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    fn visit(value: &serde_json::Value, named: &mut BTreeSet<String>) {
+        match value {
+            serde_json::Value::String(text) => content_in(text, named),
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    visit(item, named);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for field in fields.values() {
+                    visit(field, named);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut named = BTreeSet::new();
+    for value in arguments.values() {
+        visit(value, &mut named);
+    }
+    named.into_iter().collect()
 }
 
 /// What a worker's refusal to open says, as [`crate::Replica::open`] says it.

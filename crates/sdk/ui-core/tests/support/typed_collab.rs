@@ -5,7 +5,10 @@
 //! on the same channel, and lets integration tests exercise the real UI SDK
 //! shovel without a shell process or process-global service-fd variables.
 
-#![allow(refining_impl_trait)]
+#![allow(
+    refining_impl_trait,
+    reason = "the capnp server traits are implemented with the generated, more precise return types"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -232,6 +235,21 @@ impl TypedBroker {
         .expect("typed test endpoint connects");
         self.wait_subscribed(app_id, peer, user_id);
         manager
+    }
+
+    /// Wait until `count` peers subscribe to the shared test room's actions,
+    /// as an app does once it is built on a [`Self::manager`].
+    pub fn wait_action_subscribers(&self, count: usize) {
+        let channel =
+            tilo_ui::collaboration::channel_key::format(TEST_APP_ID, &Uuid::nil().to_string(), "");
+        tilo_test_env::wait_until(format!("{count} action subscriptions on {channel}"), || {
+            self.hub
+                .channels
+                .lock()
+                .unwrap()
+                .get(&channel)
+                .is_some_and(|room| room.actions.len() >= count)
+        });
     }
 
     /// Publish an action as an external room participant. This drives the
@@ -531,6 +549,7 @@ impl stream::Server for OpStream {
             out.set_op(&value.bytes);
             out.set_from_user_id(&value.author);
             out.set_kind(runtime_collab::raw::OpKind::Signed);
+            out.set_admission(runtime_collab::raw::OpAdmission::CleartextAdmitted);
             Ok(())
         })
     }

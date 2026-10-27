@@ -15,7 +15,7 @@ use tilo_actions::{Action, ActionContext, ActionError, ActionInvoker, ChangeKind
 use tilo_resource::{Doc, Fields, Reader, Resource};
 use ui_core::record::person::PersonRecord as StoredRecord;
 use ui_core::storage::{
-    ChangeOrigin, Settings, SettingsDocument, SettingsRevision, SettingsSchema,
+    ChangeOrigin, InvokingAction, Settings, SettingsDocument, SettingsRevision, SettingsSchema,
 };
 
 use super::live::Live;
@@ -23,18 +23,16 @@ use super::record::{Held, RecordDoor};
 
 /// One thing a section's record asks of the section's type.
 enum SectionOp<'a> {
-    /// Make the document one of the section's model.
     Initialize(&'a mut Doc),
-    /// Write the stored value into the document's fields.
     Write(&'a mut Doc),
-    /// Store the value the document's fields hold, as the origin did.
     Store(&'a Doc, &'a ChangeOrigin),
     /// Whether the document's fields hold the stored value.
     HoldsStored(&'a Doc),
     /// The section the document holds, published under an id and a label.
     Publish(&'a Doc, &'a str, &'a str),
-    /// The section's action an encoded one is.
     Decode(&'a EncodedAction),
+    /// The section as stored now.
+    Stored,
 }
 
 /// What a [`SectionOp`] answers.
@@ -43,6 +41,7 @@ enum SectionOut {
     Holds(bool),
     Published(Box<tilo_actions::Resource>),
     Decoded(Box<dyn Action>),
+    Value(serde_json::Value),
 }
 
 /// What a section's record does with the section's type: one function per
@@ -53,7 +52,6 @@ pub(crate) struct SectionKind {
     pub(crate) label: &'static str,
     /// The section keeps a value per device.
     pub(crate) device_local: bool,
-    /// The type id the section's actions are encoded under.
     action_type: &'static str,
     /// The app whose settings the section is, and the document they live in.
     app_id: String,
@@ -103,9 +101,18 @@ impl SectionKind {
         )
     }
 
-    /// Store what `doc` holds as the action `action` by `by` changed it.
-    fn store(&self, doc: &Doc, action: &str, by: &str) -> Result<(), String> {
-        let origin = ChangeOrigin::action(format!("{}/{action}", self.kind)).by(by.to_owned());
+    /// Store what `doc` holds as the action `action` by `by` changed it,
+    /// run by the action `invoked_by` when another action ran it.
+    fn store(
+        &self,
+        doc: &Doc,
+        action: &str,
+        by: &str,
+        invoked_by: Option<&InvokingAction>,
+    ) -> Result<(), String> {
+        let origin = ChangeOrigin::action(format!("{}/{action}", self.kind))
+            .by(by.to_owned())
+            .invoked_by(invoked_by.cloned());
         (self.ops)(self, SectionOp::Store(doc, &origin)).map(drop)
     }
 
@@ -120,6 +127,14 @@ impl SectionKind {
         match (self.ops)(self, SectionOp::Decode(action))? {
             SectionOut::Decoded(action) => Ok(action),
             _ => Err("the section decoded nothing".into()),
+        }
+    }
+
+    /// The section as stored now, as its model writes it.
+    fn stored(&self) -> Result<serde_json::Value, String> {
+        match (self.ops)(self, SectionOp::Stored)? {
+            SectionOut::Value(value) => Ok(value),
+            _ => Err("the section read nothing".into()),
         }
     }
 }
@@ -163,10 +178,12 @@ where
             tilo_actions::decode_json::<T::Action>(&action.payload)
                 .map_err(|error| error.to_string())?,
         )),
+        SectionOp::Stored => {
+            SectionOut::Value(tilo_resource::Model::to_json(&kind.settings::<T>().get()))
+        }
     })
 }
 
-/// The record a section is kept in.
 enum Kept {
     /// A document of the window's own, which lives as long as the window: in
     /// a window that keeps nothing of the person's (a private one).
@@ -184,7 +201,6 @@ enum Kept {
         record: RefCell<Option<Box<StoredRecord>>>,
         /// The stored value, while the record is not open.
         scratch: Box<RefCell<Doc>>,
-        /// The settings document's version `scratch` last followed.
         scratch_seen: Cell<SettingsRevision>,
         /// The settings document's version the record last followed.
         seen: Cell<Option<SettingsRevision>>,
@@ -312,6 +328,13 @@ impl SectionDoor {
         self.kind.label
     }
 
+    /// Open the person's record the section is kept in, making it where it
+    /// does not exist yet: a holder that syncs it holds it from the start,
+    /// so what the person's other devices change reaches it.
+    fn hold(&self) {
+        drop(self.person_record(true));
+    }
+
     fn moved(&self) {
         self.revision.set(self.revision.get().wrapping_add(1));
     }
@@ -369,9 +392,15 @@ impl SectionDoor {
         }
     }
 
-    /// Apply the encoded action `encoded` for `invoker`, store the result as
-    /// what made it, and take it back where the store refuses it.
-    fn apply(&self, encoded: &EncodedAction, invoker: &ActionInvoker) -> Result<(), ActionError> {
+    /// Apply the encoded action `encoded` for `invoker`, run by the action
+    /// `invoked_by` when another action ran it, store the result as what
+    /// made it, and take it back where the store refuses it.
+    fn apply(
+        &self,
+        encoded: &EncodedAction,
+        invoker: &ActionInvoker,
+        invoked_by: Option<&InvokingAction>,
+    ) -> Result<(), ActionError> {
         if !self.editable {
             return Err(ActionError::Refused(format!(
                 "{} is changed in another app",
@@ -386,7 +415,7 @@ impl SectionDoor {
                 let mut doc = doc.borrow_mut();
                 let changed = action.apply(&mut doc).and_then(|()| {
                     self.kind
-                        .store(&doc, &id, &invoker.actor)
+                        .store(&doc, &id, &invoker.actor, invoked_by)
                         .map_err(ActionError::Refused)
                 });
                 match changed {
@@ -416,6 +445,13 @@ impl SectionDoor {
                         .with_app(*app_id, *app_title)
                         .with_invoker(invoker.clone())
                         .with_change(change);
+                // The value is stored from the document the edit made, in
+                // the same loan: reading the record again afterwards can
+                // find it busy, and a change that reached the record but not
+                // the settings document applied nowhere. A store the
+                // settings document refuses is the person's to see (the
+                // action is refused), never a silent no-op; the record
+                // follows the stored value again on its next read.
                 record
                     .edit(change == ChangeKind::Content, |doc| {
                         let writer =
@@ -429,9 +465,10 @@ impl SectionDoor {
                         )
                         .map(|_| ())
                         .map_err(|error| error.to_string())
+                        .and_then(|()| self.kind.store(doc, &id, &invoker.actor, invoked_by))
                     })
                     .map_err(ActionError::Refused)?;
-                self.write_person(&record, seen, &id, &invoker.actor);
+                seen.set(Some(self.kind.revision()));
             }
         }
         self.follow();
@@ -448,7 +485,11 @@ impl SectionDoor {
         action: &str,
         by: &str,
     ) {
-        let Some(written) = record.read(|doc| self.kind.store(doc, action, by)) else {
+        let Some(written) = record.read(|doc| self.kind.store(doc, action, by, None)) else {
+            tracing::warn!(
+                kind = self.kind.kind,
+                "settings section not written: its record is busy"
+            );
             return;
         };
         if let Err(error) = written {
@@ -501,7 +542,7 @@ impl SectionDoor {
                 }
             },
             move |action: &T::Action, invoker: &ActionInvoker| {
-                applying.apply(&tilo_resource::encode::<T>(action)?, invoker)
+                applying.apply(&tilo_resource::encode::<T>(action)?, invoker, None)
             },
         ))
     }
@@ -542,14 +583,199 @@ impl RecordDoor for SectionDoor {
     }
 
     fn apply_encoded(&self, action: &EncodedAction, invoker: &ActionInvoker) -> Result<(), String> {
+        self.apply_invoked(action, invoker, None)
+    }
+}
+
+impl SectionDoor {
+    /// [`RecordDoor::apply_encoded`], run by the action `invoked_by` when
+    /// another action ran this one.
+    fn apply_invoked(
+        &self,
+        action: &EncodedAction,
+        invoker: &ActionInvoker,
+        invoked_by: Option<&InvokingAction>,
+    ) -> Result<(), String> {
         if action.type_id != self.kind.action_type {
             return Err(format!(
                 "{} takes no `{}` action",
                 self.kind.label, action.type_id
             ));
         }
-        self.apply(action, invoker)
+        self.apply(action, invoker, invoked_by)
             .map_err(|error| error.to_string())
+    }
+}
+
+/// The settings sections an app keeps as records, held by a host without a
+/// window: the session, which keeps them for the palette and agents whether
+/// or not the app is open. Each is published and changed as the app's
+/// window does it, so a change checks the section's model and is recorded
+/// in the settings document with what made it and who; admitting an
+/// invocation (the invoker's grants) is the caller's, from the published
+/// action.
+pub struct SettingsRecords {
+    doors: Vec<Rc<SectionDoor>>,
+    /// The person's records the sections are kept in, whose undo and redo
+    /// are published beside them.
+    person: Option<Rc<super::person::PersonState>>,
+}
+
+impl SettingsRecords {
+    /// The settings sections `declare` declares, of the app `app_id`, as
+    /// they are stored now.
+    #[must_use]
+    pub fn new(app_id: &'static str, declare: super::Declare) -> Self {
+        Self::in_document(app_id, &[declare], SettingsDocument::Session)
+    }
+
+    /// The settings sections `declares` declare, of the app `app_id`, as
+    /// `document` stores them now, each in a document of the host's own.
+    #[must_use]
+    pub fn in_document(
+        app_id: &'static str,
+        declares: &[super::Declare],
+        document: SettingsDocument,
+    ) -> Self {
+        Self::declared(
+            super::record::Sections {
+                app_id,
+                document,
+                person: None,
+                doors: Vec::new(),
+            },
+            declares,
+        )
+    }
+
+    /// The settings sections `declares` declare, of the app `app_id` (titled
+    /// `app_title`), kept in the person's `records` as the app's window
+    /// keeps them, on the device `device`: each change is a step of the
+    /// person's, undone and redone like any of theirs, and stored in the
+    /// session's settings document with what made it and who.
+    #[must_use]
+    pub fn of_person(
+        app_id: &'static str,
+        app_title: &'static str,
+        declares: &[super::Declare],
+        records: ui_core::record::person::PersonRecords,
+        device: Option<String>,
+    ) -> Self {
+        Self::declared(
+            super::record::Sections {
+                app_id,
+                document: SettingsDocument::Session,
+                person: Some((
+                    Rc::new(super::person::PersonState::new(records, app_id, app_title)),
+                    device,
+                )),
+                doors: Vec::new(),
+            },
+            declares,
+        )
+    }
+
+    fn declared(sections: super::record::Sections, declares: &[super::Declare]) -> Self {
+        let person = sections
+            .person
+            .as_ref()
+            .map(|(person, _)| Rc::clone(person));
+        let mut records = super::Records::sections(sections);
+        for declare in declares {
+            declare(&mut records);
+        }
+        Self {
+            doors: records.into_sections(),
+            person,
+        }
+    }
+
+    /// The person's records the sections are kept in, each opened (made
+    /// where it does not exist yet), as their routes sync them to the
+    /// person's other devices; none where the sections are not kept in the
+    /// person's records.
+    #[must_use]
+    pub fn history_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
+        let Some(person) = &self.person else {
+            return Vec::new();
+        };
+        for door in &self.doors {
+            door.hold();
+        }
+        person.owners()
+    }
+
+    /// The person's shared record `P` (their accounts, their contacts),
+    /// held beside the sections and synced with them
+    /// ([`Self::history_owners`]), opened on first use; not published here.
+    /// `None` where the sections are not kept in the person's records.
+    #[must_use]
+    pub fn shared<P: tilo_resource::SharedRecord>(&self) -> Option<super::PersonRecord<P>> {
+        self.person.as_ref()?.hold_shared::<P>()
+    }
+
+    /// Every section, published with its field edits and verbs, and the
+    /// person's undo and redo of each kept in their records.
+    #[must_use]
+    pub fn resources(&self) -> Vec<tilo_actions::Resource> {
+        match &self.person {
+            Some(person) => person.resources(),
+            None => self.doors.iter().map(|door| door.publish()).collect(),
+        }
+    }
+
+    /// The section `kind` (`settings.appearance`) as stored now, as its
+    /// model writes it: what a control showing one of its fields shows.
+    /// `None` for a section not declared here.
+    #[must_use]
+    pub fn stored(&self, kind: &str) -> Option<serde_json::Value> {
+        let door = self.doors.iter().find(|door| door.kind.kind == kind)?;
+        door.kind
+            .stored()
+            .map_err(|error| tracing::warn!(kind, %error, "settings section unreadable"))
+            .ok()
+    }
+
+    /// Run the action at `address` with its typed `arguments` for `invoker`,
+    /// on behalf of the action `invoked_by` when another action runs it
+    /// (the palette's dark mode runs the appearance field edit). The change
+    /// is recorded with both, so its history tells them apart. A change
+    /// whose published action asks first, for the value it carries (a later
+    /// lock), runs only once it is `confirmed`.
+    pub fn invoke(
+        &self,
+        address: &tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+        invoker: &ActionInvoker,
+        invoked_by: Option<&InvokingAction>,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        let resources = self.resources();
+        let spec = tilo_actions::door::resolve(&resources, address)
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        if !confirmed
+            && spec.confirmation_for_json(arguments) != tilo_actions::ConfirmationPolicy::None
+        {
+            return Err(tilo_actions::DoorError::ConfirmationRequired);
+        }
+        let encoded = tilo_actions::door::encode_json(&resources, address, arguments)?;
+        if encoded.type_id == super::person::HISTORY_TYPE
+            && let Some(person) = &self.person
+        {
+            return person
+                .answer_for(&encoded.payload, invoker)
+                .map_err(tilo_actions::DoorError::Failed);
+        }
+        let request: super::record::RecordAction = tilo_actions::decode_json(&encoded.payload)
+            .map_err(|error| tilo_actions::DoorError::InvalidArguments(error.to_string()))?;
+        let door = self
+            .doors
+            .iter()
+            .find(|door| door.id() == request.record)
+            .ok_or_else(|| tilo_actions::DoorError::Unknown(address.clone()))?;
+        door.apply_invoked(&request.action, invoker, invoked_by)
+            .map(|()| tilo_actions::ActionOutput::default())
+            .map_err(tilo_actions::DoorError::Failed)
     }
 }
 

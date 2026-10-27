@@ -61,11 +61,6 @@ pub struct DocumentImportTerms {
 }
 
 impl DocumentImportProposalV1 {
-    /// Sign a proposal for `terms` with the proposing device's key.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the terms are out of bounds or canonical encoding fails.
     pub fn new(
         terms: &DocumentImportTerms,
         device_key: &SigningKey,
@@ -91,10 +86,6 @@ impl DocumentImportProposalV1 {
     }
 
     /// Canonical bytes covered by the proposer's signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
             b"tilo.document-import.proposal.v1".as_slice(),
@@ -113,10 +104,6 @@ impl DocumentImportProposalV1 {
     }
 
     /// Digest binding a decision to this complete proposal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn digest(&self) -> Result<[u8; 32], CanonicalError> {
         Ok(Sha256::digest(canonical_bytes(self)?).into())
     }
@@ -146,10 +133,6 @@ impl DocumentImportProposalV1 {
     }
 
     /// Verify version, bounds, expiry and the proposer's signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns the precise malformed, expired, or signature failure.
     pub fn verify(&self, now_unix: u64) -> Result<(), DocumentImportError> {
         self.check_bounds()?;
         if now_unix >= self.expires_unix {
@@ -181,10 +164,6 @@ pub struct DocumentImportDecisionV1 {
 
 impl DocumentImportDecisionV1 {
     /// Sign a decision on one exact proposal.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn new(
         proposal: &DocumentImportProposalV1,
         accepted: bool,
@@ -204,10 +183,6 @@ impl DocumentImportDecisionV1 {
     }
 
     /// Canonical bytes covered by the decider's signature.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if canonical encoding fails.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
         canonical_bytes(&(
             b"tilo.document-import.decision.v1".as_slice(),
@@ -223,10 +198,6 @@ impl DocumentImportDecisionV1 {
     /// by its decider. An acceptance must come before the proposal expires;
     /// a decline may come at any time. Whether the decider may decide is
     /// the room's to say.
-    ///
-    /// # Errors
-    ///
-    /// Returns the precise proposal, expiry, encoding, or signature failure.
     pub fn verify(
         &self,
         proposal: &DocumentImportProposalV1,

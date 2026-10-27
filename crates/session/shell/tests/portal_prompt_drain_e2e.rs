@@ -158,9 +158,7 @@ fn tick(host: &mut ShellOverlayHost) {
               test's own task, never spawning it"
 )]
 async fn pump_until_prompt(host: &mut ShellOverlayHost) {
-    let deadline = std::time::Instant::now()
-        .checked_add(crate::support::HANG_BOUND)
-        .expect("the hang bound fits in an Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         tick(host);
         if host.permission_prompt_mut_for_tests().is_some() {
@@ -184,9 +182,7 @@ async fn await_response(
     host: &mut ShellOverlayHost,
     handle: tokio::task::JoinHandle<(u32, HashMap<String, OwnedValue>)>,
 ) -> (u32, HashMap<String, OwnedValue>) {
-    let deadline = std::time::Instant::now()
-        .checked_add(crate::support::HANG_BOUND)
-        .expect("the hang bound fits in an Instant");
+    let deadline = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < deadline {
         tick(host);
         if handle.is_finished() {
@@ -274,11 +270,22 @@ async fn session_grants_persist_and_unshowable_requests_are_denied() {
         let (mut host, grants, ws) = host_with_portal(prompts.clone());
         let (_s, _c, proxy) = access_proxy(context(grants.clone(), prompts, ws)).await;
 
-        let call = spawn_access(proxy);
+        let call = spawn_access(proxy.clone());
         pump_until_prompt(&mut host).await;
         answer(&mut host, PromptChoice::Session);
         let (code, _) = await_response(&mut host, call).await;
         assert_eq!(code, 0);
+
+        // The app asks again in the same session: answered without a prompt.
+        let (code, _) = await_response(&mut host, spawn_access(proxy)).await;
+        assert_eq!(
+            code, 0,
+            "an app allowed for this session is not asked again"
+        );
+        assert!(
+            host.permission_prompt_mut_for_tests().is_none(),
+            "no prompt may appear for a question already answered for the session"
+        );
 
         assert_eq!(
             grants.lookup(&PortalCaller::new(ws, APP), CapabilityKind::Camera),
@@ -327,9 +334,7 @@ async fn session_grants_persist_and_unshowable_requests_are_denied() {
             let call = spawn_access(proxy);
 
             // Drop the queue's contents the way a compositor with no chrome does.
-            let deadline = std::time::Instant::now()
-                .checked_add(crate::support::HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 if prompts.queued_len() > 0 {
                     break;
@@ -341,9 +346,7 @@ async fn session_grants_persist_and_unshowable_requests_are_denied() {
                 drop(pending);
             }
 
-            let deadline = std::time::Instant::now()
-                .checked_add(crate::support::HANG_BOUND)
-                .expect("the hang bound fits in an Instant");
+            let deadline = tilo_test_env::hang_deadline();
             while std::time::Instant::now() < deadline {
                 if call.is_finished() {
                     let (code, _) = call.await.expect("join");

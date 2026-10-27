@@ -14,7 +14,7 @@ After=tilo-graphical-session.target
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/tilo-launcher runtime-resident --user
+ExecStart=/usr/libexec/tilo/tilo-launcher runtime-resident --user
 # Read once, behind everything that is waiting on the disk.
 IOSchedulingClass=idle
 Nice=19

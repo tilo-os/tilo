@@ -258,9 +258,10 @@ pub(super) fn settle(network: &ShellNetwork) {
             None
         }),
     ) {
-        finished
-            .recv_timeout(std::time::Duration::from_secs(60))
-            .expect("the nearby transfer store thread finished its queue");
+        tilo_test_env::recv(
+            "the nearby transfer store thread to finish its queue",
+            &finished,
+        );
     }
     run_follow_ups(network);
 }
@@ -269,7 +270,6 @@ pub(super) fn settle(network: &ShellNetwork) {
 mod tests {
     use super::*;
     use crate::shell::nearby_transfer::NearbyTransferStore;
-    use std::time::Duration;
     use tilo_lock::MutexRecover as _;
 
     fn network() -> ShellNetwork {
@@ -303,9 +303,7 @@ mod tests {
         let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let followed = std::sync::Arc::clone(&ran);
         assert!(on_store_thread(&network, move || {
-            released
-                .recv_timeout(Duration::from_secs(60))
-                .expect("the test releases the job");
+            tilo_test_env::recv("the test to release the job", &released);
             Some(Box::new(move |_: &ShellNetwork| {
                 followed.store(true, Ordering::SeqCst);
             }))
@@ -381,7 +379,8 @@ mod tests {
             let _ = done.send(());
             network
         });
-        let returned = finished.recv_timeout(Duration::from_secs(10));
+        // The store stays held: every entry point must return regardless.
+        let returned = finished.recv_timeout(tilo_test_env::hang_bound());
         drop(held);
         let network = looping.join().expect("loop thread");
         assert!(
@@ -465,7 +464,7 @@ mod tests {
         }
         super::super::resume_nearby_transfers(
             network,
-            crate::shell::continuity_policy::ContinuityPolicySnapshot::default(),
+            crate::shell::continuity_policy::ContinuityPolicySnapshot::OFF,
         );
     }
 }

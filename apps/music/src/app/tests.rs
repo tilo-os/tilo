@@ -558,253 +558,38 @@ fn picked_covers_normalise_to_portable_values() {
         assert!(!persisted.contains("file:"));
         assert!(!persisted.contains("/tmp/"));
     }
-}
 
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn continuation_and_media_handoff_restore_known_tracks_locally() {
-    // Phase `continuation_round_trip_reopens_a_known_track_paused_at_its_position`.
+    // Phase `the_cover_chooser_hands_over_contents_every_host_can_read`: the
+    // chosen image arrives as its bytes (a browser page has no path), and
+    // becomes the playlist's portable cover.
     {
-        let (mut sender, source) = app_with_doc();
-        sender.pb.current = Some("tk_g1".into());
-        sender.pb.playing = true;
-        sender.playhead_ms = 12_345.0;
-        let metadata = sender
-            .continuation_metadata(&source, &automerge::ROOT)
-            .expect("a selected library track has a portable continuation");
-
-        let (mut receiver, mut target) = app_with_doc();
-        assert!(receiver.restore_continuation_metadata(
-            &metadata,
-            &mut ui::widget::Edits::lend(&mut target),
-            &automerge::ROOT,
-        ));
-        assert_eq!(receiver.pb.current.as_deref(), Some("tk_g1"));
-        assert_eq!(receiver.pb.position_ms, 12_345);
-        assert!(
-            !receiver.pb.playing,
-            "continuation restore must never autoplay"
-        );
-    }
-
-    // Phase `media_handoff_resolves_synced_track_and_restores_transport`.
-    {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let work = ui::background::Pumped::new();
+        let _work = work.background().enter();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cover.png");
+        image::DynamicImage::new_rgba8(2, 2)
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
         let (mut app, mut doc) = app_with_doc();
-        let arguments = [crate::search_type::SearchHit::track_link("tk_g1")];
-        app.open_launch(
-            &ui::framework::LaunchInput::new(&arguments, None).with_handoff(Some(
-                &ui::application::PlaybackHandoff {
-                    position_ms: 12_345,
-                    resume_playing: true,
-                    title: None,
-                },
-            )),
-        );
-        let before = (
-            doc.base_heads(),
-            automerge::transaction::Transactable::pending_ops(&doc),
-        );
-        app.sync(&doc, &automerge::ROOT);
-        assert_eq!(
-            (
-                doc.base_heads(),
-                automerge::transaction::Transactable::pending_ops(&doc)
-            ),
-            before
-        );
+        let playlist = app.lib.playlists().next().unwrap().id.clone();
+        app.on_pick_playlist_cover(playlist.clone());
+        work.run_pending();
+        app.drain_cover_pick(&mut ui::widget::Edits::lend(&mut doc));
+        work.run_pending();
+        app.drain_cover_embed(&mut ui::widget::Edits::lend(&mut doc));
+        let persisted = seed::library_of(&doc)
+            .playlist(&playlist)
+            .unwrap()
+            .cover
+            .clone();
         assert!(
-            app.pb.current.is_none(),
-            "sync leaves the pending handoff for authored settlement"
-        );
-        assert!(app.pending_media_handoff.is_some());
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
-        assert_eq!(app.pb.position_ms, 12_345);
-        assert_eq!(app.playhead_ms, 12_345.0);
-        assert!(app.pb.playing);
-        assert!(app.pending_media_handoff.is_none());
-    }
-
-    // Phase `media_handoff_waits_for_its_synced_resource`.
-    {
-        let mut app = MusicApp::without_profile();
-        let arguments = [crate::search_type::SearchHit::track_link(
-            "not-hydrated-yet",
-        )];
-        app.open_launch(
-            &ui::framework::LaunchInput::new(&arguments, None).with_handoff(Some(
-                &ui::application::PlaybackHandoff {
-                    position_ms: 42,
-                    resume_playing: true,
-                    title: None,
-                },
-            )),
-        );
-        let mut doc = AutoCommit::new();
-        app.sync(&doc, &automerge::ROOT);
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        assert!(app.pb.current.is_none());
-        assert!(app.pending_media_handoff.is_some());
-    }
-
-    // Phase `shared_library_sync_never_adopts_remote_playback`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.sync(&doc, &automerge::ROOT);
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        let before = app.pb.clone();
-        // A peer can still edit a collaborative playlist. It refreshes the
-        // library but must leave this device's transport untouched.
-        app.perform_action(
-            &mut ui::widget::Edits::lend(&mut doc),
-            Library::paths().playlists.insert_as(
-                &ui::tilo_resource::Id::from_raw("pl_peer_library"),
-                0,
-                &crate::model::Playlist::named("pl_peer_library", "Peer library edit"),
-            ),
-        );
-        app.sync(&doc, &automerge::ROOT);
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        app.sync(&doc, &automerge::ROOT);
-        assert_eq!(app.pb, before, "transport remains device-local");
-        assert!(
-            app.lib.playlist("pl_peer_library").is_some(),
-            "collaborative library edits still arrive"
+            persisted.starts_with("data:image/png;base64,"),
+            "{persisted}"
         );
     }
-}
-
-#[test]
-#[cfg(feature = "audio")]
-#[serial_test::serial(audio_backend)]
-fn metadata_duration_does_not_cut_off_real_audio_before_eos() {
-    let (mut app, _) = app_with_doc();
-    app.lib.tracks.get_mut("tk_g1").unwrap().duration_s = 1;
-    app.pb.queue = vec!["tk_g1".into()];
-    app.pb.current = Some("tk_g1".into());
-    app.pb.playing = true;
-
-    // The real two-second PCM source outlasts its one-second catalogue entry.
-    // Unit-test output captures decoded PCM without opening a sound device.
-    let scratch = tempfile::tempdir().unwrap();
-    let path = scratch.path().join("longer-than-metadata.wav");
-    let mut wav = Vec::new();
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&32036u32.to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&8000u32.to_le_bytes());
-    wav.extend_from_slice(&16000u32.to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&32000u32.to_le_bytes());
-    wav.resize(32044, 0);
-    std::fs::write(&path, wav).unwrap();
-    app.audio
-        .load(&media::source::path_to_file_uri(&path).unwrap());
-    app.audio.play();
-
-    let deadline = tilo_test_env::hang_deadline();
-    let mut furthest_position = 0.0_f64;
-    while app.pb.playing {
-        app.tick();
-        assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
-        furthest_position = furthest_position.max(app.playhead_ms);
-        assert!(
-            ui::time::now() < deadline,
-            "the real source must reach EOS: {}",
-            app.audio.diagnostics()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(
-        furthest_position >= 1800.0,
-        "metadata must not stop the two-second decoder at {furthest_position}ms"
-    );
-    assert_eq!(app.pb.queue_index, 0);
-}
-
-#[test]
-#[cfg(feature = "audio")]
-#[serial_test::serial(audio_backend)]
-fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
-    let (mut app, _) = app_with_doc();
-    let title = format!("handoff-init-{}", uuid::Uuid::new_v4());
-    app.lib
-        .tracks
-        .get_mut("tk_g1")
-        .unwrap()
-        .title
-        .clone_from(&title);
-    app.pb.current = Some("tk_g1".into());
-    app.pb.playing = false;
-    app.pb.volume = 50;
-    // A real, silent PCM file avoids both network access and audible noise.
-    let scratch = tempfile::tempdir().unwrap();
-    let path = scratch.path().join("paused.wav");
-    let mut wav = Vec::new();
-    wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&16036u32.to_le_bytes());
-    wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&8000u32.to_le_bytes());
-    wav.extend_from_slice(&16000u32.to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());
-    wav.extend_from_slice(&16u16.to_le_bytes());
-    wav.extend_from_slice(b"data");
-    wav.extend_from_slice(&16000u32.to_le_bytes());
-    wav.resize(16044, 0);
-    std::fs::write(&path, wav).unwrap();
-    app.audio
-        .load(&media::source::path_to_file_uri(&path).unwrap());
-    app.audio.pause();
-    app.publish_handoff();
-    assert!(
-        media::handoff::playback_sessions()
-            .iter()
-            .all(|session| session.title != title)
-    );
-    assert!(
-        app.needs_animation_frame(),
-        "paused initialization needs ticks"
-    );
-
-    let deadline = tilo_test_env::hang_deadline();
-    while app.audio.frames_rendered() == 0 || app.audio.needs_poll() {
-        app.tick();
-        assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
-        assert!(
-            ui::time::now() < deadline,
-            "paused decoder failed to preroll: {}",
-            app.audio.diagnostics()
-        );
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(!app.audio.is_playing_real());
-    app.publish_handoff();
-    let session = media::handoff::playback_sessions()
-        .into_iter()
-        .find(|session| session.title == title)
-        .expect("a decoded paused source can acknowledge handoff");
-    assert!(!session.playing);
-    app.audio.stop();
-    app.publish_handoff();
-    assert!(
-        media::handoff::playback_sessions()
-            .iter()
-            .all(|session| session.title != title)
-    );
 }
 
 // ---- synthetic winit events (drive `handle_event` like the real loop) --
@@ -933,15 +718,6 @@ fn named_key(named: winit::keyboard::NamedKey) -> WindowEvent {
 
 fn shift_mods() -> winit::event::Modifiers {
     winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
-}
-
-/// The captured click rect (center) for the first hit matching `action`,
-/// so tests can click a control the real draw pass registered.
-fn hit_center(app: &MusicApp, action: &Action) -> Option<Point> {
-    app.hits
-        .iter()
-        .find(|h| &h.action == action)
-        .map(|h| h.rect.center())
 }
 
 #[test]
@@ -1262,10 +1038,12 @@ fn request_identities_keep_stale_responses_from_winning() {
         );
 
         // Kick the real Home fetch through the worker + backend, with the source
-        // pinned so the outcome is the app's and not the network's.
+        // pinned so the outcome is the app's and not the network's, and a
+        // catalogue connected (without one Home fetches nothing).
         app.use_worker(crate::stream::StreamWorker::spawn_offline());
+        app.catalogue_connected = true;
         app.ensure_home();
-        assert!(app.home_requested);
+        assert!(app.home_asked.is_some());
         assert!(
             app.home_is_loading(),
             "a Home request in flight reads as loading"
@@ -1273,16 +1051,10 @@ fn request_identities_keep_stale_responses_from_winning() {
 
         // Pump the worker until it reports Home unavailable (the offline backend
         // errors on `home()`), exercising stream.rs → drain end to end.
-        let mut settled = false;
-        for _ in 0..300 {
+        tilo_test_env::wait_until("the offline Home fetch reports unavailable", || {
             app.drain_worker();
-            if app.home_failed {
-                settled = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(settled, "the offline Home fetch reports unavailable");
+            app.home_failed
+        });
         assert!(
             !app.home_is_loading(),
             "Home stops loading — no endless skeleton / frame spin"
@@ -1295,17 +1067,73 @@ fn request_identities_keep_stale_responses_from_winning() {
 }
 
 #[test]
+fn home_fetches_nothing_until_a_source_is_connected() {
+    use ui::a11y::Action as A11yAction;
+    use ui::widget::Widget as _;
+
+    let mut app = MusicApp::new();
+    app.reload(&seed::empty_document());
+    app.use_worker(crate::stream::StreamWorker::spawn_offline());
+    app.catalogue_connected = false;
+    let mut doc = AutoCommit::new();
+    draw_once(&mut app, &mut doc);
+    assert!(
+        app.home_asked.is_none() && app.home.is_none(),
+        "opening Home asked no provider for anything"
+    );
+    if !super::ONLINE_CATALOGUE {
+        return;
+    }
+    assert!(
+        app.hits
+            .iter()
+            .any(|hit| hit.action == Action::SpotifyEffect(crate::actions::MusicEffect::Sources)),
+        "the empty state's button chooses a source"
+    );
+    let tree = app.accessibility().expect("music semantics");
+    let page = tree
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Home"))
+        .expect("active page is exposed");
+    let empty = page
+        .children
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Add music"))
+        .expect("the empty state invites adding music");
+    assert!(
+        empty
+            .children
+            .iter()
+            .any(
+                |node| node.action_target.as_deref() == Some("music.connect-source")
+                    && node.name.as_deref() == Some("Connect a source")
+            )
+    );
+    assert!(app.perform_semantic_action(
+        "music.connect-source",
+        &A11yAction::Activate,
+        &mut ui::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+
+    // Once the person has connected one, Home comes from it.
+    app.catalogue_connected = true;
+    draw_once(&mut app, &mut doc);
+    assert!(app.home_asked.is_some(), "a connected source fills Home");
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn assistive_routes_use_the_same_reducers_and_actions() {
-    // Phase `accessibility_transport_routes_to_the_same_playback_reducer`.
+    // Phase `the_player_group_says_what_plays_and_leaves_its_controls_to_the_band`.
     {
-        use ui::a11y::Action as A11yAction;
         use ui::widget::Widget as _;
 
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, _doc) = app_with_doc();
         app.pb.current = Some("tk_g1".into());
         let tree = app.accessibility().expect("music semantics");
         assert_eq!(tree.name.as_deref(), Some("Music"));
@@ -1313,22 +1141,18 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
             .children
             .iter()
             .find(|node| node.name.as_deref() == Some("Music player"))
-            .expect("transport has its own semantic group");
+            .expect("what plays has its own semantic group");
+        let title = app.lib.track("tk_g1").unwrap().title.clone();
         assert!(
             player
-                .children
-                .iter()
-                .any(|node| node.action_target.as_deref() == Some("music.toggle-play"))
+                .value
+                .as_deref()
+                .is_some_and(|value| value.contains(&title)),
+            "it says what plays"
         );
-        assert!(app.perform_semantic_action(
-            "music.toggle-play",
-            &A11yAction::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-        ));
         assert!(
-            app.pb.playing,
-            "semantic action uses the live transport path"
+            player.children.is_empty(),
+            "its controls are the transport's own, in the shell's band"
         );
     }
 
@@ -1339,6 +1163,8 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
 
         let mut app = MusicApp::new();
         app.disconnect();
+        // A catalogue is connected but has nothing to show: search it.
+        app.catalogue_connected = true;
         let mut doc = AutoCommit::new();
         draw_once(&mut app, &mut doc);
 
@@ -1704,163 +1530,158 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
     }
 }
 
+/// A destination and an album open over each other, and Back returns.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn sidebar_docks_overlays_collapses_and_follows_navigation() {
-    // Phase `nav_and_back`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.dispatch(
-            Action::Nav(View::Albums),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(app.view, View::Albums);
-        app.dispatch(
-            Action::Nav(View::Album("al_glasslight".into())),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(app.view, View::Album("al_glasslight".into()));
-        app.dispatch(Action::Back, &mut ui::widget::Edits::lend(&mut doc));
-        assert_eq!(app.view, View::Albums);
-    }
+fn navigation_walks_the_view_stack() {
+    let (mut app, mut doc) = app_with_doc();
+    app.dispatch(
+        Action::Nav(View::Albums),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert_eq!(app.view, View::Albums);
+    app.dispatch(
+        Action::Nav(View::Album("al_glasslight".into())),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert_eq!(app.view, View::Album("al_glasslight".into()));
+    app.dispatch(Action::Back, &mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(app.view, View::Albums);
+}
 
-    // Phase `layout_docks_when_wide_overlays_when_narrow`.
-    {
-        let mut app = MusicApp::new();
-        sized(&mut app, 1280.0);
-        assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-        sized(&mut app, 480.0);
-        assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
-        // Boundary is inclusive at the drawer's breakpoint → docked.
-        let breakpoint = app.drawer.resolved_breakpoint();
-        sized(&mut app, breakpoint);
-        assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-        sized(&mut app, breakpoint - 1.0);
-        assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
+/// The rect of the widget `id` under `root`, when it is laid out.
+fn widget_rect(root: &dyn Widget, id: &str) -> Option<Rect> {
+    if root.test_id() == Some(id) {
+        return Some(root.get_rect()).filter(|rect| rect.width() > 0.0);
     }
+    root.children()
+        .into_iter()
+        .find_map(|child| widget_rect(child, id))
+}
 
-    // Phase `sidebar_open_docked_closed_overlay_by_default`.
-    {
-        let mut app = MusicApp::new();
-        sized(&mut app, 1280.0);
-        assert!(app.drawer.is_open(), "wide: docked + open");
-        assert!(
-            app.content_inset() > 0.0,
-            "wide content is inset by the sidebar"
-        );
+/// The shell's sidebar shows the destinations, then the playlists with
+/// their "New playlist" action; the band's transport shows the song. What
+/// the person chooses in either comes back as the window's own actions.
+#[test]
+fn the_shell_shows_musics_places_and_transport_and_runs_what_is_chosen() {
+    let (mut app, mut doc) = app_with_doc();
+    app.disconnect();
+    app.playback_loaded = true;
+    app.pb.current = Some("tk_g1".into());
+    app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+    app.pb.playing = false;
+    app.show_shell();
+    let (sections, selected) = app.places.shown().expect("the places are shown");
+    assert_eq!(sections[0].items.len(), 8, "the library's destinations");
+    assert_eq!(sections[0].items[0].label, "Home");
+    assert_eq!(selected, shell_place(&View::Home));
+    let playlists = sections.last().expect("the playlists");
+    assert_eq!(playlists.title, "Playlists");
+    assert!(playlists.trailing_action.is_some(), "with New playlist");
+    assert!(
+        playlists
+            .items
+            .iter()
+            .any(|item| item.label == app.lib.playlist("pl_drive").unwrap().name),
+        "the playlists are rows"
+    );
+    let shown = app.transport.shown();
+    assert_eq!(shown.title, app.lib.track("tk_g1").unwrap().title);
+    assert!(!shown.idle && !shown.playing);
 
-        sized(&mut app, 480.0);
-        assert!(!app.drawer.is_open(), "narrow: overlay + closed");
-        assert_eq!(app.content_inset(), 0.0, "narrow content is full-width");
+    let shell = ui::widget::NavShell::new()
+        .sidebar(Box::new(
+            ui::widget::NavList::new(Vec::new()).fed_by(&app.places),
+        ))
+        .content(Box::new(ui::widget::Spacer::new()))
+        .bottom_band(Box::new(ui::widget::MediaTransport::new(
+            &app.transport,
+            ui::widget::TransportActions::default(),
+        )));
+    let size = (1280, 800);
+    let mut harness =
+        ui::headless::FrameHarness::for_root(ui::State::new(), shell, size, Theme::dark());
+    for _ in 0..2 {
+        harness.relayout_at(size).expect("the shell lays out");
     }
+    let place = shell_place(&View::Playlist("pl_drive".into())).unwrap();
+    let row = harness
+        .root::<ui::widget::NavShell>()
+        .sidebar_ref::<ui::widget::NavList>()
+        .and_then(|list| list.row_rect(&place))
+        .expect("the playlist is a row");
+    harness.click_at(row.center().x, row.center().y);
+    app.take_shell_events(&mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(app.view, View::Playlist("pl_drive".into()));
+    let (_, selected) = app.places.shown().expect("the places are shown");
+    assert_eq!(selected, Some(place), "the chosen place is the open one");
+}
 
-    // Phase `hamburger_toggles_overlay_sidebar`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 480.0); // overlay
-        assert!(!app.drawer.is_open());
-        app.dispatch(
-            Action::ToggleSidebar,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(app.drawer.is_open(), "hamburger opens the flap");
-        app.dispatch(
-            Action::ToggleSidebar,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(!app.drawer.is_open(), "toggling again closes it");
+/// The transport's controls run Music's own playback effects through the
+/// action door, as an agent's invocation does: shuffle and repeat reach
+/// this device's player, and the transport shows what the player has.
+#[test]
+fn the_transport_steers_the_player_through_its_effects() {
+    let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
+    let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+    app.surface_mut::<MusicApp>()
+        .absorb_album(&crate::backend::AlbumPage {
+            id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
+            tracks: vec![crate::backend::TrackHit {
+                video_id: track.into(),
+                title: "Transport fixture".into(),
+                artist: "Fixture artist".into(),
+                artist_id: None,
+                album: Some("Fixture album".into()),
+                album_id: Some("spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into()),
+                duration_s: 213,
+                cover_url: String::new(),
+            }],
+            ..Default::default()
+        });
+    app.settle();
+    app.effect_on(
+        &crate::actions::track_resource_id(track),
+        &crate::actions::MusicEffect::AddToQueue {
+            track: track.into(),
+        },
+    )
+    .unwrap();
+    app.settle();
+    // Wide enough for shuffle and repeat to stand beside the transport.
+    for _ in 0..3 {
+        app.harness()
+            .relayout_at((1600, 900))
+            .expect("the window lays out");
     }
+    for id in ["transport.shuffle", "transport.repeat"] {
+        let rect = widget_rect(app.harness().root_widget(), id)
+            .unwrap_or_else(|| panic!("{id} is in the band"));
+        app.harness().click_at(rect.center().x, rect.center().y);
+        app.settle();
+    }
+    let player = &app.surface_mut::<MusicApp>().pb;
+    assert!(player.shuffle, "shuffle reached the player");
+    assert_eq!(player.repeat, RepeatMode::All, "and repeat");
+    let shown = app.surface_mut::<MusicApp>().transport.shown();
+    assert_eq!(shown.shuffle, Some(true), "the transport shows it");
 
-    // Phase `navigating_dismisses_overlay_sidebar`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 480.0); // overlay
-        app.drawer.open();
-        assert!(app.drawer.is_open());
-        // Selecting a destination from the open flap closes it.
-        app.dispatch(
-            Action::Nav(View::Albums),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert_eq!(app.view, View::Albums);
-        assert!(!app.drawer.is_open(), "selection dismisses the flap");
+    // The heart likes the song that plays when it is pressed.
+    app.surface_mut::<MusicApp>().pb.current = Some(track.into());
+    app.surface_mut::<MusicApp>().dirty = true;
+    app.settle();
+    for _ in 0..3 {
+        app.harness()
+            .relayout_at((1600, 900))
+            .expect("the window lays out");
     }
-
-    // Phase `navigating_keeps_docked_sidebar`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 1280.0); // docked
-        app.dispatch(
-            Action::Nav(View::Albums),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(app.drawer.is_open(), "docked sidebar persists across nav");
-    }
-
-    // Phase `close_action_dismisses_sidebar`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 480.0);
-        app.drawer.open();
-        app.dispatch(Action::CloseSidebar, &mut ui::widget::Edits::lend(&mut doc));
-        assert!(!app.drawer.is_open());
-    }
-
-    // Phase `docked_collapse_toggles_and_reexpands`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 1280.0); // docked, open by default
-        assert!(app.drawer.is_open());
-        // Collapse via the (docked) toggle.
-        app.dispatch(
-            Action::ToggleSidebar,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(!app.drawer.is_open(), "docked sidebar collapses");
-        // Once collapsed, the toggle moves to the content's header so the
-        // sidebar can be re-expanded.
-        assert!(
-            app.toggle_in_content(),
-            "collapsed docked sidebar offers a re-expand affordance"
-        );
-        app.dispatch(
-            Action::ToggleSidebar,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        assert!(app.drawer.is_open(), "toggling again re-expands it");
-    }
-
-    // Phase `collapsed_docked_sidebar_clears_to_zero_width`.
-    // Collapsing the docked sidebar clears it: after a settled collapse the
-    // resolved sidebar rect has zero width (nothing left to paint), so no
-    // stale sidebar pixels remain under the content.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        sized(&mut app, 1280.0);
-        assert!(
-            app.sidebar_rect().width() > 100.0,
-            "open docked sidebar has width"
-        );
-        app.dispatch(
-            Action::ToggleSidebar,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        // Settle the collapse animation.
-        app.drawer.snap(false);
-        app.drawer.resolve(app.rect);
-        assert!(
-            app.sidebar_rect().width() < 0.5,
-            "collapsed sidebar clears to zero width"
-        );
-        assert_eq!(
-            app.content_inset(),
-            0.0,
-            "collapsed content reclaims the full width"
-        );
-    }
+    let heart = widget_rect(app.harness().root_widget(), "transport.like")
+        .expect("the heart is in the band while a song plays");
+    app.harness().click_at(heart.center().x, heart.center().y);
+    app.settle();
+    assert!(
+        app.surface_mut::<MusicApp>().lib.is_liked(track),
+        "the playing song is liked"
+    );
 }
 
 // ---- text truncation --------------------------------------------------
@@ -1909,24 +1730,15 @@ fn large_text_rows_elide_and_keep_one_identity() {
         assert_eq!(whole, "OK");
     }
 
-    // Phase `large_text_header_actions_stay_in_the_header`.
+    // Phase `large_text_page_starts_at_the_top_with_no_header_row`.
     {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Browse;
         draw_once_large_text(&mut app, &mut doc);
-        for (name, rect) in [
-            ("search", app.search_button.get_rect()),
-            ("open file", app.open_file_button.get_rect()),
-        ] {
-            assert!(
-                rect.width() > 0.0 && rect.height() >= 28.0,
-                "large-text {name} keeps a real target: {rect:?}"
-            );
-            assert!(
-                rect.y1 <= app.body_rect.y0,
-                "the {name} action sits in the header, not over the page"
-            );
-        }
+        assert!(
+            app.body_rect.y0 < app.rect.y0 + 16.0,
+            "the toolbar is the window bar's: the page starts at the top"
+        );
     }
 
     // Phase `dense_track_rows_share_one_queue_snapshot`.
@@ -2015,10 +1827,9 @@ fn browse_and_the_live_catalogue_answer_platform_search() {
         assert_eq!(app.view, before, "`/` belongs to the platform search");
         assert!(!app.search_opener.is_pending());
         draw_once(&mut app, &mut doc);
-        let search = app.search_button.get_rect();
         assert!(
-            search.width() > 0.0 && search.y1 <= app.body_rect.y0,
-            "the header carries the search launcher: {search:?}"
+            app.body_rect.y0 < app.rect.y0 + 16.0,
+            "search is the window bar's own: no header row of the app's"
         );
     }
 
@@ -2107,15 +1918,6 @@ fn a_live_catalogue_like_uses_the_admitted_effect_and_one_undo() {
         !app.state().tracks.contains_key("yt:vid_one"),
         "undo restores the entire effect"
     );
-}
-
-// ---- responsive sidebar -----------------------------------------------
-
-/// Set the app's allocated width directly (normally done by `apply_layout`)
-/// and resolve the sidebar drawer against it, as a real frame would.
-fn sized(app: &mut MusicApp, w: f64) {
-    app.rect = Rect::new(0.0, 0.0, w, 800.0);
-    app.drawer.resolve(app.rect);
 }
 
 // ---- 1. sidebar collapse ----------------------------------------------
@@ -2261,26 +2063,26 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             &mut ui::widget::Edits::lend(&mut doc),
         );
         assert!(
-            app.lib.playlist("pl_focus").is_some(),
-            "nothing is deleted before the person agrees"
+            app.dispatcher
+                .as_ref()
+                .unwrap()
+                .take_asked()
+                .expect("what was asked builds")
+                .is_empty(),
+            "Undo takes the playlist back whole, so the host asks nothing"
         );
-        let asked = app
-            .dispatcher
-            .as_ref()
-            .unwrap()
-            .take_asked()
-            .expect("what was asked builds");
-        assert_eq!(asked.len(), 1, "the host asks to delete the playlist");
-        // Confirmed, the door applies what was asked.
-        let mut library = ui::tilo_resource::Replica::<Library>::from_doc(doc.clone());
-        for action in &asked {
-            library
-                .apply_action(action)
-                .expect("a confirmed change applies");
-        }
-        doc = library.doc().clone();
-        app.reload_library(&doc);
-        assert!(app.lib.playlist("pl_focus").is_none());
+        assert!(
+            app.lib.playlist("pl_focus").is_none(),
+            "the delete lands at once"
+        );
+        assert!(
+            ui::tilo_resource::Replica::<Library>::from_doc(doc.clone())
+                .state()
+                .unwrap()
+                .playlist("pl_focus")
+                .is_none(),
+            "and in the document"
+        );
     }
 
     // Phase `name_prompt_typing_and_enter_creates_playlist`.
@@ -2817,21 +2619,19 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             track: "tk_g2".into(),
             queued: None,
         });
+        // A newer start supersedes it: the old one settles once, as failed.
+        let newer = tilo_actions::InvocationId::new();
+        app.start_effect(newer, &competing).unwrap();
+        let failed = |update| matches!(update, Some(tilo_actions::InvocationUpdate::Failed { .. }));
+        assert!(failed(app.take_effect_result(invocation)));
+        app.apply_resolve_failure("tk_g1", request_id, "stale failure");
         assert!(
-            app.start_effect(tilo_actions::InvocationId::new(), &competing)
-                .is_err(),
-            "concurrent stream start is refused deterministically"
+            app.take_effect_result(newer).is_none(),
+            "a stale worker result cannot settle the newer invocation"
         );
-        app.apply_resolve_failure("tk_g1", request_id + 1, "stale failure");
-        assert!(
-            app.take_effect_result(invocation).is_none(),
-            "a stale worker result cannot settle this invocation"
-        );
-        app.apply_resolve_failure("tk_g1", request_id, "backend unavailable");
-        assert!(matches!(
-            app.take_effect_result(invocation),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ));
+        let newer_request = app.active_resolve_request.unwrap();
+        app.apply_resolve_failure("tk_g2", newer_request, "backend unavailable");
+        assert!(failed(app.take_effect_result(newer)));
     }
 
     // Phase `stream_operation_times_out_once_and_late_resolution_is_ignored`.
@@ -3593,13 +3393,13 @@ fn lyrics_load_bundled_sync_and_balance_the_wide_layout() {
         assert!((nc.x1 - (narrow.x1 - 24.0)).abs() < 0.5);
         // Synced lyrics hold the current line a third of the way down;
         // plain lyrics read from the top.
-        assert!(render::lyrics_scroll(None, 36.0, 600.0).abs() < 1e-9);
-        let first = render::lyrics_scroll(Some(0), 36.0, 600.0);
+        assert!(render::lyrics_scroll(None, 600.0).abs() < 1e-9);
+        let first = render::lyrics_scroll(Some(0.0), 600.0);
         assert!(
             (-first - 200.0).abs() < 0.5,
             "the first line sits a third down"
         );
-        let tenth = render::lyrics_scroll(Some(10), 36.0, 600.0);
+        let tenth = render::lyrics_scroll(Some(10.0 * 36.0), 600.0);
         assert!((10.0 * 36.0 - tenth - 200.0).abs() < 0.5);
     }
 }
@@ -3902,75 +3702,6 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
         );
     }
 
-    // Phase `dragging_the_scrubber_seeks`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.playback_loaded = true;
-        app.pb.queue = vec!["tk_g1".into()];
-        app.pb.current = Some("tk_g1".into());
-        app.pb.queue_index = 0;
-        draw_once(&mut app, &mut doc); // registers the scrubber rect at real geometry
-        let sr = app.scrubber_rect;
-        assert!(sr.width() > 10.0, "the full transport drew a scrubber bar");
-        send(
-            &mut app,
-            &cursor_at(Point::new(sr.x0 + 4.0, sr.center().y)),
-            &mut doc,
-        );
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        assert_eq!(
-            app.drag,
-            Some(Drag::Scrubber),
-            "pressing the bar begins a scrub drag"
-        );
-        let near_start = app.playhead_ms;
-        send(
-            &mut app,
-            &cursor_at(Point::new(sr.x1 - 4.0, sr.center().y)),
-            &mut doc,
-        );
-        let near_end = app.playhead_ms;
-        send(&mut app, &released(MouseButton::Left), &mut doc);
-        assert!(app.drag.is_none(), "releasing ends the drag");
-        assert!(
-            near_end > near_start + 100_000.0,
-            "dragging right seeks forward ({near_start} -> {near_end})"
-        );
-    }
-
-    // Phase `dragging_the_volume_bar_sets_volume`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.playback_loaded = true;
-        draw_once(&mut app, &mut doc);
-        let vr = app.volume_rect;
-        assert!(vr.width() > 10.0, "the full transport drew a volume bar");
-        send(
-            &mut app,
-            &cursor_at(Point::new(vr.x0 + 2.0, vr.center().y)),
-            &mut doc,
-        );
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        assert_eq!(app.drag, Some(Drag::Volume));
-        let low = app.pb.volume;
-        send(
-            &mut app,
-            &cursor_at(Point::new(vr.x1 - 2.0, vr.center().y)),
-            &mut doc,
-        );
-        let high = app.pb.volume;
-        send(&mut app, &released(MouseButton::Left), &mut doc);
-        assert!(
-            high > low,
-            "dragging the volume bar right raises volume ({low} -> {high})"
-        );
-        assert!(high >= 95, "the far right is near max volume");
-        assert!(
-            (app.audio.volume() - f32::from(app.pb.volume) / 100.0).abs() < 1e-6,
-            "the audio engine tracks the dragged volume"
-        );
-    }
-
     // Phase `wheel_scrolls_and_clamps_to_content`.
     {
         let (mut app, mut doc) = app_with_doc();
@@ -4014,47 +3745,6 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
         assert_eq!(app.pb.volume, 76, "unmute restores the pre-mute level");
         assert!((app.audio.volume() - 0.76).abs() < 1e-6);
     }
-
-    // Phase `speaker_icon_click_toggles_mute`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        draw_once(&mut app, &mut doc);
-        assert!(app.pb.volume > 0);
-        let c =
-            hit_center(&app, &Action::ToggleMute).expect("the speaker icon is a wired mute toggle");
-        send(&mut app, &cursor_at(c), &mut doc);
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        assert_eq!(app.pb.volume, 0, "clicking the speaker mutes");
-    }
-
-    // Phase `swiping_the_bar_left_plays_next`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.dispatch(
-            Action::Play {
-                queue: vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()].into(),
-                index: 0,
-            },
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        app.disconnect();
-        // Phone width: the library list is a screen of its own, so the
-        // compact bar spans the window.
-        draw_at(&mut app, &mut doc, 420.0, 800.0);
-        let bar = app.nowplaying_rect();
-        // Start on the bar's empty title area (left of the transport buttons).
-        let start = Point::new(bar.x0 + bar.width() * 0.35, bar.center().y);
-        let endp = Point::new(start.x - 130.0, start.y);
-        send(&mut app, &cursor_at(start), &mut doc);
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        send(&mut app, &cursor_at(endp), &mut doc);
-        send(&mut app, &released(MouseButton::Left), &mut doc);
-        assert_eq!(
-            app.pb.queue_index, 1,
-            "a leftward swipe skips to the next track"
-        );
-        assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
-    }
 }
 
 // ---- 12. drag-to-seek / drag-volume gestures ---------------------------
@@ -4096,93 +3786,15 @@ fn queue_view_and_volume_controls_are_responsive() {
         );
     }
 
-    // Phase `queue_button_hover_opens_preview`.
-    // Hovering the now-playing bar's queue button opens the up-next preview,
-    // which lists the next few queued songs.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        // Keep the in-memory queue authoritative across the draw's `sync` (which
-        // would otherwise re-adopt the seeded playback snapshot).
-        app.playback_loaded = true;
-        app.pb.queue = vec![
-            "tk_g1".into(),
-            "tk_a1".into(),
-            "tk_h1".into(),
-            "tk_p1".into(),
-        ];
-        app.pb.current = Some("tk_g1".into());
-        app.pb.queue_index = 0;
-        draw_once(&mut app, &mut doc); // registers the queue button rect
-        assert!(
-            app.queue_btn_rect.width() > 0.0,
-            "the wide transport drew a queue button"
-        );
-
-        // The preview lists the upcoming (not-current) tracks.
-        assert_eq!(
-            app.queue_preview_tracks(),
-            vec![
-                "tk_a1".to_string(),
-                "tk_h1".to_string(),
-                "tk_p1".to_string()
-            ],
-        );
-
-        // Not hovering yet → closed; hovering the button → open.
-        app.mouse = Point::new(-10.0, -10.0);
-        assert!(!app.queue_preview_active(), "no preview when not hovering");
-        app.mouse = app.queue_btn_rect.center();
-        assert!(
-            app.queue_preview_active(),
-            "hovering the queue button opens the preview"
-        );
-    }
-
-    // Phase `volume_control_is_responsive_by_bar_width`.
+    // Phase `more_offers_what_the_narrow_transport_folds`.
     {
         let (mut app, mut doc) = app_with_doc();
         app.disconnect();
         app.playback_loaded = true;
         app.pb.current = Some("tk_g1".into());
         app.pb.queue = vec!["tk_g1".into()];
-        // Wide bar (docked sidebar, ~1044px content): inline slider.
-        draw_at(&mut app, &mut doc, 1280.0, 800.0);
-        assert!(
-            app.volume_rect.width() > 0.0,
-            "wide bar shows an inline volume slider"
-        );
-        assert_eq!(
-            app.volume_btn_rect,
-            Rect::ZERO,
-            "wide bar has no collapsed button"
-        );
-        // Mid bar (~764px content): slider collapses to a button.
-        draw_at(&mut app, &mut doc, 1000.0, 800.0);
-        assert_eq!(
-            app.volume_rect,
-            Rect::ZERO,
-            "mid bar drops the inline slider"
-        );
-        assert!(
-            app.volume_btn_rect.width() > 0.0,
-            "mid bar shows a volume button"
-        );
-        // Very small (compact bar): volume stays a button with its popover.
         draw_at(&mut app, &mut doc, 520.0, 800.0);
-        assert_eq!(app.volume_rect, Rect::ZERO);
-        assert!(
-            app.volume_btn_rect.width() > 0.0,
-            "the compact bar keeps the volume button"
-        );
-        // The rest of the wide bar's controls live in its More menu.
-        let more = app
-            .hits
-            .iter()
-            .find_map(|hit| match hit.action {
-                Action::OpenPlayerMenu(rect) => Some(rect),
-                _ => None,
-            })
-            .expect("the compact bar offers a More menu");
+        let more = Rect::new(400.0, 760.0, 432.0, 792.0);
         app.dispatch(
             Action::OpenPlayerMenu(more),
             &mut ui::widget::Edits::lend(&mut doc),
@@ -4203,92 +3815,6 @@ fn queue_view_and_volume_controls_are_responsive() {
         assert!(
             labels.contains(&"Like") || labels.contains(&"Unlike"),
             "the More menu offers like: {labels:?}"
-        );
-    }
-
-    // Phase `volume_button_opens_a_slider_popover`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.disconnect();
-        app.playback_loaded = true;
-        app.pb.current = Some("tk_g1".into());
-        app.pb.queue = vec!["tk_g1".into()];
-        draw_at(&mut app, &mut doc, 1000.0, 800.0); // collapsed-to-button width
-        assert!(app.volume_btn_rect.width() > 0.0);
-        app.dispatch(
-            Action::ToggleVolumePopover,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
-        draw_at(&mut app, &mut doc, 1000.0, 800.0);
-        assert!(
-            app.volume_popover_open,
-            "the volume button opens the popover"
-        );
-        assert!(
-            app.volume_popover_slider.width() > 0.0,
-            "the popover hosts a volume slider"
-        );
-        let (panel, button) = (app.volume_popover_rect, app.volume_btn_rect);
-        assert!(
-            panel.y1 < button.y0 && (panel.x1 - button.x1).abs() < 0.5,
-            "the popover opens above the button, on its trailing edge ({panel:?} over {button:?})"
-        );
-        assert!(
-            panel.x0 >= 0.0 && panel.x1 <= 1000.0,
-            "the popover stays in the window: {panel:?}"
-        );
-        let (track, slider) = (app.volume_rect, app.volume_popover_slider);
-        assert!(
-            track.width() > 0.0
-                && track.x0 >= slider.x0
-                && track.x1 <= slider.x1
-                && (track.y0 - slider.y0).abs() < 0.5
-                && (track.y1 - slider.y1).abs() < 0.5,
-            "the popover slider is the active volume drag target ({track:?} in {slider:?})"
-        );
-    }
-
-    // Phase `compact_bar_renders_progress_below_the_song`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.disconnect();
-        app.playback_loaded = true;
-        app.pb.current = Some("tk_g1".into());
-        app.pb.queue = vec!["tk_g1".into()];
-        // Phone width: the compact bar spans the window.
-        draw_at(&mut app, &mut doc, 420.0, 800.0);
-        assert!(
-            app.scrubber_rect.y0 > app.nowplaying_rect().center().y,
-            "the progress bar runs along the bottom of the bar, under the song"
-        );
-        assert!(
-            app.scrubber_rect.width() > 300.0,
-            "the progress spans the bar width"
-        );
-    }
-
-    // Phase `compact_scrubber_is_grabbable_not_a_hairline`.
-    {
-        // At narrow width the scrub bar must be a real, grabbable track — not a
-        // 1-2px hairline glued to the window edge.
-        let (mut app, mut doc) = app_with_doc();
-        app.disconnect();
-        app.playback_loaded = true;
-        app.pb.current = Some("tk_g1".into());
-        app.pb.queue = vec!["tk_g1".into()];
-        // Phone width: the compact bar spans the window.
-        draw_at(&mut app, &mut doc, 420.0, 800.0);
-        let sr = app.scrubber_rect;
-        assert!(
-            sr.height() >= 16.0,
-            "the narrow scrub bar has a grabbable hit height (was {})",
-            sr.height()
-        );
-        assert!(sr.width() > 300.0, "the scrub bar spans the bar width");
-        // Its top clears the transport row, so a play/pause press never seeks.
-        assert!(
-            sr.y0 > app.rect.y1 - app.bar_h / 2.0,
-            "the scrub strip stays below the transport buttons"
         );
     }
 
@@ -4361,6 +3887,43 @@ fn queue_view_and_volume_controls_are_responsive() {
 
 // ---- 16. "Add to playlist… → New playlist…" keeps the target track -----
 
+/// The window's accessibility tree passes the audit in every view: a new
+/// library as certification opens it, and each page of a full one.
+#[test]
+fn every_view_passes_the_accessibility_audit() {
+    fn audit(app: MusicApp, doc: AutoCommit, what: &str) {
+        let mut state = ui::State::new();
+        state.adopt_doc(doc);
+        let mut frame =
+            ui::headless::FrameHarness::for_root(state, app, (1280, 800), ui::theme::Theme::dark());
+        frame.relayout();
+        let issues = frame.accessibility_audit().issues;
+        assert!(issues.is_empty(), "{what}: {issues:?}");
+    }
+
+    audit(MusicApp::new(), AutoCommit::new(), "a new library");
+    for view in [
+        View::Home,
+        View::Songs,
+        View::Albums,
+        View::Artists,
+        View::Playlists,
+        View::Downloads,
+        View::Liked,
+        View::Browse,
+        View::Queue,
+        View::Lyrics,
+        View::Album("al_glasslight".into()),
+        View::Artist("ar_aurora".into()),
+        View::Playlist("pl_focus".into()),
+    ] {
+        let (mut app, doc) = app_with_doc();
+        app.disconnect();
+        app.view = view.clone();
+        audit(app, doc, &format!("{view:?}"));
+    }
+}
+
 // ---- 18. per-view render smoke test ------------------------------------
 
 #[test]
@@ -4396,7 +3959,6 @@ fn every_view_renders_and_now_playing_falls_back_to_album_art() {
             app.view = v.clone();
             draw_once(&mut app, &mut doc);
             assert!(app.content_height > 0.0, "{v:?} produced a frame");
-            assert!(!app.hits.is_empty(), "{v:?} registered interactive hits");
         }
     }
 
@@ -4440,6 +4002,24 @@ fn draw_at(app: &mut MusicApp, doc: &mut AutoCommit, w: f64, h: f64) {
     app.render_frame(&mut scene, Affine::IDENTITY, &mut tr, &theme);
 }
 
+/// An empty Home fits its view at any size: nothing to scroll, no scrollbar.
+#[test]
+fn an_empty_home_has_nothing_to_scroll() {
+    let mut app = MusicApp::new();
+    let mut doc = seed::empty_document();
+    app.reload(&doc);
+    app.home_failed = true;
+    for (w, h) in [(1100.0, 800.0), (1700.0, 1300.0)] {
+        draw_at(&mut app, &mut doc, w, h);
+        assert!(
+            app.content_height <= app.body_rect.height() + 0.5,
+            "{w}x{h}: content {} overflows the view {}",
+            app.content_height,
+            app.body_rect.height()
+        );
+    }
+}
+
 #[test]
 fn playlist_numbers_follow_the_playlist_not_the_source_album() {
     let (mut app, mut doc) = app_with_doc();
@@ -4469,41 +4049,22 @@ fn scaled_player_and_detail_keep_content_above_the_fold() {
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
         app.render_frame(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let bar = app.nowplaying_rect();
-        assert_eq!(bar.x0, app.rect.x0, "the sidebar cannot squeeze the song");
-        assert!(app.sidebar_rect().y1 <= bar.y0);
-        assert!(app.body_rect.y1 <= bar.y0);
+        // The shell's band holds the transport; the content column ends
+        // above it.
+        let foot = app.rect.y1;
+        assert!(app.body_rect.y1 <= foot);
         assert_eq!(
-            app.body_rect.y0,
-            f64::from(theme.tokens.metrics.header_height)
+            app.body_rect.y0, app.rect.y0,
+            "the toolbar is the window bar's: the page starts at the top"
+        );
+        assert!(
+            ui::window_toolbar::declared().is_some_and(|toolbar| toolbar.location.is_some()),
+            "the album's title is the window bar's location"
         );
         let rows = app.track_tables.first().expect("album tracks");
         let first = rows.table.row_rect(0).expect("first track");
         let third = rows.table.row_rect(2).expect("third track");
-        assert!(third.y1 <= bar.y0, "three complete rows fit below the hero");
-        let art = app
-            .hits
-            .iter()
-            .find(|hit| {
-                matches!(
-                    &hit.action, Action::Nav(View::Album(id)) if id == "al_glasslight"
-                )
-            })
-            .expect("player artwork")
-            .rect;
-        assert!(art.y0 >= bar.y0 && art.y1 <= bar.y1);
-        assert!(
-            art.height() < bar.height(),
-            "art must not consume the whole bar"
-        );
-        let lyrics = app
-            .hits
-            .iter()
-            .find(|hit| hit.action == Action::Nav(View::Lyrics))
-            .expect("lyrics shortcut")
-            .rect;
-        assert!(lyrics.x1 < app.scrubber_rect.x0);
-        assert!(app.scrubber_rect.width() > 2.0 * art.width());
+        assert!(third.y1 <= foot, "three complete rows fit below the hero");
         assert!(first.y0 > app.body_rect.y0);
     }
 }
@@ -4586,9 +4147,7 @@ fn scaled_playlist_shows_four_complete_rows_with_transport_padding() {
         for i in 0..table.rows().len() {
             if let Some(rect) = table.row_rect(i) {
                 assert!(
-                    rect.y1
-                        <= app.nowplaying_rect().y0
-                            - f64::from(theme.tokens.spacing.rhythm.related),
+                    rect.y1 <= app.rect.y1 - f64::from(theme.tokens.spacing.rhythm.related),
                     "visible row {i} must fit completely with bottom padding: {rect:?}"
                 );
             }
@@ -5106,14 +4665,12 @@ fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
     else {
         panic!("the actual resolver failure must settle its pending invocation");
     };
-    let contract = crate::actions::MusicEffect::Play {
+    let play = crate::actions::MusicEffect::Play {
         track: "tk_g1".into(),
         queued: None,
     }
-    .bound()
-    .contract
-    .clone();
-    assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+    .bound();
+    assert_eq!(play.contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
     assert!(!error.retryable);
     assert!(error.message.contains("Premium eligibility"));
 }
@@ -5121,48 +4678,52 @@ fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
 #[test]
 fn settled_playback_uses_bounded_wakes_instead_of_vsync() {
     let (mut app, _doc) = app_with_doc();
-    app.pb.playing = true;
-    app.toast.dismiss();
-    app.mark_drawn();
-    let before = app.last_tick;
-    assert!(
-        !app.needs_animation_frame(),
-        "settled playback must leave time for the host output worker"
-    );
-    let deadline = app
-        .next_wake_deadline()
-        .expect("playback still gets polled");
-    assert!(deadline > before && deadline <= before + Duration::from_millis(100));
-    app.last_tick = ui::time::now()
-        .checked_sub(Duration::from_millis(101))
-        .expect("test clock has a preceding playback interval");
-    assert!(
-        app.needs_animation_frame(),
-        "a due playback wake paints its observation"
-    );
-    app.tick();
-    assert!(
-        !app.needs_animation_frame(),
-        "polling rearms the bounded wake"
-    );
-    app.last_tick = ui::time::now()
-        .checked_sub(Duration::from_millis(101))
-        .expect("a slow paint outlives the playback interval");
-    let completed_at = ui::time::now();
-    app.mark_drawn();
-    assert!(
-        !app.needs_animation_frame(),
-        "a completed slow paint must leave time before another paint"
-    );
-    assert!(
-        app.next_wake_deadline().expect("playback still wakes") > completed_at,
-        "the next interval starts after painting, not before it"
-    );
-    app.pb.playing = false;
-    assert!(
-        app.next_wake_deadline().is_none(),
-        "stopped playback stays asleep"
-    );
+    // The clock holds still, so only the intervals the test sets pass:
+    // a paint that ran long on a loaded machine is not one of them.
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        app.pb.playing = true;
+        app.toast.dismiss();
+        app.mark_drawn();
+        let before = app.last_tick;
+        assert!(
+            !app.needs_animation_frame(),
+            "settled playback must leave time for the host output worker"
+        );
+        let deadline = app
+            .next_wake_deadline()
+            .expect("playback still gets polled");
+        assert!(deadline > before && deadline <= before + Duration::from_millis(100));
+        app.last_tick = ui::time::now()
+            .checked_sub(Duration::from_millis(101))
+            .expect("test clock has a preceding playback interval");
+        assert!(
+            app.needs_animation_frame(),
+            "a due playback wake paints its observation"
+        );
+        app.tick();
+        assert!(
+            !app.needs_animation_frame(),
+            "polling rearms the bounded wake"
+        );
+        app.last_tick = ui::time::now()
+            .checked_sub(Duration::from_millis(101))
+            .expect("a slow paint outlives the playback interval");
+        let completed_at = ui::time::now();
+        app.mark_drawn();
+        assert!(
+            !app.needs_animation_frame(),
+            "a completed slow paint must leave time before another paint"
+        );
+        assert!(
+            app.next_wake_deadline().expect("playback still wakes") > completed_at,
+            "the next interval starts after painting, not before it"
+        );
+        app.pb.playing = false;
+        assert!(
+            app.next_wake_deadline().is_none(),
+            "stopped playback stays asleep"
+        );
+    });
 }
 
 #[test]
@@ -5180,3 +4741,59 @@ fn rendered_frames_without_decoder_confirmation_do_not_settle_play() {
     );
     assert_eq!(app.resource_stream_invocation.unwrap().0, invocation);
 }
+
+#[test]
+fn a_sidebar_section_starts_a_fresh_trail() {
+    let (mut app, mut doc) = app_with_doc();
+    app.dispatch(
+        Action::Nav(View::Albums),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    app.dispatch(
+        Action::Nav(View::Album("al_glasslight".into())),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert!(app.nav.can_go_back(), "a detail page can go back");
+    app.dispatch(
+        Action::Nav(View::Browse),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    assert!(
+        !app.nav.can_go_back(),
+        "Browse is a top-level section, so it shows no back button"
+    );
+}
+
+#[test]
+fn without_an_online_catalogue_home_says_why_and_offers_no_search() {
+    let (message, offers_search) = first_run_copy(false);
+    assert!(
+        !offers_search,
+        "search can't find anything without a catalogue"
+    );
+    assert!(message.contains("online"), "{message}");
+    assert!(!message.contains("backend"), "{message}");
+    // It names the control by what it says on every host, where the window
+    // bar shows it as a button or in its More actions menu.
+    for message in [message, super::HOME_EMPTY_MESSAGE] {
+        assert!(message.contains("Open audio file"), "{message}");
+    }
+    assert!(first_run_copy(true).1);
+    assert_eq!(
+        home_failure_note(false, "home content needs the live backend".into()),
+        None,
+        "the backend's wording never reaches the page"
+    );
+    assert_eq!(
+        home_failure_note(true, "timed out".into()).as_deref(),
+        Some("timed out")
+    );
+}
+
+#[path = "query_view_tests.rs"]
+mod query_view_tests;
+
+#[path = "handoff_tests.rs"]
+mod handoff_tests;
+#[path = "shuffle_tests.rs"]
+mod shuffle_tests;

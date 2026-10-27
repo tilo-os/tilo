@@ -1,6 +1,3 @@
-//! What an action may write, checked where it is made, and which units a
-//! change touched, read without the app's code.
-
 use tilo_resource::footprint::{RECORD_UNIT, UNIT_INDEX, units_of};
 use tilo_resource::{ActionCx, Collection, Id, Model, Replica, Resource, resource};
 

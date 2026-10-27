@@ -236,7 +236,6 @@ fn edits_rotate_compose_crops_and_refuse_what_is_not_a_crop() {
         "an edit of a photograph the library lacks refuses"
     );
 
-    // Reset is both fields, as one change.
     group(
         &mut library,
         &[paths.crop.set(Rect01::FULL), paths.rotate_quarters.set(0)],
@@ -643,7 +642,6 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         assert!(merge(&mut library, &item.id, local).is_err());
         assert!(merge(&mut library, &item.id, ocr(&"f".repeat(64), "wrong bytes")).is_err());
 
-        // Removing shared analysis is both components, as one change.
         let paths = photo_paths(&item.id);
         group(&mut library, &[paths.ocr.set(None), paths.vision.set(None)]).unwrap();
         assert!(photo(&library, &item.id).analysis().is_none());
@@ -703,8 +701,6 @@ fn shared_analysis_is_bounded_pinned_and_merges_by_component() {
         library
             .apply(Invoke::edit(&insert(&item)).unwrap())
             .unwrap();
-        // A component of other bytes, as a replica with a replaced picture
-        // left it.
         let mut state = library.state().unwrap();
         state.photo_mut(&item.id).unwrap().vision = replaced.vision;
         ui::tilo_resource::Fields::write_fields(&state, library.doc_mut(), &automerge::ROOT)

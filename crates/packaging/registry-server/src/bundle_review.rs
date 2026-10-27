@@ -151,10 +151,6 @@ pub fn inspect_entry(
 
 /// Fetch every version and retain the exact verified bytes for a later
 /// networkless signing step.
-///
-/// # Errors
-/// Returns the same URL, fetch, size, identity, and package verification
-/// failures as [`inspect_entry`].
 pub fn fetch_entry_bytes(
     entry: &RegistryEntry,
     policy: InspectionPolicy,
@@ -171,9 +167,6 @@ pub fn fetch_entry_bytes(
 
 /// [`fetch_entry_bytes`], reading each version a publisher uploaded to this
 /// registry from `storage` (see [`review_version_bytes`]).
-///
-/// # Errors
-/// As [`fetch_entry_bytes`], or a storage error reading an upload.
 pub fn review_entry_bytes(
     storage: &crate::Storage,
     entry: &RegistryEntry,
@@ -193,9 +186,6 @@ pub fn review_entry_bytes(
 /// registry's `/artifacts/<blake3>.tapp` and whose bytes a publisher uploaded
 /// (`PUT /uploads`) is read from `storage` instead: approval is what makes
 /// that URL serve them. The bytes pass the same inspection either way.
-///
-/// # Errors
-/// As [`fetch_version_bytes`], or a storage error reading the upload.
 pub fn review_version_bytes(
     storage: &crate::Storage,
     entry: &RegistryEntry,
@@ -312,11 +302,6 @@ fn payload_total(lengths: &std::collections::BTreeMap<tilo_app_package::BlobHash
 /// This single-version boundary lets callers durably consume each verified
 /// artifact before fetching the next version instead of retaining an entry's
 /// complete version history in memory.
-///
-/// # Errors
-///
-/// Returns the same URL, fetch, size, identity, and package verification
-/// failures as [`fetch_entry_bytes`].
 pub fn fetch_version_bytes(
     entry: &RegistryEntry,
     version: &RegistryVersion,
@@ -703,11 +688,6 @@ fn check_size(version: &RegistryVersion, actual: u64, limit: u64) -> Result<(), 
 }
 
 /// Inspect already-fetched bytes for offline tooling and deterministic tests.
-///
-/// # Errors
-///
-/// Returns an error if the bytes differ from the advertised size, package ID,
-/// publisher identity, manifest app ID, or manifest version.
 pub fn inspect_bytes(
     entry: &RegistryEntry,
     version: &RegistryVersion,
@@ -1062,7 +1042,6 @@ mod tests {
                 inspect_bytes(&entry, &entry.versions[0], &bytes),
                 Err(BundleReviewError::TargetMismatch { .. })
             ));
-            // The interfaces a version claims are the manifest's, exactly.
             entry.versions[0].tapp_mut().unwrap().target.isa = "aarch64-v8.2".into();
             entry.versions[0].tapp_mut().unwrap().target.interfaces = vec!["system@1".into()];
             assert!(matches!(

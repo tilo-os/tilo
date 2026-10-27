@@ -2,14 +2,14 @@
 
 The host package installs Tilo as an additional Wayland session on an existing
 Linux system. It is deliberately smaller than the bootc operating-system image:
-the package contains the compositor, sandbox launcher, unlock helper, PAM policy,
-portal registration, display-manager entry, and AGPL-3.0 license text. It does
-not replace the host's boot chain, greeter, or package manager.
+the package contains the compositor, sandbox launcher, unlock helper, PAM
+policy, portal registration, display-manager entry, and AGPL-3.0 license text.
+It does not replace the host's boot chain, greeter, or package manager.
 
 The session scans the host's normal XDG application directories, including
-per-user and system Flatpak exports. Those existing applications keep their
-real home directory and their original confinement model, and Tilo labels them
-as unconfined host apps rather than implying they use Tilo package policy. On
+per-user and system Flatpak exports. Those existing applications keep their real
+home directory and their original confinement model, and Tilo labels them as
+unconfined host apps rather than implying they use Tilo package policy. On
 Fedora, `xwayland-satellite` is a hard package dependency so legacy X11-only
 applications continue to open; native Wayland applications still use the Tilo
 socket directly. The complete Tilo image ships the same bridge. Because X11 does
@@ -22,9 +22,9 @@ The wrapper owns `graphical-session.target` for the lifetime of Tilo, clears
 display variables left by the preceding desktop before starting it, and removes
 Tilo's desktop identity when the session ends. That is what allows portal and
 other standard user services to use Tilo while logged in and ensures they stop
-before GNOME, KDE, or another session is selected next.
-The portal frontend and filtered D-Bus proxy are hard package dependencies, so
-sandboxed Tilo applications do not silently lose desktop APIs on minimal hosts.
+before GNOME, KDE, or another session is selected next. The portal frontend and
+filtered D-Bus proxy are hard package dependencies, so sandboxed Tilo
+applications do not silently lose desktop APIs on minimal hosts.
 
 The package-owned wrapper sends compositor stdout and stderr directly to the
 user journal with `SYSLOG_IDENTIFIER=tilo-session`. After returning to another
@@ -35,13 +35,13 @@ the journal keeps the host's normal per-user/root access controls.
 
 ## Supported outputs
 
-| Distribution | Release files | Architectures |
-| --- | --- | --- |
-| Ubuntu 24.04 | `tilo-session_*+ubuntu24.04*.deb` | `amd64`; `arm64` when enabled |
-| Debian 13 | `tilo-session_*+deb13*.deb` | `amd64`; `arm64` when enabled |
-| Fedora 44 | `tilo-session-*.rpm`, `tilo-session-devel-*.rpm` | `x86_64`; `aarch64` when enabled |
-| Arch Linux | `tilo-session-*.pkg.tar.zst`, `tilo-session-devel-*.pkg.tar.zst` | `x86_64`; `aarch64` when enabled |
-| NixOS | flake package and NixOS module; tagged store-closure export | `x86_64-linux`; `aarch64-linux` when enabled |
+| Distribution | Release files                                                    | Architectures                                |
+| ------------ | ---------------------------------------------------------------- | -------------------------------------------- |
+| Ubuntu 24.04 | `tilo-session_*+ubuntu24.04*.deb`                                | `amd64`; `arm64` when enabled                |
+| Debian 13    | `tilo-session_*+deb13*.deb`                                      | `amd64`; `arm64` when enabled                |
+| Fedora 44    | `tilo-session-*.rpm`, `tilo-session-devel-*.rpm`                 | `x86_64`; `aarch64` when enabled             |
+| Arch Linux   | `tilo-session-*.pkg.tar.zst`, `tilo-session-devel-*.pkg.tar.zst` | `x86_64`; `aarch64` when enabled             |
+| NixOS        | flake package and NixOS module; tagged store-closure export      | `x86_64-linux`; `aarch64-linux` when enabled |
 
 The complete ARM64 package definitions and release verifier are enabled by
 `TILO_DESKTOP_ARM64_RELEASES`. Tagged and explicit full-native builds use the
@@ -55,7 +55,9 @@ checking its ownership, directory permissions, and embedded development marker.
 
 ## Local builds
 
-Install the native dependencies listed in `DEVELOPMENT.md`, then run one of:
+Install the relevant
+[native dependencies](development/platforms/linux.md#native-dependencies-by-component),
+then run one of:
 
 ```bash
 dist/debian/build-deb.sh
@@ -70,9 +72,9 @@ test-control socket. Video encode and decode go through the distribution's
 GStreamer (a stable 1.x ABI), which picks hardware codecs at runtime.
 
 The package version has one source of truth: `dist/VERSION`. Before tagging,
-update it, then create a matching `desktop-vX.Y.Z` tag. Debian and Ubuntu receive
-separate package revisions because each binary is linked and dependency-scanned
-inside its own distribution build root.
+update it, then create a matching `desktop-vX.Y.Z` tag. Debian and Ubuntu
+receive separate package revisions because each binary is linked and
+dependency-scanned inside its own distribution build root.
 
 ## Install from code.tilo.so
 
@@ -93,8 +95,8 @@ sudo apt install tilo-session
 
 Use `trixie` instead of `noble` on Debian 13. Fedora 44 users must first
 bootstrap the RPM release key and maintained repo definition from the exact
-`desktop-vX.Y.Z` release they are installing. Forgejo's generated RPM repo
-file does not advertise a Tilo key or enable package verification; the release
+`desktop-vX.Y.Z` release they are installing. Forgejo's generated RPM repo file
+does not advertise a Tilo key or enable package verification; the release
 workflow publishes a repo definition with those settings already present:
 `https://code.tilo.so/api/packages/tilo/rpm/fedora/44.repo` is the upstream
 Forgejo-generated endpoint, retained for diagnostics and private-server
@@ -137,39 +139,68 @@ Save your work and reboot into the prepared deployment. GDM will continue to
 offer the existing desktop and will also offer Tilo in its session menu. The
 layering transaction preserves other requested and locally installed packages;
 applications installed system-wide or for your user, including Flatpaks, remain
-installed and discoverable from Tilo under **Host Apps**. Select the existing
-desktop in GDM whenever you want to switch back. Removing Tilo later uses
+installed and discoverable from Tilo under **Apps**. Select the existing desktop
+in GDM whenever you want to switch back. Removing Tilo later uses
 `sudo rpm-ostree uninstall tilo-session` and another reboot. Do not use the
 development subpackage for an ordinary installation.
 
 If a later host or Tilo deployment is unhealthy, choose the previous deployment
 from the boot menu or run `sudo rpm-ostree rollback`, then reboot. Rollback and
-uninstall change only the immutable deployment/package layer; the existing
-home directory, layered applications, and Flatpak data remain untouched.
+uninstall change only the immutable deployment/package layer; the existing home
+directory, layered applications, and Flatpak data remain untouched.
 
 When this repository publishes a newer `tilo-session`, the normal
-`sudo rpm-ostree update` command (an alias for `rpm-ostree upgrade`) resolves
-it into the next deployment together with the host OS update. Users do not
-download or reinstall release RPMs by hand.
+`sudo rpm-ostree update` command (an alias for `rpm-ostree upgrade`) resolves it
+into the next deployment together with the host OS update. Users do not download
+or reinstall release RPMs by hand.
 
-The version-locked `tilo-session-apps` companion carries the `app` command,
-the official Store registry owner pin under `/usr/share/tilo/trust`, and the
-signed runtime publisher policy. Opening Store or running `app repo list`
-repairs an older `registry = []` configuration from that packaged authority;
-it preserves custom registries and explicitly disabled entries. The update
-must come from the verified desktop package release. Do not copy a key from
-the catalogue into the host's trust policy.
+### When the layering is refused
+
+An Atomic host owns most of `/usr`, so `rpm-ostree install` accepts the layer
+only if every file in it is either new or already Tilo's. Re-run the same
+command against a host that already layers an older release, or a host whose
+packages ship a file at one of Tilo's paths, and the transaction is rejected,
+but the reason appears as a file-exists error in the middle of a deployment
+log. Answer it before the next transaction, without staging anything:
+
+```bash
+rpm-ostree status                              # is the session already layered?
+sudo dist/rpm/ostree-package-conflicts.sh      # which path, and who owns it
+```
+
+`dist/rpm/ostree-package-conflicts.sh` lists each payload path whose current
+owner is not a Tilo package, prints the owner, and exits non-zero. It installs
+nothing and works before Tilo is present at all, reading an unpacked payload
+from `dist/rpm/build/RPMS` when this checkout has built one. It gives two
+answers:
+
+- **`tilo-session` is already layered.** Layering is not an upgrade path. The
+  next release arrives with `sudo rpm-ostree update`, which refreshes the
+  existing layering instead of adding a second one. Moving to a specific
+  release from an older layering is `sudo rpm-ostree uninstall tilo-session &&
+  sudo rpm-ostree install tilo-session`.
+- **Another package owns the path.** A host package that installs its own copy
+  of a Tilo file (`/usr/lib/systemd/user/tilo-graphical-session.target` is the
+  usual one) cannot coexist with the package. Remove that package, or use the
+  complete Tilo image, which owns the path itself.
+
+The version-locked `tilo-session-apps` companion carries the `app` command, the
+official Store registry owner pin under `/usr/share/tilo/trust`, and the signed
+runtime publisher policy. Opening Store or running `app repo list` repairs an
+older `registry = []` configuration from that packaged authority; it preserves
+custom registries and explicitly disabled entries. The update must come from the
+verified desktop package release. Do not copy a key from the catalogue into the
+host's trust policy.
 
 A host with Tilo RPMs listed under `requested-local-packages` has a local
 package pin, which ordinary repository updates do not replace. For a local
 source installation, `dist/rpm/host-update.sh --no-build` replaces the matching
 session/apps packages in one transaction using RPMs already built for that
-checkout. It also synchronizes the packaged runtime publisher policy into
-the pending deployment. This operation changes trust policy; review the
-exact packaged keys before applying it. Without `--apply-live`, the active
-desktop continues running until a planned boot. Do not use this source-build
-helper as a substitute for a signed public release.
-
+checkout. It also synchronizes the packaged runtime publisher policy into the
+pending deployment. This operation changes trust policy; review the exact
+packaged keys before applying it. Without `--apply-live`, the active desktop
+continues running until a planned boot. Do not use this source-build helper as a
+substitute for a signed public release.
 
 If the Tilo Forgejo organization is still private, the registry requires
 authenticated package-read access. Public Tilo organization/package visibility
@@ -181,12 +212,11 @@ For a private registry, Forgejo requires authentication for both the generated
 `.repo` file and every later metadata/RPM request. Do not assume that
 `dnf config-manager` persists credentials for you. Fedora's DNF5/librepo
 repository parser accepts `username=` and `password=` options, so put those
-options in the repo stanza rather than embedding the token in `baseurl`.
-The following fetches the repo definition with a temporary netrc (the token is
-not a command-line argument or shell-history entry), installs it with
-root-only permissions, and asks you to add the two options to the generated
-stanza (the maintained release file already contains the Tilo verification
-settings):
+options in the repo stanza rather than embedding the token in `baseurl`. The
+following fetches the repo definition with a temporary netrc (the token is not a
+command-line argument or shell-history entry), installs it with root-only
+permissions, and asks you to add the two options to the generated stanza (the
+maintained release file already contains the Tilo verification settings):
 
 ```bash
 read -r -p 'Forgejo username: ' TILO_FORGEJO_USER
@@ -224,18 +254,18 @@ gpgkey=file:///etc/pki/rpm-gpg/tilo-rpm-signing-key.asc
 ```
 
 Keep the file mode at `0600`; the token is necessarily stored there so future
-metadata and RPM fetches can authenticate. After saving, use `sudo dnf install
-tilo-session` on a mutable Fedora host or `sudo rpm-ostree install tilo-session`
-on Fedora Atomic. Do not put a PAT in this repository or paste it into a
-shared terminal. The Forgejo administrator must enable the package registry,
-grant the user read access to the `tilo` organization/packages, and keep the
-HTTPS reverse proxy's `/api/packages` routes reachable. Without public
-organization visibility or those authenticated settings, an install (and
-therefore a future `rpm-ostree update`) is expected to fail with HTTP 401/403.
-The key URL is intentionally pinned to the release tag used for bootstrap;
-keep using that key for ordinary updates. For a signing-key rotation, bootstrap
-the replacement key and update `gpgkey=` before publishing RPMs made only with
-the new key.
+metadata and RPM fetches can authenticate. After saving, use
+`sudo dnf install tilo-session` on a mutable Fedora host or
+`sudo rpm-ostree install tilo-session` on Fedora Atomic. Do not put a PAT in
+this repository or paste it into a shared terminal. The Forgejo administrator
+must enable the package registry, grant the user read access to the `tilo`
+organization/packages, and keep the HTTPS reverse proxy's `/api/packages` routes
+reachable. Without public organization visibility or those authenticated
+settings, an install (and therefore a future `rpm-ostree update`) is expected to
+fail with HTTP 401/403. The key URL is intentionally pinned to the release tag
+used for bootstrap; keep using that key for ordinary updates. For a signing-key
+rotation, bootstrap the replacement key and update `gpgkey=` before publishing
+RPMs made only with the new key.
 
 For Arch or Arch Linux ARM, add this repository to `/etc/pacman.conf`:
 
@@ -279,43 +309,41 @@ The module registers the display-manager session, PAM policy, and portal. Using
 the package alone is useful for nested development, but a real login session
 should use the module so `/etc/pam.d/tilo-unlock` is activated declaratively.
 Tagged builds also publish an exact Nix store closure as a generic Forgejo
-package for disaster recovery; normal installations should use the flake so
-Nix can build or substitute the package declaratively.
+package for disaster recovery; normal installations should use the flake so Nix
+can build or substitute the package declaratively.
 
 ## CI and publishing
 
-`.forgejo/workflows/release-desktop.yml` is the release gate. Pull requests
-that touch packaging or the packaged binaries execute the current x86-64 matrix.
+`.forgejo/workflows/release-desktop.yml` is the release gate. Pull requests that
+touch packaging or the packaged binaries execute the current x86-64 matrix.
 `desktop-v*` tags execute it regardless of changed paths, wait for every enabled
 native-architecture install test, download the artifacts, require the complete
-current output set, and only then
-publish the apt, RPM, pacman, and generic Nix registries plus a checksummed
-Forgejo release. The five target userspaces run sequentially in one
-capacity-bounded lane.
+current output set, and only then publish the apt, RPM, pacman, and generic Nix
+registries plus a checksummed Forgejo release. The five target userspaces run
+sequentially in one capacity-bounded lane.
 
 The workflow uses the existing `runner` Forgejo label. amd64 containers run
 directly, and every target userspace is pinned to a verified OCI digest rather
 than a mutable distribution tag. The `dist/ci` runner can execute other
 architectures through a job-private PRoot and checksum-pinned QEMU without
 registering a host binfmt handler, but that mechanism is not the release gate:
-the Nix closure must be validated on a native ARM64 runner first.
-The package matrix runs as one sequential x86-64 lane; native Cargo builds use
-at most four compiler jobs. Ordinary changes allocate only that x86-64 lane;
-tags and manual runs with `full_native` add the native ARM64 lane and verify its
-Nix closure without QEMU-user.
-The Debian-family, Fedora, and Arch jobs reuse the runners' optional remote
-compiler cache in an architecture namespace and fail open to an
+the Nix closure must be validated on a native ARM64 runner first. The package
+matrix runs as one sequential x86-64 lane; native Cargo builds use at most four
+compiler jobs. Ordinary changes allocate only that x86-64 lane; tags and manual
+runs with `full_native` add the native ARM64 lane and verify its Nix closure
+without QEMU-user. The Debian-family, Fedora, and Arch jobs reuse the runners'
+optional remote compiler cache in an architecture namespace and fail open to an
 ordinary build if that service is unavailable. Cache credentials are only
-forwarded on trusted branch, tag, and manual runs; pull requests build cold.
-The compiler, flags, system headers, and environment are hashed into each
-sccache key, so incompatible distro objects miss while the common Rust graph
-can hit. Nix builds remain pure.
+forwarded on trusted branch, tag, and manual runs; pull requests build cold. The
+compiler, flags, system headers, and environment are hashed into each sccache
+key, so incompatible distro objects miss while the common Rust graph can hit.
+Nix builds remain pure.
 
 The build is not a generic cross-compile: Cargo and the target package manager
 both execute inside the selected Ubuntu, Debian, Fedora, Arch, or Nix userspace,
-so dependency resolution, ELF linkage, package metadata, installation, and
-`ldd` verification all exercise the target ABI. The runner must expose Docker
-and allow ordinary Docker create/copy/export/start operations. The deferred
+so dependency resolution, ELF linkage, package metadata, installation, and `ldd`
+verification all exercise the target ABI. The runner must expose Docker and
+allow ordinary Docker create/copy/export/start operations. The deferred
 cross-architecture path additionally needs unprivileged `ptrace`. RPM tag
 publication additionally requires an approved isolated broker and a protected
 `TILO_RPM_SIGNING_FINGERPRINT` variable. The separate protected-tag signing job
@@ -323,11 +351,11 @@ uses native Forgejo OIDC; package build/install-test userspaces receive neither
 OIDC nor a private key. Only the isolated service holds a dedicated compatible
 OpenPGP authority. The runner receives signed copies and public provenance,
 verifies their signatures and identical immutable headers/payloads, and retains
-both signing and host-session gates. See [the broker protocol and exact separate
-live approval boundary](desktop-rpm-broker.md). No private key belongs in a
-repository-wide Actions secret. The existing `REGISTRY_TOKEN` remains the package-upload
-credential and must have repository and package write permission for tag
-releases.
+both signing and host-session gates. See
+[the broker protocol and exact separate live approval boundary](desktop-rpm-broker.md).
+No private key belongs in a repository-wide Actions secret. The existing
+`REGISTRY_TOKEN` remains the package-upload credential and must have repository
+and package write permission for tag releases.
 
 Every distro job first checks the architecture visible inside its container,
 builds inside its target distribution, and then installs both the main and

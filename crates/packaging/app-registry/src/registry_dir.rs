@@ -44,10 +44,6 @@ pub fn read_index(dir: &Path) -> Result<RegistryIndex> {
 
 /// Load the index, or start a fresh one titled `registry_id` if the
 /// directory has none yet.
-///
-/// # Errors
-///
-/// Returns an error if `index.json` exists but fails to read or decode.
 pub fn load_or_new_index(dir: &Path, registry_id: &str) -> Result<RegistryIndex> {
     match std::fs::read(index_path(dir)) {
         Ok(bytes) => RegistryIndex::from_json(&bytes).context("decode existing index.json"),

@@ -9,8 +9,8 @@
 //!   registry, open windows, application actions and content, recent
 //!   choices, host commands).
 //! - [`palette`]: the toolkit's command palette over those sources.
-//! - [`availability`]: the manifest registry's apps a desktop cannot run,
-//!   with the reason shown for each.
+//! - [`availability`]: what the manifest registry knows of each app: where
+//!   it runs, its category and the words people know it by.
 
 pub mod availability;
 pub mod model;

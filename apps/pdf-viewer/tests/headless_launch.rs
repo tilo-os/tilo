@@ -1,4 +1,3 @@
-//! Exercise the actual PDF CLI, its asynchronous owner worker and durable records.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -18,7 +17,7 @@ fn assert_default_main_stack() {
     // This regression runs the actual application, whose main thread does not
     // inherit libtest's larger worker stack. Keep it sensitive to excess launch
     // temporaries instead of hiding them with a larger linker stack reserve.
-    let mut image = std::fs::File::open(env!("CARGO_BIN_EXE_pdf-viewer")).unwrap();
+    let mut image = std::fs::File::open(tilo_test_env::package_binary!("pdf-viewer")).unwrap();
     let mut word = [0; 2];
     image.read_exact(&mut word).unwrap();
     assert_eq!(&word, b"MZ");
@@ -65,7 +64,7 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
     actions.extend(extra);
     let dump = root.join(format!("{name}-state.json"));
     let inspect = root.join(format!("{name}-inspect.json"));
-    let mut command = Command::new(env!("CARGO_BIN_EXE_pdf-viewer"));
+    let mut command = Command::new(tilo_test_env::package_binary!("pdf-viewer"));
     for (key, _) in std::env::vars_os() {
         let name = key.to_string_lossy();
         if name.starts_with("TILO_") || name.starts_with("QUICK_") {
@@ -154,7 +153,6 @@ fn entries(collection: &Value) -> Vec<&Value> {
         .unwrap_or_default()
 }
 
-/// The kind of a dumped annotation's mark.
 fn mark_kind(annotation: &Value) -> String {
     let mark: Value =
         serde_json::from_str(annotation["mark"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
@@ -213,8 +211,7 @@ fn cli_note_survives_other_document_and_restart() {
         "a-edit",
         &a,
         vec![
-            json!({"perform": {"target": "pdf_app", "semantic_target": "pdf.tool:4", "action": "activate"}}),
-            json!({"expect": {"target": "pdf_app", "semantic_target": "pdf.tool:4", "checked": true}}),
+            json!({"invoke": {"resource": "pdf.document", "action": "use-tool", "args": {"tool": "note"}}}),
             json!({"click_at": [f64::midpoint(x0, x1), f64::midpoint(y0, y1)]}),
             json!({"type": marker}),
             json!({"key": "Enter"}),

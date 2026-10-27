@@ -72,7 +72,6 @@ impl ZoomControl {
 mod tests {
     use super::*;
 
-    /// The scale is clamped with the anchor fixed, and coordinate conversion round-trips.
     #[test]
     fn zoom_scale_is_clamped_about_a_fixed_anchor_and_converts_back() {
         // Phase: scale_is_clamped_and_anchor_is_fixed.

@@ -155,7 +155,6 @@ mod tests {
         let hint = encode(&saved, &hashes).expect("a large document is hinted");
         assert_eq!(hashes_for(&hint, &saved), Some(hashes.clone()));
 
-        // Phase `chunks_appended_after_it_keep_it_valid`.
         let mut grown = saved.clone();
         let sent = doc.get_heads();
         doc.put(ROOT, "later", 1).unwrap();
@@ -163,7 +162,6 @@ mod tests {
         grown.extend(doc.save_after(&sent));
         assert_eq!(hashes_for(&hint, &grown), Some(hashes));
 
-        // Phase `any_other_bytes_make_it_stale`.
         let replaced = doc.save();
         assert_eq!(hashes_for(&hint, &replaced), None);
         let mut flipped = saved.clone();
@@ -173,7 +171,6 @@ mod tests {
         assert_eq!(hashes_for(&hint, &saved[..saved.len() / 2]), None);
         assert_eq!(hashes_for(&hint, &grown[saved.len()..]), None);
 
-        // Phase `a_malformed_hint_is_ignored`.
         assert_eq!(hashes_for(&hint[..hint.len() - 1], &saved), None);
         assert_eq!(hashes_for(&hint[1..], &saved), None);
         assert_eq!(hashes_for(b"", &saved), None);

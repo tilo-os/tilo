@@ -113,35 +113,28 @@ mod tests {
 
     #[test]
     fn generations_parse_exactly_or_fail_loudly() {
-        // Phase `reads_the_generation`.
         {
             let c = "root=/dev/mapper/root tilo.generation=42 quiet";
             assert_eq!(from_cmdline(c).unwrap(), Some(42));
         }
-        // Phase `absent_is_none_not_zero`.
         {
             assert_eq!(from_cmdline("root=x quiet").unwrap(), None);
         }
-        // Phase `zero_is_a_legal_generation`.
         {
             assert_eq!(from_cmdline("tilo.generation=0").unwrap(), Some(0));
         }
-        // Phase `similar_keys_are_not_confused`.
         {
             assert_eq!(from_cmdline("tilo.generationx=9").unwrap(), None);
             assert_eq!(from_cmdline("nottilo.generation=9").unwrap(), None);
         }
-        // Phase `unparseable_is_an_error_not_a_silent_none`.
         {
             assert!(from_cmdline("tilo.generation=abc").is_err());
             assert!(from_cmdline("tilo.generation=-1").is_err());
             assert!(from_cmdline("tilo.generation").is_err());
         }
-        // Phase `duplicates_are_rejected`.
         {
             assert!(from_cmdline("tilo.generation=1 tilo.generation=2").is_err());
         }
-        // Phase `policy_ref_is_big_endian`.
         {
             assert_eq!(policy_ref(1), [0, 0, 0, 0, 0, 0, 0, 1]);
             assert_eq!(policy_ref(0x0102_0304_0506_0708), [1, 2, 3, 4, 5, 6, 7, 8]);

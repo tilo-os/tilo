@@ -550,7 +550,6 @@ mod tests {
 
     #[test]
     fn shared_query_editor_edits_selections_graphemes_and_words() {
-        // Case `shared_editor_replaces_selection_and_deletes_extended_graphemes`.
         {
             let mut composition = QueryComposition::new();
             let mut text = "a👨‍👩‍👧‍👦z".to_string();
@@ -587,7 +586,6 @@ mod tests {
             assert_eq!(text, "az");
         }
 
-        // Case `shared_editor_supports_selection_collapse_shift_and_word_motion`.
         {
             let mut composition = QueryComposition::new();
             let mut text = "alpha beta".to_string();
@@ -618,7 +616,6 @@ mod tests {
 
     #[test]
     fn query_preedit_is_display_only_until_commit_with_its_own_caret_and_layout() {
-        // Case `preedit_shows_at_the_caret_until_commit_replaces_the_selection`.
         {
             let mut composition = QueryComposition::new();
             let mut text = "search old value".to_string();
@@ -647,7 +644,6 @@ mod tests {
             assert_eq!(selection, Selection::collapsed("search 新".len()));
         }
 
-        // Case `draw_publishes_an_internal_preedit_caret`.
         {
             let mut composition = QueryComposition::new();
             let mut text = "ab".to_string();
@@ -686,7 +682,6 @@ mod tests {
             assert_eq!(text, "ab");
         }
 
-        // Case `equal_preedit_and_committed_text_do_not_share_an_underlined_layout`.
         {
             let mut composition = QueryComposition::new();
             let mut text = "a".to_string();
@@ -952,7 +947,7 @@ mod tests {
     fn unchanged_browser_query_reshapes_after_font_failure_and_install() {
         let root = crate::font_catalog::checkout_root();
         let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let mut composition = QueryComposition::new();
@@ -999,6 +994,9 @@ mod tests {
             .install_browser_font(
                 "NotoSansArabic[wght].ttf",
                 std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+                &crate::font_catalog::test_sha256(
+                    &std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+                ),
             )
             .unwrap();
         draw(&mut composition, &mut renderer);

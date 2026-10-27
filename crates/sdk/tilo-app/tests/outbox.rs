@@ -437,7 +437,6 @@ impl ResourceApp for AgendaApp {
     const TITLE: &'static str = "Agenda";
 
     fn view(cx: &mut ViewCx<Agenda>) -> Element {
-        // The server takes every upload at once.
         cx.outbox(
             Agenda::paths().uploads,
             |_, _: &Meeting| true,

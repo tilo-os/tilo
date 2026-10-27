@@ -14,7 +14,7 @@
 //!
 //! **One content edge.** Labels start on the column's content edge, like a
 //! section's title and a list row's text; a stripe bleeds
-//! [`row_bleed`](crate::chrome::row_bleed) past it on both sides. A face
+//! [`row_bleed`] past it on both sides. A face
 //! paints into the list's outer rect (the content edge grown by the bleed);
 //! the retained list grows its own layout box by it. Lists in one
 //! [`Section`](crate::widget::Section), and the groups of
@@ -207,6 +207,9 @@ struct RowLayout {
     label: Point,
     value: Point,
     value_width: f64,
+    /// The width the label wraps to, when it is wider than its column
+    /// (beside the value) or than the row (stacked over it).
+    label_wrap: Option<f64>,
     /// The value elided to one line, for an unbreakable value that did not
     /// fit.
     elided: Option<String>,
@@ -270,7 +273,16 @@ fn lay_out(
     let line = m.line(text);
     let min_value = f64::from(MIN_VALUE_LINES) * line;
     let readable = f64::from(READABLE_LINES) * line;
-    let stacked = inner - label_col - m.column_gap - action_col < min_value;
+    // A label wider than its column wraps within it; a word of one that is
+    // wider than the column on its own cannot, and then every label stands
+    // over its value, as when the value has too little room beside it.
+    let longest_word = all
+        .iter()
+        .flat_map(|row| row.label.split_whitespace())
+        .map(|word| f64::from(text.measure_style(word, None, &m.label).0))
+        .fold(0.0, f64::max);
+    let stacked =
+        inner - label_col - m.column_gap - action_col < min_value || longest_word > label_col + 0.5;
     let mut y = origin.y;
     let mut out = Vec::with_capacity(all.len());
     let mut group_layouts = Vec::new();
@@ -287,8 +299,23 @@ fn lay_out(
         }
         for row in *rows {
             let value_style = m.value_style(row);
+            let (label_style, label_room) = if stacked {
+                (&m.stacked_label, inner - action_col)
+            } else {
+                (&m.label, label_col)
+            };
+            let label_wrap = (f64::from(text.measure_style(row.label, None, label_style).0)
+                > label_room + 0.5)
+                .then_some(label_room.max(1.0));
+            let label_h = f64::from(
+                text.measure_style(
+                    row.label,
+                    label_wrap.map(crate::num::f32_of_f64),
+                    label_style,
+                )
+                .1,
+            );
             let (value_x, value_width, label_top_h) = if stacked {
-                let label_h = f64::from(text.measure_style(row.label, None, &m.stacked_label).1);
                 (
                     origin.x + m.pad_x,
                     inner - action_col,
@@ -318,7 +345,6 @@ fn lay_out(
                     f64::from(text.measure_style(row.value, Some(wrap), &value_style).1),
                 )
             };
-            let label_h = f64::from(text.measure_style(row.label, None, &m.label).1);
             let content = if stacked {
                 label_top_h + value_h
             } else {
@@ -347,6 +373,7 @@ fn lay_out(
                 label,
                 value,
                 value_width,
+                label_wrap,
                 elided,
                 actions,
             });
@@ -363,7 +390,7 @@ fn lay_out(
 }
 
 /// Immediate-mode property list. `paint` takes the list's outer rect: the
-/// content edge grown by [`row_bleed`](crate::chrome::row_bleed).
+/// content edge grown by [`row_bleed`].
 #[derive(Clone, Debug)]
 pub struct PropertyListFace<'a> {
     rows: &'a [PropertyRow<'a>],
@@ -432,7 +459,6 @@ impl<'a> PropertyListFace<'a> {
         )
     }
 
-    /// The height the list takes at `width`.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         self.layout(text, theme, Point::ZERO, width).height
     }
@@ -560,7 +586,13 @@ fn paint_layout(
         } else {
             &m.label
         };
-        ctx.text(row.label, label_style, theme.text_dim, geo.label, None);
+        ctx.text(
+            row.label,
+            label_style,
+            theme.text_dim,
+            geo.label,
+            geo.label_wrap.map(crate::num::f32_of_f64),
+        );
         let ink = match row.tone {
             Tone::Neutral => theme.text_primary,
             tone => theme
@@ -631,9 +663,15 @@ enum PropertyAction {
 
 impl Property {
     pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::new_owned(label.into(), value.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(label: String, value: String) -> Self {
         Self {
-            label: label.into(),
-            value: value.into(),
+            label,
+            value,
             kind: TextKind::Prose,
             tone: Tone::Neutral,
             accessible_value: None,

@@ -214,7 +214,10 @@ fn claims_name_exactly_the_changes_and_a_missing_surface_holds() {
         Ok(Receipt::Hold),
         "without the app's surface the change is held, never trusted"
     );
-    let written = |_: &[u8; 32]| vec![comment("c1")];
+    let written = |_: &[u8; 32]| crate::units::Written {
+        units: vec![comment("c1")],
+        added: Vec::new(),
+    };
     assert_eq!(
         check_claims(
             &claims,
@@ -353,4 +356,128 @@ fn an_invalid_appearance_is_refused_even_from_the_bot() {
         check_appearances(&changes, Some("bot:7f1c")),
         Err(ReceiptRefusal::Appearance { .. })
     ));
+}
+
+/// A calendar whose every verb may queue an upload to the server it syncs
+/// with, in its `uploads` outbox.
+struct Calendar;
+
+fn uploads() -> UnitPath {
+    vec![PathStep::Field("uploads".into())]
+}
+
+impl ReceiptSurface for Calendar {
+    fn kind(&self) -> &str {
+        KIND
+    }
+    fn verb(&self, action: &str) -> Option<(ActionKind, Option<String>)> {
+        (action == "new-event").then_some((ActionKind::Outside, None))
+    }
+    fn editable(&self, path: &[PathStep]) -> bool {
+        matches!(path.first(), Some(PathStep::Field(field)) if field == "title")
+    }
+    fn footprint(&self, _: &ClaimedAction) -> Vec<UnitPath> {
+        vec![Vec::new()]
+    }
+    fn outboxes(&self) -> Vec<UnitPath> {
+        vec![uploads()]
+    }
+}
+
+/// Whether Ada, who may make undoable changes but not reach outside the
+/// room, is admitted `claims`, each change writing what its claim says
+/// (inside each unit it names); `read`: the receiver read the changes
+/// themselves.
+fn calendar(claims: &[ChangeClaim], read: bool) -> Result<Receipt, ReceiptRefusal> {
+    let wrote = |units: &[UnitPath]| crate::units::Written {
+        added: units
+            .iter()
+            .filter(|unit| !unit.is_empty())
+            .cloned()
+            .collect(),
+        units: units.to_vec(),
+    };
+    calendar_read(claims, read.then_some(&wrote))
+}
+
+/// What a receiver reads a change wrote, given the units its claim names.
+type Wrote<'a> = &'a dyn Fn(&[UnitPath]) -> crate::units::Written;
+
+/// [`calendar`], the receiver reading from each change what `wrote` says
+/// of its claimed units.
+fn calendar_read(
+    claims: &[ChangeClaim],
+    wrote: Option<Wrote<'_>>,
+) -> Result<Receipt, ReceiptRefusal> {
+    let grants = grants();
+    let party = Party::new(vec![Subject::person("ada")], grants.iter());
+    let allows = |node: &TreePath, kind: ActionKind| {
+        party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
+    };
+    let units = |hash: &[u8; 32]| {
+        let units = claims
+            .iter()
+            .find(|claim| claim.change == *hash)
+            .map(|claim| claim.units.clone())
+            .unwrap_or_default();
+        wrote.map(|wrote| wrote(&units)).unwrap_or_default()
+    };
+    let written: Option<WrittenUnits<'_>> = wrote.is_some().then_some(&units as WrittenUnits<'_>);
+    check_claims(claims, &record(), None, written, Some(&Calendar), &allows)
+}
+
+/// A change reaches outside a record that queues by what it queued, not by
+/// what its action might have: an event added to the local calendar queues
+/// no upload and is an undoable change, while one that queued an upload, or
+/// a field edit whose change queued one, reaches outside.
+#[test]
+fn a_change_reaches_outside_by_what_it_queued_in_an_outbox() {
+    let outside = |result: Result<Receipt, ReceiptRefusal>| {
+        matches!(
+            result,
+            Err(ReceiptRefusal::NotGranted {
+                kind: ActionKind::Outside,
+                ..
+            })
+        )
+    };
+    let local = [claim(1, verb("new-event", None), vec![Vec::new()])];
+    assert_eq!(calendar(&local, true), Ok(Receipt::Admit));
+    assert_eq!(
+        calendar(&local, false),
+        Ok(Receipt::Admit),
+        "a sealed change that claims no outbox is decided as queueing nothing"
+    );
+    let synced = [claim(
+        2,
+        verb("new-event", None),
+        vec![Vec::new(), uploads()],
+    )];
+    assert!(outside(calendar(&synced, true)));
+    let retitled = [claim(3, edit("title"), vec![Vec::new(), uploads()])];
+    assert!(
+        outside(calendar(&retitled, true)),
+        "an edit that queued an upload reaches outside too"
+    );
+    assert_eq!(
+        calendar(&[claim(4, edit("title"), vec![Vec::new()])], true),
+        Ok(Receipt::Admit)
+    );
+    let made = |units: &[UnitPath]| crate::units::Written {
+        units: units.to_vec(),
+        added: Vec::new(),
+    };
+    assert_eq!(
+        calendar_read(&synced, Some(&made)),
+        Ok(Receipt::Admit),
+        "a new record's first event makes its outbox empty and queues nothing"
+    );
+    let queued = |_: &[UnitPath]| crate::units::Written {
+        units: vec![Vec::new(), uploads()],
+        added: vec![uploads()],
+    };
+    assert!(
+        outside(calendar_read(&local, Some(&queued))),
+        "a change that queued an upload its claim leaves out reaches outside"
+    );
 }

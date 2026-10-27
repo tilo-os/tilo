@@ -15,7 +15,7 @@ pub const ITEM_PREFIX: &str = "passwords:item:";
 
 /// What Passwords does with the vault.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "passwords.effect", device_only)]
+#[effect(operation = "passwords.effect")]
 pub enum PasswordsEffect {
     /// Show the current private credential permissions.
     #[effect(view, idempotent, kind = "read", label = "passwords-show-access")]
@@ -24,7 +24,7 @@ pub enum PasswordsEffect {
     #[effect(destructive, idempotent, label = "passwords-revoke-access")]
     RevokeAccess { grant: String },
     /// Approve one exact native request after protected confirmation.
-    #[effect(privileged, label = "passwords-approve-access")]
+    #[effect(attended, privileged, label = "passwords-approve-access")]
     ApproveAccess { proposal: String, lifetime: String },
     /// Decline one pending request without granting access.
     #[effect(idempotent, kind = "read", label = "passwords-deny-access")]
@@ -52,13 +52,13 @@ pub enum PasswordsEffect {
     ///
     /// Copies the item's password, key or note to the clipboard, which
     /// clears after 30 seconds.
-    #[effect(privileged, kind = "read")]
+    #[effect(attended, privileged, kind = "read")]
     Copy {
         #[param("Opaque id of the vault item")]
         item: String,
     },
     /// Reveal secret for 10 seconds.
-    #[effect(privileged, kind = "read")]
+    #[effect(attended, privileged, kind = "read")]
     Reveal {
         #[param("Opaque id of the vault item")]
         item: String,
@@ -69,14 +69,26 @@ pub enum PasswordsEffect {
         #[param("Opaque id of the vault item")]
         item: String,
     },
+    /// Favorite.
+    ///
+    /// Adds the item to Favorites, or removes it.
+    #[effect(idempotent)]
+    Favorite {
+        #[param("Opaque id of the vault item")]
+        item: String,
+        #[param("Whether the item is a favorite")]
+        favorite: bool,
+    },
     /// Import passwords.
     ///
     /// Opens the system file chooser for a browser password CSV.
+    #[effect(attended)]
     Import,
     /// Export CSV…
     ///
     /// Asks for confirmation, then writes every item unencrypted to a file
     /// the person chooses.
+    #[effect(attended)]
     Export,
     /// Filter vault.
     #[effect(kind = "read")]

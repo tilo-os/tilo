@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::{Rc, Weak as LocalWeak};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use tilo_lock::MutexRecover as _;
 use uuid::Uuid;
 
@@ -41,8 +41,9 @@ struct PendingState {
     entries: HashMap<Uuid, Packet>,
     order: Vec<Uuid>,
 }
+/// The queue, and what a parked host waits on for it to fill.
 #[derive(Default)]
-struct Pending(Mutex<PendingState>);
+struct Pending(Mutex<PendingState>, Condvar);
 impl Pending {
     fn push(&self, token: &Arc<Token>, event: WakeEvent, requires_sync: bool) -> bool {
         let mut pending = self.0.lock_recover();
@@ -67,6 +68,8 @@ impl Pending {
                 pending.order.push(token.id);
             }
         }
+        drop(pending);
+        self.1.notify_all();
         true
     }
 }
@@ -291,6 +294,26 @@ impl OwnerWakeQueue {
     /// Queue presence only, not current-owner custody or model purity.
     pub fn has_pending(&self) -> bool {
         !self.pending.0.lock_recover().entries.is_empty()
+    }
+    /// Park the calling thread, as an idle host's event loop does, until a
+    /// wake is queued or `deadline` passes. Whether one is queued.
+    pub fn wait_pending_until(&self, deadline: crate::time::Instant) -> bool {
+        let mut pending = self.pending.0.lock_recover();
+        loop {
+            if !pending.entries.is_empty() {
+                return true;
+            }
+            let left = deadline.saturating_duration_since(crate::time::now());
+            if left.is_zero() {
+                return false;
+            }
+            pending = self
+                .pending
+                .1
+                .wait_timeout(pending, left)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
     }
 }
 

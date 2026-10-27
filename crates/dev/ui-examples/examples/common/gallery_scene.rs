@@ -705,7 +705,6 @@ fn build_empty_and_table_cards() -> (Box<dyn Widget>, Box<dyn Widget>) {
 pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     seed_gallery_state(state);
 
-    // ---- Header -----------------------------------------------------------
     let header = col(4.0).push(title("Tilo UI Toolkit")).push(dim(
         "Component gallery — one showcase of every general-purpose widget, light & dark",
         theme,
@@ -719,14 +718,12 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     let tags = build_tags_card(theme);
     let feedback = build_feedback_card(theme);
 
-    // ---- Metrics (full width) ---------------------------------------------
     let metrics = build_metrics_card();
 
     // ---- Row 3: charts | navigation -----------------------------------------
     let charts = build_charts_card(theme);
     let navigation = build_navigation_card(theme);
 
-    // ---- Banners (full width) ---------------------------------------------
     let banners = build_banners_card();
 
     // ---- Typography conformance (full width) -----------------------------
@@ -738,7 +735,6 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     // ---- Empty state + data table (full width) -----------------------------
     let (empty, table_card) = build_empty_and_table_cards();
 
-    // ---- Assemble ---------------------------------------------------------
     Box::new(
         Column::new()
             .with_gap(16.0)

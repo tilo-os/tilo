@@ -48,9 +48,6 @@ pub struct PhononTranscript {
 impl PhononTranscript {
     /// Phonon-2 is English-only. Reject a selected language rather than passing
     /// its unimplemented `language` parameter and silently recognizing English.
-    ///
-    /// # Errors
-    /// Returns `UnsupportedLanguage` for any non-English language selection.
     pub fn for_language(language: &str) -> Result<Self, SpeechError> {
         if language.eq_ignore_ascii_case("en")
             || language
@@ -67,10 +64,6 @@ impl PhononTranscript {
     /// `partial` replaces the in-flight phrase, `final` appends a phrase, and
     /// `done` carries the complete corrected transcript. A final segment alone
     /// must never trigger field insertion: only `done` finishes the request.
-    ///
-    /// # Errors
-    /// Fails closed on oversized/invalid frames, control characters, replayed
-    /// segments or engine refusal. After failure no further result is accepted.
     pub fn observe(&mut self, frame: &str) -> Result<SpeechUpdate, SpeechError> {
         if self.closed {
             return Err(SpeechError::StreamClosed);

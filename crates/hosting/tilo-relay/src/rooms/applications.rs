@@ -77,19 +77,14 @@ fn start_part(
         .map(|change| (change.hash(), change.raw_bytes().to_vec()))
         .ok_or_else(|| CollaborationError::new("the new part has no genesis"))?;
     if let Some(keys) = keys {
-        super::sealed_records::publish_changes(
-            candidate,
-            Some(keys),
-            (app, record),
-            genesis,
-            key,
-            at,
-        )?;
+        super::sealed_records::start_sealed(candidate, keys, (app, record), genesis, key, at)?;
     } else {
         let mut started = automerge::AutoCommit::new();
         tilo_automerge::ApplyIncoming::load_incoming(&mut started, &genesis)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
-        candidate.publish_document(app, record, started.save(), key, at)?;
+        candidate
+            .publication_mut()
+            .publish_document(app, record, started.save(), key, at)?;
     }
     Ok(vec![hash])
 }
@@ -100,7 +95,7 @@ impl Rooms {
     /// trusted host code. This host-local API accepts no incoming member
     /// snapshot or factory. It keeps the existing graph and publishes only
     /// its admitted incremental changes, sealed for a record members write
-    /// sealed ([`super::sealed_records`]).
+    /// sealed (`super::sealed_records`).
     ///
     /// # Errors
     /// Refuses other certificates, stale custody, undeclared apps, a primary
@@ -151,8 +146,8 @@ impl Rooms {
         )?;
         // A record members write sealed is read through its channel's keys
         // and written sealed; any other must be complete plaintext.
-        let keys = governed
-            .record_keys(app, record)
+        let keys = self
+            .sealing_keys(&governed, app, record)
             .await
             .map_err(CollaborationError::new)?;
         let bytes = governed
@@ -251,8 +246,8 @@ impl Rooms {
             .peer()
             .workspace()
             .check_workspace_administration(governor.device_public_key, system_time(now))?;
-        let keys = governed
-            .record_keys(app, record)
+        let keys = self
+            .sealing_keys(&governed, app, record)
             .await
             .map_err(CollaborationError::new)?;
         let existing = governed
@@ -284,40 +279,15 @@ impl Rooms {
             );
         }
         let mut candidate = governed.peer().clone();
-        match heads {
-            Some(heads) if document.get_heads() == heads => return Ok(result),
-            Some(heads) => {
-                let changes = document.save_after(&heads);
-                if changes.len() > 64 * 1024 {
-                    return Err(CollaborationError::new(
-                        "record authoring exceeds publication limit",
-                    ));
-                }
-                super::sealed_records::publish_changes(
-                    &mut candidate,
-                    keys.as_ref(),
-                    (app, record),
-                    changes,
-                    &self.inner.host.key,
-                    system_time(now),
-                )?;
-            }
-            None if document.get_heads().is_empty() => return Ok(result),
-            None => {
-                let bytes = document.save();
-                if bytes.len() > 64 * 1024 {
-                    return Err(CollaborationError::new(
-                        "record authoring exceeds publication limit",
-                    ));
-                }
-                candidate.publish_document(
-                    app,
-                    record,
-                    bytes,
-                    &self.inner.host.key,
-                    system_time(now),
-                )?;
-            }
+        let published = publish_authored(
+            &mut candidate,
+            keys.as_ref(),
+            (app, record),
+            (&mut document, heads),
+            (&self.inner.host.key, system_time(now)),
+        )?;
+        if !published {
+            return Ok(result);
         }
         let collaboration = governed.collaboration().clone();
         governed.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
@@ -377,8 +347,8 @@ impl Rooms {
         }
         // A record members write sealed is read through its channel's keys,
         // and the bot's changes reach it sealed, decided as the bot's own.
-        let keys = governed
-            .record_keys(app, record)
+        let keys = self
+            .sealing_keys(&governed, app, record)
             .await
             .map_err(CollaborationError::new)?;
         let existing = governed
@@ -430,7 +400,13 @@ impl Rooms {
                 )?;
             }
             None => {
-                candidate.publish_incremental(app, record, fresh, bot, system_time(now))?;
+                candidate.publication_mut().publish_incremental(
+                    app,
+                    record,
+                    fresh,
+                    bot,
+                    system_time(now),
+                )?;
             }
         }
         let collaboration = governed.collaboration().clone();
@@ -533,7 +509,7 @@ impl Rooms {
                 seed,
             )
             .map_err(|error| CollaborationError::new(error.to_string()))?;
-            if record.is_empty() != (source.record() == "@tilo:package-primary") {
+            if record.is_empty() != source.record_id().is_package_primary() {
                 return Err(CollaborationError::new(
                     "factory primary route differs from its declaration",
                 ));
@@ -552,17 +528,18 @@ impl Rooms {
                 "factory genesis exceeds native bootstrap limit",
             ));
         }
+        let keys = self
+            .sealing_keys(&governed, app, record)
+            .await
+            .map_err(CollaborationError::new)?;
         let mut candidate = governed.peer().clone();
-        // Establish ownership through the same governor-only StatePeer path as
-        // native prepare_application_record, then merge the standard factory.
-        candidate.publish_document(
-            app,
-            record,
-            automerge::AutoCommit::new().save(),
-            &self.inner.host.key,
-            system_time(now),
+        publish_genesis(
+            &mut candidate,
+            keys.as_ref(),
+            (app, record),
+            genesis,
+            (&self.inner.host.key, system_time(now)),
         )?;
-        candidate.publish_document(app, record, genesis, &self.inner.host.key, system_time(now))?;
         let collaboration = governed.collaboration().clone();
         governed.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
             Ok(collaboration)
@@ -570,4 +547,86 @@ impl Rooms {
         self.settle(&mut governed).await?;
         Ok(true)
     }
+}
+
+/// Publish what `document` holds beyond `heads` (all of it for a record not
+/// yet held), sealed under `keys` where the record's channel has them; false
+/// when it holds nothing new.
+fn publish_authored(
+    candidate: &mut tilo_peer_state::StatePeer,
+    keys: Option<&super::sealed_records::RecordKeys>,
+    (app, record): (&str, &str),
+    (document, heads): (
+        &mut automerge::AutoCommit,
+        Option<Vec<automerge::ChangeHash>>,
+    ),
+    (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
+) -> Result<bool, CollaborationError> {
+    if document.get_heads() == heads.clone().unwrap_or_default() {
+        return Ok(false);
+    }
+    let bytes = match (&heads, keys) {
+        (Some(heads), _) => document.save_after(heads),
+        (None, Some(_)) => document.save_after(&[]),
+        (None, None) => document.save(),
+    };
+    if bytes.len() > 64 * 1024 {
+        return Err(CollaborationError::new(
+            "record authoring exceeds publication limit",
+        ));
+    }
+    match (heads, keys) {
+        (Some(_), keys) => {
+            super::sealed_records::publish_changes(
+                candidate,
+                keys,
+                (app, record),
+                bytes,
+                key,
+                now,
+            )?;
+        }
+        (None, Some(keys)) => {
+            super::sealed_records::start_sealed(candidate, keys, (app, record), bytes, key, now)?;
+        }
+        (None, None) => {
+            candidate
+                .publication_mut()
+                .publish_document(app, record, bytes, key, now)?;
+        }
+    }
+    Ok(true)
+}
+
+/// Publish an app's `genesis` of a new `record` into `candidate` as the
+/// room's host: sealed under `keys` where the record's channel has them, so
+/// nothing it holds is ever written in the clear.
+fn publish_genesis(
+    candidate: &mut tilo_peer_state::StatePeer,
+    keys: Option<&super::sealed_records::RecordKeys>,
+    (app, record): (&str, &str),
+    genesis: Vec<u8>,
+    (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),
+) -> Result<(), CollaborationError> {
+    if let Some(keys) = keys {
+        let changes = automerge::AutoCommit::load(&genesis)
+            .map_err(|error| CollaborationError::new(error.to_string()))?
+            .save_after(&[]);
+        super::sealed_records::start_sealed(candidate, keys, (app, record), changes, key, now)?;
+    } else {
+        // Establish ownership through the same governor-only StatePeer path
+        // as native prepare_application_record, then merge the standard
+        // factory.
+        candidate.publication_mut().publish_document(
+            app,
+            record,
+            automerge::AutoCommit::new().save(),
+            key,
+            now,
+        )?;
+        candidate
+            .publication_mut()
+            .publish_document(app, record, genesis, key, now)?;
+    }
+    Ok(())
 }

@@ -26,6 +26,10 @@ pub struct Container {
     /// A child shown in place of another since the host last read it
     /// ([`Container::replace_child`]): described.
     structure: crate::widget::StructureChange,
+    /// A band its view stopped building, drawn leaving.
+    ghosts: crate::widget::Ghosts,
+    /// The motion the person allows, from the last theme seen.
+    motion: crate::tokens::EffectiveMotion,
     /// Stable graph / test identity when built from a serialized UI node.
     id: Option<String>,
     rect: Rect,
@@ -71,8 +75,9 @@ pub struct Container {
     /// wrapping flex row this is the difference between filling the
     /// leftover width AFTER siblings are placed (correct) and demanding
     /// the whole line up front, forcing every sibling onto the next line
-    /// even when there was room.
-    flex_grow: bool,
+    /// even when there was room. The weight is the container's share of
+    /// that width against its growing siblings; zero does not grow.
+    flex_grow: f32,
 }
 
 impl Default for Container {
@@ -84,6 +89,8 @@ impl Default for Container {
 impl Container {
     pub fn new() -> Self {
         Self {
+            ghosts: crate::widget::Ghosts::default(),
+            motion: crate::tokens::EffectiveMotion::default(),
             child: None,
             structure: crate::widget::StructureChange::None,
             id: None,
@@ -106,7 +113,7 @@ impl Container {
             inset: None,
             activation: crate::widget::activation::Activation::default(),
             bleed: (0.0, 0.0),
-            flex_grow: false,
+            flex_grow: 0.0,
         }
     }
 
@@ -121,7 +128,17 @@ impl Container {
     /// See the field docs.
     #[must_use]
     pub fn with_flex_grow(mut self) -> Self {
-        self.flex_grow = true;
+        self.flex_grow = 1.0;
+        self
+    }
+
+    /// Grow as [`Self::with_flex_grow`] does, taking `share` of the width
+    /// its growing siblings share, down to none of it: four tenths beside
+    /// six tenths shows a 40:60 split however long either's content is.
+    #[must_use]
+    pub fn with_share(mut self, share: f32) -> Self {
+        self.flex_grow = share.max(0.0);
+        self.min_width = Some(0.0);
         self
     }
 
@@ -423,6 +440,7 @@ impl Widget for Container {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
         let child_node = self
             .child
             .as_mut()
@@ -452,7 +470,7 @@ impl Widget for Container {
             Some(px) => length(px),
             // `auto` so the basis is zero (the wrap decision ignores it);
             // flex_grow below fills the leftover line width.
-            None if self.flex_grow || self.hug => taffy::Dimension::auto(),
+            None if self.flex_grow > 0.0 || self.hug => taffy::Dimension::auto(),
             None => percent(1.0_f32),
         };
         let height = match self.fixed_height {
@@ -465,8 +483,8 @@ impl Widget for Container {
             flex_shrink: 0.0, // Prevent vertical squashing
             // A pinned width must not grow to fill a flex parent: `flex_basis:
             // auto` lets `size.width` resolve the basis instead.
-            flex_grow: if self.flex_grow { 1.0 } else { 0.0 },
-            flex_basis: if self.flex_grow {
+            flex_grow: self.flex_grow,
+            flex_basis: if self.flex_grow > 0.0 {
                 length(0.0_f32)
             } else {
                 taffy::Dimension::auto()
@@ -512,7 +530,57 @@ impl Widget for Container {
             && let Some(&child_node) = taffy.children(node).unwrap_or_default().first()
         {
             child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+            // A band on its way stands out of the layout, at the top of the
+            // container's content.
+            crate::widget::place_bands(
+                std::iter::once(child),
+                crate::widget::content_box(taffy, node, self.rect),
+                |_| 0.0,
+            );
         }
+        // A band its view stopped building leaves where it stood.
+        let content = crate::widget::content_box(taffy, node, self.rect);
+        let children = match &mut self.child {
+            Some(child) => std::slice::from_mut(child),
+            None => &mut [],
+        };
+        self.ghosts
+            .find("Container", children, content, |_| 0.0, self.motion);
+    }
+
+    /// A container sized by its content grows with a band moving in it, or
+    /// leaving it, and so moves what follows it.
+    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+        if self.fixed_height.is_some() || self.fill_height {
+            return None;
+        }
+        let moving = self
+            .child
+            .as_ref()
+            .and_then(|child| child.disclosing())
+            .map(|moving| moving.follower_offset(0.0));
+        let leaving = self
+            .ghosts
+            .shift(None, usize::from(self.child.is_some()))
+            .and_then(|shifts| shifts.last().copied());
+        if moving.is_none() && leaving.is_none() {
+            return None;
+        }
+        Some(crate::widget::Disclosing::Grows(
+            moving.unwrap_or(0.0) + leaving.unwrap_or(0.0),
+        ))
+    }
+
+    /// Frames while a band its view stopped building leaves, and one more
+    /// to draw it gone.
+    fn needs_animation_frame(&self) -> bool {
+        !self.ghosts.is_empty()
+            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
+
+    fn needs_redraw(&self) -> bool {
+        !self.ghosts.is_empty()
+            || crate::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
     fn draw(
@@ -535,6 +603,10 @@ impl Widget for Container {
                 presence,
             );
         }
+
+        self.ghosts.retain_drawn();
+        let shifts = self.ghosts.shift(None, usize::from(self.child.is_some()));
+        self.ghosts.draw(scene, transform, shifts.as_deref());
 
         crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
@@ -755,7 +827,6 @@ mod tests {
             let readable = f64::from(theme.tokens.metrics.readable_width);
             assert!((inner.width() - readable).abs() < 0.5, "{inner:?}");
         }
-        // Narrower than the measure, it shrinks with its parent.
         let (narrow, _) = lay_out(
             Container::new()
                 .with_no_padding()

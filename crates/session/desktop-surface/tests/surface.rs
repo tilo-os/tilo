@@ -8,6 +8,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use tilo_desktop_model::{IdMinter, Tab, TileContent, WindowWidth, Workspace};
 use tilo_desktop_surface::navigation::{Command, Route};
@@ -40,6 +41,7 @@ impl TileSource for Notices {
                 label: title,
                 note: String::new(),
             },
+            app_title: None,
         })
     }
 
@@ -51,24 +53,13 @@ impl TileSource for Notices {
                 title: title.into(),
                 category: Some("Office".into()),
                 description: None,
-                unavailable: None,
             })
-            .chain([
-                tilo_desktop_search::providers::AppEntry {
-                    id: "so.tilo.imager".into(),
-                    title: "Imager".into(),
-                    category: Some("System".into()),
-                    description: None,
-                    unavailable: Some("Linux and macOS only".into()),
-                },
-                tilo_desktop_search::providers::AppEntry {
-                    id: format!("{NODE_APP}app.so.tilo.terminal"),
-                    title: "Terminal".into(),
-                    category: Some("System".into()),
-                    description: Some("Runs on the node".into()),
-                    unavailable: None,
-                },
-            ])
+            .chain([tilo_desktop_search::providers::AppEntry {
+                id: format!("{NODE_APP}app.so.tilo.terminal"),
+                title: "Terminal".into(),
+                category: Some("System".into()),
+                description: Some("Runs on the node".into()),
+            }])
             .collect()
     }
 }
@@ -90,12 +81,18 @@ fn tab(minter: &mut IdMinter, title: &str) -> Tab {
             label: title.into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 
 fn mount() -> (ui::headless::FrameHarness, DesktopHandle, Rc<Cell<usize>>) {
+    mount_with(&["Notes", "Scratch"])
+}
+
+/// A desk of one window per title, each of the app named like it.
+fn mount_with(titles: &[&str]) -> (ui::headless::FrameHarness, DesktopHandle, Rc<Cell<usize>>) {
     let mut minter = IdMinter::new(7);
-    let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Scratch")];
+    let tabs = titles.iter().map(|title| tab(&mut minter, title)).collect();
     let tree = seed_tree(&mut minter, "Desk", tabs);
     let built = Rc::new(Cell::new(0));
     let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
@@ -336,13 +333,22 @@ fn a_launched_window_is_on_screen_in_the_frame_that_opens_it() {
         }
     }
     let (mut driver, handle, _) = mount();
-    for app in ["so.tilo.a", "so.tilo.b", "so.tilo.c", "so.tilo.d"] {
-        dispatch(
-            &mut driver,
-            &handle,
-            serde_json::json!({"kind":"launch","generation":"g","app":app}),
-        );
+    let launch = |driver: &mut ui::headless::FrameHarness, app: &str| {
+        on_clock(FRAME, || {
+            dispatch(
+                driver,
+                &handle,
+                serde_json::json!({"kind":"launch","generation":"g","app":app}),
+            );
+        });
+    };
+    // Launches a person makes come seconds apart: each earlier one has
+    // come to rest, sharing the screen with its neighbour, by the next.
+    for app in ["so.tilo.a", "so.tilo.b", "so.tilo.c"] {
+        launch(&mut driver, app);
+        settle(&mut driver);
     }
+    launch(&mut driver, "so.tilo.d");
     let mut rects = Vec::new();
     groups(&driver.inspection().root, &mut rects);
     rects.sort_by(|a, b| a[0].total_cmp(&b[0]));
@@ -514,6 +520,7 @@ impl TileSource for Apps {
                     .with_height(600.0)
                     .with_child(Box::new(ui::widget::Spacer::fixed(5000.0))),
             ),
+            "Greedy" => Box::new(TakesEveryWheel::default()),
             caret if caret.starts_with("Caret") => Box::new(CaretProbe::new(caret)),
             _ => {
                 return TileHost::new(ui::widget::TileContent::Notice {
@@ -523,6 +530,56 @@ impl TileSource for Apps {
             }
         };
         TileHost::new(ui::widget::TileContent::App(Box::new(Hosted(content))))
+    }
+}
+
+/// An app that takes every wheel it is handed, wherever the pointer is, as
+/// a chat's message list follows any wheel that reaches it.
+#[derive(Default)]
+struct TakesEveryWheel {
+    rect: ui::kurbo::Rect,
+}
+
+impl ui::widget::Widget for TakesEveryWheel {
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        taffy
+            .new_leaf(ui::taffy::Style {
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        if matches!(event, ui::winit::event::WindowEvent::MouseWheel { .. }) {
+            *ctx.handled = true;
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "TakesEveryWheel"
+    }
+
+    fn get_rect(&self) -> ui::kurbo::Rect {
+        self.rect
     }
 }
 
@@ -690,17 +747,77 @@ fn trackpad_swipe() -> Vec<f64> {
     deltas
 }
 
+thread_local! {
+    /// The desktop's monotonic clock in a gesture test, once it has started.
+    static CLOCK: Cell<Option<ui::time::Instant>> = const { Cell::new(None) };
+}
+
+/// One trackpad report, or one notch of a spun wheel, after the last.
+const EVENT: Duration = Duration::from_millis(8);
+/// One frame of a 60 Hz display after the last.
+const FRAME: Duration = Duration::from_millis(16);
+
+/// Run `step` with the desktop's clock moved on by `after`. Gestures and the
+/// pauses between them last exactly as long as the test says, however fast
+/// or loaded the machine running it is.
+fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
+    let at = CLOCK
+        .get()
+        .unwrap_or_else(ui::time::now)
+        .checked_add(after)
+        .unwrap();
+    CLOCK.set(Some(at));
+    tilo_clock::testing::with_monotonic_time(at, step)
+}
+
 /// Send one page wheel event as winit's web backend reports it: negated,
 /// in physical pixels.
 fn page_wheel(driver: &mut ui::headless::FrameHarness, delta_x: f64, delta_y: f64) {
-    driver.send(&ui::winit::event::WindowEvent::MouseWheel {
-        device_id: ui::winit::event::DeviceId::dummy(),
-        delta: ui::winit::event::MouseScrollDelta::PixelDelta(
-            ui::winit::dpi::PhysicalPosition::new(-delta_x, -delta_y),
-        ),
-        phase: ui::winit::event::TouchPhase::Moved,
+    on_clock(EVENT, || {
+        driver.send(&ui::winit::event::WindowEvent::MouseWheel {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+                ui::winit::dpi::PhysicalPosition::new(-delta_x, -delta_y),
+            ),
+            phase: ui::winit::event::TouchPhase::Moved,
+        });
+        driver.relayout();
     });
-    driver.relayout();
+}
+
+/// One notch of a mouse wheel spun sideways, `lines` to the left.
+fn wheel_notch(driver: &mut ui::headless::FrameHarness, lines: f32) {
+    on_clock(EVENT, || {
+        driver.send(&ui::synthetic_input::mouse_wheel(lines, 0.0));
+    });
+}
+
+/// Lay the desktop out at the clock's current reading.
+fn relayout(driver: &mut ui::headless::FrameHarness) {
+    on_clock(Duration::ZERO, || driver.relayout());
+}
+
+/// Frames until the wheel has paused longer than a swipe, so the next
+/// input is a new gesture, and a last frame long after, once whatever the
+/// gesture started has run its course.
+fn settle(driver: &mut ui::headless::FrameHarness) {
+    for _ in 0..30 {
+        on_clock(FRAME, || driver.relayout());
+    }
+    on_clock(Duration::from_secs(5), || driver.relayout());
+    on_clock(FRAME, || driver.relayout());
+}
+
+/// Frames until nothing on the desktop is moving.
+fn settle_still(driver: &mut ui::headless::FrameHarness) {
+    let settled = (0..1_000).any(|_| {
+        on_clock(FRAME, || driver.relayout());
+        !driver.frame_schedule().needs_animation_frame
+    });
+    assert!(
+        settled,
+        "the desktop is still moving after a thousand frames"
+    );
 }
 
 fn pan_offset(handle: &DesktopHandle) -> f64 {
@@ -709,7 +826,7 @@ fn pan_offset(handle: &DesktopHandle) -> f64 {
 
 /// Longer than the surface's swipe gap, so the next swipe is a new gesture.
 fn pause() {
-    std::thread::sleep(std::time::Duration::from_millis(260));
+    on_clock(Duration::from_millis(260), || ());
 }
 
 #[test]
@@ -756,7 +873,9 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
     }
     assert!((pan_offset(&handle) - (before - 50.0)).abs() < 0.01);
 
-    // A flick past the end stops the strip there, for the whole gesture.
+    // A flick past the end keeps the strip at it for the whole gesture,
+    // pulling against the rubber band (which the pan reports as the end),
+    // and once let go the strip settles there.
     pause();
     for _ in 0..200 {
         page_wheel(&mut driver, 40.0, 0.0);
@@ -770,6 +889,7 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
     }
     assert!((pan_offset(&handle) - max).abs() < 0.5);
     pause();
+    settle_still(&mut driver);
     for &dx in &swipe {
         page_wheel(&mut driver, -dx, 0.0);
     }
@@ -793,7 +913,7 @@ fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
 #[test]
 fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
     let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
-    driver.set_coalesce_wheel_frames(true);
+    driver.set_coalesce_input_frames(true);
     let first_window_x = |driver: &ui::headless::FrameHarness| {
         find(&driver.inspection().root, "WindowGroup").unwrap().rect[0]
     };
@@ -845,6 +965,114 @@ fn wheel_pans_wait_for_the_next_frame_which_only_moves_the_windows() {
     );
 }
 
+/// A page hosting the desktop shows the toolkit's tooltips as the installed
+/// shell does: the pointer resting on a window bar's magnifier asks for a
+/// frame when its dwell runs out, and that frame paints what the control
+/// searches; pressing it takes the tooltip away.
+#[test]
+fn resting_on_the_window_bars_magnifier_shows_what_it_searches() {
+    let _settled = ui::motion::testing::settled();
+    let (mut driver, _handle, _) = mount_apps(&["A"]);
+    driver.set_platform_conventions(ui::platform::PlatformConventions::new(
+        ui::platform::Platform::Linux,
+    ));
+    driver.relayout();
+    let magnifier = find(&driver.inspection().root, "WindowSearch")
+        .expect("the window's bar shows its search control")
+        .rect;
+    let (x, y) = (
+        (magnifier[0] + magnifier[2] / 2.0),
+        (magnifier[1] + magnifier[3] / 2.0),
+    );
+    driver.send_host_event(&ui::synthetic_input::cursor_moved(x, y));
+    let _ = driver.poll_frame();
+    assert!(
+        driver.drawn_tooltip().is_none(),
+        "no tooltip before the pointer has rested"
+    );
+    let reveal = driver
+        .frame_schedule()
+        .next_wake_deadline
+        .expect("the host is woken when the dwell runs out");
+    let shown = tilo_clock::testing::with_monotonic_time(reveal, || {
+        driver.poll_frame().expect("the frame lays out");
+        driver
+            .drawn_tooltip()
+            .map(|(text, chip)| (text.to_owned(), chip))
+    });
+    let (text, chip) = shown.expect("the frame paints the tooltip");
+    assert_eq!(text, "Search in this window (Ctrl+F)");
+    assert!(chip.width() > 0.0 && chip.height() > 0.0);
+    let read = find(&driver.inspection().root, "Tooltip")
+        .and_then(|node| node.semantics.as_ref())
+        .and_then(|node| node.name.clone());
+    assert_eq!(
+        read.as_deref(),
+        Some("Search in this window (Ctrl+F)"),
+        "a reader is told the tooltip too"
+    );
+    driver.send_host_event(&ui::synthetic_input::mouse_press());
+    let _ = driver.poll_frame();
+    assert!(
+        driver.drawn_tooltip().is_none(),
+        "acting on the control takes its tooltip away"
+    );
+}
+
+/// The same hover on the live clock, with the tooltip's arrival animated,
+/// driven as a page drives its frames: a frame when the schedule asks for
+/// one (animation, queued work, a due deadline), otherwise asleep until its
+/// deadline; widgets merely marked dirty bring none, as on the page. Its
+/// frames come slower than the arrival lasts, as on a busy or
+/// software-rendered GPU: the arrival's first frame draws it not yet
+/// visible and the arrival ends before the next frame, which still has to
+/// come and show the tooltip at rest. Past the dwell only the schedule's
+/// demand brings a frame, so no unrelated deadline (the bar's clock) can
+/// stand in for it.
+#[test]
+fn a_page_shows_the_tooltip_driving_frames_by_its_schedule() {
+    let (mut driver, _handle, _) = mount_apps(&["A"]);
+    driver.set_platform_conventions(ui::platform::PlatformConventions::new(
+        ui::platform::Platform::Linux,
+    ));
+    driver.relayout();
+    let magnifier = find(&driver.inspection().root, "WindowSearch")
+        .expect("the window's bar shows its search control")
+        .rect;
+    let (x, y) = (
+        magnifier[0] + magnifier[2] / 2.0,
+        magnifier[1] + magnifier[3] / 2.0,
+    );
+    driver.send_host_event(&ui::synthetic_input::cursor_moved(x, y));
+    let _ = driver.poll_frame();
+    let revealed = ui::time::now() + ui::widget::tooltip::HOVER_DWELL;
+    let end = ui::time::now() + Duration::from_secs(5);
+    let mut frames = Vec::new();
+    while ui::time::now() < end && driver.drawn_tooltip().is_none() {
+        let schedule = driver.frame_schedule();
+        let now = ui::time::now();
+        let past_dwell = frames.iter().any(|&(at, _)| at >= revealed);
+        let due = !past_dwell && schedule.next_wake_deadline.is_some_and(|at| at <= now);
+        if schedule.needs_animation_frame || schedule.queued_work || due {
+            frames.push((now, driver.poll_frame().expect("the frame lays out")));
+            std::thread::sleep(Duration::from_millis(600));
+        } else if let Some(at) = schedule.next_wake_deadline.filter(|_| !past_dwell) {
+            std::thread::sleep(at.saturating_duration_since(now));
+        } else {
+            panic!(
+                "nothing asks for a frame after {} frames: the tooltip stays unshown",
+                frames.len()
+            );
+        }
+    }
+    assert_eq!(
+        driver.drawn_tooltip().map(|(text, _)| text),
+        Some("Search in this window (Ctrl+F)"),
+        "after {} frames",
+        frames.len()
+    );
+}
+
 fn pixel_wheel(dx: f64, dy: f64) -> ui::winit::event::WindowEvent {
     ui::winit::event::WindowEvent::MouseWheel {
         device_id: ui::winit::event::DeviceId::dummy(),
@@ -866,7 +1094,10 @@ fn phase_calls(rows: &[tilo_resource::profiling::Sample], phase: &str) -> usize 
 #[test]
 fn a_wheel_the_strip_does_not_pan_with_ticks_at_once() {
     let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
-    driver.set_coalesce_wheel_frames(true);
+    driver.set_coalesce_input_frames(true);
+    // Over the first window's content, not the wallpaper before it.
+    driver.send_host_event(&ui::synthetic_input::cursor_moved(400.0, 400.0));
+    driver.relayout();
     let start = pan_offset(&handle);
     let ((), rows) = tilo_resource::profiling::observe(|| {
         driver.send_host_event(&pixel_wheel(0.0, -10.0));
@@ -1003,25 +1234,8 @@ fn history_moves_the_windows_own_navigation_stack() {
 }
 
 #[test]
-fn the_tasks_view_opens_over_the_workspace_and_the_others_say_why_not() {
+fn an_activity_view_without_its_history_says_why_not() {
     let (mut driver, handle, _) = mount_apps(&["A"]);
-    let mut tree = handle.read(Clone::clone);
-    tree.workspaces[0]
-        .tasks
-        .push(tilo_desktop_model::WorkspaceTask {
-            id: "t1".into(),
-            title: "Review the draft".into(),
-            created_by: "tester".into(),
-            assigned_agent: None,
-            route: tilo_desktop_model::WorkspaceTaskRoute::Manual,
-            status: tilo_desktop_model::WorkspaceTaskStatus::InProgress,
-            resource: None,
-            subject: None,
-            created_at: 1,
-            updated_at: 2,
-            audit: vec![],
-        });
-    handle.replace_tree(tree);
     driver.relayout();
     let workspace = handle.snapshot("g", vec![]).active_workspace;
 
@@ -1037,40 +1251,16 @@ fn the_tasks_view_opens_over_the_workspace_and_the_others_say_why_not() {
         );
         assert!(refused.unwrap_err().starts_with(reason), "{view}");
     }
-
-    let saved = handle.revision();
-    try_dispatch(
-        &mut driver,
-        &handle,
-        serde_json::json!({"kind":"workspace-activity","generation":"g","workspace":workspace,"view":"tasks"}),
-    )
-    .unwrap();
-    let json = serde_json::to_value(handle.snapshot("g", vec![])).unwrap();
-    assert_eq!(json["workspaceActivity"]["view"], "tasks");
-    assert_eq!(json["workspaceActivity"]["workspace"], workspace);
-    assert_eq!(
-        json["workspaceActivity"]["tasks"][0]["title"],
-        "Review the draft"
+    // Tasks are an app, not a view of the workspace's activity.
+    assert!(
+        serde_json::from_value::<Command>(serde_json::json!({
+            "kind": "workspace-activity",
+            "generation": "g",
+            "workspace": workspace,
+            "view": "tasks",
+        }))
+        .is_err()
     );
-    assert_eq!(
-        json["workspaceActivity"]["tasks"][0]["statusLabel"],
-        "In progress"
-    );
-    assert_eq!(
-        handle.revision(),
-        saved,
-        "opening a view is not a tree change"
-    );
-
-    try_dispatch(
-        &mut driver,
-        &handle,
-        serde_json::json!({"kind":"close-workspace-activity","generation":"g","workspace":workspace}),
-    )
-    .unwrap();
-    let json = serde_json::to_value(handle.snapshot("g", vec![])).unwrap();
-    assert!(json["workspaceActivity"].is_null());
-    assert_eq!(json["workspaceActivityCloseReason"], "dismissed");
 }
 
 #[test]
@@ -1114,13 +1304,6 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
     driver.relayout();
     let entries = handle.snapshot("g", vec![]).entries;
     let first = handle.snapshot("g", vec![]).active.unwrap();
-    // Wait out the swipe gap.
-    let settle = |driver: &mut ui::headless::FrameHarness| {
-        for _ in 0..30 {
-            std::thread::sleep(std::time::Duration::from_millis(16));
-            driver.relayout();
-        }
-    };
     let shown = |driver: &ui::headless::FrameHarness, index: usize| {
         let mut rects = Vec::new();
         groups(&driver.inspection().root, &mut rects);
@@ -1128,14 +1311,16 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
         let [x, _, width, _] = rects[index];
         x.max(0.0) < (x + width).min(1200.0) - width / 2.0
     };
-    driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    on_clock(Duration::ZERO, || {
+        driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    });
     // A sideways wheel spun to the right as Firefox reports it: six lines a
     // notch, which winit reports with negative x.
     let before = pan_offset(&handle);
     for _ in 0..4 {
-        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
+        wheel_notch(&mut driver, -6.0);
     }
-    driver.relayout();
+    relayout(&mut driver);
     assert!(
         (pan_offset(&handle) - before - 960.0).abs() < 0.5,
         "four notches pan the strip four notches' travel"
@@ -1161,9 +1346,9 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
 
     // A long spin stops at the strip's end and keeps the rest of the spin.
     for _ in 0..40 {
-        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
+        wheel_notch(&mut driver, -6.0);
     }
-    driver.relayout();
+    relayout(&mut driver);
     let pan = handle.snapshot("g", vec![]).desktop_pan.unwrap();
     assert!((pan.offset - pan.max).abs() < 0.5, "hard stop at the end");
     settle(&mut driver);
@@ -1194,18 +1379,13 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
     );
     driver.relayout();
     let last = handle.snapshot("g", vec![]).entries[3].route.clone();
-    // Wait out the swipe gap.
-    let settle = |driver: &mut ui::headless::FrameHarness| {
-        for _ in 0..30 {
-            std::thread::sleep(std::time::Duration::from_millis(16));
-            driver.relayout();
-        }
-    };
-    driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    on_clock(Duration::ZERO, || {
+        driver.send(&ui::synthetic_input::cursor_moved(600.0, 400.0));
+    });
     for _ in 0..40 {
-        driver.send(&ui::synthetic_input::mouse_wheel(-6.0, 0.0));
+        wheel_notch(&mut driver, -6.0);
     }
-    driver.relayout();
+    relayout(&mut driver);
     settle(&mut driver);
 
     // A spin whose notches arrive slowly, one or two at a time with pauses
@@ -1213,8 +1393,8 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
     // focus follows, but the strip still pans exactly the notches' travel.
     let from = pan_offset(&handle);
     for lines in [1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0] {
-        driver.send(&ui::synthetic_input::mouse_wheel(lines, 0.0));
-        driver.relayout();
+        wheel_notch(&mut driver, lines);
+        relayout(&mut driver);
         settle(&mut driver);
     }
     assert!(
@@ -1227,11 +1407,13 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
     // change to the strip's geometry, here the last window a pixel wider,
     // keeps it there rather than re-framing it onto a window's edge.
     let held = pan_offset(&handle);
-    dispatch(
-        &mut driver,
-        &handle,
-        serde_json::json!({"kind":"width","generation":"g","route":last,"permille":668}),
-    );
+    on_clock(Duration::ZERO, || {
+        dispatch(
+            &mut driver,
+            &handle,
+            serde_json::json!({"kind":"width","generation":"g","route":last,"permille":668}),
+        );
+    });
     settle(&mut driver);
     assert!(
         (pan_offset(&handle) - held).abs() < 0.5,
@@ -1336,6 +1518,86 @@ fn search_from_navigation_focuses_an_open_window_and_escape_dismisses() {
     );
 }
 
+/// The open palette's result rows.
+fn result_rows(driver: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
+    let palette = find(&driver.inspection().root, "CommandPalette")
+        .unwrap()
+        .semantics
+        .clone()
+        .unwrap();
+    palette.children.get(1).unwrap().children.clone()
+}
+
+/// Choose the app row named `name` in open search.
+fn choose_app(driver: &mut ui::headless::FrameHarness, name: &str) {
+    let row = result_rows(driver)
+        .into_iter()
+        .find(|row| row.name.as_deref() == Some(name))
+        .unwrap();
+    driver
+        .perform_semantic_named(
+            "command_palette_input",
+            row.action_target.as_deref(),
+            &ui::a11y::Action::Activate,
+        )
+        .unwrap();
+    driver.relayout();
+}
+
+#[test]
+fn an_app_chosen_from_search_while_its_window_is_open_is_focused_not_opened_twice() {
+    let (mut driver, handle, _) = mount();
+    handle.open_search(Some("sheets".into()));
+    driver.relayout();
+    choose_app(&mut driver, "Sheets");
+    assert!(handle.focus_app("so.tilo.notes"));
+    driver.relayout();
+    handle.open_search(Some("sheets".into()));
+    driver.relayout();
+    choose_app(&mut driver, "Sheets");
+    let snapshot = handle.snapshot("g", vec![]);
+    assert_eq!(
+        labels(&snapshot),
+        ["Notes", "sheets", "Scratch"],
+        "no second Sheets window"
+    );
+    let active = snapshot.active.unwrap();
+    assert_eq!(
+        snapshot
+            .entries
+            .iter()
+            .find(|e| e.route == active)
+            .unwrap()
+            .label,
+        "sheets",
+        "the open Sheets window is focused"
+    );
+}
+
+#[test]
+fn windows_titled_alike_say_which_one_each_is() {
+    let (mut driver, handle, _) = mount_with(&["Chat", "Chat", "Notes"]);
+    handle.open_search(Some("chat".into()));
+    driver.relayout();
+    let chats: Vec<String> = result_rows(&driver)
+        .into_iter()
+        .filter(|row| row.name.as_deref() == Some("Chat"))
+        .filter_map(|row| row.description)
+        // Without the bidirectional isolation marks around placeables.
+        .map(|facts| facts.replace(['\u{2068}', '\u{2069}'], ""))
+        .collect();
+    assert_eq!(chats.len(), 2, "{chats:?}");
+    let (first, second) = (chats.first().unwrap(), chats.get(1).unwrap());
+    assert!(
+        first.ends_with("1 of 2") && second.ends_with("2 of 2"),
+        "{chats:?}"
+    );
+    assert!(
+        chats.iter().all(|place| !place.starts_with("Window")),
+        "the Windows header already says what a row is: {chats:?}"
+    );
+}
+
 #[test]
 fn the_search_shortcut_closes_open_search_and_a_host_can_toggle_it() {
     let (mut driver, handle, _) = mount();
@@ -1401,7 +1663,7 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
         .unwrap();
     let results = &palette.children[1].children;
     let first = results.first().expect("a result for the typed query");
-    assert_eq!(first.name.as_deref(), Some("Open Writer"));
+    assert_eq!(first.name.as_deref(), Some("Writer"));
     driver
         .perform_semantic_named(
             "command_palette_input",
@@ -1412,50 +1674,6 @@ fn assistive_technology_and_agents_search_through_the_palette_semantics() {
     driver.relayout();
     assert!(!handle.search_open());
     assert!(labels(&handle.snapshot("g", vec![])).contains(&"writer".into()));
-}
-
-#[test]
-fn search_lists_an_app_this_desktop_cannot_run_with_why_and_opens_nothing() {
-    use ui::a11y::Action;
-    let (mut driver, handle, _) = mount();
-    let before = labels(&handle.snapshot("g", vec![]));
-    handle.toggle_search();
-    driver.relayout();
-    driver
-        .perform_semantic_named(
-            "command_palette_input",
-            Some("command-palette:query"),
-            &Action::SetValue("imager".into()),
-        )
-        .unwrap();
-    driver.relayout();
-    let palette = find(&driver.inspection().root, "CommandPalette")
-        .unwrap()
-        .semantics
-        .clone()
-        .unwrap();
-    let first = palette.children[1]
-        .children
-        .first()
-        .expect("the unavailable app is listed");
-    assert_eq!(first.name.as_deref(), Some("Imager"));
-    assert!(
-        format!("{first:?}").contains("Linux and macOS only"),
-        "the row says why: {first:?}"
-    );
-    driver
-        .perform_semantic_named(
-            "command_palette_input",
-            first.action_target.as_deref(),
-            &Action::Activate,
-        )
-        .unwrap();
-    driver.relayout();
-    assert_eq!(
-        labels(&handle.snapshot("g", vec![])),
-        before,
-        "nothing opened"
-    );
 }
 
 #[test]
@@ -1481,7 +1699,7 @@ fn search_opens_an_app_the_node_runs_for_this_desktop() {
         .children
         .first()
         .expect("the node's app is listed");
-    assert_eq!(first.name.as_deref(), Some("Open Terminal"), "it opens");
+    assert_eq!(first.name.as_deref(), Some("Terminal"), "it opens");
     assert!(
         !format!("{first:?}").contains(" only"),
         "the row offers it: {first:?}"
@@ -1595,8 +1813,6 @@ fn published_selection_prefers_keyboard_focus_inside_the_window() {
     assert_eq!(published_selection(None, &[]), None);
 }
 
-/// A window's new-tab control asks which application to open, as the
-/// native shell's does, and the one chosen opens as a tab of that window.
 #[test]
 fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     // Mounted as its own type, so the test can find the control to press.
@@ -1660,4 +1876,781 @@ fn a_windows_new_tab_control_asks_which_app_and_opens_it_there() {
     let last = handle.snapshot("g", vec![]);
     assert_ne!(last.active.as_ref().unwrap().group, group);
     assert_eq!(windows(&last).len(), windows(&before).len() + 1);
+}
+
+/// Three windows each 70% of the strip: the second runs off the right edge.
+fn mount_wide() -> (ui::headless::FrameHarness, DesktopHandle) {
+    let mut minter = IdMinter::new(7);
+    let tabs = (0..3)
+        .map(|i| tab(&mut minter, &format!("Wide{i}")))
+        .collect();
+    let mut tree = seed_tree(&mut minter, "Desk", tabs);
+    let strip = tree
+        .workspaces
+        .first_mut()
+        .and_then(|workspace| workspace.strips.first_mut())
+        .unwrap();
+    for group in &mut strip.window_groups {
+        group.width = WindowWidth::Fraction(700);
+    }
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    for _ in 0..3 {
+        driver.relayout();
+    }
+    (driver, handle)
+}
+
+/// Where tab `index` of the shown strip is drawn.
+fn shown_rect(handle: &DesktopHandle, index: usize) -> ui::kurbo::Rect {
+    let mut shown = handle.shown_tabs();
+    shown.sort_by(|a, b| a.1.x0.total_cmp(&b.1.x0));
+    shown.get(index).unwrap().1
+}
+
+#[test]
+fn a_click_in_a_window_partly_off_screen_brings_it_into_view() {
+    let (mut driver, handle) = mount_wide();
+    let second = shown_rect(&handle, 1);
+    assert!(
+        second.x0 < 1200.0 && second.x1 > 1200.0,
+        "the second window runs off the right edge: {second:?}"
+    );
+    driver.click_at(f64::midpoint(second.x0, 1200.0), second.center().y);
+    settle_still(&mut driver);
+    let second = shown_rect(&handle, 1);
+    assert!(
+        second.x0 >= -0.5 && second.x1 <= 1200.5,
+        "the clicked window is wholly in view: {second:?}"
+    );
+    let snapshot = handle.snapshot("g", vec![]);
+    assert_eq!(
+        snapshot.active.as_ref(),
+        Some(&snapshot.entries[1].route),
+        "and focused"
+    );
+}
+
+/// Every accessible name under the first node of `widget`, synthetic
+/// children included.
+fn names_under(root: &ui::headless::InspectionNode, widget: &str) -> Vec<String> {
+    fn semantic(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        out.extend(node.name.clone());
+        for child in &node.children {
+            semantic(child, out);
+        }
+    }
+    fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+        if let Some(semantics) = &node.semantics {
+            semantic(semantics, out);
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(node) = find(root, widget) {
+        walk(node, &mut out);
+    }
+    out
+}
+
+/// A maximized window keeps its bar, so a reader is told of it as of a
+/// restored one: its title and controls, and its search.
+#[test]
+fn a_maximized_windows_bar_and_search_are_in_the_accessibility_tree() {
+    let (mut driver, handle, _) = mount_apps(&["A"]);
+    let route = handle.snapshot("g", vec![]).entries[0].route.clone();
+    settle_still(&mut driver);
+    let restored = driver.inspection();
+    let search = names_under(&restored.root, "WindowSearch");
+    assert!(!search.is_empty(), "a restored window's search is read");
+    dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"maximize","generation":"g","route":route,"maximized":true}),
+    );
+    settle_still(&mut driver);
+    let inspection = driver.inspection();
+    let bar = names_under(&inspection.root, "TabBar");
+    for name in ["A", "Close A", "Restore", "Close"] {
+        assert!(
+            bar.iter().any(|read| read == name),
+            "the maximized window's bar reads {name:?}: {bar:?}"
+        );
+    }
+    assert_eq!(
+        names_under(&inspection.root, "WindowSearch"),
+        search,
+        "the maximized window's search is read as when restored"
+    );
+}
+
+#[test]
+fn a_window_restored_from_maximized_is_in_view() {
+    let (mut driver, handle) = mount_wide();
+    let snapshot = handle.snapshot("g", vec![]);
+    let route = snapshot.entries[1].route.clone();
+    let pan = snapshot.desktop_pan.unwrap();
+    dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"maximize","generation":"g","route":route,"maximized":true}),
+    );
+    settle_still(&mut driver);
+    // The strip is back home while the window fills the display, which
+    // leaves the restored window partly off screen unless it is revealed.
+    // (Where the strip already stays home under a maximized window, the
+    // pan has nothing left to do.)
+    let _ = try_dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"pan","generation":"g","workspace":pan.workspace,"strip":pan.strip,"offset":0.0}),
+    );
+    dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"maximize","generation":"g","route":route,"maximized":false}),
+    );
+    settle_still(&mut driver);
+    let restored = shown_rect(&handle, 1);
+    assert!(
+        restored.x0 >= -0.5 && restored.x1 <= 1200.5,
+        "the restored window's controls are on screen: {restored:?}"
+    );
+}
+
+/// One member's desk in a room whose layout is personal: a tree of its own
+/// (its own ids, its own strip) showing a Notes and a Chat window, on a
+/// screen `width` wide.
+fn personal_desk(seed: u16, width: u32) -> (ui::headless::FrameHarness, DesktopHandle) {
+    let mut minter = IdMinter::new(seed);
+    let tabs = ["Notes", "Chat"]
+        .iter()
+        .map(|title| tab(&mut minter, title))
+        .collect();
+    let tree = seed_tree(&mut minter, "Main", tabs);
+    let (surface, handle) =
+        DesktopSurface::new(tree, seed, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(f64::from(width));
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (width, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    for _ in 0..3 {
+        driver.relayout();
+    }
+    (driver, handle)
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "surface coordinates are a few thousand logical pixels"
+)]
+fn rect_f32(rect: ui::kurbo::Rect) -> [f32; 4] {
+    [
+        rect.x0 as f32,
+        rect.y0 as f32,
+        rect.x1 as f32,
+        rect.y1 as f32,
+    ]
+}
+
+/// What a desk shows that a member's pointer can be relative to, as the
+/// browser runtime lays it out: each shown window by the record it shows
+/// (here, its app's room record) and the shown strip.
+fn pointer_layout(handle: &DesktopHandle) -> tilo_relay_protocol::live::PointerLayout {
+    let shown = handle.shown_tabs();
+    let windows = handle.read(|tree| {
+        shown
+            .iter()
+            .filter_map(|(id, rect)| {
+                let tab = tree
+                    .workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find(|tab| tab.id == *id)?;
+                let TileContent::LocalApp { app_id, .. } = &tab.tile else {
+                    return None;
+                };
+                let record = tilo_relay_protocol::live::LiveRecord {
+                    app: app_id.clone(),
+                    record: String::new(),
+                };
+                Some((record, rect_f32(*rect)))
+            })
+            .collect()
+    });
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a strip's pan is a few thousand logical pixels"
+    )]
+    let strip = handle
+        .shown_strip()
+        .map(|(id, area, pan)| tilo_relay_protocol::live::ShownStrip {
+            id: id.0,
+            area: rect_f32(area),
+            scroll_x: pan as f32,
+        });
+    tilo_relay_protocol::live::PointerLayout { windows, strip }
+}
+
+fn close_to(a: [f32; 2], b: [f32; 2]) -> bool {
+    (a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01
+}
+
+/// Two visitors of a room whose layout is personal, on screens of other
+/// widths: their strips are their own, with ids of their own, so a pointer
+/// over one's empty desktop says where it is beside the nearest window, and
+/// lands as far beside that window on the other's desk. Said in the strip's
+/// coordinates, it never landed anywhere.
+#[test]
+fn a_pointer_over_the_empty_desktop_crosses_personal_layouts_of_other_widths() {
+    use tilo_relay_protocol::live::LivePointer;
+    let (_wide_driver, wide) = personal_desk(7, 1440);
+    let (_narrow_driver, narrow) = personal_desk(9, 1024);
+    let (wide_layout, narrow_layout) = (pointer_layout(&wide), pointer_layout(&narrow));
+    let (wide_strip, narrow_strip) = (wide_layout.strip.unwrap(), narrow_layout.strip.unwrap());
+    assert_ne!(
+        wide_strip.id, narrow_strip.id,
+        "each desk's strip is its own"
+    );
+    let notes = |layout: &tilo_relay_protocol::live::PointerLayout| {
+        layout
+            .windows
+            .iter()
+            .find(|(record, _)| record.app == "so.tilo.notes")
+            .map(|(_, rect)| *rect)
+            .expect("the desk shows its notes")
+    };
+    let (wide_notes, narrow_notes) = (notes(&wide_layout), notes(&narrow_layout));
+    assert!(
+        wide_notes[2] - wide_notes[0] > narrow_notes[2] - narrow_notes[0],
+        "the notes window is wider on the wider screen: {wide_notes:?} {narrow_notes:?}"
+    );
+
+    // In the empty desktop left of the notes window, a third of the way down.
+    let gutter = (wide_notes[0] - wide_strip.area[0]) / 2.0;
+    assert!(
+        gutter > 1.0,
+        "the strip keeps a gutter before its first window"
+    );
+    let third = wide_notes[1] + (wide_notes[3] - wide_notes[1]) / 3.0;
+    let pointer = wide_layout
+        .anchor([wide_notes[0] - gutter, third])
+        .expect("the empty desktop names a window beside it");
+    assert!(
+        matches!(&pointer, LivePointer::Beside { record, .. } if record.app == "so.tilo.notes"),
+        "beside the notes window: {pointer:?}"
+    );
+    let landed = narrow_layout
+        .place(&pointer)
+        .expect("the other desk shows the notes");
+    let expected = [
+        narrow_notes[0] - gutter,
+        narrow_notes[1] + (narrow_notes[3] - narrow_notes[1]) / 3.0,
+    ];
+    assert!(
+        close_to(landed, expected),
+        "as far left of the notes, a third of the way down: {landed:?} {expected:?}"
+    );
+
+    // Over the window itself, the same spot of it.
+    let inside = wide_layout
+        .anchor([wide_notes[0] + 40.0, wide_notes[1] + 30.0])
+        .expect("over the notes");
+    let landed = narrow_layout.place(&inside).expect("the notes are shown");
+    assert!(close_to(
+        landed,
+        [narrow_notes[0] + 40.0, narrow_notes[1] + 30.0]
+    ));
+
+    // What a strip of one's own says reaches nobody else.
+    let on_strip = LivePointer::Strip {
+        strip: wide_strip.id,
+        at: [10.0, 10.0],
+    };
+    assert_eq!(narrow_layout.place(&on_strip), None);
+}
+
+/// On a phone the search palette fits the screen: centred, within its
+/// edges, and as wide as the screen allows rather than its own width.
+#[test]
+fn search_fits_a_phone_screen() {
+    let mut minter = IdMinter::new(7);
+    let tabs = vec![tab(&mut minter, "Notes")];
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::new(Cell::new(0)))));
+    handle.set_viewport_width(390.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (390, 844),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver.relayout();
+    handle.toggle_search();
+    driver.relayout();
+    driver.relayout();
+    let [x, _, width, _] = find(&driver.inspection().root, "CommandPalette")
+        .expect("search is open")
+        .rect;
+    assert!(
+        x >= 0.0 && x + width <= 390.0,
+        "the palette at {x}..{} runs off a 390 px screen",
+        x + width
+    );
+    assert!(
+        ((x + width / 2.0) - 195.0).abs() < 1.0,
+        "and is centred: {x}, {width}"
+    );
+}
+
+/// A wheel goes to the window under the pointer: a window beside it whose
+/// app takes any wheel it is handed does not get it first, so the scroll
+/// view under the pointer scrolls. The browser desktop sends the wheel as
+/// it does, coalesced into its next frame.
+#[test]
+fn a_wheel_scrolls_the_window_under_the_pointer_not_the_one_before_it() {
+    let (mut driver, handle, _) = mount_apps(&["Greedy", "Long"]);
+    settle(&mut driver);
+    driver.set_coalesce_input_frames(true);
+    let tab = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[1].active_tab);
+    let rect = handle
+        .shown_tabs()
+        .iter()
+        .find(|(id, _)| *id == tab)
+        .map(|(_, rect)| *rect)
+        .expect("the scrolling window is shown");
+    let at = rect.center();
+    driver.send(&ui::winit::event::WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: (at.x, at.y).into(),
+    });
+    relayout(&mut driver);
+    let top = |driver: &ui::headless::FrameHarness| {
+        find(&driver.inspection().root, "Scrollable")
+            .map(|node| node.children[0].rect[1])
+            .expect("the scroll view")
+    };
+    let before = top(&driver);
+    for _ in 0..4 {
+        on_clock(EVENT, || {
+            driver.send_host_event(&pixel_wheel(0.0, -120.0));
+            driver.poll_frame().unwrap();
+        });
+    }
+    settle(&mut driver);
+    let after = top(&driver);
+    assert!(
+        after < before - 1.0,
+        "the page under the pointer moved up: its top {before} -> {after}"
+    );
+}
+
+/// An app whose capture offers to open Writer, as Camera offers Photos.
+#[derive(Default)]
+struct OpensWriter {
+    rect: ui::kurbo::Rect,
+}
+
+impl ui::widget::Widget for OpensWriter {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        taffy
+            .new_leaf(ui::taffy::Style {
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn name(&self) -> &'static str {
+        "OpensWriter"
+    }
+
+    fn get_rect(&self) -> ui::kurbo::Rect {
+        self.rect
+    }
+}
+
+impl ui::resources::PublishesResources for OpensWriter {
+    fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<ui::tilo_actions::Resource> {
+        vec![
+            ui::tilo_actions::Resource::new("camera.capture", "camera.capture", "Capture")
+                .with_action(
+                    ui::tilo_actions::remote::ApplicationLaunch::app("so.tilo.writer").spec(
+                        "open-writer",
+                        "Open Writer",
+                        "Open Writer",
+                    ),
+                ),
+        ]
+    }
+}
+
+/// A desk whose Camera window offers to open Writer; any `so.tilo.` app
+/// launches as a window of its own.
+struct OpeningApps;
+
+impl TileSource for OpeningApps {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        if tab.title == "Camera" {
+            return TileHost::new(ui::widget::TileContent::App(Box::new(Hosted(Box::new(
+                OpensWriter::default(),
+            )))));
+        }
+        TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+
+    fn launch(&mut self, workspace: &Workspace, id: u64, app: &str) -> Option<Tab> {
+        Notices(Rc::new(Cell::new(0))).launch(workspace, id, app)
+    }
+}
+
+/// The page desktop: one frame hosting its windows in process, serving them
+/// its own session for the workspace `room`.
+fn serving_desk(
+    room: &str,
+) -> (
+    ui::headless::FrameHarness,
+    DesktopHandle,
+    tilo_desktop_surface::session::Openings,
+) {
+    let mut minter = IdMinter::new(7);
+    let camera = tab(&mut minter, "Camera");
+    let tree = seed_tree(&mut minter, "Desk", vec![camera]);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(OpeningApps));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.set_caller_palette_enabled(false);
+    let (session, openings) = tilo_desktop_surface::session::serve(room, std::sync::Arc::default());
+    driver.set_session_door(
+        ui::RemoteActions::with_host(
+            session,
+            ui::tilo_actions::remote::Caller::local_person("tester").in_room(room),
+        ),
+        Some(room.into()),
+    );
+    driver.relayout();
+    (driver, handle, openings)
+}
+
+/// Camera's "Open Photos" in the browser desktop: a window asks the page's
+/// session to open another app, and the desktop opens it as a window of its
+/// own beside the one that asked. What the desktop refuses to open is said
+/// over the window that asked, never dropped.
+#[test]
+fn a_window_opens_another_app_through_the_desktop_s_session() {
+    let (mut driver, handle, openings) = serving_desk("room");
+    driver
+        .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
+        .expect("the session takes the open");
+    assert_eq!(
+        handle.snapshot("g", vec![]).entries.len(),
+        1,
+        "not yet opened"
+    );
+    assert!(openings.open(&handle, "g", |_, _| Ok(())));
+    driver.idle();
+    driver.relayout();
+    let snapshot = handle.snapshot("g", vec![]);
+    assert_eq!(snapshot.entries.len(), 2, "{:?}", snapshot.entries);
+    assert_eq!(snapshot.entries[1].label, "writer");
+    assert_eq!(
+        snapshot.active.as_ref().unwrap(),
+        &snapshot.entries[1].route,
+        "the opened app is in front"
+    );
+    assert_eq!(driver.refusal_shown(), None);
+
+    let (mut driver, handle, openings) = serving_desk("room");
+    driver
+        .invoke_published("camera.capture", "open-writer", &serde_json::Map::new())
+        .expect("the session takes the open");
+    openings.open(&handle, "g", |_, _| {
+        Err(ui::tilo_actions::remote::ActionHostError::NotPermitted)
+    });
+    driver.idle();
+    assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
+    assert!(
+        driver.refusal_shown().is_some(),
+        "the refusal is said over the window that asked"
+    );
+}
+
+/// An app whose page fills its window and scrolls a document that can be
+/// long or empty, as Speed Test's and every writing surface's does.
+struct FillingPage(ui::widget::Scrollable);
+
+impl ui::widget::Decorator for FillingPage {
+    type Inner = ui::widget::Scrollable;
+
+    fn inner(&self) -> &ui::widget::Scrollable {
+        &self.0
+    }
+
+    fn inner_mut(&mut self) -> &mut ui::widget::Scrollable {
+        &mut self.0
+    }
+}
+
+impl ui::widget::AppWidget for FillingPage {
+    fn app_kind(&self) -> ui::widget::AppKind {
+        ui::widget::AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Filling"
+    }
+    fn app_icon(&self) -> ui::widget::IconDescriptor {
+        ui::widget::IconDescriptor::Glyph("F")
+    }
+}
+
+/// Every window but the one named `Filling`, which shows `text`.
+struct FillingTiles(ui::LocalState<String>);
+
+impl TileSource for FillingTiles {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        if tab.title != "Filling" {
+            return TileHost::new(ui::widget::TileContent::Notice {
+                title: tab.title.clone(),
+                detail: String::new(),
+            });
+        }
+        let page = ui::widget::Scrollable::new_vertical()
+            .fill_parent_height()
+            .with_content_min_viewport_height()
+            .with_child(Box::new(
+                ui::widget::TextInput::from_state(&self.0)
+                    .multiline(true)
+                    .with_id("filling-editor"),
+            ));
+        TileHost::new(ui::widget::TileContent::App(Box::new(FillingPage(page))))
+    }
+
+    fn launch(&mut self, _: &Workspace, _: u64, _: &str) -> Option<Tab> {
+        None
+    }
+}
+
+/// Where each window's app is drawn: its tile.
+fn windows(driver: &ui::headless::FrameHarness) -> Vec<ui::vello::kurbo::Rect> {
+    fn walk(node: &ui::headless::InspectionNode, out: &mut Vec<ui::vello::kurbo::Rect>) {
+        if node.widget == "TileHost" {
+            let [x, y, w, h] = node.rect;
+            out.push(ui::vello::kurbo::Rect::new(x, y, x + w, y + h));
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut tiles = Vec::new();
+    walk(&driver.inspection().root, &mut tiles);
+    tiles
+}
+
+/// A window whose page fills it never makes the strip taller than its band,
+/// however long its document, and fills the window again once the document
+/// is empty. The row of windows and each window's tile took their content's
+/// height as their minimum, so a long document raised every window past the
+/// screen. A page that fills at least its viewport then kept that height as
+/// its floor, and with the page and its content adjusting a pass apart they
+/// traded the old and new heights without settling, so the desktop stopped
+/// drawing.
+#[test]
+fn a_filling_page_keeps_its_strip_to_the_band_and_settles() {
+    let text = ui::LocalState::new("A line of the document.\n".repeat(120));
+    let mut minter = IdMinter::new(7);
+    let tabs = ["Notes", "Filling", "Scratch"]
+        .iter()
+        .map(|title| tab(&mut minter, title))
+        .collect();
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(FillingTiles(text.clone())));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver
+        .relayout_at((1200, 800))
+        .expect("the desktop with a long document settles");
+    let long = *driver.targets().get("filling-editor").unwrap();
+    let tiles = windows(&driver);
+    assert_eq!(tiles.len(), 3, "{tiles:?}");
+    for tile in &tiles {
+        assert!(
+            tile.y1 <= 800.0,
+            "no window reaches past the band for a long document: {tile:?} ({long:?})"
+        );
+    }
+
+    text.set(String::new());
+    for _ in 0..3 {
+        driver
+            .relayout_at((1200, 800))
+            .expect("the desktop settles once the document is empty");
+    }
+    let short = *driver.targets().get("filling-editor").unwrap();
+    let tiles = windows(&driver);
+    for tile in &tiles {
+        assert!(
+            tile.y1 <= 800.0,
+            "the height the long document filled is no floor once it is gone: {tile:?}"
+        );
+    }
+    let filling = tiles
+        .iter()
+        .find(|tile| tile.contains(short.origin()))
+        .expect("the editor is in a window");
+    assert!(
+        (short.height() - filling.height()).abs() < 1.0,
+        "the empty page fills its window: {short:?} in {filling:?}"
+    );
+}
+
+/// Windows on records: each record launch opens its app on that record,
+/// and the record's window, once open, is the one shown again.
+struct RecordWindows {
+    opened: Rc<std::cell::RefCell<Vec<(u64, String)>>>,
+}
+
+impl TileSource for RecordWindows {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+
+    fn launch(&mut self, _: &Workspace, id: u64, app: &str) -> Option<Tab> {
+        let (app, record) = tilo_desktop_surface::session::launched_record(app)?;
+        self.opened.borrow_mut().push((id, record.to_owned()));
+        Some(Tab {
+            id,
+            title: record.into(),
+            tile: TileContent::LocalApp {
+                app_id: app.into(),
+                label: record.into(),
+                note: String::new(),
+            },
+            app_title: None,
+        })
+    }
+
+    fn showing(&self, app: &str) -> Option<u64> {
+        let (_, record) = tilo_desktop_surface::session::launched_record(app)?;
+        self.opened
+            .borrow()
+            .iter()
+            .find(|(_, opened)| opened == record)
+            .map(|(tab, _)| *tab)
+    }
+}
+
+/// A shared window's message opens the resource it shares: the page's
+/// session opens the resource's app on its record, and asked again shows
+/// that window instead of a second one. A resource in another workspace
+/// is not this desktop's to open.
+#[test]
+fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
+    use ui::tilo_actions::remote::{
+        APPLICATION_OPEN_ACTION, ActionHost as _, Caller, InvokeRequest, application_record_target,
+    };
+    let mut minter = IdMinter::new(7);
+    let chat = tab(&mut minter, "Chat");
+    let tree = seed_tree(&mut minter, "Desk", vec![chat]);
+    let opened = Rc::default();
+    let (surface, handle) = DesktopSurface::new(
+        tree,
+        7,
+        Box::new(RecordWindows {
+            opened: Rc::clone(&opened),
+        }),
+    );
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1200, 800),
+        ui::Theme::dark(),
+    );
+    let (session, openings) =
+        tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
+    let caller = Caller::local_person("tester").in_room("room");
+    let open = |room: &str| -> InvokeRequest {
+        serde_json::from_value(serde_json::json!({
+            "invocation": ui::tilo_actions::InvocationId::new(),
+            "target": application_record_target(room, "so.tilo.notes", "n:plan", "plan", APPLICATION_OPEN_ACTION),
+        }))
+        .unwrap()
+    };
+    let refused = session.invoke(&caller, open("elsewhere"));
+    drop(refused);
+    assert!(
+        !openings.open(&handle, "g", |_, _| Ok(())),
+        "nothing asked of here"
+    );
+
+    for _ in 0..2 {
+        drop(session.invoke(&caller, open("room")));
+        assert!(openings.open(&handle, "g", |app, _| {
+            assert_eq!(app, "so.tilo.notes", "admitted as its app");
+            Ok(())
+        }));
+        driver.relayout();
+    }
+    assert_eq!(opened.borrow().len(), 1, "one window on the record");
+    let snapshot = handle.snapshot("g", vec![]);
+    assert_eq!(snapshot.entries.len(), 2, "{:?}", snapshot.entries);
+    assert_eq!(snapshot.entries[1].label, "n:plan");
+    assert_eq!(snapshot.active.as_ref(), Some(&snapshot.entries[1].route));
 }

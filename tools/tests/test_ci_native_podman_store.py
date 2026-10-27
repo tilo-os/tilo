@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "os/dev/ci-native-podman-store.sh"
@@ -50,7 +51,7 @@ PY_STUB""")
 
     def run_helper(self):
         return subprocess.run(["bash", str(SCRIPT)], env=self.environment,
-                              capture_output=True, text=True, timeout=10)
+                              capture_output=True, text=True, timeout=HANG_BOUND)
 
     def exported(self):
         return dict(line.split("=", 1) for line in (self.work / "env").read_text().splitlines())

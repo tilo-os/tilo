@@ -45,7 +45,6 @@ pub(crate) struct SnapshotWrite {
 /// What [`WorkspaceStore::replace_channel`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Replaced {
-    /// Entries removed.
     pub removed: usize,
     /// Entries left in the channel, the snapshot's own included.
     pub kept: usize,
@@ -127,6 +126,36 @@ impl WorkspaceStore {
         }
         lineages.sort();
         Ok(lineages)
+    }
+
+    /// Every channel this store retains entries of.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the retained lineages cannot be listed.
+    #[cfg(feature = "agents")]
+    pub(crate) fn retained_channels(
+        &self,
+    ) -> Result<std::collections::BTreeSet<[u8; 32]>, StoreError> {
+        let v2 = self.root.join(RETAINED_DIR).join("v2");
+        let mut channels = std::collections::BTreeSet::new();
+        let entries = match fs::read_dir(&v2) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(channels),
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
+            let name = entry?.file_name();
+            if let Some(channel) = name
+                .to_str()
+                .and_then(|name| name.split_once('-'))
+                .and_then(|(_, channel)| hex::decode(channel).ok())
+                .and_then(|channel| <[u8; 32]>::try_from(channel).ok())
+            {
+                channels.insert(channel);
+            }
+        }
+        Ok(channels)
     }
 
     /// Every entry retained for `channel`, over all its authors. Reads only
@@ -226,6 +255,55 @@ impl WorkspaceStore {
             }
         }
         Ok(outcome)
+    }
+}
+
+/// Where [`WorkspaceStore::archive_channel`] keeps what it takes out of
+/// replay, under the retained directory, beside the `v2` replay reads.
+pub(crate) const ARCHIVE_DIR: &str = "archive-v1";
+
+impl WorkspaceStore {
+    /// Take every entry of `channel` out of what any replay reads, and keep
+    /// it in a new archive under [`ARCHIVE_DIR`]: a room's document started
+    /// over from a base at an admission, and the history before it is no
+    /// newcomer's to read, yet stays as it was for those who held it. A
+    /// lineage holding continuity receipts is left as it is. Must run on the
+    /// persistence owner. Returns how many entries it archived.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a link, write or directory barrier fails; a
+    /// lineage is switched only once its entries are linked into the archive.
+    pub(crate) fn archive_channel(&self, channel: &[u8; 32]) -> Result<usize, StoreError> {
+        self.tail_cache.invalidate();
+        self.forget_channel_listing(channel);
+        let archive = self
+            .root
+            .join(RETAINED_DIR)
+            .join(ARCHIVE_DIR)
+            .join(hex::encode(rand::random::<[u8; 16]>()));
+        let mut archived = 0_usize;
+        for (lineage, _) in self.channel_lineages(channel)? {
+            let Some(active) = current(&lineage)? else {
+                continue;
+            };
+            if has_sidecars(&active)? {
+                continue;
+            }
+            let names = record_names(&active)?;
+            if names.is_empty() {
+                continue;
+            }
+            let kept = archive.join(lineage.file_name().unwrap_or_default());
+            fs::create_dir_all(&kept)?;
+            for name in &names {
+                fs::hard_link(active.join(name), kept.join(name))?;
+            }
+            sync_dir(&kept)?;
+            rewrite(self, &lineage, &[], &[], 0)?;
+            archived = archived.saturating_add(names.len());
+        }
+        Ok(archived)
     }
 }
 
@@ -377,6 +455,51 @@ mod tests {
             .unwrap();
         assert!(replayed.contains(&snapshot));
         assert_eq!(replayed.len(), 4);
+    }
+
+    #[test]
+    fn an_archived_channel_is_kept_and_no_longer_retained() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+        store
+            .retain_checkpoint(&[9; 32], &frame(5, true, b"before"))
+            .unwrap();
+        store
+            .retain_delta(&[9; 32], 1, &frame(1, false, b"member"))
+            .unwrap();
+
+        assert_eq!(store.archive_channel(&[9; 32]).unwrap(), 2);
+        assert!(store.channel_entries(&[9; 32]).unwrap().is_empty());
+        assert!(
+            WorkspaceStore::open(tmp.path(), 7, false)
+                .unwrap()
+                .load_retained()
+                .unwrap()
+                .is_empty()
+        );
+        let mut kept = Vec::new();
+        for archive in fs::read_dir(store.root().join(RETAINED_DIR).join(ARCHIVE_DIR)).unwrap() {
+            for lineage in fs::read_dir(archive.unwrap().path()).unwrap() {
+                for entry in fs::read_dir(lineage.unwrap().path()).unwrap() {
+                    kept.push(fs::read(entry.unwrap().path()).unwrap());
+                }
+            }
+        }
+        kept.sort();
+        let mut expected = vec![frame(5, true, b"before"), frame(1, false, b"member")];
+        expected.sort();
+        assert_eq!(kept, expected);
+
+        store
+            .retain_checkpoint(&[9; 32], &frame(5, true, b"base"))
+            .unwrap();
+        let bodies: Vec<Vec<u8>> = store
+            .channel_entries(&[9; 32])
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.body)
+            .collect();
+        assert_eq!(bodies, vec![b"base".to_vec()]);
     }
 
     #[test]

@@ -116,7 +116,6 @@ impl LifetimeKey<'_> {
         match self.0 {
             Lifetime::UntilRevoked => (0, "", 0),
             Lifetime::Session(session) => (1, session, 0),
-            Lifetime::Task(task) => (2, task, 0),
             Lifetime::Until(at) => (3, "", *at),
             Lifetime::Once => (4, "", 0),
         }
@@ -126,7 +125,6 @@ impl LifetimeKey<'_> {
         match self.0 {
             Lifetime::UntilRevoked => String::new(),
             Lifetime::Session(_) => " (this session)".to_owned(),
-            Lifetime::Task(task) => format!(" (while task {task} is open)"),
             Lifetime::Until(at) => format!(" (until {at} ms)"),
             Lifetime::Once => " (once)".to_owned(),
         }

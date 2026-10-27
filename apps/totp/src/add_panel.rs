@@ -149,11 +149,31 @@ struct Values {
     secret: LocalState<String>,
     period: LocalState<String>,
     algorithm: LocalState<usize>,
-    digits: LocalState<usize>,
+    /// The code's digit count itself, not a segment index: an account or a
+    /// setup link may carry a count the form does not offer by default.
+    digits: LocalState<u8>,
+    /// The digit count of the account or link last put in the form, which
+    /// stays on offer after another count is chosen.
+    loaded_digits: LocalState<u8>,
 }
 
 /// The digit counts the form offers, in selector order.
 const DIGITS: [u8; 2] = [6, 8];
+
+/// The digit counts the form offers: the usual ones, and in its place among
+/// them each of `extra` that is another count an authenticator can compute,
+/// so opening an account or reading a setup link never turns its 7-digit
+/// codes into 6-digit ones.
+fn digit_choices(extra: &[u8]) -> Vec<u8> {
+    let mut counts = DIGITS.to_vec();
+    for count in extra {
+        if (4..=10).contains(count) && !counts.contains(count) {
+            counts.push(*count);
+        }
+    }
+    counts.sort_unstable();
+    counts
+}
 /// The period a new account starts with, in seconds.
 const DEFAULT_PERIOD: &str = "30";
 
@@ -166,7 +186,8 @@ impl Values {
             secret: LocalState::new(String::new()),
             period: LocalState::new(DEFAULT_PERIOD.to_owned()),
             algorithm: LocalState::new(0),
-            digits: LocalState::new(0),
+            digits: LocalState::new(DIGITS[0]),
+            loaded_digits: LocalState::new(DIGITS[0]),
         }
     }
 
@@ -177,7 +198,8 @@ impl Values {
         self.wipe_secret();
         self.period.set(DEFAULT_PERIOD.to_owned());
         self.algorithm.set(Algorithm::Sha1.index());
-        self.digits.set(0);
+        self.digits.set(DIGITS[0]);
+        self.loaded_digits.set(DIGITS[0]);
     }
 
     /// Clear the key from memory, not merely from the field.
@@ -491,6 +513,11 @@ fn text_field(
         .with_id(id.test_id())
         .with_kind(kind)
         .with_placeholder(placeholder);
+    // The secret key grants every future code, and the desktop may be shared
+    // or watched: it stays masked until someone asks to see it.
+    if id == FieldId::Secret {
+        input = input.with_secret(true);
+    }
     if sheet.borrow().focus == Some(id) {
         input.set_focus(true);
     }
@@ -607,7 +634,15 @@ fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) 
             .map(|algorithm| algorithm.as_str().to_owned())
             .collect();
         let algorithm = values.algorithm.clone();
-        let counts: Vec<String> = DIGITS.iter().map(u8::to_string).collect();
+        let offered = digit_choices(&[
+            values.loaded_digits.with(|count| *count),
+            values.digits.with(|count| *count),
+        ]);
+        let counts: Vec<String> = offered.iter().map(u8::to_string).collect();
+        let chosen = offered
+            .iter()
+            .position(|count| values.digits.with(|current| current == count))
+            .unwrap_or(0);
         let digits = values.digits.clone();
         // The two segmented choices share a line, so the form stays within a
         // window of ordinary height with the section open.
@@ -621,12 +656,11 @@ fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) 
             row = row.push(part);
         }
         row = row.push(Box::new(Spacer::new()));
-        for part in choice(
-            &t("totp-add-label-digits"),
-            &counts,
-            values.digits.with(|selected| *selected),
-            move |index| digits.set(index),
-        ) {
+        for part in choice(&t("totp-add-label-digits"), &counts, chosen, move |index| {
+            if let Some(count) = offered.get(index) {
+                digits.set(*count);
+            }
+        }) {
             row = row.push(part);
         }
         items.push(Box::new(row));
@@ -918,9 +952,8 @@ impl AddAccountPanel {
         }
         self.values.period.set(account.period.to_string());
         self.values.algorithm.set(account.algorithm.index());
-        self.values
-            .digits
-            .set(usize::from(account.digits == DIGITS[1]));
+        self.values.digits.set(account.digits);
+        self.values.loaded_digits.set(account.digits);
     }
 
     pub fn take_event(&mut self) -> Option<AddPanelEvent> {
@@ -1040,8 +1073,6 @@ impl AddAccountPanel {
         }
     }
 
-    // ---- account building / actions ------------------------------------
-
     /// Build an account from the current field values, or the problem that
     /// stops it being saved.
     fn build_account(&self) -> Result<Account, Problem> {
@@ -1086,9 +1117,8 @@ impl AddAccountPanel {
             .get(self.values.algorithm.with(|selected| *selected))
             .copied()
             .unwrap_or_default();
-        let digits = DIGITS
-            .get(self.values.digits.with(|selected| *selected))
-            .copied()
+        let digits = Some(self.values.digits.with(|count| *count))
+            .filter(|count| (4..=10).contains(count))
             .unwrap_or(DIGITS[0]);
         let color = (issuer.len().wrapping_add(label.len()) % 7) as u8;
         Ok(Account {
@@ -1196,6 +1226,9 @@ impl AddAccountPanel {
             .map(|problem| problem.message.clone())
     }
 }
+
+#[cfg(test)]
+mod file_picker_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -1313,7 +1346,6 @@ pub(crate) mod tests {
             if body.contains(target.center()) {
                 return;
             }
-            // Footer and header actions lie outside the scrollable form.
             if matches!(name, "Cancel" | "Add account" | "Close") {
                 return;
             }
@@ -1360,6 +1392,32 @@ pub(crate) mod tests {
         app.effect(&TotpEffect::AddAccount).unwrap();
         settle(&mut app);
         app
+    }
+
+    #[test]
+    fn secret_key_is_masked_until_revealed_on_request() {
+        let mut app = opened((1280, 900));
+        type_into(&mut app, "totp-secret-key", "JBSWY3DPEHPK3PXP");
+        let names = |app: &mut Hosted| -> Vec<String> {
+            nodes(app)
+                .into_iter()
+                .filter_map(|node| node.name)
+                .collect()
+        };
+        assert!(
+            names(&mut app).iter().any(|name| name == "Show password"),
+            "the secret key is masked and offers a show control"
+        );
+        click(&mut app, "Show password");
+        assert!(
+            names(&mut app).iter().any(|name| name == "Hide password"),
+            "showing the key is a request that can be taken back"
+        );
+        assert_eq!(
+            panel(&mut app, |p| p.field_snapshot().2),
+            "JBSWY3DPEHPK3PXP",
+            "masking hides the key on screen, not from the form"
+        );
     }
 
     #[test]
@@ -1635,6 +1693,44 @@ pub(crate) mod tests {
             app.state().list().iter().all(|a| a.secret.is_empty()),
             "seeds never reach shared document"
         );
+    }
+
+    /// A setup link or an account may carry a digit count the form does not
+    /// offer by default. Reading it, choosing another and coming back, and
+    /// editing such an account all keep the count, so its codes stay right.
+    #[test]
+    fn a_digit_count_beyond_six_and_eight_survives_the_form() {
+        let mut app = opened((1280, 900));
+        panel(&mut app, |p| {
+            p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&digits=7");
+        });
+        settle(&mut app);
+        assert!(panel(&mut app, |p| p.sheet.borrow().advanced_open));
+        assert_eq!(
+            panel(&mut app, |p| p.build_account().unwrap()).digits,
+            7,
+            "a 7-digit setup link makes 7-digit codes"
+        );
+        click(&mut app, "8");
+        assert_eq!(panel(&mut app, |p| p.build_account().unwrap()).digits, 8);
+        click(&mut app, "7");
+        assert_eq!(panel(&mut app, |p| p.build_account().unwrap()).digits, 7);
+        let count = app.state().list().len();
+        app.harness().key("Enter");
+        settle(&mut app);
+        let added = app.state().list();
+        assert_eq!(added.len(), count + 1);
+        assert!(
+            added.iter().any(|a| a.issuer == "Acme" && a.digits == 7),
+            "the saved account keeps its 7 digits"
+        );
+
+        let mut ten = crate::model::demo_accounts().remove(0);
+        ten.digits = 10;
+        panel(&mut app, |p| p.open_for_edit(&ten));
+        settle(&mut app);
+        let edited = panel(&mut app, |p| p.build_account().unwrap());
+        assert_eq!(edited.digits, 10, "editing a name leaves the digits alone");
     }
 
     #[test]

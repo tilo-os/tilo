@@ -87,7 +87,6 @@ mod tests {
             fold("Cœur Straße Æsir Côte d’Ivoire"),
             "coeur strasse aesir cote d'ivoire"
         );
-        // Canonically equivalent spellings fold alike.
         assert_eq!(fold("e\u{301}"), fold("é"));
     }
 

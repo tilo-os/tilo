@@ -60,7 +60,6 @@ pub type IdentityKey = [u8; 32];
 /// The kind of access being attempted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
-    /// `open` for reading, or a `read`.
     Read,
     /// `open` for writing, `write`, `create`, `truncate`, unlink, …
     Write,
@@ -72,11 +71,9 @@ pub enum Access {
 /// not `/docsxyz`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AclEntry {
-    /// Identity this grant is for.
     pub identity: IdentityKey,
     /// Path subtree the grant covers.
     pub path_prefix: String,
-    /// May read within the subtree.
     pub read: bool,
     /// May write within the subtree.
     pub write: bool,
@@ -473,7 +470,6 @@ impl AclHandle {
         self.acl.read().map_err(|_| ())
     }
 
-    /// A handle over `acl`.
     pub fn new(acl: WorkspaceAcl) -> Self {
         let (revision_watch, _) = tokio::sync::watch::channel(0_u64);
         Self {
@@ -669,13 +665,11 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn permits_follows_grants_restrictions_and_capabilities_by_path_component() {
-        // Phase `empty_acl_denies_everyone`.
         {
             let acl = WorkspaceAcl::new();
             assert!(!acl.permits(&ALICE, "/anything", Access::Read));
             assert!(!acl.permits(&ALICE, "/", Access::Write));
         }
-        // Phase `read_grant_allows_read_not_write`.
         {
             let mut acl = WorkspaceAcl::new();
             acl.grant_read(ALICE, "/docs");
@@ -685,7 +679,6 @@ mod tests {
             // Bob has no grant at all.
             assert!(!acl.permits(&BOB, "/docs/report.md", Access::Read));
         }
-        // Phase `prefix_respects_component_boundary`.
         {
             let mut acl = WorkspaceAcl::new();
             acl.grant_read(ALICE, "/doc");
@@ -694,7 +687,6 @@ mod tests {
             // Not a subtree of "/doc" — must not leak.
             assert!(!acl.permits(&ALICE, "/document", Access::Read));
         }
-        // Phase `root_prefix_covers_all`.
         {
             let mut acl = WorkspaceAcl::new();
             acl.grant_read_write(ALICE, "/");

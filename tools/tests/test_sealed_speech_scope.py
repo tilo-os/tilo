@@ -3,6 +3,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from hang import HANG_BOUND
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "release" / "qualify_sealed_speech_scope.py"
@@ -16,7 +17,7 @@ class SealedSpeechScopeTests(unittest.TestCase):
              "attention expectation requires actual worker diagnostics"),
         ]:
             result = subprocess.run([sys.executable, str(SCRIPT), *options],
-                                    capture_output=True, text=True, timeout=10)
+                                    capture_output=True, text=True, timeout=HANG_BOUND)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(error, result.stderr)
             self.assertNotIn("SEALED_WORKER_SCOPE_BEFORE", result.stdout)
@@ -32,7 +33,7 @@ class SealedSpeechScopeTests(unittest.TestCase):
             with self.subTest(options=options):
                 result = subprocess.run(
                     [sys.executable, str(SCRIPT), "--whisper-public-review", *options],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True, text=True, timeout=HANG_BOUND,
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("public Whisper review excludes", result.stderr)
@@ -41,7 +42,7 @@ class SealedSpeechScopeTests(unittest.TestCase):
     def test_alternate_public_fixture_requires_explicit_review(self):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--case", "de_de-0"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=HANG_BOUND,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("explicit public review required", result.stderr)
@@ -52,7 +53,7 @@ class SealedSpeechScopeTests(unittest.TestCase):
             with self.subTest(model=model):
                 result = subprocess.run(
                     [sys.executable, str(SCRIPT), "--whisper-model", model],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True, text=True, timeout=HANG_BOUND,
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("alternate Whisper model requires explicit public review", result.stderr)
@@ -61,7 +62,7 @@ class SealedSpeechScopeTests(unittest.TestCase):
     def test_allocator_override_requires_public_review_before_execution(self):
         result = subprocess.run(
             [sys.executable, str(SCRIPT), "--whisper-allocator", "default"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=HANG_BOUND,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("alternate Whisper allocator requires explicit public review", result.stderr)

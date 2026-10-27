@@ -45,7 +45,6 @@ pub struct RunGroup {
 }
 
 impl RunGroup {
-    /// The group of shortcut run `run`.
     #[must_use]
     pub fn shortcut(run: RunId) -> Self {
         Self {
@@ -54,12 +53,13 @@ impl RunGroup {
         }
     }
 
-    /// The group of the agent's run of workspace task `task`.
+    /// The group of an agent's run of an issue, by the id its changes carry
+    /// (`runtime_collab::task_run_group`).
     #[must_use]
-    pub fn task(task: &str) -> Self {
+    pub fn task(group: &str) -> Self {
         Self {
             kind: ui::history_source::steps::TASK_RUN,
-            id: task.to_owned(),
+            id: group.to_owned(),
         }
     }
 }
@@ -157,6 +157,7 @@ pub fn record_run_steps(
         match &finished.report.outcome {
             RunOutcome::Completed => "completed".to_string(),
             RunOutcome::Failed { path, failure } => format!("stopped at {path}: {failure}"),
+            RunOutcome::Cancelled { at } => format!("stopped at {at}"),
         }
     );
     ui::record_run_with_details(
@@ -170,10 +171,9 @@ pub fn record_run_steps(
     )
 }
 
-/// Record the agent's run of a workspace task that `ended` in
-/// `coordinator`, made of `steps`, so Activity lists it under the task's
-/// title, attributed to the agent and the person it worked for, and the Task
-/// Center can undo it whole. `None` when there are no steps. The
+/// Record the agent's run of an issue that `ended` in `coordinator`, made of
+/// `steps`, so Activity lists it under the issue's title, attributed to the
+/// agent and the person it worked for, and undoes it whole. `None` when there are no steps. The
 /// transaction is left open for the caller to commit.
 pub fn record_task_run_steps(
     coordinator: &mut AutoCommit,
@@ -190,7 +190,7 @@ pub fn record_task_run_steps(
         Some(&decision),
         steps,
     )?;
-    ui::history_source::runs::set_run_task(coordinator, &key, &ended.task_id);
+    ui::history_source::runs::set_run_task(coordinator, &key, &ended.group);
     Some(key)
 }
 

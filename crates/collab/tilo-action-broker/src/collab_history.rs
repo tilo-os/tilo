@@ -11,6 +11,10 @@
 //! Layout: `<root>/<artifact uuid>.ops`, a sequence of records
 //! `len (u32 LE) || postcard(SignedOp)`. The index (seq → offset) is rebuilt
 //! by scanning on first use; a torn final record from a crash is cut off.
+//! Beside each log, `<artifact uuid>.room` names the room whose members may
+//! page through it, and `<artifact uuid>.record` the record it is: room, app
+//! and record id, one per line, so a later session still knows which
+//! records of an app this device holds in a room.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -153,6 +157,34 @@ impl ArtifactLog {
 pub struct CollabHistoryStore {
     root: PathBuf,
     logs: HashMap<ArtifactId, ArtifactLog>,
+    /// The `.record` files of the store, read once on first use and kept
+    /// with every binding after.
+    records: Option<HashMap<ArtifactId, HeldRecord>>,
+}
+
+/// The record an artifact's history is, as its `.record` file says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HeldRecord {
+    room: String,
+    app_id: String,
+    record_id: String,
+}
+
+impl HeldRecord {
+    fn encode(&self) -> String {
+        format!("{}\n{}\n{}", self.room, self.app_id, self.record_id)
+    }
+
+    fn decode(text: &str) -> Option<Self> {
+        let mut lines = text.split('\n');
+        let (room, app_id, record_id) = (lines.next()?, lines.next()?, lines.next()?);
+        let held = Self {
+            room: room.to_owned(),
+            app_id: app_id.to_owned(),
+            record_id: record_id.to_owned(),
+        };
+        (lines.next().is_none() && !room.is_empty() && !app_id.is_empty()).then_some(held)
+    }
 }
 
 impl CollabHistoryStore {
@@ -171,14 +203,11 @@ impl CollabHistoryStore {
         Ok(Self {
             root,
             logs: HashMap::new(),
+            records: None,
         })
     }
 
     /// The session store under the launcher-provided state root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `XDG_STATE_HOME` is absent or unusable.
     #[cfg(not(test))]
     pub fn open_for_session() -> std::io::Result<Self> {
         let state = tilo_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
@@ -241,10 +270,6 @@ impl CollabHistoryStore {
     /// Remember that `artifact`'s history belongs to the room `cluster_id`,
     /// beside its log, so a later session still knows which room's members
     /// may page through it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the I/O error of writing the binding.
     pub fn bind_room(&mut self, artifact: ArtifactId, cluster_id: &str) -> std::io::Result<()> {
         let path = self.room_path(artifact);
         if fs::read_to_string(&path).is_ok_and(|bound| bound == cluster_id) {
@@ -275,11 +300,87 @@ impl CollabHistoryStore {
         self.root.join(format!("{}.room", artifact.0))
     }
 
-    /// One scrollback page from durable history.
+    fn record_path(&self, artifact: ArtifactId) -> PathBuf {
+        self.root.join(format!("{}.record", artifact.0))
+    }
+
+    /// The records this store holds history of, read from disk on first
+    /// use. A file that does not parse (torn by a crash) names no record.
+    fn held_records(&mut self) -> &mut HashMap<ArtifactId, HeldRecord> {
+        let root = &self.root;
+        self.records.get_or_insert_with(|| {
+            let Ok(entries) = fs::read_dir(root) else {
+                return HashMap::new();
+            };
+            entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    if path
+                        .extension()
+                        .is_none_or(|extension| extension != "record")
+                    {
+                        return None;
+                    }
+                    let artifact = uuid::Uuid::parse_str(path.file_stem()?.to_str()?).ok()?;
+                    let held = HeldRecord::decode(&fs::read_to_string(&path).ok()?)?;
+                    Some((ArtifactId(artifact), held))
+                })
+                .collect()
+        })
+    }
+
+    /// Remember that `artifact`'s history is the record `record_id` of the
+    /// app `app_id` in the room `cluster_id` ([`Self::bind_room`] included),
+    /// so a later session still knows the records it holds there
+    /// ([`Self::records_in`]).
     ///
     /// # Errors
     ///
-    /// Returns the I/O error of reading the log.
+    /// Returns the I/O error of writing the binding.
+    pub fn bind_record(
+        &mut self,
+        artifact: ArtifactId,
+        cluster_id: &str,
+        app_id: &str,
+        record_id: &str,
+    ) -> std::io::Result<()> {
+        let held = HeldRecord {
+            room: cluster_id.to_owned(),
+            app_id: app_id.to_owned(),
+            record_id: record_id.to_owned(),
+        };
+        if self.held_records().get(&artifact) == Some(&held) {
+            return Ok(());
+        }
+        self.bind_room(artifact, cluster_id)?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(self.record_path(artifact))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(held.encode().as_bytes())?;
+        file.sync_data()?;
+        self.held_records().insert(artifact, held);
+        Ok(())
+    }
+
+    /// The records of the app `app_id` in the room `cluster_id` this store
+    /// holds history of, this session or an earlier one.
+    pub fn records_in(&mut self, app_id: &str, cluster_id: &str) -> Vec<String> {
+        self.held_records()
+            .values()
+            .filter(|held| held.app_id == app_id && held.room == cluster_id)
+            .map(|held| held.record_id.clone())
+            .collect()
+    }
+
+    /// One scrollback page from durable history.
     pub fn page_before(
         &mut self,
         artifact: ArtifactId,
@@ -409,7 +510,10 @@ mod tests {
         };
         for seq in 101..=130 {
             let envelope = signed(&key, artifact, seq, sealed);
-            channels.record_history("room-a", &envelope);
+            channels.record_history(
+                &crate::route::CrdtRoute::record("so.tilo.notes", "room-a", "page"),
+                &envelope,
+            );
             channels.state_for(artifact).record_validated_op(envelope);
         }
         let (page, exhausted) = channels.scrollback_page(artifact, 131, 10);

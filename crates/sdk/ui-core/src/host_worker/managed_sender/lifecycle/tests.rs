@@ -308,8 +308,6 @@ fn managed_sender_lifecycle_uncertain_actual_barrier_sends_nothing_and_reopens_o
         Err(Failure::Busy)
     ));
     assert!(sender.active.iter().all(Option::is_none));
-    // Simulated process loss after rename: the existing-only reader performs
-    // its genuine reconciliation barrier before it can expose this original row.
     drop(sender);
     drop(cache);
     let (mut reopened, _cache) = reopen(root.path());

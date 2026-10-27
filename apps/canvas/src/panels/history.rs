@@ -88,7 +88,6 @@ fn ago(time_ms: i64) -> String {
     ui::widget::history::format_relative_time(at, ui::time::wall())
 }
 
-/// The panel.
 pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let versions = cx.history(LISTED);
     let tools = tools.clone();

@@ -20,7 +20,6 @@ fn binary_part() -> Vec<u8> {
     bytes
 }
 
-/// `package` with `extra` parts appended.
 fn with_parts(package: &[u8], extra: &[(&str, &[u8])]) -> Vec<u8> {
     let mut source = zip::ZipArchive::new(Cursor::new(package)).unwrap();
     let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));

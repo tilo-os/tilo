@@ -308,7 +308,6 @@ fn live_render_shows_real_tiles_and_mid_zoom_never_blanks() {
         let region = map_region();
         let base_zoom = app.zoom_for_verify();
 
-        // Load the base-zoom imagery.
         let _ = pump_frames_until(
             &mut app,
             Duration::from_secs(25),

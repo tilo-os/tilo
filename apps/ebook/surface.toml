@@ -13,6 +13,7 @@ fields = [
   { path = "entries.*.subject", type = "String" },
   { path = "entries.*.added", type = "u64", readonly = true },
   { path = "entries.*.content", type = "Bytes", readonly = true },
+  { path = "entries.*.index", type = "Bytes", readonly = true },
   { path = "progress", type = "Map<Progress>" },
   { path = "settings", type = "Settings", stored = "record" },
   { path = "settings.font_scale", type = "f32" },
@@ -50,7 +51,7 @@ fields = [
   { path = "annotations.*.start", type = "usize" },
   { path = "annotations.*.end", type = "usize" },
   { path = "annotations.*.excerpt", type = "String", label = true },
-  { path = "annotations.*.text", type = "RichText", ops = "sha256:32d3007b3b137974" },
+  { path = "annotations.*.text", type = "RichText", ops = "sha256:b86bfc65e3faa1c9" },
   { path = "annotations.*.color", type = "HiColor" },
   { path = "annotations.*.created", type = "u64" },
   { path = "annotations.*.group", type = "Uuid", readonly = true },
@@ -85,6 +86,14 @@ kind = "undoable"
 writes = ["record", "annotations.*"]
 params = [
   { name = "book", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "index-book"
+kind = "undoable"
+params = [
+  { name = "book", required = true, schema = { type = "string" } },
+  { name = "index", required = true, schema = { type = "object", additionalProperties = false, properties = { hash = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["hash", "size"] } },
 ]
 
 [[resources.verbs]]
@@ -180,5 +189,14 @@ kind = "undoable"
 writes = ["record", "annotations.*"]
 params = [
   { name = "scheme", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "settings.books-catalogues"
+label = "Book catalogues"
+version = 1
+person = true
+fields = [
+  { path = "keep_catalogues", type = "bool" },
 ]
 

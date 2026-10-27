@@ -4,20 +4,28 @@ use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
 
 use super::{FrameContent, bounded_present_damage};
 
-pub(super) struct CpuCanvas {
+pub(crate) struct CpuCanvas {
     rasterizer: CpuRasterizer,
     pixels: Vec<u8>,
     size: (u32, u32),
     valid: bool,
-    /// What the last frame rasterized.
     regions: Vec<Region>,
     /// What the last frame changed and [`Self::upload`] sends: what it
     /// rasterized, and where its scroll copies landed.
     uploads: Vec<Region>,
+    /// The frames' scenes hold only what their damage needs: one that must
+    /// be rasterized whole is refused.
+    damage_only: bool,
+}
+
+/// A canvas to rasterize frames into when they are rasterized on the CPU
+/// (`on_cpu`), else none.
+pub(crate) fn canvas(on_cpu: bool) -> Option<CpuCanvas> {
+    on_cpu.then(CpuCanvas::new)
 }
 
 impl CpuCanvas {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             rasterizer: CpuRasterizer::new(Options {
                 threads: 4,
@@ -28,14 +36,21 @@ impl CpuCanvas {
             valid: false,
             regions: Vec::new(),
             uploads: Vec::new(),
+            damage_only: false,
         }
     }
 
-    pub(super) fn invalidate(&mut self) {
+    /// Whether the frames' scenes hold only what their damage needs
+    /// (`RetainedRaster::rasterize_damage_only`).
+    pub(crate) fn draw_damage_only(&mut self, damage_only: bool) {
+        self.damage_only = damage_only;
+    }
+
+    pub(crate) fn invalidate(&mut self) {
         self.valid = false;
     }
 
-    pub(super) fn rasterize(&mut self, frame: &FrameContent<'_>) -> Result<u64, String> {
+    pub(crate) fn rasterize(&mut self, frame: &FrameContent<'_>) -> Result<u64, String> {
         if frame.width == 0 || frame.height == 0 {
             return Err("CPU target dimensions must be nonzero".into());
         }
@@ -67,10 +82,17 @@ impl CpuCanvas {
             );
         let whole =
             frame.full_redraw || !self.valid || (!copied && !frame.scroll_copies.is_empty());
+        let bounded = bounded_present_damage(frame.width, frame.height, frame.damage_regions);
+        if self.damage_only && (whole || bounded.is_none()) {
+            // The copies may have moved the pixels: what is retained is no
+            // longer the last frame.
+            self.valid = false;
+            return Err(crate::retained_raster::DAMAGE_ONLY_REFUSED.to_owned());
+        }
         self.regions = if whole {
             vec![Region::new(0, 0, frame.width, frame.height)]
         } else {
-            bounded_present_damage(frame.width, frame.height, frame.damage_regions)
+            bounded
                 .map(|regions| {
                     regions
                         .into_iter()
@@ -104,11 +126,11 @@ impl CpuCanvas {
     }
 
     /// The canvas: premultiplied RGBA8, rows of `width * 4` bytes.
-    pub(super) fn pixels(&self) -> &[u8] {
+    pub(crate) fn pixels(&self) -> &[u8] {
         &self.pixels
     }
 
-    pub(super) fn upload(&self, queue: &vello::wgpu::Queue, texture: &vello::wgpu::Texture) {
+    pub(crate) fn upload(&self, queue: &vello::wgpu::Queue, texture: &vello::wgpu::Texture) {
         let stride = self.size.0.saturating_mul(4);
         for region in &self.uploads {
             let offset = u64::from(region.y) * u64::from(stride) + u64::from(region.x) * 4;

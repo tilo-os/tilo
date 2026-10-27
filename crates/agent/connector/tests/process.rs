@@ -28,7 +28,7 @@ impl BlobAccess for Blobs {
 
 fn command() -> WorkerCommand {
     WorkerCommand {
-        program: env!("CARGO_BIN_EXE_scripted-connector-worker").into(),
+        program: tilo_test_env::package_binary!("scripted-connector-worker"),
         args: Vec::new(),
         env: Vec::new(),
         metrics_file: None,
@@ -68,7 +68,9 @@ async fn performs_publish_and_attach_first() {
         .await;
     assert_eq!(
         missing,
-        Err(PerformError::Refused("missing attachment".into()))
+        Err(PerformError::Unavailable(
+            "the attachment has not reached this host yet".into()
+        ))
     );
     let refused = process
         .perform(serde_json::json!({"op": {"op": "refuse"}}))
@@ -93,7 +95,7 @@ async fn events_secrets_and_checkpoints_reach_the_host() {
         process.events().lock().await.after(0, 0).next().unwrap().id,
         "boot"
     );
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while process.status() != (true, "token checked".to_owned()) {
             tokio::task::yield_now().await;
         }
@@ -115,7 +117,7 @@ async fn a_crash_fails_the_pending_perform_and_the_worker_comes_back() {
         .perform(serde_json::json!({"op": {"op": "crash"}}))
         .await;
     assert!(matches!(crashed, Err(PerformError::Unavailable(_))));
-    let again = tokio::time::timeout(Duration::from_secs(10), async {
+    let again = tokio::time::timeout(tilo_test_env::hang_bound(), async {
         loop {
             if let Ok(value) = process
                 .perform(serde_json::json!({"op": {"op": "ping"}}))

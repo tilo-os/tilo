@@ -582,7 +582,6 @@ fn transfer_hook_worker(
     .unwrap()
 }
 
-/// Failures and cancellation during creation, initialization, preparation and publication.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1030,8 +1029,10 @@ fn cancel_and_discard_win_and_disclose_retained_state() {
                             let (m, c) = &*server_gate;
                             let mut released = m.lock().unwrap();
                             while !*released {
-                                released =
-                                    c.wait_timeout(released, Duration::from_secs(2)).unwrap().0;
+                                released = c
+                                    .wait_timeout(released, tilo_test_env::hang_bound())
+                                    .unwrap()
+                                    .0;
                                 if !*released {
                                     break;
                                 }
@@ -1128,7 +1129,6 @@ fn cancel_and_discard_win_and_disclose_retained_state() {
     );
 }
 
-/// Disconnection and paused scope release.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1149,9 +1149,12 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
             worker.start(server.release(&bytes)).unwrap();
             wait(&worker, Phase::Ready);
             let shared = worker.shared.clone();
-            let now = ui::time::now();
-            drop(worker);
-            assert!(now.elapsed() < Duration::from_secs(3));
+            let (dropped, done) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                drop(worker);
+                let _ = dropped.send(());
+            });
+            tilo_test_env::recv("dropping the worker to cancel and join it", &done);
             assert_eq!(
                 shared
                     .mailbox
@@ -1270,7 +1273,6 @@ fn disconnects_and_pauses_release_scopes_without_consuming() {
     );
 }
 
-/// Lost acks.
 #[test]
 fn lost_acks_stay_uncertain_until_fresh_recovery() {
     isolated(

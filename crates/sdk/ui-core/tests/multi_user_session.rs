@@ -77,7 +77,6 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
         let key = PresenceKey::Widget {
             path: vec![PathSegment::Field("doc".into())],
         };
-        // Mirrors what a text-input widget does on every caret move.
         alice_app.broadcast_presence(key.clone(), PresencePayload::Caret { pos: 9 });
 
         // Without a real socket, the manager's outbox is a no-op — wire the
@@ -102,7 +101,6 @@ fn relay_fans_out_presence_and_status_to_remote_peers() {
             Some(9),
             "alice's broadcast caret must reach bob's PresenceCtx attributed to alice"
         );
-        // Remote broadcast of *own* presence is a one-way outbound signal.
         assert_eq!(
             alice_app
                 .presence_ctx()
@@ -302,7 +300,6 @@ fn peer_carets_pointers_and_tabs_render_on_the_remote_app() {
             Some((100.0, 50.0))
         );
 
-        // Simulates a window-level coordinate remap.
         bob_app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
             user_id: "alice".into(),
             key: ws_key.clone(),

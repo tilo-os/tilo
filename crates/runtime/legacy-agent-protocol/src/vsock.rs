@@ -219,7 +219,7 @@ mod tests {
         let (mut server, peer) = listener.accept().unwrap();
         assert_eq!(peer, CID_LOCAL);
         server
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         send(&mut client, &HostMessage::Health).unwrap();
         assert_eq!(

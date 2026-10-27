@@ -114,7 +114,6 @@ authentic() {  # authentic FILE: its published signature files verify
   [[ $certified == false ]] || verify_bundle "$1" "$1.bundle"
 }
 
-# ---- 1. the newest publication for this base ---------------------------------
 if [[ $sign_only == false ]]; then
   status=$(fetch "$package/manifest.json" "$work/latest.json")
   case "$status" in
@@ -141,7 +140,6 @@ if [[ $sign_only == false ]]; then
   esac
 fi
 
-# ---- 2. sign, and check the signature verifies as a device will ----------------
 cp -- "$manifest" "$work/manifest.json"
 python3 "$RESOLVE" check "$work/manifest.json" "${qualification[@]}" >/dev/null \
   || die "the copied manifest differs from the reviewed content"
@@ -172,7 +170,6 @@ for suffix in "${suffixes[@]}"; do
   cp -- "$work/manifest.json$suffix" "$work/manifest-r$revision.json$suffix"
 done
 
-# ---- 3. the immutable revision -------------------------------------------------
 uploads="$work/uploads.tsv"
 printf '%s\t%s\n' "$work/manifest-r$revision.json" "$package/manifest-r$revision.json" > "$uploads"
 for suffix in "${suffixes[@]}"; do
@@ -180,7 +177,6 @@ for suffix in "${suffixes[@]}"; do
 done
 TILO_PACKAGE_UPLOAD_WORKERS=1 "$REPO/tools/upload_immutable_packages.sh" "$uploads"
 
-# ---- 4. the newest pair --------------------------------------------------------
 for file in "${suffixes[@]/#/manifest.json}" manifest.json; do
   status=$(curl --silent --show-error --retry 3 --retry-all-errors "${auth[@]}" \
     --output /dev/null --write-out '%{http_code}' --request DELETE "$package/$file")
@@ -198,7 +194,6 @@ for suffix in "${suffixes[@]}"; do
   "$REPO/tools/upload_immutable_packages.sh" "$uploads"
 done
 
-# ---- 5. read back what a device will read ---------------------------------------
 [[ $(fetch "$package/manifest.json" "$work/check.json") == 200 ]] || die "manifest.json is not readable after upload"
 for suffix in "${suffixes[@]}"; do
   [[ $(fetch "$package/manifest.json$suffix" "$work/check.json$suffix") == 200 ]] \

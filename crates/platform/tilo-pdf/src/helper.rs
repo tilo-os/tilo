@@ -53,6 +53,7 @@ fn start(channel: &mut Channel) -> Result<Engine, (FailureKind, String)> {
     let engine = |message: String| (FailureKind::Engine, message);
     let sandbox = |message: String| (FailureKind::Sandbox, message);
     confine::detach().map_err(|e| engine(e.to_string()))?;
+    background_priority();
     let library = Library::load().map_err(engine)?;
     let lib_path = library.path().to_path_buf();
     // The socket, stdio, and a handful of in-flight memory files.
@@ -70,6 +71,20 @@ fn start(channel: &mut Channel) -> Result<Engine, (FailureKind, String)> {
     Ok(Engine::new(library))
 }
 
+/// Run below the apps it renders for: pages render ahead of a scroll while
+/// the reader draws, and on a machine with one or two slow cores the window's
+/// own thread must be scheduled first. Lowered before confinement, which
+/// does not allow it later; a failure leaves the priority as it was.
+fn background_priority() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: plain integer syscalls on this (still single-threaded)
+    // process; threads pdfium starts later inherit the value.
+    unsafe {
+        let current = libc::getpriority(libc::PRIO_PROCESS, 0);
+        libc::setpriority(libc::PRIO_PROCESS, 0, current.saturating_add(10).min(19));
+    }
+}
+
 /// Read-only access to the library, the system font directories and the
 /// font catalog; nothing else.
 fn policy(lib_path: &Path, catalog: Option<&Path>) -> confine::Policy {
@@ -78,7 +93,10 @@ fn policy(lib_path: &Path, catalog: Option<&Path>) -> confine::Policy {
     // The image installs the catalog inside a system font directory, which
     // already covers it; a development run reads the checkout's copy.
     read_only.extend(catalog.map(Path::to_path_buf));
-    confine::Policy { read_only }
+    confine::Policy {
+        read_only,
+        socket_pairs: false,
+    }
 }
 
 /// Pixel buffers the client attached, mapped writable once.

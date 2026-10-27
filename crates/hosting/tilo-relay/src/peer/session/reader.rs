@@ -8,9 +8,9 @@ use crate::peer::observe_reader_backlog;
 use crate::peer::{
     AccessAudit, Arc, Envelope, EnvelopeV2, PeerError, RETENTION_PREFIX_BYTE_CAP,
     RETENTION_PREFIX_FRAME_CAP, ReplayWrite, SessionCtx, SessionReader, StateDelivery,
-    audit_subscriber_access, buffered_retention_prefix, eligible_checkpoint_prefix,
-    handle_delta_prefix, handle_envelope, handle_private, mpsc, resume_record, send_private_reply,
-    trace_native_publication,
+    audit_subscriber_access, buffered_retention_prefix, commit_run_key, eligible_checkpoint_prefix,
+    handle_commit_run, handle_delta_prefix, handle_envelope, handle_private, mpsc, resume_record,
+    send_private_reply, trace_native_publication,
 };
 use std::collections::VecDeque;
 
@@ -21,6 +21,13 @@ const LAG_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// How many frames the reader reads ahead of a state frame in progress.
 const READ_AHEAD: usize = 32;
+/// A state frame handled for this long is logged: every state frame
+/// behind it, a call's heartbeat among them, waited as long.
+const SLOW_STATE_FRAME: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Most commits one run queues before the first is answered
+/// ([`SessionReaderLoop::handle_commit_run`]).
+const COMMIT_RUN: usize = READ_AHEAD;
 
 /// The delivery budget an inbound frame holds while it waits.
 type Budget = Arc<tokio::sync::OwnedSemaphorePermit>;
@@ -106,16 +113,10 @@ struct Inbound<'s, R> {
 impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
     /// Whether a frame read ahead of the state frame that controls
     /// `active_control` may be served before it.
-    fn may_overtake(
-        &self,
-        frame: &EnvelopeV2,
-        active_control: Option<u64>,
-        cx: SessionLoop<'_, '_>,
-    ) -> bool {
+    fn may_overtake(&self, frame: &EnvelopeV2, active_control: Option<u64>) -> bool {
         private_may_overtake(
             frame,
             active_control,
-            cx.pending_replays.load(std::sync::atomic::Ordering::SeqCst) == 0,
             self.backlog.iter().map(|(frame, _)| frame),
         )
     }
@@ -171,7 +172,9 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
                 result = &mut operation => break result,
                 frame = self.reader.read_next(), if self.open && self.backlog.len() < READ_AHEAD => {
                     let Some(frame) = frame? else { self.open = false; continue; };
-                    if self.may_overtake(&frame, blocked_room, cx) {
+                    if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
+                        cx.heartbeats.owe();
+                    } else if self.may_overtake(&frame, blocked_room) {
                         if let Some(reply) = serve_private_beside(&mut operation, frame, cx).await? {
                             break Ok(reply);
                         }
@@ -202,7 +205,9 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
                 }
                 frame = self.reader.read_next(), if self.open && self.backlog.len() < READ_AHEAD => {
                     let Some(frame) = frame? else { self.open = false; continue; };
-                    if self.may_overtake(&frame, None, cx) {
+                    if matches!(frame, EnvelopeV2::State(Envelope::Ping)) {
+                        cx.heartbeats.owe();
+                    } else if self.may_overtake(&frame, None) {
                         if let Some(reply) = handle_private(frame, cx.peer, cx.session).await? {
                             send_private_reply(cx.session.private_tx, reply).await?;
                         }
@@ -343,7 +348,23 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                     continue;
                 };
             match frame {
-                EnvelopeV2::State(env) => self.handle_state_frame(env, inbound_budget, cx).await?,
+                // A heartbeat is answered by the wire itself, between any
+                // two frames, whatever the writer waits for (see `wire`).
+                EnvelopeV2::State(Envelope::Ping) => cx.heartbeats.owe(),
+                EnvelopeV2::State(env) => {
+                    let kind = env.kind();
+                    let started = std::time::Instant::now();
+                    self.handle_state_frame(env, inbound_budget, cx).await?;
+                    let held = started.elapsed();
+                    if held >= SLOW_STATE_FRAME {
+                        tracing::info!(
+                            kind,
+                            held_ms = held.as_millis(),
+                            backlog = self.inbound.backlog.len(),
+                            "a state frame held its connection"
+                        );
+                    }
+                }
                 frame => {
                     if let Some(reply) = handle_private(frame, cx.peer, cx.session).await? {
                         send_private_reply(cx.session.private_tx, reply).await?;
@@ -406,6 +427,9 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         cx: SessionLoop<'_, '_>,
     ) -> Result<(), PeerError> {
         trace_native_publication("server_received", &env, None);
+        if matches!(env, Envelope::Commit { .. }) {
+            return self.handle_commit_run(env, inbound_budget, cx).await;
+        }
         let (mut prefix, prefix_budgets) = self.inbound.checkpoint_prefix(env, inbound_budget)?;
         let env = prefix.remove(0);
         let replaying = matches!(
@@ -459,6 +483,57 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                         ticket,
                         reply,
                         replaying,
+                    },
+                    cx,
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Handle `env`, a `Commit`, with the commits read ahead behind it:
+    /// all are queued with their owners before the first is waited for, so
+    /// they become durable under shared barriers; their answers go to the
+    /// writer in the order sent.
+    async fn handle_commit_run(
+        &mut self,
+        env: Envelope,
+        inbound_budget: Option<Budget>,
+        cx: SessionLoop<'_, '_>,
+    ) -> Result<(), PeerError> {
+        let mut keys = vec![commit_run_key(&env)];
+        let mut commits = vec![env];
+        let mut budgets = vec![inbound_budget];
+        while commits.len() < COMMIT_RUN {
+            let Some((EnvelopeV2::State(next @ Envelope::Commit { .. }), _)) =
+                self.inbound.backlog.front()
+            else {
+                break;
+            };
+            let key = commit_run_key(next);
+            if keys.contains(&key) {
+                break;
+            }
+            let Some((EnvelopeV2::State(next), budget)) = self.inbound.backlog.pop_front() else {
+                break;
+            };
+            trace_native_publication("server_received", &next, None);
+            keys.push(key);
+            commits.push(next);
+            budgets.push(Some(budget));
+        }
+        let subscribed = &*self.subscribed;
+        let operation = Box::pin(handle_commit_run(cx.peer, cx.session, subscribed, commits));
+        let replies = self.inbound.overtake_while(operation, None, cx).await?;
+        drop(budgets);
+        for reply in replies.into_iter().flatten() {
+            self.inbound
+                .hand_off_reply(
+                    self.replies,
+                    ReplayWrite {
+                        ticket: None,
+                        reply: Some(reply),
+                        replaying: false,
                     },
                     cx,
                 )

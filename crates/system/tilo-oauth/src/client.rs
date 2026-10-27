@@ -3,12 +3,20 @@
 use std::time::Duration;
 
 use crate::loopback::{LoopbackCancel, LoopbackServer};
-use crate::{AuthorizationRequest, OAuthError, Pkce, Provider, Registration, Revocation, TokenSet};
+use crate::{
+    AuthorizationRequest, OAuthError, Pkce, Provider, Refresh, Registration, Revocation, TokenSet,
+};
 
 /// Deadline for one token endpoint request.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// Largest token endpoint answer read.
 const MAX_RESPONSE_BYTES: u64 = 64 * 1024;
+/// The editor identity GitHub's Copilot token endpoint expects.
+const COPILOT_EDITOR: [(&str, &str); 3] = [
+    ("editor-version", "vscode/1.107.0"),
+    ("editor-plugin-version", "copilot-chat/0.35.0"),
+    ("user-agent", "GitHubCopilotChat/0.35.0"),
+];
 
 /// HTTPS client for token endpoints. Redirects are refused: a token request
 /// is never replayed to another origin.
@@ -71,6 +79,9 @@ impl OAuthClient {
         if refresh_token.is_empty() {
             return Err(OAuthError::InvalidGrant);
         }
+        if let Refresh::CopilotToken { endpoint } = &provider.refresh {
+            return self.copilot_token(endpoint, refresh_token);
+        }
         let mut tokens = self.token_request(
             provider,
             client,
@@ -130,22 +141,87 @@ impl OAuthClient {
         }
     }
 
-    fn token_request<'a>(
-        &self,
-        provider: &Provider,
-        client: &'a Registration,
-        mut params: Vec<(&str, &'a str)>,
-    ) -> Result<TokenSet, OAuthError> {
-        use std::io::Read as _;
-        if let Some(secret) = client.secret() {
-            params.push(("client_secret", secret));
-        }
-        let response = self
+    /// Trade a GitHub token for a Copilot token ([`Refresh::CopilotToken`]).
+    fn copilot_token(&self, endpoint: &str, github_token: &str) -> Result<TokenSet, OAuthError> {
+        let mut request = self
             .http
-            .post(&provider.token_endpoint)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .header("Accept", "application/json")
-            .body(form(&params))
+            .get(endpoint)
+            .header("Authorization", format!("token {github_token}"))
+            .header("Accept", "application/json");
+        // The endpoint serves the editors Copilot supports, and asks who
+        // is calling the way they say it.
+        for (name, value) in COPILOT_EDITOR {
+            request = request.header(name, value);
+        }
+        let (status, body) = Self::read(request)?;
+        match status {
+            200..=299 => {}
+            401 => return Err(OAuthError::InvalidGrant),
+            403 | 404 => {
+                return Err(OAuthError::Protocol(
+                    "this GitHub account has no Copilot subscription".into(),
+                ));
+            }
+            other => {
+                return Err(OAuthError::Protocol(format!(
+                    "the Copilot token endpoint answered HTTP {other}"
+                )));
+            }
+        }
+        let value: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|_| OAuthError::Protocol("the Copilot token answer is not JSON".into()))?;
+        let token = value
+            .get("token")
+            .and_then(serde_json::Value::as_str)
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| OAuthError::Protocol("the Copilot token answer has no token".into()))?;
+        let now = tilo_clock::unix_now();
+        let expires_at = value
+            .get("expires_at")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| OAuthError::Protocol("the Copilot token answer has no expiry".into()))?;
+        Ok(TokenSet {
+            access_token: token.to_string(),
+            scope: None,
+            refresh_token: github_token.to_string(),
+            expires_in: expires_at.saturating_sub(now),
+            obtained_at: now,
+        })
+    }
+
+    /// The `OpenID` Connect userinfo of the person `access_token` belongs
+    /// to (`GET endpoint` with the token as a bearer).
+    ///
+    /// # Errors
+    /// [`OAuthError::InvalidGrant`] when the token is refused,
+    /// [`OAuthError::Network`] or [`OAuthError::Protocol`] otherwise.
+    pub fn userinfo(
+        &self,
+        endpoint: &str,
+        access_token: &str,
+    ) -> Result<serde_json::Value, OAuthError> {
+        let (status, body) = Self::read(
+            self.http
+                .get(endpoint)
+                .bearer_auth(access_token)
+                .header("Accept", "application/json"),
+        )?;
+        match status {
+            200..300 => serde_json::from_str(&body)
+                .map_err(|_| OAuthError::Protocol("the userinfo answer is not JSON".into())),
+            401 => Err(OAuthError::InvalidGrant),
+            _ => Err(OAuthError::Protocol(format!(
+                "userinfo endpoint answered HTTP {status}"
+            ))),
+        }
+    }
+
+    /// Send `request` and read at most [`MAX_RESPONSE_BYTES`] of its answer.
+    pub(crate) fn read(
+        request: reqwest::blocking::RequestBuilder,
+    ) -> Result<(u16, String), OAuthError> {
+        use std::io::Read as _;
+        let response = request
             .send()
             .map_err(|error| OAuthError::Network(error.without_url().to_string()))?;
         let status = response.status().as_u16();
@@ -154,6 +230,31 @@ impl OAuthClient {
             .take(MAX_RESPONSE_BYTES)
             .read_to_string(&mut body)
             .map_err(|error| OAuthError::Network(error.to_string()))?;
+        Ok((status, body))
+    }
+
+    pub(crate) fn post_form(
+        &self,
+        endpoint: &str,
+        params: &[(&str, &str)],
+    ) -> reqwest::blocking::RequestBuilder {
+        self.http
+            .post(endpoint)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Accept", "application/json")
+            .body(form(params))
+    }
+
+    fn token_request<'a>(
+        &self,
+        provider: &Provider,
+        client: &'a Registration,
+        mut params: Vec<(&str, &'a str)>,
+    ) -> Result<TokenSet, OAuthError> {
+        if let Some(secret) = client.secret() {
+            params.push(("client_secret", secret));
+        }
+        let (status, body) = Self::read(self.post_form(&provider.token_endpoint, &params))?;
         match crate::parse_token_response(&body) {
             Ok(tokens) if (200..300).contains(&status) => Ok(tokens),
             Ok(_) => Err(OAuthError::Protocol(format!(
@@ -209,7 +310,7 @@ impl Authorization {
         login_hint: Option<&str>,
     ) -> Result<Self, OAuthError> {
         let code_return = match LoopbackServer::bind_to(&client.redirect_ports) {
-            Ok(server) => Return::Loopback(server),
+            Ok(server) => Return::Loopback(server.at(&client.redirect)),
             Err(OAuthError::RedirectPortsBusy) if client.paste_code_fallback => Return::Pasted,
             Err(error) => return Err(error),
         };

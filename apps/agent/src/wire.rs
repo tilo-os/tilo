@@ -573,20 +573,17 @@ mod tests {
         assert_eq!(link.take_detached(1), None, "an answer is taken once");
     }
 
-    /// A forgotten poll's answer is dropped when it arrives, and waiting for
-    /// an answer that is already in returns at once.
     #[test]
     fn a_forgotten_poll_is_dropped_and_an_arrived_one_needs_no_wait() {
         let mut link = test_link(AnsweringHost { events: Vec::new() });
         link.send_detached(&poll(1)).unwrap();
         link.forget(1);
         link.send_detached(&poll(3)).unwrap();
-        let began = ui::time::now();
+        // A deadline already past: only an answer that needs no wait is seen.
         assert_eq!(
-            link.wait_detached(3, began + Duration::from_secs(5)),
+            link.wait_detached(3, ui::time::now()),
             Some(Detached::Cancellation(Ok(true)))
         );
-        assert!(began.elapsed() < Duration::from_secs(1));
         assert_eq!(link.take_detached(1), None);
         assert_eq!(
             link.wait_detached(1, ui::time::now()),

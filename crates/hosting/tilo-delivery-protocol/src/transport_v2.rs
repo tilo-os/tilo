@@ -10,7 +10,10 @@
 //! [`SessionReader`] turns all three back into `State` values, so nothing
 //! past the session boundary sees them. Private frames never enter the state
 //! codec or the durable relay store.
-#![allow(missing_docs)]
+#![allow(
+    missing_docs,
+    reason = "wire frame types, described as a whole by the module documentation above"
+)]
 use crate::peer_actions::{
     DirectedAction, MAX_PRIVATE_BYTES, SignedDirectedAction, UnavailableReason,
 };
@@ -202,7 +205,6 @@ pub struct SessionReader<R> {
     prefix_read: usize,
     payload: Vec<u8>,
     payload_read: usize,
-    /// What this session last received in each presence slot.
     presence: presence::PresenceSlots,
     /// The last delta frame this session received in each delta slot.
     deltas: delta::DeltaSlots,
@@ -226,11 +228,6 @@ impl<R: tokio::io::AsyncRead + Unpin> SessionReader<R> {
         }
     }
     /// The next complete envelope, or `None` at a clean end of stream.
-    ///
-    /// # Errors
-    ///
-    /// Returns `FrameError` when the stream fails or a frame is oversized or
-    /// does not decode.
     pub async fn read_next(&mut self) -> Result<Option<EnvelopeV2>, FrameError> {
         loop {
             if let Some(next) = self.expanded.pop_front() {
@@ -471,8 +468,6 @@ mod tests {
             compact,
             "the borrowed encoding is the variant's own encoding",
         );
-        // A delta that carries a signature, and every other envelope, travel
-        // as State.
         let signed = keystroke([7; 64]);
         assert_eq!(
             encode_state(&signed).unwrap(),
@@ -493,7 +488,6 @@ mod tests {
             reader.read_next().await.unwrap(),
             Some(EnvelopeV2::State(unsigned.clone()))
         );
-        // The whole State frame of the same delta reads the same.
         let mut reader = SessionReader::new(std::io::Cursor::new(
             encode(&EnvelopeV2::State(unsigned.clone())).unwrap(),
         ));
@@ -775,7 +769,6 @@ mod tests {
             Err(FrameError::TooLarge(_))
         ));
         assert_eq!(reader.payload.len(), 1);
-        // The same size remains valid in the common state lane.
         let state = EnvelopeV2::State(Envelope::Presence {
             workspace_id: 7,
             payload: vec![0; MAX_PRIVATE_BYTES + 1],
@@ -793,18 +786,17 @@ mod tests {
             room: Uuid::from_u128(7),
         })
         .unwrap();
+        // Each read takes in what has arrived, finds the frame incomplete
+        // and is dropped, as a cancelled read is.
+        let interrupted = |reader: &mut SessionReader<_>| {
+            let read = std::pin::pin!(reader.read_next());
+            read.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        };
         writer.write_all(&wire[..2]).await.unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(5), reader.read_next())
-                .await
-                .is_err()
-        );
+        assert!(interrupted(&mut reader));
         writer.write_all(&wire[2..8]).await.unwrap();
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(5), reader.read_next())
-                .await
-                .is_err()
-        );
+        assert!(interrupted(&mut reader));
         writer.write_all(&wire[8..]).await.unwrap();
         assert_eq!(
             reader.read_next().await.unwrap(),

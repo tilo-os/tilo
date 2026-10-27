@@ -49,7 +49,7 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     // Revoking is an administrator's act, and `Workspace::new` leaves a room
     // ownerless — install the identity the chrome acts as, so the click
     // exercises the authority check.
-    ws.set_owner(shell::shell::state::local_user_id_for_room(&ws.room));
+    ws.set_owner(shell::shell::state::local_user_id_for_room(&ws.room()));
     for (app_id, caps) in entries {
         // Seed through the production granting path — `grants()` is a *derived*
         // view rebuilt from `capabilities` and returned by value, so inserting
@@ -106,7 +106,7 @@ fn tree_with_members() -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
     let mut ws = Workspace::new(id, "perm-test");
-    let owner = shell::shell::state::local_user_id_for_room(&ws.room);
+    let owner = shell::shell::state::local_user_id_for_room(&ws.room());
     ws.set_owner(owner.clone());
     for person in ["ada", "bo"] {
         ws.govern_as_at(
@@ -318,7 +318,6 @@ fn grant_and_revoke_clicks_are_owner_only_and_deliberate() {
         }
         assert_eq!(chrome.borrow().ws_grant_draft.subject_index, target);
 
-        // Drive the capability picker to "Microphone".
         while chrome.borrow().ws_grant_draft.choice().label() != "Microphone" {
             let rect = host.grant_composer_rects().unwrap().capability;
             click(&mut host, rect);
@@ -499,10 +498,22 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             roster.len(),
             "one row per member of the real roster"
         );
+        let owner = shell::shell::state::local_user_id_for_room(
+            &tree
+                .desktop
+                .active_workspace()
+                .expect("fixture workspace")
+                .room(),
+        );
         for (user, role_rect, remove_rect) in rows {
             assert!(roster.iter().any(|(u, _)| u == user), "{user} is a member");
-            assert!(role_rect.area() > 0.0);
-            assert!(remove_rect.area() > 0.0);
+            if *user == owner {
+                assert_eq!(role_rect.area(), 0.0, "the owner's role is not a choice");
+                assert_eq!(remove_rect.area(), 0.0, "no one removes themselves here");
+            } else {
+                assert!(role_rect.area() > 0.0, "{user}'s role is a choice");
+                assert!(remove_rect.area() > 0.0, "{user} can be removed");
+            }
         }
     }
 
@@ -573,7 +584,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
                 .desktop
                 .active_workspace()
                 .expect("fixture workspace")
-                .room,
+                .room(),
         );
         if let Some(ws) = tree.desktop.active_workspace_mut() {
             ws.grant_as(
@@ -630,8 +641,11 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         assert!(!rows.is_empty());
 
         for (_, role_rect, remove_rect) in &rows {
-            click(&mut host, *role_rect);
-            click(&mut host, *remove_rect);
+            for control in [role_rect, remove_rect] {
+                if control.area() > 0.0 {
+                    click(&mut host, *control);
+                }
+            }
         }
 
         assert_eq!(
@@ -648,7 +662,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         let mut tree = WorkspaceTree::default();
         let id = WorkspaceId::from(1);
         let mut ws = Workspace::new(id, "perm-test");
-        let local = shell::shell::state::local_user_id_for_room(&ws.room);
+        let local = shell::shell::state::local_user_id_for_room(&ws.room());
         let owner = "someone-else".to_string();
         ws.set_owner(owner.clone());
         let now = tilo_clock::unix_now();
@@ -662,7 +676,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         )
         .expect("the owner admits the delegate");
         let set_role = tilo_action_policy::roles::governance_action(
-            &ws.room.to_string(),
+            &ws.room().to_string(),
             tilo_action_policy::roles::governance::SET_ROLE,
         );
         ws.govern_as_at(
@@ -723,7 +737,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
                 .desktop
                 .active_workspace()
                 .expect("fixture workspace")
-                .room,
+                .room(),
         );
         let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
         let row = host
@@ -734,6 +748,9 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             .expect("the owner is in the roster");
         let before = authority(&chrome);
 
+        // The row offers no control to press at all.
+        assert_eq!(row.1.area(), 0.0, "no role control on the owner's row");
+        assert_eq!(row.2.area(), 0.0, "no Remove on the owner's row");
         click(&mut host, row.1);
         click(&mut host, row.2);
 
@@ -759,7 +776,7 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
     let mut ws = Workspace::new(id, "perm-test");
-    let owner = shell::shell::state::local_user_id_for_room(&ws.room);
+    let owner = shell::shell::state::local_user_id_for_room(&ws.room());
     ws.set_owner(owner.clone());
     let granted = workspace_settings::apply_governance(
         &mut ws,

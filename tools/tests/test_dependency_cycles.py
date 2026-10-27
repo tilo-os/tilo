@@ -1,7 +1,10 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
+import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -30,6 +33,33 @@ def metadata(edges: dict[str, list[tuple[str, str]]]) -> dict:
                 for name, deps in edges.items()
             ]
         },
+    }
+
+
+def lock(deps: dict[str, list[str]]) -> str:
+    """A Cargo.lock of packages at 0.1.0 with `deps`: package -> [dependency]."""
+    return "version = 4\n" + "".join(
+        f'\n[[package]]\nname = "{name}"\nversion = "0.1.0"\n'
+        + (f"dependencies = [{', '.join(json.dumps(d) for d in ds)}]\n" if ds else "")
+        for name, ds in deps.items()
+    )
+
+
+def members(deps: dict[str, list[tuple[str, str | None, bool]]]) -> dict:
+    """``cargo metadata --no-deps`` of members with `deps`: member ->
+    [(dependency, kind, whether it is a path dependency)]."""
+    return {
+        "packages": [
+            {
+                "name": name,
+                "version": "0.1.0",
+                "dependencies": [
+                    {"name": dep, "kind": kind, "path": f"/src/{dep}" if path else None}
+                    for dep, kind, path in ds
+                ],
+            }
+            for name, ds in deps.items()
+        ]
     }
 
 
@@ -74,24 +104,59 @@ class DependencyCycleTests(unittest.TestCase):
         )
         self.assertIsNone(check.find_cycle(graph))
 
-    def test_cargos_cycle_error_fails_with_its_cycle(self):
-        stderr = (
-            "error: cyclic package dependency: package `tilo-resource v0.1.0` "
-            "depends on itself. Cycle:\n"
-        )
-        failure = check.audit(run=ran(101, stderr=stderr))
-        self.assertTrue(failure)
-        self.assertIn("cycle", failure[0])
-        self.assertTrue(any("tilo-resource" in line for line in failure))
-
     def test_an_acyclic_workspace_passes(self):
-        stdout = json.dumps(metadata({"app": [("base", None)], "base": []}))
-        self.assertEqual(check.audit(run=ran(0, stdout=stdout)), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.lock").write_text(lock({"app": ["base"], "base": []}))
+            stdout = json.dumps(members({"app": [("base", None, True)], "base": []}))
+            self.assertEqual(check.audit(root, run=ran(0, stdout=stdout)), ([], []))
+
+    def test_a_cycle_through_the_lock_fails_with_its_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.lock").write_text(lock({"app": ["base"], "base": ["app"]}))
+            stdout = json.dumps(members({"app": [("base", None, True)], "base": [("app", None, True)]}))
+            found, _ = check.audit(root, run=ran(0, stdout=stdout))
+            self.assertEqual(len(found), 1)
+            self.assertTrue(found[0].startswith("Cargo.lock: "))
+            self.assertIn("app", found[0])
 
     def test_other_cargo_failures_are_reported(self):
-        failure = check.audit(run=ran(101, stderr="error: the lock file needs to be updated"))
-        self.assertTrue(failure)
-        self.assertIn("could not be checked", failure[0])
+        found, notes = check.audit(run=ran(101, stderr="error: failed to parse manifest"))
+        self.assertEqual(found, [])
+        self.assertIn("could not be checked", notes[0])
+
+    def test_a_members_dev_dependency_in_the_lock_closes_no_loop(self):
+        # The lock lists a member's dev-dependencies among its dependencies.
+        graph = check.graph(
+            members({"low": [("high", "dev", True)], "high": [("low", None, True)]}),
+            tomllib.loads(lock({"low": ["high"], "high": ["low"]})),
+        )
+        self.assertIsNone(check.find_cycle(graph))
+
+    def test_a_new_path_dependency_counts_before_the_lock_has_it(self):
+        graph = check.graph(
+            members({"low": [("high", None, True)], "high": [("low", None, True)]}),
+            tomllib.loads(lock({"low": [], "high": ["low"]})),
+        )
+        self.assertEqual(set(check.find_cycle(graph) or []), {"low", "high"})
+
+    def test_a_cycle_through_a_registry_crate_is_found(self):
+        # A vendored member patched in for a registry crate's dependency: the
+        # registry crate's edges come from the lock alone.
+        graph = check.graph(
+            members({"app": [("serde-ext", None, False)], "vendored": [("app", None, True)]}),
+            tomllib.loads(lock({"app": ["serde-ext"], "serde-ext": ["vendored"], "vendored": ["app"]})),
+        )
+        self.assertEqual(set(check.find_cycle(graph) or []), {"app", "serde-ext", "vendored"})
+
+    def test_it_needs_no_registry_cache(self):
+        with tempfile.TemporaryDirectory() as home:
+            env = {**os.environ, "CARGO_HOME": home}
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT)], capture_output=True, text=True, env=env, check=False
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

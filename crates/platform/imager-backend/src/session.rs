@@ -37,11 +37,6 @@ impl BackendSession {
     }
 
     /// Create a private workspace owned by the effective user.
-    ///
-    /// # Errors
-    /// Returns an error if temporary-directory creation, opening, metadata lookup,
-    /// or canonicalization fails, or the workspace fails ownership, permission,
-    /// or identity validation.
     #[cfg(unix)]
     pub fn create(intent: SessionIntent) -> io::Result<Self> {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -86,11 +81,6 @@ impl BackendSession {
     }
 
     /// Recheck workspace identity, ownership, and private permissions.
-    ///
-    /// # Errors
-    /// Returns an error if metadata inspection fails, the namespace no longer
-    /// names the held directory, the effective user changed, or ownership or
-    /// permissions differ from those admitted at creation.
     #[cfg(unix)]
     pub fn validate(&self) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
@@ -138,11 +128,6 @@ pub fn preparation_namespace() -> Option<PathBuf> {
 
 /// Resolve only the selected state-root alias; descendants retain their own
 /// descriptor-relative nofollow and private-directory admission checks.
-///
-/// # Errors
-/// Returns an error for a non-absolute path or unsupported path components,
-/// a non-directory existing ancestor, or native metadata and canonicalization
-/// failures. Missing descendants are appended without creating them.
 pub fn resolve_state_root(path: &Path) -> io::Result<PathBuf> {
     use std::path::Component;
     if !path.is_absolute()

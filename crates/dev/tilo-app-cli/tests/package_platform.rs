@@ -34,7 +34,7 @@ printf '{"reason":"compiler-artifact","manifest_path":"%s","target":{"name":"%s"
 "#;
 
 fn tilo_app(dir: &Path, cargo: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+    Command::new(tilo_test_env::package_binary!("tilo-app"))
         .args(args)
         .current_dir(dir)
         .env_remove("TILO_UI_PATH")
@@ -112,7 +112,6 @@ fn desktop_packages_ship_one_executable_under_a_signed_target() {
             Some(target.runtime.as_str()),
             manifest.package.runtime.as_deref()
         );
-        // One executable, beside the public surface the app committed.
         assert_eq!(
             read.meta.collection.entries.keys().collect::<Vec<_>>(),
             [module, "surface.toml"]
@@ -167,7 +166,7 @@ fn this_machines_libraries_are_named_only_when_the_build_fails() {
     );
     let app = dir.path().join("notes");
     let package = |fail: bool| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_tilo-app"));
+        let mut command = Command::new(tilo_test_env::package_binary!("tilo-app"));
         command
             .args(["package", "--force", "--json"])
             .current_dir(&app)

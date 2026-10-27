@@ -58,15 +58,6 @@ pub fn bot_offer(entry: &VerifiedEntry, registry_name: &str) -> Option<Catalogue
     })
 }
 
-/// Every bot `entries` offers.
-#[must_use]
-pub fn bot_offers(entries: &[VerifiedEntry], registry_name: &str) -> Vec<CatalogueBot> {
-    entries
-        .iter()
-        .filter_map(|entry| bot_offer(entry, registry_name))
-        .collect()
-}
-
 /// `version` of the signed bot `package_id`, when the catalogue still lists it.
 #[must_use]
 pub fn listed_version<'a>(
@@ -111,45 +102,9 @@ pub fn fetch_bot_program(bot: &BotArtifact) -> Result<Vec<u8>, RegistryError> {
     Ok(bytes)
 }
 
-/// Where an installed bot stands in the directory.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "kebab-case")]
-pub enum DirectoryStatus {
-    /// The installed version is the newest listed one.
-    Listed,
-    /// A newer version is listed; installing it needs a new grant review.
-    UpdateAvailable { version: String },
-    /// The entry or the installed version is gone: taken down, deleted or
-    /// retained away. The installation keeps running what it has.
-    NotListed,
-}
-
-/// Where `installed_version` of the bot `package_id` stands in `entries`.
-#[must_use]
-pub fn directory_status(
-    entries: &[VerifiedEntry],
-    package_id: &str,
-    installed_version: &str,
-) -> DirectoryStatus {
-    let Some((entry, _)) = listed_version(entries, package_id, installed_version) else {
-        return DirectoryStatus::NotListed;
-    };
-    match newest_bot_version(entry) {
-        Some((newest, _))
-            if tilo_app_package::version::compare(newest, installed_version).is_gt() =>
-        {
-            DirectoryStatus::UpdateAvailable {
-                version: newest.to_owned(),
-            }
-        }
-        _ => DirectoryStatus::Listed,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::TrustLevel;
     use std::io::{Read as _, Write as _};
 
     fn bot(version: &str, program: &[u8], base: &str) -> registry_types::RegistryVersion {
@@ -169,82 +124,6 @@ mod tests {
                 },
             }),
         }
-    }
-
-    fn listed(
-        kind: registry_types::EntryKind,
-        versions: Vec<registry_types::RegistryVersion>,
-        trust: TrustLevel,
-    ) -> VerifiedEntry {
-        VerifiedEntry {
-            entry: registry_types::RegistryEntry {
-                package_id: "so.tilo.bots.echo".into(),
-                kind,
-                name: "Echo".into(),
-                description: "Posts echo".into(),
-                tagline: "Echo".into(),
-                images: registry_types::LocalizedImages::default(),
-                supported_languages: vec!["en".into()],
-                categories: vec!["Bots".into()],
-                source_url: None,
-                homepage: None,
-                publisher_pubkey_hex: "aa".repeat(32),
-                versions,
-                updated_at_unix: 1,
-                signature_hex: String::new(),
-            },
-            trust,
-            version_index: None,
-        }
-    }
-
-    fn echo_listing() -> Vec<VerifiedEntry> {
-        vec![listed(
-            registry_types::EntryKind::Bot,
-            vec![
-                bot("1.0.0", b"a", "https://apps.tilo.so"),
-                bot("1.2.0", b"b", "https://apps.tilo.so"),
-            ],
-            TrustLevel::PublisherSigned,
-        )]
-    }
-
-    #[test]
-    fn bot_offers_pick_the_newest_signed_bot_version() {
-        let offers = bot_offers(&echo_listing(), "Tilo");
-        assert_eq!(offers.len(), 1);
-        assert_eq!(offers[0].version, "1.2.0");
-        let untrusted = vec![listed(
-            registry_types::EntryKind::Bot,
-            vec![bot("1.0.0", b"a", "https://apps.tilo.so")],
-            TrustLevel::Untrusted,
-        )];
-        assert!(bot_offers(&untrusted, "Tilo").is_empty());
-    }
-
-    #[test]
-    fn directory_status_follows_the_listing() {
-        let entries = echo_listing();
-        assert_eq!(
-            directory_status(&entries, "so.tilo.bots.echo", "1.2.0"),
-            DirectoryStatus::Listed
-        );
-        assert_eq!(
-            directory_status(&entries, "so.tilo.bots.echo", "1.0.0"),
-            DirectoryStatus::UpdateAvailable {
-                version: "1.2.0".into()
-            }
-        );
-        assert_eq!(
-            directory_status(&entries, "so.tilo.bots.echo", "0.9.0"),
-            DirectoryStatus::NotListed
-        );
-        assert_eq!(
-            directory_status(&entries, "so.tilo.bots.other", "1.0.0"),
-            DirectoryStatus::NotListed
-        );
-        assert!(listed_version(&entries, "so.tilo.bots.echo", "1.0.0").is_some());
-        assert!(listed_version(&entries, "so.tilo.bots.echo", "0.9.0").is_none());
     }
 
     /// Serve `body` once on loopback; answers the origin.

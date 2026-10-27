@@ -9,12 +9,13 @@ use std::time::Duration;
 
 use tokio::io::BufReader;
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::{Mutex, oneshot, watch};
+use tokio::sync::{Mutex, broadcast, oneshot, watch};
 
 use crate::EventLog;
 use crate::framing::{read_frame_async, write_frame_async};
 use crate::protocol::{
-    ATTACH_FIELD, Bytes, FromWorker, Outcome, PROTOCOL_VERSION, PUBLISH_FIELD, ToWorker,
+    ATTACH_FIELD, Bytes, CallLink, FromWorker, Outcome, OutsideCall, PROTOCOL_VERSION,
+    PUBLISH_FIELD, ToWorker,
 };
 
 /// The host's content store, as far as a worker's ops need it. The worker
@@ -62,6 +63,25 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 
 type Answer = oneshot::Sender<Result<serde_json::Value, PerformError>>;
 
+/// Audio frames from the worker a slow listener may fall behind by before
+/// it misses the oldest: live audio is dropped, never queued.
+const AUDIO_BACKLOG: usize = 256;
+
+/// The service's calls and the worker's place in them, as it last said.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CallsReport {
+    pub calls: Vec<OutsideCall>,
+    pub link: CallLink,
+}
+
+/// One Opus frame a person said in the outside call the worker is in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutsideAudio {
+    /// Their account on the service.
+    pub speaker: String,
+    pub opus: Vec<u8>,
+}
+
 struct Shared {
     state_dir: PathBuf,
     metrics_file: Option<PathBuf>,
@@ -73,6 +93,11 @@ struct Shared {
     stdin: Mutex<Option<ChildStdin>>,
     pending: Mutex<HashMap<u64, Answer>>,
     next_request: AtomicU64,
+    /// The outside call the host wants the worker in, said again to every
+    /// worker it starts.
+    wanted_call: std::sync::Mutex<Option<(Option<String>, Option<String>)>>,
+    calls: watch::Sender<CallsReport>,
+    audio: broadcast::Sender<OutsideAudio>,
 }
 
 pub struct ConnectorProcess {
@@ -105,10 +130,23 @@ impl ConnectorProcess {
             stdin: Mutex::new(None),
             pending: Mutex::new(HashMap::new()),
             next_request: AtomicU64::new(1),
+            wanted_call: std::sync::Mutex::new(None),
+            calls: watch::channel(CallsReport::default()).0,
+            audio: broadcast::channel(AUDIO_BACKLOG).0,
         });
         let child = launch(&shared, &command).await?;
         let supervisor = tokio::spawn(supervise(Arc::clone(&shared), command, child));
         Ok(Self { shared, supervisor })
+    }
+
+    /// Keep `bytes` in the host's content store this connector reads, for
+    /// an op that names them in its `attach` list (a picture the room
+    /// holds in a record rather than as content). Their BLAKE3 hex hash.
+    ///
+    /// # Errors
+    /// The store refused or failed, as a message for the host's log.
+    pub fn keep(&self, bytes: &[u8]) -> Result<String, String> {
+        self.shared.blobs.store(bytes)
     }
 
     /// Perform one queued op: an outbox entry's value, `{"op": <the op the
@@ -133,11 +171,12 @@ impl ConnectorProcess {
         }
         let mut frames = Vec::new();
         for hash in names(&queued, ATTACH_FIELD) {
-            let bytes = self
-                .shared
-                .blobs
-                .read(&hash)
-                .ok_or_else(|| PerformError::Refused("missing attachment".into()))?;
+            // A member's file reaches the host's store after the message
+            // naming it: the host asks the poster for it once it reads the
+            // message. Try again until it arrived rather than give up.
+            let bytes = self.shared.blobs.read(&hash).ok_or_else(|| {
+                PerformError::Unavailable("the attachment has not reached this host yet".into())
+            })?;
             frames.push(ToWorker::Blob {
                 blake3: hash,
                 bytes: Bytes(bytes),
@@ -161,6 +200,34 @@ impl ConnectorProcess {
         }
     }
 
+    /// Append an event the host itself observed for this connector (one
+    /// the service told the host directly, such as a sign-in on its consent
+    /// page that came back to the host), as if the worker had reported it:
+    /// the bots listening to `source` get it the same way, deduplicated by
+    /// `id`.
+    ///
+    /// # Errors
+    /// The event log could not keep it.
+    pub async fn emit(
+        &self,
+        source: &str,
+        id: &str,
+        payload: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        let now = tilo_clock::unix_now_ms_i64();
+        let appended = self
+            .shared
+            .events
+            .lock()
+            .await
+            .append(source, id, now, now, payload)
+            .map_err(|error| error.to_string())?;
+        if let Some(seq) = appended {
+            self.shared.seq.send_replace(seq);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn events(&self) -> Arc<Mutex<EventLog>> {
         Arc::clone(&self.shared.events)
@@ -178,6 +245,50 @@ impl ConnectorProcess {
             .lock()
             .map(|s| s.clone())
             .unwrap_or_default()
+    }
+
+    /// Have the worker be in the outside call `call` from now on, showing
+    /// `status` there (`None` leaves). Kept, and said again to a restarted
+    /// worker.
+    ///
+    /// # Errors
+    /// The worker is not running now; a worker that starts later is told.
+    pub async fn set_call(
+        &self,
+        call: Option<String>,
+        status: Option<String>,
+    ) -> std::io::Result<()> {
+        if let Ok(mut wanted) = self.shared.wanted_call.lock() {
+            *wanted = Some((call.clone(), status.clone()));
+        }
+        send(&self.shared, &[ToWorker::Call { call, status }]).await
+    }
+
+    /// The service's calls and the worker's place in them, as they change.
+    #[must_use]
+    pub fn calls(&self) -> watch::Receiver<CallsReport> {
+        self.shared.calls.subscribe()
+    }
+
+    /// The audio the outside call says, frame by frame, from now on.
+    #[must_use]
+    pub fn audio(&self) -> broadcast::Receiver<OutsideAudio> {
+        self.shared.audio.subscribe()
+    }
+
+    /// Hand the worker one Opus frame the room's call heard from `speaker`.
+    ///
+    /// # Errors
+    /// The worker is not running.
+    pub async fn send_audio(&self, speaker: String, opus: Vec<u8>) -> std::io::Result<()> {
+        send(
+            &self.shared,
+            &[ToWorker::Audio {
+                speaker,
+                opus: Bytes(opus),
+            }],
+        )
+        .await
     }
 
     pub async fn stop(self) {
@@ -262,6 +373,14 @@ async fn launch(shared: &Arc<Shared>, command: &WorkerCommand) -> std::io::Resul
             "worker speaks another protocol version",
         ));
     }
+    let wanted = shared
+        .wanted_call
+        .lock()
+        .ok()
+        .and_then(|wanted| wanted.clone());
+    if let Some((call, status)) = wanted {
+        write_frame_async(&mut stdin, &ToWorker::Call { call, status }).await?;
+    }
     *shared.stdin.lock().await = Some(stdin);
     tokio::spawn(read_loop(Arc::clone(shared), reader));
     Ok(child)
@@ -271,6 +390,8 @@ async fn supervise(shared: Arc<Shared>, command: WorkerCommand, mut child: Child
     loop {
         let _ = child.wait().await;
         shared.stdin.lock().await.take();
+        // A stopped worker is in no call.
+        shared.calls.send_replace(CallsReport::default());
         for (_, answer) in shared.pending.lock().await.drain() {
             let _ = answer.send(Err(PerformError::Unavailable("worker exited".into())));
         }
@@ -392,6 +513,14 @@ async fn read_loop(shared: Arc<Shared>, mut reader: BufReader<ChildStdout>) {
                 }
             }
             FromWorker::Status { healthy, message } => set_status(&shared, healthy, &message),
+            FromWorker::Calls { calls, link } => {
+                shared.calls.send_replace(CallsReport { calls, link });
+            }
+            FromWorker::Audio { speaker, mut opus } => {
+                // Audio is no secret: moved out rather than copied and zeroed.
+                let opus = std::mem::take(&mut opus.0);
+                let _ = shared.audio.send(OutsideAudio { speaker, opus });
+            }
             FromWorker::Metrics {
                 queue_depth,
                 lag_seconds,
@@ -438,7 +567,6 @@ mod tests {
         .unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("tilo_rooms_bridge_lag_seconds 0.000\n"));
-        // The temporary file was renamed away.
         assert_eq!(
             std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
             1

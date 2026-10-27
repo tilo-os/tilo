@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use tilo_sort::CompactSort as _;
 
 use taffy::NodeId as TaffyNodeId;
 use vello::kurbo::Rect;
@@ -58,6 +59,8 @@ mod reading_order;
 
 #[path = "a11y_tree/component_nodes.rs"]
 mod component_nodes;
+#[path = "a11y_tree/pointed.rs"]
+mod pointed;
 use component_nodes::ComponentNodes;
 pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
@@ -373,7 +376,7 @@ impl SemanticTree {
     /// receive no layout dispatch id. `focused` folds
     /// into each node's [`AccessState::focused`]. `resources` is the focused
     /// app's open-resource forest
-    /// ([`Widget::resources`]); each
+    /// ([`crate::resources::PublishesResources::resources`]); each
     /// exported [`ActionSpec`] becomes an invokable
     /// affordance.
     pub fn refresh(
@@ -608,9 +611,9 @@ impl SemanticTree {
             delta.added.extend(updates.added);
             delta.removed.extend(updates.removed);
             delta.updated.extend(updates.updated);
-            delta.added.sort();
-            delta.removed.sort();
-            delta.updated.sort();
+            delta.added.compact_sort();
+            delta.removed.compact_sort();
+            delta.updated.compact_sort();
         }
 
         #[cfg(any(test, feature = "test-support"))]
@@ -799,7 +802,7 @@ impl SemanticTree {
     /// invocation with simulated clicks.
     pub fn control_paths(&self, control_id: &str) -> Vec<Vec<SemanticId>> {
         let mut paths = self.control_paths_unranked(control_id);
-        paths.sort_by(|left, right| {
+        paths.compact_sort_by(|left, right| {
             left.len()
                 .cmp(&right.len())
                 .then_with(|| left.last().cmp(&right.last()))
@@ -938,7 +941,14 @@ impl SemanticTree {
                     } else {
                         spec
                     };
-                    resource.actions.push(spec);
+                    // A control's own verbs (focus it, press it, set it) are
+                    // how agents and scripts drive what a person presses
+                    // directly: never a row of their own in people's lists,
+                    // where they would repeat the app's actions as
+                    // "New folder — Focus".
+                    resource
+                        .actions
+                        .push(spec.for_audience(tilo_actions::Audience::Agents));
                 }
                 Some(resource)
             })
@@ -1098,7 +1108,6 @@ struct Build<'a, const BOUND: bool> {
     duplicate_ids: Vec<SemanticId>,
     /// The last refresh's retained subtrees, taken from as they recur.
     retained_before: RetainedMap,
-    /// This refresh's, for the next.
     retained: RetainedMap,
     /// A subtree built this refresh took the place of one it kept under the
     /// same id: a repeated id the full walk has to report.
@@ -1200,9 +1209,9 @@ impl Sections<'_> {
                 delta.removed.push(id.clone());
             }
         }
-        delta.added.sort();
-        delta.removed.sort();
-        delta.updated.sort();
+        delta.added.compact_sort();
+        delta.removed.compact_sort();
+        delta.updated.compact_sort();
         delta
     }
 }
@@ -1255,6 +1264,12 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
         parent_durable: bool,
         parent_children: &mut Vec<SemanticId>,
     ) {
+        // Under a parent without a durable identity nothing is durable, and
+        // the projection for actions keeps only durable nodes: it need not
+        // ask this widget or anything under it for its node.
+        if self.actions_only && !parent_durable {
+            return;
+        }
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
             return;
         };
@@ -1595,7 +1610,6 @@ mod tests {
 
     #[test]
     fn semantic_ids_are_durable_and_exported_only_when_stable() {
-        // Case `identity_is_stable_across_frames`.
         {
             let mut col = Column::new()
                 .push(Box::new(Button::new("a", "Alpha")))
@@ -1635,7 +1649,6 @@ mod tests {
             );
         }
 
-        // Case `duplicate_control_locations_choose_the_shortest_semantic_path`.
         {
             let mut tree = SemanticTree::new();
             let group = SemanticId("root~k:advanced".into());
@@ -1674,7 +1687,6 @@ mod tests {
             assert_eq!(routes[1].last(), Some(&deep));
         }
 
-        // Case `durable_widget_keys_survive_layout_rebuild_and_sibling_reorder`.
         {
             let mut first = Column::new()
                 .push(Box::new(Button::new("alpha", "Alpha")))
@@ -1716,7 +1728,6 @@ mod tests {
             assert!(tree.duplicate_ids().is_empty());
         }
 
-        // Case `encoded_action_keys_remain_valid_resource_ids`.
         {
             let mut button = Button::new("settings.section:network\u{1f}open", "Network");
             let node_map = layout(&mut button);
@@ -1738,7 +1749,6 @@ mod tests {
             );
         }
 
-        // Case `frame_local_control_identity_is_not_exported`.
         {
             let mut button = Button::new("go", "Go");
             let node_map = layout(&mut button);
@@ -1755,7 +1765,6 @@ mod tests {
             assert!(tree.action_resources().is_empty());
         }
 
-        // Case `controls_in_a_scroll_region_are_published_only_under_a_key`.
         {
             let published = |scroll: crate::widget::Scrollable| {
                 let mut scroll = scroll.with_child(Box::new(Button::new("go", "Go")));
@@ -1815,7 +1824,6 @@ mod tests {
 
     #[test]
     fn nodes_afford_only_the_actions_they_declare() {
-        // Case `semantic_projection_classifies_navigation_as_view`.
         {
             assert_eq!(
                 semantic_operation_kind(Role::Button, &Action::Focus),
@@ -1831,7 +1839,6 @@ mod tests {
             );
         }
 
-        // Case `button_node_affords_focus_and_activate_verbs`.
         {
             let mut btn = Button::new("go", "Go");
             let node_map = layout(&mut btn);
@@ -1855,7 +1862,6 @@ mod tests {
             ));
         }
 
-        // Case `plain_text_is_not_falsely_advertised_as_activatable`.
         {
             let label = crate::a11y::AccessNode::new(Role::Label);
             assert!(
@@ -1866,7 +1872,6 @@ mod tests {
             );
         }
 
-        // Case `declared_context_menu_is_projected_as_a_view_action`.
         {
             let row = crate::a11y::AccessNode::new(Role::ListItem)
                 .with_state(AccessState::new().focusable(true).context_menu(true));
@@ -1880,7 +1885,6 @@ mod tests {
             ));
         }
 
-        // Case `effectful_controls_are_not_projected_without_a_domain_contract`.
         {
             let mut button = Button::new("go", "Go");
             let node_map = layout(&mut button);
@@ -1899,7 +1903,6 @@ mod tests {
             );
         }
 
-        // Case `standard_local_text_input_projects_its_framework_owned_set_value`.
         {
             let mut field = TextInput::new(Vec::new()).with_accessible_name("Destination");
             let node_map = layout(&mut field);
@@ -1920,7 +1923,6 @@ mod tests {
 
     #[test]
     fn refresh_deltas_track_focus_membership_and_nested_cells() {
-        // Case `focus_change_updates_the_same_node`.
         {
             let mut col = Column::new()
                 .push(Box::new(Button::new("a", "Alpha")))
@@ -1966,7 +1968,6 @@ mod tests {
             );
         }
 
-        // Case `added_and_removed_nodes_surface_in_the_delta`.
         {
             let mut two = Column::new()
                 .push(Box::new(Button::new("a", "Alpha")))
@@ -1989,7 +1990,6 @@ mod tests {
             assert!(now.len() < baseline.len(), "the tree shrank");
         }
 
-        // Case `retained_table_control_is_nested_under_its_synthetic_cell`.
         {
             struct RowData {
                 id: u64,

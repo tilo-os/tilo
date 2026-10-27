@@ -1,5 +1,3 @@
-//! Two isolated Chromium profiles exchange real microphone Opus through
-//! a governed relay call, including mute, reconnect, leave and revocation.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -290,18 +288,24 @@ async fn two_chromium_profiles_exchange_microphone_audio_in_a_governed_call() {
                     if let Some(Envelope::VoiceRefused {reason, ..}) = &event {
                         panic!("the relay refused Alice's heartbeat: {reason}");
                     }
-                    if let Some(Envelope::VoiceGranted {grant, ..}) = event
-                        && (grant.token != native_grant.token || grant.subscriptions != native_grant.subscriptions) {
+                    // As the native shell does, Alice keeps her carrier
+                    // through a renewed token or another roster (Carol muting,
+                    // Bob reconnecting) and replaces it only for another
+                    // scope: a carrier rebuilt on every grant drops her audio
+                    // to everyone while it reconnects.
+                    if let Some(Envelope::VoiceGranted {grant, ..}) = event {
+                        let stale = call::scope(&grant, generation) != call::scope(&native_grant, generation);
+                        native_grant = *grant;
+                        if stale {
                             native.close();
-                            native_grant = *grant;
                             generation = generation.checked_add(1).unwrap();
                             native = carrier(&native_grant, generation);
+                        }
                     }
                 }
                 _ = tick.tick() => {
-                    // The production native client retires its carrier when a
-                    // remote publication ends. Its owner must reopen it, just
-                    // as the browser owner does after renewal or reconnect.
+                    // A carrier that failed is reopened, as its owner does,
+                    // with the current grant.
                     if native.status() == Status::Failed && std::time::Instant::now() >= retry_at {
                         native.close();
                         generation = generation.checked_add(1).unwrap();

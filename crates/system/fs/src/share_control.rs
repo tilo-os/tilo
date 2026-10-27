@@ -53,11 +53,6 @@ pub struct ShareControlServer {
 
 impl ShareControlServer {
     /// Construct a server using the process security clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when workspace, endpoint, issuer set, or issuer
-    /// membership is invalid.
     pub fn new(
         workspace_id: Uuid,
         endpoint: EndpointAddr,
@@ -139,11 +134,6 @@ impl ShareControlServer {
 
     /// Serve accepted streams with a hard global connection bound. Acquiring
     /// a permit before `accept` prevents an accept-loop task flood.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when permit acquisition, socket acceptance, or the
-    /// listener itself fails.
     pub async fn serve(self: Arc<Self>, listener: UnixListener) -> std::io::Result<()> {
         let slots = Arc::new(Semaphore::new(MAX_SHARE_CONTROL_CONNECTIONS));
         loop {
@@ -381,11 +371,6 @@ where
 }
 
 /// Write one bounded canonical request frame.
-///
-/// # Errors
-///
-/// Returns an error when encoding or socket I/O fails or the request exceeds
-/// the protocol frame bound.
 pub async fn write_share_control_request(
     stream: &mut UnixStream,
     request: &ShareControlRequestV1,
@@ -394,10 +379,6 @@ pub async fn write_share_control_request(
 }
 
 /// Read one bounded canonical response frame.
-///
-/// # Errors
-///
-/// Returns an error for EOF, malformed/oversized responses, or socket I/O.
 pub async fn read_share_control_response(
     stream: &mut UnixStream,
 ) -> std::io::Result<ShareControlResponseV1> {
@@ -554,12 +535,10 @@ mod tests {
     #[tokio::test]
     async fn empty_and_truncated_frames_end_the_connection() {
         for (wire, answer) in [
-            // A zero-length frame is an invalid request.
             (
                 &[0, 0, 0, 0][..],
                 Some(ShareControlErrorCode::InvalidRequest),
             ),
-            // A stream closed inside the prefix is a clean close.
             (&[0, 0][..], None),
         ] {
             let fixture = Fixture::new();
@@ -582,7 +561,6 @@ mod tests {
             task.await.unwrap().unwrap();
         }
 
-        // A stream closed inside the payload is an I/O error.
         let error = read_share_control_response_from(&[0, 0, 0, 3, 2]).await;
         assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
     }
@@ -600,7 +578,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     async fn share_control_creates_and_revokes_only_known_records_with_redacted_bounded_frames() {
-        // Phase `creates_named_and_bearer_then_revokes_over_requesting_stream`.
         {
             let fixture = Fixture::new();
             let (_, recipient) = generate_keypair();
@@ -660,7 +637,6 @@ mod tests {
                 ShareGrantStatus::Revoked
             );
         }
-        // Phase `unknown_record_cannot_create_any_authority_state`.
         {
             let fixture = Fixture::new();
             let (_, recipient) = generate_keypair();
@@ -688,7 +664,6 @@ mod tests {
                 0
             );
         }
-        // Phase `oversized_frame_is_rejected_before_payload_allocation`.
         {
             let fixture = Fixture::new();
             let (mut client, server_stream) = UnixStream::pair().unwrap();
@@ -711,7 +686,6 @@ mod tests {
             );
             task.await.unwrap().unwrap();
         }
-        // Phase `bearer_uri_is_redacted_from_every_response_debug_path`.
         {
             let fixture = Fixture::new();
             let response = fixture

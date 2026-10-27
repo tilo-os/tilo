@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Physical development admission must bind CI, tested media and installed GPT."""
+import base64
 import hashlib
 import importlib.util
 import json
@@ -16,6 +17,7 @@ SPEC = importlib.util.spec_from_file_location(
     'admission', Path(__file__).resolve().parents[1] / 'dev/windows-direct-dev-admission.py')
 admission = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(admission)
+FIXTURE_PACK = Path(__file__).with_name('fixtures') / 'windows-direct-dev-admission-objects.pack.b64'
 
 
 def fixture(directory):
@@ -59,23 +61,27 @@ def fixture(directory):
 class AdmissionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        # CI's shallow PR checkout may omit this separately published immutable
-        # assembly branch. Fetch only missing reviewed objects; the admission
-        # validator still refuses unavailable or mismatched objects and bytes.
-        # A checkout without an `origin` (t's) fetches from the public repository.
-        repository = Path(__file__).resolve().parents[2]
-        remote = 'origin'
-        if subprocess.run(['git', '-C', str(repository), 'remote', 'get-url', 'origin'],
-                          capture_output=True).returncode:
-            remote = 'https://code.tilo.so/tilo/tilo.git'
-        revisions = {*admission.PROFILE_FIX_PAIR, *admission.SEALED_FIX_PAIR}
-        for revision in sorted(revisions):
-            result = subprocess.run(['git', '-C', str(repository), 'cat-file', '-e',
-                                     revision + '^{commit}'], capture_output=True)
-            if result.returncode:
-                subprocess.run(['git', '-C', str(repository), 'fetch', '--no-tags',
-                                '--depth=1', remote, revision],
-                               capture_output=True, check=True, timeout=60)
+        # The reviewed assembly revisions, in a repository of the fixture's own: the checkout
+        # under test may have no .git (t's checks get none), and the reviewed board revisions
+        # sit on no published branch. FIXTURE_PACK is a base64 Git pack of exactly the objects
+        # the validator reads: the three commits, their root trees, and the trees and blobs on
+        # each changed path. Unchanged subtrees stay absent, so the pack is small, offline,
+        # and the commit IDs remain the real, pinned ones. The admission validator still
+        # refuses unavailable or mismatched objects and bytes.
+        cls.repository = tempfile.TemporaryDirectory()
+        repository = Path(cls.repository.name)
+        clean = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+        subprocess.run(['git', 'init', '-q', str(repository)], env=clean, check=True)
+        subprocess.run(['git', '-C', str(repository), 'index-pack', '--stdin'],
+                       input=base64.b64decode(FIXTURE_PACK.read_bytes()), env=clean,
+                       capture_output=True, check=True, timeout=60)
+        cls.repository_patch = patch.object(admission, 'REPOSITORY', repository)
+        cls.repository_patch.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.repository_patch.stop()
+        cls.repository.cleanup()
 
     def test_execute_never_trusts_development_receipt_without_fresh_admission(self):
         copy = admission.module('dev_copy_entry', 'copy-windows-direct-final-install.py')
@@ -254,6 +260,16 @@ class AdmissionTests(unittest.TestCase):
         with patch.object(admission, 'PROFILE_FIX_CHANGED', {'os/Containerfile'}):
             with self.assertRaisesRegex(ValueError, 'input closure differs'):
                 admission.assembly_compatibility(generic, board)
+
+    def test_reviewed_assembly_refuses_unavailable_objects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clean = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+            subprocess.run(['git', 'init', '-q', directory], env=clean, check=True)
+            with patch.object(admission, 'REPOSITORY', Path(directory)):
+                for pair in (admission.PROFILE_FIX_PAIR, admission.SEALED_FIX_PAIR):
+                    with self.subTest(pair=pair), \
+                            self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                        admission.assembly_compatibility(*pair)
 
     def test_sealed_diff_pins_do_not_depend_on_git_abbreviation(self):
         for abbreviation in ('7', '12', '40'):

@@ -31,11 +31,24 @@ path = "examples/notes-latency.rs"
 [features]
 thin = ["dep:runtime-dylib"]
 android = []
+# Reach the emoji catalogue a page's reactions pick from through its engine
+# library in the runtime bundle (libtilo_emoji_engine.so,
+# crates/runtime/engines/emoji) instead of linking it. The release collection
+# enables it (dist/apps/app-collections.toml), as for Chat.
+runtime-engine = ["thin", "tilo-emoji-engine/thin"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
+# The Unicode emoji a page's reactions pick from, offered where this build of
+# the app carries them: every native build does, the module the browser desktop
+# starts with carries none.
+tilo-unicode-emoji = { path = "../../crates/platform/tilo-unicode-emoji" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+# The catalogue comes from its engine library in the runtime bundle
+# (`runtime-engine`) instead of being linked into the app; `tilo-unicode-emoji`
+# offers whichever the build carries.
+tilo-emoji-engine = { path = "../../crates/runtime/engines/emoji", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 # Page bodies are rich text, edited in the SDK rich-text editor.
 tilo-doc = { path = "../../crates/doc/tilo-doc" }

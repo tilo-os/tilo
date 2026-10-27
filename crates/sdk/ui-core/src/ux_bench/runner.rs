@@ -521,15 +521,11 @@ fn measure(
 }
 
 /// Execute a scenario, retaining failure evidence and never treating input dispatch as completion.
-/// # Errors
-/// Reports file IO, invalid input scale, and evidence serialization errors.
 pub fn run(driver: &mut FrameHarness, scenario: &Scenario, out: &Path) -> Result<Report, String> {
     run_with_state(driver, scenario, out, || Value::Null)
 }
 
 /// Run with a read-only adapter state snapshot for product outcome assertions.
-/// # Errors
-/// Returns invalid scenarios, filesystem or evidence serialization errors.
 #[allow(
     clippy::too_many_lines,
     clippy::cast_possible_truncation,

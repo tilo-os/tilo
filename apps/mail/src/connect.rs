@@ -34,10 +34,6 @@ pub(crate) fn interleaved(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
 }
 
 /// Connect to `host:port`, racing its addresses.
-///
-/// # Errors
-///
-/// A user-facing reason when the name does not resolve or no address accepts.
 pub(crate) async fn tcp(host: &str, port: u16) -> Result<TcpStream, String> {
     let addrs = tokio::net::lookup_host((host, port))
         .await
@@ -48,14 +44,26 @@ pub(crate) async fn tcp(host: &str, port: u16) -> Result<TcpStream, String> {
 
 /// Connect to the first of `addrs` that accepts, racing them as [`tcp`] does.
 async fn race(addrs: Vec<SocketAddr>) -> Result<TcpStream, String> {
+    race_with(addrs, TcpStream::connect).await
+}
+
+/// [`race`] over any `connect`, so the staggering and deadlines can be
+/// checked against connections that never answer.
+async fn race_with<T, F, Fut>(addrs: Vec<SocketAddr>, connect: F) -> Result<T, String>
+where
+    F: Fn(SocketAddr) -> Fut + Sync,
+    Fut: std::future::Future<Output = std::io::Result<T>> + Send,
+    T: Send,
+{
     use futures_util::StreamExt as _;
 
+    let connect = &connect;
     let mut attempts: futures_util::stream::FuturesUnordered<_> = interleaved(addrs)
         .into_iter()
         .enumerate()
         .map(|(index, addr)| async move {
             tokio::time::sleep(STAGGER * u32::try_from(index).unwrap_or(u32::MAX)).await;
-            match tokio::time::timeout(ATTEMPT_TIMEOUT, TcpStream::connect(addr)).await {
+            match tokio::time::timeout(ATTEMPT_TIMEOUT, connect(addr)).await {
                 Ok(connected) => connected.map_err(|e| e.to_string()),
                 Err(_) => Err("connection timed out".to_owned()),
             }
@@ -79,11 +87,6 @@ async fn race(addrs: Vec<SocketAddr>) -> Result<TcpStream, String> {
 /// after another, each with the whole command timeout, so on a network that
 /// drops one address family an account check or a send waited ten seconds
 /// for every dead address before the SMTP server was even asked.
-///
-/// # Errors
-///
-/// A user-facing reason when no address accepts, TLS fails, or the server
-/// does not answer as SMTP.
 pub(crate) async fn smtp(
     host: &str,
     port: u16,
@@ -200,20 +203,36 @@ mod tests {
         assert!(tcp("127.0.0.1", port).await.is_ok());
     }
 
-    /// An address that never answers (a documentation network nothing
-    /// routes back from) does not hold up a live one behind it.
-    #[tokio::test(flavor = "current_thread")]
+    /// An address that never answers does not hold up a live one behind
+    /// it: the live one joins the race one stagger later and wins.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn a_silent_address_does_not_hold_up_a_live_one() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let live = listener.local_addr().unwrap();
-        let started = std::time::Instant::now();
-        let stream = race(vec![addr("192.0.2.1:25"), live]).await.unwrap();
-        assert_eq!(stream.peer_addr().unwrap(), live);
-        assert!(
-            started.elapsed() < ATTEMPT_TIMEOUT,
-            "{:?}",
-            started.elapsed()
-        );
+        let silent = addr("[2001:db8::1]:25");
+        let live = addr("192.0.2.1:25");
+        let started = tokio::time::Instant::now();
+        let won = race_with(vec![silent, live], |addr| async move {
+            if addr == silent {
+                std::future::pending::<()>().await;
+            }
+            Ok(addr)
+        })
+        .await
+        .unwrap();
+        assert_eq!(won, live);
+        assert_eq!(started.elapsed(), STAGGER);
+    }
+
+    /// When every address stays silent, each gives up at its own deadline.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn silent_addresses_time_out_at_their_deadline() {
+        let started = tokio::time::Instant::now();
+        let error = race_with(vec![addr("[2001:db8::1]:25"), addr("192.0.2.1:25")], |_| {
+            std::future::pending::<std::io::Result<()>>()
+        })
+        .await
+        .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert_eq!(started.elapsed(), STAGGER + ATTEMPT_TIMEOUT);
     }
 
     #[tokio::test(flavor = "current_thread")]

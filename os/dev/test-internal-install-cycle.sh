@@ -105,7 +105,7 @@ export TILO_INSTALLER_OUTPUT="$storage"
 export TILO_RUN="$run"
 export TILO_MEM="${TILO_MEM:-8192}"
 export TILO_SSH_PORT="${TILO_SSH_PORT:-2222}"
-export TILO_BOOT_WAIT_ATTEMPTS="${TILO_BOOT_WAIT_ATTEMPTS:-600}"
+export TILO_BOOT_WAIT_SECS="${TILO_BOOT_WAIT_SECS:-1800}"
 # The disk passphrase and account password of the installed Tilo (a
 # disposable test target; the same convention as test-installer-cycle.sh).
 export TILO_USER="${TILO_INTERNAL_CYCLE_USER:-cycleuser}"

@@ -127,10 +127,6 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
 /// same-account unconfined scripts to the owner facade. That facade retains
 /// the original certified session and revalidates it before effects; an owner
 /// label alone is not action authority.
-///
-/// # Errors
-/// Refuses a busy/foreign profile, malformed request or failed admission, and
-/// incomplete host answers. A terminal action failure is returned as a receipt.
 pub(crate) fn owner_action<S: RuntimeServices>(
     profile: &Path,
     json: &str,

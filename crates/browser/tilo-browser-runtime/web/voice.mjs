@@ -11,33 +11,67 @@
  * - the carrier reopened with backoff when it drops, and at once when the
  *   network changes (`online`, `navigator.connection` `change`): QUIC paths
  *   do not survive a new network;
- * - the microphone and playback (web/voice-audio.mjs): muting stops the
- *   microphone and the publication, a grant that may not publish mutes;
+ * - the microphone and playback (web/voice-audio.mjs): a call starts muted
+ *   and asks the browser for nothing; the first unmute asks for the
+ *   microphone, and a refusal keeps the person in the call, muted, with the
+ *   reason in `micIssue`; muting stops the microphone and the publication,
+ *   and a grant that may not publish mutes;
  * - who is speaking, from the levels the audio thread measures;
  * - the camera and a shared screen (web/voice-video.mjs): published on the
  *   carrier while on, again on each new carrier, and told to the host
  *   (`signalling.show`); and the pictures of others the app shows, read off
- *   the carrier into an inbox the app collects from.
+ *   the carrier into an inbox the app collects from;
+ * - whether this person is muted or deafened, told to the host with what
+ *   they show whenever it changes, so everyone in the call sees it; a
+ *   deafened person hears nothing of the call and is muted.
  *
- * `signalling` is the session side: `{join(call), leave(), onEvent(listener)}`
+ * `signalling` is the session side: `{join(call), leave(), show(camera,
+ * screen, muted, deafened), reachable(), onEvent(listener)}`
  * where events are `{kind: 'granted', grant}` and `{kind: 'ended', call,
  * reason}` (`peer.voice` in peer.mjs adapts the wasm peer).
  */
 import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
 import {createPictureInbox, openSource} from './voice-video.mjs';
 import {createVoiceTransport} from './voice-transport.mjs';
-import {MediaAdmissionError} from './moq-carrier.mjs';
+import {CarrierUnsupportedError, MediaAdmissionError} from './moq-carrier.mjs';
+import {callIdOf} from './voice-controls.mjs';
 
 /** RMS above which a participant counts as speaking, and how long it stays so. */
 const SPEAKING_LEVEL = 0.015;
 const SPEAKING_HOLD_MS = 400;
 const RECONNECT_MS = [250, 1000, 3000, 10_000];
+/** How long a join waits for the host's grant before it gives up: a host
+ * that never answers ends the call with a reason, never a call that stays
+ * joining. */
+export const GRANT_DEADLINE_MS = 15_000;
+/** How often the grant deadline looks at the time the page ran. A look
+ * that comes on time counts its interval; one that comes late counts it
+ * less by its lateness, and one a whole interval late or more counts
+ * nothing: the page stood still or crawled (a busy page beside a call:
+ * software rendering while a video loads, a background tab), the session's
+ * beats and grants with it, so that time is no sign that the host will not
+ * answer. */
+export const GRANT_LOOK_MS = 2_000;
+/** Why a join ended when no grant came in time. */
+export const NO_GRANT = 'no grant arrived in time';
+
+/** Why the browser gave no microphone, as the call's status names it: the
+ * person or the browser refused it, there is none, or it would not start. */
+export function microphoneIssue(error) {
+  const name = error?.name;
+  if (name === 'NotAllowedError' || name === 'SecurityError') return 'permission_denied';
+  if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'source_lost';
+  return 'capture_failed';
+}
 
 /**
  * `state` is `{phase, call, muted, canPublish, participants, inputId,
- * reason, carrier}` where `phase` is `idle`, `joining`, `connecting`, `live`,
- * `reconnecting` or `ended`, and each participant is `{namespace, device,
- * user, publishes, speaking, self}`.
+ * reason, carrier, micIssue, unsupported}` where `unsupported` says an
+ * ended call ended because this browser cannot open the carrier, and `micIssue` is why the microphone could
+ * not start (`permission_denied`, `source_lost`, `capture_failed`) or null; `phase` is `idle`, `joining`, `connecting`, `live`,
+ * `reconnecting` or `ended`, `admitted` says whether the host granted the
+ * call (an ended call that never was is a refusal), and each participant is `{namespace, device,
+ * user, publishes, camera, screen, muted, deafened, speaking, self}`.
  */
 export function createVoiceCall({
   signalling,
@@ -64,11 +98,25 @@ export function createVoiceCall({
   let carrier;
   let carrierKey;
   let connecting;
+  /** What the carrier being opened is for (see `keyOf`). */
+  let connectingKey;
   let attempt = 0;
   let retryTimer;
+  let grantTimer;
   let capturePaused = false;
   let generation = 0;
+  /** Whether the host was last told this person is muted, and deafened. */
+  let toldMuted;
+  let toldDeafened;
+  /** Whether the microphone was muted when the person deafened: what
+   * undeafening puts back. */
+  let mutedBeforeDeafen = true;
   const speaking = new Map();
+  /** How loud each participant plays here, by id (`callIdOf`), and that
+   * as a gain per publication of the grant it was worked out for. */
+  const volumes = new Map();
+  let gains = new Map();
+  let gainsOf;
   /** The camera and screen streams this person shows, by source. */
   const streams = new Map();
   /** Their publishers on the current carrier, by source. */
@@ -80,10 +128,17 @@ export function createVoiceCall({
   const inbox = createPictureInbox();
 
   function idle() {
-    return {phase: 'idle', call: null, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, videoIssue: null};
+    return {phase: 'idle', call: null, admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, deafened: false, videoIssue: null, micIssue: null, unsupported: false};
   }
   const emit = () => { for (const listener of [...listeners]) { try { listener(state); } catch (error) { report({type: 'voice-listener-error', error}); } } };
-  const update = change => { state = {...state, ...change}; emit(); };
+  const update = change => {
+    state = {...state, ...change};
+    // Muting, deafening, a refused or lost microphone and a grant that may
+    // not publish all reach the others.
+    if ((state.muted !== toldMuted || state.deafened !== toldDeafened) && inCall()) tellShowing();
+    emit();
+  };
+  const inCall = () => state.phase !== 'idle' && state.phase !== 'ended';
 
   function participants() {
     if (!grant) return [];
@@ -96,6 +151,9 @@ export function createVoiceCall({
       publishes: participant.publishes,
       camera: participant.camera === true,
       screen: participant.screen === true,
+      muted: participant.muted === true,
+      ...(participant.bridged ? {bridged: participant.bridged} : {}),
+      deafened: participant.deafened === true,
       self: participant.namespace === own,
       speaking: (speaking.get(participant.namespace.split('/')[1]) ?? -Infinity) > at - SPEAKING_HOLD_MS,
     }));
@@ -118,6 +176,17 @@ export function createVoiceCall({
     if (changed) update({participants: next});
   }
 
+  function gainOf(publisher) {
+    if (gainsOf !== grant) {
+      gainsOf = grant;
+      gains = new Map((grant?.participants ?? []).flatMap(participant => {
+        const gain = volumes.get(callIdOf(participant));
+        return gain === undefined ? [] : [[participant.namespace.split('/')[1], gain]];
+      }));
+    }
+    return gains.get(publisher) ?? 1;
+  }
+
   function onFrame(frame) {
     if (!carrier || state.muted || !grant?.directions.publish) return;
     try { carrier.publish(frame); } catch (error) { report({type: 'voice-publish-error', error}); }
@@ -128,7 +197,18 @@ export function createVoiceCall({
     const controller = new AbortController();
     audioController = controller;
     const startingMuted = wantMuted;
-    audioStarting = audio.start({inputId, muted: startingMuted, onFrame, onLevels, signal: controller.signal, onError: error => {
+    // The microphone going away mutes the person, with the reason; the
+    // call goes on and they still hear it.
+    const onCaptureLost = error => {
+      if (audioController !== controller || controller.signal.aborted) return;
+      microphoneFailed(audioSession, error);
+    };
+    const onInputChanged = id => {
+      if (audioController !== controller || controller.signal.aborted) return;
+      inputId = id;
+      update({inputId: id ?? null});
+    };
+    audioStarting = audio.start({inputId, muted: startingMuted, onFrame, onLevels, onCaptureLost, onInputChanged, signal: controller.signal, onError: error => {
       if (audioController !== controller || controller.signal.aborted) return;
       report({type: 'voice-audio-error', error});
       const call = state.call;
@@ -137,6 +217,7 @@ export function createVoiceCall({
     }}).then(session => {
       if (audioController !== controller || controller.signal.aborted) { void session.stop(); return undefined; }
       audioSession = session;
+      session.setDeafened?.(state.deafened);
       // A direction change or mute can arrive during microphone acquisition.
       if (capturePaused || state.muted !== startingMuted) synchronizeCapture(capturePaused || state.muted);
       return session;
@@ -154,13 +235,19 @@ export function createVoiceCall({
   function synchronizeCapture(muted) {
     const session = audioSession;
     if (!session) return;
+    // A microphone that will not start leaves the person in the call, muted.
     const failed = error => {
       if (audioSession !== session) return;
-      report({type: 'voice-audio-error', error});
-      signalling.leave();
-      ended(state.call, String(error?.message ?? error));
+      microphoneFailed(session, error);
     };
     try { Promise.resolve(session.setMuted(muted)).catch(failed); } catch (error) { failed(error); }
+  }
+
+  function microphoneFailed(session, error) {
+    report({type: 'voice-microphone-error', error});
+    wantMuted = true;
+    try { Promise.resolve(session?.setMuted(true)).catch(() => {}); } catch {}
+    update({muted: true, micIssue: microphoneIssue(error)});
   }
 
   function pauseCapture() {
@@ -216,7 +303,9 @@ export function createVoiceCall({
   }
 
   function tellShowing() {
-    try { signalling.show?.(streams.has('camera'), streams.has('screen')); } catch (error) { report({type: 'voice-signalling-error', error}); }
+    toldMuted = state.muted;
+    toldDeafened = state.deafened;
+    try { signalling.show?.(streams.has('camera'), streams.has('screen'), state.muted, state.deafened); } catch (error) { report({type: 'voice-signalling-error', error}); }
   }
 
   function stopVideo() {
@@ -265,6 +354,7 @@ export function createVoiceCall({
     retryTimer = undefined;
     connecting?.abort();
     connecting = undefined;
+    connectingKey = undefined;
     unpublishVideo();
     const current = carrier;
     if (current && pause) pauseCapture();
@@ -273,26 +363,35 @@ export function createVoiceCall({
     try { current?.close(); } catch {}
   }
 
-  /** The grant a carrier is opened for: same token, same publication. */
-  const keyOf = value => `${value.participation}:${value.token}:${value.directions.publish}:${value.directions.subscribe}`;
+  /** What a carrier is opened for: its participation and directions. The
+   * token only admits new carrier sessions; an admitted one keeps the
+   * participation's authority, so a renewed token (every half minute) keeps
+   * the carrier and is used when one is opened next. */
+  const keyOf = value => `${value.participation}:${value.directions.publish}:${value.directions.subscribe}`;
 
   function connect() {
     if (!grant || state.phase === 'idle' || state.phase === 'ended') return;
     if (carrier && carrierKey === keyOf(grant)) return;
+    // A grant renewed or re-sent while a carrier is being opened for the
+    // same participation leaves that opening be: started over, a slow
+    // handshake (a network just back) never finishes.
+    if (connecting && connectingKey === keyOf(grant)) return;
     closeCarrier();
     const opening = grant;
     const ticket = ++generation;
     const controller = new AbortController();
     connecting = controller;
+    connectingKey = keyOf(opening);
     update({phase: attempt === 0 && state.phase !== 'live' ? 'connecting' : 'reconnecting', carrier: 'connecting'});
     void transport.connect({grant: opening, signal: controller.signal}).then(session => {
       if (ticket !== generation) { session.close(); return; }
       connecting = undefined;
+      connectingKey = undefined;
       carrier = session;
       carrierKey = keyOf(opening);
       attempt = 0;
       session.subscribe({
-        onFrame: frame => audioSession?.play({publisherId: frame.publisher, timestamp: frame.timestamp, duration: frame.duration, payload: frame.payload}),
+        onFrame: frame => audioSession?.play({publisherId: frame.publisher, timestamp: frame.timestamp, duration: frame.duration, payload: frame.payload, gain: gainOf(frame.publisher)}),
         onPublisher: (publisher, active) => { if (!active) audioSession?.removePublisher(publisher); },
       });
       update({phase: 'live', carrier: 'open', reason: null});
@@ -303,7 +402,7 @@ export function createVoiceCall({
       // authenticated carrier says this grant no longer has authority.
       void session.authorityLost?.then(() => {
         if (ticket !== generation || !grant || state.call !== opening.call) return;
-        admissionEnded(opening.call, new MediaAdmissionError().message);
+        admissionLost(opening.call, new MediaAdmissionError().message);
       });
       void session.closed.then(() => {
         if (carrier !== session) return;
@@ -314,9 +413,14 @@ export function createVoiceCall({
     }, error => {
       if (ticket !== generation) return;
       connecting = undefined;
+      connectingKey = undefined;
       report({type: 'voice-carrier-error', error});
+      if (error instanceof CarrierUnsupportedError) {
+        unsupportedEnded(opening.call, error.message);
+        return;
+      }
       if (error instanceof MediaAdmissionError) {
-        admissionEnded(opening.call, error.message);
+        admissionLost(opening.call, error.message);
         return;
       }
       retry();
@@ -344,9 +448,12 @@ export function createVoiceCall({
   function granted(next) {
     if (state.phase === 'idle' || state.phase === 'ended' || next.call !== state.call) return;
     grant = next;
+    clearGrantDeadline();
+    // Back after the room took the carrier away: audio again, as wanted.
+    if (!audioSession && !audioStarting) void startAudio();
     const canPublish = next.directions.publish;
     if (!canPublish && !state.muted) void audioSession?.setMuted(true);
-    update({canPublish, muted: canPublish ? state.muted : true, participants: participants()});
+    update({admitted: true, canPublish, muted: canPublish ? state.muted : true, participants: participants()});
     connect();
     // Someone joined or left: the shown pictures follow their publications.
     applyShown();
@@ -354,8 +461,66 @@ export function createVoiceCall({
 
   function ended(call, reason) {
     if (call !== state.call) return;
+    const admitted = state.admitted;
     stopAll();
-    update({...idle(), phase: 'ended', call, reason});
+    update({...idle(), phase: 'ended', call, admitted, reason});
+  }
+
+  function clearGrantDeadline() {
+    if (grantTimer !== undefined) clearTimer(grantTimer);
+    grantTimer = undefined;
+  }
+
+  /** `expire` once the page ran, online, `GRANT_DEADLINE_MS` without a
+   * grant, looked at every `GRANT_LOOK_MS`. */
+  function startGrantDeadline(expire) {
+    clearGrantDeadline();
+    let ran = 0;
+    let last = now();
+    const look = () => {
+      const at = now();
+      const late = Math.max(at - last - GRANT_LOOK_MS, 0);
+      // Offline, the session cannot reach the host: no grant can come, so
+      // that time is no sign the host will not answer either. The call
+      // waits, reconnecting, for the network.
+      if (environment.navigator?.onLine !== false) ran += Math.max(GRANT_LOOK_MS - late, 0);
+      last = at;
+      if (ran >= GRANT_DEADLINE_MS) {
+        grantTimer = undefined;
+        expire();
+        return;
+      }
+      grantTimer = setTimer(look, GRANT_LOOK_MS);
+    };
+    grantTimer = setTimer(look, GRANT_LOOK_MS);
+  }
+
+  /** The room took the carrier's admission away (revoked it, or refused
+   * its token): nothing is sent or played on it any more. The session
+   * still holds the participation and joins afresh when the host forgot it
+   * (a page that stood still past its lifetime, a token renewed meanwhile),
+   * so the call waits for that grant; one that does not come while the
+   * page runs for the deadline ends the call, and an end the session
+   * reports ends it at once. */
+  function admissionLost(call, reason) {
+    if (call !== state.call) return;
+    stopAll();
+    // The relay answered, so the host is reachable again: the session need
+    // not wait out its backoff to bring the fresh grant.
+    try { signalling.reachable?.(); } catch (error) { report({type: 'voice-signalling-error', error}); }
+    update({phase: 'reconnecting', carrier: 'waiting', camera: false, screen: false, participants: []});
+    startGrantDeadline(() => {
+      if (state.call === call && !grant && state.phase !== 'idle' && state.phase !== 'ended') admissionEnded(call, reason);
+    });
+  }
+
+  /** This browser can never open the carrier: the call ends at once with
+   * why, instead of reconnecting forever. */
+  function unsupportedEnded(call, reason) {
+    if (call !== state.call) return;
+    stopAll();
+    update({...idle(), phase: 'ended', call, admitted: false, unsupported: true, reason});
+    try { signalling.leave(); } catch (error) { report({type: 'voice-signalling-error', error}); }
   }
 
   function admissionEnded(call, reason) {
@@ -363,12 +528,23 @@ export function createVoiceCall({
     try { signalling.leave(); } catch (error) { report({type: 'voice-signalling-error', error}); }
   }
 
+  /** Silence or play what the call plays here, and say it. */
+  function applyDeafened(deafened) {
+    try { audioSession?.setDeafened?.(deafened); } catch (error) { report({type: 'voice-audio-error', error}); }
+    update({deafened});
+  }
+
   function stopAll() {
+    clearGrantDeadline();
     closeCarrier(false);
     capturePaused = false;
     generation++;
     grant = undefined;
+    toldMuted = undefined;
+    toldDeafened = undefined;
     speaking.clear();
+    volumes.clear();
+    gainsOf = undefined;
     stopVideo();
     const session = audioSession;
     audioSession = undefined;
@@ -400,10 +576,23 @@ export function createVoiceCall({
       if (state.phase !== 'idle' && state.phase !== 'ended') this.leave();
       wantMuted = muted;
       attempt = 0;
+      // A browser that cannot open the carrier never joins: the others
+      // would see someone in the call who hears nothing.
+      const unsupported = transport.unsupported?.();
+      if (unsupported) {
+        state = {...idle(), phase: 'ended', call, muted, unsupported: true, reason: unsupported};
+        emit();
+        return;
+      }
       state = {...idle(), phase: 'joining', call, muted};
       emit();
       void startAudio();
       signalling.join(call);
+      // Said before the grant: the session tells the host once granted.
+      tellShowing();
+      startGrantDeadline(() => {
+        if (state.call === call && !grant && state.phase !== 'idle' && state.phase !== 'ended') admissionEnded(call, NO_GRANT);
+      });
     },
     leave() {
       if (state.phase === 'idle') return;
@@ -413,14 +602,48 @@ export function createVoiceCall({
       state = idle();
       emit();
     },
+    /** Mute or unmute. Unmuting asks the browser for the microphone; a
+     * refusal resolves with the call still on, muted, and `micIssue` set. */
     async setMuted(value) {
+      // Unmuting is hearing the call again too.
+      if (!value && state.deafened) applyDeafened(false);
       wantMuted = Boolean(value) || !(grant?.directions.publish ?? true);
       if (state.phase === 'idle' || state.phase === 'ended') { update({muted: wantMuted}); return; }
-      update({muted: wantMuted});
-      await (audioSession ?? await audioStarting)?.setMuted(wantMuted || capturePaused);
+      update({muted: wantMuted, ...(wantMuted ? {} : {micIssue: null})});
+      const call = state.call;
+      const session = audioSession ?? await audioStarting;
+      try {
+        await session?.setMuted(wantMuted || capturePaused);
+      } catch (error) {
+        if (state.call !== call || audioSession !== session) return;
+        microphoneFailed(session, error);
+      }
+    },
+    /** Deafen or undeafen: a deafened person hears nothing of the call
+     * and is muted. Undeafening unmutes again when they were unmuted
+     * before and `unmute` allows it (the browser asks for the microphone
+     * only from a gesture). */
+    async setDeafened(value, {unmute = true} = {}) {
+      const deafen = Boolean(value);
+      if (!inCall() || deafen === state.deafened) return;
+      if (deafen) {
+        mutedBeforeDeafen = state.muted;
+        applyDeafened(true);
+        await this.setMuted(true);
+        return;
+      }
+      applyDeafened(false);
+      if (!mutedBeforeDeafen && unmute) await this.setMuted(false);
     },
     /** Turn the camera or a shared screen on or off in the call. */
     setVideo,
+    /** Play participant `id` (a person or `<service>:<account>`) at `gain`
+     * (0 silences, 1 as they arrive, at most 2) on this device only. */
+    setVolume(id, gain) {
+      if (typeof id !== 'string' || !Number.isFinite(gain) || gain < 0 || gain > 2) return;
+      if (gain === 1) volumes.delete(id); else volumes.set(id, gain);
+      gainsOf = undefined;
+    },
     /** The pictures the app shows: `[{person, source, layer}]`. */
     showPictures(pictures) {
       shown = pictures.filter(item => !participants().some(participant => participant.self && participant.user === item.person));
@@ -442,6 +665,8 @@ export function createVoiceCall({
     async selectOutput(deviceId) {
       return (audioSession ?? await audioStarting)?.selectOutput(deviceId) ?? false;
     },
+    /** Why this browser cannot take part in calls, or null when it can. */
+    unsupported: () => transport.unsupported?.() ?? null,
     /** Carrier and audio counters, for diagnostics and tests. */
     stats: () => ({carrier: carrier?.stats() ?? null, phase: state.phase, captureActive: audioSession?.captureActive === true}),
     networkChanged,

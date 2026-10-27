@@ -102,7 +102,7 @@ control_of() {
 }
 controls=()
 for name in "${names[@]}"; do controls+=("$(control_of "$base/$name")"); done
-bin=$repo_root/target/nested-session/bin
+bin=${TILO_NESTED_SESSION_BUILD:-$repo_root/target/nested-session}/bin
 
 common=()
 ((headless)) && common+=(--headless)
@@ -123,6 +123,8 @@ fi
 pids=()
 cleanup() {
     local pid
+    # A second signal must not cut the cleanup short and leave a session up.
+    trap '' INT TERM HUP
     for pid in "${pids[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done
     for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
     [[ -z $ready_out ]] || rm -f "$ready_out"
@@ -223,7 +225,7 @@ done
 for control in "${controls[@]}"; do
     lounge=$(TILO_TEST_CONTROL=$control "$bin/tilo-control" state-dump \
         | jq -r --arg room "$room" '.workspace_tree as $t | $t.workspaces[]
-            | select((.room | tostring) == $room) | select(.id != $t.active) | .id')
+            | select((.room | tostring) == $room) | select(.id != $t.active) | .room')
     if [[ -n $lounge ]]; then
         TILO_TEST_CONTROL=$control "$bin/tilo-control" actions invoke actions \
             "workspace.select.$lounge" >/dev/null || say "could not go to the Lounge"

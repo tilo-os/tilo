@@ -36,8 +36,6 @@ impl SpotifyIdentity {
 }
 
 /// Confirm the exact native-session access token belongs to the expected account.
-/// # Errors
-/// Spotify rejects the token, the bounded response is invalid, or identities differ.
 pub fn with_verified_spotify_access_token<T>(
     expected: &SpotifyIdentity,
     token: &str,

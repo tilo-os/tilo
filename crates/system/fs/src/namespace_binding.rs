@@ -85,7 +85,6 @@ pub enum NamespaceBindingError {
     Canonical(#[from] CanonicalError),
 }
 
-/// The digest a binding signs.
 #[must_use]
 pub fn payload_digest(bytes: &[u8]) -> [u8; 32] {
     *blake3::Hasher::new_derive_key(DIGEST_DOMAIN)

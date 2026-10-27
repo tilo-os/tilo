@@ -10,6 +10,11 @@ pub struct Collaborator {
     /// dots. `None` means present in the workspace but not on content.
     #[serde(default)]
     pub active_tab: Option<u64>,
+    /// The id of the app they are in, as their live presence says: what
+    /// tells where they are when [`Self::active_tab`] is not a window here,
+    /// as in a room whose layout is personal.
+    #[serde(default)]
+    pub in_app: Option<String>,
     /// Optional `#rrggbb`/`#rrggbbaa` override for the palette
     /// `ui::presence::user_color` would otherwise pick.
     #[serde(default)]
@@ -30,6 +35,10 @@ pub struct Collaborator {
     /// from the handle to the person. `None` for a persisted row.
     #[serde(default)]
     pub session: Option<u64>,
+    /// Another device of the person this one belongs to, named by the
+    /// device: it is shown among their devices, never as someone else.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_device: bool,
 }
 
 impl Collaborator {
@@ -39,11 +48,13 @@ impl Collaborator {
             id: id.into(),
             name: name.into(),
             active_tab: None,
+            in_app: None,
             cursor_color: None,
             avatar: None,
             role_id: None,
             invited: false,
             session: None,
+            own_device: false,
         }
     }
 
@@ -80,6 +91,13 @@ impl Collaborator {
     #[must_use]
     pub fn with_role(mut self, role_id: impl Into<String>) -> Self {
         self.role_id = Some(role_id.into());
+        self
+    }
+
+    /// Mark this row as another device of the local person.
+    #[must_use]
+    pub fn as_own_device(mut self) -> Self {
+        self.own_device = true;
         self
     }
 

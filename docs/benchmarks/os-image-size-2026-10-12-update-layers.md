@@ -60,7 +60,7 @@ The comment line shifts every panic location in the file. That changes the
 runtime library (and so renames the runtime), the shell, the greeter, the
 installer and every app. It is the most common kind of update: a framework
 change. Updates are `tools/perf/image_size.py --image NEW --update-from OLD --update-only`.
-The raw output is in `os-image-size-2026-10-12-update-layers.json`.
+The raw output is in [`os-image-size-2026-10-12-update-layers.json`](https://code.tilo.so/tilo/tilo/src/commit/0ebed9cae919c6f3e2a57565bde34beac0325ec5/docs/benchmarks/os-image-size-2026-10-12-update-layers.json).
 
 ## Update size (x86_64, dev lane)
 

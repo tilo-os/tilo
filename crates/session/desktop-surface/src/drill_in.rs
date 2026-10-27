@@ -2,7 +2,7 @@
 //!
 //! One rhythm for every page (HIG §7b, §9.6) and one Control-role painter
 //! (§9.1, §9.5) that the root page and the Wi-Fi, Bluetooth and VPN
-//! drill-ins paint their tiles, cards, slider block and rows with. This
+//! drill-ins paint their tiles, cards and rows with. This
 //! deliberately stops at structure common to every page: header/back, row
 //! placement and the calm list-row visual language. Device-specific glyphs,
 //! state and actions stay in their owning panes.
@@ -62,8 +62,6 @@ pub const STATUS_DOT: f64 = GLYPH / 2.0;
 /// [`control_fill`], the one definition every shell Control paints with.
 const CONTROL_FLOOR_LIFT_T: f32 = 0.35;
 
-// ---------- the Control role, painted once ----------
-
 /// A Control's fill: the shared hover tier when hovered, otherwise a quiet
 /// floor on the same ramp so tiles and rows read as surfaces rather than as
 /// bare text on the panel. Both states sit on one ordered ramp, so hover is
@@ -84,7 +82,7 @@ pub fn control_radius(theme: &Theme, rect: Rect) -> f64 {
 /// Paint one Control-role surface (HIG §9.1 / §9.5): its fill with the
 /// derived rest edge (`ui::surface::card`) at the Control radius, and the
 /// toolkit `Button`'s 2 px focus ring on top when `focused`. One painter for
-/// every tile, card, slider block, power row, edit row and list row in the
+/// every tile, card, power row, edit row and list row in the
 /// panel, so they cannot drift apart again.
 pub fn paint_control(
     scene: &mut Scene,
@@ -106,8 +104,6 @@ pub fn paint_control(
         );
     }
 }
-
-// ---------- row geometry: everything sits on the row's centre line ----------
 
 /// A `glyph`-sized box on `row`'s leading `inset`, centred on its centre
 /// line.
@@ -157,14 +153,6 @@ fn discovery_label_width(row: Rect, glyph: Rect, trailing_reserve: f64) -> f64 {
     (row.x1 - trailing_reserve.max(status_slots) - label_x).max(1.0)
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum DrillInOutcome {
-    #[default]
-    None,
-    Back,
-    Changed,
-}
-
 #[derive(Default)]
 pub struct DrillInList {
     back: Rect,
@@ -172,7 +160,6 @@ pub struct DrillInList {
     first_visible: usize,
     row_count: usize,
     visible_capacity: usize,
-    wheel_remainder: f64,
 }
 
 impl DrillInList {
@@ -222,117 +209,10 @@ impl DrillInList {
         self.row_count
     }
 
-    pub fn visible_indices(&self) -> std::ops::Range<usize> {
-        self.first_visible..self.first_visible.saturating_add(self.rows.len())
-    }
-
-    /// Pure projection of the current scroll window. Semantic geometry can
-    /// use this before paint without mutating the retained list.
-    pub fn visible_rects(
-        &self,
-        panel: Rect,
-        row_count: usize,
-        list_top: f64,
-    ) -> Vec<(usize, Rect)> {
-        let capacity = Self::capacity(panel, list_top);
-        let first = self.first_visible.min(row_count.saturating_sub(capacity));
-        let visible = capacity.min(row_count.saturating_sub(first));
-        (0..visible)
-            .map(|slot| {
-                let y = panel.y0 + list_top + f64_of_usize(slot) * (ROW_HEIGHT + RELATED_GAP);
-                (
-                    first.saturating_add(slot),
-                    Rect::new(
-                        panel.x0 + PANEL_PAD,
-                        y,
-                        panel.x1 - PANEL_PAD,
-                        y + ROW_HEIGHT,
-                    ),
-                )
-            })
-            .collect()
-    }
-
     pub fn row_for(&self, index: usize) -> Option<&Rect> {
         index
             .checked_sub(self.first_visible)
             .and_then(|slot| self.rows.get(slot))
-    }
-
-    /// Move the bounded viewport by whole rows. Positive movement reveals
-    /// later entries; negative movement returns toward the first entry.
-    pub fn scroll_by(
-        &mut self,
-        panel: Rect,
-        row_count: usize,
-        list_top: f64,
-        movement: isize,
-    ) -> bool {
-        self.layout_from(panel, row_count, list_top);
-        let max_start = row_count.saturating_sub(self.visible_capacity);
-        let next = if movement.is_negative() {
-            self.first_visible.saturating_sub(movement.unsigned_abs())
-        } else {
-            self.first_visible
-                .saturating_add(usize::try_from(movement).unwrap_or(usize::MAX))
-        }
-        .min(max_start);
-        if next == self.first_visible {
-            return false;
-        }
-        self.first_visible = next;
-        self.layout_from(panel, row_count, list_top);
-        true
-    }
-
-    /// Accumulate touchpad fractions until they amount to a whole row.
-    pub fn scroll_wheel(
-        &mut self,
-        panel: Rect,
-        row_count: usize,
-        list_top: f64,
-        rows: f64,
-    ) -> bool {
-        self.wheel_remainder += rows;
-        let whole = self.wheel_remainder.trunc();
-        if whole.abs() < 1.0 {
-            return false;
-        }
-        self.wheel_remainder -= whole;
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "wheel input is bounded; only complete accumulated rows are converted"
-        )]
-        self.scroll_by(panel, row_count, list_top, whole as isize)
-    }
-
-    /// Keep keyboard or accessibility focus inside the painted viewport.
-    pub fn ensure_visible(
-        &mut self,
-        panel: Rect,
-        row_count: usize,
-        list_top: f64,
-        index: usize,
-    ) -> bool {
-        self.layout_from(panel, row_count, list_top);
-        if index >= row_count || self.visible_capacity == 0 {
-            return false;
-        }
-        let next = if index < self.first_visible {
-            index
-        } else if index >= self.first_visible.saturating_add(self.visible_capacity) {
-            index
-                .saturating_add(1)
-                .saturating_sub(self.visible_capacity)
-        } else {
-            self.first_visible
-        };
-        if next == self.first_visible {
-            return false;
-        }
-        self.first_visible = next;
-        self.layout_from(panel, row_count, list_top);
-        true
     }
 
     /// The pointer-floor back button in the title band's leading corner, on
@@ -355,10 +235,6 @@ impl DrillInList {
         list_top + rows * ROW_HEIGHT + (rows - 1.0) * RELATED_GAP + PANEL_PAD
     }
 
-    pub fn back_contains(&self, point: Point) -> bool {
-        self.back.contains(point)
-    }
-
     pub fn row_at(&self, point: Point) -> Option<usize> {
         self.rows
             .iter()
@@ -368,11 +244,6 @@ impl DrillInList {
 
     pub fn rows(&self) -> &[Rect] {
         &self.rows
-    }
-
-    /// Centre of the Back button, where a press pops the drill-in.
-    pub fn back_center(&self) -> Point {
-        self.back.center()
     }
 
     pub fn draw_header(

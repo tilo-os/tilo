@@ -34,13 +34,10 @@ pub struct OutputGeometry {
     /// brightness service names a monitor by. Empty when the backend has
     /// no connectors.
     pub connector: String,
-    /// Left edge in the logical desktop.
     pub x: f64,
     /// Top edge in the logical desktop.
     pub y: f64,
-    /// Logical width.
     pub width: f64,
-    /// Logical height.
     pub height: f64,
     /// The display's scale: physical pixels per logical pixel.
     pub scale: f64,

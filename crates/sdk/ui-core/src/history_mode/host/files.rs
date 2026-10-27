@@ -406,11 +406,14 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
         .map(|version| {
             let person = version.actor.person.as_bytes();
             // The device that signed the version names who wrote it: an
-            // agent's own device reads as the agent, on behalf of its person.
-            let known = files
-                .target
-                .authors
-                .resolve_file_actor(person, version.actor.device.as_bytes());
+            // agent's own device reads as the agent, on behalf of its person,
+            // and so does the agent the signing device recorded as having
+            // caused the write through its person's session.
+            let known = files.target.authors.resolve_attributed_file_actor(
+                person,
+                version.actor.device.as_bytes(),
+                files.attributions.get(&version.id),
+            );
             let author = known.unwrap_or_else(|| {
                 let identity = hex::encode(person.get(..6).unwrap_or(person));
                 let name = if person.iter().all(|b| *b == 0) {
@@ -452,7 +455,6 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::HANG_BOUND;
     use crate::history_mode::HistoryRegistration;
     use automerge::AutoCommit;
 
@@ -716,6 +718,7 @@ mod tests {
                     heads: vec![],
                     current_revision: None,
                     next_after: None,
+                    attributions: vec![],
                 }))
             }
             fn preview(
@@ -738,7 +741,7 @@ mod tests {
             }
         }
         fn settle(host: &mut HistoryHost) {
-            let end = crate::time::now() + HANG_BOUND;
+            let end = crate::time::now() + tilo_test_env::hang_bound();
             while !host.file_target_resolved && crate::time::now() < end {
                 host.refresh(&AutoCommit::new());
                 std::thread::sleep(crate::time::Duration::from_millis(1));
@@ -837,7 +840,7 @@ mod tests {
         assert_eq!(files.restore.request, Some(request));
         assert!(files.restore.prepare(review, request.operation).is_err());
         files.check_result();
-        let end = crate::time::now() + HANG_BOUND;
+        let end = crate::time::now() + tilo_test_env::hang_bound();
         while original.results.load(Ordering::SeqCst) == 0 && crate::time::now() < end {
             std::thread::sleep(crate::time::Duration::from_millis(1));
         }
@@ -955,7 +958,7 @@ mod tests {
         let rows = file_timeline_entries(&files);
         assert_eq!(rows[0].author.name, "Ada");
         assert_eq!(rows[0].author.attribution, None);
-        assert_eq!(rows[1].author.name, "Scribe · Agent, for Ada");
+        assert_eq!(rows[1].author.name, "Scribe · Software, for Ada");
         assert_eq!(rows[1].author.relation, AuthorRelation::Software);
         assert_eq!(rows[1].author.rgb(), (10, 20, 30));
         assert_eq!(
@@ -971,5 +974,45 @@ mod tests {
         // A device is an agent only of the person who delegated it.
         assert_ne!(rows[2].author.name, rows[1].author.name);
         assert_eq!(rows[2].author.attribution, None);
+
+        // An agent that wrote through Ada's own session, as Ada's laptop
+        // recorded it in the signed record, reads as that agent, for Ada --
+        // the person who signed the version, never anybody else.
+        let through_session = fs_protocol::FileAttributionV1 {
+            actor: "agent:courier".into(),
+            label: "Courier".into(),
+            color: [40, 50, 60],
+        };
+        files.versions = vec![version(4, ada, ada_laptop), version(5, ada, ada_laptop)];
+        files.attributions = [(version(4, ada, ada_laptop).id, through_session)].into();
+        let rows = file_timeline_entries(&files);
+        assert_eq!(rows[0].author.name, "Courier · Software, for Ada");
+        assert_eq!(rows[0].author.rgb(), (40, 50, 60));
+        assert_eq!(
+            rows[0].author.attribution,
+            Some(HistoryAttribution {
+                actor: "agent:courier".into(),
+                kind: tilo_actions::ActorKind::Agent,
+                actor_name: "Courier".into(),
+                on_behalf_of: Some(hex::encode(ada)),
+                on_behalf_of_name: Some("Ada".into()),
+            })
+        );
+        assert_eq!(rows[1].author.name, "Ada", "an unattributed version");
+        assert_eq!(rows[1].author.attribution, None);
+
+        // A record that names no agent changes nothing.
+        files.attributions = [(
+            version(5, ada, ada_laptop).id,
+            fs_protocol::FileAttributionV1 {
+                actor: "ada".into(),
+                label: "Ada".into(),
+                color: [0, 0, 0],
+            },
+        )]
+        .into();
+        let rows = file_timeline_entries(&files);
+        assert_eq!(rows[1].author.name, "Ada");
+        assert_eq!(rows[1].author.attribution, None);
     }
 }

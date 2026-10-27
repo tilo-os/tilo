@@ -1,4 +1,3 @@
-//! Default native Messages, original protected review and two certified peers.
 use super::*;
 use crate::network::{Actor, NetCmd, PeerIdentityStore};
 use crate::session_runtime::runtime;
@@ -30,6 +29,7 @@ impl Peer {
         let source = source(&rig, &lifecycle, &socket);
         let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
             &rig.root.path().join("native-apps"),
+            &rig.root.path().join("native-apps").join("person"),
             &rig.owner.principal,
             socket,
         )
@@ -142,14 +142,14 @@ impl Peer {
         assert!(
             self.mounted
                 .harness
-                .wait_until(ui::time::Duration::from_secs(10), |_| {
+                .wait_until(tilo_test_env::hang_bound(), |_| {
                     self.apps.pump_messaging_records();
                     self.mounted.client.account_state(&account) == AccountState::Ready
                 })
         );
         assert_eq!(self.mounted.harness.dump_json(), before);
     }
-    fn contacts(&mut self, other: &Self) {
+    fn contacts(&self, other: &Self) {
         let mut directory = tilo_contact_directory::ContactDirectory::default();
         let certificate = &other.rig.admission.host.device_cert;
         let address = format!(
@@ -170,7 +170,7 @@ impl Peer {
                 "native-reviewed-device".into(),
             )
             .unwrap();
-        seed_person(&mut self.apps, &directory);
+        seed_person(&self.apps, &directory);
     }
     fn choose(&mut self) -> String {
         effect(
@@ -247,6 +247,7 @@ impl Peer {
         drop(apps);
         let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
             &rig.root.path().join("native-apps"),
+            &rig.root.path().join("native-apps").join("person"),
             &rig.owner.principal,
             rig.root.path().join("native-first.sock"),
         )
@@ -260,7 +261,7 @@ impl Peer {
         assert!(
             mounted
                 .harness
-                .wait_until(ui::time::Duration::from_secs(10), |_| {
+                .wait_until(tilo_test_env::hang_bound(), |_| {
                     apps.pump_messaging_records();
                     mounted.client.account_state(&account) == AccountState::Ready
                 }),
@@ -337,7 +338,7 @@ fn visible(peer: &mut Peer, other: &mut Peer, text: &str) {
     assert!(
         peer.mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(10), |h| {
+            .wait_until(tilo_test_env::hang_bound(), |h| {
                 peer.apps.pump_messaging_records();
                 other.apps.pump_messaging_records();
                 h.a11y_nodes().iter().any(|(_, n)| n.label() == Some(text))
@@ -464,7 +465,7 @@ fn default_native_denied_review_never_publishes_or_writes_private_account() {
     assert!(
         peer.mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 peer.apps.pump_messaging_records();
                 peer.mounted.client.account_state(&account) != AccountState::Ready
                     && peer.vault.proposals().unwrap().is_empty()

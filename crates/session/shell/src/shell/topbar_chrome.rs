@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tilo_desktop::chrome::{
     ActiveMediaUse, AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, Chrome, ChromeIntent,
     ChromeOverlays, ClockActivity, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
-    LinkKind, LinkStatus, MediaKind, OwnChip, StripPlaces, SystemStatus, VolumeState,
+    LinkKind, LinkStatus, MediaKind, OwnChip, SystemStatus, VolumeState,
 };
 pub use tilo_desktop::topbar::*;
 use vello::kurbo::Rect;
@@ -33,26 +33,18 @@ pub fn native_source(chrome: chrome_state::Chrome) -> Chrome {
     })
 }
 
-/// Who is where, as the bar shows it: this person's own chip and the
-/// strips people are on, worked out once per chrome revision.
+/// This person's own chip, as the bar shows it, worked out once per chrome
+/// revision.
 #[derive(Clone)]
 struct People {
     key: (u64, u64),
     own: OwnChip,
-    places: StripPlaces,
 }
 
 /// The name this person goes by here, numbered like anyone else's when
 /// someone in the room shares it; never "You", never their key.
 pub(crate) fn own_shown_name(state: &chrome_state::ChromeState) -> String {
-    // An owned fixture is nobody's desktop: it reads no person's identity.
-    let own_name = (!state.hosted_inputs().is_fixture())
-        .then(ui::local_identity::load)
-        .flatten()
-        .map(|identity| identity.display_name);
-    // As the people here see this person: their name, else "Guest", never
-    // a key or a device.
-    let own_name = Some(crate::shell::network::own_person_name(own_name));
+    let own_name = Some(own_person_name(state));
     let local_user = state.active_local_user();
     let (_, shown) = tilo_desktop::collaborators::collaborator_roster_rows_named(
         &state.tree().desktop,
@@ -60,6 +52,17 @@ pub(crate) fn own_shown_name(state: &chrome_state::ChromeState) -> String {
         own_name.as_deref(),
     );
     shown.or(own_name).unwrap_or_default()
+}
+
+/// This person's own name, before the roster numbers it: as the people here
+/// see them, their name, else "Guest", never a key or a device.
+pub(crate) fn own_person_name(state: &chrome_state::ChromeState) -> String {
+    // An owned fixture is nobody's desktop: it reads no person's identity.
+    let own_name = (!state.hosted_inputs().is_fixture())
+        .then(ui::local_identity::load)
+        .flatten()
+        .map(|identity| identity.display_name);
+    crate::shell::network::own_person_name(own_name)
 }
 
 /// The colour this person wears here; an owned fixture derives it from the
@@ -71,43 +74,6 @@ pub(crate) fn own_rgb(state: &chrome_state::ChromeState) -> (u8, u8, u8) {
         crate::shell::state::local_presence_hue()
     };
     ui::presence::identity_rgb(hue)
-}
-
-/// The strips of the active workspace people are on: the others at the
-/// strip holding the tab their presence names, this person on the one shown.
-fn strip_places(state: &chrome_state::ChromeState) -> StripPlaces {
-    let local_user = state.active_local_user();
-    let tree = state.tree();
-    let desktop = &tree.desktop;
-    let others: Vec<tilo_desktop_model::StripId> = desktop
-        .active_workspace()
-        .map(|workspace| {
-            workspace
-                .collaborators
-                .iter()
-                .filter(|person| person.id != local_user)
-                .filter_map(|person| {
-                    let tab = person.active_tab?;
-                    workspace
-                        .strips
-                        .iter()
-                        .find(|strip| {
-                            strip
-                                .window_groups
-                                .iter()
-                                .any(|group| group.tabs.iter().any(|t| t.id == tab))
-                        })
-                        .map(|strip| strip.id)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let places = StripPlaces::in_active_workspace(desktop, &others);
-    drop(tree);
-    StripPlaces {
-        can_add: state.can_add_strip(),
-        ..places
-    }
 }
 
 #[derive(Default)]
@@ -245,8 +211,8 @@ impl NativeChrome {
             own: OwnChip {
                 name: own_shown_name(state),
                 rgb: own_rgb(state),
+                identity: String::new(),
             },
-            places: strip_places(state),
         };
         *self.people.borrow_mut() = Some(people.clone());
         people
@@ -264,7 +230,7 @@ impl DesktopChromeSource for NativeChrome {
         let people = self.people(&state);
         DesktopChromeSnapshot {
             revision: state.revision,
-            status: system_status(&state.status),
+            status: system_status(&state.quick_settings.status),
             clock: self.fixture_clock.clone().unwrap_or_else(clock_snapshot),
             overlays: ChromeOverlays {
                 overview: state.overlays.overview,
@@ -277,6 +243,8 @@ impl DesktopChromeSource for NativeChrome {
             fullscreen: state.fullscreen_covers_primary(),
             notification_badge: state.notification_badge_total(),
             notifications_quiet: state.quiet_status_now().is_some(),
+            // The status cluster opens quick settings here.
+            notifications_only: false,
             activity_glance: state.activity_glance.clone(),
             viewport_size: state.viewport_size(),
             clock_activity: state.clock_activity.as_ref().map(|activity| ClockActivity {
@@ -290,9 +258,13 @@ impl DesktopChromeSource for NativeChrome {
             active_exposures: state.active_exposures().to_vec(),
             // Native presence has no spectator role yet.
             watching: 0,
-            strip_places: Some(people.places),
             top_bar: state.top_bar_presence(),
             own: Some(people.own),
+            invite: tilo_desktop::chrome::Invite::when(
+                crate::shell::invite_policy::may_invite_here(&state),
+            ),
+            waved: state.wave_notice.clone(),
+            arrived: state.arrival_notice.clone(),
         }
     }
 
@@ -301,7 +273,6 @@ impl DesktopChromeSource for NativeChrome {
         match intent {
             ChromeIntent::SwitchWorkspace(dir) => return state.switch_workspace(dir),
             ChromeIntent::ToggleOverview => state.overlays.overview = !state.overlays.overview,
-            ChromeIntent::ToggleWorkspaceSettings => state.toggle_workspace_settings(),
             ChromeIntent::ToggleQuickSettings => {
                 state.toggle_quick_settings();
                 return true;
@@ -316,13 +287,23 @@ impl DesktopChromeSource for NativeChrome {
                     state.overlays.room_activity = false;
                 }
             }
+            // The same invite flow the people panel's button starts.
+            ChromeIntent::Invite => {
+                state.push_peer_sync_request(
+                    crate::shell::overlay_host::PeerSyncAction::PromptInvite,
+                );
+                state.overlays.collaborators = false;
+            }
+            // The overlay host opens the list at them on its next update.
+            ChromeIntent::ShowPerson(id) => {
+                state.push_presence_request(chrome_state::PresenceRequest::Show(id));
+            }
             ChromeIntent::ShowActivity(focus) => {
                 let focus = focus.or_else(|| state.activity_glance.focus.clone());
                 state.open_room_activity(focus);
                 return true;
             }
             ChromeIntent::HideClock => state.overlays.clock = false,
-            ChromeIntent::SwitchStrip(strip) => return state.focus_strip(strip),
             // The overlay host opens the strip switcher's card on its next
             // update, as Super+S does, with the focused strip chosen.
             ChromeIntent::ShowStrips => state.request_strip_switcher(),
@@ -361,7 +342,6 @@ impl DesktopChromeSource for NativeChrome {
                 }
                 return true;
             }
-            ChromeIntent::AddStrip { name } => return state.add_named_strip(&name),
             ChromeIntent::RenameWorkspace { name } => {
                 if !state.may_rename_active_workspace() {
                     return false;
@@ -379,8 +359,14 @@ impl DesktopChromeSource for NativeChrome {
             ChromeIntent::ToggleProfile => {
                 state.bar_popover_request = Some(chrome_state::BarPopoverRequest::Profile);
             }
-            // The native bar carries no Tilo mark: its About is in Settings.
-            ChromeIntent::ToggleTiloMenu => return false,
+            // The native bar carries no Tilo mark (its About is in Settings),
+            // and the device keeps who its person is, so nothing is asked
+            // from the avatar here.
+            ChromeIntent::ToggleTiloMenu
+            | ChromeIntent::OpenAvatarAsk
+            | ChromeIntent::CollapseAvatarAsk
+            | ChromeIntent::AnswerAvatarAsk
+            | ChromeIntent::PutOffAvatarAsk => return false,
         }
         state.bump();
         true
@@ -402,13 +388,23 @@ impl DesktopChromeSource for NativeChrome {
         crate::tray::global().revision()
     }
 
+    fn app_notification_badge(&self, app_id: &str) -> u32 {
+        self.chrome.borrow().notification_badge_for(app_id)
+    }
+
     fn app_tray(&self) -> Vec<AppTrayItem> {
         crate::tray::global()
             .snapshot()
             .into_iter()
             .map(|item| AppTrayItem {
                 key: item.key,
-                id: item.id,
+                id: item.id.clone(),
+                owner_app: item.address.owner_app.clone(),
+                title: if item.title.trim().is_empty() {
+                    item.id
+                } else {
+                    item.title
+                },
                 status: match item.status {
                     tilo_tray_host::ItemStatus::Passive => AppTrayStatus::Passive,
                     tilo_tray_host::ItemStatus::Active => AppTrayStatus::Active,
@@ -525,7 +521,7 @@ mod native_source_tests {
         let snapshot = source.snapshot();
         assert_eq!(
             snapshot.status.battery_percent,
-            chrome.borrow().status.battery_percent()
+            chrome.borrow().quick_settings.status.battery_percent()
         );
         assert_eq!(source.tree().active, chrome.borrow().tree().desktop.active);
     }
@@ -559,7 +555,6 @@ mod native_source_tests {
             activity_id: Some("timer-1".into()),
         }));
         board.show(CLOCKS_APP, None);
-        // A fresh source takes the ended activity in at once.
         let source = native_source(chrome.clone());
         assert!(source.snapshot().clock_activity.is_none(), "it ended");
         assert!(!chrome.borrow().overlays.clock);

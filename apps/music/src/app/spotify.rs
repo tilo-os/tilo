@@ -274,7 +274,7 @@ impl MusicApp {
         use crate::backend::{HomeContent, HomeItem, HomeItemKind, HomeSection, SpotifyDevice};
         self.backend_name = "Spotify".into();
         self.spotify_catalogue = true;
-        self.home_requested = true;
+        self.home_asked = Some(ui::time::now());
         self.home = Some(HomeContent {
             sections: vec![HomeSection {
                 title: crate::i18n::t("music-spotify-library"),
@@ -512,7 +512,7 @@ impl MusicApp {
                 }
                 if reply.state.get("playlist").is_some() || reply.state.get("uri").is_some() {
                     self.home = None;
-                    self.home_requested = false;
+                    self.home_asked = None;
                     self.spotify_library_offset = 50;
                     self.spotify_library_more = true;
                 }
@@ -865,9 +865,9 @@ impl ui::widget::controls::ActionControls for MusicApp {
                 return Some(invocation);
             }
         }
-        self.search_opener
-            .take()
-            .or_else(|| self.history.take())
+        self.bar_controls
+            .pop_front()
+            .or_else(|| self.search_opener.take())
             .or_else(|| {
                 ui::widget::Widget::children_mut(self)
                     .into_iter()
@@ -902,6 +902,7 @@ impl ui::widget::controls::ActionControls for MusicApp {
 
     fn has_pending_control_invocation(&self) -> bool {
         !self.spotify_menu_controls.is_empty()
+            || !self.bar_controls.is_empty()
             || ui::widget::Widget::children(self)
                 .into_iter()
                 .any(ui::widget::controls::has_pending_control_invocation)
@@ -962,7 +963,7 @@ mod tests {
         app.snap_spotify("spotify-home");
         app.source_error = Some("Reconnect Spotify to grant library access".into());
         let tree = app.accessibility().unwrap();
-        let page = &tree.children[2];
+        let page = &tree.children[1];
         assert!(page.children.iter().any(|node| node.name.as_deref()
             == Some(app.source_status().as_str())
             && node.description.as_deref() == app.source_error.as_deref()));
@@ -985,7 +986,7 @@ mod tests {
         );
         app.view = super::super::View::Artist(id.into());
         assert_eq!(
-            app.accessibility().unwrap().children[2].name.as_deref(),
+            app.accessibility().unwrap().children[1].name.as_deref(),
             Some("Provider artist")
         );
         assert!(
@@ -1003,7 +1004,7 @@ mod tests {
         );
         app.view = super::super::View::Album(album.into());
         assert_eq!(
-            app.accessibility().unwrap().children[2].name.as_deref(),
+            app.accessibility().unwrap().children[1].name.as_deref(),
             Some("Provider album")
         );
         let playlist = "spotify:playlist:1234567890123456789012";
@@ -1017,7 +1018,7 @@ mod tests {
         );
         app.view = super::super::View::Playlist(playlist.into());
         assert_eq!(
-            app.accessibility().unwrap().children[2].name.as_deref(),
+            app.accessibility().unwrap().children[1].name.as_deref(),
             Some("Provider playlist")
         );
     }
@@ -1134,8 +1135,10 @@ mod tests {
                 &mut text,
                 &theme,
             );
-            assert_eq!(tree.children(root).unwrap().len(), 2);
-            assert_eq!(app.children().len(), 2);
+            // The refresh control is the app's one retained child: search
+            // and the other header buttons are the window bar's.
+            assert_eq!(tree.children(root).unwrap().len(), 1);
+            assert_eq!(app.children().len(), 1);
             let control = app
                 .children()
                 .into_iter()

@@ -87,15 +87,25 @@ impl QuickFS {
             current_revision,
         ))
     }
-    /// Answer a history read query for `ino`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the history-read error for an invisible file, unavailable or
-    /// stale history state, or a query this transport does not answer.
     pub fn read_file_history(&self, ino: u64, query: Query) -> Result<Value, Error> {
         let (scope, snapshot, current_revision) = self.history_read_snapshot(ino)?;
-        snapshot.read_query(scope, current_revision, query)
+        // Read after the history snapshot released the namespace and history
+        // locks: the record repository is never taken under them.
+        let attributions = self.version_attributions(scope.record_id);
+        snapshot.read_query(scope, current_revision, query, &attributions)
+    }
+    /// Who caused each of `record_id`'s versions an agent caused, as the
+    /// version's own signing device recorded it in the signed record
+    /// (`AttributeVersion`). Empty without signed records.
+    fn version_attributions(
+        &self,
+        record_id: fs_protocol::FileRecordId,
+    ) -> Vec<fs_protocol::FileVersionAttributionV1> {
+        self.record_publisher
+            .as_ref()
+            .and_then(|publisher| publisher.snapshot(record_id).ok().flatten())
+            .map(|record| record.attributions)
+            .unwrap_or_default()
     }
 
     /// Read a version preview, provided the history frontier still matches.
@@ -117,11 +127,6 @@ impl QuickFS {
         self.read_file_history_preview(ino, scope, version_id)
     }
     /// Read the verified content of one history version as a preview.
-    ///
-    /// # Errors
-    ///
-    /// Returns the history-read error for an invisible file, a missing
-    /// version, oversized or unverifiable content, or unavailable storage.
     pub fn read_file_history_preview(
         &self,
         ino: u64,
@@ -148,6 +153,7 @@ impl QuickFS {
         let Value::Version {
             scope: actual,
             version,
+            ..
         } = self.read_file_history(
             ino,
             Query::Version {

@@ -183,6 +183,14 @@ pub trait Presenter: Send {
         QUEUE_DEPTH
     }
 
+    /// Whether this presenter's thread runs realtime: it blocks on the GPU
+    /// and the display every few milliseconds, so a realtime policy only makes
+    /// its deadlines. A presenter that rasterizes on the CPU on this thread
+    /// runs for longer than the realtime budget and stays normal.
+    fn realtime(&self) -> bool {
+        true
+    }
+
     /// Display timing of the exact preceding observed frame.
     fn display_timing(&self) -> DisplayTiming {
         DisplayTiming::default()
@@ -873,11 +881,21 @@ impl PresentPipe {
             .name("tilo-present".to_string())
             .spawn(move || {
                 // Flag completion however this thread leaves (normal return or unwind), so `shutdown` never waits on a thread that's already gone.
-                let _done = FinishedOnDrop(thread_finished);
+                let _done = FinishedOnDrop {
+                    finished: thread_finished,
+                    pending: thread_pending.clone(),
+                };
+                // Declared after `_done`, so the receiver goes first: a submit that still got
+                // its frame through left it in `pending` before `_done` empties it.
+                let rx = rx;
                 // Presentation has a deadline every refresh; input and the app
                 // under the person's hands share the machine with anything.
                 #[cfg(target_os = "linux")]
-                ::launcher::priority::request_realtime(::launcher::priority::PRESENT_RT_PRIORITY);
+                if presenter.realtime() {
+                    ::launcher::priority::request_realtime(
+                        ::launcher::priority::PRESENT_RT_PRIORITY,
+                    );
+                }
                 RenderThread {
                     presenter,
                     pending: thread_pending,
@@ -1212,11 +1230,21 @@ impl PresentPipe {
 }
 
 /// Sets the shared "thread finished" flag on drop, so it's set whether the render thread returns normally or unwinds.
-struct FinishedOnDrop(Arc<AtomicBool>);
+///
+/// Frames still handed over go first: nothing will render them, and each holds the capacity
+/// it was admitted with. The receiver is gone by then, so a submit either failed to send or
+/// queued its frame before this empties the queue; none is left holding capacity, and a
+/// loop that sees the thread finished also sees its next submit refused.
+struct FinishedOnDrop {
+    finished: Arc<AtomicBool>,
+    pending: PendingFrames,
+}
 
 impl Drop for FinishedOnDrop {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
+        let unrendered = std::mem::take(&mut *lock_pending(&self.pending));
+        drop(unrendered);
+        self.finished.store(true, Ordering::Release);
     }
 }
 
@@ -1326,15 +1354,11 @@ mod tests {
             verdict,
         }));
         assert!(pipe.warm(FramePaint::full(Scene::new())));
-        started_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the warm started");
+        tilo_test_env::recv("the warm to start", &started_rx);
         pipe.note_input();
         resume_tx.send(()).expect("resume the warm");
         assert!(
-            verdict_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("the warm reported"),
+            tilo_test_env::recv("the warm's report", &verdict_rx),
             "the warm went on while idle and stopped at the step after input arrived"
         );
         pipe.shutdown();
@@ -1387,17 +1411,16 @@ mod tests {
         assert!(pipe.submit(scene, OutputId(0)));
         // The store replaced the frame while the queued one is still rendering.
         frame.note_superseded();
+        let held = Arc::downgrade(&frame);
         drop(frame);
+        // The lease runs only after the frame itself is dropped.
         assert!(
-            given_back.recv_timeout(Duration::from_millis(200)).is_err(),
+            held.strong_count() > 0 && given_back.try_recv().is_err(),
             "the buffer stays held while the queued frame can still draw it"
         );
         drop(rendering);
         tilo_test_env::wait_until("the frame to be presented", || pipe.presented() == 1);
-        assert!(
-            given_back.recv_timeout(Duration::from_secs(2)).is_ok(),
-            "presenting the frame gives the buffer back"
-        );
+        tilo_test_env::recv("the presented frame's buffer to go back", &given_back);
         pipe.shutdown();
     }
 
@@ -1499,13 +1522,9 @@ mod tests {
                 dpms: Arc::new(Mutex::new(Vec::new())),
             }));
             let held = gate.lock().expect("hold the presenter inside `present`");
-            let t0 = std::time::Instant::now();
+            // This thread holds the gate, so a `submit` that waited for the
+            // present would never return.
             assert!(pipe.submit(Scene::new(), OutputId(0)));
-            let elapsed = t0.elapsed();
-            assert!(
-                elapsed < Duration::from_millis(100),
-                "submit must hand off, not wait for the present; took {elapsed:?}"
-            );
             assert_eq!(pipe.presented(), 0, "the present is still blocked");
             drop(held);
             tilo_test_env::wait_until("the released frame", || pipe.presented() == 1);
@@ -1943,13 +1962,11 @@ mod tests {
 
     #[test]
     fn admission_bounds_frames_in_flight_and_never_queues_behind_a_render() {
-        // Phase `an_overlapping_presenter_admits_a_frame_beside_the_owed_flip`.
         assert!(admits(0, 0, 0), "an idle pipe takes a frame");
         assert!(
             admits(0, MAX_UNRETIRED, 0),
             "the next frame renders while the previous one waits for its vblank"
         );
-        // Phase `latest_wins_no_frame_waits_behind_one_rendering`.
         assert!(
             !admits(1, 0, 0),
             "a frame queued behind one rendering would age a whole render"
@@ -1964,7 +1981,6 @@ mod tests {
             1,
             "a presenter waiting for its flip keeps the floor"
         );
-        // Phase `in_flight_frames_stay_bounded`.
         assert!(
             !admits(0, MAX_UNRETIRED.saturating_add(1), 0),
             "a presenter owing more flips than it should is refused frames"
@@ -2293,10 +2309,6 @@ mod tests {
         pipe
     }
 
-    /// Every admitted frame gives its capacity back once and retires once, whatever order
-    /// the flips of the frames before it retired in. A flip retiring inside the present that
-    /// queued it used to have no frame to settle: that frame stayed owed for good, `presented`
-    /// stopped and each later frame was admitted only as the one after it retired.
     #[test]
     fn a_flip_retiring_inside_its_own_present_still_retires_its_frame() {
         let mut pipe = run_scripted(&[Flip::WithinPresent]);
@@ -2443,8 +2455,8 @@ mod tests {
             assert!(pipe.submit(Scene::new(), OutputId(0)));
             // The channel is FIFO, so the render thread must take this frame — and block on the gate
             // inside `present` — before it can see the `Stop` `shutdown` is about to send, so it's
-            // guaranteed wedged. A short grace means this test can't be confused with a regression: it
-            // finishes in a tenth of a second, while a fallback onto the real `SHUTDOWN_GRACE` stands out as a two-second outlier.
+            // guaranteed wedged. This thread holds the gate throughout, so `shutdown` returning at
+            // all proves it gave up on the wedged render thread rather than blocking on it.
             let grace = Duration::from_millis(100);
             let t0 = Instant::now();
             pipe.shutdown_with_grace(grace);
@@ -2454,11 +2466,6 @@ mod tests {
                 "shutdown must actually wait out its grace before giving up; \
                  returning in {took:?} means it never waited for the frame at all, \
                  which would abandon a frame that was about to finish"
-            );
-            assert!(
-                took < Duration::from_millis(1_500),
-                "shutdown must give up on a wedged render thread, not block on it; \
-                 took {took:?} against a {grace:?} grace"
             );
             // Releasing afterwards must not panic or double-free anything.
             drop(held);

@@ -221,6 +221,49 @@ fn consecutive_badged_rows_share_one_badge_column() {
     assert_eq!(shared, [Some(width), Some(width), None]);
 }
 
+/// A disclosure only shows what the page already holds, so the native app
+/// contract finds its header bound as a view-local control, addressed by
+/// its title or by the id a page gives it.
+#[test]
+fn a_disclosure_header_is_a_bound_view_local_control() {
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(
+            crate::widget::Column::new()
+                .with_no_padding()
+                .push(Box::new(
+                    Section::new(vec![Box::new(ListRow::new("a", "Ada"))])
+                        .with_header(SectionHeader::group("Details"))
+                        .collapsed(),
+                ))
+                .push(Box::new(
+                    Section::new(vec![Box::new(ListRow::new("b", "Grace"))])
+                        .with_header(SectionHeader::group("Details"))
+                        .collapsed()
+                        .disclosure_id("wired-details"),
+                )),
+        ),
+        (400, 300),
+        crate::theme::Theme::light(),
+    );
+    let audit = harness.native_app_audit();
+    assert!(audit.issues.is_empty(), "{audit:?}");
+    fn targets(node: &InspectionNode, out: &mut Vec<String>) {
+        out.extend(
+            node.semantics
+                .as_ref()
+                .and_then(|s| s.action_target.clone()),
+        );
+        for child in &node.children {
+            targets(child, out);
+        }
+    }
+    let mut ids = Vec::new();
+    targets(&harness.inspection().root, &mut ids);
+    assert!(ids.iter().any(|id| id == "disclosure:Details"), "{ids:?}");
+    assert!(ids.iter().any(|id| id == "wired-details"), "{ids:?}");
+}
+
 #[test]
 fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
     let opened = std::rc::Rc::new(std::cell::Cell::new(None));
@@ -331,4 +374,113 @@ fn status_lines_and_object_headers_sit_on_the_content_edge() {
         .caption("Login");
     let node = Widget::accessibility(&head).unwrap();
     assert_eq!(node.name.as_deref(), Some("example.org"));
+}
+
+#[test]
+fn a_section_says_whether_the_pointer_is_over_it() {
+    let over = Rc::new(Cell::new(false));
+    let section = Section::new(vec![
+        Box::new(ListRow::new("a", "Ada")),
+        Box::new(ListRow::new("b", "Grace")),
+    ])
+    .pointer_over(Rc::clone(&over));
+    let mut harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(
+            crate::widget::Column::new()
+                .with_no_padding()
+                .push(Box::new(section)),
+        ),
+        (500, 400),
+        Theme::dark(),
+    );
+    let whole = rect(&harness.inspection().root.children[0]);
+    let rows = whole;
+    assert!(whole.y1 < 380.0, "the section is shorter than the window");
+    harness.send(&crate::synthetic_input::cursor_moved(
+        rows.center().x,
+        rows.center().y,
+    ));
+    assert!(over.get(), "over a row");
+    harness.send(&crate::synthetic_input::cursor_moved(10.0, whole.y1 + 10.0));
+    assert!(!over.get(), "below the section");
+    harness.send(&crate::synthetic_input::cursor_moved(
+        rows.center().x,
+        rows.center().y,
+    ));
+    harness.send(&WindowEvent::CursorLeft {
+        device_id: winit::event::DeviceId::dummy(),
+    });
+    assert!(!over.get(), "the pointer left the window");
+}
+
+/// The right edge of every switch in `node`, in tree order.
+fn switch_edges(node: &InspectionNode, found: &mut Vec<f64>) {
+    if node.widget == "Toggle" {
+        found.push(rect(node).x1);
+    }
+    for child in &node.children {
+        switch_edges(child, found);
+    }
+}
+
+/// The switch edges of a section of `rows` laid out 600 wide.
+fn switch_edges_of(rows: Vec<Element>) -> Vec<f64> {
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(Section::new(rows)),
+        (600, 400),
+        Theme::light(),
+    );
+    let root = harness.inspection().root;
+    let mut edges = Vec::new();
+    switch_edges(&root, &mut edges);
+    edges
+}
+
+fn switch(id: &str) -> Element {
+    Box::new(crate::widget::Toggle::new(id, id))
+}
+
+#[test]
+fn a_lists_switches_stand_in_one_column_beside_its_chevrons() {
+    let edges = switch_edges_of(vec![
+        Box::new(
+            ListRow::new("home", "Home")
+                .secondary("Connected")
+                .trailing(switch("home"))
+                .disclosure(),
+        ),
+        Box::new(ListRow::new("desk", "Through Desk PC").trailing(switch("desk"))),
+        Box::new(
+            ListRow::new("work", "Work")
+                .trailing(switch("work"))
+                .disclosure(),
+        ),
+        Box::new(ListRow::new("mini", "Through Studio Mac mini").trailing(switch("mini"))),
+        Box::new(ListRow::new("add", "Add a VPN").disclosure()),
+    ]);
+    assert_eq!(edges.len(), 4, "every switch laid out: {edges:?}");
+    assert!(
+        edges.iter().all(|edge| (edge - edges[0]).abs() < 0.5),
+        "one column of switches: {edges:?}"
+    );
+}
+
+#[test]
+fn a_list_without_marks_after_its_switches_keeps_them_on_the_edge() {
+    let alone = switch_edges_of(vec![Box::new(
+        ListRow::new("share", "Let my other devices use this device").trailing(switch("share")),
+    )]);
+    let beside_drill = switch_edges_of(vec![
+        Box::new(
+            ListRow::new("share", "Let my other devices use this device").trailing(switch("share")),
+        ),
+        Box::new(ListRow::new("more", "More options").disclosure()),
+    ]);
+    assert_eq!(alone.len(), 1);
+    assert!(
+        (alone[0] - beside_drill[0]).abs() < 0.5,
+        "a chevron with no switch before it moves no switch: {alone:?} vs {beside_drill:?}"
+    );
 }

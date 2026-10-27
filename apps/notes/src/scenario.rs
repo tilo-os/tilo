@@ -66,6 +66,7 @@ pub const SCENARIOS: &[&str] = &[
     "scrolled",
     "sidebar_scroll",
     "mention",
+    "reactions",
 ];
 
 /// A 16:9-ish desktop window that shows the sidebar and a full page.
@@ -89,7 +90,6 @@ fn tag(n: u128) -> TagId {
     uuid::Uuid::from_u128(0x7461_6767_0000_4000_8000_0000_0000_0000 | n)
 }
 
-/// Scenarios in which a person types into a new note.
 fn types_into_new_note(scenario: Option<&str>) -> bool {
     matches!(
         scenario,
@@ -372,10 +372,26 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
     out
 }
 
+/// The reactions `scenario` adds to the launch checklist: the person's own,
+/// under the note's tags.
+#[must_use]
+pub fn reactions(
+    scenario: Option<&str>,
+) -> Vec<ui::tilo_resource::Invoke<crate::resource::Notebook>> {
+    if scenario != Some("reactions") {
+        return Vec::new();
+    }
+    let field = crate::resource::Notebook::paths()
+        .pages
+        .item(&crate::notebook::page_id(page(3)))
+        .reactions;
+    ["🎉", "👍"]
+        .into_iter()
+        .filter_map(|emoji| ui::tilo_resource::Invoke::edit(&field.react(emoji)).ok())
+        .collect()
+}
+
 /// What a person does in `scenario`, through the window's event path.
-///
-/// # Errors
-/// Returns what the scenario could not find on screen.
 #[allow(
     clippy::too_many_lines,
     reason = "one table of every scenario's input keeps them comparable"
@@ -458,8 +474,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             }
         }
         Some("find") => {
-            chord(driver, &["ctrl"], "f");
-            driver.type_text("migration");
+            driver.search_in_window(ui::window_toolbar::SearchOpening::Find, "migration");
         }
         Some("multiline_typing" | "paragraph_click") => {
             let commit = scenario == Some("paragraph_click");
@@ -518,6 +533,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             show_room(driver);
             driver.type_text("Ask @");
         }
+        Some("reactions") => show_room(driver),
         Some("slash_query") => driver.type_text("Groceries for Monday /c"),
         Some("slash_applied") => {
             driver.type_text("/h1");

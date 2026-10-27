@@ -44,10 +44,14 @@ pub(crate) struct CodeView {
     lines: Vec<JsonLine>,
     collapsed: HashSet<usize>,
     text: String,
-    /// Widths of each token at the current style, measured once.
-    widths: Vec<Vec<f64>>,
+    /// The geometry the last layout or paint resolved.
     metrics: Option<Metrics>,
-    measured_for: Option<(u32, u32)>,
+    /// Where the last paint set each token of each line, by line index.
+    #[cfg(test)]
+    painted: HashMap<usize, Vec<f64>>,
+    /// How many characters the last paint set.
+    #[cfg(test)]
+    painted_chars: usize,
     /// The theme of the last layout pass, which `measure` has no argument for.
     theme: Option<Theme>,
     rect: Rect,
@@ -87,9 +91,11 @@ impl CodeView {
             lines,
             collapsed: HashSet::new(),
             text,
-            widths: Vec::new(),
             metrics: None,
-            measured_for: None,
+            #[cfg(test)]
+            painted: HashMap::new(),
+            #[cfg(test)]
+            painted_chars: 0,
             theme: None,
             rect: Rect::ZERO,
             folds: Vec::new(),
@@ -125,13 +131,12 @@ impl CodeView {
         shown
     }
 
+    /// The view's geometry, measured afresh each pass. The renderer caches
+    /// measurements itself and drops them when the fonts change (a browser
+    /// fetches the monospace face only once code first asks for it), so a
+    /// copy kept here would go on placing tokens by the stand-in face's
+    /// advances after the real face arrived.
     fn resolve(&mut self, theme: &Theme, text: &mut TextRenderer) -> Metrics {
-        let key = (theme.text_scale.to_bits(), theme.ui_scale.to_bits());
-        if let Some(metrics) = &self.metrics
-            && self.measured_for == Some(key)
-        {
-            return metrics.clone();
-        }
         let style = theme.text(TextRole::Code);
         let (_, line_h) = text.measure_style("Ag", None, &style);
         let digits = self.lines.len().max(1).to_string();
@@ -144,20 +149,9 @@ impl CodeView {
             number_w: f64::from(number_w),
             fold_w: f64::from(theme.tokens.metrics.icon_sm),
             gap: f64::from(spacing.s2),
-            style: style.clone(),
+            style,
         };
-        self.widths = self
-            .lines
-            .iter()
-            .map(|line| {
-                line.tokens
-                    .iter()
-                    .map(|token| f64::from(text.measure_style(&token.text, None, &style).0))
-                    .collect()
-            })
-            .collect();
         self.metrics = Some(metrics.clone());
-        self.measured_for = Some(key);
         metrics
     }
 
@@ -238,7 +232,14 @@ impl Widget for CodeView {
         let colors = &theme.tokens.colors;
         let visible = self.visible();
         self.folds.clear();
+        #[cfg(test)]
+        self.painted.clear();
         let number_style = metrics.style.clone().numeric();
+        let advance = f64::from(text_renderer.measure_style("0", None, &metrics.style).0);
+        #[cfg(test)]
+        {
+            self.painted_chars = 0;
+        }
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         let mut y = self.rect.y0 + metrics.pad_y;
         for index in visible {
@@ -281,16 +282,27 @@ impl Widget for CodeView {
                 self.folds.push((band_for_caret(caret, band), index));
             }
             let mut x = self.rect.x0 + Self::text_x(&metrics);
-            let widths = self.widths.get(index);
-            for (slot, token) in line.tokens.iter().enumerate() {
+            for token in &line.tokens {
+                if x >= self.rect.x1 {
+                    break;
+                }
+                // The view does not scroll sideways, so text past its right
+                // edge never shows; shaping all of a megabyte-long line on
+                // every frame would freeze the pane.
+                let shown = prefix(&token.text, columns_within(self.rect.x1 - x, advance));
+                #[cfg(test)]
+                {
+                    self.painted.entry(index).or_default().push(x);
+                    self.painted_chars += shown.chars().count();
+                }
                 ctx.text(
-                    &token.text,
+                    shown,
                     &metrics.style,
                     token_color(theme, token.kind),
                     Point::new(x, band.y0),
                     None,
                 );
-                x += widths.and_then(|w| w.get(slot)).copied().unwrap_or(0.0);
+                x += f64::from(ctx.text.measure_style(shown, None, &metrics.style).0);
             }
             if collapsed && line.opens_block {
                 ctx.text(
@@ -360,6 +372,21 @@ impl Widget for CodeView {
     }
 }
 
+/// How many characters of the code face can show in `width`, with room to
+/// spare for characters wider than a digit.
+fn columns_within(width: f64, advance: f64) -> usize {
+    ui::num::usize_of_f64((width / advance.max(1.0)).ceil())
+        .saturating_mul(2)
+        .saturating_add(1)
+}
+
+/// The first `count` characters of `text`.
+fn prefix(text: &str, count: usize) -> &str {
+    text.char_indices()
+        .nth(count)
+        .map_or(text, |(end, _)| text.get(..end).unwrap_or(text))
+}
+
 /// The hit target of a caret is the gutter cell it sits in, a full line tall.
 fn band_for_caret(caret: Rect, band: Rect) -> Rect {
     Rect::new(caret.x0 - 2.0, band.y0, caret.x1 + 2.0, band.y1)
@@ -394,7 +421,6 @@ mod tests {
         }
     }
 
-    /// A press on a caret folds its block away, and the next press unfolds it.
     #[test]
     fn pressing_a_caret_folds_and_unfolds_its_block() {
         let body = serde_json::json!({ "a": { "b": [1, 2, 3] }, "c": true }).to_string();
@@ -454,6 +480,30 @@ mod tests {
         assert_eq!(view.visible(), all);
     }
 
+    /// A line far longer than the view is wide is drawn only as far as it
+    /// shows, so a minified megabyte does not freeze the pane; its start is
+    /// still there.
+    #[test]
+    fn a_long_line_paints_only_what_fits() {
+        let body = format!("{}\nshort", "a".repeat(1024 * 1024));
+        let d = harness(CodeView::plain("Body", &body));
+        let _ = d.render_rgba();
+        let view = d.root::<CodeView>();
+        assert_eq!(view.visible().len(), 2);
+        assert!(
+            view.painted_chars > "short".len() + 20,
+            "the long line's start is drawn: {}",
+            view.painted_chars
+        );
+        assert!(
+            view.painted_chars < 2_000,
+            "a 600-pixel view draws no megabyte: {}",
+            view.painted_chars
+        );
+        assert_eq!(prefix("grün", 3), "grü");
+        assert_eq!(prefix("ab", 5), "ab");
+    }
+
     /// Plain text has no folds and one numbered line per line of text.
     #[test]
     fn plain_text_is_numbered_without_folds() {
@@ -462,5 +512,67 @@ mod tests {
         let view = d.root::<CodeView>();
         assert!(view.folds.is_empty());
         assert_eq!(view.visible().len(), 3);
+    }
+
+    /// A browser starts without the monospace face and fetches it once code
+    /// first asks for it. Once it arrives, every token sets after the real
+    /// advance of the one before it: a separator never prints over its key.
+    #[test]
+    fn tokens_follow_the_face_that_arrives_after_the_first_paint() {
+        let root = ui::font_catalog::checkout_root();
+        let fonts = ui::font_catalog::FontCatalog::product("", "en-US")
+            .load_browser_startup_bytes(|name| {
+                let bytes = std::fs::read(root.join(name)).ok()?;
+                let digest = ui::font_catalog::test_sha256(&bytes);
+                Some((bytes, digest))
+            })
+            .expect("startup fonts");
+        let body = serde_json::json!({ "name": "tilo", "count": 3 }).to_string();
+        let mut d = FrameHarness::for_root_with(
+            ui::State::new(),
+            CodeView::json("Body", &body),
+            (600, 400),
+            ui::headless::FrameOptions {
+                theme: Some(Theme::dark()),
+                text: Some(TextRenderer::with_browser_font_system(fonts)),
+                ..ui::headless::FrameOptions::default()
+            },
+        );
+        let _ = d.render_rgba();
+        let demands = d.take_browser_font_demands();
+        assert!(!demands.is_empty(), "code asks for the monospace face");
+        for name in demands {
+            let bytes = std::fs::read(root.join(&name)).expect("font bytes");
+            let digest = ui::font_catalog::test_sha256(&bytes);
+            d.install_browser_font(&name, bytes, &digest)
+                .expect("font installs");
+        }
+        // An installed font asks for layout; the host runs it on its next frame.
+        d.relayout();
+        let _ = d.render_rgba();
+
+        let mut measure = TextRenderer::new();
+        let view = d.root::<CodeView>();
+        let style = view.metrics.clone().expect("measured").style;
+        let mut keys = 0;
+        for (index, line) in view.lines.iter().enumerate() {
+            let xs = &view.painted[&index];
+            for (slot, token) in line.tokens.iter().enumerate() {
+                if token.kind != TokenKind::Key {
+                    continue;
+                }
+                keys += 1;
+                let key_end =
+                    xs[slot] + f64::from(measure.measure_style(&token.text, None, &style).0);
+                let separator = xs[slot + 1];
+                assert!(
+                    separator + 0.5 >= key_end,
+                    "{:?} starts at {separator}, inside {} ending at {key_end}",
+                    line.tokens[slot + 1].text,
+                    token.text
+                );
+            }
+        }
+        assert_eq!(keys, 2, "both keys were checked");
     }
 }

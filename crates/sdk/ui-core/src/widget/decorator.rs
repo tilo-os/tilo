@@ -70,10 +70,10 @@
 //!   ui::widget::Decorator for ..`) rather than importing it; the prelude
 //!   deliberately does not export it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::{AppModel, ModelPath, capability};
-use automerge::{AutoCommit, ObjId};
+
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -81,12 +81,38 @@ use winit::event::WindowEvent;
 
 use super::{
     EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
-    PrimaryScrollResult, ResourceOperationStart, Widget,
+    PrimaryScrollResult, Widget,
 };
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
+
+/// A widget as `&dyn Widget`, also one that already is a trait object: a
+/// decorator's inner widget may be either, and its layout walk hands the
+/// inner widget on ([`Widget::for_each_layout_child`]).
+pub trait AsDynWidget {
+    /// This widget as a trait object.
+    fn as_dyn_widget(&self) -> &dyn Widget;
+}
+
+impl<T: Widget> AsDynWidget for T {
+    fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+}
+
+impl AsDynWidget for dyn Widget {
+    fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+}
+
+impl AsDynWidget for dyn super::AppWidget {
+    fn as_dyn_widget(&self) -> &dyn Widget {
+        self
+    }
+}
 
 /// Point `node` at `widget` in the host's node map, replacing the inner
 /// widget's own registration. For a [`Decorator`] that overrides a hook the
@@ -179,7 +205,7 @@ macro_rules! decorator_trait {
         }
 
         /// The same trait for the toolkit's own decorators that apps box
-        /// ([`concrete_decorator_widget`]): it has no blanket [`Widget`]
+        /// (`concrete_decorator_widget`): it has no blanket [`Widget`]
         /// impl, so each such type gets a concrete one, compiled once into
         /// the toolkit. Through the blanket impl a decorator's [`Widget`]
         /// methods are generic, and every app that boxes one compiled them
@@ -245,7 +271,7 @@ decorator_trait! {
     /// forwarding the rest. See the [module docs](self).
     trait {
         /// The widget this one extends.
-        type Inner: Widget + ?Sized;
+        type Inner: Widget + AsDynWidget + ?Sized;
 
         /// The extended widget.
         fn inner(&self) -> &Self::Inner;
@@ -256,6 +282,15 @@ decorator_trait! {
         #[doc(hidden)]
         fn concrete_type_name(&self) -> &'static str {
             std::any::type_name::<Self>()
+        }
+
+        /// The inner widget itself: the decorator's layout node stands for
+        /// it, so a retained layout is checked through the inner widget and
+        /// what it lays out. A decorator that lays out more than its inner
+        /// widget (an overlay it mounts) lists that too.
+        fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+            visitor(self.inner().as_dyn_widget());
+            true
         }
 
         fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
@@ -279,13 +314,17 @@ decorator_trait! {
             Some(self)
         }
 
+        fn stands_for(&self, address: *const ()) -> bool {
+            std::ptr::from_ref(self).cast::<()>() == address || self.inner().stands_for(address)
+        }
+
         fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
             Some(self)
         }
 
         /// A decorator's structure flag is its own [`Decorator::take_structure_dirty`]
         /// (which may add flags of its own), so by default it says
-        /// [`super::StructureChange::Rebuild`]; one that adds no flags forwards
+        /// [`crate::widget::StructureChange::Rebuild`]; one that adds no flags forwards
         /// its inner widget's change by overriding this.
         fn take_structure_change(&mut self) -> crate::widget::StructureChange {
             crate::widget::StructureChange::of(Decorator::take_structure_dirty(self))
@@ -335,6 +374,10 @@ decorator_trait! {
             Decorator::concrete_type_name(self)
         }
 
+        fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+            Decorator::for_each_layout_child(self, visitor)
+        }
+
         fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
             Decorator::provide(self, request);
         }
@@ -360,6 +403,10 @@ decorator_trait! {
 
         fn as_any(&self) -> Option<&dyn std::any::Any> {
             Decorator::as_any(self)
+        }
+
+        fn stands_for(&self, address: *const ()) -> bool {
+            Decorator::stands_for(self, address)
         }
 
         fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -409,17 +456,17 @@ decorator_trait! {
         fn layout_info() -> Option<LayoutInfo>;
         fn children() -> Vec<&dyn Widget>;
         fn for_each_child(visitor: &mut dyn FnMut(&dyn Widget));
-        fn local_resource_operation_handlers() -> &'static [&'static str];
-        fn resource_operation_handlers() -> HashSet<String>;
+        fn for_each_child_in_clip(visitor: &mut dyn FnMut(&dyn Widget));
         fn name() -> &str;
         fn test_id() -> Option<&str>;
+        fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;
         fn child_clip_rect() -> Option<vello::kurbo::Rect>;
-        fn keeps_undo_step_open() -> bool;
         fn cursor_shape(point: vello::kurbo::Point) -> Option<winit::window::CursorIcon>;
         fn claims_raw_touch(point: vello::kurbo::Point) -> bool;
+        fn touch_claim(point: vello::kurbo::Point) -> crate::interaction::TouchClaim;
         fn tooltip() -> Option<&str>;
         fn tooltip_side() -> crate::widget::tooltip::TooltipSide;
         fn tooltip_target_at(point: vello::kurbo::Point) -> Option<(vello::kurbo::Rect, String)>;
@@ -428,18 +475,23 @@ decorator_trait! {
         fn wants_tab_input() -> bool;
         fn ime_cursor_rect() -> Option<vello::kurbo::Rect>;
         fn traps_focus() -> bool;
+        fn scopes_keyboard_focus() -> bool;
         fn accessibility() -> Option<crate::a11y::AccessNode>;
         fn synthetic_accessibility_rect(path: &[usize]) -> Option<vello::kurbo::Rect>;
         fn accessibility_child_parent(child_index: usize) -> Option<usize>;
         fn accessibility_child_path(child_index: usize) -> Option<Vec<usize>>;
         fn accessibility_represents_child(child_index: usize) -> bool;
+        fn accessibility_child_description(child_index: usize) -> Option<String>;
         fn is_enabled() -> bool;
         fn ime_requires_deferred_ack() -> bool;
+        fn ime_refuses_ordinary_commits() -> bool;
         fn ime_edit_fingerprint(key: &[u8; 32]) -> Option<[u8; 32]>;
         fn ime_content() -> Option<crate::ime::InputContent>;
         fn ime_multiline() -> bool;
         fn presented() -> bool;
-        fn opening() -> bool;
+        fn arrives_from() -> crate::arriving::Source;
+        fn arrival_progress() -> Option<crate::arriving::Progress>;
+        fn arrival_shape() -> crate::widget::SkeletonShape;
         fn text_review() -> Option<(usize, String)>;
         fn nav_availability() -> crate::gesture::NavAvailability;
         fn dev_route() -> Option<crate::widget::router::RouteSnapshot>;
@@ -447,9 +499,12 @@ decorator_trait! {
         fn minimum_window_width() -> Option<f64>;
         fn needs_idle_sync() -> bool;
         fn wants_pointer_capture() -> bool;
+        fn disclosing() -> Option<crate::widget::Disclosing>;
+        fn is_band() -> bool;
         fn animation_detail() -> Option<String>;
         fn needs_animation_frame() -> bool;
         fn next_wake_deadline() -> Option<Instant>;
+        fn holds_frame_until(now: Instant) -> Option<Instant>;
         fn modal_capture() -> Option<vello::kurbo::Rect>;
         fn has_pending_visual_work() -> bool;
         fn has_transient_feedback() -> bool;
@@ -458,10 +513,11 @@ decorator_trait! {
         fn damage_covers_own_box() -> bool;
         fn is_layout_dirty() -> bool;
         fn layout_needs_measure() -> bool;
+        #[doc(hidden)]
+        fn relaid_layout_node() -> Option<NodeId>;
         fn is_default_keyboard_focus() -> bool;
         fn keyboard_input_scope() -> Option<crate::application::InstanceId>;
         fn primary_vertical_scroll() -> Option<PrimaryScrollRegion>;
-        fn semantic_readers() -> &'static [crate::semantic_document_read::RegisteredSemanticReader];
         #[doc(hidden)]
         #[allow(
             private_interfaces,
@@ -474,6 +530,8 @@ decorator_trait! {
 
     mut {
         fn set_full_bleed(full_bleed: bool);
+        fn place_disclosing(slot: vello::kurbo::Rect);
+        fn note_placement(placement: crate::widget::Placement);
         #[doc(hidden)]
         #[allow(
             private_interfaces,
@@ -516,10 +574,6 @@ decorator_trait! {
         fn reveal_descendant(target: *const dyn Widget) -> bool;
         fn take_action_palette_request() -> Option<tilo_actions::ActionAddress>;
         fn take_search_request() -> bool;
-        fn take_committed_action() -> Option<Vec<automerge::ChangeHash>>;
-        fn set_undo_status(status: &mut dyn FnMut() -> crate::undo::UndoStatus);
-        fn take_undo_request() -> Option<crate::undo::UndoRequest>;
-        fn handle_local_undo_request(request: crate::undo::UndoRequest) -> bool;
         fn set_focus(focused: bool);
         fn set_invalid(invalid: bool);
         fn focus_synthetic_accessibility(path: &[usize]) -> bool;
@@ -545,6 +599,7 @@ decorator_trait! {
         ) -> bool;
         fn take_focus_reset() -> bool;
         fn take_accessibility_request() -> Option<crate::a11y::AccessibilityRequest>;
+        fn take_app_activation() -> Option<crate::application::InstanceId>;
         fn restore_dev_route(route: &crate::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);
         fn apply_room_action(
@@ -552,18 +607,8 @@ decorator_trait! {
             type_id: &str,
             payload: &[u8],
         ) -> bool;
-        fn start_operation(
-            op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut crate::widget::Edits<'_>,
-            path: &ObjId,
-        ) -> Result<Option<ResourceOperationStart>, String>;
-        fn poll_resource_operation(
-            invocation: tilo_actions::InvocationId,
-            cancellation_requested: bool,
-            doc: &AutoCommit,
-            path: &ObjId,
-        ) -> Option<tilo_actions::InvocationUpdate>;
         fn take_structure_dirty() -> bool;
+        fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
         fn mark_drawn();
         fn release_scene_cache();
         fn draw_overlay(
@@ -592,6 +637,7 @@ decorator_trait! {
 // The toolkit's decorators that apps box themselves. A type here implements
 // `concrete::Decorator` instead of `Decorator`.
 concrete_decorator_widget!(super::nav_list::NavList);
+concrete_decorator_widget!(super::media_transport::MediaTransport);
 
 #[cfg(test)]
 #[path = "decorator_tests.rs"]

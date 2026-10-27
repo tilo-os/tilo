@@ -65,10 +65,9 @@ at the configured `identity_root`. Home-server first-boot enrollment belongs to
 the provisioning-image flow, while a hosted service supplies its provider
 identity through its control plane.
 
-LAN discovery is deliberately opt-in because it advertises the device's Iroh
-endpoint id and local addresses on the current network. Set
-`TILO_COLLAB_LAN_DISCOVERY=1` to enable the Tilo-specific
-`_tilo-collab-v1._udp.local` service. Invite addresses work without it.
+A desktop session finds the person's own devices on the local network with
+sealed probes only those devices can read (`tilo-lan-discovery`); nothing on
+the network learns the endpoint id. Invite addresses work without it.
 
 ## Wire protocol
 
@@ -128,7 +127,7 @@ What a relay costs per active collaborator is measured, not estimated:
   budgets, and the live egress counter checked against the frames the
   subscribers read.
 - **Load bench** (`examples/relay_load`, nightly in
-  `perf-scheduled.yml`): 100 collaborators in rooms of four, each typing 30
+  t's `perf-hosting` check): 100 collaborators in rooms of four, each typing 30
   characters, then pointing for four seconds at 30 Hz (which each client's
   session writer paces to the relay's 20 Hz before it is sent), then idle, every
   minute, against one relay process. It records CPU-seconds, resident MiB and

@@ -1,7 +1,7 @@
 //! Persistent browsing history + fuzzy address-bar ranking.
 //!
 //! The store is a flat list of [`HistoryEntry`] rows keyed by URL. Every
-//! navigation calls [`History::record`], which de-duplicates by URL
+//! navigation calls [`History::record_at`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
 //! list stays one-row-per-page. It is the person's own record
 //! ([`BrowsingHistory`]): it follows them to their other devices and never
@@ -574,6 +574,30 @@ impl BrowsingHistory {
         Ok(())
     }
 
+    /// Name a visited page recorded before its title was known: a page a
+    /// web app moved to without loading one, or one that names itself once
+    /// it has loaded. A page that has a title keeps it.
+    ///
+    /// Like recording the visit, this is the browser keeping its history,
+    /// not an edit of the person's to take back.
+    #[action(housekeeping)]
+    pub fn name_visit(
+        &mut self,
+        #[param("The page's address")] url: String,
+        #[param("The page's title")] title: String,
+    ) -> Result<(), Refusal> {
+        let title = bounded_text(&title, MAX_HISTORY_TITLE_BYTES);
+        if title.trim().is_empty() {
+            return Err(Refusal::new("a page is named by a title"));
+        }
+        if let Some(visit) = self.visits.get_mut(url.trim())
+            && visit.title.0.trim().is_empty()
+        {
+            visit.title = Atom(title);
+        }
+        Ok(())
+    }
+
     /// Forget one page.
     #[action]
     pub fn forget(&mut self, #[param("The page's address")] url: String) {
@@ -729,7 +753,6 @@ mod tests {
     /// Recording visits.
     #[test]
     fn record_dedups_keeps_titles_and_evicts_at_the_bound() {
-        // Phase `record_dedups_by_url_and_bumps_count`.
         {
             let mut h = History::new();
             h.record_at("https://a.test", "First", 100);
@@ -741,7 +764,6 @@ mod tests {
             assert_eq!(e.title, "Second", "revisit refreshes the title");
         }
 
-        // Phase `record_keeps_old_title_when_new_is_blank`.
         {
             let mut h = History::new();
             h.record_at("https://a.test", "Real Title", 100);
@@ -753,14 +775,12 @@ mod tests {
             );
         }
 
-        // Phase `record_ignores_blank_url`.
         {
             let mut h = History::new();
             h.record_at("   ", "nope", 100);
             assert!(h.is_empty(), "a blank URL is not recorded");
         }
 
-        // Phase `record_keeps_distinct_urls_separate`.
         {
             let mut h = History::new();
             h.record_at("https://a.test", "A", 100);
@@ -768,7 +788,6 @@ mod tests {
             assert_eq!(h.len(), 2);
         }
 
-        // Phase `history_evicts_oldest_rows_at_the_resource_bound`.
         {
             let mut h = History::new();
             for index in 0..=MAX_HISTORY_ENTRIES {
@@ -863,7 +882,6 @@ mod tests {
                 len: Some(1),
                 first: Some("https://github.com"),
             },
-            // Equal visit counts isolate the recency signal.
             Case {
                 name: "with no query and equal visits, the most-recent page leads",
                 rows: &[

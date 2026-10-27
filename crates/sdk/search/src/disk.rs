@@ -143,10 +143,6 @@ impl DiskIndex {
     /// The writer's lock is an advisory lock on `.tantivy-writer.lock`,
     /// which the system releases with the process holding it: the file a
     /// crashed process leaves behind does not refuse the next writer.
-    ///
-    /// # Errors
-    ///
-    /// Tantivy's error when another live writer holds the index.
     pub fn writer(
         &self,
         heap_bytes: usize,
@@ -205,8 +201,10 @@ impl DiskIndex {
             return Vec::new();
         }
         let searcher = self.reader.searcher();
-        let Ok(top) = searcher.search(&BooleanQuery::new(terms), &TopDocs::with_limit(limit))
-        else {
+        let Ok(top) = searcher.search(
+            &BooleanQuery::new(terms),
+            &TopDocs::with_limit(limit).order_by_score(),
+        ) else {
             return Vec::new();
         };
         top.into_iter()
@@ -230,10 +228,6 @@ pub struct DiskWriter {
 
 impl DiskWriter {
     /// Insert or replace the document with `key`.
-    ///
-    /// # Errors
-    ///
-    /// Tantivy's error when the indexing thread has failed.
     pub fn upsert(
         &mut self,
         key: &str,
@@ -250,7 +244,6 @@ impl DiskWriter {
         self.writer.add_document(doc).map(|_| ())
     }
 
-    /// Remove the document with `key`, if any.
     pub fn remove(&mut self, key: &str) {
         self.writer
             .delete_term(Term::from_field_text(self.fields.key, key));
@@ -270,10 +263,6 @@ impl DiskWriter {
     /// Commit, let the merges that commit started finish, and release the
     /// writer. Dropping a writer instead discards what it has not committed
     /// and abandons its merges half done, to be redone by the next writer.
-    ///
-    /// # Errors
-    ///
-    /// Tantivy's error when the commit, a merge or the reload fails.
     pub fn close(mut self) -> tantivy::Result<()> {
         self.writer.commit()?;
         self.writer.wait_merging_threads()?;
@@ -334,6 +323,63 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].key, "/a/shopping.md", "a title word counts more");
         assert!(index.search("retired", 5).is_empty());
+    }
+
+    /// Files' body index on a user's disk may have been written by tantivy
+    /// 0.22 (index format 6). It opens as it is, keeps every document, and
+    /// takes new writes and merges in the current format.
+    #[test]
+    fn an_index_tantivy_0_22_wrote_opens_and_keeps_its_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = include_str!("../tests/fixtures/tantivy-0.22-disk-index.hex");
+        for line in fixture.lines().filter(|line| !line.starts_with('#')) {
+            let (name, hex) = line.split_once(' ').unwrap();
+            let bytes: Vec<u8> = hex
+                .as_bytes()
+                .chunks(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect();
+            std::fs::write(dir.path().join(name), bytes).unwrap();
+        }
+        let postings =
+            std::fs::read(dir.path().join("e43ba5cdcfcb434b81109ed4f5c24b98.idx")).unwrap();
+        let footer = String::from_utf8_lossy(&postings);
+        assert!(
+            footer.contains(r#""minor":22,"patch":1,"index_format_version":6"#),
+            "a segment tantivy 0.22.1 wrote"
+        );
+
+        let index = DiskIndex::open_or_create(dir.path()).unwrap();
+        let versions = index.versions().unwrap();
+        assert_eq!(versions.len(), 3);
+        assert_eq!(versions.get("/home/a/notes.txt"), Some(&1_700_000_000));
+        assert_eq!(versions.get("/home/a/travel.md"), Some(&1_700_000_200));
+        let budget: Vec<String> = index
+            .search("budget", 5)
+            .into_iter()
+            .map(|hit| hit.key)
+            .collect();
+        assert_eq!(budget.len(), 2);
+        assert!(budget.contains(&"/home/a/notes.txt".to_owned()));
+        assert!(budget.contains(&"/home/a/recipe.md".to_owned()));
+
+        // A merge over every segment rewrites the old ones in the current format.
+        let mut writer = index.writer(15_000_000, 2_000).unwrap();
+        writer
+            .upsert("/home/a/recipe.md", 1_700_000_300, "recipe", "soup")
+            .unwrap();
+        writer.commit().unwrap();
+        let segments = index.index.searchable_segment_ids().unwrap();
+        writer.writer.merge(&segments).wait().unwrap();
+        writer.close().unwrap();
+
+        let index = DiskIndex::open_or_create(dir.path()).unwrap();
+        let versions = index.versions().unwrap();
+        assert_eq!(versions.len(), 3);
+        assert_eq!(versions.get("/home/a/recipe.md"), Some(&1_700_000_300));
+        assert_eq!(index.search("lisbon", 5).len(), 1);
+        assert_eq!(index.search("soup", 5).len(), 1);
+        assert_eq!(index.search("budget", 5).len(), 1);
     }
 
     #[test]

@@ -121,7 +121,6 @@ pub(super) async fn ask(
         .unwrap_or_else(|reason| panic!("the relay did not answer: {reason}"))
 }
 
-/// An invocation of `action` on `resource` of `provider` with `argument`.
 pub(super) fn invocation(
     provider: &str,
     resource: String,
@@ -147,7 +146,6 @@ pub(super) fn invocation(
     })
 }
 
-/// The host's own operation `action` with `argument`.
 pub(super) fn host_operation(action: &str, argument: serde_json::Value) -> RemoteActionMessage {
     invocation(
         HOST_ACTIONS_PROVIDER,

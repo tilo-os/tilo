@@ -91,6 +91,17 @@ impl ParamType {
 /// not an assertion: binding does not check it.
 pub const RESOURCE_KIND_ANNOTATION: &str = "resource_kind";
 
+/// Schema annotation saying how each of a parameter's choices reads to a
+/// person: an object from choice to label; see
+/// [`ActionParam::with_labelled_choices`]. An identity is chosen by its name,
+/// never by its fingerprint.
+pub const CHOICE_LABELS_ANNOTATION: &str = "choice_labels";
+
+/// Schema annotation naming which of a parameter's choices are people
+/// (identities, collaborators): a surface shows each with its avatar; see
+/// [`ActionParam::choosing_people`].
+pub const PEOPLE_ANNOTATION: &str = "people";
+
 /// Schema annotation marking a parameter as a place inside the resource the
 /// action is on (an item, a caret in it, a range of it); see
 /// [`ActionParam::as_place`].
@@ -100,6 +111,36 @@ pub const PLACE_ANNOTATION: &str = "place";
 /// another action produced (a content hash), not words a caller can say;
 /// see [`ActionParam::as_content`].
 pub const CONTENT_ANNOTATION: &str = "content";
+
+/// Schema annotation naming what a parameter's value picks from the
+/// workspace; see [`ActionParam::picking`]. An annotation, not an
+/// assertion: binding takes any value of the parameter's type.
+pub const PICK_ANNOTATION: &str = "pick";
+
+/// What a parameter's value names in the workspace, so a person picks it
+/// from what is there instead of typing its encoding ([`PICK_ANNOTATION`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// Who: a person, an agent or an app of the workspace, as a
+    /// `tilo_action_policy::Subject`.
+    Subject,
+    /// Where: a node of the workspace's tree, as its path below the room.
+    Node,
+    /// One of the workspace's grants, by its id.
+    Grant,
+}
+
+impl Pick {
+    const ALL: [Self; 3] = [Self::Subject, Self::Node, Self::Grant];
+
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::Subject => "subject",
+            Self::Node => "node",
+            Self::Grant => "grant",
+        }
+    }
+}
 
 /// The schema of a place inside a resource ([`ActionParam::as_place`]).
 #[must_use]
@@ -249,6 +290,100 @@ impl ActionParam {
             RESOURCE_KIND_ANNOTATION.into(),
             serde_json::Value::String(kind.into()),
         );
+        self.schema = Some(std::sync::Arc::new(serde_json::Value::Object(schema)));
+        self
+    }
+
+    /// Restrict this parameter to the first of each pair, each read as the
+    /// second ([`CHOICE_LABELS_ANNOTATION`]): binding still takes only the
+    /// values, and a surface offers the labels.
+    #[must_use]
+    pub fn with_labelled_choices<V: Into<Str>, L: Into<String>>(
+        mut self,
+        choices: impl IntoIterator<Item = (V, L)>,
+    ) -> Self {
+        let mut labels = serde_json::Map::new();
+        self.choices = choices
+            .into_iter()
+            .map(|(value, label)| {
+                let value: Str = value.into();
+                labels.insert(value.to_string(), serde_json::Value::String(label.into()));
+                value
+            })
+            .collect();
+        self.annotate(CHOICE_LABELS_ANNOTATION, serde_json::Value::Object(labels))
+    }
+
+    /// Mark which choices are people ([`PEOPLE_ANNOTATION`]): each is shown
+    /// with the avatar of its label, keyed by its value. Choices not named
+    /// (a "Create new" beside the identities) read as text alone.
+    #[must_use]
+    pub fn choosing_people<S: Into<String>>(self, people: impl IntoIterator<Item = S>) -> Self {
+        let people = people
+            .into_iter()
+            .map(|person| serde_json::Value::String(person.into()))
+            .collect();
+        self.annotate(PEOPLE_ANNOTATION, serde_json::Value::Array(people))
+    }
+
+    /// Have a person pick this parameter's value from the workspace's
+    /// `pick`s ([`PICK_ANNOTATION`]); callers that know the value still give
+    /// it as the parameter's type says.
+    #[must_use]
+    pub fn picking(self, pick: Pick) -> Self {
+        self.annotate(
+            PICK_ANNOTATION,
+            serde_json::Value::String(pick.tag().into()),
+        )
+    }
+
+    /// What this parameter's value picks from the workspace
+    /// ([`Self::picking`]).
+    #[must_use]
+    pub fn pick(&self) -> Option<Pick> {
+        let tag = self.schema.as_ref()?.get(PICK_ANNOTATION)?.as_str()?;
+        Pick::ALL.into_iter().find(|pick| pick.tag() == tag)
+    }
+
+    /// How `choice` reads to a person ([`Self::with_labelled_choices`]).
+    #[must_use]
+    pub fn choice_label(&self, choice: &str) -> Option<&str> {
+        self.schema
+            .as_ref()?
+            .get(CHOICE_LABELS_ANNOTATION)?
+            .get(choice)?
+            .as_str()
+    }
+
+    /// Whether this parameter is chosen from labelled values
+    /// ([`Self::with_labelled_choices`]), even when there are none to offer
+    /// now: a surface offers the empty list, never a free-text field.
+    #[must_use]
+    pub fn has_labelled_choices(&self) -> bool {
+        self.schema
+            .as_ref()
+            .is_some_and(|schema| schema.get(CHOICE_LABELS_ANNOTATION).is_some())
+    }
+
+    /// Whether `choice` is a person ([`Self::choosing_people`]).
+    #[must_use]
+    pub fn choice_is_person(&self, choice: &str) -> bool {
+        self.schema
+            .as_ref()
+            .and_then(|schema| schema.get(PEOPLE_ANNOTATION))
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|people| people.iter().any(|person| person.as_str() == Some(choice)))
+    }
+
+    fn annotate(mut self, key: &str, value: serde_json::Value) -> Self {
+        let mut schema = match self.schema.take() {
+            Some(schema) => match std::sync::Arc::unwrap_or_clone(schema) {
+                serde_json::Value::Object(schema) => schema,
+                _ => serde_json::Map::new(),
+            },
+            _ => serde_json::Map::new(),
+        };
+        schema.insert(key.into(), value);
         self.schema = Some(std::sync::Arc::new(serde_json::Value::Object(schema)));
         self
     }
@@ -691,10 +826,6 @@ impl ActionArgs {
     /// Fails on the first problem rather than accumulating: the caller has to
     /// fix them one at a time anyway, and a partial bind must never reach an
     /// action.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first missing, unknown, wrong-typed, or disallowed argument.
     pub fn bind(
         params: &[ActionParam],
         supplied: impl IntoIterator<Item = (String, ArgValue)>,
@@ -708,13 +839,22 @@ impl ActionArgs {
                 // not get.
                 return Err(ArgError::Unknown { name });
             };
+            // Callers (models especially) write null for "not set": for an
+            // optional parameter that is leaving it out. A nullable one
+            // takes null as its value.
+            if matches!(value, ArgValue::Null) && !param.nullable && !param.required {
+                continue;
+            }
             if matches!(value, ArgValue::Null) && !param.nullable {
                 return Err(ArgError::Constraint {
                     name,
                     reason: "may not be null".into(),
                 });
             }
-            if !matches!(value, ArgValue::Null) && !value.satisfies(param.ty) {
+            if !matches!(value, ArgValue::Null)
+                && !value.satisfies(param.ty)
+                && !schema_alternative_of(param, &value)
+            {
                 return Err(ArgError::WrongType {
                     name,
                     expected: param.ty,
@@ -798,11 +938,6 @@ impl ActionArgs {
 
     /// Bind arguments that arrived as a JSON object — the shape a control
     /// socket delivers.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ArgError`] when a JSON value is unrepresentable or the
-    /// supplied arguments do not satisfy `params`.
     pub fn bind_json(
         params: &[ActionParam],
         supplied: &serde_json::Map<String, serde_json::Value>,
@@ -832,7 +967,6 @@ impl ActionArgs {
         Self::bind(params, pairs)
     }
 
-    /// The text bound to `name`, if any.
     pub fn text(&self, name: &str) -> Option<&str> {
         match self.values.get(name) {
             Some(
@@ -845,7 +979,6 @@ impl ActionArgs {
         }
     }
 
-    /// The integer bound to `name`, if any.
     pub fn integer(&self, name: &str) -> Option<i64> {
         match self.values.get(name) {
             Some(ArgValue::Integer(i)) => Some(*i),
@@ -853,7 +986,6 @@ impl ActionArgs {
         }
     }
 
-    /// The JSON array bound to `name`, if any.
     pub fn array(&self, name: &str) -> Option<&[serde_json::Value]> {
         match self.values.get(name) {
             Some(ArgValue::Array(values)) => Some(values),
@@ -875,7 +1007,6 @@ impl ActionArgs {
         }
     }
 
-    /// The boolean bound to `name`, if any.
     pub fn boolean(&self, name: &str) -> Option<bool> {
         match self.values.get(name) {
             Some(ArgValue::Boolean(b)) => Some(*b),
@@ -1077,6 +1208,32 @@ fn validate_schema_value(
     schema: &serde_json::Value,
 ) -> Result<(), String> {
     check_schema_value(value, schema).map_err(|refusal| refusal.to_string())
+}
+
+/// Whether `param`'s schema offers `value`'s JSON type as one of its
+/// alternatives (`oneOf`), beside the parameter's own type: a byte parameter
+/// takes its bytes inline, as an array, or a content reference, as a string.
+/// The schema then decides which alternative the value is.
+fn schema_alternative_of(param: &ActionParam, value: &ArgValue) -> bool {
+    let json_type = match value.to_json() {
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Number(number) if number.is_i64() || number.is_u64() => "integer",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Object(_) => "object",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Null => return false,
+    };
+    param
+        .schema
+        .as_deref()
+        .and_then(|schema| schema.get("oneOf"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|alternatives| {
+            alternatives.iter().any(|alternative| {
+                alternative.get("type").and_then(serde_json::Value::as_str) == Some(json_type)
+            })
+        })
 }
 
 fn check_schema_value(
@@ -1352,11 +1509,6 @@ fn validate_schema_object(
 
 /// Validate one JSON value against the deterministic JSON Schema subset used
 /// by Tilo action contracts.
-///
-/// # Errors
-///
-/// Returns a human-readable contract violation when `schema` is malformed,
-/// uses unsupported assertions, or `value` fails one of its supported assertions.
 pub fn validate_json_schema(
     value: &serde_json::Value,
     schema: &serde_json::Value,
@@ -1398,6 +1550,9 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
     RESOURCE_KIND_ANNOTATION,
     PLACE_ANNOTATION,
     CONTENT_ANNOTATION,
+    CHOICE_LABELS_ANNOTATION,
+    PEOPLE_ANNOTATION,
+    PICK_ANNOTATION,
 ];
 
 /// Validate the assertion vocabulary itself before a surface is published.
@@ -1664,6 +1819,32 @@ mod rich_schema_tests {
     }
 
     #[test]
+    fn null_leaves_an_optional_argument_out_and_is_no_required_ones_value() {
+        let params = vec![
+            ActionParam::required("media", ParamType::Text, "media"),
+            ActionParam::optional("fade_in", ParamType::Number, "fade in"),
+            ActionParam::optional("parent", ParamType::Text, "parent").nullable(),
+        ];
+        let supplied = json!({"media": "shot-a.mp4", "fade_in": null, "parent": null});
+        let bound = ActionArgs::bind_json(&params, supplied.as_object().unwrap()).unwrap();
+        assert_eq!(
+            bound.to_json(),
+            *json!({"media": "shot-a.mp4", "parent": null})
+                .as_object()
+                .unwrap()
+        );
+        assert_eq!(bound.number("fade_in"), None);
+
+        let missing = json!({"media": null});
+        assert_eq!(
+            ActionArgs::bind_json(&params, missing.as_object().unwrap())
+                .unwrap_err()
+                .to_string(),
+            "argument `media` may not be null"
+        );
+    }
+
+    #[test]
     fn shared_schema_preserves_wire_binding_and_copy_on_write() {
         use crate::{ActionSpec, EncodedAction, ExecutionLocus};
         use std::sync::Arc;
@@ -1727,6 +1908,20 @@ mod rich_schema_tests {
                 .unwrap()
                 .get(RESOURCE_KIND_ANNOTATION),
             None
+        );
+    }
+
+    #[test]
+    fn a_parameter_with_labelled_choices_of_people_binds_its_values() {
+        let param = ActionParam::required("id", ParamType::Text, "The identity")
+            .with_labelled_choices([("ada", "Ada"), ("bob", "Bob")])
+            .choosing_people(["ada", "bob"]);
+        assert!(param.validate_declaration().is_empty());
+        let params = [param];
+        assert!(ActionArgs::bind(&params, [("id".into(), ArgValue::Text("ada".into()))]).is_ok());
+        assert!(
+            ActionArgs::bind(&params, [("id".into(), ArgValue::Text("eve".into()))]).is_err(),
+            "only the values offered"
         );
     }
 

@@ -102,8 +102,6 @@ pub fn render_epub(
     Ok(cur.into_inner())
 }
 
-// ---- container.xml ----------------------------------------------------------
-
 const CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
   <rootfiles>
@@ -111,8 +109,6 @@ const CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   </rootfiles>
 </container>
 "#;
-
-// ---- images -----------------------------------------------------------------
 
 /// A packaged image resource derived from an image the snapshot references.
 struct ImageItem {
@@ -173,8 +169,6 @@ fn image_item_for(b: &BlockView, snap: &Resolved<'_>, existing_count: usize) -> 
         blob_hash: hash.clone(),
     })
 }
-
-// ---- chapters ---------------------------------------------------------------
 
 /// One spine chapter: manifest id, href, the headings it owns (for nav
 /// TOC), and the rendered XHTML. The display title is folded into the
@@ -470,8 +464,6 @@ fn wrap_xhtml(title: &str, body: &str) -> String {
     )
 }
 
-// ---- nav (TOC) --------------------------------------------------------------
-
 /// Build the EPUB 3 nav document: an `<nav epub:type="toc">` whose
 /// nested `<ol>` mirrors heading levels across chapters, each linking to
 /// its anchor in the owning chapter.
@@ -622,8 +614,6 @@ fn render_nav_forest(nodes: &[NavNode], depth: usize, out: &mut String) {
     out.push_str("</ol>\n");
 }
 
-// ---- OPF package ------------------------------------------------------------
-
 /// Build the OPF package document: metadata (Dublin Core) + manifest + spine.
 fn build_opf(snap: &Resolved<'_>, chapters: &[Chapter], images: &[ImageItem]) -> String {
     let title = doc_title(snap);
@@ -761,8 +751,6 @@ fn stable_id(snap: &Resolved<'_>, title: &str) -> String {
     }
     format!("{hash:016x}")
 }
-
-// ---- XML escaping -----------------------------------------------------------
 
 #[cfg(test)]
 mod tests;

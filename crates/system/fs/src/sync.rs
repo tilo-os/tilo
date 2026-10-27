@@ -13,7 +13,7 @@
 //! Every request names the workspace it is for, and every namespace
 //! payload either side sends is bound to that workspace by the sender's
 //! device signature ([`crate::namespace_binding`]). A receiver applies
-//! nothing that [`accept_namespace_payload`] refuses: another workspace's
+//! nothing that `accept_namespace_payload` refuses: another workspace's
 //! tree, bytes that are not the ones signed, or a device whose holder may
 //! not serve this workspace's namespace.
 
@@ -269,10 +269,6 @@ impl std::fmt::Display for NamespaceRefusalV1 {
 /// the whole workspace for a document or changes, also write it for a sync
 /// message, which authors changes), and the payload is bound to
 /// `workspace_id`, as `kind`, by `peer`'s own device, over these bytes.
-///
-/// # Errors
-///
-/// Returns why the payload is refused.
 pub(crate) fn accept_namespace_payload(
     policy: &PeerPolicy,
     workspace_id: uuid::Uuid,
@@ -346,16 +342,10 @@ pub struct Ticket {
 }
 
 impl Ticket {
-    /// # Errors
-    ///
-    /// Returns an error if postcard serialization fails.
     pub fn encode(&self) -> Result<String> {
         Ok(hex::encode(postcard::to_allocvec(self)?))
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `s` is not valid hex, or the decoded bytes are not a valid postcard-encoded [`Ticket`].
     pub fn decode(s: &str) -> Result<Self> {
         let raw = hex::decode(s.trim())?;
         Ok(postcard::from_bytes(&raw)?)
@@ -385,10 +375,6 @@ impl Ticket {
 /// iroh's secret key and the device key are the same 32 bytes, which is
 /// what makes the node id a *name* that still means the same thing after
 /// a restart.
-///
-/// # Errors
-///
-/// Returns an error if the endpoint fails to bind.
 pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
     let lookup = MemoryLookup::new();
     let endpoint = endpoint_builder(secret, &lookup).bind().await?;
@@ -401,10 +387,6 @@ pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint
 /// [`crate::reachability::Reachability`] is woken. For a daemon
 /// that waits to be dialled (`fs serve`); one that dials out at once has
 /// no reason to wait.
-///
-/// # Errors
-///
-/// Returns an error if the endpoint fails to bind.
 pub async fn bind_dormant_endpoint_with_key(
     secret: iroh::SecretKey,
 ) -> Result<(Endpoint, MemoryLookup, crate::reachability::Reachability)> {
@@ -439,6 +421,10 @@ pub(crate) const IDLE_KEEP_ALIVE: Duration = Duration::from_secs(25);
 /// a 25 s keep-alive would not reliably beat.
 pub(crate) const IDLE_TIMEOUT_MS: u32 = 60_000;
 
+/// The endpoint a mount or a `fs serve` reaches its peers on: number 0's
+/// relays, and number 0's directory only as a reader — a filesystem peer is
+/// dialled by the devices that mounted it, which hold its address already,
+/// so publishing its key would only sign in for a lookup nothing makes.
 fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::endpoint::Builder {
     use iroh::endpoint::{QuicTransportConfig, VarInt};
     /// Unacknowledged bytes one stream, and one connection, may have in
@@ -457,7 +443,9 @@ fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::end
         .default_path_max_idle_timeout(Duration::from_millis(u64::from(IDLE_TIMEOUT_MS)))
         .max_idle_timeout(Some(VarInt::from_u32(IDLE_TIMEOUT_MS).into()))
         .build();
-    Endpoint::builder(presets::N0)
+    Endpoint::builder(presets::Minimal)
+        .address_lookup(tilo_endpoint_reachability::Watchonly)
+        .relay_mode(iroh::endpoint::default_relay_mode())
         .transport_config(transport)
         .secret_key(secret)
         .address_lookup(lookup.clone())
@@ -467,10 +455,6 @@ fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::end
 /// on every call**, so nothing durable may be keyed on it — for tests
 /// and throwaway probes only; a real mount uses
 /// [`bind_endpoint_with_key`] so its identity is the device's.
-///
-/// # Errors
-///
-/// Returns an error if the endpoint fails to bind.
 pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
     bind_endpoint_with_key(iroh::SecretKey::generate()).await
 }
@@ -479,7 +463,7 @@ pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
 /// the bootstrap ALPN, bounded by a timeout so a stalled host can't hang
 /// the caller. The document is returned only when `policy` lets the peer
 /// read the whole workspace and the peer bound these exact bytes to
-/// `workspace_id` ([`accept_namespace_payload`]).
+/// `workspace_id` (`accept_namespace_payload`).
 ///
 /// # Errors
 ///
@@ -540,10 +524,6 @@ pub async fn fetch_remote_doc(
 /// Run the incremental Automerge sync protocol against a peer, applying
 /// missing changes into `namespace` — periodic anti-entropy exchanging
 /// only the delta, not the whole document.
-///
-/// # Errors
-///
-/// Returns an error if the connection, exchange, or a frame read/write fails, or the peer doesn't respond within the timeout.
 pub async fn sync_with_peer(
     endpoint: &Endpoint,
     peer: EndpointAddr,
@@ -1752,15 +1732,6 @@ impl Workspace {
     /// Begin hosting a new workspace, returning a ticket to share with
     /// peers. `policy` is what the sync and content planes serve *through*
     /// (see [`PeerPolicy`]); `None` hosts unenforced.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the gossip topic or protocol router fails to start.
-    /// Host a workspace and its authenticated synchronization protocols.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the gossip topic or protocol router fails to start.
     pub async fn host(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1786,10 +1757,6 @@ impl Workspace {
     }
 
     /// Host a workspace with the exact-record sharing protocol enabled.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the gossip topic or protocol router fails to start.
     pub async fn host_with_records(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1868,10 +1835,6 @@ impl Workspace {
     /// already have bootstrapped `namespace` from the host (see
     /// [`fetch_remote_doc`]) — a joiner serves too (anti-entropy is
     /// symmetric), so it carries the same `policy` a host does.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the gossip topic or protocol router fails to start.
     pub async fn join(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1899,10 +1862,6 @@ impl Workspace {
     }
 
     /// Join a workspace and serve/consume its exact-record sharing protocol.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the gossip topic or protocol router fails to start.
     pub async fn join_with_records(
         node: SyncNode,
         ticket: Ticket,
@@ -2267,11 +2226,6 @@ impl RecordAuthorizer for DirectMeshAuthorizer<'_> {
 }
 
 /// Exchange the current signed workspace authority with one authenticated peer.
-///
-/// # Errors
-///
-/// Returns an error when transport authentication, authority framing, or the
-/// remote exchange fails.
 pub async fn submit_workspace_authority(
     endpoint: &Endpoint,
     remote: EndpointAddr,

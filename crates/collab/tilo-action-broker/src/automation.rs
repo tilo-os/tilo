@@ -11,7 +11,7 @@
 //! - one library resource, `shortcuts`, carrying `create`, `update`,
 //!   `delete` and `list`, which take and return the shortcut's JSON.
 //!
-//! A shortcut is saved only after [`tilo_automation::check`] accepts it
+//! A shortcut is saved only after [`tilo_automation::check()`] accepts it
 //! against the catalogue the saving person is offered at that moment, and
 //! the host stores it through its [`ShortcutLibraryServices`]. It runs as the
 //! person who invoked it, inside its own grant, through the same broker;
@@ -38,13 +38,13 @@ use tilo_actions::{ExecutionLocus, OperationKind};
 use tilo_automation::{
     ActionCatalog, AskRequest, ConfirmationRequest, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, RunHooks,
     RunId, RunMode, RunOutcome, RunReport, RunTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION,
-    SHORTCUTS_APP_ID, Schedule, Shortcut, TriggerSpec, shortcut_id_of, shortcut_resource_id,
+    SHORTCUTS_APP_ID, Schedule, Shortcut, StopWatch, TriggerSpec, shortcut_id_of,
+    shortcut_resource_id,
 };
 use tilo_desktop_model::Workspace;
 
 /// The resource carrying the shortcut library's actions.
 pub const LIBRARY_RESOURCE: &str = "shortcuts";
-/// Kind of [`LIBRARY_RESOURCE`].
 pub const LIBRARY_RESOURCE_KIND: &str = "shortcuts.library";
 /// Save a new shortcut.
 pub const CREATE_ACTION: &str = "create";
@@ -54,6 +54,10 @@ pub const UPDATE_ACTION: &str = "update";
 pub const DELETE_ACTION: &str = "delete";
 /// Every shortcut saved in the workspace.
 pub const LIST_ACTION: &str = "list";
+/// Stop a run of a saved shortcut that is still going.
+pub const STOP_ACTION: &str = "stop";
+/// Stop every run going in the workspace.
+pub const STOP_ALL_ACTION: &str = "stop-all";
 
 /// How long a running step is left before it is observed again, when its
 /// host cannot say when it changes. The broker's own door can, so this is
@@ -67,14 +71,20 @@ const MAX_FINISHED_RUNS: usize = 64;
 /// actions, then `run` on each saved shortcut.
 #[must_use]
 pub fn descriptors(workspace: &Workspace) -> Vec<ActionDescriptor> {
-    [CREATE_ACTION, UPDATE_ACTION, DELETE_ACTION, LIST_ACTION]
-        .into_iter()
-        .filter_map(library_descriptor)
-        .chain(workspace.shortcuts.iter().map(run_descriptor))
-        .collect()
+    [
+        CREATE_ACTION,
+        UPDATE_ACTION,
+        DELETE_ACTION,
+        LIST_ACTION,
+        STOP_ACTION,
+        STOP_ALL_ACTION,
+    ]
+    .into_iter()
+    .filter_map(library_descriptor)
+    .chain(workspace.shortcuts.iter().map(run_descriptor))
+    .collect()
 }
 
-/// The descriptor of library action `action`, when it is one.
 #[must_use]
 pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
     let shortcut_param = || {
@@ -124,6 +134,28 @@ pub fn library_descriptor(action: &str) -> Option<ActionDescriptor> {
         LIST_ACTION => (
             "List shortcuts",
             "Every shortcut saved in this workspace, as JSON",
+            Vec::new(),
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "array", "items": {"type": "object"}}),
+            },
+        ),
+        STOP_ACTION => (
+            "Stop a run",
+            "Stop a running shortcut before its next step; what it already did is kept and can be undone",
+            vec![ActionParam::required(
+                "id",
+                ParamType::Text,
+                "Id of the shortcut whose run to stop",
+            )],
+            ActionKind::Read,
+            ResultSpec::Json {
+                schema: serde_json::json!({"type": "object"}),
+            },
+        ),
+        STOP_ALL_ACTION => (
+            "Stop every run",
+            "Stop every running shortcut before its next step; what they already did is kept and can be undone",
             Vec::new(),
             ActionKind::Read,
             ResultSpec::Json {
@@ -321,7 +353,7 @@ pub fn check_triggers(
             ));
         }
     }
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let others = &workspace.shortcuts;
     let target = chord_target(&room, &shortcut.id);
     let mut keyboard = None;
@@ -380,6 +412,10 @@ pub enum LibraryOperation {
     Create(Shortcut),
     Update(Shortcut),
     Delete(String),
+    /// Stop the runs of shortcut `id` that are still going.
+    Stop(String),
+    /// Stop every run going in the workspace.
+    StopAll,
     List,
 }
 
@@ -423,6 +459,14 @@ pub fn decode_library(action: &str, argument: Option<&str>) -> Result<LibraryOpe
                 .trim()
                 .to_string(),
         ),
+        STOP_ACTION => LibraryOperation::Stop(
+            bound
+                .text("id")
+                .ok_or("`id` is required")?
+                .trim()
+                .to_string(),
+        ),
+        STOP_ALL_ACTION => LibraryOperation::StopAll,
         _ => LibraryOperation::List,
     })
 }
@@ -442,7 +486,6 @@ pub struct SaveContext<'a> {
 /// A shortcut to store, or remove, in one workspace.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ShortcutChange {
-    /// Save this shortcut, replacing a saved shortcut with the same id.
     Save(Box<Shortcut>),
     /// Remove the saved shortcut with this id.
     Delete(String),
@@ -453,11 +496,20 @@ pub enum ShortcutChange {
 pub enum LibraryPlan {
     /// Answer without changing anything.
     Answer(ActionOutput),
+    /// Stop the runs the operation names, then answer.
+    Stop(StopRequest),
     /// Store `change`, then answer with `output`.
     Change {
         change: ShortcutChange,
         output: ActionOutput,
     },
+}
+
+/// Which runs a stop names: one shortcut's, or every one going.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StopRequest {
+    Shortcut(String),
+    All,
 }
 
 /// Plan `operation` against the shortcuts saved in `workspace`.
@@ -491,6 +543,13 @@ pub fn plan_library(
                 output: ActionOutput::default(),
             });
         }
+        LibraryOperation::Stop(id) => {
+            if !saved.iter().any(|shortcut| shortcut.id == id) {
+                return Err(format!("there is no shortcut `{id}`"));
+            }
+            return Ok(LibraryPlan::Stop(StopRequest::Shortcut(id)));
+        }
+        LibraryOperation::StopAll => return Ok(LibraryPlan::Stop(StopRequest::All)),
         LibraryOperation::Create(shortcut) => (shortcut, false),
         LibraryOperation::Update(shortcut) => (shortcut, true),
     };
@@ -540,6 +599,137 @@ pub fn library_context(descriptor: &ActionDescriptor) -> ActionContext {
         )))
 }
 
+/// A broker's shortcut runs that are not over: the steps waiting on their
+/// person, and the runs going so one can be stopped between two steps.
+#[derive(Clone, Default)]
+pub struct RunLedger {
+    pub prompts: StepPrompts,
+    pub running: RunningRuns,
+}
+
+/// The runs this broker has going, by the room and the shortcut each runs.
+///
+/// A run registers itself before its first step and leaves when it ends;
+/// stopping one marks it, and the interpreter asks before every step that
+/// would invoke something. What a stopped run already did stands, and is
+/// recorded and undone like a completed run's.
+#[derive(Clone, Default)]
+pub struct RunningRuns {
+    running: std::sync::Arc<Mutex<Vec<RunningRun>>>,
+}
+
+/// One run going, as a stop names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunningRun {
+    pub room: String,
+    pub shortcut: String,
+    /// What the shortcut is called, for a person reading the answer.
+    pub name: String,
+    pub run: RunId,
+    /// The step the run has reached, as it last said where it was.
+    pub at: Option<String>,
+    /// Why it is being stopped, once someone has.
+    pub stopped: Option<String>,
+}
+
+impl RunningRuns {
+    /// Note a run as going, before its first step.
+    pub fn register(&self, run: RunningRun) {
+        if let Ok(mut running) = self.running.lock() {
+            running.retain(|other| other.run != run.run);
+            running.push(run);
+        }
+    }
+
+    /// Note a run as over.
+    pub fn leave(&self, run: RunId) {
+        if let Ok(mut running) = self.running.lock() {
+            running.retain(|other| other.run != run);
+        }
+    }
+
+    /// Note where run `run` has reached. A stop only lands while the run is
+    /// between two answers, so the last place it named is where it ends.
+    fn moved(&self, run: RunId, at: &str) {
+        if let Ok(mut running) = self.running.lock()
+            && let Some(running) = running.iter_mut().find(|other| other.run == run)
+        {
+            running.at = Some(at.to_owned());
+        }
+    }
+
+    /// Whether run `run` has been told to stop, and why.
+    fn stopped(&self, run: RunId) -> Option<String> {
+        self.running
+            .lock()
+            .ok()?
+            .iter()
+            .find(|other| other.run == run)?
+            .stopped
+            .clone()
+    }
+
+    /// Stop the runs `request` names, in `room`. Returns those it stopped;
+    /// a run that is not going is not an error, since stopping one that has
+    /// just finished is what someone asking for it wanted anyway.
+    pub fn stop(&self, room: &str, request: &StopRequest, reason: &str) -> Vec<RunningRun> {
+        let Some(mut running) = self.running.lock().ok() else {
+            return Vec::new();
+        };
+        let named = |run: &RunningRun| {
+            run.room == room
+                && match request {
+                    StopRequest::Shortcut(id) => run.shortcut == *id,
+                    StopRequest::All => true,
+                }
+        };
+        // Only a run still going is stopped; one already told to stop is
+        // left to end, and asking again names nothing new.
+        let mut stopping = Vec::new();
+        for run in running.iter_mut().filter(|run| named(run)) {
+            if run.stopped.is_none() {
+                run.stopped = Some(reason.to_owned());
+                stopping.push(run.clone());
+            }
+        }
+        stopping
+    }
+
+    /// Every run going in `room`.
+    pub fn going(&self, room: &str) -> Vec<RunningRun> {
+        self.running
+            .lock()
+            .map(|running| {
+                running
+                    .iter()
+                    .filter(|run| run.room == room)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// What stopping says it stopped, for whoever asked: one entry per run it
+/// reached, with where each had got to.
+#[must_use]
+pub fn stopped_output(stopped: &[RunningRun]) -> ActionOutput {
+    let runs: Vec<Value> = stopped
+        .iter()
+        .map(|run| {
+            serde_json::json!({
+                "shortcut": run.shortcut,
+                "name": run.name,
+                "reached": run.at,
+            })
+        })
+        .collect();
+    ActionOutput {
+        value: Some(Value::Array(runs)),
+        resources: Vec::new(),
+    }
+}
+
 /// How a run started through the door treats a person-shaped question.
 ///
 /// Whoever invokes `run` answers for its confirmations up front: evidence
@@ -571,14 +761,24 @@ pub struct DoorHooks {
     confirmation: Option<Confirmation>,
     /// The runtime the run's poll fallback waits on.
     runtime: tokio::runtime::Handle,
+    /// The runs going, so one of them can be stopped from elsewhere.
+    runs: RunningRuns,
+    run: RunId,
 }
 
 impl DoorHooks {
     #[must_use]
-    pub fn new(confirmation: Option<Confirmation>, runtime: tokio::runtime::Handle) -> Self {
+    pub fn new(
+        confirmation: Option<Confirmation>,
+        runtime: tokio::runtime::Handle,
+        runs: RunningRuns,
+        run: RunId,
+    ) -> Self {
         Self {
             confirmation,
             runtime,
+            runs,
+            run,
         }
     }
 }
@@ -596,6 +796,14 @@ impl RunHooks for DoorHooks {
 
     fn settle(&self, _invocation: InvocationId) -> Pending<()> {
         settle_later(&self.runtime)
+    }
+
+    fn stopped(&self, what: StopWatch<'_>) -> Pending<Result<(), String>> {
+        self.runs.moved(self.run, what.path.as_str());
+        Pending::ready(match self.runs.stopped(self.run) {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        })
     }
 }
 
@@ -677,6 +885,9 @@ pub struct SheetHooks {
     shortcut: String,
     /// The runtime the run's poll fallback waits on.
     runtime: tokio::runtime::Handle,
+    /// The runs going, so one of them can be stopped from elsewhere.
+    runs: RunningRuns,
+    run: RunId,
 }
 
 impl SheetHooks {
@@ -685,11 +896,15 @@ impl SheetHooks {
         prompts: StepPrompts,
         shortcut: impl Into<String>,
         runtime: tokio::runtime::Handle,
+        runs: RunningRuns,
+        run: RunId,
     ) -> Self {
         Self {
             prompts,
             shortcut: shortcut.into(),
             runtime,
+            runs,
+            run,
         }
     }
 
@@ -721,6 +936,14 @@ impl RunHooks for SheetHooks {
             })
     }
 
+    fn stopped(&self, what: StopWatch<'_>) -> Pending<Result<(), String>> {
+        self.runs.moved(self.run, what.path.as_str());
+        Pending::ready(match self.runs.stopped(self.run) {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        })
+    }
+
     fn settle(&self, _invocation: InvocationId) -> Pending<()> {
         settle_later(&self.runtime)
     }
@@ -730,7 +953,10 @@ impl RunHooks for SheetHooks {
 #[must_use]
 pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpdate {
     match &report.outcome {
-        RunOutcome::Completed => InvocationUpdate::Succeeded {
+        // A stopped run did not fail: it ends where it was told to. What it
+        // had already done is recorded and can be undone as one step, so it
+        // answers like a completed run, with the report saying it stopped.
+        RunOutcome::Completed | RunOutcome::Cancelled { .. } => InvocationUpdate::Succeeded {
             invocation,
             output: ActionOutput {
                 value: report.output.clone(),
@@ -887,7 +1113,7 @@ pub fn readable_folder(
     if workspace.role_of(saver).is_none() || workspace.is_blocked(saver) {
         return Err("the saver is not a member of the workspace".into());
     }
-    let actor = collab_types::Actor::person(saver).in_room(workspace.room.to_string());
+    let actor = collab_types::Actor::person(saver).in_room(workspace.room().to_string());
     if workspace.sandbox_decide_at(
         &actor,
         &collab_types::ResourceRef::FsPath(path.clone()),
@@ -941,7 +1167,81 @@ mod tests {
             )
             .is_err()
         );
+        assert_eq!(
+            decode_library(STOP_ACTION, Some(&slot(serde_json::json!({"id": "tidy"})))),
+            Ok(LibraryOperation::Stop("tidy".into()))
+        );
+        assert_eq!(
+            decode_library(STOP_ALL_ACTION, None),
+            Ok(LibraryOperation::StopAll)
+        );
+        assert!(decode_library(STOP_ACTION, None).is_err());
         assert!(decode_library("rename", None).is_err());
+    }
+
+    fn going(room: &str, shortcut: &str, name: &str) -> RunningRun {
+        RunningRun {
+            room: room.into(),
+            shortcut: shortcut.into(),
+            name: name.into(),
+            run: RunId::new(),
+            at: None,
+            stopped: None,
+        }
+    }
+
+    #[test]
+    fn stopping_names_one_shortcuts_runs_or_every_run_going_in_the_room() {
+        let runs = RunningRuns::default();
+        let tidy = going("desk", "tidy", "Tidy");
+        let sweep = going("desk", "sweep", "Sweep");
+        let elsewhere = going("study", "tidy", "Tidy");
+        for run in [&tidy, &sweep, &elsewhere] {
+            runs.register(run.clone());
+        }
+        runs.moved(tidy.run, "1");
+        let stopped = runs.stop("desk", &StopRequest::Shortcut("tidy".into()), "asked");
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(stopped[0].shortcut, "tidy");
+        assert_eq!(stopped[0].at.as_deref(), Some("1"));
+        // The other room's run of the same shortcut is somebody else's.
+        assert!(runs.stopped(elsewhere.run).is_none());
+        assert!(runs.stopped(sweep.run).is_none());
+
+        // Stopping everything names what is still going, not the run already
+        // told to stop.
+        let all = runs.stop("desk", &StopRequest::All, "asked");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].shortcut, "sweep");
+        assert!(runs.stopped(sweep.run).is_some());
+        assert!(runs.stopped(tidy.run).is_some());
+        // Asking again stops nothing new: a run is told once.
+        assert!(
+            runs.stop("desk", &StopRequest::All, "asked again")
+                .is_empty()
+        );
+        assert_eq!(runs.going("desk").len(), 2);
+        runs.leave(tidy.run);
+        assert_eq!(runs.going("desk").len(), 1);
+    }
+
+    #[test]
+    fn a_stop_says_which_runs_it_reached_and_where_each_had_got_to() {
+        let runs = RunningRuns::default();
+        let tidy = going("desk", "tidy", "Tidy");
+        runs.register(tidy.clone());
+        runs.moved(tidy.run, "then.2");
+        let output = stopped_output(&runs.stop("desk", &StopRequest::All, "asked"));
+        assert_eq!(
+            output.value,
+            Some(serde_json::json!([{
+                "shortcut": "tidy",
+                "name": "Tidy",
+                "reached": "then.2",
+            }]))
+        );
+        // Nothing running is not a failure: the run just finished.
+        assert_eq!(stopped_output(&[]).value, Some(serde_json::json!([])));
     }
 
     #[test]
@@ -971,6 +1271,8 @@ mod tests {
                 "shortcuts#update",
                 "shortcuts#delete",
                 "shortcuts#list",
+                "shortcuts#stop",
+                "shortcuts#stop-all",
                 "shortcuts.shortcut:tidy#run",
             ]
         );

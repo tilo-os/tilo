@@ -10,36 +10,97 @@ pub(super) struct TrashSlot {
     path: PathBuf,
 }
 
+/// Trash slots for a batch of items: each one's metadata written, all of
+/// them synced together, then their folder once.
+pub(super) struct TrashSlots {
+    pub(super) files: SecureNearbyDestination,
+    pub(super) paths: Vec<PathBuf>,
+}
+
+/// The home Trash's data folder, and its `files` and `info` folders.
+fn open_trash() -> Result<(PathBuf, SecureNearbyDestination, SecureNearbyDestination), String> {
+    let data = tilo_paths::data_dir().ok_or("home Trash is unavailable")?;
+    fs::create_dir_all(&data).map_err(|error| error.to_string())?;
+    let data_directory = SecureNearbyDestination::open_beneath(&data, &data)?;
+    let trash = private_directory(&data_directory, "Trash")?;
+    let files = private_directory(&trash, "files")?;
+    let info = private_directory(&trash, "info")?;
+    Ok((data, files, info))
+}
+
+/// Write `original`'s Trash metadata, unsynced: the payload's name in
+/// Trash, and the metadata file to sync.
+fn write_info(
+    info: &SecureNearbyDestination,
+    original: &Path,
+) -> Result<(OsString, fs::File), String> {
+    let leaf = original.file_name().ok_or("Trash original has no name")?;
+    let mut name = OsString::from_vec(leaf.as_bytes().iter().take(180).copied().collect());
+    name.push(format!(".{}", uuid::Uuid::new_v4()));
+    let mut info_name = name.clone();
+    info_name.push(".trashinfo");
+    let encoded = percent_encoding::percent_encode(original.as_os_str().as_bytes(), &PATH_ENCODING);
+    let contents = format!(
+        "[Trash Info]\nPath={encoded}\nDeletionDate={}\n",
+        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S")
+    );
+    let mut metadata = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(info.anchored_root().join(&info_name))
+        .map_err(|error| error.to_string())?;
+    metadata
+        .write_all(contents.as_bytes())
+        .map_err(|error| error.to_string())?;
+    Ok((name, metadata))
+}
+
+impl TrashSlots {
+    pub(super) fn prepare(originals: &[PathBuf]) -> Result<Self, String> {
+        let (data, files, info) = open_trash()?;
+        let mut paths = Vec::with_capacity(originals.len());
+        let mut written = Vec::with_capacity(originals.len());
+        for original in originals {
+            let (name, metadata) = write_info(&info, original)?;
+            paths.push(data.join("Trash/files").join(&name));
+            written.push(metadata);
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed: Mutex<Option<String>> = Mutex::new(None);
+        std::thread::scope(|scope| {
+            for _ in 0..SYNC_THREADS.min(written.len()) {
+                scope.spawn(|| {
+                    while let Some(file) = written.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        if let Err(error) = file.sync_all() {
+                            *failed.lock_recover() = Some(error.to_string());
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(error) = failed
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            return Err(error);
+        }
+        sync_directory(&info)?;
+        Ok(Self { files, paths })
+    }
+
+    pub(super) fn sync(&self) -> Result<(), String> {
+        sync_directory(&self.files)
+    }
+}
+
 impl TrashSlot {
     pub(super) fn prepare(original: &Path) -> Result<Self, String> {
-        let data = tilo_paths::data_dir().ok_or("home Trash is unavailable")?;
-        fs::create_dir_all(&data).map_err(|error| error.to_string())?;
-        let data_directory = SecureNearbyDestination::open_beneath(&data, &data)?;
-        let trash = private_directory(&data_directory, "Trash")?;
-        let files = private_directory(&trash, "files")?;
-        let info = private_directory(&trash, "info")?;
-        let leaf = original.file_name().ok_or("Trash original has no name")?;
-        let mut name = OsString::from_vec(leaf.as_bytes().iter().take(180).copied().collect());
-        name.push(format!(".{}", uuid::Uuid::new_v4()));
-        let mut info_name = name.clone();
-        info_name.push(".trashinfo");
-        let encoded =
-            percent_encoding::percent_encode(original.as_os_str().as_bytes(), &PATH_ENCODING);
-        let contents = format!(
-            "[Trash Info]\nPath={encoded}\nDeletionDate={}\n",
-            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S")
-        );
-        let mut metadata = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(info.anchored_root().join(&info_name))
-            .map_err(|error| error.to_string())?;
-        metadata
-            .write_all(contents.as_bytes())
-            .and_then(|()| metadata.sync_all())
-            .map_err(|error| error.to_string())?;
+        let (data, files, info) = open_trash()?;
+        let (name, metadata) = write_info(&info, original)?;
+        metadata.sync_all().map_err(|error| error.to_string())?;
         sync_directory(&info)?;
         let path = data.join("Trash/files").join(&name);
         Ok(Self { files, path })

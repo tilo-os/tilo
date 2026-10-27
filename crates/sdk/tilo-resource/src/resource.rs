@@ -2,6 +2,7 @@
 //! history, undo, collaboration, permissions, palette/agent/script exposure,
 //! search and replay without writing any of them.
 
+use crate::search_preview::SearchPreview;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -20,6 +21,9 @@ use crate::path::Edit;
 use crate::reader::Demand;
 use crate::vocabulary::{Builds, Built, Declaration, Vocabulary, vocabulary};
 use tilo_lock::MutexRecover as _;
+
+mod head;
+pub use head::{HeadInputs, head_inputs, publish_head, publish_head_of};
 
 /// A resource type. `#[resource]` implements it for a `#[derive(Model)]`
 /// record, which is how every app declares its own. The SDK implements it by
@@ -249,6 +253,7 @@ pub trait Resource: Sized + 'static {
     fn children_parts(state: &Self::State) -> crate::items::ChildrenParts {
         crate::items::ChildrenParts {
             others: Self::children(state),
+            kept: std::rc::Rc::default(),
             items: Vec::new(),
             item_actions: Vec::new(),
         }
@@ -339,6 +344,33 @@ pub trait Resource: Sized + 'static {
         Err(format!("a {} does not answer reads", Self::LABEL))
     }
 
+    /// Whether [`facts`](Self::facts) answers. A resource that does is
+    /// published with the framework's `facts` read, which an agent's host
+    /// shows when it checks work done on the resource.
+    const HAS_FACTS: bool = false;
+
+    /// The record's own table, for a resource that is a record: what
+    /// generic code reads a field's value through without the record's type
+    /// (the framework, a window's [`Reactions`](crate::Reactions) with
+    /// [`record_reactions`](crate::reactions::record_reactions)).
+    /// `#[resource]` names the record's; none otherwise.
+    const RECORD_TABLE: Option<&'static crate::table::ModelTable> = None;
+
+    /// What the resource holds as a compact summary of plain values, meant
+    /// for checking it against a request: names, times, counts and text as
+    /// a person would state them (a cut's shots with their source, in and
+    /// out points; a deck's slide titles), not ids or storage. Two answers
+    /// compare field by field, so keep a list's order meaningful and its
+    /// items' keys stable. Called only when [`HAS_FACTS`](Self::HAS_FACTS)
+    /// is set.
+    ///
+    /// # Errors
+    /// A message naming why the facts could not be read.
+    fn facts(state: &Self::State, doc: &Doc) -> Result<serde_json::Value, String> {
+        let _ = (state, doc);
+        Err(format!("a {} states no facts", Self::LABEL))
+    }
+
     /// What declared action `action` (one [`ActionDecl::answering`]) made,
     /// answered to its caller once it applied to `doc` as `changes`: the
     /// ids it minted, the area it selected, a warning that what it drew is
@@ -357,6 +389,15 @@ pub trait Resource: Sized + 'static {
     /// by field and item by item. `#[resource]` returns the record's
     /// [`Model::SHAPE`](crate::Model::SHAPE); the default opts out.
     fn shape() -> Option<crate::Shape> {
+        None
+    }
+
+    /// The state as its record's JSON ([`Model::to_json`](crate::Model::to_json)):
+    /// what a field that weakens one way holds now. `#[resource]` returns
+    /// the record's; the default knows none, so any change of such a field
+    /// counts as weakening.
+    fn state_json(state: &Self::State) -> Option<serde_json::Value> {
+        let _ = state;
         None
     }
 
@@ -443,7 +484,8 @@ pub trait Resource: Sized + 'static {
 /// a script submits an edit that has no named declaration (a drag with its
 /// final geometry) through the same permission-checked, undoable path.
 ///
-/// It is programmatic: never offered in the palette or a menu, where a
+/// It is for agents ([`tilo_actions::Audience::Agents`]): never offered in
+/// the palette or a menu, where a
 /// person picks named actions. Its risk is the value's own
 /// ([`tilo_actions::Action::risk`]), so a destructive value — deleting a clip —
 /// needs the same confirmation a declared destructive action does, while an
@@ -460,7 +502,7 @@ pub const EDIT_PARAM: &str = "edit";
 
 /// Read a field edit given as JSON into the action it is.
 fn read_edit(vocabulary: &Vocabulary, value: serde_json::Value) -> Result<Built, String> {
-    let edit = Edit::<()>::from_json(value)?;
+    let edit = vocabulary.rooted_edit(Edit::<()>::from_json(value)?)?;
     match (vocabulary.edit)(edit) {
         Some(action) => Ok(action),
         None => Err(format!("{} has no field edits", vocabulary.label)),
@@ -625,7 +667,13 @@ fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
     let ty = field.ty;
     match field.shape {
         crate::Shape::Collection(_) | crate::Shape::Keyed(_) => {
-            vec!["insert-item", "remove-item", "move-to", "set"]
+            vec![
+                "upsert-item",
+                "insert-item",
+                "remove-item",
+                "move-to",
+                "set",
+            ]
         }
         _ if rich => vec!["rich"],
         _ if ty.starts_with("Counter") => vec!["add", "set"],
@@ -703,6 +751,27 @@ fn edit_paths(
         properties.insert("path".into(), path);
         properties.insert("op".into(), serde_json::json!({ "enum": ops }));
         properties.insert("value".into(), value);
+        if ops.contains(&"upsert-item") {
+            properties.insert(
+                "match".into(),
+                serde_json::json!({
+                    "type": "object",
+                    "description": "upsert-item: the fields that identify the item, e.g. {\"name\": \"Ana\"}; it updates the one item holding them with `value`'s fields, else appends `value` as a new item"
+                }),
+            );
+            properties.insert(
+                "at".into(),
+                serde_json::json!({
+                    "description": "insert-item, move-to: \"end\" (the default), {\"after\": id} or {\"before\": id}",
+                    "anyOf": [
+                        { "const": "end" },
+                        { "type": "object", "properties": { "after": { "type": "string" } }, "required": ["after"] },
+                        { "type": "object", "properties": { "before": { "type": "string" } }, "required": ["before"] },
+                        { "type": "integer", "minimum": 0 }
+                    ]
+                }),
+            );
+        }
         if let Some(rich) = rich {
             properties.insert("rich".into(), rich.clone());
         }
@@ -749,11 +818,25 @@ fn edit_paths(
         if field.unit {
             flags.push("its own storage unit".to_owned());
         }
+        match field.trust {
+            crate::Trust::Ordinary => {}
+            crate::Trust::Sensitive => flags.push("changing it asks for confirmation".to_owned()),
+            crate::Trust::Weakens(_) => flags.push(
+                "making it weaker can weaken security: such a change asks for confirmation and needs the person's own grant; making it stricter does not"
+                    .to_owned(),
+            ),
+            crate::Trust::Weakening => flags.push(
+                "changing it can weaken security: it asks for confirmation and needs the person's own grant"
+                    .to_owned(),
+            ),
+        }
         if collection {
+            // A field edit changes only the record, so Undo takes a removed
+            // item back and nobody is asked first.
             flags.push(if field.quiet_remove {
                 "removing an item asks nothing".to_owned()
             } else {
-                "removing an item asks for confirmation".to_owned()
+                "removing an item asks nothing; Undo takes it back".to_owned()
             });
         }
         let description = flags.join("; ");
@@ -838,8 +921,15 @@ fn edit_paths(
     }
 }
 
-/// The published spec of [`FIELD_EDIT`].
-fn field_edit_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
+mod field_edit;
+use field_edit::rooted_edit_spec;
+
+/// The published spec of [`FIELD_EDIT`], where `now` holds the values of
+/// the fields that weaken one way ([`weakening_now`]).
+pub(crate) fn field_edit_spec(
+    vocabulary: &'static Vocabulary,
+    now: Vec<(String, String)>,
+) -> ActionSpec {
     // Built once per type: it describes every editable path, which only
     // the type decides.
     let schema = per_type(vocabulary, TypeSchema::Edit, &|| {
@@ -852,7 +942,52 @@ fn field_edit_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
         schema,
         format!("Edit a {} field", vocabulary.label),
         "The path of the field from the record's root, and the operation",
+        now,
     )
+}
+
+/// The values now, as JSON text by dotted path, of `R`'s fields that weaken
+/// one way ([`Trust::Weakens`](crate::Trust::Weakens)) outside any item:
+/// whether a change of one weakens depends on them.
+fn weakening_now<R: Resource>(state: &R::State) -> Vec<(String, String)> {
+    weakening_in(R::shape(), &|| R::state_json(state))
+}
+
+/// [`weakening_now`] of the resource whose stored layout is `shape` and
+/// whose state's JSON `json` reads. Not generic, so it is compiled once
+/// rather than for every resource type.
+#[inline(never)]
+fn weakening_in(
+    shape: Option<crate::Shape>,
+    json: &dyn Fn() -> Option<serde_json::Value>,
+) -> Vec<(String, String)> {
+    let Some(shape) = shape else {
+        return Vec::new();
+    };
+    let fields: Vec<String> = shape
+        .guarded_fields()
+        .into_iter()
+        .filter(|(path, trust)| {
+            matches!(trust, crate::Trust::Weakens(_)) && !path.split('.').any(|key| key == "*")
+        })
+        .map(|(path, _)| path)
+        .collect();
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    let Some(json) = json() else {
+        return Vec::new();
+    };
+    fields
+        .into_iter()
+        .filter_map(|path| {
+            let value = path
+                .split('.')
+                .try_fold(&json, |value, key| value.get(key))?
+                .to_string();
+            Some((path, value))
+        })
+        .collect()
 }
 
 /// The field edit offered on the item `item` of the collection `field`:
@@ -950,101 +1085,9 @@ fn item_edit_type(
         schema,
         "Edit a field of this item".to_owned(),
         "The path of the field from the item, and the operation",
+        Vec::new(),
     );
     Some(Arc::clone(spec.action_type()))
-}
-
-/// The field edit at paths under the prefix its target holds (a
-/// `Vec<Segment>` [`Target`], the record's root without one), whose root is
-/// of shape `root`, described by `schema`.
-fn rooted_edit_spec(
-    vocabulary: &'static Vocabulary,
-    root: Option<crate::Shape>,
-    schema: Arc<serde_json::Value>,
-    label: String,
-    description: &'static str,
-) -> ActionSpec {
-    let mut spec = edit_spec(vocabulary, schema, label, description);
-    // Any door reads the edit without this record's code: it is a field
-    // edit, and these collections' removals ask nothing.
-    let contract = &mut spec.type_mut().contract;
-    contract
-        .tags
-        .push(tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned());
-    if let Some(root) = root {
-        contract.tags.extend(
-            root.quiet_removals()
-                .into_iter()
-                .map(|path| format!("{}{path}", tilo_action_policy::edits::QUIET_REMOVAL_TAG)),
-        );
-    }
-    spec
-}
-
-/// The field edit at paths under the prefix its target holds, described by
-/// `schema`. See [`rooted_edit_spec`].
-fn edit_spec(
-    vocabulary: &'static Vocabulary,
-    schema: Arc<serde_json::Value>,
-    label: String,
-    description: &'static str,
-) -> ActionSpec {
-    let read = move |target: &Target, value: &serde_json::Map<String, serde_json::Value>| {
-        let edit = Edit::<()>::from_json(serde_json::Value::Object(value.clone()))?;
-        let mut path = target
-            .get::<Vec<crate::Segment>>()
-            .cloned()
-            .unwrap_or_default();
-        path.extend(edit.path().iter().cloned());
-        match (vocabulary.edit)(Edit::new(path, edit.op().clone())) {
-            Some(action) => Ok(action),
-            None => Err(format!("{} has no field edits", vocabulary.label)),
-        }
-    };
-    let read = std::sync::Arc::new(read);
-    let risk_read = std::sync::Arc::clone(&read);
-    ActionSpec::typed_on(
-        FIELD_EDIT,
-        label,
-        "Field edit as JSON",
-        ExecutionLocus::ClientLocal,
-        vec![
-            ActionParam::required_owned(EDIT_PARAM, ParamType::Object, description)
-                .with_shared_schema(schema),
-        ],
-        move |target, args| {
-            let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
-                return refused("missing edit");
-            };
-            match read(target, value) {
-                Ok(mut action) => {
-                    action.stamp(origin_now_ms());
-                    encoded(&action)
-                }
-                Err(reason) => refused(&reason),
-            }
-        },
-    )
-    .with_description(
-        "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}.",
-    )
-    // Controls and agents edit fields; a person picks named actions or edits
-    // the field in place.
-    .programmatic()
-    // A field edit changes only the document.
-    .reversible()
-    // History records the edit itself, not `field-edit`.
-    .carrying()
-    // Removing a collection item asks, as a delete verb does.
-    .with_risk_on(move |target, args| {
-        let Some(tilo_actions::ArgValue::Object(value)) = args.get(EDIT_PARAM) else {
-            return tilo_actions::RiskLevel::Low;
-        };
-        match risk_read(target, value) {
-            Ok(action) => action.risk(),
-            Err(_) => tilo_actions::RiskLevel::Low,
-        }
-    })
 }
 
 /// The edits of a resource whose document holds nothing. An app whose data
@@ -1088,6 +1131,9 @@ pub struct SearchEntry {
     pub group: Option<String>,
     pub subtitle: Option<String>,
     pub icon: Option<String>,
+    /// What the palette shows of the hit while a person is on it; `None`
+    /// shows its `text`, and an entry with neither shows no preview.
+    pub preview: Option<SearchPreview>,
     pub boost: i32,
     pub body: Option<SearchBody>,
     /// More short text the entry is found by, each ranked by its own
@@ -1113,6 +1159,7 @@ impl Clone for SearchEntry {
             group: self.group.clone(),
             subtitle: self.subtitle.clone(),
             icon: self.icon.clone(),
+            preview: self.preview.clone(),
             boost: self.boost,
             body: self.body.clone(),
             fields: self.fields.clone(),
@@ -1133,6 +1180,7 @@ impl PartialEq for SearchEntry {
             && self.group == other.group
             && self.subtitle == other.subtitle
             && self.icon == other.icon
+            && self.preview == other.preview
             && self.boost == other.boost
             && self.body == other.body
             && self.fields == other.fields
@@ -1322,6 +1370,14 @@ impl SearchEntry {
     #[must_use]
     pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    /// What the palette shows of the hit while a person is on it, in place
+    /// of its text.
+    #[must_use]
+    pub fn previewed(mut self, preview: SearchPreview) -> Self {
+        self.preview = Some(preview);
         self
     }
 
@@ -1763,9 +1819,16 @@ fn edit_declaration(
 ) -> Declaration {
     let destructive = (vocabulary.edit)(edit.clone())
         .is_some_and(|action| action.risk() == tilo_actions::RiskLevel::Destructive);
+    let invokes = serde_json::to_value(&edit).ok().map(|edit| {
+        (
+            FIELD_EDIT.to_owned(),
+            serde_json::Map::from_iter([(EDIT_PARAM.to_owned(), edit)]),
+        )
+    });
     let build: Builds = Arc::new(move |_, now_ms| stamped_edit(vocabulary, edit.clone(), now_ms));
     let mut decl = Declaration::new(vocabulary, id, label, Vec::new(), build);
     decl.destructive = destructive;
+    decl.invokes = invokes;
     decl
 }
 
@@ -1838,11 +1901,18 @@ pub fn child_by_id<R: Resource>(
         return Some(child);
     }
     let mut fresh = R::read(doc).ok()?;
+    R::load(&mut fresh, doc, &child_demand(id)).ok()?;
+    R::child(&fresh, id)
+}
+
+/// What reading the child published at `id` demands: compiled once rather
+/// than for every resource.
+#[inline(never)]
+fn child_demand(id: &str) -> Demand {
     // A child is published as `<kind>/<field>/<key>`; its record knows
     // it by the key.
     let key = id.rsplit('/').next().unwrap_or(id);
-    R::load(&mut fresh, doc, &Demand::none().with_keys([id, key])).ok()?;
-    R::child(&fresh, id)
+    Demand::none().with_keys([id, key])
 }
 
 /// An action whose payload cannot be decoded, so the host refuses it with
@@ -1984,10 +2054,15 @@ pub(crate) fn spec_of_declaration_on(
         )
     };
     let mut spec = spec.of_kind(decl.kind);
-    // A document action is undone by the host's undo; one that reached
-    // outside the document is not.
-    if decl.kind == ActionKind::Undoable {
-        spec = spec.reversible();
+    // One whose arguments decide whether it reaches outside is what the
+    // action built from them is; arguments that build none are taken as
+    // reaching outside.
+    if decl.by_arguments {
+        let classify = Arc::clone(&decl.build);
+        spec = spec.with_need_of(move |args| match classify(args, 0) {
+            Ok(action) => action.need(),
+            Err(_) => tilo_actions::ActionNeed::of(ActionKind::Outside),
+        });
     }
     if let Some(field) = decl.field {
         spec = spec.below_field(field);
@@ -2007,6 +2082,9 @@ pub(crate) fn spec_of_declaration_on(
             contract.tags.push(tag.clone());
         }
     }
+    // A compensated undo arrives as a tag: once it is there, a deletion it
+    // takes back is no longer asked about.
+    contract.settle_confirmation();
     spec
 }
 
@@ -2241,7 +2319,7 @@ fn object_arg(
     }
 }
 
-fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
+pub(crate) fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.apply_spec");
     let read = move |args: &tilo_actions::ActionArgs| match object_arg(args, APPLY_PARAM) {
@@ -2267,15 +2345,13 @@ fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     )
     // A typed edit is how a surface, an agent or a script says what should
     // happen without a named declaration; a person picks named actions.
-    .programmatic()
-    // A typed value of the resource's own vocabulary changes only the
-    // document, and the host's undo reverts it.
-    .reversible()
+    .for_audience(tilo_actions::Audience::Agents)
     // History records the edit it carried, not `apply`.
     .carrying()
     // Offered to whoever may take the least of its edits; each value is
     // what that edit is.
     .with_need((vocabulary.least_need)())
+    .of_kind((vocabulary.least_need)().kind)
     .with_need_of(move |args| match read(args) {
         Ok(action) => action.need(),
         Err(_) => tilo_actions::ActionContract::default().need(),
@@ -2289,26 +2365,38 @@ fn apply_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
             _ => tilo_actions::RiskLevel::Low,
         }
     })
+    // Undo takes a value back when it takes back the edit it carries, so a
+    // deleting value Undo does take back applies without asking, exactly as
+    // its named declaration does. The declaration says which its edits are,
+    // so nothing is built to ask.
+    .with_undo_of(move |args| {
+        let Some(value) = object_arg(args, APPLY_PARAM) else {
+            return false;
+        };
+        let value = serde_json::Value::Object(value);
+        let declarations = vocabulary.declarations();
+        let mut ids: Vec<&str> = Vec::with_capacity(declarations.len());
+        for decl in declarations.iter() {
+            ids.push(decl.id);
+        }
+        let carried = crate::schema::declared_invocation(&value, &ids)
+            .and_then(|(id, _)| declarations.iter().find(|decl| decl.id == id))
+            .map_or(tilo_actions::ActionKind::Outside, |decl| decl.kind);
+        tilo_actions::undo_takes_back(
+            carried,
+            tilo_actions::ChangeKind::Content,
+            false,
+        )
+    })
 }
 
-/// What kind of action a published spec is: a view only reads, an effect
-/// reaches outside the document, and a document action changes only the
-/// document when the host's undo reverts it, else it reaches outside.
+/// What kind of action a published spec is: the kind its contract carries,
+/// which the code that built it derived (a view only reads, a document
+/// action changes only the document when the host's undo reverts it, else it
+/// reaches outside).
 #[must_use]
 pub fn spec_kind(spec: &ActionSpec) -> ActionKind {
-    if spec
-        .contract
-        .tags
-        .iter()
-        .any(|tag| tag == crate::effect::EDITS_TAG)
-    {
-        return ActionKind::Undoable;
-    }
-    match spec.kind {
-        OperationKind::View => ActionKind::Read,
-        OperationKind::Document if spec.contract.reversible => ActionKind::Undoable,
-        OperationKind::Effect | OperationKind::Document => ActionKind::Outside,
-    }
+    spec.contract.kind
 }
 
 /// What `action` is, for the grants deciding it.
@@ -2341,8 +2429,15 @@ pub(crate) fn group_need(needs: impl IntoIterator<Item = ActionNeed>) -> ActionN
 }
 
 /// The encoded group of the built `members`, of the resource `vocabulary`:
-/// what [`ActionGroup`](crate::ActionGroup) of them encodes as.
+/// what [`ActionGroup`](crate::ActionGroup) of them encodes as. A group of
+/// one action is that action, as `Dispatcher::group` submits it: a control
+/// whose gesture is sometimes several actions (create a draft, then edit
+/// it) and usually one edit records that edit, which continues the undo
+/// step of the edit before it as the edit alone would.
 pub(crate) fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> EncodedAction {
+    if let [only] = members {
+        return encoded(only);
+    }
     let mut payload = Vec::with_capacity(128);
     payload.push(b'[');
     for (index, member) in members.iter().enumerate() {
@@ -2357,7 +2452,7 @@ pub(crate) fn encode_group(vocabulary: &Vocabulary, members: &[Built]) -> Encode
     EncodedAction::written(crate::group::group_type_of(vocabulary.action_type), payload)
 }
 
-fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
+pub(crate) fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     let _phase = crate::profiling::Phase::start("resource.group_spec");
     let build = move |args: &tilo_actions::ActionArgs, now_ms: i64| {
@@ -2377,11 +2472,9 @@ fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
     .with_description(
         "Several actions as one all-or-nothing step: one undo, and if any member refuses nothing is applied. actions: [{action: id, args: {..}}].",
     )
-    // One group is one undo step, like any other document action.
-    .reversible()
     // A gesture's edits, from a surface, a script or an agent; a person picks
     // the named actions it is made of.
-    .programmatic()
+    .for_audience(tilo_actions::Audience::Agents)
     // History records the members, not the group.
     .carrying()
     // Is what its most demanding member is.
@@ -2395,12 +2488,21 @@ fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
         Ok(members) => crate::group::group_risk(members.iter().map(Built::risk)),
         Err(_) => tilo_actions::RiskLevel::Low,
     })
+    // Undo takes it back only when it takes back every member: one that
+    // reaches outside the document makes a deleting group ask.
+    .with_undo_of(move |args| match build(args, 0) {
+        Ok(members) => members.iter().all(Built::undoable),
+        Err(_) => false,
+    })
 }
 
 /// The default search entries of a record: one per item with a
 /// `#[model(label)]`, anchored at its item resource, or else all of its text
-/// in one entry. A `#[resource(search = path)]` function extends it by
-/// calling it.
+/// in one entry, found by its text. Items of a record holding several collections are listed
+/// under each collection's title (its doc comment's first line: "Folders",
+/// "Articles"), so the kinds read apart. An item is found by all of its
+/// text, which is no preview of it: the palette shows none for it. A
+/// `#[resource(search = path)]` function extends it by calling it.
 #[must_use]
 pub fn default_search<R: crate::Resource + crate::Fields>(
     label: &str,
@@ -2411,22 +2513,41 @@ pub fn default_search<R: crate::Resource + crate::Fields>(
     if items.is_empty() {
         record.collect_text(&mut text);
     }
-    default_search_of(R::KIND, label, items, &text)
+    let titles: &[crate::shape::FieldShape] = match <R as crate::Model>::SHAPE {
+        crate::Shape::Record(fields) => fields,
+        _ => &[],
+    };
+    default_search_of(R::KIND, label, items, &text, titles)
 }
 
 /// [`default_search`] of a record of the kind `kind` holding `items`, or
-/// else the text `text`.
+/// else the text `text`; `fields` names its collections.
 fn default_search_of(
     kind: &str,
     label: &str,
     items: Vec<crate::items::ItemText>,
     text: &[String],
+    fields: &[crate::shape::FieldShape],
 ) -> Vec<crate::SearchEntry> {
     if !items.is_empty() {
+        let several = items
+            .iter()
+            .any(|item| items.first().is_some_and(|first| first.field != item.field));
+        let title_of = |field: &str| {
+            fields
+                .iter()
+                .find(|shape| shape.name == field)
+                .map(|shape| shape.title)
+        };
         let mut entries = Vec::with_capacity(items.len());
         for item in items {
             let anchor = crate::items::item_resource_id_in(kind, item.field, &item.id);
-            entries.push(crate::SearchEntry::new(item.label, item.text).anchored(anchor));
+            let mut entry = crate::SearchEntry::new(item.label, String::new()).anchored(anchor);
+            entry.fields.push((item.text, crate::SearchWeight::Body));
+            if several && let Some(title) = title_of(item.field) {
+                entry = entry.grouped(title);
+            }
+            entries.push(entry);
         }
         return entries;
     }
@@ -2436,7 +2557,7 @@ fn default_search_of(
     vec![crate::SearchEntry {
         anchor: None,
         title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
-        text: text.join("\n"),
+        fields: vec![(text.join("\n"), crate::SearchWeight::Body)],
         ..Default::default()
     }]
 }
@@ -2456,25 +2577,6 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
     publish_parts::<R>(id, label, Some(state))
 }
 
-/// [`publish`] without the children: the resource's identity, actions and
-/// views exactly as `publish` gives them, at a cost that does not grow with
-/// the children ([`Resource::children_offer_bound`]). What controls bind to.
-pub fn publish_head<R: Resource>(
-    id: &str,
-    label: &str,
-    state: &R::State,
-) -> tilo_actions::Resource {
-    let offered = R::children_offer_bound(state);
-    let own = Own {
-        availability: Some(&|action| R::availability(state, action)),
-        views: R::views(state),
-        local_operations: R::local_operations(),
-    };
-    publish_own(vocabulary::<R>(), id, label, own, &|decl| {
-        offered.contains(&decl.id)
-    })
-}
-
 /// [`publish`], or without a state only what does not depend on one: the
 /// declared actions, [`APPLY`], [`GROUP`](crate::GROUP) and the local
 /// operations.
@@ -2489,6 +2591,7 @@ pub(crate) fn publish_parts<R: Resource>(
             availability: None,
             views: Vec::new(),
             local_operations: R::local_operations(),
+            now: Vec::new(),
         };
         return publish_own(vocabulary, id, label, own, &|_| false);
     };
@@ -2497,11 +2600,27 @@ pub(crate) fn publish_parts<R: Resource>(
         availability: Some(&|action| R::availability(state, action)),
         views: R::views(state),
         local_operations: R::local_operations(),
+        now: weakening_now::<R>(state),
     };
     publish_own(vocabulary, id, label, own, &|decl| {
         crate::items::offered_bound(&children, decl)
     })
     .with_children(children)
+}
+
+/// The resource tree published for one open document ([`publish`]) whose
+/// state its holder could not read: its declared actions, [`APPLY`],
+/// [`GROUP`](crate::GROUP) and the field edit, each unavailable for
+/// `reason`, so a caller learns why they do not apply instead of finding a
+/// hole in the surface. What a state would offer — its children, its views,
+/// which actions can be taken now — is not published: there is no state to
+/// read it from.
+pub fn unreadable_parts<R: Resource>(
+    id: &str,
+    label: &str,
+    reason: &str,
+) -> tilo_actions::Resource {
+    crate::unreadable::parts::<R>(id, label, reason)
 }
 
 /// What a resource's own publication reads of its state.
@@ -2511,6 +2630,8 @@ struct Own<'a> {
     availability: Option<&'a dyn Fn(&str) -> tilo_actions::Availability>,
     views: Vec<tilo_actions::ResourceViewSpec>,
     local_operations: Vec<ActionSpec>,
+    /// The values now of the fields that weaken one way ([`weakening_now`]).
+    now: Vec<(String, String)>,
 }
 
 /// The resource's own part of [`publish_parts`]: everything but its
@@ -2536,7 +2657,7 @@ fn publish_own(
         // ([`items::bound`](crate::items::bound)), it stays published here
         // for scripts that name the item, out of the palette's way.
         resource = resource.with_action(if offered_bound(decl) {
-            spec.programmatic()
+            spec.for_audience(tilo_actions::Audience::Agents)
         } else {
             spec
         });
@@ -2555,7 +2676,7 @@ fn publish_own(
         .with_action(apply_spec(vocabulary))
         .with_action(group_spec(vocabulary));
     if vocabulary.edits {
-        resource = resource.with_action(field_edit_spec(vocabulary));
+        resource = resource.with_action(field_edit_spec(vocabulary, own.now));
     }
     resource
 }

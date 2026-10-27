@@ -47,7 +47,6 @@ fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
             .downcast_mut::<Form>()
             .unwrap();
         *root = std::mem::take(root).with_label_placement(placement);
-        // A normal layout rebuild observes the newly authored region value.
         app.layout.structure_dirty = true;
         form_layout(&mut app, width);
         let focused = app.focused_node.unwrap();

@@ -8,7 +8,7 @@ PartOf=tilo-graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/tilo-model-gateway serve --socket %t/tilo/services/model-gateway.sock
+ExecStart=/usr/libexec/tilo/tilo-model-gateway serve --socket %t/tilo/services/model-gateway.sock
 Restart=on-failure
 RestartSec=2
 UMask=0077

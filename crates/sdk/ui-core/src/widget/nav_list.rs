@@ -33,7 +33,7 @@ use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::widget::tree_view::{
-    NavItemSpec, NavPresentation, NavRowSpec, NavStatus, NodeId, TreeModel, TreeView,
+    NavItemSpec, NavPresentation, NavRowSpec, NavStatus, NodeId, TreeImpl, TreeModel,
 };
 use crate::widget::{AppModel, FilterCount, Filterable, ModelPath, RowStatus, Tone, TreeRowAction};
 
@@ -53,22 +53,37 @@ pub struct NavSection {
     pub trailing_action: Option<NavAction>,
     /// The one quiet line the section shows while it has no items.
     pub empty_caption: Option<String>,
+    /// Rows standing in, while it has no items, for items still being read.
+    pub pending: u8,
     /// The window's filter narrows this section's items.
     pub filterable: bool,
+    /// The title can be renamed in place ([`NavList::on_rename`]).
+    pub editable_title: bool,
+    /// The header has a menu ([`NavList::on_context_menu`]).
+    pub menu: bool,
     pub items: Vec<NavItem>,
 }
 
 impl NavSection {
     #[must_use]
     pub fn new(id: impl Into<String>, title: impl Into<String>, items: Vec<NavItem>) -> Self {
+        Self::new_owned(id.into(), title.into(), items)
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, title: String, items: Vec<NavItem>) -> Self {
         Self {
-            id: id.into(),
-            title: title.into(),
+            id,
+            title,
             collapsible: false,
             collapsed: false,
             trailing_action: None,
             empty_caption: None,
+            pending: 0,
             filterable: false,
+            editable_title: false,
+            menu: false,
             items,
         }
     }
@@ -107,12 +122,42 @@ impl NavSection {
         self
     }
 
-    /// Let the window's filter field ([`super::NavShell::with_filter`])
-    /// narrow this section's items. Sections that do not opt in (a list of
-    /// connections above the tables being filtered) stay as they are.
+    /// While the section has no items because they are still being read,
+    /// `rows` rows stand in for them: the shape of a row (its icon and its
+    /// label), in the skeleton tone, so nothing moves when the items arrive.
+    /// They are not destinations: nothing selects them, the arrow keys pass
+    /// over them, and assistive technology hears "Loading".
+    #[must_use]
+    pub fn pending(mut self, rows: u8) -> Self {
+        self.pending = rows;
+        self
+    }
+
+    /// Let the window's search narrow this section's items: the window
+    /// bar's field, or a shell's own [`super::NavShell::with_filter`] field.
+    /// The section draws no field itself. Sections that do not opt in (a
+    /// list of connections above the tables being filtered) stay as they
+    /// are.
     #[must_use]
     pub fn filterable(mut self) -> Self {
         self.filterable = true;
+        self
+    }
+
+    /// The person can rename the section in place: F2 on its header, or
+    /// [`NavFeed::begin_rename`] from its menu.
+    #[must_use]
+    pub fn editable_title(mut self) -> Self {
+        self.editable_title = true;
+        self
+    }
+
+    /// The header asks for its menu as an item's row does: a right click, a
+    /// long press, the Menu key ([`NavList::on_context_menu`], with the
+    /// section's id).
+    #[must_use]
+    pub fn with_menu(mut self) -> Self {
+        self.menu = true;
         self
     }
 }
@@ -133,10 +178,16 @@ pub struct NavAction {
 impl NavAction {
     #[must_use]
     pub fn new(id: impl Into<String>, icon: Icon, label: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), icon, label.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, icon: Icon, label: String) -> Self {
         Self {
-            id: id.into(),
+            id,
             icon,
-            label: label.into(),
+            label,
             opens_menu: false,
         }
     }
@@ -237,9 +288,15 @@ pub struct NavItem {
     pub status_label: Option<(String, Tone)>,
     pub badge: Option<String>,
     pub swatch: Option<Color>,
+    /// A picture in the icon's place (an album's cover).
+    pub art: Option<NavArt>,
     pub checked: Option<bool>,
     pub level: Option<f32>,
     pub presence: Vec<String>,
+    /// The person the row stands for, as their avatar in the icon's place.
+    pub person: Option<NavPerson>,
+    /// Something new waits behind the row (an unread conversation).
+    pub unread: bool,
     /// The key assistive technology and tests address the row by; the
     /// default is `nav:item:{id}`.
     pub semantic_key: Option<String>,
@@ -248,6 +305,30 @@ pub struct NavItem {
     /// words people use for them. A row found by a term that has a name
     /// shows that name under its label.
     pub search_terms: Vec<NavSearchTerm>,
+}
+
+/// A picture in a row's icon place ([`NavItem::art`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavArt {
+    /// What the picture is of; its initials stand in while there is none.
+    pub name: String,
+    pub image: Option<vello::peniko::ImageData>,
+}
+
+/// The person a row stands for ([`NavItem::person`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavPerson {
+    /// Who they are; their initials stand in for a picture.
+    pub identity: String,
+    /// Their colour in the room, ringing the avatar.
+    pub colour: Color,
+    /// They are speaking now.
+    pub speaking: bool,
+    /// The name their initials come from, when the label says more than
+    /// their name ("Dana (via Discord)"); else the label.
+    pub name: Option<String>,
+    /// Their picture; their initials stand in while there is none.
+    pub image: Option<vello::peniko::ImageData>,
 }
 
 /// A row's status dot, as [`NavItem::status`] keeps it.
@@ -265,9 +346,15 @@ impl NavItemStatus {
 impl NavItem {
     #[must_use]
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), label.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, label: String) -> Self {
         Self {
-            id: id.into(),
-            label: label.into(),
+            id,
+            label,
             icon: None,
             count: None,
             actions: true,
@@ -282,6 +369,9 @@ impl NavItem {
             status_label: None,
             badge: None,
             swatch: None,
+            art: None,
+            person: None,
+            unread: false,
             checked: None,
             level: None,
             presence: Vec::new(),
@@ -406,6 +496,18 @@ impl NavItem {
         self
     }
 
+    /// A small rounded picture in the icon's place: what the destination
+    /// holds (an album's cover), or the initials of `name` while it has
+    /// none. The label lines up with the icons of the rows around it.
+    #[must_use]
+    pub fn art(mut self, name: impl Into<String>, image: Option<vello::peniko::ImageData>) -> Self {
+        self.art = Some(NavArt {
+            name: name.into(),
+            image,
+        });
+        self
+    }
+
     /// A checkbox in the leading slot (a calendar shown or hidden). The
     /// whole row toggles it and reports through [`NavList::on_check`]; a
     /// checkable row is not a destination and is never selected.
@@ -428,6 +530,42 @@ impl NavItem {
     #[must_use]
     pub fn presence(mut self, identity: impl Into<String>) -> Self {
         self.presence.push(identity.into());
+        self
+    }
+
+    /// The row stands for a person (someone in a call): their avatar, in
+    /// `colour`, in the icon's place, ringed while `speaking`.
+    #[must_use]
+    pub fn person(mut self, identity: impl Into<String>, colour: Color, speaking: bool) -> Self {
+        self.person = Some(NavPerson {
+            identity: identity.into(),
+            colour,
+            speaking,
+            name: None,
+            image: None,
+        });
+        self
+    }
+
+    /// The face of the person the row stands for ([`Self::person`]): the
+    /// name their initials come from and their picture.
+    #[must_use]
+    pub fn person_face(
+        mut self,
+        name: impl Into<String>,
+        image: Option<vello::peniko::ImageData>,
+    ) -> Self {
+        if let Some(person) = &mut self.person {
+            person.name = Some(name.into());
+            person.image = image;
+        }
+        self
+    }
+
+    /// Something new waits behind the row: its label stands out at rest.
+    #[must_use]
+    pub fn unread(mut self, unread: bool) -> Self {
+        self.unread = unread;
         self
     }
 
@@ -457,6 +595,8 @@ enum NavNodeKind {
         collapsible: bool,
         action: Option<(Icon, String)>,
         first: bool,
+        editable: bool,
+        menu: bool,
     },
     Item {
         spec: Box<NavItemSpec>,
@@ -467,6 +607,8 @@ enum NavNodeKind {
     },
     /// An empty section's caption.
     Caption,
+    /// A row standing in for an item still being read.
+    Pending,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -618,6 +760,8 @@ impl NavModel {
                                 .as_ref()
                                 .map(|action| (action.icon, action.label.clone())),
                             first: first_row,
+                            editable: section.editable_title,
+                            menu: section.menu,
                         },
                         parent: Some(ROOT),
                         children: Vec::new(),
@@ -629,7 +773,25 @@ impl NavModel {
                 id
             };
             first_row = false;
+            if section.items.is_empty() {
+                for row in 0..section.pending {
+                    let key = format!("pending:{}:{row}", section.id);
+                    let id = keys.id(&key);
+                    model.attach(
+                        parent,
+                        id,
+                        NavNode {
+                            key,
+                            label: "Loading".to_owned(),
+                            kind: NavNodeKind::Pending,
+                            parent: Some(parent),
+                            children: Vec::new(),
+                        },
+                    );
+                }
+            }
             if section.items.is_empty()
+                && section.pending == 0
                 && let Some(caption) = &section.empty_caption
             {
                 let id = keys.id(&format!("caption:{}", section.id));
@@ -689,9 +851,12 @@ impl NavModel {
             badge: item.badge.clone(),
             section_badges: Rc::clone(badges),
             swatch: item.swatch,
+            art: item.art.clone(),
             checked: item.checked,
             level: item.level,
             presence: item.presence.clone(),
+            person: item.person.clone(),
+            unread: item.unread,
         };
         self.attach(
             parent,
@@ -778,15 +943,19 @@ impl NavModel {
                 collapsible,
                 action,
                 first,
+                menu,
+                ..
             } => Some(NavRowSpec::Section {
                 title: node.label.clone(),
                 collapsible: *collapsible,
                 action: action.as_ref().map(|(icon, _)| *icon),
                 action_label: action.as_ref().map(|(_, label)| label.clone()),
                 first: *first,
+                menu: *menu,
             }),
             NavNodeKind::Item { spec, .. } => Some(NavRowSpec::Item(spec.clone())),
             NavNodeKind::Caption => Some(NavRowSpec::Caption),
+            NavNodeKind::Pending => Some(NavRowSpec::Pending),
         }
     }
 }
@@ -808,7 +977,7 @@ impl TreeModel for NavModel {
         self.nodes.get(&id).is_some_and(|node| match node.kind {
             NavNodeKind::Root | NavNodeKind::Section { .. } => true,
             NavNodeKind::Item { .. } => !node.children.is_empty(),
-            NavNodeKind::Caption => false,
+            NavNodeKind::Caption | NavNodeKind::Pending => false,
         })
     }
 
@@ -827,7 +996,7 @@ impl TreeModel for NavModel {
     fn semantic_key(&self, id: NodeId) -> Option<String> {
         let node = self.nodes.get(&id)?;
         match &node.kind {
-            NavNodeKind::Root | NavNodeKind::Caption => None,
+            NavNodeKind::Root | NavNodeKind::Caption | NavNodeKind::Pending => None,
             NavNodeKind::Section { .. } => Some(format!("nav:section:{}", node.key)),
             NavNodeKind::Item { semantic_key, .. } => Some(
                 semantic_key
@@ -858,7 +1027,7 @@ impl TreeModel for NavModel {
     fn can_collapse(&self, id: NodeId) -> bool {
         // A section folds only when it says it does.
         self.nodes.get(&id).is_some_and(|node| match node.kind {
-            NavNodeKind::Root | NavNodeKind::Caption => false,
+            NavNodeKind::Root | NavNodeKind::Caption | NavNodeKind::Pending => false,
             NavNodeKind::Section { collapsible, .. } => collapsible,
             NavNodeKind::Item { .. } => true,
         })
@@ -874,9 +1043,13 @@ impl TreeModel for NavModel {
     }
 
     fn is_renamable(&self, id: NodeId) -> bool {
-        self.nodes
-            .get(&id)
-            .is_some_and(|node| matches!(node.kind, NavNodeKind::Item { editable: true, .. }))
+        self.nodes.get(&id).is_some_and(|node| {
+            matches!(
+                node.kind,
+                NavNodeKind::Item { editable: true, .. }
+                    | NavNodeKind::Section { editable: true, .. }
+            )
+        })
     }
 
     fn shows_row_actions(&self, id: NodeId) -> bool {
@@ -918,7 +1091,7 @@ struct NavShared {
 
 /// The navigation list. See the module docs.
 pub struct NavList {
-    tree: TreeView<(), NavModel>,
+    tree: TreeImpl<(), NavModel>,
     shared: Rc<RefCell<NavShared>>,
     keys: NavKeys,
     /// The sections as the app handed them, before any filter.
@@ -930,6 +1103,12 @@ pub struct NavList {
     unfiltered_open: Option<Vec<NodeId>>,
     /// The app state the list follows, read at every sync and update.
     source: Option<NavSource>,
+    /// The app declared its places come under headings, even while none
+    /// has loaded yet ([`Self::with_headings`]).
+    headings: bool,
+    /// The feed the list answers "which place is here?" through, for a
+    /// drag the app runs over it ([`NavFeed::place_at`]).
+    feed: Option<NavFeed>,
 }
 
 /// What a followed list reads: the sections and the chosen destination, or
@@ -955,7 +1134,7 @@ impl NavList {
         let action_shared = Rc::clone(&shared);
         let rename_shared = Rc::clone(&shared);
         let expand_shared = Rc::clone(&shared);
-        let tree = TreeView::from_model(model)
+        let tree = TreeImpl::from_model(model)
             .hide_root()
             .fill()
             .with_expanded(openings.expanded)
@@ -1048,6 +1227,8 @@ impl NavList {
             filter: String::new(),
             unfiltered_open: None,
             source: None,
+            headings: false,
+            feed: None,
         };
         list.install_presentation(false);
         list.refresh_keys();
@@ -1158,6 +1339,14 @@ impl NavList {
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
         self.tree = self.tree.with_accessible_name(name);
+        self
+    }
+
+    /// The list's stable identity for assistive technology
+    /// ([`TreeView::with_semantic_key`]).
+    #[must_use]
+    pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
+        self.tree = self.tree.with_semantic_key(key);
         self
     }
 
@@ -1370,6 +1559,16 @@ impl NavList {
         self
     }
 
+    /// The places come in groups under headings (a contact book's groups,
+    /// a mail account's folders), even where none has loaded yet or the
+    /// person has made none. A sidebar that can hold headings starts as a
+    /// list, so it never turns from rail into list as its groups arrive.
+    #[must_use]
+    pub fn with_headings(mut self) -> Self {
+        self.headings = true;
+        self
+    }
+
     /// An icon-over-label compact rail (a workspace switcher, a channel
     /// rail). Section titles give way to space; counts become a mark;
     /// captions wrap to a second line before they elide.
@@ -1397,12 +1596,17 @@ impl NavList {
         let kept: Vec<NodeId> = self.tree.expanded_ids().collect();
         let ensured: HashSet<NodeId> = openings.ensured.iter().copied().collect();
         // What the person folded stays folded; what is new opens as the app
-        // asked, a section that does not fold is always open, and what the
-        // app ensures opens whatever the person did.
+        // asked (a row that could not fold before, as its first children
+        // arrive, too), a section that does not fold is always open, and
+        // what the app ensures opens whatever the person did.
+        let was_foldable = |id: NodeId| {
+            let before = self.tree.model();
+            self.keys_seen(id) && before.can_collapse(id) && before.child_count(id) > 0
+        };
         let open: Vec<NodeId> = openings
             .expanded
             .into_iter()
-            .filter(|id| !self.keys_seen(*id) || !model.can_collapse(*id) || ensured.contains(id))
+            .filter(|id| !was_foldable(*id) || !model.can_collapse(*id) || ensured.contains(id))
             .chain(kept)
             .chain(openings.ensured)
             .collect();
@@ -1413,6 +1617,31 @@ impl NavList {
         self.tree.restore_expanded(open);
         self.refresh_keys();
         self.select_quietly(selected.as_deref());
+    }
+
+    /// Do what the app asked through its feed: open or fold rows
+    /// ([`NavFeed::set_open`]) and open a rename field
+    /// ([`NavFeed::begin_rename`]). Whether anything changed.
+    fn take_asks(&mut self) -> bool {
+        let Some(feed) = self.feed.clone() else {
+            return false;
+        };
+        let mut changed = false;
+        for (key, open) in feed.take_openings() {
+            if self.is_expanded(&key) != open {
+                self.set_expanded(&key, open);
+                changed = true;
+            }
+        }
+        let Some(key) = feed.take_rename_request() else {
+            return changed;
+        };
+        let model = self.tree.model();
+        let Some(node) = model.item_id(&key).or_else(|| model.section_id(&key)) else {
+            return changed;
+        };
+        self.tree.reveal(node);
+        self.tree.begin_rename(node) || changed
     }
 
     fn keys_seen(&self, id: NodeId) -> bool {
@@ -1475,11 +1704,12 @@ impl NavList {
             .is_some_and(|node| self.tree.is_expanded(node))
     }
 
-    /// The painted rect of item `id`'s row, edge to edge of the list, when
-    /// it is in view.
+    /// The painted rect of item or section `id`'s row, edge to edge of the
+    /// list, when it is in view.
     #[must_use]
     pub fn row_rect(&self, id: &str) -> Option<Rect> {
-        let node = self.tree.model().item_id(id)?;
+        let model = self.tree.model();
+        let node = model.item_id(id).or_else(|| model.section_id(id))?;
         self.tree.row_rect(node)
     }
 
@@ -1558,9 +1788,15 @@ impl NavList {
             .collect()
     }
 
+    /// Place the list at `rect` for a host that paints its own layout and
+    /// positions its children by hand rather than through the layout tree.
+    pub fn place_at(&mut self, rect: Rect) {
+        self.tree.place_at(rect);
+    }
+
     /// The list's tree, for tests reading its engine state.
     #[cfg(test)]
-    pub(crate) fn tree(&self) -> &TreeView<(), NavModel> {
+    pub(crate) fn tree(&self) -> &TreeImpl<(), NavModel> {
         &self.tree
     }
 }
@@ -1610,21 +1846,145 @@ impl RailExtent for NavList {
         if !self.tree.is_rail() {
             return None;
         }
-        fn labels<'a>(items: &'a [NavItem], out: &mut Vec<&'a str>) {
-            for item in items {
-                out.push(&item.label);
-                labels(&item.children, out);
-            }
-        }
-        let mut all = Vec::new();
-        for section in &self.sections {
-            labels(&section.items, &mut all);
-        }
+        let items = all_items(&self.sections);
         Some(crate::text_render::with_layout_renderer(
             theme.text_scale,
-            |text| crate::chrome::rail_width_fitting(theme, text, all.iter().copied()),
+            |text| {
+                crate::chrome::rail_width_fitting(
+                    theme,
+                    text,
+                    items.iter().map(|item| item.label.as_str()),
+                )
+            },
         ))
     }
+}
+
+/// The most destinations a sidebar shows as a rail by default. Past it the
+/// tiles stop reading as one short set of places at a glance.
+const RAIL_DEFAULT_MAX_DESTINATIONS: usize = 7;
+
+/// A navigation sidebar whose width decides how it reads: narrow, a rail
+/// of tiles (icon over a short caption); wide, a list (icon beside the
+/// label). The shell hosting it as its sidebar asks how wide each form
+/// needs to be, which one it starts as, and switches it as its width
+/// crosses the threshold.
+pub(crate) trait AdaptiveNav {
+    /// The width of the list as a rail: its longest word whole, up to the
+    /// rail's cap ([`crate::chrome::sidebar_rail_width_fitting`]).
+    fn rail_fit(&self, theme: &crate::Theme) -> f64;
+    /// The width at which every label stands whole beside its icon
+    /// ([`crate::chrome::nav_list_width_fitting`]): from here on it is a
+    /// list.
+    fn list_fit(&self, theme: &crate::Theme) -> f64;
+    /// Whether the sidebar starts as a rail: a short, flat set of places,
+    /// each with an icon and a label that stands whole in a tile. See
+    /// docs/design-language.md, "Windows and navigation".
+    fn rail_by_default(&self, theme: &crate::Theme) -> bool;
+    /// Paint the rows as a rail's tiles or as list rows. Returns whether
+    /// that changed.
+    fn set_rail(&mut self, rail: bool) -> bool;
+}
+
+/// Every destination of `sections`, nested ones included, in order.
+fn all_items(sections: &[NavSection]) -> Vec<&NavItem> {
+    fn walk<'a>(items: &'a [NavItem], out: &mut Vec<&'a NavItem>) {
+        for item in items {
+            out.push(item);
+            walk(&item.children, out);
+        }
+    }
+    let mut out = Vec::new();
+    for section in sections {
+        walk(&section.items, &mut out);
+    }
+    out
+}
+
+impl AdaptiveNav for NavList {
+    fn rail_fit(&self, theme: &crate::Theme) -> f64 {
+        let items = all_items(&self.sections);
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            crate::chrome::sidebar_rail_width_fitting(
+                theme,
+                text,
+                items.iter().map(|item| item.label.as_str()),
+            )
+        })
+    }
+
+    fn list_fit(&self, theme: &crate::Theme) -> f64 {
+        let items = all_items(&self.sections);
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            crate::chrome::nav_list_width_fitting(
+                theme,
+                text,
+                items.iter().map(|item| item.label.as_str()),
+            )
+        })
+    }
+
+    fn rail_by_default(&self, theme: &crate::Theme) -> bool {
+        // Headings, folding, a "New …" action and a filter are what a list
+        // of many or growing places needs; a rail shows none of them.
+        let flat_sections = !self.headings
+            && self.sections.iter().all(|section| {
+                section.title.is_empty()
+                    && !section.collapsible
+                    && section.trailing_action.is_none()
+                    && !section.filterable
+            });
+        let items = all_items(&self.sections);
+        // A tile is an icon over a caption: a row that says more than its
+        // label (a second line, a figure, a check, a status, a colour, the
+        // people in it) or that nests or renames needs the list.
+        let tile_shaped = items.iter().all(|item| {
+            item.icon.is_some()
+                && item.children.is_empty()
+                && !item.editable_label
+                && item.secondary.is_none()
+                && item.meta.is_none()
+                && item.status.is_none()
+                && item.status_label.is_none()
+                && item.badge.is_none()
+                && item.swatch.is_none()
+                && item.art.is_none()
+                && item.checked.is_none()
+                && item.level.is_none()
+                && item.presence.is_empty()
+        });
+        if !flat_sections
+            || !tile_shaped
+            || items.is_empty()
+            || items.len() > RAIL_DEFAULT_MAX_DESTINATIONS
+        {
+            return false;
+        }
+        let width = self.rail_fit(theme);
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            items
+                .iter()
+                .all(|item| crate::chrome::rail_caption_fits(theme, text, &item.label, width))
+        })
+    }
+
+    fn set_rail(&mut self, rail: bool) -> bool {
+        self.tree.set_nav_rail(rail)
+    }
+}
+
+/// The navigation sidebar `widget` is, when it is one ([`AdaptiveNav`]).
+/// Only the sidebar itself counts, never a list nested inside a composite
+/// sidebar: a rail can't hold the composite's other controls.
+pub(crate) fn adaptive(widget: &dyn crate::widget::Widget) -> Option<&(dyn AdaptiveNav + 'static)> {
+    crate::widget::capability::capability::<dyn AdaptiveNav>(widget)
+}
+
+/// As [`adaptive`], to switch it.
+pub(crate) fn adaptive_mut(
+    widget: &mut dyn crate::widget::Widget,
+) -> Option<&mut (dyn AdaptiveNav + 'static)> {
+    crate::widget::capability::capability_mut::<dyn AdaptiveNav>(widget)
 }
 
 /// The width of the first rail in `widget`'s subtree under `theme`
@@ -1662,11 +2022,41 @@ pub(crate) fn take_navigation(widget: &mut dyn crate::widget::Widget) -> bool {
     found
 }
 
+/// Whether `node` is a destination's row whose selection action is
+/// unavailable.
+fn unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
+    node.action_target
+        .as_deref()
+        .and_then(|target| target.strip_prefix("node:"))
+        .and_then(|id| id.parse::<NodeId>().ok())
+        .and_then(|id| shared.keys.get(&id))
+        .and_then(|key| shared.selection_actions.get(key))
+        .is_some_and(|action| !action.is_available())
+}
+
+/// Publish every row under `node` whose selection action is unavailable as
+/// disabled.
+fn disable_unavailable(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
+    node.state.disabled |= unavailable(node, shared);
+    for child in &mut node.children {
+        disable_unavailable(child, shared);
+    }
+}
+
+/// Whether [`disable_unavailable`] would change anything under `node`.
+fn has_unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
+    (!node.state.disabled && unavailable(node, shared))
+        || node
+            .children
+            .iter()
+            .any(|child| has_unavailable(child, shared))
+}
+
 // Not the blanket `Decorator`: apps box a navigation list, and its Widget
 // methods (with the tree view they forward to) are compiled once, here
 // (`concrete_decorator_widget!` in decorator.rs).
 impl crate::widget::decorator::concrete::Decorator for NavList {
-    type Inner = TreeView<(), NavModel>;
+    type Inner = TreeImpl<(), NavModel>;
 
     fn inner(&self) -> &Self::Inner {
         &self.tree
@@ -1685,6 +2075,10 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             request.provide::<dyn RailExtent>(self);
             return;
         }
+        if request.wants::<dyn AdaptiveNav>() {
+            request.provide::<dyn AdaptiveNav>(self);
+            return;
+        }
         crate::widget::Widget::provide(&self.tree, request);
     }
 
@@ -1695,6 +2089,10 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         }
         if request.wants::<dyn NavigationSource>() {
             request.provide::<dyn NavigationSource>(self);
+            return;
+        }
+        if request.wants::<dyn AdaptiveNav>() {
+            request.provide::<dyn AdaptiveNav>(self);
             return;
         }
         if request.wants::<dyn Filterable>()
@@ -1716,6 +2114,9 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         // The published owner is NavList, so host lookup and synthetic
         // accessibility routing must identify this same retained wrapper.
         node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
+        if let Some(feed) = &self.feed {
+            feed.publish_node(node);
+        }
         node
     }
 
@@ -1730,39 +2131,89 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             self.set_selected(next.as_deref());
         }
         self.pull();
+        self.take_asks();
         crate::widget::Widget::sync(&mut self.tree, state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let pulled = self.pull();
+        let pulled = self.pull() | self.take_asks();
         crate::widget::Widget::update(&mut self.tree, state, path) || pulled
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        fn refresh(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
-            if let Some(id) = node
-                .action_target
-                .as_deref()
-                .and_then(|target| target.strip_prefix("node:"))
-                .and_then(|id| id.parse::<NodeId>().ok())
-                && let Some(key) = shared.keys.get(&id)
-                && let Some(action) = shared.selection_actions.get(key)
-            {
-                node.state.disabled |= !action.is_available();
-            }
-            for child in &mut node.children {
-                refresh(child, shared);
+        crate::widget::decorator::concrete::Decorator::accessibility_shared(self)
+            .map(crate::a11y::SharedAccessNode::into_owned)
+    }
+
+    /// The tree's rows as it keeps them between walks
+    /// ([`TreeView::access_rows`]), each the very node of the last walk
+    /// while nothing it is built from changed: a keystroke in the pane
+    /// beside the list builds none of them. A row whose destination's
+    /// selection action is unavailable is published disabled, as a copy of
+    /// the tree's row; availability changes without the tree changing, so
+    /// those few are copied on every walk.
+    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+        let mut access = crate::widget::Widget::accessibility_shared(&self.tree)?;
+        let shared = self.shared.borrow();
+        if shared
+            .selection_actions
+            .values()
+            .any(|action| !action.is_available())
+        {
+            disable_unavailable(&mut access.node, &shared);
+            for row in &mut access.children {
+                if has_unavailable(row, &shared) {
+                    disable_unavailable(std::sync::Arc::make_mut(row), &shared);
+                }
             }
         }
-        let mut access = crate::widget::Widget::accessibility(&self.tree)?;
-        refresh(&mut access, &self.shared.borrow());
         Some(access)
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text: &mut crate::text_render::TextRenderer,
+        theme: &crate::Theme,
+        presence: &crate::PresenceCtx,
+    ) {
+        crate::widget::Widget::draw(&mut self.tree, scene, transform, text, theme, presence);
+        if let Some(feed) = &self.feed {
+            let model = self.tree.model();
+            let rows = self
+                .tree
+                .visible_rows()
+                .into_iter()
+                .filter_map(|(node, _, _)| {
+                    let key = model.key(node)?;
+                    let rect = self.tree.row_rect(node)?;
+                    Some((key.to_owned(), rect))
+                })
+                .collect();
+            feed.publish_rows(crate::widget::Widget::get_rect(&self.tree), rows);
+        }
+    }
+
+    /// Never hidden: answered without building the rows.
+    fn accessibility_hidden(&self) -> bool {
+        crate::widget::Widget::accessibility_hidden(&self.tree)
+    }
+
+    /// The tree's own node, without building its rows.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        let mut root = crate::widget::Widget::accessibility_root(&self.tree)?;
+        disable_unavailable(&mut root, &self.shared.borrow());
+        Some(root)
     }
 
     fn name(&self) -> &'static str {
         "NavList"
     }
 }
+
+mod feed;
+pub use feed::NavFeed;
 
 #[cfg(test)]
 mod tests;
@@ -1808,6 +2259,22 @@ impl crate::widget::controls::ActionControls for NavList {
             }
         }
         bindings
+    }
+
+    /// Whether [`Self::control_action_bindings`] holds an action, answered
+    /// without building the rows' semantics it also lists: the host asks it
+    /// on every frame. The actions are the visible destinations' selection
+    /// actions and whatever the tree's own children bind.
+    fn has_action_control_bindings(&self) -> bool {
+        let shared = self.shared.borrow();
+        let selection = !shared.selection_actions.is_empty()
+            && self
+                .tree
+                .visible_row_range()
+                .filter_map(|index| self.tree.visible_row(index))
+                .filter_map(|(node, _, _)| shared.keys.get(&node))
+                .any(|key| shared.selection_actions.contains_key(key));
+        selection || crate::widget::controls::has_action_control_bindings(&self.tree)
     }
 
     fn refresh_control_action_availability(

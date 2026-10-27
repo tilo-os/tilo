@@ -14,7 +14,9 @@ fn command(program: &str, args: &[&str]) -> Vec<u8> {
         .unwrap();
     assert!(
         output.status.success(),
-        "native fixture tool {program} failed"
+        "native fixture tool {program} {args:?} failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
     );
     output.stdout
 }
@@ -185,7 +187,7 @@ fn runtime(root: &Path) -> (PathBuf, String) {
         ],
     );
     let launcher = root.join("tilo-launcher");
-    std::fs::copy(env!("CARGO_BIN_EXE_tilo-launcher"), &launcher).unwrap();
+    std::fs::copy(tilo_test_env::package_binary!("tilo-launcher"), &launcher).unwrap();
     command(
         "/usr/bin/strip",
         &["--strip-debug", launcher.to_str().unwrap()],

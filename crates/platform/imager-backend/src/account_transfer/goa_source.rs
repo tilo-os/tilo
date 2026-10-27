@@ -1,8 +1,8 @@
 //! Selected GOA refresh grants retain the original installed-app registration.
 //! Source contracts:
-//! https://github.com/GNOME/gnome-online-accounts/blob/master/src/goabackend/goautils.c
-//! https://github.com/GNOME/gnome-online-accounts/blob/master/src/goabackend/goaoauth2provider.c
-//! https://github.com/GNOME/gnome-online-accounts/blob/master/data/dbus-interfaces.xml
+//! <https://github.com/GNOME/gnome-online-accounts/blob/master/src/goabackend/goautils.c>
+//! <https://github.com/GNOME/gnome-online-accounts/blob/master/src/goabackend/goaoauth2provider.c>
+//! <https://github.com/GNOME/gnome-online-accounts/blob/master/data/dbus-interfaces.xml>
 use super::{Candidate, ConnectionError, Connector, Origin, SourceRoots};
 #[cfg(test)]
 use account_custody::OAuthCloud;
@@ -147,6 +147,9 @@ impl Connector {
     ) -> Result<AccountId, ConnectionError> {
         if selected.origin != Origin::Gnome
             || !selected.can_import_credentials
+            || !selected
+                .services
+                .contains(&crate::account_sources::Service::Files)
             || selected.profile != roots.config.join("goa-1.0/accounts.conf")
         {
             return Err(ConnectionError::InvalidConfiguration);

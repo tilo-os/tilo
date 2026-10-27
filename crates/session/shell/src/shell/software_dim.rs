@@ -39,7 +39,6 @@ fn sanitize(light: f32) -> f32 {
     }
 }
 
-/// Whether `light` dims at all.
 pub fn dims(light: f32) -> bool {
     sanitize(light) < 1.0
 }
@@ -178,11 +177,6 @@ mod tests {
         srgb_eotf(f32::from(code) / f32::from(u16::MAX))
     }
 
-    // USER REQUIREMENT (2026-10-18): "make sure overlays like power, volume,
-    // brightness etc. should in general be raised on the correct (?)
-    // screen(s)… in consistent positions… also how to handle brightness
-    // controls on multiple screens" — a display without a brightness control
-    // is dimmed in linear light, smoothly, never below a readable floor.
     #[test]
     fn the_crtc_lut_scales_linear_light_monotonically_at_full_precision() {
         let lut = gamma_lut(1024, 0.5, Transfer::Srgb);
@@ -191,7 +185,6 @@ mod tests {
         for pair in lut.windows(2) {
             assert!(pair[0] <= pair[1], "monotonic: {pair:?}");
         }
-        // Every entry is the input's linear light, halved.
         for (i, &value) in lut.iter().enumerate() {
             #[allow(clippy::cast_precision_loss, reason = "small index")]
             let input = srgb_eotf(i as f32 / 1023.0);
@@ -257,7 +250,7 @@ mod tests {
     #[test]
     fn the_cpu_fallback_dithers_a_flat_colour_around_its_dimmed_value() {
         let dim = CpuDim::new(0.5);
-        let mut rgba = vec![200_u8, 200, 200, 77].repeat(16);
+        let mut rgba = [200_u8, 200, 200, 77].repeat(16);
         dim.apply(&mut rgba, 4);
         let target = dimmed_signal(200.0 / 255.0, 0.5, Transfer::Srgb) * 255.0;
         let reds: Vec<u8> = rgba.chunks_exact(4).map(|p| p[0]).collect();

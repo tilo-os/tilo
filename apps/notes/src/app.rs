@@ -41,8 +41,9 @@ use crate::main_panel::{BacklinkChip, MainPanel, TagChip};
 use crate::model::{PageId, TagId, Workspace};
 use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{OutEvent, PageSidebar, SidebarTransfer};
-use crate::status_bar::{SaveStatus, StatusBarState, StatusModel, count_words};
+use crate::status_bar::{SaveStatus, StatusBarState, StatusModel};
 
+mod asset_reads;
 mod effects;
 mod window_bar;
 
@@ -51,6 +52,11 @@ thread_local! {
     /// Always so in the app.
     static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
+
+/// What the window's bar was last declared with: the note shown (its title
+/// and anchor), whether the page tree is open, and whether New note is
+/// offered.
+type DeclaredBar = (Option<(String, String)>, bool, bool);
 
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
@@ -313,6 +319,8 @@ pub(crate) fn check_image(bytes: &[u8]) -> Result<(), String> {
 pub struct NotesApp {
     workspace: Workspace,
     sidebar: PageSidebar,
+    /// The open note's headings, under the page tree.
+    outline: crate::outline::NotesOutline,
     note_menu: ContextMenu,
     note_menu_target: Option<PageId>,
     note_menu_editor: bool,
@@ -322,17 +330,20 @@ pub struct NotesApp {
     /// The note's save + page/word status, surfaced on the save status
     /// surface (see `save_status`) instead of a permanent strip.
     status: StatusModel,
-    /// The framework's save status surface: autosave says nothing; a save
-    /// that stalls says "Couldn't save yet. Retrying…" in the note's header
-    /// row, and "Saved" once it lands; one that gives up says "Not saved" with "Try again" there; a failed save
-    /// is an error toast with "Try again", and the save that ends it a
-    /// one-time "Saved".
+    /// The open note's word count and the revision of the note's blocks it
+    /// was counted at, so a status refresh that saw no change reuses it
+    /// instead of walking every block again.
+    word_count: Option<(u64, usize)>,
+    /// The framework's save status, said in the window's bar: autosave says
+    /// nothing; a save that stalls says "Couldn't save yet. Retrying…", and
+    /// "Saved" once it lands; one that gives up says "Not saved" and a
+    /// failed save says why, each with "Try again" beside it until a save
+    /// succeeds and says "Saved".
     save_surface: ui::SaveStatusSurface,
     /// The notification a save that gave up raises out of sight.
     save_notices: crate::save_notice::SaveNotices,
     /// "Try again" was chosen on a failed save; the host drains it.
     save_retry: bool,
-    transfer_toasts: ui::widget::toast::ToastStack,
     /// The last copied link, whose outcome can arrive after its toast.
     pub(crate) link_copy: ui::CopyWatch,
     /// A deleted note's "Undo" toast is up: the notebook's state it acts
@@ -360,12 +371,18 @@ pub struct NotesApp {
     header_in_bar: bool,
     /// The note title and sidebar state the bar's slots were last declared
     /// with.
-    declared_bar: Option<(Option<String>, bool)>,
+    declared_bar: Option<DeclaredBar>,
+    /// Whether the headers offer New note: the person may make one.
+    offers_new_note: bool,
     /// Cached taffy node IDs. Filled in `build_layout`, used by
     /// `apply_layout` and `handle_event`. The columns' nodes exist only while
     /// the shell shows them (a closed drawer shows no page tree).
     shell_node: Option<NodeId>,
     sidebar_node: Option<NodeId>,
+    /// The column holding the outline above the page tree, and the outline's
+    /// own node while it is shown.
+    sidebar_column_node: Option<NodeId>,
+    outline_node: Option<NodeId>,
     /// The page tree had the keyboard when the shortcut sheet opened, and gets
     /// it back when the sheet closes.
     shortcuts_return_to_tree: bool,
@@ -384,6 +401,10 @@ pub struct NotesApp {
     /// collaborator's device: the record content arrival count when the
     /// notebook was last read for them. Read again once it has moved.
     canonical_assets_waiting: Option<u64>,
+    /// The read of pictures the window does not hold yet, and the record
+    /// content arrival count it started at.
+    asset_reads: asset_reads::AssetReads,
+    asset_read_looked: u64,
     /// View/legacy callback intents that must wait for a mutable bound record admission.
     pending_events: Vec<OutEvent>,
     /// Last mouse position in logical coords. Used to hit-test
@@ -404,18 +425,10 @@ pub struct NotesApp {
     /// flagging itself dirty.
     self_dirty: bool,
     paint_damage: ui::widget::paint_damage::PaintDamage,
-    /// Where this draw painted the save status (its bubble or failure card).
-    status_painted: Option<Rect>,
-    /// Where the last drawn frame painted it.
-    status_drawn: Option<Rect>,
     /// A scroll of the note this draw left to a copy the host makes of what
     /// stays on screen (`ui::scroll_copy`), offered when the host collects
     /// damage.
     main_scroll_copy: Option<crate::main_panel::ScrollCopy>,
-    /// Where the save status floats over the note, this frame and the last,
-    /// with its shadow: a copy of the note's scroll repaints it over what
-    /// moved under it.
-    status_over_main: Vec<Rect>,
     /// Inputs of the last canonical projection: document heads, pending
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
@@ -472,12 +485,6 @@ pub struct NotesApp {
     /// bodies changed, alongside the full-text catalogue; drawing a selected
     /// note therefore never scans a large notebook.
     backlink_index: HashMap<PageId, Vec<(PageId, u32)>>,
-    /// Last theme text scale, captured during layout. Responsive chrome uses
-    /// it for width/height reservations so 200% text switches to the drawer
-    /// before page labels or the title stack can collide.
-    /// Effective reduced-motion setting provided by the host. Notes owns one
-    /// small app-local animation (the transient save-status bubble), so it
-    /// retains the value instead of relying on the default child forwarding.
     prepared_local_focus: Option<crate::local_view::PreparedFocus>,
     // The first measured width resolves the saved drawer and Sidebar intent once.
     pending_responsive_view: Option<(bool, bool)>,
@@ -488,6 +495,9 @@ pub struct NotesApp {
     /// The notes the notebook holds, and the notes a search hit or an agent's
     /// `open` asked to show, shared with the framework's opener.
     opened: Rc<std::cell::RefCell<Opened>>,
+    /// Who the participants are, by name, once hosted: whom the header's
+    /// reactions name, and whether anyone else shares the notebook.
+    people: Option<ui::framework::People>,
 }
 
 /// What the framework's opener and the window share: the notes there are,
@@ -597,18 +607,9 @@ impl NotesApp {
         sidebar.sync_from_workspace(&workspace);
         let mut main = MainPanel::new();
         main.set_local_author(Some(author.0.clone()));
-        let content = crate::notebook::content();
-        let looked = ui::collaboration::record_content::arrivals();
-        let snapshot =
-            crate::notebook::image_snapshot(&workspace.images, |digest| content.read(digest));
-        let waiting = snapshot.len() < workspace.images.len();
-        let manifest = workspace.images.clone();
         let mut app = Self::build_widget(workspace, sidebar, main);
-        if let Ok(mut assets) = app.canonical_assets.write() {
-            *assets = snapshot;
-        }
-        app.canonical_assets_waiting = waiting.then_some(looked);
-        app.canonical_asset_manifest = manifest;
+        // The pictures are read like any later ones, without waiting here.
+        app.refresh_canonical_assets();
         app.main = app.main.project_canonical(doc, &app.workspace)?;
         app.bound_page = app.workspace.selected();
         app.projection_adopted = true;
@@ -677,22 +678,27 @@ impl NotesApp {
         };
         vec![
             Box::new(note_menu),
+            // window-bar: fallback, the bar's search while it hosts the window
             Box::new(ui::search::search_button(
                 ui::search::SearchRequest::this_app(),
             )),
         ]
     }
 
-    fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
-        let new_note = {
-            let header = Rc::clone(header);
+    /// The page tree's header actions: New note.
+    fn page_tree_header_actions(header: &Rc<HeaderRequests>) -> Vec<ui::widget::Element> {
+        let header = Rc::clone(header);
+        vec![Box::new(
             Button::icon_only(
                 NEW_NOTE_BUTTON_ID,
                 ui::icons::Icon::Plus,
                 &ui::i18n!("notes-affordance-new-note"),
             )
-            .on_view(move || header.new_note.set(true))
-        };
+            .on_view(move || header.new_note.set(true)),
+        )]
+    }
+
+    fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
         let actions = Self::content_header_actions(header);
         // Maximized, the header lives in the window's bar: the note has the
         // whole window until the person reaches for the top edge.
@@ -702,7 +708,10 @@ impl NotesApp {
             .with_header_in_window_bar()
             .sidebar(Box::new(columns.sidebar.slot()))
             .content(Box::new(columns.content.slot()))
-            .sidebar_header(ui::i18n!("notes-title"), vec![Box::new(new_note)])
+            .sidebar_header(
+                ui::i18n!("notes-title"),
+                Self::page_tree_header_actions(header),
+            )
             .content_header("", actions)
     }
 
@@ -720,12 +729,13 @@ impl NotesApp {
             note_menu_table: None,
             note_menu_table_source: None,
             sidebar,
+            outline: crate::outline::NotesOutline::new(),
             main,
             status: StatusModel::new(),
+            word_count: None,
             save_surface: ui::SaveStatusSurface::new(),
             save_notices: crate::save_notice::SaveNotices::new(),
             save_retry: false,
-            transfer_toasts: ui::widget::toast::ToastStack::new().with_max(3),
             link_copy: ui::CopyWatch::default(),
             delete_undo: DeleteUndo::None,
             undo_requested: false,
@@ -737,8 +747,11 @@ impl NotesApp {
             header,
             header_in_bar: false,
             declared_bar: None,
+            offers_new_note: true,
             shell_node: None,
             sidebar_node: None,
+            sidebar_column_node: None,
+            outline_node: None,
             shortcuts_return_to_tree: false,
             main_node: None,
             theme: Theme::dark(),
@@ -746,6 +759,8 @@ impl NotesApp {
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
             canonical_asset_manifest: ui::tilo_resource::Map::new(),
             canonical_assets_waiting: None,
+            asset_reads: asset_reads::AssetReads::new(),
+            asset_read_looked: 0,
             pending_events: Vec::new(),
             last_mouse: Point::ZERO,
             bound_page: None,
@@ -754,16 +769,14 @@ impl NotesApp {
             laid_out: false,
             self_dirty: false,
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
-            status_painted: None,
-            status_drawn: None,
             main_scroll_copy: None,
-            status_over_main: Vec::new(),
             canonical_synced: None,
             reconciled_heads: None,
             projection_adopted: false,
             presented: false,
             dispatcher: None,
             live: None,
+            people: None,
             active_tag_filter: None,
             route_history: ui::NavStack::new(initial_route),
             history_target: None,
@@ -801,6 +814,23 @@ impl NotesApp {
         std::mem::take(&mut self.save_retry) || stalled
     }
 
+    /// The open note's word count, counted once per change of its blocks
+    /// rather than once per status refresh: every pointer move and scroll
+    /// ends in one, and walking every block of a long note each time is what
+    /// that costs.
+    fn cached_word_count(&mut self) -> Option<usize> {
+        self.workspace.selected()?;
+        let revision = self.main.content_revision();
+        if let Some((counted, count)) = self.word_count
+            && counted == revision
+        {
+            return Some(count);
+        }
+        let count = self.main.word_count();
+        self.word_count = Some((revision, count));
+        Some(count)
+    }
+
     fn refresh_status(&mut self) {
         let _profile = ui::tilo_resource::profiling::Phase::start("status_refresh");
         let path = match self.workspace.selected() {
@@ -816,15 +846,12 @@ impl NotesApp {
         // We count over each block's plain text body — not the
         // serialised markdown — so chrome like `- `, `**`, `` ` ``
         // doesn't inflate the total.
-        let word_count = if self.workspace.selected().is_some() {
-            let mut total = 0usize;
-            for b in self.main.editor().blocks() {
-                total += count_words(b.text());
-            }
-            Some(total)
-        } else {
-            None
-        };
+        //
+        // This walks every block of the open note, so it is kept off the
+        // hot path: the result is reused until the editor has shown a
+        // change. A pointer move, a scroll, a save landing or a key that
+        // edited nothing leaves the note and its count where they were.
+        let word_count = self.cached_word_count();
         let save_status = self
             .shots_save_status
             .unwrap_or(match self.record_save_status {
@@ -894,45 +921,23 @@ impl NotesApp {
         self.refresh_status();
     }
 
-    /// Draw the save status: in the header row beside the note's title,
-    /// where it covers none of the note, and a failed save's card in the
-    /// bottom-right corner. It shows on a status change or while the pointer
-    /// rests on it, then fades. Returns where it painted, `self.rect` when
-    /// it painted without saying.
-    fn draw_status_bubble(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Option<Rect> {
-        let now = ui::time::now();
-        let before = scene.encoding().draw_tags.len();
-        self.save_surface
-            .set_header_slot(self.shell.header_status_slot());
-        let painted = self
-            .save_surface
-            .paint(scene, transform, tr, theme, self.rect, now);
-        painted.or_else(|| (scene.encoding().draw_tags.len() != before).then_some(self.rect))
-    }
-
     /// What `draw` painted, as the parts its damage is proven by: the note
-    /// panel, the shell, the page tree, the save status and the toasts
-    /// (`scenes`, in that order), each with where it can change. `None`
+    /// panel, the shell and the page tree (`scenes`, in that order), each
+    /// with where it can change. `None`
     /// while something reaches past those parts' own damage: an editor
     /// popup, the page tree's menu or a dragged row.
     fn paint_frame(
         &self,
         transform: Affine,
         theme: &Theme,
-        scenes: [&Scene; 5],
+        scenes: [&Scene; 3],
     ) -> Option<ui::widget::paint_damage::PaintFrame> {
         use ui::widget::paint_damage::{PaintFrame, PaintPart};
         let sidebar = self.sidebar.tree();
         if self.main.has_editor_popup() || self.sidebar.menu_is_open() || sidebar.is_dragging() {
             return None;
         }
-        let [main, shell, page_tree, status, toasts] = scenes;
+        let [main, shell, page_tree] = scenes;
         // A scroll of the note the host may copy damages only what the copy
         // leaves; the copy is offered when the host collects damage.
         let mut main_damage = Vec::new();
@@ -948,18 +953,6 @@ impl NotesApp {
         if self.sidebar_node.is_some() {
             sidebar.collect_damage(&mut sidebar_damage);
         }
-        // The bubble where it was and where it is, with its shadow, within
-        // the app: past its edge a window or a tile clips the shadow (the
-        // bubble sits in the corner a tile shares with the app), and damage
-        // there would repaint whatever lies beyond, another display included.
-        let status_damage = [self.status_drawn, self.status_painted]
-            .into_iter()
-            .flatten()
-            .map(|rect| {
-                ui::widget::floating_surface::painted_bounds(rect, theme).intersect(self.rect)
-            })
-            .filter(|rect| !rect.is_zero_area())
-            .collect();
         let part = |key: &str, rect: Rect, scene: &Scene, damage: Vec<Rect>| {
             PaintPart::new(key.into(), rect, scene.clone(), damage)
         };
@@ -972,35 +965,18 @@ impl NotesApp {
                 part("note-main", self.main.get_rect(), main, main_damage),
                 part("notes-shell", self.rect, shell, shell_damage),
                 part("notes-sidebar", self.rect, page_tree, sidebar_damage),
-                part("notes-status", self.rect, status, status_damage),
-                // Toasts report no damage of their own: a change repaints
-                // the app.
-                part("notes-toasts", self.rect, toasts, Vec::new()),
             ],
         ))
     }
 
-    /// A press on the failed save's toast: "Try again" asks the host to
-    /// submit the note again, the close button dismisses it. Returns whether
-    /// the press was the toast's.
-    fn handle_save_status_press(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
-        let WindowEvent::MouseInput {
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-            ..
-        } = event
-        else {
-            return false;
-        };
-        if !self.save_surface.contains(self.last_mouse) {
-            return false;
-        }
-        if self.save_surface.click(self.last_mouse) == Some(ui::SaveAction::Retry) {
-            self.save_retry = true;
-        }
-        self.self_dirty = true;
-        *handled = true;
-        true
+    /// Whether a popup of the window is open: one of the shell's, the page
+    /// tree's menu, or the editor's.
+    fn popup_open(&self) -> bool {
+        self.sidebar.menu_is_open()
+            || self.main.has_editor_popup()
+            || Widget::modal_capture(&self.shell).is_some()
+            || Widget::modal_capture(&self.main).is_some()
+            || Widget::modal_capture(self.sidebar.tree()).is_some()
     }
 
     /// Resolve a page's breadcrumb path by walking parent pointers.
@@ -1058,6 +1034,49 @@ impl NotesApp {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The reactions to the selected note, as its header shows them: every
+    /// reaction it has, and an add button while the person may react and
+    /// someone else shares the notebook (alone, nobody would see one).
+    fn selected_reactions(&self) -> Option<crate::main_panel::NoteReactions> {
+        let page = self.workspace.selected()?;
+        let notebook = self.live.as_ref()?.get();
+        let reactions = &notebook
+            .pages
+            .get(&crate::notebook::page_id(page))?
+            .reactions;
+        let dispatcher = self.dispatcher.as_ref()?;
+        let me = dispatcher.me();
+        let people = self.people.as_ref();
+        // Each reactor under the name the notebook's people know them by,
+        // for the pills' tooltips.
+        let groups: Vec<ui::tilo_resource::ReactionGroup> = reactions
+            .groups()
+            .into_iter()
+            .map(|mut group| {
+                for reactor in &mut group.reactors {
+                    if reactor.name.is_none()
+                        && let Some(people) = people
+                    {
+                        reactor.name = Some(people.name(&reactor.by));
+                    }
+                }
+                group
+            })
+            .collect();
+        let can_react = me.is_some()
+            && !dispatcher.is_past()
+            && dispatcher.may(&tilo_actions::ActionNeed::reactions());
+        // Shared with whoever belongs to the notebook's room, here now or not.
+        let shared = people.is_some_and(|people| dispatcher.is_shared(people));
+        let offered = can_react && (shared || !groups.is_empty());
+        (offered || !groups.is_empty()).then(|| crate::main_panel::NoteReactions {
+            page,
+            groups,
+            me: me.unwrap_or_default().to_owned(),
+            can_react: offered,
+        })
     }
 
     /// Present only the selected page's incoming-link row. The complete index
@@ -1176,7 +1195,7 @@ impl NotesApp {
                     self.bound_page = None;
                     self.self_dirty = true;
                 }
-                Err(error) => self.transfer_toasts.push(
+                Err(error) => self.notify(
                     ui::i18n::I18nManager::format(
                         "notes-image-paste-failed",
                         &[("error", ui::i18n::ArgValue::from(error))],
@@ -1201,7 +1220,7 @@ impl NotesApp {
             }
             Err(error) => {
                 tracing::warn!(%error, "notes: image not inserted");
-                self.transfer_toasts.push(
+                self.notify(
                     ui::i18n::I18nManager::format(
                         "notes-image-import-failed",
                         &[("error", ui::i18n::ArgValue::from(error))],
@@ -1295,15 +1314,24 @@ impl NotesApp {
         match &self.delete_undo {
             DeleteUndo::Offered => self.delete_undo = DeleteUndo::Seen(key),
             DeleteUndo::Seen(seen) if *seen != key => {
-                self.transfer_toasts.dismiss_actionable();
+                self.shell.dismiss_toast();
                 self.delete_undo = DeleteUndo::None;
             }
             _ => {}
         }
     }
 
+    /// Say `text` in the window's bar. It replaces a deletion's Undo, so
+    /// that Undo is no longer offered.
+    fn notify(&mut self, text: impl Into<String>, kind: ui::widget::toast::ToastKind) {
+        self.shell.toast(text, kind);
+        self.delete_undo = DeleteUndo::None;
+    }
+
+    /// The deletion's Undo was chosen in the window's bar: undo it as
+    /// Ctrl+Z does.
     fn take_toast_undo(&mut self) {
-        if self.transfer_toasts.take_activated().is_some()
+        if self.shell.take_toast_action().is_some()
             && std::mem::take(&mut self.delete_undo) != DeleteUndo::None
         {
             self.undo_requested = true;
@@ -1335,7 +1363,7 @@ impl NotesApp {
                     .replace([']', '[', '(', ')'], " ");
                 self.insert_image_bytes(&mut ctx.edits(), alt.trim(), bytes);
             }
-            Err(error) => self.transfer_toasts.push(
+            Err(error) => self.notify(
                 ui::i18n::I18nManager::format(
                     "notes-image-import-failed",
                     &[("error", ui::i18n::ArgValue::from(error))],
@@ -1355,6 +1383,9 @@ impl NotesApp {
         }
         while let Some(url) = self.main.take_external_link_open() {
             self.request(&NotesEffect::OpenLink { url });
+        }
+        while let Some(href) = self.main.take_resource_link_open() {
+            self.request(&NotesEffect::OpenResource { href });
         }
     }
 
@@ -1396,7 +1427,11 @@ impl NotesApp {
         if self.workspace.selected().is_none()
             && let Some(first) = self.workspace.children_of(None).first().map(|p| p.id)
         {
+            // The window opens on its first note: the page tree marks it, as
+            // it marks every note the window moves to. A presented window
+            // takes no projection for this, so nothing else would.
             self.workspace.set_selected(Some(first));
+            self.sidebar.sync_from_workspace(&self.workspace);
         }
         let Some(sel) = self.workspace.selected() else {
             if self.main.page_id().is_some() {
@@ -1593,7 +1628,7 @@ impl NotesApp {
             Some("save_error") => {
                 self.set_save_status_for_shots(SaveStatus::Failed, ui::time::Duration::ZERO);
             }
-            Some("import_success") => self.transfer_toasts.push(
+            Some("import_success") => self.notify(
                 "Imported Project brief",
                 ui::widget::toast::ToastKind::Success,
             ),
@@ -1652,6 +1687,16 @@ impl NotesApp {
         }
         ui::tilo_resource::profiling::measure("link_pages", || self.refresh_link_pages());
         self.self_dirty = true;
+    }
+
+    /// Wake the window through `wake` when the notebook's pictures are read.
+    pub(crate) fn wake_asset_reads_through(&mut self, wake: ui::WakeHandle) {
+        self.asset_reads.wake_through(wake);
+    }
+
+    /// Name the participants through `people` from now on.
+    pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
+        self.people = Some(people);
     }
 
     /// Attach the framework dispatcher when hosted as a surface.
@@ -1886,11 +1931,11 @@ impl NotesApp {
                 let notice = self.deletion_notice(id);
                 self.dispatch(edits, &actions::delete_page_action(id))?;
                 // A note goes with everything inside it, so the deletion
-                // says so and can be taken back at once.
-                self.transfer_toasts.dismiss_actionable();
-                self.transfer_toasts.push_with_action(
+                // says so and can be taken back at once, in the window's bar.
+                self.shell.toast_with_action(
                     notice,
                     ui::widget::toast::ToastKind::Info,
+                    "undo-2",
                     ui::i18n!("notes-undo"),
                 );
                 self.delete_undo = DeleteUndo::Offered;
@@ -2066,54 +2111,6 @@ impl NotesApp {
     /// change through the one page-tree action route. Kept callable from sync
     /// because semantic actions target `MainPanel` directly and naturally
     /// request a subsequent sync rather than travelling through `handle_event`.
-    /// Keep the image snapshot in step with the notebook's asset references,
-    /// and pick up referenced bytes that arrive from a collaborator's device
-    /// after the reference did. Their arrival syncs the window and moves the
-    /// record content's arrival count; nothing looks for them on a timer.
-    fn refresh_canonical_assets(&mut self) {
-        let manifest = self.workspace.images.clone();
-        let looked = ui::collaboration::record_content::arrivals();
-        let retry = self
-            .canonical_assets_waiting
-            .is_some_and(|seen| seen != looked);
-        if manifest == self.canonical_asset_manifest && !retry {
-            return;
-        }
-        let content = crate::notebook::content();
-        let snapshot = crate::notebook::image_snapshot(&manifest, |digest| content.read(digest));
-        let arrived = self
-            .canonical_assets
-            .read()
-            .is_ok_and(|assets| snapshot.keys().any(|key| !assets.contains_key(key)));
-        let mut waiting = true;
-        if let Ok(mut assets) = self.canonical_assets.write() {
-            // Bytes this window put in itself (a paste) stay while the
-            // notebook still names them, even where the store would not
-            // serve them back.
-            assets.retain(|key, _| {
-                key.strip_prefix("asset:")
-                    .is_some_and(|digest| manifest.contains_key(digest))
-            });
-            assets.extend(snapshot);
-            waiting = manifest
-                .keys()
-                .any(|digest| !assets.contains_key(&format!("asset:{digest}")));
-        }
-        self.canonical_asset_manifest = manifest;
-        self.canonical_assets_waiting = waiting.then_some(looked);
-        if arrived {
-            // The image store remembers a failed load, and an image block is
-            // laid out (and asked for) in the frame it appears, before its
-            // bytes were in the snapshot: forget the failures so the images
-            // that were placeholders are fetched again.
-            if let Some(store) = self.main.image_store()
-                && store.forget_failed()
-            {
-                self.self_dirty = true;
-            }
-        }
-    }
-
     fn drain_title_rename(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(new_title) = self.main.take_title_rename() else {
             return;
@@ -2391,11 +2388,12 @@ impl NotesApp {
     }
 
     /// Test hook: whether the picture `source` (`asset:<digest>`) has
-    /// decoded in the notebook's image store, once its loads settle.
+    /// decoded in the notebook's image store, once its loads settle (or
+    /// `bound` runs out).
     #[doc(hidden)]
-    pub fn image_decoded_for_test(&self, source: &str) -> bool {
+    pub fn image_decoded_for_test(&self, source: &str, bound: ui::time::Duration) -> bool {
         self.main.image_store().is_some_and(|store| {
-            store.block_until_idle(ui::time::Duration::from_secs(2));
+            store.block_until_idle(bound);
             store.get(source).is_some()
         })
     }
@@ -2587,9 +2585,6 @@ impl ui::application_view::ApplicationViewState for NotesApp {
     }
 }
 
-/// The action target prefix of the save status surface's buttons.
-const SAVE_STATUS_TARGET: &str = "notes.save-status";
-
 impl NotesApp {
     fn finish_block_reveal(&mut self) {
         if self
@@ -2650,6 +2645,22 @@ impl ui::undo::UndoControl for NotesApp {
     }
 }
 
+/// Follow the open note's headings, and reveal the one the outline chose.
+fn refresh_outline(app: &mut NotesApp) {
+    app.outline.follow(&app.main);
+    if let Some(block) = app.outline.take_chosen()
+        && let Some(index) = app
+            .main
+            .editor()
+            .blocks()
+            .iter()
+            .position(|current| current.id == block)
+        && app.main.reveal_block(index)
+    {
+        app.self_dirty = true;
+    }
+}
+
 impl Widget for NotesApp {
     ui::provides!(
         dyn ui::resources::PublishesResources,
@@ -2683,16 +2694,18 @@ impl Widget for NotesApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        // A scheduled sync only presents when update reports a change. Mark
-        // the expired chip dirty so reduced motion still removes it; paint
-        // consumes its deadline, leaving an idle window asleep afterward.
-        let feedback_expired = self
-            .save_surface
-            .next_wake_deadline()
-            .is_some_and(|deadline| deadline <= ui::time::now());
-        self.self_dirty |= feedback_expired;
+        // A scheduled sync only runs when update reports a change: the save's
+        // notice leaving the window's bar, or its next stage, is one. The
+        // sync takes up the deadline, leaving an idle window asleep after.
+        let feedback_expired = self.save_surface.needs_publish()
+            || self
+                .save_surface
+                .next_wake_deadline()
+                .is_some_and(|deadline| deadline <= ui::time::now());
         // A dragged block's pointer at the page's edge scrolls the page.
         let dragged = self.main.autoscroll_block_drag();
+        // A lifted touchpad gesture glides the page on; only the view moves.
+        self.main.advance_glide();
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
@@ -2710,13 +2723,14 @@ impl Widget for NotesApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.link_copy.failed() {
-            self.transfer_toasts.push(
+            self.notify(
                 ui::i18n!("notes-copy-link-failed"),
                 ui::widget::toast::ToastKind::Error,
             );
         }
         let _profile = ui::tilo_resource::profiling::Phase::start("surface_sync");
         self.shell.sync(state, path);
+        self.take_toast_undo();
         // The window's bar shows the note's slots and runs what the person
         // did with them through the same header requests.
         if self.sync_window_toolbar() {
@@ -2733,6 +2747,14 @@ impl Widget for NotesApp {
         // A save that gave up is raised as a notification only if no frame
         // paints this note: the person could lose work they cannot see.
         self.deliver_save_notice(ui::time::now());
+        // "Try again" beside the save's notice in the window's bar submits
+        // the note again; the notice says the save in the bar.
+        if self.save_surface.take_bar_action() == Some(ui::SaveAction::Retry) {
+            self.save_retry = true;
+            self.self_dirty = true;
+        }
+        self.save_surface.advance(ui::time::now());
+        self.save_surface.publish();
         self.refresh_canonical_assets();
         let requested = std::mem::take(&mut self.opened.borrow_mut().requests);
         for page in requested {
@@ -2800,6 +2822,7 @@ impl Widget for NotesApp {
         self.drain_tag_open();
         self.drain_backlink_open();
         self.main.set_tags(self.selected_tag_chips());
+        self.main.set_reactions(self.selected_reactions());
         self.refresh_transclusion_previews();
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
@@ -2807,6 +2830,7 @@ impl Widget for NotesApp {
         self.refresh_search_blocks();
         self.main.set_backlinks(self.selected_backlink_chips());
         self.finish_block_reveal();
+        refresh_outline(self);
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -2824,7 +2848,12 @@ impl Widget for NotesApp {
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
         let main = self.main.take_structure_change();
         let shell = self.shell.take_structure_change();
-        main.join(shell)
+        let outline = if self.outline.take_structure_dirty() {
+            ui::widget::StructureChange::Rebuild
+        } else {
+            ui::widget::StructureChange::None
+        };
+        main.join(shell).join(outline)
     }
 
     fn build_layout(
@@ -2848,10 +2877,49 @@ impl Widget for NotesApp {
             Self::fill_slot(taffy, slot, node);
             node
         });
-        self.sidebar_node = self.columns.sidebar.node().map(|slot| {
-            let node = self.sidebar.build_layout(taffy, theme, node_map);
-            Self::fill_slot(taffy, slot, node);
-            node
+        self.sidebar_node = None;
+        self.outline_node = None;
+        self.sidebar_column_node = self.columns.sidebar.node().map(|slot| {
+            let tree = self.sidebar.build_layout(taffy, theme, node_map);
+            if let Ok(existing) = taffy.style(tree).cloned() {
+                let _ = taffy.set_style(
+                    tree,
+                    Style {
+                        size: Size {
+                            width: Dimension::percent(1.0),
+                            height: Dimension::auto(),
+                        },
+                        flex_grow: 1.0,
+                        flex_basis: taffy::style_helpers::length(0.0_f32),
+                        flex_shrink: 1.0,
+                        ..existing
+                    },
+                );
+            }
+            self.sidebar_node = Some(tree);
+            let mut children = vec![tree];
+            if self.outline.is_shown() {
+                let outline = self.outline.build_layout(taffy, theme, node_map);
+                self.outline_node = Some(outline);
+                children.push(outline);
+            }
+            #[allow(
+                clippy::unwrap_used,
+                reason = "inserting a fresh column under the slot the shell made is infallible unless the taffy arena is already corrupted"
+            )]
+            let column = taffy
+                .new_with_children(
+                    Style {
+                        display: taffy::Display::Flex,
+                        flex_direction: taffy::FlexDirection::Column,
+                        size: Size::from_percent(1.0, 1.0),
+                        ..Default::default()
+                    },
+                    &children,
+                )
+                .unwrap();
+            Self::fill_slot(taffy, slot, column);
+            column
         });
 
         let style = Style {
@@ -2885,17 +2953,18 @@ impl Widget for NotesApp {
             }
         }
         if let Some(n) = self.main_node {
-            self.main.set_bottom_inset(
-                ui::status_bubble::pill_height(&self.theme)
-                    + f64::from(self.theme.tokens.spacing.s4)
-                    + f64::from(self.theme.tokens.spacing.rhythm.group),
-            );
+            // One gutter under the last line at the window's foot.
+            self.main
+                .set_bottom_inset(f64::from(self.theme.tokens.spacing.rhythm.group));
             self.main
                 .apply_layout(taffy, n, self.columns.content.rect().origin());
         }
+        let sidebar_origin = self.columns.sidebar.rect().origin();
+        if let Some(n) = self.outline_node {
+            self.outline.apply_layout(taffy, n, sidebar_origin);
+        }
         if let Some(n) = self.sidebar_node {
-            self.sidebar
-                .apply_layout(taffy, n, self.columns.sidebar.rect().origin());
+            self.sidebar.apply_layout(taffy, n, sidebar_origin);
         }
         self.note_menu.set_viewport(Some(self.rect));
     }
@@ -2938,64 +3007,31 @@ impl Widget for NotesApp {
             // that reaches past its column.
             self.sidebar
                 .draw(scene, transform, text_renderer, &sidebar_theme, presence);
+            if self.outline_node.is_some() {
+                self.outline
+                    .draw(scene, transform, text_renderer, &sidebar_theme, presence);
+            }
         }
         let sidebar_scene = std::mem::take(scene);
-        // Transient floating status bubble (bottom-right).
-        self.status_painted = self.draw_status_bubble(scene, transform, text_renderer, theme);
-        let status_scene = std::mem::take(scene);
-        // Toasts stand above the status bubble's corner.
-        let gutter = f64::from(theme.tokens.spacing.s4);
-        let lift = ui::status_bubble::pill_height(theme) + gutter;
-        let toast_area = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            (self.rect.y1 - lift).max(self.rect.y0),
-        );
-        self.transfer_toasts.place_bottom_right(toast_area, gutter);
-        self.transfer_toasts
-            .draw(scene, transform, text_renderer, theme, presence);
-        let toasts_scene = std::mem::take(scene);
+        // The window drew: a save that gave up is said in its bar, not
+        // raised as a notification.
+        self.save_surface.seen();
         self.main_scroll_copy = self.main.scroll_copy();
-        self.status_over_main = [self.status_drawn, self.status_painted]
-            .into_iter()
-            .flatten()
-            .map(|rect| {
-                ui::widget::floating_surface::painted_bounds(rect, theme)
-                    .intersect(self.main.get_rect())
-            })
-            .filter(|rect| !rect.is_zero_area())
-            .collect();
         let frame = self.paint_frame(
             transform,
             theme,
-            [
-                &main_scene,
-                &shell_scene,
-                &sidebar_scene,
-                &status_scene,
-                &toasts_scene,
-            ],
+            [&main_scene, &shell_scene, &sidebar_scene],
         );
         self.paint_damage.record(self.rect, frame);
         *scene = incoming;
-        for part in [
-            &main_scene,
-            &shell_scene,
-            &sidebar_scene,
-            &status_scene,
-            &toasts_scene,
-        ] {
+        for part in [&main_scene, &shell_scene, &sidebar_scene] {
             scene.append(part, None);
         }
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming only while the floating status bubble is lingering
-        // / fading, so it hides itself without needing a stray pointer event.
-        // Idle otherwise (no idle redraw spin).
-        (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
-            || self.main.block_drag_scrolling()
+        self.main.block_drag_scrolling()
+            || self.main.gliding()
             || self.main.editor().drag_handles_fading()
             || self.shell.needs_animation_frame()
     }
@@ -3037,21 +3073,22 @@ impl Widget for NotesApp {
         if self.handle_help_key(event, ctx) {
             return;
         }
-        if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
-            return;
-        }
         if self.handle_new_note_shortcut(event, ctx) {
             return;
         }
         if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.handled) {
             return;
         }
-        if self.handle_save_status_press(event, ctx.handled) {
-            return;
-        }
-        self.transfer_toasts.handle_event(event, ctx);
-        self.take_toast_undo();
-        if *ctx.handled {
+        // An open popup (a dropdown's list, a menu, the editor's block
+        // menu) takes the pointer even where something earlier handled it.
+        let popup_holds_pointer = self.popup_open()
+            && matches!(
+                event,
+                WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::Touch(_)
+            );
+        if !popup_holds_pointer && *ctx.handled {
             return;
         }
         if self.handle_shell(event, ctx) {
@@ -3095,13 +3132,8 @@ impl Widget for NotesApp {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
-        match self.save_surface.perform(SAVE_STATUS_TARGET, target) {
-            Some(ui::SaveAction::Retry) => self.save_retry = true,
-            Some(ui::SaveAction::Dismiss) => {}
-            None => return false,
-        }
-        self.self_dirty = true;
-        true
+        let _ = target;
+        false
     }
 
     fn get_rect(&self) -> Rect {
@@ -3110,7 +3142,7 @@ impl Widget for NotesApp {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
-        let mut children = vec![
+        let children = vec![
             AccessNode::new(Role::StaticText)
                 .with_name(self.status.save_text())
                 .with_description(if self.status.needs_attention() {
@@ -3119,11 +3151,10 @@ impl Widget for NotesApp {
                     self.status.right_text()
                 })
                 // Readable on request, never announced: autosave is silent.
-                // The save surface announces a failure and the save that
-                // ends it, as it shows them.
+                // The window's bar announces a failure and the save that
+                // ends it, as it says them.
                 .with_hashed_key("notes.save-status"),
         ];
-        children.extend(self.save_surface.accessibility(SAVE_STATUS_TARGET));
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Notes")
@@ -3138,6 +3169,9 @@ impl Widget for NotesApp {
             children.push(&self.shell);
         }
         if self.sidebar_shown() {
+            if self.outline_node.is_some() {
+                children.push(&self.outline);
+            }
             children.push(self.sidebar.tree());
         }
         if self.note_menu.is_open() {
@@ -3145,7 +3179,6 @@ impl Widget for NotesApp {
         }
         children.push(&self.main);
         children.push(&self.shortcuts);
-        children.push(&self.transfer_toasts);
         children
     }
 
@@ -3156,6 +3189,9 @@ impl Widget for NotesApp {
             children.push(&mut self.shell);
         }
         if show_sidebar {
+            if self.outline_node.is_some() {
+                children.push(&mut self.outline);
+            }
             children.push(self.sidebar.tree_mut());
         }
         if self.note_menu.is_open() {
@@ -3163,7 +3199,6 @@ impl Widget for NotesApp {
         }
         children.push(&mut self.main);
         children.push(&mut self.shortcuts);
-        children.push(&mut self.transfer_toasts);
         children
     }
 
@@ -3175,6 +3210,7 @@ impl Widget for NotesApp {
         self.self_dirty
             || self.shell.needs_redraw()
             || self.sidebar.needs_redraw()
+            || self.outline.needs_redraw()
             || self.main.needs_redraw()
             || self.shortcuts.needs_redraw()
     }
@@ -3182,14 +3218,10 @@ impl Widget for NotesApp {
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // The note's scroll, copied by a host that keeps its last frame; a
         // host that does not copy repaints the body.
-        if let Some(copy) = &self.main_scroll_copy {
-            if copy.offer(&self.main) {
-                // The save status floats over the note: it is repainted
-                // over what moved under it, and where the copy took it.
-                regions.extend(self.status_over_main.iter().copied());
-            } else {
-                regions.push(copy.body());
-            }
+        if let Some(copy) = &self.main_scroll_copy
+            && !copy.offer(&self.main)
+        {
+            regions.push(copy.body());
         }
         if self.needs_redraw() || self.paint_damage.is_recorded() {
             self.paint_damage.collect(self.rect, regions);
@@ -3204,14 +3236,12 @@ impl Widget for NotesApp {
     }
 
     fn mark_drawn(&mut self) {
-        if self.paint_damage.is_recorded() {
-            self.status_drawn = self.status_painted;
-        }
         self.paint_damage.mark_drawn();
         self.main_scroll_copy = None;
         self.self_dirty = false;
         self.shell.mark_drawn();
         self.sidebar.mark_drawn();
+        self.outline.mark_drawn();
         self.main.mark_drawn();
         self.shortcuts.mark_drawn();
     }
@@ -3346,39 +3376,6 @@ impl NotesApp {
         true
     }
 
-    /// Window-level Find always targets the current note body. The searchable
-    /// editor and overlay live in `ui::BlockEditor`; Notes only routes the
-    /// conventional command when a sibling such as the title owns focus.
-    fn handle_find_shortcut(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-        focus_target: &mut Option<NodeId>,
-        handled: &mut bool,
-    ) -> bool {
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key: Key::Character(key),
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let mods = modifiers.state();
-        if !(mods.control_key() || mods.super_key()) || !key.eq_ignore_ascii_case("f") {
-            return false;
-        }
-        if !self.main.open_find(focus_target) {
-            return false;
-        }
-        *handled = true;
-        true
-    }
-
     /// Ctrl+N makes a new top-level note, the same as the header's new-note
     /// button; Ctrl+Shift+N makes one inside the selected note. Taking the
     /// selection as the parent for the plain chord nested every quick note
@@ -3432,6 +3429,9 @@ impl NotesApp {
     /// as well as after input.
     fn drain_header_requests(&mut self) {
         if self.header.new_note.take() {
+            // As Ctrl+N does: the new note opens with its title taking the
+            // keyboard, so the name comes first.
+            self.name_next_created = true;
             self.pending_events
                 .push(OutEvent::CreateChild { parent: None });
             self.self_dirty = true;
@@ -3512,6 +3512,11 @@ impl NotesApp {
             ui::widget::block_editor::LinkTarget::Page(id) => id,
             ui::widget::block_editor::LinkTarget::External(url) => {
                 self.request(&NotesEffect::OpenLink { url });
+                *handled = true;
+                return true;
+            }
+            ui::widget::block_editor::LinkTarget::Resource(href) => {
+                self.request(&NotesEffect::OpenResource { href });
                 *handled = true;
                 return true;
             }
@@ -3759,18 +3764,7 @@ impl NotesApp {
         // Update the last-mouse cache so the next MouseInput knows
         // where to hit-test for link clicks.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let logical = ctx.logical(position);
-            self.last_mouse = logical;
-            // Resting on the bubble's corner pins it open; over a failed
-            // save's toast its actions lift.
-            let (area, theme) = (self.rect, &self.theme);
-            ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-                self.save_surface
-                    .hover_bubble(area, logical, text, theme, ui::time::now())
-            });
-            if self.save_surface.pointer_moved(logical) {
-                self.self_dirty = true;
-            }
+            self.last_mouse = ctx.logical(position);
         }
         // Status bar refresh runs at the tail of every event so word
         // count + save indicator stay current. Cheap — the StatusBar
@@ -3814,6 +3808,7 @@ impl NotesApp {
 
 #[cfg(test)]
 mod tests {
+    mod agent_content;
     mod search_refresh;
     use super::*;
     use tempfile::TempDir;
@@ -3830,34 +3825,6 @@ mod tests {
             .ids()
             .filter_map(crate::notebook::page_of)
             .collect()
-    }
-
-    #[test]
-    fn capture_draw_preserves_import_notification_at_expiry_boundary() {
-        ui::clock::freeze_for_capture();
-        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
-        // A zero remaining lifetime deterministically exercises the expiry
-        // boundary without making CI speed or a real-time sleep the oracle.
-        app.transfer_toasts =
-            ui::widget::toast::ToastStack::new().with_default_ttl(ui::time::Duration::ZERO);
-        app.transfer_toasts.push(
-            "Imported Project brief",
-            ui::widget::toast::ToastKind::Success,
-        );
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        app.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::default(),
-            &PresenceCtx::empty(),
-        );
-        let node = app
-            .transfer_toasts
-            .accessibility()
-            .expect("the captured import notification remains announced");
-        assert_eq!(node.name.as_deref(), Some("Notifications"));
-        assert_eq!(node.value.as_deref(), Some("Imported Project brief"));
     }
 
     #[test]
@@ -3926,34 +3893,21 @@ mod tests {
         assert!(app.transclusion_previews().is_empty());
     }
 
+    /// An import's result is the window bar's notice, and a capture keeps
+    /// it up however long the frame takes.
     #[test]
-    fn capture_draw_preserves_the_import_notification_lifetime() {
+    fn a_capture_keeps_the_import_notice_in_the_window_bar() {
         ui::clock::freeze_for_capture();
-        let (mut app, _state, _tmp, _) = app_seeded_into_doc();
-        app.transfer_toasts.push(
+        let (mut app, mut state, _tmp, _) = app_seeded_into_doc();
+        app.notify(
             "Imported Project brief",
             ui::widget::toast::ToastKind::Success,
         );
-        let lifetime = app.transfer_toasts.iter().next().unwrap().ttl_remaining();
-        app.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::default(),
-            &PresenceCtx::default(),
-        );
+        app.frame(&mut state.doc, &state.root);
+        app.frame(&mut state.doc, &state.root);
         assert_eq!(
-            app.transfer_toasts.iter().next().unwrap().ttl_remaining(),
-            lifetime,
-            "the real Notes draw must preserve a capture's transient notification"
-        );
-        assert_eq!(
-            app.transfer_toasts
-                .accessibility()
-                .unwrap()
-                .value
-                .as_deref(),
-            Some("Imported Project brief")
+            ui::window_toolbar::notice().map(|notice| notice.text),
+            Some("Imported Project brief".to_owned())
         );
     }
 
@@ -4254,12 +4208,11 @@ mod tests {
                 &mut Edits::lend(&mut state.doc),
                 OutEvent::Delete(welcome),
             );
+            // Undo takes a deleted note back, so it lands at once.
             assert!(
-                state.doc.get_changes(&before).is_empty(),
-                "deleting a note asks the person first"
+                !state.doc.get_changes(&before).is_empty(),
+                "deleting a note asks nothing"
             );
-            // The person confirms what the host asked.
-            app.land(&mut state.doc);
             let change = state.doc.get_changes(&before).into_iter().last().unwrap();
             let context =
                 tilo_actions::ActionContext::from_change_message(change.message().unwrap())
@@ -4309,11 +4262,17 @@ mod tests {
         }
     }
 
-    /// A retry must recover the actual record writer, not leave a latch for
-    /// the test to consume after the production owner already took it.
-    fn assert_real_save_retry(expected_target: &str) {
+    /// A save that fails holds its notice in the window's bar, "Try again"
+    /// beside it, for as long as the failure stands; "Try again" recovers
+    /// the actual record writer (not a latch the test consumes after the
+    /// production owner took it), and the save that succeeds takes the
+    /// failure down.
+    #[test]
+    fn a_failed_save_holds_its_notice_with_try_again_until_a_save_succeeds() {
         use ui::tilo_resource::Resource as _;
+        use ui::widget::toast::ToastKind;
 
+        ui::i18n::I18nManager::init("en-US");
         let profile = TempDir::new().unwrap();
         let mut host =
             ui::prelude::TestApp::<crate::NotesShell>::open_data_dir(profile.path()).unwrap();
@@ -4343,31 +4302,55 @@ mod tests {
         .unwrap();
         assert!(host.flush().is_err(), "the actual writer must fail");
         host.settle();
-        let hosted_retry = host
-            .surface::<NotesApp, _>(|notes| {
-                assert!(matches!(
-                    notes.record_save_status,
-                    ui::record::RecordSaveStatus::Failed(_)
-                ));
-                let failure = notes
-                    .accessibility()
-                    .unwrap()
-                    .children
-                    .into_iter()
-                    .find(|node| node.children.len() == 2)
-                    .expect("the actual writer failure offers retry");
-                failure.children[0]
-                    .action_target
-                    .clone()
-                    .expect("live retry target")
-            })
-            .unwrap();
-        assert_eq!(hosted_retry, expected_target);
+        host.surface::<NotesApp, _>(|notes| {
+            assert!(matches!(
+                notes.record_save_status,
+                ui::record::RecordSaveStatus::Failed(_)
+            ));
+        })
+        .unwrap();
+        let held = ui::window_toolbar::notice().expect("the failure is said in the window's bar");
+        assert_eq!(held.kind, ToastKind::Error);
+        assert!(held.text.starts_with("Save failed: "), "{held:?}");
+        let retry = held.actions.first().cloned().expect("Try again beside it");
+        assert_eq!(retry.name, "Try again");
+        // In the window's bar, wide and compact, Try again stands right
+        // after the failure, naming itself where the row has room, and never
+        // in the overflow menu; the failure is cut short only where nothing
+        // that yields to it stands beside it.
+        host.harness().present_in_window_bar();
+        for width in [1280.0, 420.0] {
+            let shown = host
+                .harness()
+                .window_bar_notice(width)
+                .expect("the failure is up in the bar");
+            let button = shown.buttons.first().expect("Try again stands in the row");
+            assert_eq!(button.name, "Try again");
+            assert!(
+                button.bounds.x0 > shown.text_bounds.x1,
+                "{width} px: {shown:?}"
+            );
+            // Wide, inline; compact, in a strip of its own under the row,
+            // its text whole.
+            assert_eq!(
+                shown.strip.is_some(),
+                width < 1280.0, // allow-breakpoint: the test asks the shared bar to choose its compact form
+                "{width} px: {shown:?}"
+            );
+            assert!(shown.whole && button.labelled, "{width} px: {shown:?}");
+        }
+        host.settle();
+        host.settle();
+        assert_eq!(
+            ui::window_toolbar::notice(),
+            Some(held),
+            "the failure stands until a save succeeds"
+        );
+
         std::fs::remove_file(&directory).unwrap();
         std::fs::rename(&backup, &directory).unwrap();
         host.harness()
-            .perform_named(&hosted_retry, &ui::a11y::Action::Activate)
-            .unwrap();
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: retry.id });
         host.settle();
         host.surface::<NotesApp, _>(|notes| {
             assert_eq!(
@@ -4380,6 +4363,12 @@ mod tests {
         })
         .unwrap();
         assert!(!host.take_save_retry().unwrap(), "no second retry remains");
+        let said = ui::window_toolbar::notice().expect("the save that ends it says so");
+        assert_eq!(
+            (said.text.as_str(), said.kind, said.actions.first()),
+            ("Saved", ToastKind::Success, None),
+            "the failure is down"
+        );
         let bytes = std::fs::read(directory.join("state.automerge")).unwrap();
         let persisted = automerge::AutoCommit::load(&bytes).unwrap();
         let notebook = crate::resource::Notebook::read(&persisted).unwrap();
@@ -4389,10 +4378,10 @@ mod tests {
         );
     }
 
-    /// A note whose save gives up says "Not saved" with "Try again" in its
-    /// bubble while it is painted, and raises nothing; one that nothing
-    /// paints raises a notification whose "Try again" submits the note
-    /// again.
+    /// A note whose save gives up says "Not saved" with "Try again" in the
+    /// window's bar while it is painted, and raises nothing; one that
+    /// nothing paints raises a notification whose "Try again" submits the
+    /// note again.
     #[test]
     fn a_save_that_gives_up_asks_in_place_in_view_and_notifies_out_of_sight() {
         ui::i18n::I18nManager::init("en-US");
@@ -4407,16 +4396,16 @@ mod tests {
 
         let in_view = std::sync::Arc::new(ui::notify::conformance::Recording::default());
         let (mut app, _state, _tmp) = staged(&in_view);
-        app.draw_status_bubble(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::default(),
-        )
-        .expect("the bubble is painted");
+        // The window draws a frame: the person sees it.
+        app.save_surface.seen();
         assert!(app.save_surface.gave_up());
-        assert_eq!(app.save_surface.bubble_text(), "Not saved");
-        assert!(app.save_surface.failure().is_none(), "no toast");
+        let notice = app.save_surface.notice().expect("said in the bar");
+        assert_eq!(notice.text, "Not saved");
+        assert_eq!(
+            notice.actions.first().map(|action| action.name.as_str()),
+            Some("Try again")
+        );
+        assert!(app.save_surface.failure().is_none(), "no failure reason");
         app.deliver_save_notice(later());
         assert!(in_view.shown().is_empty(), "in view, nothing is notified");
 
@@ -4459,42 +4448,26 @@ mod tests {
             for status in [SaveStatus::Saving, SaveStatus::Saved].repeat(3) {
                 app.shots_save_status = Some(status);
                 app.refresh_status();
-                assert!(
-                    !app.save_surface.is_visible(ui::time::now()),
-                    "autosave must not flash a bubble while typing"
+                assert_eq!(
+                    app.save_surface.notice(),
+                    None,
+                    "autosave must not say anything while typing"
                 );
             }
             assert_eq!(app.save_surface.state(), Some(&ui::SaveState::Saved));
 
             app.shots_save_status = Some(SaveStatus::Failed);
             app.refresh_status();
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            app.draw_status_bubble(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::default(),
-            );
             assert!(
                 app.save_surface.failure().is_some(),
                 "an unresolved save failure stays on the surface"
             );
-            assert!(
-                !app.save_surface.needs_frame(ui::time::now()),
-                "persistent status must not cause an idle redraw loop"
+            assert_eq!(
+                app.save_surface.next_wake_deadline(),
+                None,
+                "a held failure must not cause an idle wake loop"
             );
-            let node = app
-                .accessibility()
-                .unwrap()
-                .children
-                .into_iter()
-                .find(|node| node.children.len() == 2)
-                .expect("the failure is announced with its actions");
-            let retry = node.children[0]
-                .action_target
-                .clone()
-                .expect("Try again is a target");
-            assert_real_save_retry(&retry);
+            assert!(!app.needs_animation_frame(), "nor an idle redraw loop");
 
             app.shots_save_status = Some(SaveStatus::Saved);
             app.refresh_status();
@@ -4505,21 +4478,17 @@ mod tests {
             );
         }
 
-        eprintln!("phase reduced_motion_stops_notes_owned_status_bubble_frames");
+        eprintln!("phase a_passing_save_notice_wakes_once_to_leave");
         {
             let (mut app, state, _tmp, _) = app_seeded_into_doc();
-            app.theme.reduce_motion = false;
             app.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_STALL);
-            assert!(app.needs_animation_frame(), "normal fade requests frames");
-
-            app.theme.reduce_motion = true;
             assert!(
                 !app.needs_animation_frame(),
-                "reduced motion must not keep the compositor awake for a decorative fade"
+                "the bar's notice takes no frames of its own"
             );
             assert!(
                 app.next_wake_deadline().is_some(),
-                "the reduced-motion chip must still schedule its removal"
+                "a passing Saved schedules its removal"
             );
             assert!(
                 app.has_transient_feedback(),
@@ -4530,6 +4499,32 @@ mod tests {
                 "captures can include save feedback without waiting out its lifetime"
             );
             assert_expired_save_feedback_presents(&mut app, &state);
+        }
+
+        eprintln!("phase words_are_counted_once_per_change_of_the_note");
+        {
+            let (mut app, _state, _tmp, _welcome) = app_seeded_into_doc();
+            app.shots_save_status = Some(SaveStatus::Saved);
+            app.refresh_status();
+            let boards = app.main.word_count();
+            assert!(boards > 0, "the seeded note has words");
+            let counted = app.word_count.expect("the count was taken");
+            assert_eq!(counted.1, boards);
+            // A status refresh that saw no change reuses what it counted.
+            for _ in 0..3 {
+                app.refresh_status();
+                assert_eq!(app.word_count, Some(counted), "no recount without a change");
+                assert_eq!(app.status.state().word_count, Some(boards));
+            }
+            // An edit of the note is recounted.
+            app.main
+                .editor_mut()
+                .set_blocks(vec![ui::widget::Block::paragraph("One two three")]);
+            app.refresh_status();
+            assert_eq!(app.status.state().word_count, Some(3));
+            let edited = app.word_count.expect("the edited count was taken");
+            assert_eq!(edited.1, 3, "the live count, not one left behind");
+            assert_ne!(edited.0, counted.0, "the revision moved with the edit");
         }
 
         eprintln!("phase an_unchanged_notebook_skips_search_index_work");
@@ -4543,32 +4538,35 @@ mod tests {
     }
 
     fn assert_expired_save_feedback_presents(app: &mut NotesApp, state: &ui::State) {
+        // The notice's lifetime runs on the window's clock: Saved landed a
+        // notice's lifetime and a second ago.
         let landed = ui::time::now()
-            .checked_sub(ui::time::Duration::from_secs(3))
-            .expect("the test clock can age the transient chip");
+            .checked_sub(ui::widget::toast::NOTICE_LIFETIME + ui::time::Duration::from_secs(1))
+            .expect("the test clock can age the notice");
         let began = landed
             .checked_sub(ui::SAVE_STALL)
             .expect("the test clock can age the save");
         app.save_surface = ui::SaveStatusSurface::new();
-        app.save_surface.set(ui::SaveState::Saving, began);
-        app.save_surface.advance(landed);
-        app.save_surface.set(ui::SaveState::Saved, landed);
+        ui::time::testing::with_monotonic_time(landed, || {
+            app.save_surface.set(ui::SaveState::Saving, began);
+            app.save_surface.advance(landed);
+            app.save_surface.set(ui::SaveState::Saved, landed);
+            app.save_surface.publish();
+        });
         app.mark_drawn();
         assert!(!app.self_dirty);
         assert!(
             app.update(&state.doc, &state.root),
-            "deadline sync must request the chip-removal frame"
-        );
-        assert!(app.self_dirty, "the native host must present the change");
-        app.draw_status_bubble(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::default(),
+            "the deadline's sync must run to take the notice down"
         );
         assert!(
+            !app.self_dirty,
+            "the window's bar takes it down; the note does not repaint"
+        );
+        app.sync(&state.doc, &state.root);
+        assert!(
             app.save_surface.next_wake_deadline().is_none(),
-            "painting the removal consumes the one-shot wake"
+            "the sync that takes it down consumes the one-shot wake"
         );
     }
 

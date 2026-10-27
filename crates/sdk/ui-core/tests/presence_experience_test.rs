@@ -79,7 +79,6 @@ fn room_arrivals_status_and_follow_reach_the_right_surface() {
 
         assert!(a.followed_peer().is_none(), "not following anyone yet");
 
-        // Click well inside the right-edge band.
         let hit = a.try_follow_click(viewport, Point::new(98.0, 50.0));
         assert!(hit, "clicking the mist band should select the peer");
         assert_eq!(a.followed_peer(), Some("bob"));

@@ -24,7 +24,10 @@ durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-automerge.workspace = true
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
-tilo-model-gateway = { default-features = false, version = "0.1.0", path = "../../agent/model-gateway" }
+tilo-model-client = { default-features = false, version = "0.1.0", path = "../../agent/model-client" }
+# The provider administration interface the page's deferred client implements.
+agent-provider-config = { version = "0.1.0", path = "../../agent/provider-config" }
+zeroize.workspace = true
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", default-features = false }
@@ -42,6 +45,8 @@ tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 tilo-desktop = { version = "0.1.0", path = "../../session/desktop" }
 serde.workspace = true
 serde_json.workspace = true
+# Warnings and errors reach the console (src/console_log.rs).
+tracing.workspace = true
 vello.workspace = true
 wgpu.workspace = true
 winit.workspace = true
@@ -49,7 +54,12 @@ web-time = "1"
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 js-sys = "=0.3.85"
-web-sys = { version = "=0.3.85", features = ["HtmlCanvasElement", "console"] }
+web-sys = { version = "=0.3.85", features = [
+    "HtmlCanvasElement",
+    "HtmlMediaElement",
+    "HtmlVideoElement",
+    "console",
+] }
 # The certified peer over HTTPS (no iroh in the bundle), its live codec and
 # the toolkit transport.
 tilo-browser-peer = { version = "0.1.0", path = "../tilo-browser-peer", default-features = false, features = ["toolkit"] }
@@ -59,6 +69,7 @@ tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-prot
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 hex.workspace = true
+uuid.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 tokio = { workspace = true, features = ["sync"] }
 
@@ -71,8 +82,25 @@ default = []
 # `defer_activity_pane`, which the browser desktop fetches as its own module
 # the first time someone opens Activity. Without it the pane is linked in.
 deferred-activity = []
+# The bundling crate supplies the model service's clients through
+# `defer_model_clients`, which the browser desktop fetches as their own module
+# the first time a window asks a model or opens provider settings. Without it
+# they are linked in.
+deferred-model-clients = []
+# The bundling crate registers the Feedback composer as an application
+# fetched the first time it opens, and hands its code over through
+# `install_feedback_composer`. Without it the composer is linked in.
+deferred-feedback-composer = []
+# The bundling crate supplies the pinned people overlay's code through
+# `defer_people_overlay`, which the browser desktop fetches as its own module
+# the first time someone pins who is here. Without it the overlay is linked
+# in.
+deferred-people-overlay = []
 
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

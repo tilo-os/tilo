@@ -37,6 +37,8 @@ runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 tilo-environment = { path = "../../crates/runtime/environment" }
 libc.workspace = true
 vte = "0.15.0"
+# The window bar's search can find a regular expression in the scrollback.
+regex.workspace = true
 tracing.workspace = true
 unicode-width = "0.2.2"
 unicode-segmentation = "1.12"

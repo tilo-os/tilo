@@ -3,7 +3,7 @@ name = "tilo-appearance"
 version = "0.1.0"
 edition = "2024"
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The desktop's appearance preferences on every target: light or dark, the accent colour, increased contrast and reduced motion."
@@ -24,6 +24,7 @@ zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 # A fake portal on a socket pair, served from a test runtime.
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
 zbus = { workspace = true, features = ["p2p", "tokio"] }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

@@ -71,7 +71,6 @@ pub(crate) struct LiveState {
     /// The staged image it describes; empty when nothing is staged.
     #[serde(default)]
     pub(crate) image: String,
-    /// Part of the update waits for a desktop restart.
     #[serde(default)]
     pub(crate) desktop_pending: bool,
     /// Part of the update waits for a restart of the machine.
@@ -409,7 +408,6 @@ fn after_urgent_update() {
 mod tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn a_staged_update_asks_for_a_restart_at_most_every_two_days() {
         let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
@@ -425,7 +423,6 @@ mod tests {
         assert!(!due(false, Some(start), hours(100)));
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn only_what_a_live_update_cannot_apply_asks_for_a_restart_of_the_machine() {
         let applied = LiveState {
@@ -439,7 +436,7 @@ mod tests {
         );
         let kernel = LiveState {
             reboot_required: true,
-            ..applied.clone()
+            ..applied
         };
         assert!(restart_needed(true, Some(&kernel)));
         assert!(
@@ -449,7 +446,6 @@ mod tests {
         assert!(!restart_needed(false, None));
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn the_desktop_restarts_to_finish_an_update_only_while_the_person_is_away_and_at_most_every_two_days()
      {

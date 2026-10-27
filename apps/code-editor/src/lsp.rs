@@ -354,10 +354,6 @@ fn parse_location(v: &Value) -> Option<Location> {
 
 /// Parse a `textDocument/formatting` response: the edits that format the
 /// document (none when it is formatted already), or the server's refusal.
-///
-/// # Errors
-/// Returns the server's error message when it answered with an error, or a
-/// description when the result is not a list of edits.
 pub fn parse_formatting(msg: &Value) -> Result<Vec<TextEdit>, String> {
     if let Some(error) = msg.get("error") {
         return Err(clip_display_text(
@@ -406,9 +402,6 @@ fn byte_offset(text: &str, line_starts: &[usize], position: Position) -> usize {
 
 /// `text` with `edits` applied. The edits are against `text` as it was and do
 /// not overlap, as the protocol guarantees.
-///
-/// # Errors
-/// Returns an error when two edits overlap, rather than guess at a result.
 pub fn apply_text_edits(text: &str, edits: &[TextEdit]) -> Result<String, String> {
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(text.match_indices('\n').map(|(at, _)| at + 1))
@@ -466,13 +459,8 @@ impl<R: BufRead> MessageReader<R> {
     }
 
     /// Read the next framed message. Returns `Ok(None)` at clean EOF.
-    ///
-    /// # Errors
-    /// Returns an error if a header block has no `Content-Length`, the
-    /// underlying reader fails, or the body is not valid JSON.
     pub fn next_message(&mut self) -> std::io::Result<Option<Value>> {
         let mut content_length: Option<usize> = None;
-        // Parse headers up to the blank line.
         loop {
             let mut raw = Vec::new();
             let n = self
@@ -578,6 +566,57 @@ pub enum LspEvent {
     Exited,
 }
 
+/// Why a language server isn't answering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LspFailure {
+    /// Its program isn't on this computer.
+    NotInstalled { server: String },
+    /// It ran and ended; `detail` says how, when the system told.
+    Stopped {
+        server: String,
+        detail: Option<String>,
+    },
+    /// It could not start, for a reason in the system's own words.
+    Unknown { server: String, detail: String },
+}
+
+impl LspFailure {
+    /// The server's program name ("rust-analyzer").
+    pub fn server(&self) -> &str {
+        match self {
+            LspFailure::NotInstalled { server }
+            | LspFailure::Stopped { server, .. }
+            | LspFailure::Unknown { server, .. } => server,
+        }
+    }
+
+    /// The system's own account of the failure, for whoever wants it.
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            LspFailure::NotInstalled { .. } => None,
+            LspFailure::Stopped { detail, .. } => detail.as_deref(),
+            LspFailure::Unknown { detail, .. } => Some(detail),
+        }
+    }
+}
+
+impl std::fmt::Display for LspFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LspFailure::NotInstalled { server } => write!(f, "{server} is not installed"),
+            LspFailure::Stopped {
+                server,
+                detail: None,
+            } => write!(f, "{server} stopped"),
+            LspFailure::Stopped {
+                server,
+                detail: Some(detail),
+            } => write!(f, "{server} stopped ({detail})"),
+            LspFailure::Unknown { detail, .. } => f.write_str(detail),
+        }
+    }
+}
+
 /// A running language-server connection.
 pub struct LspClient {
     child: Child,
@@ -661,22 +700,41 @@ impl LspClient {
     /// with a clean file.
     ///
     /// # Errors
-    /// Returns a descriptive error string when `lang` has no server mapping,
-    /// `root` is not a directory, the server binary can't be launched, or its
-    /// piped stdio could not be taken.
-    pub fn start(lang: Language, root: &Path) -> Result<LspClient, String> {
-        let (prog, args) = Self::server_command(lang)
-            .ok_or_else(|| format!("no language server configured for {}", lang.label()))?;
+    /// [`LspFailure::NotInstalled`] when the server's program is not on this
+    /// computer; [`LspFailure::Unknown`] when `lang` has no server mapping,
+    /// `root` is not a directory, the program can't be launched, or its piped
+    /// stdio could not be taken.
+    pub fn start(lang: Language, root: &Path) -> Result<LspClient, LspFailure> {
+        Self::start_with(lang, root, &tilo_process::tools::ToolDirs::current())
+    }
+
+    /// [`Self::start`], looking for the server's program in `tools`.
+    ///
+    /// # Errors
+    /// As [`Self::start`].
+    pub fn start_with(
+        lang: Language,
+        root: &Path,
+        tools: &tilo_process::tools::ToolDirs,
+    ) -> Result<LspClient, LspFailure> {
+        let (prog, args) = Self::server_command(lang).ok_or_else(|| LspFailure::Unknown {
+            server: lang.label().to_owned(),
+            detail: format!("no language server configured for {}", lang.label()),
+        })?;
+        let unknown = |detail: String| LspFailure::Unknown {
+            server: prog.clone(),
+            detail,
+        };
 
         if !root.is_dir() {
-            return Err(format!(
-                "{} is not a directory — open a project folder for live diagnostics",
-                root.display()
-            ));
+            return Err(unknown(format!("{} is not a directory", root.display())));
         }
         let root_uri = path_to_uri(root);
 
-        let mut command = Command::new(&prog);
+        let program = tools.find(&prog).ok_or_else(|| LspFailure::NotInstalled {
+            server: prog.clone(),
+        })?;
+        let mut command = Command::new(&program);
         // Language servers communicate over pipes, not a console window.
         bounded_command::without_console_window(&mut command);
         command
@@ -697,24 +755,27 @@ impl LspClient {
         tilo_process::job::independent(&mut command, &prog);
         let mut child = command.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                format!("{prog} not found on PATH — install it for live diagnostics")
+                LspFailure::NotInstalled {
+                    server: prog.clone(),
+                }
             } else {
-                format!("failed to launch {prog}: {e}")
+                unknown(format!("failed to launch {prog}: {e}"))
             }
         })?;
 
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| format!("{prog}: piped stdin was not created"))?;
+            .ok_or_else(|| unknown(format!("{prog}: piped stdin was not created")))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| format!("{prog}: piped stdout was not created"))?;
+            .ok_or_else(|| unknown(format!("{prog}: piped stdout was not created")))?;
         let stdin = Arc::new(Mutex::new(stdin));
         let pending: Arc<Mutex<HashMap<i64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
 
-        let events = spawn_reader_thread(&prog, stdout, stdin.clone(), pending.clone())?;
+        let events =
+            spawn_reader_thread(&prog, stdout, stdin.clone(), pending.clone()).map_err(unknown)?;
 
         let mut client = LspClient {
             child,
@@ -728,6 +789,16 @@ impl LspClient {
         };
         send_initialize_handshake(&mut client, root, &root_uri);
         Ok(client)
+    }
+
+    /// How the server's process ended, once it has: its exit status or the
+    /// signal that ended it.
+    pub fn exit_detail(&mut self) -> Option<String> {
+        self.child
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|status| status.to_string())
     }
 
     /// The directory this server was rooted at.
@@ -848,7 +919,6 @@ impl LspClient {
         );
     }
 
-    /// Request hover at a position.
     pub fn request_hover(&mut self, uri: &str, pos: Position) {
         self.send_request(
             "textDocument/hover",
@@ -1170,7 +1240,6 @@ mod tests {
 
     #[test]
     fn route_message_answers_requests_but_not_notifications_and_resolves_responses() {
-        // Each phase routes against its own pending table.
         a_workspace_configuration_request_is_answered_per_item();
         every_server_request_gets_some_reply();
         a_notification_is_not_answered();
@@ -1231,7 +1300,6 @@ mod tests {
 
     #[test]
     fn progress_keeps_titles_across_reports_and_shows_the_busiest_task() {
-        // Each phase builds its own fake client.
         progress_notifications_parse_into_an_indexing_state();
         a_report_without_a_title_inherits_the_one_begin_carried();
         the_busiest_task_is_the_one_shown();
@@ -1316,7 +1384,6 @@ mod tests {
 
     #[test]
     fn client_roots_request_ids_and_server_exit_fail_safe() {
-        // Each phase builds its own client or root.
         a_project_path_becomes_a_correctly_encoded_uri();
         a_server_cannot_be_rooted_at_a_path_that_is_not_a_directory();
         missing_server_binary_degrades_gracefully();
@@ -1340,7 +1407,6 @@ mod tests {
             format!("{uri_prefix}/a/b")
         );
         let path = PathBuf::from(format!("{prefix}/home/me/my project/src/main.rs"));
-        // And it round-trips back through the portal's own parser.
         let uri = path_to_uri(&path);
         assert_eq!(
             ui::portal::to_local_path(&url::Url::parse(&uri).unwrap()),
@@ -1360,6 +1426,7 @@ mod tests {
         let Err(err) = LspClient::start(Language::Rust, &missing) else {
             panic!("a non-directory root must be refused");
         };
+        let err = err.to_string();
         assert!(
             err.contains("not a directory"),
             "a bogus root must be refused up front, got: {err}"
@@ -1430,7 +1497,6 @@ mod tests {
 
     #[test]
     fn framing_round_trips_back_to_back_messages_and_refuses_oversized_bodies() {
-        // Each phase reads its own buffer.
         framing_round_trips();
         framing_reads_two_back_to_back_messages();
         framing_refuses_an_oversized_advertised_body_before_allocating_it();
@@ -1446,7 +1512,6 @@ mod tests {
         let mut reader = MessageReader::new(Cursor::new(bytes));
         let decoded = reader.next_message().unwrap().unwrap();
         assert_eq!(decoded, payload);
-        // Second read hits clean EOF.
         assert!(reader.next_message().unwrap().is_none());
     }
 
@@ -1486,7 +1551,6 @@ mod tests {
 
     #[test]
     fn server_payloads_parse_into_diagnostics_completions_hover_and_definitions() {
-        // Each phase parses its own canned message.
         parses_publish_diagnostics_into_model();
         absent_severity_defaults_to_error();
         parses_completion_list_and_array_shapes();
@@ -1496,7 +1560,6 @@ mod tests {
     }
 
     fn parses_publish_diagnostics_into_model() {
-        // A canned rust-analyzer-shaped diagnostics notification.
         let msg = json!({
             "jsonrpc": "2.0",
             "method": "textDocument/publishDiagnostics",
@@ -1562,7 +1625,6 @@ mod tests {
     }
 
     fn parses_completion_list_and_array_shapes() {
-        // CompletionList shape with an insertText override.
         let list = json!({
             "jsonrpc": "2.0", "id": 2,
             "result": {
@@ -1599,12 +1661,10 @@ mod tests {
     }
 
     fn parses_hover_markup_marked_string_and_array() {
-        // MarkupContent { kind, value }.
         let markup =
             json!({ "result": { "contents": { "kind": "markdown", "value": "fn main()" } } });
         assert_eq!(parse_hover(&markup).as_deref(), Some("fn main()"));
 
-        // Bare string MarkedString.
         let s = json!({ "result": { "contents": "u64" } });
         assert_eq!(parse_hover(&s).as_deref(), Some("u64"));
 
@@ -1617,7 +1677,6 @@ mod tests {
     }
 
     fn parses_definition_location_shapes() {
-        // Single Location.
         let single = json!({ "result": {
             "uri": "file:///proj/src/prime.rs",
             "range": { "start": {"line":3,"character":7}, "end": {"line":3,"character":18} }
@@ -1655,10 +1714,8 @@ mod tests {
             Some(LspEvent::Completion(items)) => assert_eq!(items.len(), 1),
             other => panic!("expected completion event, got {other:?}"),
         }
-        // The pending entry is consumed.
         assert!(pending.lock().unwrap().is_empty());
 
-        // A diagnostics notification routes without an id.
         let note = json!({
             "method": "textDocument/publishDiagnostics",
             "params": { "uri": "file:///x.rs", "diagnostics": [] }

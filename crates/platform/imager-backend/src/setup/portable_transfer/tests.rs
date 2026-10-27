@@ -1151,7 +1151,7 @@ fn commit_disposable_ballast(
             return;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < tilo_test_env::hang_bound(),
             "bounded ballast commitment deadline"
         );
         let next = if remaining > target {

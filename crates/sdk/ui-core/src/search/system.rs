@@ -2,6 +2,7 @@
 use crate::CommandEntry;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 pub mod filters;
 #[cfg(test)]
 mod tests;
@@ -47,12 +48,11 @@ impl SearchScope {
 pub enum ResourceKind {
     /// A palette-registered chrome action (e.g. "Open workspace settings").
     Action,
-    /// An installed Tilo application. Enter launches it, sandboxed, into
-    /// the workspace you are looking at.
+    /// An app the person has or can get: a Tilo app, a Flatpak, a
+    /// downloaded program or one of the system's. Where it comes from is a
+    /// fact on its row, not a kind of its own. Enter starts it in the
+    /// workspace you are looking at.
     Application,
-    /// An app Tilo did not package (Flatpak, distro binary). Its own kind
-    /// because a Tilo app runs sandboxed in a room; a host app runs unconfined.
-    HostApplication,
     /// A note document (title + body). Enter opens/focuses the note tab.
     Note,
     /// A record an app made, collected or imported. Enter brings it into
@@ -86,8 +86,7 @@ impl ResourceKind {
     pub fn label(&self) -> &str {
         match self {
             ResourceKind::Action => "Actions",
-            ResourceKind::Application => "Applications",
-            ResourceKind::HostApplication => "Host Apps",
+            ResourceKind::Application => "Apps",
             ResourceKind::Note => "Notes",
             ResourceKind::Record => "Records",
             ResourceKind::File => "Files",
@@ -109,7 +108,6 @@ impl ResourceKind {
         match self {
             ResourceKind::Action => (0, String::new()),
             ResourceKind::Application => (1, String::new()),
-            ResourceKind::HostApplication => (2, String::new()),
             ResourceKind::Note => (3, String::new()),
             ResourceKind::Record => (4, String::new()),
             ResourceKind::File => (5, String::new()),
@@ -120,6 +118,40 @@ impl ResourceKind {
             ResourceKind::Tab => (10, String::new()),
             ResourceKind::WindowGroup => (11, String::new()),
             ResourceKind::Custom(s) => (12, s.clone()),
+        }
+    }
+}
+
+/// How far a hit is from the person: what they have, an app Tilo opens at
+/// once, or an app they would first have to install. A property of the hit,
+/// set by the provider that knows it, and read by the merge
+/// ([`order_hits`]): what the person has, and the Tilo apps that just open,
+/// rank by match quality; a third-party app the person does not have (a
+/// Flathub app's Store page) ranks after all of them, however well its name
+/// matches, ordered among its kind by match quality and still listed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Availability {
+    /// On this device or the person's own: an installed app, a file, a
+    /// message, an action, a setting.
+    #[default]
+    OnDevice,
+    /// A Tilo app from the catalogue, its documents and actions: not on this
+    /// device, but Enter downloads and opens it, with no install step.
+    TiloCatalogue,
+    /// An app from a third-party catalogue (Flathub) the person does not
+    /// have: Enter shows its Store page, where they decide to install it.
+    ThirdPartyCatalogue,
+}
+
+impl Availability {
+    /// The band the merge orders the hit in, before match quality: every
+    /// hit the person can open now leads every app they would have to
+    /// install first.
+    #[must_use]
+    pub const fn band(self) -> u8 {
+        match self {
+            Self::OnDevice | Self::TiloCatalogue => 0,
+            Self::ThirdPartyCatalogue => 1,
         }
     }
 }
@@ -234,6 +266,10 @@ pub trait SearchRow {
     fn shortcut(&self) -> Option<&str> {
         None
     }
+    /// How far the hit is from the person; see [`Availability`].
+    fn availability(&self) -> Availability {
+        Availability::OnDevice
+    }
 }
 /// One contiguous run of same-kind results, as [`group_by_kind`] arranges
 /// them.
@@ -256,12 +292,12 @@ pub fn scope_allows(
     scope: SearchScope,
     provider_id: &str,
     active_provider_id: Option<&str>,
-    available_in_active_app: bool,
+    narrows_to_active_app: bool,
 ) -> bool {
     match scope {
         SearchScope::All | SearchScope::Workspace => true,
         SearchScope::ActiveApp => {
-            active_provider_id.is_none_or(|id| id == provider_id || available_in_active_app)
+            active_provider_id.is_none_or(|id| id == provider_id || narrows_to_active_app)
         }
     }
 }
@@ -381,46 +417,46 @@ pub fn application_intent_boost(score: i32, top: i32) -> f32 {
 /// continue to rank purely by match quality; this only prevents a fresh system
 /// from presenting forty alphabetised tools as though they were equally likely
 /// starting points. The first group is deliberately useful to curious
-/// tinkerers without assuming they are developers.
-fn starting_point(package_id: &str) -> (&'static str, i32) {
+/// tinkerers without assuming they are developers. Higher first.
+#[must_use]
+pub fn starting_point_rank(package_id: &str) -> i32 {
     // A local build publishes the same apps under `dev.tilo.`.
     let canonical = package_id
         .strip_prefix("dev.tilo.")
         .map(|name| format!("so.tilo.{name}"));
     match canonical.as_deref().unwrap_or(package_id) {
-        "so.tilo.browser" => ("search-apps-group-start-here", 90),
-        "so.tilo.file-explorer" => ("search-apps-group-start-here", 89),
-        "so.tilo.notes" => ("search-apps-group-start-here", 88),
-        "so.tilo.terminal" => ("search-apps-group-start-here", 87),
-        "so.tilo.settings" => ("search-apps-group-start-here", 86),
-        "so.tilo.store" => ("search-apps-group-start-here", 85),
+        "so.tilo.browser" => 90,
+        "so.tilo.file-explorer" => 89,
+        "so.tilo.notes" => 88,
+        "so.tilo.terminal" => 87,
+        "so.tilo.settings" => 86,
+        "so.tilo.store" => 85,
 
-        "so.tilo.calendar" => ("search-apps-group-everyday", 74),
-        "so.tilo.mail" => ("search-apps-group-everyday", 73),
-        "so.tilo.contacts" => ("search-apps-group-everyday", 72),
-        "so.tilo.chat" => ("search-apps-group-everyday", 71),
-        "so.tilo.calculator" => ("search-apps-group-everyday", 70),
+        "so.tilo.calendar" => 74,
+        "so.tilo.mail" => 73,
+        "so.tilo.contacts" => 72,
+        "so.tilo.chat" => 71,
+        "so.tilo.calculator" => 70,
 
-        "so.tilo.word-processor" => ("search-apps-group-work", 59),
-        "so.tilo.sheets" => ("search-apps-group-work", 58),
-        "so.tilo.slides" => ("search-apps-group-work", 57),
-        "so.tilo.pdf-viewer" => ("search-apps-group-work", 56),
-        "so.tilo.typst-editor" => ("search-apps-group-work", 55),
+        "so.tilo.word-processor" => 59,
+        "so.tilo.sheets" => 58,
+        "so.tilo.slides" => 57,
+        "so.tilo.pdf-viewer" => 56,
+        "so.tilo.typst-editor" => 55,
 
-        "so.tilo.music" => ("search-apps-group-media", 49),
-        "so.tilo.tube" => ("search-apps-group-media", 48),
-        "so.tilo.video-player" => ("search-apps-group-media", 47),
-        "so.tilo.photos" => ("search-apps-group-media", 46),
-        "so.tilo.camera" => ("search-apps-group-media", 45),
-        "so.tilo.weather" => ("search-apps-group-everyday", 44),
-        "so.tilo.maps" => ("search-apps-group-everyday", 43),
-        "so.tilo.feeds" => ("search-apps-group-everyday", 42),
-        "so.tilo.ebook" => ("search-apps-group-media", 41),
-        "so.tilo.totp" => ("search-apps-group-everyday", 40),
+        "so.tilo.music" => 49,
+        "so.tilo.tube" => 48,
+        "so.tilo.video-player" => 47,
+        "so.tilo.photos" => 46,
+        "so.tilo.camera" => 45,
+        "so.tilo.weather" => 44,
+        "so.tilo.maps" => 43,
+        "so.tilo.feeds" => 42,
+        "so.tilo.ebook" => 41,
+        "so.tilo.totp" => 40,
 
         "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
-        | "so.tilo.vpn" | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager"
-        | "so.tilo.themes" => ("search-apps-group-system-tools", 25),
+        | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager" | "so.tilo.themes" => 25,
         "so.tilo.api-tester"
         | "so.tilo.snippets"
         | "so.tilo.diffmerge"
@@ -428,22 +464,9 @@ fn starting_point(package_id: &str) -> (&'static str, i32) {
         | "so.tilo.containers"
         | "so.tilo.hex-editor"
         | "so.tilo.git-client"
-        | "so.tilo.code-editor" => ("search-apps-group-developer-tools", 5),
-        _ => ("search-apps-group-more-apps", 10),
+        | "so.tilo.code-editor" => 5,
+        _ => 10,
     }
-}
-
-/// Where `package_id` sits in the empty Applications palette; higher first.
-#[must_use]
-pub fn starting_point_rank(package_id: &str) -> i32 {
-    starting_point(package_id).1
-}
-
-/// The empty Applications palette group `package_id` is listed under, in
-/// the desktop's language.
-#[must_use]
-pub fn starting_point_group(package_id: &str) -> String {
-    crate::i18n::widget_format(starting_point(package_id).0, &[])
 }
 
 /// Top of every provider's ranker-derived score.
@@ -494,10 +517,7 @@ pub fn lexical_strength(
     let title = fold_search_text(title);
     // Application providers decorate the app name with the launch verb.
     // Compare its name on the same basis as a file or note title.
-    let title = if matches!(
-        kind,
-        ResourceKind::Application | ResourceKind::HostApplication
-    ) {
+    let title = if matches!(kind, ResourceKind::Application) {
         title.strip_prefix("open ").unwrap_or(&title)
     } else {
         &title
@@ -540,15 +560,12 @@ pub fn merged_strength(
 ) -> f32 {
     let top = top.max(1);
     // Launch intent is a reading of what was typed; an empty query has none.
-    let application_intent = if !needle.trim().is_empty()
-        && matches!(
-            kind,
-            ResourceKind::Application | ResourceKind::HostApplication
-        ) {
-        application_intent_boost(score, top)
-    } else {
-        0.0
-    };
+    let application_intent =
+        if !needle.trim().is_empty() && matches!(kind, ResourceKind::Application) {
+            application_intent_boost(score, top)
+        } else {
+            0.0
+        };
     lexical_strength(needle, kind, title, subtitle)
         + score as f32 / top as f32
         + application_intent
@@ -561,20 +578,34 @@ pub fn merged_strength(
 /// the word. The sort is stable: equally strong hits keep their provider's
 /// own order rather than being re-alphabetised by title.
 pub fn order_by_kind<T>(merged: &mut [(T, f32)], kind: impl Fn(&T) -> &ResourceKind) {
-    let mut best: HashMap<(u8, String), f32> = HashMap::new();
+    order_hits(merged, |hit| (kind(hit), Availability::OnDevice));
+}
+
+/// [`order_by_kind`] within each [`Availability::band`]: every hit the
+/// person can open now, ordered as [`order_by_kind`] orders them, then the
+/// apps they would have to install first, ordered the same way among
+/// themselves. Hits of one kind in different bands are separate groups.
+pub fn order_hits<T>(merged: &mut [(T, f32)], class: impl Fn(&T) -> (&ResourceKind, Availability)) {
+    let key = |hit: &T| {
+        let (kind, availability) = class(hit);
+        (availability.band(), kind.sort_key())
+    };
+    let mut best: HashMap<(u8, (u8, String)), f32> = HashMap::new();
     for (hit, strength) in merged.iter() {
-        let slot = best.entry(kind(hit).sort_key()).or_insert(f32::MIN);
+        let slot = best.entry(key(hit)).or_insert(f32::MIN);
         *slot = slot.max(*strength);
     }
-    merged.sort_by(|(a, a_strength), (b, b_strength)| {
-        let (a_key, b_key) = (kind(a).sort_key(), kind(b).sort_key());
+    merged.compact_sort_by(|(a, a_strength), (b, b_strength)| {
+        let (a_key, b_key) = (key(a), key(b));
         let a_group = best.get(&a_key).copied().unwrap_or(f32::MIN);
         let b_group = best.get(&b_key).copied().unwrap_or(f32::MIN);
-        b_group
-            .partial_cmp(&a_group)
-            .unwrap_or(Ordering::Equal)
+        // What the person has leads what they would have to install.
+        a_key
+            .0
+            .cmp(&b_key.0)
+            .then_with(|| b_group.partial_cmp(&a_group).unwrap_or(Ordering::Equal))
             // Equally strong groups fall back to the fixed kind order.
-            .then_with(|| a_key.cmp(&b_key))
+            .then_with(|| a_key.1.cmp(&b_key.1))
             .then_with(|| {
                 b_strength
                     .partial_cmp(a_strength)
@@ -602,20 +633,19 @@ pub fn rank<Row: SearchRow>(rows: Vec<(Row, i32)>) -> Vec<Row> {
             (row, strength)
         })
         .collect();
-    order_by_kind(&mut merged, SearchRow::kind);
+    order_hits(&mut merged, |row| (row.kind(), row.availability()));
     merged.into_iter().map(|(r, _)| r).collect()
 }
 
-/// [`group_by_kind`] over [`SearchRow`]s.
 pub fn group<Row: SearchRow>(ranked: Vec<Row>, row_budget: usize) -> Vec<KindGroup<Row>> {
     group_by_kind(ranked, SearchRow::kind, row_budget)
 }
 
 /// Ranked hits arranged into contiguous per-kind groups and trimmed to a
-/// `row_budget` shared round-robin: a palette paints ~10 rows, and an
-/// outscoring kind (forty file hits) can otherwise push a correctly-ranked
-/// app off the bottom. A lone group is exempt — narrowing to one kind means
-/// "show me all of these". A zero budget keeps everything.
+/// `row_budget` shared round-robin ([`trim_groups`]): a palette paints ~10
+/// rows, and an outscoring kind (forty file hits) can otherwise push a
+/// correctly-ranked app off the bottom. A lone group is exempt — narrowing
+/// to one kind means "show me all of these". A zero budget keeps everything.
 pub fn group_by_kind<T>(
     ranked: Vec<T>,
     kind: impl Fn(&T) -> &ResourceKind,
@@ -635,10 +665,20 @@ pub fn group_by_kind<T>(
             }),
         }
     }
-    if row_budget == 0
-        || groups.len() < 2
-        || groups.iter().map(|g| g.total).sum::<usize>() <= row_budget
-    {
+    trim_groups(groups, row_budget, &[])
+}
+
+/// Keep each group to a fair share of `row_budget` rows, front to back,
+/// except the kinds in `expanded`, which keep every row. A group that lost
+/// rows keeps its `total`, so its header and its [`show_all_entry`] can say
+/// how many there are. A lone group, or a zero budget, keeps everything.
+pub fn trim_groups<T>(
+    mut groups: Vec<KindGroup<T>>,
+    row_budget: usize,
+    expanded: &[ResourceKind],
+) -> Vec<KindGroup<T>> {
+    let rows: usize = groups.iter().map(|g| g.results.len()).sum();
+    if row_budget == 0 || groups.len() < 2 || rows <= row_budget {
         return groups;
     }
     // Fair share, front to back: each group takes an equal cut of whatever
@@ -647,13 +687,42 @@ pub fn group_by_kind<T>(
     let n = groups.len();
     let mut remaining = row_budget;
     for (i, group) in groups.iter_mut().enumerate() {
+        if expanded.contains(&group.kind) {
+            remaining = remaining.saturating_sub(group.results.len());
+            continue;
+        }
         let groups_left = n.saturating_sub(i).max(1);
         let share = remaining.checked_div(groups_left).unwrap_or(1).max(1);
-        let keep = share.min(group.total);
+        let keep = share.min(group.results.len());
         group.results.truncate(keep);
         remaining = remaining.saturating_sub(keep);
     }
     groups
+}
+
+impl<Row> KindGroup<Row> {
+    /// Whether the budget left out some of this group's rows, which a
+    /// [`show_all_entry`] under it then offers.
+    #[must_use]
+    pub fn is_capped(&self) -> bool {
+        self.results.len() < self.total
+    }
+}
+
+/// The row under a group [`trim_groups`] cut short that lists the rest of
+/// it in place: "Show all 59". Its host handles choosing it by `id`, by
+/// expanding the group's kind. Without it a palette says "Applications 59"
+/// and offers four, and the rest are only reachable by already knowing
+/// their names.
+#[must_use]
+pub fn show_all_entry(id: impl Into<String>, group: &str, total: usize) -> CommandEntry {
+    CommandEntry::new(
+        id,
+        crate::i18n::widget_format("search-show-all", &[("count", total.into())]),
+    )
+    .icon(crate::icons::Icon::ChevronDown)
+    .group(group)
+    .group_total(total)
 }
 pub fn command_entries<Row: SearchRow>(groups: &[KindGroup<Row>]) -> Vec<CommandEntry> {
     let mut entries = Vec::new();
@@ -680,11 +749,6 @@ pub fn icon_for_kind(kind: &ResourceKind) -> crate::icons::Icon {
     match kind {
         K::Action => Icon::Settings2,
         K::Application => Icon::LayoutGrid,
-        // Deliberately *not* the applications glyph. A host app is not
-        // one of Tilo's — it runs unconfined, outside everything the
-        // grid stands for — and the row has to look different at a
-        // glance, not only read differently.
-        K::HostApplication => Icon::ExternalLink,
         K::Note => Icon::FileText,
         // A record is one document several rooms can reach — the stacked
         // plates say "this is the same thing in more than one place",
@@ -713,7 +777,11 @@ pub trait Provider<Host, Row: SearchRow> {
     fn max_score(&self) -> i32 {
         MAX_PROVIDER_SCORE
     }
-    fn available_in_active_app_scope(&self) -> bool {
+    /// Whether this provider keeps to the focused app under
+    /// [`SearchScope::ActiveApp`], answering only with that app's own rows.
+    /// A search scoped to an app shows that app and nothing else: system
+    /// actions and other apps come back only when the scope is cleared.
+    fn narrows_to_active_app(&self) -> bool {
         false
     }
     fn revision(&self, _host: &Host, _query: &Query<'_>) -> String {
@@ -756,7 +824,7 @@ impl<'a, Host, Row: SearchRow> Registry<'a, Host, Row> {
                 }
             }
         }
-        kinds.sort_by_key(ResourceKind::sort_key);
+        kinds.compact_sort_by_key(ResourceKind::sort_key);
         kinds
     }
     pub fn query(&self, host: &Host, query: &Query<'_>) -> Vec<Row> {
@@ -769,7 +837,7 @@ impl<'a, Host, Row: SearchRow> Registry<'a, Host, Row> {
                 query.scope,
                 provider.id(),
                 query.active_provider_id,
-                provider.available_in_active_app_scope(),
+                provider.narrows_to_active_app(),
             ) {
                 continue;
             }
@@ -818,7 +886,7 @@ impl<'a, Host, Row: SearchRow> Registry<'a, Host, Row> {
             query.scope,
             provider_id,
             query.active_provider_id,
-            provider.available_in_active_app_scope(),
+            provider.narrows_to_active_app(),
         ) {
             return None;
         }

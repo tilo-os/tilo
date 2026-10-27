@@ -126,14 +126,12 @@ mod macos_tests {
     #[test]
     #[serial_test::serial]
     fn macos_session_starts_persists_and_refuses_invalid_state() {
-        // Phase `help_succeeds_without_starting_a_session`.
         {
             assert_eq!(
                 shell::compositor::macos::run_args(&["--help".into()]),
                 std::process::ExitCode::SUCCESS
             );
         }
-        // Phase `native_workspace_changes_survive_reopening`.
         {
             let directory = tempfile::tempdir().unwrap();
             let options = options(directory.path());
@@ -167,7 +165,6 @@ mod macos_tests {
                     .any(|ws| ws.name == "Mac work")
             );
         }
-        // Phase `invalid_workspace_state_is_preserved_and_refused`.
         {
             let directory = tempfile::tempdir().unwrap();
             let options = options(directory.path());
@@ -188,7 +185,6 @@ mod macos_tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn macos_input_reaches_the_palette_and_hosted_files() {
-        // Phase `macos_search_shortcuts_open_the_real_shell_palette`.
         {
             let directory = tempfile::tempdir().unwrap();
             let session = prepare(&options(directory.path())).unwrap();
@@ -220,7 +216,6 @@ mod macos_tests {
                     .unwrap();
             }
         }
-        // Phase `hosted_files_receive_physical_pixel_wheel_at_each_scale`.
         {
             for (scale, physical_delta) in [(1.0, -60.0), (2.0, -120.0)] {
                 let directory = tempfile::tempdir().unwrap();
@@ -263,7 +258,6 @@ mod macos_tests {
                 assert_eq!(after.y0 - before.y0, -60.0, "scale {scale}");
             }
         }
-        // Phase `hosted_files_pointer_selection_and_enter_open_the_seeded_document`.
         {
             let directory = tempfile::tempdir().unwrap();
             let (tree_handle, records, mut driver) = files_driver(directory.path());
@@ -353,7 +347,6 @@ mod macos_tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn hosted_files_show_the_real_directory_and_current_disk_content() {
-        // Phase `files_tile_uses_the_supplied_real_directory`.
         {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("mac-note.txt"), "real content").unwrap();
@@ -369,6 +362,7 @@ mod macos_tests {
                     kind: shell::shell::state::AppKind::FileExplorer,
                     label: "Files".into(),
                 },
+                app_title: None,
             };
             let request = tilo_desktop::resolver::TileRequest {
                 room: shell::shell::state::RoomId::new(),
@@ -388,7 +382,6 @@ mod macos_tests {
             harness.relayout();
             assert!(harness.inspection_json().unwrap().contains("mac-note.txt"));
         }
-        // Phase `hosted_files_expose_each_rendered_row_with_its_own_bounds`.
         {
             let directory = tempfile::tempdir().unwrap();
             let (_tree, _records, driver) = files_driver(directory.path());
@@ -410,7 +403,6 @@ mod macos_tests {
                 "row bounds must not alias: {first:?} {second:?}"
             );
         }
-        // Phase `hosted_files_empty_host_intent_poll_preserves_history_owner`.
         {
             let directory = tempfile::tempdir().unwrap();
             let (_tree, _records, mut driver) = files_driver(directory.path());
@@ -438,7 +430,6 @@ mod macos_tests {
                 "an empty host-intent poll must not mutate the incidental outer document"
             );
         }
-        // Phase `hosted_files_refuse_conflicting_document_record_without_publishing_a_tab`.
         {
             let directory = tempfile::tempdir().unwrap();
             let (tree_handle, records, mut driver) = files_driver(directory.path());
@@ -482,7 +473,6 @@ mod macos_tests {
                 "a refused record identity must not publish an Editor document"
             );
         }
-        // Phase `deleted_hosted_document_reopens_as_a_visible_unavailable_file`.
         {
             let directory = tempfile::tempdir().unwrap();
             let (_tree, records, mut driver) = files_driver(directory.path());
@@ -523,7 +513,6 @@ mod macos_tests {
                 "an unavailable file must not masquerade as editable document content"
             );
         }
-        // Phase `externally_changed_hosted_document_reopens_with_current_disk_content`.
         {
             let directory = tempfile::tempdir().unwrap();
             let (tree, records, mut driver) = files_driver(directory.path());

@@ -98,7 +98,7 @@ async fn clients_share_the_inherited_connection() {
                 server_side,
             );
 
-            let deadline = std::time::Duration::from_secs(10);
+            let deadline = tilo_test_env::hang_bound();
             let first = runtime_collab::try_connect().expect("first client");
             let second = runtime_collab::try_connect().expect("second client");
             let room = tokio::time::timeout(deadline, first.join_channel("room", b"first"))

@@ -229,16 +229,64 @@ class AgainstMainTests(unittest.TestCase):
             spec.unlink()
             self.assertIn("`S.a` is now `u64`", interfaces.against("main", root)[0])
 
+    def test_members_moved_to_another_interface_are_judged_there(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            self.git(root, "init", "-q", "-b", "main")
+            self.git(root, "config", "user.email", "t@example.com")
+            self.git(root, "config", "user.name", "t")
+            spec = root / "crates/demo/wire/interface.toml"
+            code = root / "crates/demo/wire/src/lib.rs"
+            code.parent.mkdir(parents=True)
+            spec.write_text(self.SPEC.replace('roots = ["S"]', 'roots = ["S", "T"]'))
+            code.write_text(self.source(1, "a: u32") + "pub struct T { b: u8 }\n")
+            self.git(root, "add", ".")
+            self.git(root, "commit", "-qm", "base")
+
+            # T leaves for an interface of its own: the one it left is unchanged.
+            code.write_text(self.source(1, "a: u32"))
+            spec.write_text(self.SPEC)
+            other = root / "crates/demo/other/interface.toml"
+            other_code = root / "crates/demo/other/src/lib.rs"
+            other_code.parent.mkdir(parents=True)
+            other.write_text(
+                'name = "other"\nversion = 0\nversion_const = "crates/demo/other/src/lib.rs:V"\n'
+                'encoding = "json"\nsources = ["crates/demo/other/src/lib.rs"]\nroots = ["T"]\n'
+            )
+            other_code.write_text("pub const V: u32 = 1;\npub struct T { b: u16 }\n")
+            self.assertEqual(interfaces.against("main", root), [])
+
+            # Gone from both is still gone.
+            other.unlink()
+            problems = interfaces.against("main", root)
+            self.assertEqual(len(problems), 1)
+            self.assertIn("`T` is gone", problems[0])
+
 
 class RepositoryTests(unittest.TestCase):
     def test_every_committed_interface_matches_its_code(self):
         self.assertEqual(interfaces.check(), [])
 
-    def test_the_four_interfaces_each_have_one_number(self):
+    def test_the_five_interfaces_each_have_one_number(self):
         names = sorted(
             interfaces.load_spec(path)[0].name for path in interfaces.interface_files()
         )
-        self.assertEqual(names, ["package", "peer", "runtime", "shell-ui"])
+        self.assertEqual(names, ["app-host", "package", "peer", "runtime", "shell-ui"])
+
+
+class EnvRuntimeFormatTests(unittest.TestCase):
+    def test_the_env_runtime_declares_the_package_format_it_is_sealed_in(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            definition = root / interfaces.ENV_RUNTIME
+            definition.parent.mkdir(parents=True)
+            definition.write_text("# env-runtime-version: 1.0.0\n# package-format: 2\n")
+            self.assertEqual(interfaces.env_runtime_format(2, root), [])
+            # A new package format needs a new runtime: the old one names the
+            # old format and fails the check until it is declared again.
+            self.assertEqual(len(interfaces.env_runtime_format(3, root)), 1)
+            definition.write_text("# env-runtime-version: 1.0.0\n")
+            self.assertEqual(len(interfaces.env_runtime_format(2, root)), 1)
 
 
 if __name__ == "__main__":

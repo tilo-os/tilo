@@ -19,6 +19,7 @@ use crate::num::f64_of_usize;
 use crate::time::SystemTime;
 use crate::widget::ModelPath;
 use std::collections::{HashMap, HashSet};
+use tilo_sort::CompactSort as _;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -36,6 +37,7 @@ use crate::widget::Widget;
 use crate::widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time,
 };
+use crate::widget::history_face::{EntryFace, HistoryEntryPresenter};
 use crate::widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, NamedRange, group_entries,
 };
@@ -53,7 +55,11 @@ const PADDING: f64 = 8.0;
 const AVATAR_DIAM: f64 = 16.0;
 const REVERT_CHIP_W: f64 = 64.0;
 const TIME_SLOT_W: f64 = 80.0;
-const AUTHOR_SLOT_W: f64 = 160.0;
+/// The author cluster of a row: the author's face and the gap after it.
+/// A row is told apart by who made it at a glance, by face and colour; the
+/// name is the face's tooltip and the row's accessible name, never a
+/// column of names cut to fit.
+const AUTHOR_SLOT_W: f64 = 8.0 + AVATAR_DIAM + 10.0;
 const INDENT: f64 = 20.0;
 /// Right-hand gutter shared by every trailing element — a row's relative
 /// time and a band header's — so the time column lines up down the pane.
@@ -211,7 +217,6 @@ pub type UndoBandCallback = Box<dyn FnMut(&BandUndoRequest)>;
 /// nesting depth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum VisualRow {
-    /// Index into `row_groups`.
     Group(usize),
     /// Index into `entries`, plus the depth it renders at.
     Entry(usize, usize),
@@ -336,6 +341,13 @@ struct NamingState {
 pub struct ActivityTimeline {
     entries: Vec<HistoryEntry>,
     named: Vec<NamedRange>,
+    /// What changes did, as members' devices described them; a change
+    /// without one reads as its own summary.
+    descriptions: std::collections::HashMap<HistoryEntryId, String>,
+    /// The app's presentation of its changes ([`Self::set_entry_presenter`]).
+    presenter: Option<std::rc::Rc<dyn HistoryEntryPresenter>>,
+    /// The faces it gave the listed changes, asked once per list.
+    faces: HashMap<HistoryEntryId, EntryFace>,
     grouping: GroupingConfig,
     /// The forest, over the **unfiltered** entry list.
     groups: Vec<HistoryGroup>,
@@ -370,6 +382,8 @@ pub struct ActivityTimeline {
     last_cursor: Point,
     on_revert: Option<RevertCallback>,
     on_activate_entry: Option<EntryActivateCallback>,
+    /// Choosing a change whose face opens it in the app.
+    on_open_entry: Option<EntryActivateCallback>,
     on_undo_band: Option<UndoBandCallback>,
     on_name_group: Option<NameGroupCallback>,
     /// "Now" for the relative-timestamp paint. Tests + headless callers pin
@@ -389,6 +403,10 @@ pub struct ActivityTimeline {
     /// `metrics.min_pointer_target`, taken from the theme each `draw` so the
     /// theme-less hit-test accessors can grow a chip's target to it.
     min_pointer_target: f64,
+    /// The theme of the last `draw`, which an app's row faces measure
+    /// their height under ([`crate::widget::EntryBody::height`]): rows are
+    /// laid out by the theme-less accessors between frames.
+    face_theme: Theme,
     /// `RoomActivity` may supply its own Everyone/person selector; suppressing
     /// this duplicate leaves the op-class strip intact.
     show_author_pill: bool,
@@ -420,6 +438,9 @@ impl ActivityTimeline {
         Self {
             entries: Vec::new(),
             named: Vec::new(),
+            descriptions: std::collections::HashMap::new(),
+            presenter: None,
+            faces: HashMap::new(),
             grouping: GroupingConfig::default(),
             groups: Vec::new(),
             group_order: Vec::new(),
@@ -443,6 +464,7 @@ impl ActivityTimeline {
             last_cursor: Point::ZERO,
             on_revert: None,
             on_activate_entry: None,
+            on_open_entry: None,
             on_undo_band: None,
             on_name_group: None,
             now_override: None,
@@ -452,6 +474,7 @@ impl ActivityTimeline {
             filters_people: false,
             people_chip_rects: Vec::new(),
             min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            face_theme: Theme::default(),
             show_author_pill: true,
             show_day_headings: false,
             clear_chip_rect: Rect::ZERO,
@@ -495,6 +518,7 @@ impl ActivityTimeline {
             .map(|selected| selected.iter().map(|entry| entry.id).collect())
             .unwrap_or_default();
         self.entries = entries;
+        self.refresh_faces();
         self.selection = if selected_ids.is_empty() {
             None
         } else {
@@ -517,6 +541,81 @@ impl ActivityTimeline {
         self.regroup();
     }
 
+    /// The descriptions the host read from the document, by change.
+    pub fn set_descriptions(
+        &mut self,
+        descriptions: std::collections::HashMap<HistoryEntryId, String>,
+    ) {
+        if self.descriptions != descriptions {
+            self.descriptions = descriptions;
+            self.rebuild();
+        }
+    }
+
+    /// What `entry` did, in words: what the app's face for it says, else its
+    /// description when a member's device wrote one, otherwise its own
+    /// summary.
+    pub fn summary_of<'a>(&'a self, entry: &'a HistoryEntry) -> &'a str {
+        if let Some(face) = self.faces.get(&entry.id) {
+            return face.spoken.as_str();
+        }
+        self.descriptions
+            .get(&entry.id)
+            .map_or(entry.summary.as_str(), String::as_str)
+    }
+
+    /// Present the changes the way the app does: each change it gives a face
+    /// draws that face, copies what it copies and, when the face opens it,
+    /// is taken up by the app when chosen ([`Self::on_open_entry`]). `None`
+    /// reads every change as its sentence.
+    pub fn set_entry_presenter(
+        &mut self,
+        presenter: Option<std::rc::Rc<dyn HistoryEntryPresenter>>,
+    ) {
+        let same = match (&self.presenter, &presenter) {
+            (None, None) => true,
+            (Some(was), Some(now)) => std::rc::Rc::ptr_eq(was, now),
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.presenter = presenter;
+        self.refresh_faces();
+        self.rebuild_rows();
+    }
+
+    /// The face the app gave `entry`, if it gave one.
+    pub fn face_of(&self, entry: &HistoryEntryId) -> Option<&EntryFace> {
+        self.faces.get(entry)
+    }
+
+    fn refresh_faces(&mut self) {
+        self.faces = match &self.presenter {
+            Some(presenter) => self
+                .entries
+                .iter()
+                .filter_map(|entry| presenter.face(entry).map(|face| (entry.id, face)))
+                .collect(),
+            None => HashMap::new(),
+        };
+    }
+
+    /// The face of the change on line `i`, when it has one.
+    fn row_face(&self, i: usize) -> Option<&EntryFace> {
+        self.faces.get(&self.row_entry(i)?.id)
+    }
+
+    /// Put what the face of the change on line `i` copies on the
+    /// clipboard. Returns whether it had anything to copy.
+    pub fn copy_row(&self, i: usize) -> bool {
+        let Some(text) = self.row_face(i).and_then(|face| face.copy.as_deref()) else {
+            return false;
+        };
+        crate::text_selection::clipboard_copy(text);
+        true
+    }
+
     /// The widget has no document; the host reads names
     /// (`tilo_ui::history_source::groups`) and pushes them here.
     pub fn set_named_ranges(&mut self, named: Vec<NamedRange>) {
@@ -528,11 +627,6 @@ impl ActivityTimeline {
 
     pub fn named_ranges(&self) -> &[NamedRange] {
         &self.named
-    }
-
-    /// For a streaming producer. Call [`Self::refresh`] after mutating it.
-    pub fn entries_mut(&mut self) -> &mut Vec<HistoryEntry> {
-        &mut self.entries
     }
 
     /// Idempotent.
@@ -576,6 +670,37 @@ impl ActivityTimeline {
     pub fn on_revert<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
         self.on_revert = Some(Box::new(f));
         self
+    }
+
+    /// Called with a change whose face opens it ([`EntryFace::opens`]) when a
+    /// person chooses it, by click, Enter or assistive technology, instead
+    /// of selecting it.
+    #[must_use]
+    pub fn on_open_entry<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
+        self.on_open_entry = Some(Box::new(f));
+        self
+    }
+
+    /// [`Self::on_open_entry`] for a timeline already built.
+    pub fn set_on_open_entry<F: FnMut(&HistoryEntryId) + 'static>(&mut self, f: F) {
+        self.on_open_entry = Some(Box::new(f));
+    }
+
+    /// Open the change on line `i` in the app, when its face opens it and
+    /// the host listens. Returns whether it did.
+    fn open_row(&mut self, i: usize) -> bool {
+        let Some(id) = self
+            .row_face(i)
+            .filter(|face| face.opens)
+            .and(self.row_entry(i).map(|entry| entry.id))
+        else {
+            return false;
+        };
+        let Some(open) = self.on_open_entry.as_mut() else {
+            return false;
+        };
+        open(&id);
+        true
     }
 
     /// Observe explicit activation of an individual activity entry. Selection
@@ -640,7 +765,9 @@ impl ActivityTimeline {
         let mut agents: Vec<HistoryAuthor> = Vec::new();
         let mut order: Vec<usize> = (0..self.entries.len()).collect();
         if self.newest_first {
-            order.sort_by_key(|&i| std::cmp::Reverse(self.entries.get(i).map(|e| e.timestamp)));
+            order.compact_sort_by_key(|&i| {
+                std::cmp::Reverse(self.entries.get(i).map(|e| e.timestamp))
+            });
         }
         for index in order {
             let Some(entry) = self.entries.get(index) else {
@@ -711,7 +838,7 @@ impl ActivityTimeline {
         }
         let typed = self.author_query.trim();
         if !typed.is_empty() {
-            parts.push(format!("author:{typed}"));
+            parts.push(typed.to_owned());
         }
         for a in &self.filter.authors {
             parts.push(a.clone());
@@ -720,7 +847,7 @@ impl ActivityTimeline {
             parts.push(
                 self.time_range_label
                     .clone()
-                    .unwrap_or_else(|| "a date range".to_string()),
+                    .unwrap_or_else(|| crate::i18n!("history-filter-dates")),
             );
         }
         parts.join(" \u{00b7} ")
@@ -728,26 +855,23 @@ impl ActivityTimeline {
 
     pub fn empty_state_lines(&self) -> (String, Option<String>) {
         if self.entries.is_empty() {
-            return ("No activity yet".to_string(), None);
+            return (crate::i18n!("history-empty"), None);
         }
         let hidden = self.entries.len();
         let summary = self.active_filter_summary();
         let detail = if summary.is_empty() {
-            format!("{hidden} entries are loaded but none are shown")
+            crate::i18n!("history-empty-hidden", "count" => hidden)
         } else {
-            format!("{hidden} hidden by {summary}")
+            crate::i18n!("history-empty-hidden-by", "count" => hidden, "filters" => summary)
         };
-        (
-            "No activity matches these filters".to_string(),
-            Some(detail),
-        )
+        (crate::i18n!("history-empty-filtered"), Some(detail))
     }
 
     pub fn author_pill_rect(&self) -> Rect {
         self.author_pill_rect
     }
 
-    /// Show or hide the built-in `author:any` pill. The default is `true` for
+    /// Show or hide the built-in author pill. The default is `true` for
     /// standalone use; hosts with an equivalent people control can turn it
     /// off without losing the operation-class filters.
     pub fn set_show_author_pill(&mut self, show: bool) {
@@ -769,8 +893,6 @@ impl ActivityTimeline {
             self.rebuild_rows();
         }
     }
-
-    // ---------- groups: expansion, naming, selection ----------
 
     pub fn row_count(&self) -> usize {
         self.rows.len()
@@ -942,6 +1064,7 @@ impl ActivityTimeline {
         let _ = self.focus_row(row);
         match visual {
             VisualRow::Group(_) => self.toggle_group_at_row(row),
+            VisualRow::Entry(..) if self.open_row(row) => true,
             VisualRow::Entry(entry, _) => {
                 self.selection = Some((entry, entry));
                 self.selection_anchor = Some(entry);
@@ -957,7 +1080,6 @@ impl ActivityTimeline {
         }
     }
 
-    /// Activate the currently focused row.
     pub fn activate_focused_row(&mut self) -> bool {
         self.focused_row().is_some_and(|row| self.activate_row(row))
     }
@@ -1059,17 +1181,59 @@ impl ActivityTimeline {
         true
     }
 
-    // ---------- geometry ----------
-
-    /// Proportional to the pane with a floor so a name is never squeezed to
-    /// nothing.
+    /// The author cluster's width: the face alone, whatever the pane.
     fn author_slot_w(&self) -> f64 {
-        if self.filters_people {
-            // One document's History names people by first name and agents
-            // by their own: the summary takes the room.
-            return 96.0;
+        AUTHOR_SLOT_W
+    }
+
+    /// The name an entry's author goes by in this History: an agent by its
+    /// own name where History filters by person, else the author's.
+    fn author_label<'a>(&self, entry: &'a HistoryEntry) -> &'a str {
+        match &entry.author.attribution {
+            // An agent's own name; its row's place in the History says for whom.
+            Some(who) if self.filters_people => who.actor_name.as_str(),
+            _ => entry.author.name.as_str(),
         }
-        (self.rect.width() * 0.32).clamp(84.0, AUTHOR_SLOT_W)
+    }
+
+    /// The bot chip a bot's change carries after its face, and its width.
+    fn bot_chip(
+        entry: &HistoryEntry,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<(String, f64)> {
+        is_bot_author(&entry.author).then(|| {
+            let label = crate::i18n::widget_format("author-bot-chip", &[]);
+            let width = crate::widget::ChipFace::intrinsic_width(
+                &label,
+                crate::widget::ChipLead::None,
+                false,
+                text_renderer,
+                theme,
+            );
+            (label, width)
+        })
+    }
+
+    /// The face of the author of line `i`, where it is drawn.
+    fn avatar_rect(&self, i: usize) -> Option<Rect> {
+        let entry = self.row_entry(i)?;
+        if entry.is_genesis() {
+            return None;
+        }
+        let row = RowSlot {
+            rect: self.row_rect(i)?,
+            depth: self.row_depth(i),
+        }
+        .indented();
+        let cy = f64::midpoint(row.y0, row.y1);
+        let x = row.x0 + 8.0;
+        Some(Rect::new(
+            x,
+            cy - AVATAR_DIAM / 2.0,
+            x + AVATAR_DIAM,
+            cy + AVATAR_DIAM / 2.0,
+        ))
     }
 
     fn time_slot_w(&self) -> f64 {
@@ -1125,7 +1289,12 @@ impl ActivityTimeline {
     fn row_height(&self, i: usize) -> f64 {
         match self.rows.get(i) {
             Some(VisualRow::Group(_)) => GROUP_ROW_HEIGHT,
-            _ => ROW_HEIGHT,
+            Some(VisualRow::Entry(entry, _)) => self
+                .entries
+                .get(*entry)
+                .and_then(|entry| self.faces.get(&entry.id))
+                .map_or(ROW_HEIGHT, |face| face.height(ROW_HEIGHT, &self.face_theme)),
+            None => ROW_HEIGHT,
         }
     }
 
@@ -1281,6 +1450,44 @@ impl ActivityTimeline {
             return None;
         }
         Some(rect)
+    }
+
+    /// The trailing chip of an entry row: where Revert, or Copy, is drawn.
+    fn trailing_chip_rect(row: Rect, width: f64) -> Rect {
+        let chip_h = ROW_HEIGHT - 16.0;
+        let cy = f64::midpoint(row.y0, row.y1);
+        Rect::new(
+            row.x1 - width - 6.0,
+            cy - chip_h / 2.0,
+            row.x1 - 6.0,
+            cy + chip_h / 2.0,
+        )
+    }
+
+    /// Where the Copy chip is painted on `row`: the trailing chip, or just
+    /// before Revert when that is offered too.
+    fn copy_chip_painted(&self, row: Rect, beside_revert: bool) -> Rect {
+        let width = self.revert_chip_w();
+        let chip = Self::trailing_chip_rect(row, width);
+        if beside_revert {
+            chip - vello::kurbo::Vec2::new(width + 6.0, 0.0)
+        } else {
+            chip
+        }
+    }
+
+    /// The Copy chip of line `i`: shown while the pointer is over a change
+    /// whose face copies something.
+    pub fn copy_chip_rect(&self, i: usize) -> Option<Rect> {
+        if self.hover_row != Some(i) {
+            return None;
+        }
+        self.row_face(i)?.copy.as_ref()?;
+        let beside_revert = self.revert_chip_rect(i).is_some();
+        let row = self.row_rect(i)?;
+        let depth = self.row_depth(i);
+        let row = RowSlot { rect: row, depth }.indented();
+        Some(self.hit_rect_within(self.copy_chip_painted(row, beside_revert), row))
     }
 
     /// `None` when the host cannot revert, the line is off-screen, is a group
@@ -1513,7 +1720,7 @@ impl ActivityTimeline {
             .enumerate()
             .map(|(i, g)| (i, g.last_time))
             .collect();
-        order.sort_by(|(ai, at), (bi, bt)| {
+        order.compact_sort_by(|(ai, at), (bi, bt)| {
             if self.newest_first {
                 bt.cmp(at).then(bi.cmp(ai))
             } else {
@@ -1686,14 +1893,24 @@ impl ActivityTimeline {
         let total_count = g.len();
         let restorable =
             (g.start..g.end).any(|i| self.entries.get(i).is_some_and(HistoryEntry::is_revertible));
-        let mut facts = g.subtitle_facts(&self.entries);
+        // The app may say what the band amounts to (its calculations, its
+        // functions) where counting characters would mean nothing.
+        let summary = self.presenter.as_ref().and_then(|presenter| {
+            self.entries
+                .get(g.start..g.end)
+                .and_then(|members| presenter.group_summary(members))
+        });
+        let mut facts = g.subtitle_facts_summarised(&self.entries, summary);
         if visible_count < total_count {
             // Saying "12 changes" over three visible rows would be a lie the
             // reader cannot catch.
-            facts.insert(0, format!("{visible_count} of {total_count} shown"));
+            facts.insert(
+                0,
+                crate::i18n!("history-band-shown", "shown" => visible_count, "total" => total_count),
+            );
         }
         if g.open {
-            facts.insert(0, "still open".to_owned());
+            facts.insert(0, crate::i18n!("history-band-open"));
         }
         let gi = row_groups.len();
         row_groups.push(RowGroup {
@@ -1886,7 +2103,10 @@ struct EntryRowLayout {
     author_slot_w: f64,
     /// The pointer is over a revertible entry and a host handles reverts.
     offers_revert: bool,
-    /// Summary width given up to the revert chip; zero unless `offers_revert`.
+    /// The pointer is over a change whose face copies something.
+    offers_copy: bool,
+    /// Summary width given up to the revert or copy chip; zero unless one
+    /// is offered.
     chip_reserve: f64,
 }
 
@@ -2045,19 +2265,27 @@ impl ActivityTimeline {
         // Reserved only when hovered — reserving it on every row cost the
         // summary a third of its width for something not on screen.
         let offers_revert = emphasis.hovered && self.on_revert.is_some() && entry.is_revertible();
+        let offers_copy = emphasis.hovered
+            && self
+                .faces
+                .get(&entry.id)
+                .is_some_and(|face| face.copy.is_some());
+        // A bot's change carries its chip after the face, and the summary
+        // starts after the chip.
+        let bot_w = if entry.is_genesis() {
+            0.0
+        } else {
+            Self::bot_chip(entry, ctx.text, ctx.theme).map_or(0.0, |(_, width)| width + 6.0)
+        };
         let layout = EntryRowLayout {
             row,
             cy,
             text_style: ctx.theme.text(TextRole::Caption),
-            // The indent comes out of the author cluster, not the summary —
-            // the summary is what the reader is here for.
-            author_slot_w: (self.author_slot_w() - f64_of_usize(slot.depth) * INDENT).max(72.0),
+            author_slot_w: self.author_slot_w() + bot_w,
             offers_revert,
-            chip_reserve: if offers_revert {
-                self.revert_chip_w() + 6.0
-            } else {
-                0.0
-            },
+            offers_copy,
+            chip_reserve: (self.revert_chip_w() + 6.0)
+                * f64::from(u8::from(offers_revert) + u8::from(offers_copy)),
         };
         if !entry.is_genesis() {
             self.draw_row_author(ctx, &layout, entry, dot_x);
@@ -2175,8 +2403,8 @@ impl ActivityTimeline {
         }
     }
 
-    /// The author's name. Their identity is the dot's colour and, in full,
-    /// the provenance detail; a row is read by the name.
+    /// A bot's chip after its face. The author's name is not drawn: it is
+    /// the face's tooltip and the row's accessible name.
     fn draw_row_author(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2193,69 +2421,22 @@ impl ActivityTimeline {
         let &EntryRowLayout {
             row,
             cy,
-            ref text_style,
             author_slot_w,
             ..
         } = layout;
-        let x = dot_x + AVATAR_DIAM / 2.0 + 8.0;
+        let Some((label, width)) = Self::bot_chip(entry, text_renderer, theme) else {
+            return;
+        };
         let slot_end = row.x0 + author_slot_w - 6.0;
-        // A bot's change carries the bot chip after its name, as its
-        // messages do; the chip keeps its width and the name gives way.
-        let bot_chip = is_bot_author(&entry.author).then(|| {
-            let label = crate::i18n::widget_format("author-bot-chip", &[]);
-            let width = crate::widget::ChipFace::intrinsic_width(
-                &label,
-                crate::widget::ChipLead::None,
-                false,
-                text_renderer,
-                theme,
-            );
-            (label, width)
-        });
-        let chip_reserve = bot_chip.as_ref().map_or(0.0, |(_, width)| width + 6.0);
-        let shown = match &entry.author.attribution {
-            // An agent's own name; its row's place in the History says for whom.
-            Some(who) if self.filters_people => who.actor_name.as_str(),
-            _ => entry.author.name.as_str(),
-        };
-        let name = fit_text(
-            text_renderer,
-            shown,
-            text_style,
-            (slot_end - x - chip_reserve).max(24.0),
+        let chip_x = dot_x + AVATAR_DIAM / 2.0 + 6.0;
+        let height = crate::widget::ChipFace::height(theme).min(row.height());
+        let chip = Rect::new(
+            chip_x,
+            cy - height / 2.0,
+            (chip_x + width).min(slot_end),
+            cy + height / 2.0,
         );
-        let name_top = text_top(text_renderer, text_style, cy);
-        // The reader's own changes read quieter than other people's.
-        let colour = if entry.author.relation == crate::widget::history::AuthorRelation::Reader {
-            theme.tokens.colors.text_dim
-        } else {
-            theme.tokens.colors.text_primary
-        };
-        text_renderer.draw_style(
-            scene,
-            &name,
-            colour,
-            transform.pre_translate((x, name_top).into()),
-            None,
-            text_style,
-        );
-        if let Some((label, width)) = bot_chip {
-            let (name_width, _) = text_renderer.measure_style(&name, None, text_style);
-            let chip_x = x + f64::from(name_width) + 6.0;
-            let height = crate::widget::ChipFace::height(theme).min(row.height());
-            let chip = Rect::new(
-                chip_x,
-                cy - height / 2.0,
-                (chip_x + width).min(slot_end),
-                cy + height / 2.0,
-            );
-            crate::widget::ChipFace::new(chip, &label).paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-            );
-        }
+        crate::widget::ChipFace::new(chip, &label).paint(scene, transform, text_renderer, theme);
     }
 
     /// The op-class glyph and the summary column, including the redaction
@@ -2282,6 +2463,32 @@ impl ActivityTimeline {
             ..
         } = layout;
         let glyph_x = row.x0 + author_slot_w;
+        // A change the app presents itself draws as the app draws it, in the
+        // slot the kind icon and the sentence share. A redacted one never
+        // does: its strike-through says it was taken back.
+        if entry.redaction.is_none()
+            && let Some(body) = self.faces.get(&entry.id).and_then(|face| face.body.clone())
+        {
+            let slot = Rect::new(
+                glyph_x,
+                row.y0,
+                (row.x1 - self.time_slot_w() - chip_reserve - TRAILING_INSET).max(glyph_x),
+                row.y1,
+            );
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &slot,
+            );
+            body.paint(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                slot,
+            );
+            scene.pop_layer();
+            return;
+        }
         // What kind of change it was, as an icon of the set.
         let icon_side = f64::from(theme.tokens.metrics.icon_sm);
         crate::icons::draw_icon(
@@ -2304,11 +2511,11 @@ impl ActivityTimeline {
         let (summary_owned, is_redacted_row): (String, bool) =
             if let Some(redaction) = entry.redaction.as_ref() {
                 (
-                    format!(
-                        "[redacted by {} on {} \u{2014} {:?}]",
-                        redaction.redactor_label,
-                        format_relative_time(redaction.redacted_at, now),
-                        redaction.reason,
+                    crate::i18n!(
+                        "history-redacted",
+                        "who" => redaction.redactor_label.as_str(),
+                        "when" => format_relative_time(redaction.redacted_at, now),
+                        "reason" => redaction.reason.as_str()
                     ),
                     true,
                 )
@@ -2320,9 +2527,10 @@ impl ActivityTimeline {
                 } else {
                     Self::entry_breadcrumb(entry)
                 };
+                let said = self.summary_of(entry);
                 let summary = breadcrumb.map_or_else(
-                    || entry.summary.clone(),
-                    |breadcrumb| format!("{breadcrumb} · {}", entry.summary),
+                    || said.to_owned(),
+                    |breadcrumb| format!("{breadcrumb} · {said}"),
                 );
                 (summary, false)
             };
@@ -2383,9 +2591,21 @@ impl ActivityTimeline {
             cy,
             ref text_style,
             offers_revert,
+            offers_copy,
             chip_reserve,
             ..
         } = layout;
+        if offers_copy {
+            draw_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                self.copy_chip_painted(row, offers_revert),
+                &crate::i18n!("history-entry-copy"),
+                false,
+            );
+        }
         let rel = fit_text(
             text_renderer,
             &row_time(entry, now),
@@ -2419,7 +2639,7 @@ impl ActivityTimeline {
                 text_renderer,
                 theme,
                 chip_rect,
-                "Revert",
+                &crate::i18n!("history-entry-revert"),
                 false,
             );
         }
@@ -2503,15 +2723,35 @@ impl ActivityTimeline {
                     tr,
                     theme,
                     name_rect,
-                    if rg.name.is_some() { "Rename" } else { "Name" },
+                    &crate::i18n::I18nManager::lookup_plain(if rg.name.is_some() {
+                        "history-band-rename"
+                    } else {
+                        "history-band-name"
+                    }),
                     rg.name.is_some(),
                 );
             }
             if let Some(r) = self.group_chip_rects_full(row, rg).undo {
-                draw_chip(scene, transform, tr, theme, r, "Undo", false);
+                draw_chip(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    r,
+                    &crate::i18n!("history-band-undo"),
+                    false,
+                );
             }
             if let Some(r) = restore_rect {
-                draw_chip(scene, transform, tr, theme, r, "Restore", false);
+                draw_chip(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    r,
+                    &crate::i18n!("history-band-restore"),
+                    false,
+                );
             }
         }
     }
@@ -2872,9 +3112,9 @@ impl ActivityTimeline {
         // The author pill is anchored right when this standalone widget owns
         // people filtering. RoomActivity can supply that control itself.
         let author_label = if self.author_query.is_empty() {
-            "author:any".to_string()
+            crate::i18n!("history-author-anyone")
         } else {
-            format!("author:{}", self.author_query)
+            self.author_query.clone()
         };
         let author_full_w = if self.show_author_pill {
             chip_width(text_renderer, &author_label).min(strip.width() * 0.45)
@@ -3133,6 +3373,17 @@ impl ActivityTimeline {
 }
 
 impl Widget for ActivityTimeline {
+    /// Over an author's face, their name.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        if !self.rect.contains(point) {
+            return None;
+        }
+        (0..self.row_count()).find_map(|i| {
+            let face = self.avatar_rect(i).filter(|face| face.contains(point))?;
+            Some((face, self.author_label(self.row_entry(i)?).to_owned()))
+        })
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3159,6 +3410,9 @@ impl Widget for ActivityTimeline {
         _presence: &PresenceCtx,
     ) {
         self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
+        if self.face_theme != *theme {
+            self.face_theme = theme.clone();
+        }
         if self.draws_own_surface {
             self.draw_surface_chrome(scene, transform, theme);
         }
@@ -3200,6 +3454,25 @@ impl Widget for ActivityTimeline {
                 && !ctx.modifiers.state().super_key() =>
             {
                 self.handle_naming_key(event, *ctx.modifiers, ctx.handled);
+            }
+            // Copy copies what the focused change's face copies (a
+            // calculation's result); with nothing to copy it is the host's.
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(c),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if (ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key())
+                && c.eq_ignore_ascii_case("c")
+                && self
+                    .focused_row()
+                    .and_then(|row| self.row_face(row))
+                    .is_some_and(|face| face.copy.is_some()) =>
+            {
+                *ctx.handled = self.focused_row().is_some_and(|row| self.copy_row(row));
             }
             // Author typeahead. Chorded keys are left alone so the host's
             // own shortcuts still work while the pane has the keyboard.
@@ -3320,9 +3593,9 @@ impl Widget for ActivityTimeline {
                         let item = self.entries.get(*entry)?;
                         let id = crate::widget::history_group::hex16(&item.id);
                         let said = if item.is_genesis() {
-                            item.summary.clone()
+                            self.summary_of(item).to_owned()
                         } else {
-                            format!("{}: {}", item.author.name, item.summary)
+                            format!("{}: {}", item.author.name, self.summary_of(item))
                         };
                         let name = Self::entry_breadcrumb(item).map_or_else(
                             || said.clone(),
@@ -3363,7 +3636,7 @@ impl Widget for ActivityTimeline {
             .collect();
         Some(
             AccessNode::new(Role::List)
-                .with_name("History entries")
+                .with_name(crate::i18n!("history-entries"))
                 .with_description(description)
                 .with_state(
                     AccessState::new()
@@ -3534,7 +3807,8 @@ impl ActivityTimeline {
 
             // `[Clear filters]` — the way back out. Without it the user has
             // to remember which chip they pressed to get here.
-            let label = "Clear filters";
+            let label = crate::i18n!("history-filters-clear");
+            let label = label.as_str();
             let (lw, lh) = text_renderer.measure_style(label, None, &small);
             let chip_w = (f64::from(lw) + 20.0).min(budget.max(24.0));
             let chip_h = f64::from(lh) + 10.0;
@@ -3958,6 +4232,20 @@ impl ActivityTimeline {
         handled: &mut bool,
         modifiers: winit::event::Modifiers,
     ) {
+        if self
+            .copy_chip_rect(i)
+            .is_some_and(|chip| chip.contains(self.last_cursor))
+        {
+            let _ = self.copy_row(i);
+            *handled = true;
+            return;
+        }
+        // A change the app takes up opens there; shift-click still extends
+        // a range over it.
+        if !modifiers.state().shift_key() && self.open_row(i) {
+            *handled = true;
+            return;
+        }
         if let Some(chip) = self.revert_chip_rect(i)
             && chip.contains(self.last_cursor)
         {
@@ -4168,7 +4456,6 @@ mod tests {
                     theme.name
                 );
 
-                // Band backdrop against the pane beside its inset.
                 let band_row = (0..t.row_count())
                     .find(|i| t.group_at_row(*i).is_some())
                     .expect("two authors' runs produce a band");
@@ -4268,8 +4555,37 @@ mod tests {
             assert!(!spoken(&timeline).starts_with(&task));
         }
 
+        fn a_described_change_reads_as_its_description_and_falls_back_to_its_summary() {
+            let entry = entry(EntryKind::Text, "Alice", 10, 1);
+            let id = entry.id;
+            let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), vec![entry]);
+            let spoken = |timeline: &ActivityTimeline| {
+                Widget::accessibility(timeline)
+                    .expect("timeline semantics")
+                    .children
+                    .iter()
+                    .filter_map(|node| node.name.clone())
+                    .collect::<Vec<_>>()
+                    .join("|")
+            };
+            let raw = timeline.entries()[0].summary.clone();
+            assert!(spoken(&timeline).contains(&raw));
+            timeline.set_descriptions(std::collections::HashMap::from([(
+                id,
+                "Noted that costs rose".to_owned(),
+            )]));
+            assert!(spoken(&timeline).contains("Noted that costs rose"));
+            assert_eq!(
+                timeline.summary_of(&timeline.entries()[0]),
+                "Noted that costs rose"
+            );
+            timeline.set_descriptions(std::collections::HashMap::new());
+            assert!(spoken(&timeline).contains(&raw));
+        }
+
         ux1x_pane_chips_and_bands_keep_a_derived_edge_on_both_presets();
         provenance_breadcrumbs_and_collapsed_mixed_scope_survive_hidden_rows();
+        a_described_change_reads_as_its_description_and_falls_back_to_its_summary();
         a_task_band_says_it_is_a_task_and_a_named_run_does_not();
         host_can_suppress_duplicate_author_pill_without_hiding_op_filters();
     }
@@ -4311,6 +4627,102 @@ mod tests {
         timeline_at(rect, entries)
             .on_revert(|_| {})
             .on_name_group(|_| {})
+    }
+
+    /// An app's presenter decides how its changes read: a face's words name
+    /// the row, its body sets the row's height, choosing a change it opens
+    /// hands it to the app instead of selecting it, and Copy copies what the
+    /// face copies. Changes without a face keep their sentence.
+    #[test]
+    fn a_presented_change_reads_opens_and_copies_as_the_app_says() {
+        struct Tall;
+        impl crate::widget::EntryBody for Tall {
+            fn height(&self, _: &Theme) -> f64 {
+                ROW_HEIGHT * 2.0
+            }
+            fn paint(&self, _: &mut PaintCtx<'_>, _: Rect) {}
+        }
+        struct Calculations;
+        impl HistoryEntryPresenter for Calculations {
+            fn face(&self, entry: &HistoryEntry) -> Option<EntryFace> {
+                (entry.id.0[0] == 1).then(|| {
+                    EntryFace::new("1+2 = 3")
+                        .with_body(Rc::new(Tall))
+                        .copying("3")
+                        .opening()
+                })
+            }
+        }
+        let _host = crate::host::enter(&crate::host::HostServices::null());
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&opened);
+        let presented = entry(EntryKind::Details, "Alice", 10, 1);
+        let plain = entry(EntryKind::Details, "Alice", 20, 2);
+        let (presented_id, plain_summary) = (presented.id, plain.summary.clone());
+        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), vec![presented, plain])
+            .on_open_entry(move |id| seen.borrow_mut().push(*id));
+        timeline.set_entry_presenter(Some(Rc::new(Calculations)));
+        let row = (0..timeline.row_count())
+            .find(|row| {
+                timeline
+                    .row_entry(*row)
+                    .is_some_and(|entry| entry.id == presented_id)
+            })
+            .expect("the change is listed");
+        let names: Vec<String> = Widget::accessibility(&timeline)
+            .expect("timeline semantics")
+            .children
+            .iter()
+            .filter_map(|node| node.name.clone())
+            .collect();
+        assert!(
+            names.iter().any(|name| name.ends_with("1+2 = 3")),
+            "{names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name.ends_with(&plain_summary)),
+            "{names:?}"
+        );
+        assert!((timeline.row_height(row) - ROW_HEIGHT * 2.0).abs() < 1e-9);
+
+        assert!(timeline.copy_row(row), "the face copies its result");
+        assert_eq!(
+            crate::text_selection::clipboard_paste().as_deref(),
+            Some("3")
+        );
+
+        assert!(timeline.activate_row(row));
+        assert_eq!(*opened.borrow(), vec![presented_id], "the app takes it up");
+        assert!(timeline.selection.is_none(), "opening is not selecting");
+    }
+
+    /// A band says what the app says it amounts to, in place of how many
+    /// characters moved.
+    #[test]
+    fn a_presenter_says_what_a_band_amounts_to() {
+        struct Counting;
+        impl HistoryEntryPresenter for Counting {
+            fn face(&self, _: &HistoryEntry) -> Option<EntryFace> {
+                None
+            }
+            fn group_summary(&self, entries: &[HistoryEntry]) -> Option<String> {
+                Some(format!("{} calculations", entries.len()))
+            }
+        }
+        let entries: Vec<HistoryEntry> = (1..=3)
+            .map(|id| entry(EntryKind::Text, "Alice", u64::from(id), id))
+            .collect();
+        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
+        let band = |timeline: &ActivityTimeline| {
+            (0..timeline.row_count())
+                .find_map(|row| timeline.group_subtitle_at_row(row))
+                .expect("the changes form a band")
+        };
+        assert!(band(&timeline).contains("chars"), "{}", band(&timeline));
+        timeline.set_entry_presenter(Some(Rc::new(Counting)));
+        let said = band(&timeline);
+        assert!(said.contains("3 calculations"), "{said}");
+        assert!(!said.contains("chars"), "{said}");
     }
 
     #[test]
@@ -4492,7 +4904,7 @@ mod tests {
             assert_eq!(title, "No activity matches these filters");
             let detail = detail.expect("a filtered-empty list must say why");
             assert!(
-                detail.contains("2 hidden"),
+                detail.contains('2') && detail.contains("hidden"),
                 "counts what it is hiding: {detail}"
             );
             assert!(detail.contains("Comments"), "names the filter: {detail}");
@@ -4873,7 +5285,6 @@ mod tests {
                     "the bottom edge of row {i} still belongs to it"
                 );
             }
-            // Left of the row list's inset, and below the last row.
             let r0 = t.row_rect(0).unwrap();
             assert_eq!(t.row_at(Point::new(r0.x0 - 4.0, r0.center().y)), None);
             assert_eq!(t.row_at(Point::new(250.0, 499.9)), None);
@@ -5905,7 +6316,6 @@ mod group_tests {
             // work, so bands sort by their newest change and stay contiguous.
             let day = 86_400u64;
             let mut entries: Vec<HistoryEntry> = Vec::new();
-            // Local session, recent.
             for i in 0..4 {
                 entries.push(entry(EntryKind::Text, "Alice", NOW - 60 + u64::from(i), i));
             }

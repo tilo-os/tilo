@@ -124,10 +124,6 @@ pub fn create_dir(path: &Path) -> Result<(), StoreError> {
 
 /// Atomically replace `path` with `bytes`, durably: the file, and its
 /// entry in its parent directory.
-///
-/// # Errors
-///
-/// Returns an error when the write or a barrier fails.
 pub fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     crate::atomic_write(path, bytes)?;
     // native::atomic fsyncs the parent and fails when that fails. Apple's fsync
@@ -190,9 +186,6 @@ pub struct GenerationGc {
     lineage: PathBuf,
     entries: crate::bounded::DirectoryCursor,
     child: Option<(PathBuf, crate::bounded::DirectoryCursor)>,
-    /// The next quantum's barrier already holds: the caller has just
-    /// written CURRENT with [`durable_write`], which synced it and the
-    /// lineage after the rename.
     barrier_held: bool,
     /// This collection removed something, which its last quantum syncs.
     removed: bool,
@@ -225,11 +218,6 @@ impl GenerationGc {
         })
     }
     /// One quantum of collection.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `CURRENT` is missing or a barrier, listing or
-    /// removal fails.
     pub fn step(
         &mut self,
         limit: crate::bounded::WorkLimit,

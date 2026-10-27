@@ -64,6 +64,10 @@ pub enum Content {
     /// Presentation only: never interpreted as an instruction or tool call.
     Reasoning {
         text: String,
+        /// Opaque provider state that carries the reasoning into the next
+        /// turn, such as `OpenAI` Responses' encrypted reasoning; never shown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extra_content: Option<Value>,
     },
     /// Inline bytes, never a local path or an implicit URL fetch.
     Image {
@@ -86,9 +90,6 @@ pub struct ToolDefinition {
 impl ToolDefinition {
     /// Validate the structural vocabulary used by the advertised tool schemas.
     /// Permission and application-specific checks still belong to dispatch.
-    ///
-    /// # Errors
-    /// Returns an invalid-response error when arguments do not match the schema.
     pub fn validate_input(&self, input: &Value) -> Result<(), ModelError> {
         validate_input(input, &self.input_schema)
             .map_err(|reason| ModelError::invalid(format!("{}: {reason}", self.name)))
@@ -203,9 +204,28 @@ pub enum StopReason {
 /// Normalized token accounting. Missing provider counters remain zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
+    /// Every input token: uncached, read from a cache and written to one.
     pub input_tokens: u64,
+    /// Every output token, reasoning included.
     pub output_tokens: u64,
     pub total_tokens: u64,
+    /// The part of `input_tokens` read from the provider's prompt cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cached_input_tokens: u64,
+    /// The part of `input_tokens` written to the provider's prompt cache.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cache_write_tokens: u64,
+    /// The part of `output_tokens` spent reasoning.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub reasoning_tokens: u64,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+const fn is_zero(count: &u64) -> bool {
+    *count == 0
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -569,7 +589,7 @@ impl StreamState {
                 for block in &response.message.content {
                     match block {
                         Content::Text { text: part } => text.push_str(part),
-                        Content::Reasoning { text: part } => reasoning.push_str(part),
+                        Content::Reasoning { text: part, .. } => reasoning.push_str(part),
                         _ => {}
                     }
                 }
@@ -666,7 +686,7 @@ pub trait ModelBackend {
             for content in &response.message.content {
                 match content {
                     Content::Text { text } => sink(StreamEvent::TextDelta { text: text.clone() }),
-                    Content::Reasoning { text } => {
+                    Content::Reasoning { text, .. } => {
                         sink(StreamEvent::ReasoningDelta { text: text.clone() });
                     }
                     _ => {}
@@ -761,6 +781,7 @@ mod tests {
             });
             final_response.message.content.push(Content::Reasoning {
                 text: "Summary".into(),
+                extra_content: None,
             });
             state.apply(&StreamEvent::Finished {
                 response: final_response,
@@ -841,6 +862,9 @@ mod tests {
             input_tokens: 12,
             output_tokens: 3,
             total_tokens: 15,
+            cached_input_tokens: 8,
+            cache_write_tokens: 2,
+            reasoning_tokens: 1,
         };
         let encoded = serde_json::to_value(&answer).unwrap();
         assert_eq!(

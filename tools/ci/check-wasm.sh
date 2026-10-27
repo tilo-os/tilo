@@ -8,7 +8,7 @@
 #   tools/ci/check-wasm.sh [-p <browser crate>]...
 #   CARGO=<any cargo drop-in> tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)
 #
-# check.yml's `wasm` job runs it with the selected browser crates. A lint, not
+# t.toml's `wasm` check runs it with the browser crates. A lint, not
 # a build: the link and the web runtime's post-processing need wasm-bindgen
 # and binaryen.
 set -euo pipefail
@@ -16,9 +16,12 @@ cd "$(dirname "$0")/../.."
 
 cargo=${CARGO:-cargo}
 target=wasm32-unknown-unknown
-# Lints that misfire on wasm32 alone: browser handles are neither Send nor
-# Sync, and std::fs::File there holds nothing to drop.
-allow=(-A clippy::future_not_send -A clippy::arc_with_non_send_sync -A clippy::drop_non_drop)
+# Lints that misfire on wasm32 alone (package_sets.WASM_CLIPPY_ALLOW, which the
+# check and clippy families' wasm pass allows too).
+allow=()
+for lint in $(python3 -c 'import sys; sys.path.insert(0, "tools/ci"); import package_sets; print(*package_sets.WASM_CLIPPY_ALLOW)'); do
+  allow+=(-A "$lint")
+done
 
 clippy() {
   local label=$1

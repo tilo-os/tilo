@@ -179,10 +179,10 @@ class AppReleaseTests(unittest.TestCase):
                     self.assertEqual(1, sum(len(values) for values in classified.values()))
             # Non-input prose and an unrelated CI helper must not become fleet rebuilds.
             self.assertEqual([], app_release.apps_from_changes(
-                ['docs/architecture.md', 'tools/ci/timing_report.py'], CATALOG))
+                ['docs/architecture.md', 'tools/ci/measure.sh'], CATALOG))
         with self.subTest(phase='check scheduling is not an app release dependency'):
-            paths = ['tools/ci/affected_packages.py', 'tools/tests/test_ci_select.py',
-                     'docs/ci-performance.md']
+            paths = ['tools/ci/suites.py', 'tools/tests/test_suites.py',
+                     'docs/t.md']
             self.assertEqual([], app_release.apps_from_changes(paths, CATALOG))
             self.assertEqual({'binary': [], 'packaging': [], 'verification': []},
                              app_release.input_classification(paths))
@@ -195,15 +195,15 @@ class AppReleaseTests(unittest.TestCase):
                 def git(*args):
                     return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
                 git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@invalid')
-                for relative in ('tools/ci/affected_packages.py', 'tools/ci/workspace_graph.py'):
+                for relative in ('tools/ci/suites.py', 'tools/ci/workspace_graph.py'):
                     target = root / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text((ROOT / relative).read_text())
                 git('add', 'tools'); git('commit', '-qm', 'shared graph baseline')
                 base = git('rev-parse', 'HEAD')
-                scheduler = root / 'tools/ci/affected_packages.py'
-                scheduler.write_text(scheduler.read_text().replace('MAX_DEVELOPER_SHARDS = 2', 'MAX_DEVELOPER_SHARDS = 3'))
-                git('commit', '-qam', 'change check fanout')
+                scheduler = root / 'tools/ci/suites.py'
+                scheduler.write_text(scheduler.read_text().replace('SUITE_TIMEOUT_SECONDS = 600', 'SUITE_TIMEOUT_SECONDS = 601'))
+                git('commit', '-qam', 'change suite timeout')
                 args = SimpleNamespace(root=root, config=ROOT / 'dist/apps/app-collections.toml',
                                        tag='', apps='', base=base, collection='default')
                 with mock.patch.object(app_release, 'app_catalog', return_value=app_release.app_catalog(ROOT)), \

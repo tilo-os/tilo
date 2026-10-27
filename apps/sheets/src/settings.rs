@@ -64,7 +64,6 @@ mod tests {
     /// The locale section reads forgivingly and layers under the document.
     #[test]
     fn locale_reads_and_layers_under_the_document() {
-        // Case `parses_locale_section`.
         {
             let json = r#"{"currency":"EUR","date_format":"EU","time_format":"H12","measurement":"Imperial"}"#;
             let locale: Locale = serde_json::from_str(json).unwrap();
@@ -74,7 +73,6 @@ mod tests {
             assert_eq!(locale.measurement, Measurement::Imperial);
         }
 
-        // Case `a_partial_section_keeps_the_other_defaults`.
         {
             let locale: Locale = serde_json::from_str(r#"{"currency":"GBP"}"#).unwrap();
             assert_eq!(locale.currency, Currency::GBP);
@@ -83,7 +81,6 @@ mod tests {
             assert_eq!(locale.measurement, Measurement::Metric);
         }
 
-        // Case `doc_override_layers_over_global`.
         {
             let global = Locale {
                 currency: Currency::USD,
@@ -103,7 +100,6 @@ mod tests {
             assert_eq!(eff.time_format, TimeStyle::H24); // inherited from global
         }
 
-        // Case `empty_doc_settings_inherit_everything`.
         {
             let global = Locale {
                 currency: Currency::GBP,

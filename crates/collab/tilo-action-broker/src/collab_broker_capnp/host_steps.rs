@@ -1,6 +1,6 @@
 //! Steps the host itself runs for the person at this device: pairing a
-//! nearby device, and administering the person's identities and the devices
-//! trusted under them.
+//! nearby device, administering the person's identities and the devices
+//! trusted under them, and changing the person's settings.
 //!
 //! Each is answered under the host's own provider, offered only to a caller
 //! on this machine confined to a room, and admitted against that room's
@@ -10,91 +10,22 @@
 
 use std::sync::Arc;
 
-use tilo_actions::remote::{Pending, device_pairing, identity_admin};
-use tilo_actions::{ActionAddress, ActionDescriptor};
-
-use super::{BrokerActor, CapnpBrokerState};
-use crate::services::{
-    DevicePairingOutcome, DevicePairingRequest, DevicePairingServices, HostServices,
-    IdentityAdminRequest, IdentityAdminServices,
-};
+use super::CapnpBrokerState;
+use crate::services::{HostServices, HostStepOutcome, HostStepRequest, HostStepServices};
 use tilo_actions::remote::{
-    ActionHostError, Caller, InvocationReceipt, InvokeRequest, Reservation,
+    ActionHostError, Caller, InvocationReceipt, InvokeRequest, Pending, Reservation,
 };
 
-/// One installed host-step service.
-#[derive(Clone)]
-pub(super) enum HostSteps {
-    Pairing(Arc<dyn DevicePairingServices>),
-    Identity(Arc<dyn IdentityAdminServices>),
-}
-
-impl HostSteps {
-    /// Every host-step service `services` installs.
-    pub(super) fn installed(services: &HostServices) -> Vec<Self> {
-        let pairing = services.device_pairing.clone().map(Self::Pairing);
-        let identity = services.identity_admin.clone().map(Self::Identity);
-        pairing.into_iter().chain(identity).collect()
-    }
-
-    /// The installed service that answers under `provider`, if any.
-    pub(super) fn for_provider(services: &HostServices, provider: &str) -> Option<Self> {
-        Self::installed(services)
-            .into_iter()
-            .find(|steps| steps.provider() == provider)
-    }
-
-    /// The provider the steps are answered under.
-    pub(super) fn provider(&self) -> &'static str {
-        match self {
-            Self::Pairing(_) => device_pairing::PROVIDER,
-            Self::Identity(_) => identity_admin::PROVIDER,
-        }
-    }
-
-    /// The application whose controls reach the steps as their person.
-    pub(super) fn app_id(&self) -> &str {
-        match self {
-            Self::Pairing(service) => service.app_id(),
-            Self::Identity(service) => service.app_id(),
-        }
-    }
-
-    /// Every step, described.
-    pub(super) fn descriptors(&self) -> Vec<ActionDescriptor> {
-        match self {
-            Self::Pairing(service) => service.descriptors(),
-            Self::Identity(service) => service.descriptors(),
-        }
-    }
-
-    /// Start the admitted step `address` for `actor` in `room`.
-    ///
-    /// # Errors
-    ///
-    /// Why the host refuses to start it.
-    pub(super) fn start(
-        &self,
-        room: &str,
-        actor: &BrokerActor,
-        address: &ActionAddress,
-        argument: Option<&str>,
-    ) -> Result<Pending<DevicePairingOutcome>, String> {
-        match self {
-            Self::Pairing(service) => service.start(&DevicePairingRequest {
-                room,
-                actor,
-                address,
-                argument,
-            }),
-            Self::Identity(service) => service.start(&IdentityAdminRequest {
-                room,
-                actor,
-                address,
-                argument,
-            }),
-        }
-    }
+/// The installed host-step service that answers under `provider`, if any.
+pub(super) fn for_provider(
+    services: &HostServices,
+    provider: &str,
+) -> Option<Arc<dyn HostStepServices>> {
+    services
+        .host_steps
+        .iter()
+        .find(|steps| steps.provider() == provider)
+        .cloned()
 }
 
 /// Transport keys alone never grant access to a service on this device.
@@ -179,7 +110,7 @@ impl CapnpBrokerState {
         self: &Arc<Self>,
         caller: &Caller,
         origin: Option<&super::published_invocation::InvocationCaller>,
-        steps: &super::host_steps::HostSteps,
+        steps: &dyn HostStepServices,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let abandon = |error: ActionHostError| {
@@ -208,17 +139,13 @@ impl CapnpBrokerState {
             return Err(abandon(ActionHostError::NotPermitted));
         };
         let address = &request.target.address;
-        let Some(descriptor) = steps
-            .descriptors()
-            .into_iter()
-            .find(|descriptor| &descriptor.address == address)
-        else {
+        let argument = request.argument.to_slot();
+        let Some(descriptor) = steps.invocation(address, argument.as_deref()) else {
             return Err(abandon(ActionHostError::UnknownAction));
         };
         let (workspace, policy, now) = self
             .current_framework_authority(caller, origin, room)
             .map_err(abandon)?;
-        let argument = request.argument.to_slot();
         // One answer covers both gates of this exact host invocation.
         let witnessed = self.consume_answer(
             request.confirmation.as_ref(),
@@ -280,7 +207,36 @@ impl CapnpBrokerState {
             )?;
             Ok(policy)
         })?;
-        let started = steps.start(room, &policy, address, argument.as_deref());
+        let step = HostStepRequest {
+            room,
+            actor: &policy,
+            address,
+            argument: argument.as_deref(),
+        };
+        if descriptor.contract.is_live() {
+            let view = match steps.watch(&step) {
+                Ok(view) => view,
+                Err(reason) => {
+                    self.complete_host_action(
+                        &admitted,
+                        host_step_failure(request.invocation, "host_step_refused", &reason),
+                    )?;
+                    return Err(ActionHostError::Refused { reason });
+                }
+            };
+            let following = super::live_views::Following {
+                caller: caller.clone(),
+                origin: origin.cloned(),
+                room: room.to_owned(),
+                app_id: steps.app_id().to_owned(),
+                descriptor,
+                witnessed,
+            };
+            self.follow_live_view(admitted, following, view)
+                .map_err(|reason| ActionHostError::Refused { reason })?;
+            return Ok(self.receipt_for(request.invocation, id));
+        }
+        let started = steps.start(&step);
         match started {
             Ok(started) => self.follow_admitted_host_step(admitted, started),
             Err(reason) => {
@@ -298,7 +254,7 @@ impl CapnpBrokerState {
     pub(super) fn follow_admitted_host_step(
         self: &Arc<Self>,
         admitted: super::host_action_admission::AdmittedHostAction,
-        started: Pending<DevicePairingOutcome>,
+        started: Pending<HostStepOutcome>,
     ) {
         let state = Arc::clone(self);
         started.then(move |outcome| {
@@ -467,11 +423,12 @@ pub(super) mod signed_test_support {
                 tilo_identity_host::provisioning::IdentityStorage::Files,
             )
             .expect("provision the production receipt signer");
-            let mut workspace = Workspace::new(WorkspaceId(9), "Host actions");
-            workspace.set_room(
+            let mut workspace = Workspace::in_room(
+                WorkspaceId(9),
                 tilo_desktop_model::RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
+                "Host actions",
             );
-            let room = workspace.room.to_string();
+            let room = workspace.room().to_string();
             let (key, certificate) =
                 tilo_identity_host::broker::trusted_current_device(&room).unwrap();
             let owner = Arc::new(
@@ -596,7 +553,7 @@ pub(super) mod signed_test_support {
 
         fn owner(&self) -> super::super::InvocationOwner {
             match &self.origin {
-                InvocationCaller::Certified { caller, .. } => caller.owner(),
+                InvocationCaller::Certified { caller, .. } => caller.owner().unwrap(),
                 InvocationCaller::Local { admitted, .. } => {
                     let certificate = admitted.certificate.as_ref().unwrap();
                     super::super::InvocationOwner::AuthenticatedLocal {
@@ -624,7 +581,7 @@ pub(super) mod signed_test_support {
                 ),
             };
             pending
-                .wait_timeout(std::time::Duration::from_secs(5))
+                .wait_timeout(tilo_test_env::hang_bound())
                 .ok()
                 .flatten()
                 .expect("host admission answers immediately")
@@ -643,7 +600,7 @@ pub(super) mod signed_test_support {
                 }
             };
             pending
-                .wait_timeout(std::time::Duration::from_secs(5))
+                .wait_timeout(tilo_test_env::hang_bound())
                 .ok()
                 .flatten()
                 .expect("catalogue answers immediately")
@@ -745,7 +702,7 @@ pub(super) mod signed_test_support {
 mod identity_admin_tests {
     use super::super::action_host::RowScope;
     use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
-    use crate::services::{IdentityAdminOutcome, IdentityAdminRequest, IdentityAdminServices};
+    use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
@@ -758,7 +715,7 @@ mod identity_admin_tests {
     #[derive(Default)]
     struct Host {
         started: Mutex<Vec<(String, String, String)>>,
-        answers: Mutex<Vec<Completer<IdentityAdminOutcome>>>,
+        answers: Mutex<Vec<Completer<HostStepOutcome>>>,
         admission_check: Mutex<Option<Box<dyn Fn() + Send>>>,
     }
 
@@ -778,7 +735,11 @@ mod identity_admin_tests {
         }
     }
 
-    impl IdentityAdminServices for Host {
+    impl HostStepServices for Host {
+        fn provider(&self) -> &'static str {
+            identity_admin::PROVIDER
+        }
+
         fn app_id(&self) -> &'static str {
             "so.tilo.settings"
         }
@@ -803,10 +764,7 @@ mod identity_admin_tests {
                 .collect()
         }
 
-        fn start(
-            &self,
-            request: &IdentityAdminRequest<'_>,
-        ) -> Result<Pending<IdentityAdminOutcome>, String> {
+        fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
             if let Some(check) = self.admission_check.lock().unwrap().as_ref() {
                 check();
             }
@@ -825,7 +783,7 @@ mod identity_admin_tests {
         let owner = hex::encode([41; 32]);
         let mut workspace = Workspace::new(WorkspaceId(9), "Identities");
         workspace.set_owner(owner.clone());
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
         let (state, _bridge_rx) = CapnpBrokerState::new_configured(
@@ -836,7 +794,7 @@ mod identity_admin_tests {
             None,
             None,
             crate::services::HostServices {
-                identity_admin: Some(host),
+                host_steps: vec![host],
                 ..Default::default()
             },
         );
@@ -864,7 +822,7 @@ mod identity_admin_tests {
     ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
         state
             .action_invoke(caller, None, None, request)
-            .wait_timeout(std::time::Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .expect("admission answers at once")
@@ -873,7 +831,11 @@ mod identity_admin_tests {
     #[derive(Default)]
     struct PairingHost(Host);
 
-    impl crate::services::DevicePairingServices for PairingHost {
+    impl HostStepServices for PairingHost {
+        fn provider(&self) -> &'static str {
+            tilo_actions::remote::device_pairing::PROVIDER
+        }
+
         fn app_id(&self) -> &str {
             self.0.app_id()
         }
@@ -893,16 +855,8 @@ mod identity_admin_tests {
             vec![descriptor]
         }
 
-        fn start(
-            &self,
-            request: &crate::services::DevicePairingRequest<'_>,
-        ) -> Result<Pending<crate::services::DevicePairingOutcome>, String> {
-            self.0.start(&IdentityAdminRequest {
-                room: request.room,
-                actor: request.actor,
-                address: request.address,
-                argument: request.argument,
-            })
+        fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
+            self.0.start(request)
         }
     }
 
@@ -917,10 +871,11 @@ mod identity_admin_tests {
                 let host = Arc::new(PairingHost::default());
                 let identity = Arc::new(Host::default());
                 let services = crate::services::HostServices {
-                    device_pairing: pairing
-                        .then(|| host.clone() as Arc<dyn crate::services::DevicePairingServices>),
-                    identity_admin: (!pairing)
-                        .then(|| identity.clone() as Arc<dyn IdentityAdminServices>),
+                    host_steps: vec![if pairing {
+                        host.clone() as Arc<dyn HostStepServices>
+                    } else {
+                        identity.clone()
+                    }],
                     ..Default::default()
                 };
                 let f = if foreign {
@@ -992,7 +947,7 @@ mod identity_admin_tests {
     fn device_pairing_uses_the_same_signed_admission_and_terminal_path() {
         let host = Arc::new(PairingHost::default());
         let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-            device_pairing: Some(host.clone()),
+            host_steps: vec![host.clone()],
             ..Default::default()
         });
         let mut asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1026,7 +981,7 @@ mod identity_admin_tests {
     fn identity_admin_signs_before_start_and_retains_the_original_uuid() {
         let host = Arc::new(Host::default());
         let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-            identity_admin: Some(host.clone()),
+            host_steps: vec![host.clone()],
             ..Default::default()
         });
         let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1070,7 +1025,7 @@ mod identity_admin_tests {
         for dropped in [false, true] {
             let host = Arc::new(Host::default());
             let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-                identity_admin: Some(host.clone()),
+                host_steps: vec![host.clone()],
                 ..Default::default()
             });
             let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1118,7 +1073,7 @@ mod identity_admin_tests {
         for admission_failure in [false, true] {
             let host = Arc::new(Host::default());
             let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-                identity_admin: Some(host.clone()),
+                host_steps: vec![host.clone()],
                 ..Default::default()
             });
             let asked = request(identity_admin::REMOVE, Some(Confirmation::Confirmed));
@@ -1154,7 +1109,6 @@ mod identity_admin_tests {
     #[test]
     fn host_steps_recheck_live_authority_after_blocked_durable_admission() {
         use std::sync::{atomic::Ordering, mpsc};
-        use std::time::Duration;
         use tilo_actions::InvocationUpdate;
 
         for certified in [false, true] {
@@ -1167,7 +1121,7 @@ mod identity_admin_tests {
             ] {
                 let host = Arc::new(Host::default());
                 let services = crate::services::HostServices {
-                    identity_admin: Some(host.clone()),
+                    host_steps: vec![host.clone()],
                     ..Default::default()
                 };
                 let mut f = if certified {
@@ -1189,18 +1143,18 @@ mod identity_admin_tests {
                     .unwrap()
                     .after_admission = Some(Box::new(move || {
                     entered.send(()).unwrap();
-                    resume.recv_timeout(Duration::from_secs(5)).unwrap();
+                    resume.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                 }));
                 let result = std::thread::scope(|scope| {
                     let state = f.state.clone();
                     let caller = f.caller.clone();
                     let origin = f.origin.clone();
-                    let steps = super::HostSteps::Identity(host.clone());
+                    let steps = host.clone();
                     let asked = &asked;
                     let worker = scope.spawn(move || {
-                        state.invoke_host_step(&caller, Some(&origin), &steps, asked)
+                        state.invoke_host_step(&caller, Some(&origin), steps.as_ref(), asked)
                     });
-                    blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                    blocked.recv_timeout(tilo_test_env::hang_bound()).unwrap();
                     // The journal writer holds a signed admission but has not
                     // returned a dispatch permit. Change authority in that gap.
                     match change {
@@ -1250,7 +1204,7 @@ mod identity_admin_tests {
         for revoked in [false, true] {
             let host = Arc::new(Host::default());
             let f = super::signed_test_support::Fixture::new(crate::services::HostServices {
-                identity_admin: Some(host.clone()),
+                host_steps: vec![host.clone()],
                 ..Default::default()
             });
             if revoked {
@@ -1399,5 +1353,204 @@ mod identity_admin_tests {
         let unconfined = Caller::local_person(owner);
         assert!(invoked(&state, &unconfined, &request(identity_admin::LIST, None)).is_err());
         assert!(host.started.lock().unwrap().is_empty(), "nothing started");
+    }
+}
+
+#[cfg(test)]
+mod settings_records_tests {
+    use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
+    use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
+    use crate::test_support::{
+        Grants as _, KindSet, Subject, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use std::sync::{Arc, Mutex};
+    use tilo_action_policy::edits::{FIELD_EDIT_TAG, Weaker, weakening_tag};
+    use tilo_actions::remote::{
+        ActionHostError, Caller, Confirmation, InvokeArgument, InvokeRequest, RemoteActionTarget,
+        settings_records,
+    };
+
+    const APP: &str = "so.tilo.settings";
+    const RESOURCE: &str = "settings:power";
+
+    /// The session's settings, standing in: one section whose lock delay
+    /// weakens the lock when longer or never.
+    struct Host {
+        minutes: Mutex<u32>,
+    }
+
+    impl Host {
+        fn descriptor(&self, privileged: bool) -> tilo_actions::ActionDescriptor {
+            let now = self.minutes.lock().unwrap().to_string();
+            tilo_actions::ActionDescriptor {
+                semantic_identity: None,
+                address: tilo_actions::ActionAddress::new(RESOURCE, "field-edit"),
+                resource_kind: "settings.power".into(),
+                resource_label: "Power".into(),
+                action_label: "Edit".into(),
+                description: None,
+                locus: tilo_actions::ExecutionLocus::default(),
+                kind: tilo_actions::OperationKind::Document,
+                contract: tilo_actions::ActionContract {
+                    kind: tilo_actions::ActionKind::Undoable,
+                    risk: if privileged {
+                        tilo_actions::RiskLevel::Privileged
+                    } else {
+                        tilo_actions::RiskLevel::Low
+                    },
+                    tags: vec![
+                        FIELD_EDIT_TAG.into(),
+                        tilo_actions::ARGUMENT_RISK_TAG.into(),
+                        weakening_tag(
+                            "lock_minutes",
+                            Some(&now),
+                            Weaker::Higher { weakest: Some(0) },
+                        ),
+                    ],
+                    ..tilo_actions::ActionContract::default()
+                },
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            }
+        }
+    }
+
+    impl HostStepServices for Host {
+        fn provider(&self) -> &'static str {
+            settings_records::PROVIDER
+        }
+
+        fn app_id(&self) -> &'static str {
+            APP
+        }
+
+        fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+            vec![self.descriptor(false)]
+        }
+
+        fn invocation(
+            &self,
+            address: &tilo_actions::ActionAddress,
+            argument: Option<&str>,
+        ) -> Option<tilo_actions::ActionDescriptor> {
+            let weakens = self
+                .descriptor(false)
+                .contract
+                .confirmation_for_argument(argument)
+                != tilo_actions::ConfirmationPolicy::None;
+            Some(self.descriptor(weakens)).filter(|descriptor| &descriptor.address == address)
+        }
+
+        fn start(
+            &self,
+            request: &HostStepRequest<'_>,
+        ) -> Result<tilo_actions::remote::Pending<HostStepOutcome>, String> {
+            let json = request
+                .argument
+                .and_then(|text| text.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+                .ok_or("no edit")?;
+            let arguments: serde_json::Value =
+                serde_json::from_str(json).map_err(|error| error.to_string())?;
+            let minutes = arguments["edit"]["value"].as_u64().ok_or("no value")?;
+            *self.minutes.lock().unwrap() = u32::try_from(minutes).map_err(|e| e.to_string())?;
+            Ok(tilo_actions::remote::Pending::ready(Ok(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
+    }
+
+    fn lock_after(minutes: u32, confirmation: Option<Confirmation>) -> InvokeRequest {
+        InvokeRequest {
+            on_behalf_of: None,
+            invocation: tilo_actions::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: settings_records::PROVIDER.into(),
+                address: tilo_actions::ActionAddress::new(RESOURCE, "field-edit"),
+            },
+            argument: InvokeArgument::Json(
+                serde_json::from_value(serde_json::json!({
+                    "edit": { "path": [{ "field": "lock_minutes" }], "op": "set", "value": minutes }
+                }))
+                .unwrap(),
+            ),
+            context: None,
+            confirmation,
+            revision: None,
+            wait_ms: None,
+            appearance: None,
+        }
+    }
+
+    fn invoked(
+        state: &Arc<CapnpBrokerState>,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+        state
+            .action_invoke(caller, None, None, request)
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .expect("admission answers at once")
+    }
+
+    /// With no window of Settings, the session changes the person's
+    /// settings: a change that weakens the lock asks the person first, and
+    /// an agent's needs their own answer; a stricter one asks nothing.
+    #[test]
+    fn a_setting_that_weakens_asks_the_person_and_an_agent_needs_their_answer() {
+        let host = Arc::new(Host {
+            minutes: Mutex::new(5),
+        });
+        let owner = hex::encode([41; 32]);
+        let mut workspace = Workspace::new(WorkspaceId(9), "Settings");
+        workspace.set_owner(owner.clone());
+        workspace.admit_agent("scribe", KindSet::READ);
+        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
+        let room = workspace.room().to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared().authority()),
+            None,
+            None,
+            crate::services::HostServices {
+                host_steps: vec![host.clone()],
+                ..Default::default()
+            },
+        );
+        let person = Caller::local_person(owner).in_room(room.clone());
+        let agent = Caller::local_agent("scribe").in_room(room);
+        let minutes = || *host.minutes.lock().unwrap();
+
+        invoked(&state, &person, &lock_after(1, None)).expect("locking sooner asks nothing");
+        assert_eq!(minutes(), 1);
+        assert_eq!(
+            invoked(&state, &person, &lock_after(0, None)),
+            Err(ActionHostError::ConfirmationRequired),
+            "never locking asks first"
+        );
+        assert_eq!(minutes(), 1);
+        invoked(
+            &state,
+            &person,
+            &lock_after(10, Some(Confirmation::Confirmed)),
+        )
+        .expect("the person confirmed it");
+        assert_eq!(minutes(), 10);
+
+        invoked(&state, &agent, &lock_after(5, None)).expect("the agent locks sooner");
+        assert_eq!(minutes(), 5);
+        for confirmation in [None, Some(Confirmation::Confirmed)] {
+            assert!(
+                invoked(&state, &agent, &lock_after(0, confirmation)).is_err(),
+                "an agent's own confirmation is no answer of the person's"
+            );
+        }
+        assert_eq!(minutes(), 5, "nothing weakened");
     }
 }

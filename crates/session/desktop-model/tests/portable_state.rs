@@ -1,5 +1,3 @@
-//! A persisted desktop loads with its ids, defaults and local view intact.
-
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 use serde_json::json;
 use tilo_desktop_model::DropTarget;
@@ -37,7 +35,7 @@ fn persisted_state_preserves_ids_defaults_and_record_binding() {
     let tree = persisted_tree();
     assert_eq!(tree.schema_version, 1);
     assert_eq!(
-        tree.workspaces[0].room.to_string(),
+        tree.workspaces[0].room().to_string(),
         "6f1c2d9e-4b3a-4e8f-9a7b-1c2d3e4f5a6b"
     );
     assert!(tree.workspaces[0].collaborators.is_empty());

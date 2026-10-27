@@ -1,10 +1,11 @@
 //! Target-local call lifecycle. Wire intent never grants microphone authority.
 //!
-//! Joining a voice channel is being in its call with the microphone on, as in
-//! any voice chat, unless the person last chose to be muted: that choice is
-//! theirs and remembered ([`CallPreferences`]). The microphone itself is
-//! asked for through the normal permission prompt, once for as long as the
-//! person allows it there, and while it captures the system shows it.
+//! Joining a voice channel is being in its call muted and listening, with no
+//! prompt: nothing is captured until the person unmutes. The first unmute
+//! asks for the microphone through the normal permission prompt, once for as
+//! long as the person allows it there, and while it captures the system
+//! shows it. A refused prompt leaves the person in the call, muted, and the
+//! call's status says why ([`Issue::PermissionDenied`]).
 //!
 //! The camera and a shared screen work the same way: turned on in the call
 //! by the person, asked for through the normal prompt (camera, screen
@@ -75,48 +76,6 @@ pub(crate) trait MediaFactory: Send + Sync {
     }
 }
 
-/// The person's own choice of joining calls muted: what they last chose
-/// with the microphone button, kept across calls and restarts. Kept in
-/// memory only until a file is installed (tests never touch a real one).
-#[derive(Default)]
-pub(crate) struct CallPreferences {
-    muted: AtomicBool,
-    path: OnceLock<std::path::PathBuf>,
-}
-#[derive(serde::Serialize, serde::Deserialize)]
-struct CallPreferencesFile {
-    join_muted: bool,
-}
-impl CallPreferences {
-    /// Where the choice lives for this person: their private state.
-    pub(crate) fn default_path() -> Option<std::path::PathBuf> {
-        crate::portal::private_state_root().map(|root| root.join("tilo/calls.json"))
-    }
-    fn install(&self, path: std::path::PathBuf) -> bool {
-        let muted = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<CallPreferencesFile>(&bytes).ok())
-            .is_some_and(|file| file.join_muted);
-        self.muted.store(muted, Ordering::Release);
-        self.path.set(path).is_ok()
-    }
-    pub(crate) fn join_muted(&self) -> bool {
-        self.muted.load(Ordering::Acquire)
-    }
-    pub(crate) fn remember(&self, muted: bool) {
-        if self.muted.swap(muted, Ordering::AcqRel) == muted {
-            return;
-        }
-        if let Some(path) = self.path.get()
-            && let Err(error) = tilo_files::native::atomic::json::write_private(
-                path,
-                &CallPreferencesFile { join_muted: muted },
-            )
-        {
-            tracing::warn!(%error, "the call mute choice was not saved");
-        }
-    }
-}
 /// The installed owner/client/codec adapter. Starting a session always listens
 /// muted. Stop methods synchronously fence capture/publication and cancel the
 /// exact device connection; device-worker state changes are never awaited here.
@@ -164,6 +123,12 @@ pub(crate) trait MediaSession: Send {
     }
     /// The pictures the app shows of the others now.
     fn show(&mut self, _shown: Vec<Shown>) {}
+    /// Play `participant` (a person or guest id) at `percent` of as they
+    /// arrive, on this device only.
+    fn set_volume(&mut self, _participant: String, _percent: u16) {}
+    /// Play nothing of the call (`true`), or play it again, and tell the
+    /// others. The microphone is stopped and restarted on its own.
+    fn set_deafened(&mut self, _deafened: bool) {}
     /// The pictures received after `after`, up to `budget` bytes but at
     /// least one, and where the next collection continues.
     fn take_pictures(&mut self, after: u64, _budget: usize) -> (Vec<Picture>, u64) {
@@ -244,10 +209,6 @@ struct Entry {
     capture: Option<Capture>,
     pending: Option<Pending>,
     worker: Option<tokio::task::AbortHandle>,
-    /// The join turns the microphone on once the call is live.
-    microphone_on_join: bool,
-    /// The call went live with the microphone wanted: ask for it.
-    unmute_due: bool,
     /// What the last tick saw of the call, to wake watchers when it changes.
     seen: Option<Seen>,
     /// The camera and screen this call publishes.
@@ -256,16 +217,67 @@ struct Entry {
     video_pending: BTreeMap<PictureSource, Pending>,
     /// When the capture leases are renewed next.
     renew_at: Instant,
+    /// Whether the microphone was muted when the person deafened: what
+    /// undeafening puts back.
+    muted_before_deafen: bool,
+}
+/// Silence or play what `entry`'s call plays here; its microphone is
+/// stopped or restarted on its own.
+fn deafen(entry: &mut Entry, deafened: bool) {
+    entry.snapshot.deafened = deafened;
+    if let Some(backend) = &entry.backend {
+        backend.lock_recover().set_deafened(deafened);
+    }
 }
 /// What a watcher of a call sees change between ticks.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Seen {
     state: State,
-    muted: bool,
     issue: Option<Issue>,
+    speaking: u64,
+    microphone: SeenMicrophone,
+    pictures: SeenPictures,
+}
+impl Seen {
+    /// What a watcher sees of the call `entry` now.
+    fn of(entry: &Entry) -> Self {
+        let speaking = entry
+            .backend
+            .as_ref()
+            .and_then(|backend| {
+                backend
+                    .lock()
+                    .ok()
+                    .map(|backend| backend.speaking_revision())
+            })
+            .unwrap_or_default();
+        Self {
+            state: entry.snapshot.state,
+            issue: entry.snapshot.issue,
+            speaking,
+            microphone: SeenMicrophone {
+                muted: entry.snapshot.muted,
+                capturing: entry.capture.is_some(),
+                asking: entry.pending.is_some(),
+            },
+            pictures: SeenPictures {
+                camera: entry.video.contains_key(&PictureSource::Camera),
+                screen: entry.video.contains_key(&PictureSource::Screen),
+            },
+        }
+    }
+}
+/// The microphone as a watcher sees it: muted, capturing, or asking the
+/// person first.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SeenMicrophone {
+    muted: bool,
     capturing: bool,
     asking: bool,
-    speaking: u64,
+}
+/// The pictures a call sends.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SeenPictures {
     camera: bool,
     screen: bool,
 }
@@ -291,7 +303,6 @@ struct Shared {
     listener: OnceLock<Arc<dyn Fn() + Send + Sync>>,
     privacy_listener: OnceLock<PrivacyListener>,
     output_disabled: AtomicBool,
-    preferences: CallPreferences,
     /// The rosters of each caller's record, as last heard.
     rosters: Mutex<BTreeMap<(String, String, String), Vec<Roster>>>,
     /// Woken whenever a status may have changed: what a `Watch` waits on.
@@ -338,7 +349,6 @@ impl NativeMediaService {
             listener: OnceLock::new(),
             privacy_listener: OnceLock::new(),
             output_disabled: AtomicBool::new(false),
-            preferences: CallPreferences::default(),
             rosters: Mutex::new(BTreeMap::new()),
             changed: tokio::sync::Notify::new(),
         });
@@ -379,13 +389,6 @@ impl NativeMediaService {
     }
     /// Keep the person's mute choice in `path` from now on, starting from
     /// what it holds.
-    pub(crate) fn install_preferences(&self, path: std::path::PathBuf) -> bool {
-        self.0.preferences.install(path)
-    }
-    #[cfg(test)]
-    pub(crate) fn preferences(&self) -> &CallPreferences {
-        &self.0.preferences
-    }
     pub(crate) fn capture_broker(&self) -> Arc<Mutex<CaptureBroker>> {
         Arc::clone(&self.0.capture)
     }
@@ -412,6 +415,7 @@ impl NativeMediaService {
             command,
             Command::Join { .. }
                 | Command::SetMuted { .. }
+                | Command::SetDeafened { .. }
                 | Command::SelectInput { .. }
                 | Command::Leave
         );
@@ -457,16 +461,41 @@ impl NativeMediaService {
                 }
                 return Ok(ended());
             }
-            if let Command::SetMuted { muted } = command {
-                self.0.preferences.remember(muted);
-            }
             if matches!(command, Command::SetMuted { muted: true }) {
                 let Some(entry) = calls.entries.get_mut(&key) else {
                     return Ok(idle());
                 };
-                entry.microphone_on_join = false;
                 self.0.stop_capture(entry);
                 return Ok(self.0.snapshot(entry));
+            }
+            // Deafening silences the call and mutes at once; undeafening
+            // hears it at once and unmutes below when it was unmuted before,
+            // as unmuting while deafened hears the call again.
+            if let Command::SetDeafened { deafened } = command {
+                let Some(entry) = calls.entries.get_mut(&key) else {
+                    return Ok(idle());
+                };
+                if deafened {
+                    if !entry.snapshot.deafened {
+                        entry.muted_before_deafen = entry.snapshot.muted;
+                    }
+                    deafen(entry, true);
+                    self.0.stop_capture(entry);
+                    return Ok(self.0.snapshot(entry));
+                }
+                let was = entry.snapshot.deafened;
+                deafen(entry, false);
+                if !was || entry.muted_before_deafen {
+                    return Ok(self.0.snapshot(entry));
+                }
+            }
+            if matches!(command, Command::SetMuted { muted: false })
+                && let Some(entry) = calls
+                    .entries
+                    .get_mut(&key)
+                    .filter(|entry| entry.snapshot.deafened)
+            {
+                deafen(entry, false);
             }
             // Turning a camera or a screen off is immediate.
             let off = match command {
@@ -502,7 +531,9 @@ impl NativeMediaService {
                     .get(&key)
                     .map_or_else(idle, |entry| self.0.snapshot(entry)))
             }
-            Command::SetMuted { muted: false } => self.request_capture(&key, intent),
+            Command::SetMuted { muted: false } | Command::SetDeafened { deafened: false } => {
+                self.request_capture(&key, intent)
+            }
             Command::SetCamera { on: true } => self.request_video(&key, PictureSource::Camera),
             Command::SetScreen { on: true } => self.request_video(&key, PictureSource::Screen),
             Command::Show { pictures } => {
@@ -516,6 +547,23 @@ impl NativeMediaService {
                 };
                 if let Some(backend) = &entry.backend {
                     backend.lock_recover().show(pictures);
+                }
+                Ok(self.0.snapshot(entry))
+            }
+            Command::SetVolume {
+                participant,
+                percent,
+            } => {
+                let calls = self
+                    .0
+                    .calls
+                    .lock()
+                    .map_err(|_| "native media unavailable")?;
+                let Some(entry) = calls.entries.get(&key) else {
+                    return Ok(idle());
+                };
+                if let Some(backend) = &entry.backend {
+                    backend.lock_recover().set_volume(participant, percent);
                 }
                 Ok(self.0.snapshot(entry))
             }
@@ -554,6 +602,7 @@ impl NativeMediaService {
             }
             Command::Leave
             | Command::SetMuted { muted: true }
+            | Command::SetDeafened { deafened: true }
             | Command::SetCamera { on: false }
             | Command::SetScreen { on: false } => Err("native media intent already handled".into()),
             Command::Pictures { .. } => Err("pictures are collected on their own lane".into()),
@@ -628,14 +677,13 @@ impl NativeMediaService {
                 capture: None,
                 pending: None,
                 worker: None,
-                microphone_on_join: !self.0.preferences.join_muted(),
-                unmute_due: false,
                 seen: None,
                 video: BTreeMap::new(),
                 video_pending: BTreeMap::new(),
                 renew_at: Instant::now()
                     .checked_add(LEASE_RENEWAL)
                     .unwrap_or_else(Instant::now),
+                muted_before_deafen: true,
             },
         );
         let weak = Arc::downgrade(&self.0);
@@ -691,7 +739,7 @@ impl NativeMediaService {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == entry.caller.workspace)
+            .find(|workspace| workspace.room().to_string() == entry.caller.workspace)
             .map(|workspace| workspace.id)
             .ok_or("local workspace unavailable")?;
         let caller = PortalCaller::new(workspace, entry.caller.app.clone());
@@ -796,7 +844,7 @@ impl NativeMediaService {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room.to_string() == entry.caller.workspace)
+            .find(|workspace| workspace.room().to_string() == entry.caller.workspace)
             .map(|workspace| workspace.id)
             .ok_or("local workspace unavailable")?;
         let caller = PortalCaller::new(workspace, entry.caller.app.clone());
@@ -876,10 +924,12 @@ impl NativeMediaService {
                         .lock()
                         .map_err(|_| "native media unavailable")?;
                     let entry = calls.entries.get(&key);
-                    (
+                    let seen = (
                         entry.map_or(State::Idle, |entry| entry.snapshot.state),
                         entry.and_then(|entry| entry.backend.clone()),
-                    )
+                    );
+                    drop(calls);
+                    seen
                 };
                 let signal = backend
                     .as_ref()
@@ -1013,6 +1063,8 @@ impl NativeMediaServices for NativeMediaService {
             Command::Leave => "leave",
             Command::SetMuted { muted: true } => "mute",
             Command::SetMuted { muted: false } => "unmute",
+            Command::SetDeafened { deafened: true } => "deafen",
+            Command::SetDeafened { deafened: false } => "undeafen",
             Command::SelectInput { .. } => "select_input",
             Command::Status => "status",
             Command::Watch { .. } => "watch",
@@ -1021,6 +1073,7 @@ impl NativeMediaServices for NativeMediaService {
             Command::SetScreen { on: true } => "screen_on",
             Command::SetScreen { on: false } => "screen_off",
             Command::Show { .. } => "show",
+            Command::SetVolume { .. } => "set_volume",
             Command::Pictures { .. } => "pictures",
         };
         let route = (
@@ -1207,6 +1260,7 @@ impl Shared {
             snapshot.state,
             State::Unavailable | State::Idle | State::Ended
         );
+        snapshot.deafened &= in_call;
         snapshot.camera = in_call && entry.video.contains_key(&PictureSource::Camera);
         snapshot.screen = in_call && entry.video.contains_key(&PictureSource::Screen);
         if snapshot.state == State::Live {
@@ -1603,16 +1657,26 @@ impl Shared {
             }
         }
     }
-    /// The intent of a join that went live wanting the microphone, once.
-    fn take_due_unmute(&self, key: &Key, generation: u64) -> Option<u64> {
-        let mut calls = self.calls.lock().ok()?;
-        let entry = calls
-            .entries
-            .get_mut(key)
-            .filter(|entry| entry.generation == generation && entry.unmute_due)?;
-        entry.unmute_due = false;
-        Some(entry.intent)
+    /// Bring capture and video in line with the call's `state`: paused
+    /// while it reconnects, flowing while it is live, stopped otherwise.
+    fn follow_state(&self, entry: &mut Entry, state: State, now: Instant) {
+        match state {
+            State::Reconnecting => {
+                Self::pause_capture(entry);
+                self.tend_video(entry, now);
+            }
+            State::Live => {
+                self.tend_video(entry, now);
+                self.resume_capture(entry);
+            }
+            _ => {
+                self.stop_capture(entry);
+                self.stop_video(entry, PictureSource::Camera);
+                self.stop_video(entry, PictureSource::Screen);
+            }
+        }
     }
+
     fn tick(&self, key: &Key, generation: u64) -> bool {
         // Expiry callbacks stop backend capture while the broker still owns
         // revocation. Never hold a backend mutex while resolving the broker.
@@ -1682,49 +1746,9 @@ impl Shared {
             .unwrap_or(Err(Issue::SessionEnded));
         match result {
             Ok(state) => {
-                match state {
-                    State::Reconnecting => {
-                        Self::pause_capture(entry);
-                        self.tend_video(entry, now);
-                    }
-                    State::Live => {
-                        self.tend_video(entry, now);
-                        self.resume_capture(entry);
-                        if entry.microphone_on_join
-                            && entry.capture.is_none()
-                            && entry.pending.is_none()
-                        {
-                            entry.microphone_on_join = false;
-                            entry.unmute_due = true;
-                        }
-                    }
-                    _ => {
-                        self.stop_capture(entry);
-                        self.stop_video(entry, PictureSource::Camera);
-                        self.stop_video(entry, PictureSource::Screen);
-                    }
-                }
+                self.follow_state(entry, state, now);
                 entry.snapshot.state = state;
-                let speaking = entry
-                    .backend
-                    .as_ref()
-                    .and_then(|backend| {
-                        backend
-                            .lock()
-                            .ok()
-                            .map(|backend| backend.speaking_revision())
-                    })
-                    .unwrap_or_default();
-                let seen = Some(Seen {
-                    state,
-                    muted: entry.snapshot.muted,
-                    issue: entry.snapshot.issue,
-                    capturing: entry.capture.is_some(),
-                    asking: entry.pending.is_some(),
-                    speaking,
-                    camera: entry.video.contains_key(&PictureSource::Camera),
-                    screen: entry.video.contains_key(&PictureSource::Screen),
-                });
+                let seen = Some(Seen::of(entry));
                 if entry.seen != seen {
                     entry.seen = seen;
                     self.changed.notify_waiters();
@@ -1776,7 +1800,11 @@ async fn run_call(weak: Weak<Shared>, key: Key, generation: u64, intent: u64, pr
             return;
         };
         match prepared {
-            Ok(backend) => {
+            Ok(mut backend) => {
+                // Deafened while the call was still starting.
+                if entry.snapshot.deafened {
+                    backend.set_deafened(true);
+                }
                 entry.backend = Some(Arc::new(Mutex::new(backend)));
             }
             Err(issue) => {
@@ -1793,12 +1821,6 @@ async fn run_call(weak: Weak<Shared>, key: Key, generation: u64, intent: u64, pr
         };
         if !shared.tick(&key, generation) {
             return;
-        }
-        if let Some(intent) = shared.take_due_unmute(&key, generation)
-            && let Err(error) =
-                NativeMediaService(Arc::clone(&shared)).request_capture(&key, intent)
-        {
-            tracing::debug!(%error, "the call's microphone did not start on join");
         }
         drop(shared);
         tokio::time::sleep(Duration::from_millis(10)).await;

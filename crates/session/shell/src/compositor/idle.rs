@@ -177,6 +177,9 @@ enum Panel {
 pub struct SessionManager {
     config: IdleConfig,
     last_activity: Instant,
+    /// The person's last input here. Unlike `last_activity`, nothing but
+    /// input moves it, so it says when they last used this device.
+    last_input: Instant,
     /// Explicit panel wake is not input: only the display timeout restarts.
     last_display_wake: Option<Instant>,
     panel: Panel,
@@ -198,6 +201,7 @@ impl SessionManager {
         Self {
             config,
             last_activity: now,
+            last_input: now,
             last_display_wake: None,
             panel: Panel::On,
             locked: false,
@@ -258,6 +262,7 @@ impl SessionManager {
     /// never flashes the dimmed level. Does **not** unlock a locked session — input while locked wakes the display but the session stays locked until [`Self::request_unlock`].
     pub fn note_activity(&mut self, now: Instant) -> Vec<SessionTransition> {
         self.last_activity = now;
+        self.last_input = now;
         // Input after a resume clears the suspend latch so a later idle episode can suspend again (no transition — resume is signalled out-of-band by logind's `PrepareForSleep`).
         self.suspended = false;
         let mut out = Vec::new();
@@ -362,6 +367,26 @@ impl SessionManager {
         self.last_activity = now;
     }
 
+    /// The person used another of their devices nearby at `at`: idle time
+    /// here counts from then if that is later, as though it were input, but
+    /// a blanked display stays blanked.
+    pub fn note_use_elsewhere(&mut self, at: Instant) {
+        self.last_activity = self.last_activity.max(at);
+    }
+
+    /// How long since the person's last input on this device.
+    pub fn input_idle_for(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.last_input)
+    }
+
+    /// Whether the idle timer has not yet reached the lock timeout: the
+    /// person was using the device, here or on one nearby.
+    pub fn in_use(&self, now: Instant) -> bool {
+        self.config
+            .lock_timeout
+            .is_none_or(|timeout| self.idle_for(now) < timeout)
+    }
+
     /// Whether the idle-suspend latch is currently set.
     pub fn is_suspend_pending(&self) -> bool {
         self.suspended
@@ -415,13 +440,33 @@ impl SessionManager {
         out
     }
 
-    /// Enter the secure pre-sleep state. This is deliberately separate from
-    /// ordinary activity: suspend always leaves the session locked, even when
-    /// automatic idle locking is disabled.
-    pub fn prepare_for_sleep(&mut self, now: Instant) -> Vec<SessionTransition> {
+    /// Turn the display off now, as the idle timeout would: the power key on
+    /// a session that is already locked. The lock and timers stay as they
+    /// are; input wakes the display again. Nothing changes when it is off.
+    pub fn blank_now(&mut self, now: Instant) -> Vec<SessionTransition> {
+        self.last_activity = now;
+        if self.is_blanked() {
+            return Vec::new();
+        }
+        self.panel = Panel::Off {
+            dimmed: self.panel == Panel::Dimmed,
+        };
+        vec![SessionTransition::Blanked]
+    }
+
+    /// Enter the pre-sleep state. This is separate from ordinary activity:
+    /// unless the person turned off the password after sleep
+    /// ([`tilo_power_mgmt::PowerPolicy::lock_on_sleep`]), sleep leaves the
+    /// session locked even when automatic idle locking is disabled. Either
+    /// way a session that is already locked stays locked.
+    pub fn prepare_for_sleep(
+        &mut self,
+        now: Instant,
+        lock_on_sleep: bool,
+    ) -> Vec<SessionTransition> {
         self.last_activity = now;
         self.suspended = true;
-        if self.locked {
+        if self.locked || !lock_on_sleep {
             Vec::new()
         } else {
             self.locked = true;
@@ -462,6 +507,22 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blanking_now_turns_the_display_off_once_and_input_wakes_it_still_locked() {
+        let start = Instant::now();
+        let mut session = SessionManager::new(cfg(Some(600), None), start);
+        session.request_lock(start);
+        let now = start + Duration::from_secs(1);
+        assert_eq!(session.blank_now(now), vec![SessionTransition::Blanked]);
+        assert!(session.is_blanked() && session.is_locked());
+        assert_eq!(session.blank_now(now), Vec::new(), "already off");
+        assert_eq!(
+            session.note_activity(now + Duration::from_secs(1)),
+            vec![SessionTransition::Woke]
+        );
+        assert!(!session.is_blanked() && session.is_locked());
+    }
 
     #[test]
     fn explicit_display_wake_preserves_lock_and_input_idle() {
@@ -843,6 +904,7 @@ mod tests {
             let policy = tilo_power_mgmt::config::policy_from_settings_json_for_profile(
                 r#"{"power":{"blank_minutes":1,"auto_suspend":false}}"#,
                 None,
+                false,
             );
             let t0 = Instant::now();
             // Isolate the display policy: lock and suspend are independent
@@ -864,6 +926,7 @@ mod tests {
             let never = tilo_power_mgmt::config::policy_from_settings_json_for_profile(
                 r#"{"power":{"blank_minutes":0,"auto_suspend":false}}"#,
                 None,
+                false,
             );
             assert_eq!(
                 session.note_activity(t0 + Duration::from_secs(61)),
@@ -978,6 +1041,24 @@ mod tests {
     // auto-lock
 
     #[test]
+    fn use_of_a_device_nearby_defers_the_idle_lock_but_is_not_input_here() {
+        let t0 = Instant::now();
+        let mut s = SessionManager::new(cfg(None, Some(600)), t0);
+        s.note_use_elsewhere(t0 + Duration::from_secs(500));
+        assert!(s.tick(t0 + Duration::from_secs(600)).is_empty());
+        assert!(s.in_use(t0 + Duration::from_secs(1000)));
+        assert_eq!(
+            s.input_idle_for(t0 + Duration::from_secs(1000)),
+            Duration::from_secs(1000)
+        );
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(1100)),
+            vec![SessionTransition::Locked]
+        );
+        assert!(!s.in_use(t0 + Duration::from_secs(1100)));
+    }
+
+    #[test]
     fn locking_requires_authentication_to_clear() {
         // Phase `idle_past_lock_threshold_locks`.
         {
@@ -1043,8 +1124,31 @@ mod tests {
         {
             let t0 = Instant::now();
             let mut s = SessionManager::new(cfg(None, None), t0);
-            assert_eq!(s.prepare_for_sleep(t0), vec![SessionTransition::Locked]);
-            assert!(s.prepare_for_sleep(t0).is_empty());
+            assert_eq!(
+                s.prepare_for_sleep(t0, true),
+                vec![SessionTransition::Locked]
+            );
+            assert!(s.prepare_for_sleep(t0, true).is_empty());
+            assert!(s.resume_from_sleep(t0 + Duration::from_secs(1)).is_empty());
+            assert!(s.is_locked());
+        }
+        // Phase `sleep_leaves_an_unlocked_session_unlocked_when_the_person_asked`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(None, None), t0);
+            assert!(s.prepare_for_sleep(t0, false).is_empty());
+            assert!(!s.is_locked());
+            assert!(s.is_suspend_pending());
+            assert!(s.resume_from_sleep(t0 + Duration::from_secs(1)).is_empty());
+            assert!(!s.is_locked(), "waking shows the work left on screen");
+        }
+        // Phase `sleep_keeps_a_lock_that_was_already_there`.
+        {
+            let t0 = Instant::now();
+            let mut s = SessionManager::new(cfg(None, None), t0);
+            assert_eq!(s.request_lock(t0), vec![SessionTransition::Locked]);
+            assert!(s.prepare_for_sleep(t0, false).is_empty());
+            assert!(s.is_locked());
             assert!(s.resume_from_sleep(t0 + Duration::from_secs(1)).is_empty());
             assert!(s.is_locked());
         }
@@ -1065,6 +1169,30 @@ mod tests {
     }
 
     // idle-to-suspend
+
+    /// Lock "Never" and suspend when idle off: however long and however
+    /// often the person walks away, idleness only darkens the screen.
+    #[test]
+    fn with_lock_never_and_idle_suspend_off_idleness_only_darkens_the_screen() {
+        let t0 = Instant::now();
+        let registry = tilo_power_mgmt::InhibitRegistry::new();
+        let mut s = SessionManager::new(cfg_s(Some(600), None, None), t0);
+        let mut seen = Vec::new();
+        for episode in 0..3_u64 {
+            let start = t0 + Duration::from_secs(episode * 100_000);
+            if episode > 0 {
+                seen.extend(s.note_activity(start));
+            }
+            for minute in 1..=24 * 60_u64 {
+                seen.extend(s.tick_inhibited(start + Duration::from_secs(minute * 60), &registry));
+            }
+        }
+        assert!(seen.contains(&SessionTransition::Blanked));
+        assert!(!seen.contains(&SessionTransition::Locked), "{seen:?}");
+        assert!(!seen.contains(&SessionTransition::Suspend), "{seen:?}");
+        assert!(!s.is_locked());
+        assert!(!s.is_suspend_pending());
+    }
 
     #[test]
     fn idle_suspend_fires_once_per_episode_and_resume_stays_locked() {
@@ -1147,7 +1275,7 @@ mod tests {
                 vec![SessionTransition::Blanked, SessionTransition::Suspend]
             );
             assert_eq!(
-                s.prepare_for_sleep(t0 + Duration::from_secs(121)),
+                s.prepare_for_sleep(t0 + Duration::from_secs(121), true),
                 vec![SessionTransition::Locked]
             );
             assert!(s.is_locked() && s.is_blanked() && s.is_suspend_pending());

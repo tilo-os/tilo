@@ -3,7 +3,7 @@
 //!
 //! Every document-mutating operation is a [`RichTextAction`] from tilo-doc's
 //! rich-text vocabulary (re-exported here with its builders). The same
-//! [`EncodedAction`] is what toolbar/panel/menu affordances dispatch and what
+//! [`EncodedAction`](tilo_actions::EncodedAction) is what toolbar/panel/menu affordances dispatch and what
 //! Ctrl+K dispatches — one source of truth, one replay path. This module adds
 //! what is the word processor's own: its application operations (open, save,
 //! zoom, panels) and the resource tree it publishes.
@@ -13,6 +13,7 @@
 pub(crate) mod continuation;
 /// Pure editor input primitives shared by keyboard, palette and agents.
 pub mod editing;
+pub(crate) mod image_place;
 /// Per-participant view state and its pure resource-context projection.
 pub mod participant;
 /// Per-participant view operations (caret, selection, Find) and their
@@ -434,7 +435,6 @@ mod tests {
     /// The document's own resource id and kind.
     const DOCUMENT: &str = "word-processor.document";
 
-    /// The document verb `operation` as its action value.
     fn verb(
         operation: crate::model::DocumentAction,
     ) -> <crate::model::Document as ui::tilo_resource::Resource>::Action {
@@ -1101,7 +1101,6 @@ mod tests {
             "Insert table here",
             "Insert page break",
             "Align paragraph",
-            "Replace selection",
             "Add or change hyperlink",
             "Accept change",
             "Accept all changes",
@@ -1799,7 +1798,6 @@ mod tests {
             "{:?}",
             spec.contract.validate_declaration()
         );
-        // Empty text is refused, and nothing is written.
         let before = state.doc.save();
         let mut arguments = serde_json::Map::new();
         arguments.insert("text".into(), "".into());

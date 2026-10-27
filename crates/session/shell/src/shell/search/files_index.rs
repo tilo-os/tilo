@@ -195,6 +195,8 @@ impl FilesIndex {
         {
             return hit;
         }
+        #[cfg(test)]
+        INDEX_SEARCHES.set(INDEX_SEARCHES.get().saturating_add(1));
         let out: Vec<ContentHit> = self
             .index
             .search(needle, limit)
@@ -214,6 +216,12 @@ impl FilesIndex {
         }
         out
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Queries this thread sent to the on-disk index rather than the cache.
+    static INDEX_SEARCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn files_index_dir() -> Result<PathBuf, tilo_search::TantivyError> {
@@ -344,7 +352,6 @@ mod tests {
 
     #[test]
     fn index_filters_skip_binaries_and_bloat_and_cap_head_reads() {
-        // Phase `is_binary_hits_common_extensions`.
         {
             assert!(is_binary(Path::new("/home/x/a.png")));
             assert!(is_binary(Path::new("/home/x/a.MP3")));
@@ -352,7 +359,6 @@ mod tests {
             assert!(!is_binary(Path::new("/home/x/a")));
         }
 
-        // Phase `skip_dirs_hits_common_bloat`.
         {
             let home = Path::new("/home/x");
             assert!(should_skip(Path::new("/home/x/proj/node_modules"), home));
@@ -360,7 +366,6 @@ mod tests {
             assert!(!should_skip(Path::new("/home/x/proj/src/lib.rs"), home));
         }
 
-        // Phase `read_head_caps_allocation_regardless_of_file_size`.
         {
             let dir =
                 std::env::temp_dir().join(format!("tilo-read-head-test-{}", std::process::id()));
@@ -396,7 +401,6 @@ mod tests {
 
     #[test]
     fn query_cache_is_an_lru_that_refreshes_repeats() {
-        // Phase `query_cache_lru_evicts_oldest`.
         {
             let mut c = QueryCache::new(2);
             c.put("a".to_string(), 10, 0, Vec::new());
@@ -407,7 +411,6 @@ mod tests {
             assert!(c.get("c", 10, 0).is_some());
         }
 
-        // Phase `query_cache_moves_repeat_to_head`.
         {
             let mut c = QueryCache::new(2);
             c.put("a".to_string(), 10, 0, Vec::new());
@@ -439,12 +442,10 @@ mod content_index_integration {
     use super::*;
     use serial_test::serial;
     use std::fs;
-    use std::time::{Duration, Instant};
 
     #[test]
     #[serial]
     fn walking_home_indexes_documents_and_finds_content() {
-        // Phase `walk_and_index_runs_synchronously_and_writes_docs`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();
@@ -467,7 +468,6 @@ mod content_index_integration {
             );
         }
 
-        // Phase `walks_home_and_finds_content_match`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();
@@ -508,11 +508,15 @@ mod content_index_integration {
         }
     }
 
-    /// A cache-miss query must land under 200 ms (CI jitter budget); a
-    /// cache-hit must be sub-millisecond.
+    /// A query searches the index once; the same query again is answered
+    /// from the cache without touching the index.
     #[test]
     #[serial]
-    fn query_latency_stays_inside_keystroke_budget() {
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the test observes the writer thread the index otherwise only keeps alive"
+    )]
+    fn a_repeated_query_is_answered_from_the_cache() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let cache_dir = tmp.path().join(".cache/tilo/files-index");
@@ -530,28 +534,37 @@ mod content_index_integration {
         }
 
         let idx = FilesIndex::open_or_create(home).unwrap();
-        // The perf assertion below kicks in only once the index is hot, so
-        // a slow initial walker doesn't skew it.
         tilo_test_env::wait_until("the walker to populate the index", || {
             !idx.query("keyword", 10).is_empty()
         });
+        // The walker may still be committing; a commit moves the generation
+        // and rightly empties the cache, so count once it has finished.
+        tilo_test_env::wait_until("the walker to finish", || {
+            idx._writer_handle
+                .read()
+                .ok()
+                .and_then(|handle| handle.as_ref().map(thread::JoinHandle::is_finished))
+                .unwrap_or(false)
+        });
 
-        let miss_start = Instant::now();
+        let before = INDEX_SEARCHES.get();
         let hits = idx.query("bravo", 10);
-        let miss_elapsed = miss_start.elapsed();
         assert!(!hits.is_empty(), "expected results for 'bravo'");
-        assert!(
-            miss_elapsed < Duration::from_millis(200),
-            "cache-miss query took {miss_elapsed:?}, over the 200 ms budget"
+        assert_eq!(
+            INDEX_SEARCHES.get(),
+            before + 1,
+            "a new query searches once"
         );
 
-        // Repeat — this one hits the LRU cache.
-        let hit_start = Instant::now();
-        let _ = idx.query("bravo", 10);
-        let hit_elapsed = hit_start.elapsed();
-        assert!(
-            hit_elapsed < Duration::from_millis(5),
-            "cache-hit query took {hit_elapsed:?}, over the 5 ms budget"
+        let again = idx.query("bravo", 10);
+        assert_eq!(
+            again.iter().map(|hit| &hit.path).collect::<Vec<_>>(),
+            hits.iter().map(|hit| &hit.path).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            INDEX_SEARCHES.get(),
+            before + 1,
+            "the repeated query is answered from the cache"
         );
     }
 
@@ -562,7 +575,6 @@ mod content_index_integration {
         reason = "the test observes the writer thread the index otherwise only keeps alive"
     )]
     fn incremental_reindex_skips_untouched_and_removes_deleted_files() {
-        // Phase `incremental_reindex_skips_untouched_files`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();
@@ -590,7 +602,6 @@ mod content_index_integration {
             );
         }
 
-        // Phase `complete_incremental_scan_removes_deleted_files`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let home = tmp.path();

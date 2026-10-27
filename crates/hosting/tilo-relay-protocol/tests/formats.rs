@@ -204,7 +204,6 @@ fn json_encodings_are_pinned() {
         }
     );
 
-    // Process lease.
     assert_json(
         &ProcessLease::from_parts(4242, 987_654_321),
         r#"{"pid":4242,"start_time":987654321}"#,

@@ -24,13 +24,21 @@ impl ui::storage::SettingsSchema for SharedDisplayPrefs {
 impl SharedDisplayPrefs {}
 
 #[derive(
-    Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model,
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Model,
 )]
 #[serde(default)]
 pub struct AutomaticDisplayPrefs {
     /// A device administrator's choice: changed only through its effect.
     #[model(readonly)]
     pub automatic_display_input: bool,
+}
+
+impl Default for AutomaticDisplayPrefs {
+    fn default() -> Self {
+        Self {
+            automatic_display_input: settings_store::continuity_privacy::ON_UNLESS_SET,
+        }
+    }
 }
 
 impl ui::storage::SettingsSchema for AutomaticDisplayPrefs {
@@ -530,7 +538,10 @@ mod tests {
             position,
             "inclusion does not rewrite native placement"
         );
-        assert!(!model.automatic_display_prefs.get().automatic_display_input);
+        assert!(
+            model.automatic_display_prefs.get().automatic_display_input,
+            "inclusion leaves automatic input as it was"
+        );
     }
 
     #[test]
@@ -627,8 +638,8 @@ mod tests {
                 .any(|name| name.starts_with("Display 3:") && name.contains("Legacy computer"))
         );
         assert!(
-            !model.automatic_display_prefs.get().automatic_display_input,
-            "numbering never grants input authority"
+            model.automatic_display_prefs.get().automatic_display_input,
+            "numbering leaves automatic input as it was"
         );
     }
 
@@ -692,7 +703,11 @@ mod tests {
         )
         .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
-            settings.displays().model().borrow_mut().person_devices = devices();
+            crate::panes::display::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .person_devices = devices();
         });
         app.settle();
         let address = "settings.shared-display:offline-peer:edid:panel-1";
@@ -742,12 +757,23 @@ mod tests {
         observed[0].online = true;
         observed[0].outputs[0].enabled = false;
         app.surface::<SettingsApp, _>(|settings| {
-            settings.displays().model().borrow_mut().person_devices = observed;
+            settings
+                .areas()
+                .find::<crate::panes::display::DisplayArea>()
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .person_devices = observed;
         });
         app.settle();
         let mut captions = Vec::new();
         app.surface::<SettingsApp, _>(|settings| {
-            let model = settings.displays().model().borrow();
+            let model = settings
+                .areas()
+                .find::<crate::panes::display::DisplayArea>()
+                .unwrap()
+                .model()
+                .borrow();
             let card = model.build_shared_displays_card().unwrap().into_section();
             names(&card, &mut captions);
         });
@@ -769,7 +795,15 @@ mod tests {
         assert!(!offered(&mut app, "order-shared-display"));
 
         app.surface::<SettingsApp, _>(|settings| {
-            settings.displays().model().borrow_mut().person_devices[0].outputs[0].enabled = true;
+            settings
+                .areas()
+                .find::<crate::panes::display::DisplayArea>()
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .person_devices[0]
+                .outputs[0]
+                .enabled = true;
         });
         app.settle();
         assert!(offered(&mut app, "order-shared-display"));
@@ -874,7 +908,11 @@ mod tests {
         )
         .unwrap();
         app.surface::<SettingsApp, _>(|settings| {
-            settings.displays().model().borrow_mut().person_devices = devices();
+            crate::panes::display::area(settings)
+                .unwrap()
+                .model()
+                .borrow_mut()
+                .person_devices = devices();
         });
         app.settle();
         let before = app
@@ -903,10 +941,10 @@ mod tests {
             .call("inspect-shared-displays", serde_json::json!({}))
             .unwrap()
             .unwrap();
-        assert_eq!(before["automatic_input"], false);
+        assert_eq!(before["automatic_input"], true, "on until turned off");
         app.call(
             "set-automatic-display-input",
-            serde_json::json!({"on":true}),
+            serde_json::json!({"on":false}),
         )
         .unwrap();
         app.settle();
@@ -914,18 +952,20 @@ mod tests {
             .call("inspect-shared-displays", serde_json::json!({}))
             .unwrap()
             .unwrap();
-        assert_eq!(after["automatic_input"], true);
+        assert_eq!(after["automatic_input"], false);
         app.surface::<SettingsApp, _>(|settings| {
             let privacy = settings
-                .displays()
+                .areas()
+                .find::<crate::panes::display::DisplayArea>()
+                .unwrap()
                 .model()
                 .borrow()
                 .cx
                 .settings::<crate::continuity::ContinuityPrivacy>()
                 .get();
             assert!(
-                !privacy.enabled && !privacy.display_input,
-                "automatic opt-in never enables the existing privacy switches"
+                privacy.enabled && privacy.display_input,
+                "automatic input is its own switch: turning it off leaves display and input on"
             );
         });
         assert_eq!(
@@ -935,14 +975,14 @@ mod tests {
     }
 
     #[test]
-    fn shared_display_automatic_input_cannot_be_enabled_by_a_viewer() {
+    fn shared_display_automatic_input_cannot_be_changed_by_a_viewer() {
         let mut app =
             ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
                 .unwrap();
         assert!(
             app.call(
                 "set-automatic-display-input",
-                serde_json::json!({"on":true})
+                serde_json::json!({"on":false})
             )
             .is_err()
         );
@@ -950,6 +990,6 @@ mod tests {
             .call("inspect-shared-displays", serde_json::json!({}))
             .unwrap()
             .unwrap();
-        assert_eq!(view["automatic_input"], false);
+        assert_eq!(view["automatic_input"], true);
     }
 }

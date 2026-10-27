@@ -4,12 +4,16 @@
 //! The launcher connects every app launched into a room and names the app
 //! and the room before the sandbox starts (`tilo_dialogs::shell`), so a
 //! request is attributed without trusting the app. A chooser is the shell's
-//! file picker, on screen, limited to the paths the app's workspace grants
-//! it; whatever comes back is checked against the grants again before the
-//! app hears it. Opening a file hands it to the compositor thread, which
-//! opens it in the app that owns its type; opening a link hands it to the
-//! same dispatcher the shell's search opens links with, which starts the app
-//! that claims its scheme.
+//! file picker, on screen, over everything the person can reach; choosing
+//! is the person's consent, and gives the app exactly what was chosen,
+//! privately on this device, through its documents (`tilo_documents`): the
+//! app hears the path inside its sandbox where the choice now is. Where the
+//! session serves no documents, or the app's workspace is not the person's
+//! on screen, the chooser reaches only what the workspace grants the app,
+//! and what comes back is checked against those grants. Opening a file
+//! hands it to the compositor thread, which opens it in the app that owns
+//! its type; opening a link hands it to the same dispatcher the shell's
+//! search opens links with, which starts the app that claims its scheme.
 //!
 //! Who answers a chooser: a session with someone at it (an attached agent
 //! driving the screen, or an ordinary desktop) shows it; an unattended one
@@ -30,7 +34,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use collab_types::caps::Access;
-use tilo_dialogs::shell::{Handshake, MAX_FRAME_BYTES, PROTOCOL, PickMode, Reply, Request};
+use tilo_dialogs::shell::{
+    ChosenApp, Handshake, MAX_FRAME_BYTES, PROTOCOL, PickMode, Reply, Request,
+};
 
 use crate::portal::{
     FilePickerRequest, FilePickerSpawner, GrantStoreHandle, PickerFilter, PickerScope, PortalCaller,
@@ -55,6 +61,10 @@ pub struct ChooserContext {
     /// Read again whenever what decides it may have changed
     /// (`tilo_identity_host::policy_change`).
     pub identity_selected: IdentitySelected,
+    /// The files people chose for apps, served into each app's sandbox
+    /// (`tilo_documents`). `None` where the session serves no documents
+    /// filesystem: a chooser then reaches only what the workspace grants.
+    pub documents: Option<tilo_documents::Documents>,
 }
 
 /// An app asked for `path` to be opened in the app that owns its type.
@@ -63,6 +73,10 @@ pub struct OpenRequest {
     pub caller: PortalCaller,
     pub path: PathBuf,
     pub reply: mpsc::Sender<Result<(), String>>,
+    /// The path the app named, when it is one it was given through its
+    /// documents (`/run/tilo/documents/…`): checked again against that
+    /// choice, not the workspace's grants, when it is dispatched.
+    given: Option<(tilo_documents::AppKey, PathBuf)>,
 }
 
 /// An app asked for `uri` to be opened in the app that claims its scheme.
@@ -78,6 +92,16 @@ pub struct LinkOpenRequest {
 pub struct IdentityChooserRequest {
     pub caller: PortalCaller,
     pub reply: mpsc::Sender<Result<(), String>>,
+}
+
+/// An app asked for the shell's app chooser ([`Request::ChooseApp`]).
+/// Answered on the compositor thread, which owns the palette, once the
+/// person chose an app (or none).
+pub struct AppChooserRequest {
+    pub caller: PortalCaller,
+    /// What the app will do with the app chosen, in the person's words.
+    pub purpose: String,
+    pub reply: mpsc::Sender<Result<Option<ChosenApp>, String>>,
 }
 
 /// How the shell answered a [`LinkOpenRequest`].
@@ -96,13 +120,16 @@ struct OpenQueues {
     documents: mpsc::Sender<OpenRequest>,
     links: mpsc::Sender<LinkOpenRequest>,
     identities: mpsc::Sender<IdentityChooserRequest>,
+    apps: mpsc::Sender<AppChooserRequest>,
 }
 
 pub struct ChooserService {
     grants: GrantStoreHandle,
+    documents: Option<tilo_documents::Documents>,
     opens: mpsc::Receiver<OpenRequest>,
     links: mpsc::Receiver<LinkOpenRequest>,
     identities: mpsc::Receiver<IdentityChooserRequest>,
+    apps: mpsc::Receiver<AppChooserRequest>,
     stop: Arc<AtomicBool>,
     acceptor: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
@@ -133,12 +160,15 @@ impl ChooserService {
         let (opens_tx, opens_rx) = mpsc::channel();
         let (links_tx, links_rx) = mpsc::channel();
         let (identities_tx, identities_rx) = mpsc::channel();
+        let (apps_tx, apps_rx) = mpsc::channel();
         let queues = OpenQueues {
             documents: opens_tx,
             links: links_tx,
             identities: identities_tx,
+            apps: apps_tx,
         };
         let grants = context.grants.clone();
+        let documents = context.documents.clone();
         let context = Arc::new(context);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -172,9 +202,11 @@ impl ChooserService {
             })?;
         Ok(Self {
             grants,
+            documents,
             opens: opens_rx,
             links: links_rx,
             identities: identities_rx,
+            apps: apps_rx,
             stop,
             acceptor: Some(acceptor),
             path,
@@ -188,13 +220,19 @@ impl ChooserService {
             .filter_map(|mut open| {
                 // Admission can precede compositor dispatch by several frames.
                 // Resolve the path again against the original app's current
-                // workspace policy rather than handing over stale approval.
-                match permitted(
-                    &self.grants,
-                    &open.caller,
-                    std::slice::from_ref(&open.path),
-                    PickMode::Open,
-                ) {
+                // workspace policy, or the choice it was given by, rather
+                // than handing over stale approval.
+                let checked = match &open.given {
+                    Some((key, sandbox)) => given_host_path(self.documents.as_ref(), key, sandbox)
+                        .map(|path| vec![path]),
+                    None => permitted(
+                        &self.grants,
+                        &open.caller,
+                        std::slice::from_ref(&open.path),
+                        PickMode::Open,
+                    ),
+                };
+                match checked {
                     Ok(mut paths) => {
                         open.path = paths.remove(0);
                         Some(open)
@@ -215,6 +253,27 @@ impl ChooserService {
         self.identities.try_iter().collect()
     }
 
+    /// Open the app choosers apps asked for with `open`, when the asking
+    /// app's workspace is `active` (the one on screen); any other is
+    /// refused. Whether one opened.
+    pub fn serve_app_choosers(
+        &self,
+        active: crate::shell::state::WorkspaceId,
+        mut open: impl FnMut(&str, mpsc::Sender<Result<Option<ChosenApp>, String>>),
+    ) -> bool {
+        let mut opened = false;
+        for request in self.apps.try_iter() {
+            if request.caller.workspace_id == active {
+                open(&request.purpose, request.reply);
+                opened = true;
+            } else {
+                tracing::info!(app = %request.caller.app_id, "app chooser refused: another workspace");
+                let _ = request.reply.send(Err(t("portal-chooser-other-workspace")));
+            }
+        }
+        opened
+    }
+
     /// Open the links apps asked for, through the dispatcher the shell's
     /// search uses, in the asking app's workspace when it is the one on
     /// screen.
@@ -223,7 +282,14 @@ impl ChooserService {
         for open in self.links.try_iter() {
             let active = chrome.borrow().tree().desktop.active;
             let outcome = if open.caller.workspace_id == active {
-                match uri_open::open_in_workspace(&open.uri, chrome) {
+                // Taken to the link when the person's own press in the
+                // asking app is behind the request; else it opens beside
+                // them.
+                let person = crate::compositor::activation::person_initiated(
+                    &chrome.borrow().tree(),
+                    open.caller.app_id.as_str(),
+                );
+                match uri_open::open_for_app(&open.uri, chrome, person) {
                     Ok(_) => LinkOpened::Opened,
                     Err(UriOpenError::InvalidUri | UriOpenError::NoHandler { .. }) => {
                         LinkOpened::Unclaimed
@@ -317,7 +383,7 @@ fn serve_connection(stream: UnixStream, context: &Arc<ChooserContext>, opens: &O
                     | Request::ReleaseContents { .. }) => {
                         Some(contents::answer(&context, &caller, request, &selections))
                     }
-                    request => Some(answer(&context, &opens, &caller, request)),
+                    request => Some(answer(&context, &opens, &caller, &room, request)),
                 };
                 if let Some(reply) = reply {
                     send(&writer, &reply);
@@ -437,6 +503,44 @@ fn answer_choose_identity(
     }
 }
 
+/// Show the app chooser for the caller, when someone is at the computer to
+/// choose, and wait for what they choose.
+fn answer_choose_app(
+    context: &ChooserContext,
+    apps: &mpsc::Sender<AppChooserRequest>,
+    caller: &PortalCaller,
+    id: u64,
+    purpose: String,
+) -> Reply {
+    if !(context.presence)() {
+        return Reply::Nobody { id };
+    }
+    let (reply, outcome) = mpsc::channel();
+    if apps
+        .send(AppChooserRequest {
+            caller: caller.clone(),
+            purpose,
+            reply,
+        })
+        .is_err()
+    {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        };
+    }
+    (context.wake)();
+    match outcome.recv() {
+        Ok(Ok(Some(app))) => Reply::AppChosen { id, app },
+        Ok(Ok(None)) => Reply::Cancelled { id },
+        Ok(Err(reason)) => Reply::Failed { id, reason },
+        Err(_) => Reply::Failed {
+            id,
+            reason: t("portal-chooser-session-closing"),
+        },
+    }
+}
+
 /// The caller the launcher named, if its room is one of this session's.
 fn authenticate(grants: &GrantStoreHandle, handshake: &Handshake) -> Option<PortalCaller> {
     if handshake.protocol != PROTOCOL
@@ -452,6 +556,7 @@ fn answer(
     context: &ChooserContext,
     opens: &OpenQueues,
     caller: &PortalCaller,
+    room: &str,
     request: Request,
 ) -> Reply {
     match request {
@@ -469,69 +574,29 @@ fn answer(
             accept_label,
             suggested_name,
             filters,
-        } => {
-            if !(context.presence)() {
-                return Reply::Nobody { id };
-            }
-            if mode == PickMode::WritableDirectory && multiple {
-                return Reply::Failed {
-                    id,
-                    reason: t("portal-chooser-no-file"),
-                };
-            }
-            let Some(scope) = authorized_scope(context, caller, mode) else {
-                return Reply::Failed {
-                    id,
-                    reason: t("portal-chooser-nothing-granted"),
-                };
-            };
-            let (reply, chosen) = tokio::sync::oneshot::channel();
-            context.pickers.spawn(FilePickerRequest {
-                caller: caller.clone(),
-                parent_window: None,
-                title,
-                save: mode == PickMode::Save,
-                directory: matches!(mode, PickMode::Directory | PickMode::WritableDirectory),
-                writable_directory: mode == PickMode::WritableDirectory,
+        } => answer_pick(
+            context,
+            caller,
+            room,
+            Pick {
+                id,
+                mode,
                 multiple,
-                accept_label: Some(accept_label).filter(|label| !label.trim().is_empty()),
-                current_name: suggested_name,
-                filters: filters
-                    .iter()
-                    .map(|filter| {
-                        let pairs = filter
-                            .globs
-                            .iter()
-                            .map(|glob| (0, glob.clone()))
-                            .chain(filter.mimetypes.iter().map(|mime| (1, mime.clone())))
-                            .collect::<Vec<_>>();
-                        PickerFilter::from_pairs(filter.name.clone(), &pairs)
-                    })
-                    .collect(),
-                scope: Some(scope),
-                reply,
-            });
-            (context.wake)();
-            match chosen.blocking_recv() {
-                Ok(Some(paths)) if mode == PickMode::WritableDirectory && paths.len() > 1 => {
-                    Reply::Failed {
-                        id,
-                        reason: t("portal-chooser-no-file"),
-                    }
-                }
-                Ok(Some(paths)) if !paths.is_empty() => {
-                    match permitted(&context.grants, caller, &paths, mode) {
-                        Ok(paths) => Reply::Picked { id, paths },
-                        Err(reason) => Reply::Failed { id, reason },
-                    }
-                }
-                _ => Reply::Cancelled { id },
-            }
+                title,
+                accept_label,
+                suggested_name,
+                filters,
+            },
+        ),
+        Request::Open { id, path } => {
+            answer_open(context, &opens.documents, caller, room, (id, path))
         }
-        Request::Open { id, path } => answer_open(context, &opens.documents, caller, id, path),
         Request::OpenUri { id, uri } => answer_open_uri(context, &opens.links, caller, id, uri),
         Request::ChooseIdentity { id } => {
             answer_choose_identity(context, &opens.identities, caller, id)
+        }
+        Request::ChooseApp { id, purpose } => {
+            answer_choose_app(context, &opens.apps, caller, id, purpose)
         }
         // Served by the connection, which knows its room and its waits.
         Request::AwaitIdentity { id } => Reply::Failed {
@@ -539,6 +604,197 @@ fn answer(
             reason: t("portal-chooser-session-closing"),
         },
     }
+}
+
+/// A path chooser's request ([`Request::Pick`]).
+struct Pick {
+    id: u64,
+    mode: PickMode,
+    multiple: bool,
+    title: String,
+    accept_label: String,
+    suggested_name: Option<String>,
+    filters: Vec<tilo_dialogs::shell::Filter>,
+}
+
+/// Show the chooser for a path and give the app what the person chose.
+///
+/// Choosing is the person's consent, like every portal's chooser: the
+/// chooser shows everything the person can reach, and what they choose is
+/// given to the app that asked, as exactly that and nothing more (the file
+/// to read for an Open, the one file to write for a Save, the folder and
+/// what is under it for a folder), through its documents
+/// ([`tilo_documents`]). The app hears the path it reaches the choice by
+/// inside its sandbox. Where the session serves no documents, or the app's
+/// workspace is not the person's on screen, the chooser reaches only what
+/// the workspace already grants the app.
+fn answer_pick(context: &ChooserContext, caller: &PortalCaller, room: &str, pick: Pick) -> Reply {
+    let id = pick.id;
+    let mode = pick.mode;
+    if !(context.presence)() {
+        return Reply::Nobody { id };
+    }
+    if mode == PickMode::WritableDirectory && pick.multiple {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-no-file"),
+        };
+    }
+    if matches!(mode, PickMode::Save | PickMode::WritableDirectory)
+        && crate::portal::lockdown::current_policy().disable_save_to_disk
+    {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-save-disabled"),
+        };
+    }
+    let giving = context
+        .documents
+        .as_ref()
+        .zip(tilo_documents::AppKey::new(room, caller.app_id.as_str()))
+        .filter(|_| contents::owner(context, caller));
+    let scope = if giving.is_some() {
+        person_scope(context, caller, mode)
+    } else if let Some(scope) = authorized_scope(context, caller, mode) {
+        scope
+    } else {
+        return Reply::Failed {
+            id,
+            reason: t("portal-chooser-nothing-granted"),
+        };
+    };
+    let roots = scope.roots.clone();
+    let recent = giving
+        .as_ref()
+        .map(|(documents, key)| documents.chosen(key))
+        .unwrap_or_default();
+    let (reply, chosen) = tokio::sync::oneshot::channel();
+    context.pickers.spawn(FilePickerRequest {
+        caller: caller.clone(),
+        parent_window: None,
+        title: pick.title,
+        save: mode == PickMode::Save,
+        directory: matches!(mode, PickMode::Directory | PickMode::WritableDirectory),
+        writable_directory: mode == PickMode::WritableDirectory,
+        multiple: pick.multiple,
+        accept_label: Some(pick.accept_label).filter(|label| !label.trim().is_empty()),
+        current_name: pick.suggested_name,
+        filters: pick
+            .filters
+            .iter()
+            .map(|filter| {
+                let pairs = filter
+                    .globs
+                    .iter()
+                    .map(|glob| (0, glob.clone()))
+                    .chain(filter.mimetypes.iter().map(|mime| (1, mime.clone())))
+                    .collect::<Vec<_>>();
+                PickerFilter::from_pairs(filter.name.clone(), &pairs)
+            })
+            .collect(),
+        scope: Some(scope),
+        recent,
+        reply,
+    });
+    (context.wake)();
+    match chosen.blocking_recv() {
+        Ok(Some(paths))
+            if paths.len() > 1 && (!pick.multiple || mode == PickMode::WritableDirectory) =>
+        {
+            Reply::Failed {
+                id,
+                reason: t("portal-chooser-no-file"),
+            }
+        }
+        Ok(Some(paths)) if !paths.is_empty() => {
+            let given = match giving {
+                Some((documents, key)) => give(documents, &key, &roots, &paths, mode),
+                None => permitted(&context.grants, caller, &paths, mode),
+            };
+            match given {
+                Ok(paths) => Reply::Picked { id, paths },
+                Err(reason) => Reply::Failed { id, reason },
+            }
+        }
+        _ => Reply::Cancelled { id },
+    }
+}
+
+/// The chooser's reach when choosing gives: everything the person can reach
+/// (their home and the workspace tree), and what the workspace already
+/// grants the app. A Save starts where an unattended session saves.
+fn person_scope(context: &ChooserContext, caller: &PortalCaller, mode: PickMode) -> PickerScope {
+    let verb = if matches!(mode, PickMode::Save | PickMode::WritableDirectory) {
+        Access::Write
+    } else {
+        Access::Read
+    };
+    let scope = PickerScope::for_user().with_granted_paths(
+        context
+            .grants
+            .granted_paths(caller)
+            .into_iter()
+            .filter(|path| context.grants.filesystem_path_allows(caller, path, verb)),
+    );
+    match (mode, context.save_directory.as_deref()) {
+        (PickMode::Save, Some(directory))
+            if scope.roots.iter().any(|root| directory.starts_with(root)) =>
+        {
+            PickerScope {
+                initial_dir: directory.to_path_buf(),
+                ..scope
+            }
+        }
+        _ => scope,
+    }
+}
+
+/// Give `key` each chosen path, as what `mode` asked for, and answer the
+/// paths it reaches them by. Each must lie within the chooser's `roots`:
+/// the chooser is the shell's own, but what it answers is checked like
+/// anything else before it becomes a grant.
+fn give(
+    documents: &tilo_documents::Documents,
+    key: &tilo_documents::AppKey,
+    roots: &[PathBuf],
+    paths: &[PathBuf],
+    mode: PickMode,
+) -> Result<Vec<PathBuf>, String> {
+    let kind = match mode {
+        PickMode::Open => tilo_documents::Kind::Read,
+        PickMode::Save => tilo_documents::Kind::Save,
+        PickMode::Directory => tilo_documents::Kind::Folder { write: false },
+        PickMode::WritableDirectory => tilo_documents::Kind::Folder { write: true },
+    };
+    let roots: Vec<PathBuf> = roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .collect();
+    paths
+        .iter()
+        .map(|path| {
+            let refused = || {
+                t_args(
+                    "portal-chooser-file-not-granted",
+                    &[("path", path.display().to_string().into())],
+                )
+            };
+            let resolved = match mode {
+                PickMode::Save => path.parent().and_then(|folder| folder.canonicalize().ok()),
+                PickMode::Open | PickMode::Directory | PickMode::WritableDirectory => {
+                    path.canonicalize().ok()
+                }
+            };
+            if !resolved.is_some_and(|resolved| roots.iter().any(|root| resolved.starts_with(root)))
+            {
+                return Err(refused());
+            }
+            documents.grant(key, path, kind).map_err(|error| {
+                tracing::info!(%error, app = key.app(), "a chosen item was not given");
+                refused()
+            })
+        })
+        .collect()
 }
 
 fn answer_open_uri(
@@ -587,10 +843,24 @@ fn answer_open(
     context: &ChooserContext,
     opens: &mpsc::Sender<OpenRequest>,
     caller: &PortalCaller,
-    id: u64,
-    path: PathBuf,
+    room: &str,
+    (id, path): (u64, PathBuf),
 ) -> Reply {
-    let paths = match permitted(&context.grants, caller, &[path], PickMode::Open) {
+    // A path the app was given through its documents is the one it hears
+    // and opens itself; the file it names on the host is found through that
+    // choice, which the workspace's grants know nothing of.
+    let given = path
+        .starts_with(tilo_documents::SANDBOX_DIR)
+        .then(|| tilo_documents::AppKey::new(room, caller.app_id.as_str()))
+        .flatten()
+        .map(|key| (key, path.clone()));
+    let checked = match &given {
+        Some((key, sandbox)) => {
+            given_host_path(context.documents.as_ref(), key, sandbox).map(|path| vec![path])
+        }
+        None => permitted(&context.grants, caller, &[path], PickMode::Open),
+    };
+    let paths = match checked {
         Ok(paths) => paths,
         Err(reason) => return Reply::Failed { id, reason },
     };
@@ -606,6 +876,7 @@ fn answer_open(
             caller: caller.clone(),
             path,
             reply,
+            given,
         })
         .is_err()
     {
@@ -623,6 +894,20 @@ fn answer_open(
             reason: t("portal-chooser-session-closing"),
         },
     }
+}
+
+/// The host file `sandbox` (a path `key`'s app was given through its
+/// documents) really is, found beneath the choice as an open finds it, while
+/// that choice still covers it.
+fn given_host_path(
+    documents: Option<&tilo_documents::Documents>,
+    key: &tilo_documents::AppKey,
+    sandbox: &Path,
+) -> Result<PathBuf, String> {
+    documents
+        .and_then(|documents| tilo_documents::host::resolve(documents, key, sandbox))
+        .and_then(|target| target.real_path().ok())
+        .ok_or_else(|| t("portal-chooser-no-file"))
 }
 
 /// Derive picker reach from the requested operation's current authority.
@@ -732,7 +1017,6 @@ mod tests {
     use crate::portal::FilePickerQueue;
     use crate::shell::state::{Capability, FsMode, GRANT_SESSION, Workspace, WorkspaceId};
     use std::io::BufRead as _;
-    use std::time::Instant;
 
     const APP: &str = "so.tilo.sheets";
 
@@ -741,8 +1025,9 @@ mod tests {
         pickers: FilePickerQueue,
         present: Arc<AtomicBool>,
         wakes: Arc<std::sync::atomic::AtomicU64>,
-        /// Whether the room has an identity selected.
         selected: Arc<AtomicBool>,
+        /// How often the service read whether it has.
+        identity_reads: Arc<std::sync::atomic::AtomicU64>,
         room: String,
         socket: PathBuf,
         inbox: PathBuf,
@@ -754,6 +1039,11 @@ mod tests {
     /// A room whose Sheets may read `in/` and write `out/`, and a folder
     /// beside them it was given nothing in.
     fn session_with_save_hint(hint: bool) -> Session {
+        session_with(hint, None)
+    }
+
+    /// [`session_with_save_hint`], giving what is chosen through `documents`.
+    fn session_with(hint: bool, documents: Option<tilo_documents::Documents>) -> Session {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
         let (inbox, outbox, elsewhere) = (base.join("in"), base.join("out"), base.join("home"));
@@ -774,8 +1064,10 @@ mod tests {
                 },
             );
         }
-        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
-        let room = workspace.room.to_string();
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(
+            &workspace.room(),
+        ));
+        let room = workspace.room().to_string();
         let (grants, _) = GrantStoreHandle::test_with_workspace(workspace);
         let pickers = FilePickerQueue::new();
         let present = Arc::new(AtomicBool::new(true));
@@ -786,10 +1078,13 @@ mod tests {
         let wakes = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let wake_counter = Arc::clone(&wakes);
         let selected = Arc::new(AtomicBool::new(false));
+        let identity_reads = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let identity_selected = {
             let selected = Arc::clone(&selected);
+            let reads = Arc::clone(&identity_reads);
             let room = room.clone();
             Arc::new(move |asked: &str| {
+                reads.fetch_add(1, Ordering::AcqRel);
                 Ok::<bool, String>(asked == room && selected.load(Ordering::Acquire))
             })
         };
@@ -805,6 +1100,7 @@ mod tests {
                     wake_counter.fetch_add(1, Ordering::Release);
                 }),
                 identity_selected,
+                documents,
             },
         )
         .unwrap();
@@ -814,6 +1110,7 @@ mod tests {
             present,
             wakes,
             selected,
+            identity_reads,
             room,
             socket,
             inbox,
@@ -833,7 +1130,7 @@ mod tests {
         fn launch(session: &Session, app_id: &str, room: &str) -> Self {
             let mut writer = UnixStream::connect(&session.socket).unwrap();
             writer
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             writer
                 .write_all(&launcher::services::chooser_handshake(app_id, room).unwrap())
@@ -845,7 +1142,6 @@ mod tests {
         fn send(&mut self, request: &Request) {
             let mut frame = serde_json::to_vec(request).unwrap();
             frame.push(b'\n');
-            // A hung-up shell is seen as the missing reply.
             let _ = self.writer.write_all(&frame);
         }
 
@@ -876,29 +1172,13 @@ mod tests {
 
     /// The chooser the service put on screen, once it has.
     fn shown(session: &Session) -> FilePickerRequest {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("ten seconds fit in an Instant");
-        loop {
-            if let Some(request) = session.pickers.drain().pop() {
-                return request;
-            }
-            assert!(Instant::now() < deadline, "no chooser was shown");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_for("a chooser to be shown", || session.pickers.drain().pop())
     }
 
     fn open_request(session: &Session) -> OpenRequest {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("ten seconds fit in an Instant");
-        loop {
-            if let Some(request) = session.service.drain_opens().pop() {
-                return request;
-            }
-            assert!(Instant::now() < deadline, "no open reached the compositor");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_for("an open to reach the compositor", || {
+            session.service.drain_opens().pop()
+        })
     }
 
     #[test]
@@ -925,39 +1205,34 @@ mod tests {
 
     /// The identity chooser the service asked the compositor for, once it has.
     fn identity_chooser_request(session: &Session) -> IdentityChooserRequest {
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(10))
-            .expect("ten seconds fit in an Instant");
-        loop {
-            if let Some(request) = session.service.drain_identity_choosers().pop() {
-                return request;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "no identity chooser reached the compositor"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_for("an identity chooser to reach the compositor", || {
+            session.service.drain_identity_choosers().pop()
+        })
     }
 
-    // USER REQUIREMENT (2026-10-19): "Once an identity is selected, the app
-    // connects and shows its content without a restart."
     #[test]
     fn an_app_waiting_for_its_workspaces_identity_hears_the_moment_one_is_chosen() {
         let session = session_with_save_hint(false);
         let mut app = App::launch(&session, APP, &session.room);
         app.send(&Request::AwaitIdentity { id: 1 });
-        app.writer
-            .set_read_timeout(Some(Duration::from_millis(300)))
-            .unwrap();
-        assert_eq!(app.reply(), None, "nothing is selected, so nothing is said");
+        let reads = || session.identity_reads.load(Ordering::Acquire);
+        tilo_test_env::wait_until("the wait to read the workspace's identity", || reads() >= 1);
+        // A change that selects nothing is read again; any answer to the
+        // first read went out before this second one.
+        tilo_identity_host::policy_change::announce();
+        tilo_test_env::wait_until("the wait to read it again", || reads() >= 2);
+        app.writer.set_nonblocking(true).unwrap();
+        assert!(
+            matches!(
+                std::io::Read::read(&mut &app.writer, &mut [0_u8; 1]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+            ),
+            "nothing is selected, so nothing is said"
+        );
+        app.writer.set_nonblocking(false).unwrap();
 
         session.selected.store(true, Ordering::Release);
-        // What the identity registry announces when it is written.
         tilo_identity_host::policy_change::announce();
-        app.writer
-            .set_read_timeout(Some(Duration::from_secs(10)))
-            .unwrap();
         assert_eq!(app.reply(), Some(Reply::IdentitySelected { id: 1 }));
 
         app.send(&Request::AwaitIdentity { id: 2 });
@@ -968,8 +1243,6 @@ mod tests {
         );
     }
 
-    // USER REQUIREMENT (2026-10-19): "The button invokes the shell's identity
-    // chooser action".
     #[test]
     fn an_app_asks_for_the_identity_chooser_of_its_own_workspace() {
         let session = session_with_save_hint(false);
@@ -1114,7 +1387,6 @@ mod tests {
         let session = session_with_save_hint(true);
         let mut app = App::launch(&session, APP, &session.room);
 
-        // Phase `open_starts_in_the_grants_and_returns_the_chosen_file`.
         app.send(&pick(1, PickMode::Open));
         let shown_open = shown(&session);
         assert_eq!(shown_open.caller.app_id.as_str(), APP);
@@ -1142,7 +1414,6 @@ mod tests {
             })
         );
 
-        // Phase `a_file_outside_the_grants_is_never_handed_over`.
         app.send(&pick(2, PickMode::Open));
         shown(&session)
             .reply
@@ -1150,7 +1421,6 @@ mod tests {
             .unwrap();
         assert!(matches!(app.reply(), Some(Reply::Failed { id: 2, .. })));
 
-        // Phase `save_starts_in_the_save_directory_and_needs_a_write_grant`.
         app.send(&pick(3, PickMode::Save));
         let shown_save = shown(&session);
         assert!(shown_save.save);
@@ -1180,12 +1450,10 @@ mod tests {
             "a read grant does not let the app replace files"
         );
 
-        // Phase `a_closed_chooser_is_a_cancel`.
         app.send(&pick(5, PickMode::Open));
         shown(&session).reply.send(None).unwrap();
         assert_eq!(app.reply(), Some(Reply::Cancelled { id: 5 }));
 
-        // Phase `nobody_at_the_computer_shows_nothing`.
         session.present.store(false, Ordering::Release);
         app.send(&pick(6, PickMode::Open));
         assert_eq!(app.reply(), Some(Reply::Nobody { id: 6 }));
@@ -1209,21 +1477,13 @@ mod tests {
             "Review package",
             "Review",
         ));
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let request = loop {
+        let request = tilo_test_env::wait_for("the ordinary contents chooser to mount", || {
             assert!(
                 contents.try_recv().is_err(),
                 "a new file must reach the owner picker, not fail on empty app grants"
             );
-            if let Some(request) = session.pickers.drain().pop() {
-                break request;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the ordinary contents chooser was not mounted"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        };
+            session.pickers.drain().pop()
+        });
         let scope = request
             .scope
             .as_ref()
@@ -1233,7 +1493,7 @@ mod tests {
             .reply
             .send(Some(vec![session.elsewhere.join("secret.xlsx")]))
             .unwrap();
-        let chosen = contents.recv_timeout(Duration::from_secs(10)).unwrap();
+        let chosen = tilo_test_env::recv("the chosen contents", &contents);
         let tilo_dialogs::portal::ContentsOutcome::Picked(files) = chosen else {
             panic!("owner-selected contents must be delivered: {chosen:?}");
         };
@@ -1374,7 +1634,7 @@ type = "gui"
         ));
         shown(&session).reply.send(Some(vec![path])).unwrap();
         let tilo_dialogs::portal::ContentsOutcome::Picked(mut files) =
-            chosen.recv_timeout(Duration::from_secs(10)).unwrap()
+            tilo_test_env::recv("the chosen contents", &chosen)
         else {
             panic!("actual Store chooser must receive selected bytes")
         };
@@ -1423,7 +1683,7 @@ type = "gui"
             .send(Some(vec![session.inbox.join("x.xlsx")]))
             .unwrap();
         let tilo_dialogs::portal::ContentsOutcome::Picked(files) =
-            contents.recv_timeout(Duration::from_secs(10)).unwrap()
+            tilo_test_env::recv("the chosen contents", &contents)
         else {
             panic!("admitted directory descriptor must survive a root rename")
         };
@@ -1602,14 +1862,9 @@ type = "gui"
         app.send(&content_request(1));
         let request = shown(&session);
         app.writer.shutdown(std::net::Shutdown::Both).unwrap();
-        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
-        while !request.reply.is_closed() && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
-        assert!(
-            request.reply.is_closed(),
-            "closed caller must revoke the pending chooser"
-        );
+        tilo_test_env::wait_until("the closed caller to revoke the pending chooser", || {
+            request.reply.is_closed()
+        });
     }
 
     #[test]
@@ -1630,11 +1885,9 @@ type = "gui"
             id: 1,
             path: path.clone(),
         });
-        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
-        while session.wakes.load(Ordering::Acquire) == 0 {
-            assert!(Instant::now() < deadline, "the open was never queued");
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        tilo_test_env::wait_until("the open to be queued", || {
+            session.wakes.load(Ordering::Acquire) != 0
+        });
         std::fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink(session.elsewhere.join("secret.xlsx"), &path).unwrap();
         assert!(
@@ -1768,7 +2021,7 @@ type = "gui"
         let _ = shell_launcher::drain_events();
 
         let tree = WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_demo());
-        shell_launcher::action_authority::follow_tree(&tree);
+        crate::shell::action_authority::follow_tree(&tree);
         let chrome = ChromeState::new_with_handle(tree.clone());
         let room = chrome
             .borrow()
@@ -1776,7 +2029,7 @@ type = "gui"
             .desktop
             .active_workspace()
             .unwrap()
-            .room
+            .room()
             .to_string();
         let socket = base.join("chooser.sock");
         let service = ChooserService::start_at(
@@ -1788,6 +2041,7 @@ type = "gui"
                 save_directory: None,
                 wake: Arc::new(|| {}),
                 identity_selected: Arc::new(|_: &str| Ok::<bool, String>(false)),
+                documents: None,
             },
         )
         .unwrap();
@@ -1806,14 +2060,10 @@ type = "gui"
         let open = |opener: &Arc<dyn tilo_dialogs::UriOpener>, uri: &'static str| {
             let opener = Arc::clone(opener);
             let asked = std::thread::spawn(move || opener.open(uri).map_err(|e| e.to_string()));
-            let deadline = Instant::now()
-                .checked_add(Duration::from_secs(30))
-                .expect("thirty seconds fit in an Instant");
-            while !asked.is_finished() {
+            tilo_test_env::wait_until(format!("{uri} to be answered"), || {
                 service.open_requested_links(&chrome);
-                assert!(Instant::now() < deadline, "{uri} was never answered");
-                std::thread::sleep(Duration::from_millis(5));
-            }
+                asked.is_finished()
+            });
             asked.join().unwrap()
         };
         let player = opener_of("so.tilo.video-player");
@@ -1821,24 +2071,14 @@ type = "gui"
 
         assert_eq!(open(&player, "settings://updates"), Ok(()));
         assert_eq!(open(&camera, "settings://privacy/camera"), Ok(()));
-        let deadline = Instant::now()
-            .checked_add(Duration::from_secs(30))
-            .expect("thirty seconds fit in an Instant");
-        let commands = loop {
+        let commands = tilo_test_env::wait_for("Settings to be launched twice", || {
             let commands: Vec<String> = std::fs::read_to_string(&log)
                 .unwrap_or_default()
                 .lines()
                 .map(str::to_owned)
                 .collect();
-            if commands.len() >= 2 {
-                break commands;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "Settings was not launched: {commands:?}"
-            );
-            std::thread::sleep(Duration::from_millis(25));
-        };
+            (commands.len() >= 2).then_some(commands)
+        });
         for uri in ["settings://updates", "settings://privacy/camera"] {
             assert!(
                 commands
@@ -1886,5 +2126,341 @@ type = "gui"
         app.send(&pick(1, PickMode::Open));
         assert_eq!(app.reply(), None);
         assert!(session.pickers.is_empty());
+    }
+
+    /// The PDF Viewer, Settings, Backups and Logs: apps the room granted
+    /// nothing.
+    const VIEWER: &str = "so.tilo.pdf-viewer";
+    const SETTINGS: &str = "so.tilo.settings";
+    const BACKUPS: &str = "so.tilo.backups";
+    const LOGS: &str = "so.tilo.logs";
+
+    /// A session that gives what is chosen, as the shell does: its
+    /// documents, mounted where the launcher binds each app's view from
+    /// when this machine can mount FUSE, and the person's home with a
+    /// report, an image, a backups folder and files beside them.
+    struct Giving {
+        session: Session,
+        documents: tilo_documents::Documents,
+        mounted: Option<tilo_documents::mount::Mounted>,
+        _env: tilo_test_env::ScopedEnv,
+    }
+
+    fn giving() -> Giving {
+        let documents = tilo_documents::Documents::new();
+        let session = session_with(false, Some(documents.clone()));
+        let home = &session.elsewhere;
+        std::fs::write(home.join("report.pdf"), b"%PDF").unwrap();
+        std::fs::write(home.join("beside.txt"), b"beside").unwrap();
+        std::fs::write(home.join("dunes.png"), b"\x89PNG").unwrap();
+        std::fs::create_dir_all(home.join("Backups/2026")).unwrap();
+        std::fs::write(home.join("Backups/2026/monday.tar"), b"monday").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home);
+        let at = session.socket.with_file_name("documents");
+        let mounted = match tilo_documents::mount::mount(documents.clone(), &at) {
+            Ok(mounted) => Some(mounted),
+            Err(error) if std::env::var_os("TILO_REQUIRE_FUSE").is_none() => {
+                eprintln!("FUSE is unavailable here ({error}); checking the documents table only");
+                None
+            }
+            Err(error) => panic!("TILO_REQUIRE_FUSE is set and mounting failed: {error}"),
+        };
+        Giving {
+            session,
+            documents,
+            mounted,
+            _env: env,
+        }
+    }
+
+    impl Giving {
+        fn key(&self, app: &str) -> tilo_documents::AppKey {
+            tilo_documents::AppKey::new(&self.session.room, app).unwrap()
+        }
+
+        /// Where `app` finds `given` with its view bound as the launcher
+        /// binds it, when the documents are mounted.
+        fn in_view(&self, app: &str, given: &Path) -> Option<PathBuf> {
+            let mounted = self.mounted.as_ref()?;
+            let rest = given.strip_prefix(tilo_documents::SANDBOX_DIR).unwrap();
+            Some(tilo_documents::app_view(mounted.path(), &self.key(app)).join(rest))
+        }
+
+        /// What `app` reads at `given`: through the documents table, and
+        /// through its view when mounted, which must agree.
+        fn read(&self, app: &str, given: &Path) -> Option<Vec<u8>> {
+            let table = tilo_documents::host::resolve(&self.documents, &self.key(app), given)
+                .and_then(|target| std::fs::read(target.host_path()).ok());
+            if let Some(path) = self.in_view(app, given) {
+                assert_eq!(
+                    std::fs::read(path).ok(),
+                    table,
+                    "the mount and the table agree on {}",
+                    given.display()
+                );
+            }
+            table
+        }
+
+        /// The app's end of the chooser, as its toolkit builds it.
+        fn client(&self, app: &str) -> Arc<dyn tilo_dialogs::FilePicker> {
+            let mut stream = UnixStream::connect(&self.session.socket).unwrap();
+            stream
+                .write_all(&launcher::services::chooser_handshake(app, &self.session.room).unwrap())
+                .unwrap();
+            tilo_dialogs::shell::ShellLink::connect(stream)
+                .unwrap()
+                .picker(None)
+        }
+
+        /// Ask through `app`'s toolkit, choose `chosen` on the shell's
+        /// chooser, and answer the path the app hears.
+        fn choose(
+            &self,
+            app: &str,
+            request: tilo_dialogs::portal::PickRequest,
+            chosen: &Path,
+        ) -> PathBuf {
+            let picker = self.client(app);
+            let asked = picker.pick(request);
+            shown(&self.session)
+                .reply
+                .send(Some(vec![chosen.to_path_buf()]))
+                .unwrap();
+            match tilo_test_env::recv("the chooser's answer", &asked) {
+                tilo_dialogs::portal::PortalOutcome::Opened(path) => path,
+                other => panic!("{app} hears what was chosen: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn choosing_a_file_in_the_picker_gives_the_app_that_file() {
+        let giving = giving();
+        let session = &giving.session;
+        let report = session.elsewhere.join("report.pdf");
+        let mut app = App::launch(session, VIEWER, &session.room);
+        assert!(giving.documents.tokens(&giving.key(VIEWER)).is_empty());
+
+        app.send(&pick(1, PickMode::Open));
+        let request = shown(session);
+        let roots = request.scope.as_ref().map(|scope| scope.roots.clone());
+        assert!(
+            roots
+                .as_ref()
+                .is_some_and(|roots| roots.iter().any(|root| session.elsewhere.starts_with(root))),
+            "the chooser shows the person's files, not only what the app was granted: {roots:?}"
+        );
+        request.reply.send(Some(vec![report.clone()])).unwrap();
+        let Some(Reply::Picked { id: 1, paths }) = app.reply() else {
+            panic!("the app hears what was chosen");
+        };
+        let [given] = paths.as_slice() else {
+            panic!("one file was chosen: {paths:?}");
+        };
+        assert!(given.starts_with(tilo_documents::SANDBOX_DIR), "{given:?}");
+        assert_eq!(given.file_name(), report.file_name());
+        assert_eq!(giving.read(VIEWER, given).as_deref(), Some(&b"%PDF"[..]));
+
+        // Exactly that file, to read, and nothing else became readable.
+        let target =
+            tilo_documents::host::resolve(&giving.documents, &giving.key(VIEWER), given).unwrap();
+        assert!(!target.writable(), "an Open gives the file to read");
+        if let Some(path) = giving.in_view(VIEWER, given) {
+            assert!(std::fs::write(&path, b"changed").is_err());
+            assert_eq!(std::fs::read(&report).unwrap(), b"%PDF");
+        }
+        for beside in ["beside.txt", "secret.xlsx", "Backups"] {
+            assert_eq!(
+                giving.read(VIEWER, &given.with_file_name(beside)),
+                None,
+                "{beside} beside the chosen file"
+            );
+        }
+        assert_eq!(
+            giving.read(SETTINGS, given),
+            None,
+            "another app in the room was given nothing"
+        );
+        assert_eq!(giving.documents.tokens(&giving.key(VIEWER)).len(), 1);
+
+        // Choosing it again reopens it where it was: a recent file works.
+        app.send(&pick(2, PickMode::Open));
+        shown(session).reply.send(Some(vec![report])).unwrap();
+        assert_eq!(
+            app.reply(),
+            Some(Reply::Picked {
+                id: 2,
+                paths: vec![given.clone()],
+            })
+        );
+        assert_eq!(giving.documents.tokens(&giving.key(VIEWER)).len(), 1);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_pdf_viewer_opens_a_pdf_it_was_granted_nothing_for() {
+        let giving = giving();
+        let given = giving.choose(
+            VIEWER,
+            tilo_dialogs::portal::PickRequest::open("Open a PDF", "Open"),
+            &giving.session.elsewhere.join("report.pdf"),
+        );
+        assert_eq!(giving.read(VIEWER, &given).as_deref(), Some(&b"%PDF"[..]));
+    }
+
+    /// An app asking for a file it was given to be opened in the app for
+    /// its type names it by the path it heard; the compositor gets the file
+    /// that path names on the host, and only for the app it was given to.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn opening_a_given_file_hands_the_compositor_the_file_it_names() {
+        let giving = giving();
+        let session = &giving.session;
+        let report = session.elsewhere.join("report.pdf");
+        let given = giving.choose(
+            VIEWER,
+            tilo_dialogs::portal::PickRequest::open("Open a PDF", "Open"),
+            &report,
+        );
+
+        let mut viewer = App::launch(session, VIEWER, &session.room);
+        viewer.send(&Request::Open {
+            id: 1,
+            path: given.clone(),
+        });
+        let open = open_request(session);
+        assert_eq!(open.caller.app_id.as_str(), VIEWER);
+        assert_eq!(open.path, report.canonicalize().unwrap());
+        open.reply.send(Ok(())).unwrap();
+        assert_eq!(viewer.reply(), Some(Reply::Opened { id: 1 }));
+
+        let mut settings = App::launch(session, SETTINGS, &session.room);
+        settings.send(&Request::Open {
+            id: 2,
+            path: given.clone(),
+        });
+        assert!(
+            matches!(settings.reply(), Some(Reply::Failed { id: 2, .. })),
+            "another app cannot open what was given to the viewer"
+        );
+        viewer.send(&Request::Open {
+            id: 3,
+            path: given.with_file_name("beside.txt"),
+        });
+        assert!(
+            matches!(viewer.reply(), Some(Reply::Failed { id: 3, .. })),
+            "nothing beside the given file opens"
+        );
+        assert!(session.service.drain_opens().is_empty());
+    }
+
+    /// Settings' wallpaper chooser opens the chosen image itself
+    /// (`send_open_file`): the same request on the wire, then
+    /// `open_regular_file` on the path it hears, which inside the sandbox is
+    /// in its view.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn settings_sets_a_wallpaper_from_an_image_it_was_granted_nothing_for() {
+        let giving = giving();
+        let given = giving.choose(
+            SETTINGS,
+            tilo_dialogs::portal::PickRequest::open("Choose a wallpaper", "Choose"),
+            &giving.session.elsewhere.join("dunes.png"),
+        );
+        assert_eq!(
+            giving.read(SETTINGS, &given).as_deref(),
+            Some(&b"\x89PNG"[..])
+        );
+        if let Some(path) = giving.in_view(SETTINGS, &given) {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(
+                &mut tilo_dialogs::portal::open_regular_file(&path).unwrap(),
+                &mut bytes,
+            )
+            .unwrap();
+            assert_eq!(bytes, b"\x89PNG");
+        }
+    }
+
+    /// Backups chooses a folder: the folder and everything under it, to
+    /// read, and nothing above or beside it.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn backups_chooses_a_folder_and_is_given_its_subtree() {
+        let giving = giving();
+        let folder = giving.session.elsewhere.join("Backups");
+        let given = giving.choose(
+            BACKUPS,
+            tilo_dialogs::portal::PickRequest::directory("Choose a backup folder", "Choose"),
+            &folder,
+        );
+        assert_eq!(given.file_name(), folder.file_name());
+        assert_eq!(
+            giving
+                .read(BACKUPS, &given.join("2026/monday.tar"))
+                .as_deref(),
+            Some(&b"monday"[..])
+        );
+        assert_eq!(giving.read(BACKUPS, &given.join("../report.pdf")), None);
+        assert_eq!(
+            giving.read(BACKUPS, &given.with_file_name("report.pdf")),
+            None
+        );
+        if let Some(path) = giving.in_view(BACKUPS, &given) {
+            let names: Vec<_> = std::fs::read_dir(&path)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(names, vec![std::ffi::OsString::from("2026")]);
+            assert!(
+                std::fs::write(path.join("2026/tuesday.tar"), b"t").is_err(),
+                "a folder chosen to read is not written"
+            );
+        }
+    }
+
+    /// Logs exports to a file that does not exist yet: that one file, to
+    /// write, and the save sibling a whole-file replace goes through.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn logs_exports_to_a_new_file_it_was_granted_nothing_for() {
+        let giving = giving();
+        let destination = giving.session.elsewhere.join("journal-filtered.jsonl");
+        let given = giving.choose(
+            LOGS,
+            tilo_dialogs::portal::PickRequest::save(
+                "Export filtered logs",
+                "Export",
+                "journal-filtered.jsonl",
+            ),
+            &destination,
+        );
+        assert_eq!(given.file_name(), destination.file_name());
+        let target =
+            tilo_documents::host::resolve(&giving.documents, &giving.key(LOGS), &given).unwrap();
+        assert!(target.writable(), "a Save gives the file to write");
+        assert_eq!(target.host_path(), destination);
+        assert_eq!(
+            giving.read(LOGS, &given.with_file_name("beside.txt")),
+            None,
+            "nothing beside it"
+        );
+        if let Some(path) = giving.in_view(LOGS, &given) {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .and_then(|mut file| file.write_all(b"{\"line\":1}\n"))
+                .unwrap();
+            assert_eq!(std::fs::read(&destination).unwrap(), b"{\"line\":1}\n");
+            tilo_dialogs::portal::replace_saved(&path, b"{\"line\":2}\n").unwrap();
+            assert_eq!(std::fs::read(&destination).unwrap(), b"{\"line\":2}\n");
+            assert!(std::fs::write(path.with_file_name("other.jsonl"), b"x").is_err());
+            assert!(!giving.session.elsewhere.join("other.jsonl").exists());
+        }
     }
 }

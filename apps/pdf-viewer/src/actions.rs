@@ -5,7 +5,7 @@
 //! selection, the active tool, and the sidebar tab — stays out of the
 //! document: those are [`PdfEffect`]s. Every change of the markup the
 //! on-page affordances make (the selection HUD's highlight swatches, the
-//! toolbar colour swatch, the comment rail's edit / reply / resolve / delete
+//! window bar's marker colours, the comment rail's edit / reply / resolve / delete
 //! buttons, the note-marker drag, the page rail) is one of the typed field
 //! edits or verbs built here and submitted through the resource's
 //! dispatcher: the same values the palette and agents invoke.
@@ -19,7 +19,7 @@ use ui::tilo_resource;
 use ui::tilo_resource::{Edit, Effect, Id, Invoke};
 
 use crate::markup::{PagePlanEntry, PdfMarkup};
-use crate::model::{Annotation, FormEntry, GeomSpace, PtRect, Signature, Swatch};
+use crate::model::{Annotation, FormEntry, GeomSpace, PtRect, Signature, Swatch, Tool};
 use crate::resource::{NewAnnotation, NewComment, NewNote, NewSignature, pdf_markup};
 
 /// The action palette is refreshed frequently. Keep that contextual snapshot
@@ -78,7 +78,7 @@ pub fn outline_resource_id(ctx: &PdfResourceCtx, index: usize) -> Option<String>
 
 /// What the reader does that changes no markup: moving through the
 /// document and its view, the highlight tool's style, and opening and saving
-/// files. Every caller — a toolbar button, the palette, an agent — reaches
+/// files. Every caller — a window bar slot, the palette, an agent — reaches
 /// the reader's handler as one of these.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "pdf_viewer.effects")]
@@ -108,8 +108,27 @@ pub enum PdfEffect {
     #[effect(view)]
     TogglePages,
     /// Find in document
+    ///
+    /// Opens the window's search on the document.
     #[effect(view, idempotent)]
     Find,
+    /// Use tool
+    ///
+    /// Arms what a press on the page does: select text, highlight, draw,
+    /// add a note, add text or sign.
+    #[effect(view, idempotent)]
+    UseTool {
+        #[param("select, highlight, ink, note, text or sign")]
+        tool: Tool,
+    },
+    /// Marker colour
+    ///
+    /// The colour the next mark takes; a selected mark takes it too.
+    #[effect(view, idempotent)]
+    SetMarkerColour {
+        #[param("yellow, green, pink, blue or purple")]
+        colour: Swatch,
+    },
     /// Mark text as highlight
     #[effect(view, idempotent)]
     MarkHighlight,
@@ -147,9 +166,10 @@ pub enum PdfEffect {
     },
     /// Read text
     ///
-    /// Answers with the text of the PDF's pages as its file holds them,
-    /// page by page, at most 50 pages at a time: read on from the `next` an
-    /// answer gives. Changes nothing.
+    /// Answers with the text of the PDF's pages, page by page, at most 50
+    /// pages at a time: read on from the `next` an answer gives. Reads the
+    /// PDF the record pinned, so a record opened from content reads with no
+    /// file. Changes nothing.
     #[effect(kind = "read", returns, idempotent)]
     ReadText {
         #[param("The first page to read, 1-based; the first page when omitted")]
@@ -157,16 +177,62 @@ pub enum PdfEffect {
         #[param("The last page to read, 1-based; 50 pages on when omitted")]
         to_page: Option<usize>,
     },
+    /// Look at a page
+    ///
+    /// Answers with a picture of one page as the PDF draws it, kept as
+    /// content: its address, width and height. Changes nothing.
+    #[effect(kind = "read", returns, idempotent)]
+    LookPage {
+        #[param("The page to look at, 1-based")]
+        page: usize,
+        #[param("The picture's longest side in pixels, 64 to 1536; 1024 when omitted")]
+        size: Option<u32>,
+    },
+    /// Open PDF from content
+    ///
+    /// Pins a PDF the room keeps as content (an attachment, a shared file,
+    /// an export) as the document this record marks up, so read-text and
+    /// look-page read it and markup is made on it, and answers with its
+    /// name and page count. A record marks up one PDF: the PDF it holds
+    /// already answers again, another is refused.
+    #[effect(kind = "undoable", returns, idempotent, audience = "agents")]
+    ImportPdfContent {
+        #[param(content, "The PDF's content address, `tilo.content:<hash>`")]
+        content: String,
+        #[param("The file's name, such as report.pdf; Document.pdf when omitted")]
+        name: Option<String>,
+    },
+    /// Select text
+    ///
+    /// Selects `text` on a page (all of the page's text when omitted), as
+    /// a drag across it would, and answers with what it selected.
+    #[effect(job, returns)]
+    SelectText {
+        #[param(
+            "The text to select, its first occurrence on the page; the whole page when omitted"
+        )]
+        text: Option<String>,
+        #[param("The page, 1-based; the current page when omitted")]
+        page: Option<usize>,
+    },
+    /// Select all
+    #[effect(view, idempotent)]
+    SelectAll,
+    /// Copy selection
+    ///
+    /// Copies the selected text to the clipboard and answers with it.
+    #[effect(job, returns)]
+    CopySelection,
     /// Open PDF
     ///
     /// Opens a PDF on its own markup record, in this window.
-    #[effect(job, cancellable, destructive, device_only)]
+    #[effect(job, cancellable, destructive)]
     OpenPdf {
         #[param("Filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
     /// Save annotated PDF
-    #[effect(job, cancellable, destructive, device_only)]
+    #[effect(job, cancellable, destructive)]
     SaveAs {
         #[param("Filesystem path; omit to use the system picker")]
         path: Option<String>,
@@ -327,6 +393,11 @@ pub fn pin_source_action(hash: &str, len: u64, name: &str) -> Invoke<PdfMarkup> 
     PdfMarkup::PIN_SOURCE.with((hash.to_owned(), len, name.to_owned()))
 }
 
+/// Record the reader's place as the resume hint of the open document.
+pub fn record_reading_position_action(page: &str, fraction: f64, zoom: f64) -> Invoke<PdfMarkup> {
+    PdfMarkup::RECORD_READING_POSITION.with((page.to_owned(), fraction, zoom))
+}
+
 pub fn delete_annotation_action(id: &str) -> Invoke<PdfMarkup> {
     PdfMarkup::DELETE_ANNOTATION.with(Id::from_raw(id))
 }
@@ -471,6 +542,24 @@ pub fn move_page_plan_action(id: &str, after_id: Option<&str>) -> Invoke<PdfMark
     PdfMarkup::MOVE_PAGE.with((Id::from_raw(id), after_id.map(str::to_owned)))
 }
 
+/// The page rail's reorder of the page at `from` to final position `to`
+/// (the page is taken out, then put back at `to`) among the pages `ids`, as
+/// the move it is: after the page that will precede it, or to the start.
+/// Moving down, that page is the one at `to`; moving up, the one before it.
+pub fn reorder_page_plan_action(
+    ids: &[String],
+    from: usize,
+    to: usize,
+) -> Option<Invoke<PdfMarkup>> {
+    let id = ids.get(from)?;
+    let after = match to.cmp(&from) {
+        std::cmp::Ordering::Equal => return None,
+        std::cmp::Ordering::Greater => Some(ids.get(to)?),
+        std::cmp::Ordering::Less => to.checked_sub(1).and_then(|before| ids.get(before)),
+    };
+    Some(move_page_plan_action(id, after.map(String::as_str)))
+}
+
 /// Turn page occurrence `id` to `degrees` clockwise.
 #[cfg(test)]
 pub fn rotate_page_action(id: &str, degrees: i32) -> Invoke<PdfMarkup> {
@@ -483,7 +572,7 @@ pub fn rotate_page_action(id: &str, degrees: i32) -> Invoke<PdfMarkup> {
     )
 }
 
-/// The presentation context the reader hands [`provide_resources`] so the
+/// The presentation context the reader hands `provide_resources` so the
 /// document-level "Add note" action can be built from the live reading position
 /// and author — state that lives in the app, not the document.
 #[derive(Debug, Clone)]

@@ -60,6 +60,12 @@ pub enum RegistryError {
     Empty,
     #[error("registry snapshot proof failed: {0}")]
     Proof(#[from] registry_types::SnapshotError),
+    /// The registry's owner-signed catalogue is authentic but past its
+    /// expiry: the registry has not renewed it. Nothing in it is offered.
+    #[error(
+        "the registry's catalogue expired at {expired_at_unix} (Unix time) and has not been renewed"
+    )]
+    Expired { expired_at_unix: u64 },
     #[error("registry snapshot was rolled back or replayed")]
     Rollback,
     #[error("registry snapshot checkpoint could not be persisted: {0}")]
@@ -143,11 +149,6 @@ fn client() -> Result<&'static reqwest::blocking::Client, RegistryError> {
 /// Fetch and parse informational registry metadata, rejecting an owner identity
 /// that differs from the preconfigured pin. This endpoint never establishes
 /// trust on first contact.
-///
-/// # Errors
-///
-/// Returns an error if the request fails, the response is empty, or
-/// the body doesn't decode as a [`RegistryHandshake`].
 pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, RegistryError> {
     let url = registry_url(reg, "registry")?;
     let c = client()?;
@@ -172,12 +173,6 @@ pub fn fetch_handshake(reg: &RegistryConfig) -> Result<RegistryHandshake, Regist
 }
 
 /// Fetch `/entries` and classify each result.
-///
-/// # Errors
-///
-/// Returns an error if the request fails, is oversized, is not a signed
-/// snapshot, fails any signature/authorization/freshness check, or rolls back
-/// the durable checkpoint.
 pub fn fetch_entries(reg: &RegistryConfig) -> Result<Vec<VerifiedEntry>, RegistryError> {
     let snapshot = fetch_snapshot(reg)?;
     let now = tilo_clock::unix_now();
@@ -199,9 +194,28 @@ pub fn fetch_snapshot(reg: &RegistryConfig) -> Result<CatalogueSnapshot, Registr
     let snapshot =
         CatalogueSnapshot::from_json(&bytes).map_err(|e| RegistryError::Decode(e.to_string()))?;
     let now = tilo_clock::unix_now();
-    let _ = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now)?;
+    if let Err(error) = classify_snapshot(&snapshot, &reg.owner_pubkey_hex, now) {
+        return Err(expired_or(error, &snapshot, &reg.owner_pubkey_hex, now));
+    }
     persist_checkpoint(reg, &snapshot, &bytes)?;
     Ok(snapshot)
+}
+
+/// `error`, unless `snapshot` failed only by having expired: then
+/// [`RegistryError::Expired`], so a device can say the catalogue expired
+/// rather than that the registry is unreachable.
+fn expired_or(
+    error: RegistryError,
+    snapshot: &CatalogueSnapshot,
+    owner_pubkey_hex: &str,
+    now_unix: u64,
+) -> RegistryError {
+    match (&error, snapshot.expired_at(owner_pubkey_hex, now_unix)) {
+        (RegistryError::Proof(registry_types::SnapshotError::Freshness), Some(expired_at_unix)) => {
+            RegistryError::Expired { expired_at_unix }
+        }
+        _ => error,
+    }
 }
 
 /// The catalogue this device last accepted from `reg`, read from disk without
@@ -352,12 +366,6 @@ fn registry_url(reg: &RegistryConfig, suffix: &str) -> Result<reqwest::Url, Regi
 }
 
 /// Pure proof verification used by HTTP and fixture tests.
-///
-/// # Errors
-///
-/// Returns an error if the pinned owner key is absent or a placeholder, or if
-/// the snapshot fails its owner signature, publisher authorization,
-/// freshness, bounds, or publisher-signature checks.
 pub fn classify_snapshot(
     snapshot: &CatalogueSnapshot,
     owner_pubkey_hex: &str,
@@ -553,6 +561,32 @@ mod tests {
     }
 
     #[test]
+    fn an_authentic_expired_catalogue_is_told_apart_from_a_failed_one() {
+        let owner = SigningKey::from_bytes(&[8; 32]);
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        let classified = |snapshot: &CatalogueSnapshot, now| {
+            classify_snapshot(snapshot, &owner_hex, now)
+                .map(|_| ())
+                .map_err(|error| expired_or(error, snapshot, &owner_hex, now))
+        };
+        // Issued at 100, valid until 200.
+        let genuine = snapshot(&owner);
+        assert!(classified(&genuine, 150).is_ok());
+        assert!(matches!(
+            classified(&genuine, 250),
+            Err(RegistryError::Expired {
+                expired_at_unix: 200
+            })
+        ));
+        // Another owner's expired snapshot is a proof failure, not "expired".
+        let stranger = SigningKey::from_bytes(&[9; 32]);
+        assert!(matches!(
+            classified(&snapshot(&stranger), 250),
+            Err(RegistryError::Proof(_))
+        ));
+    }
+
+    #[test]
     fn the_last_accepted_catalogue_is_read_back_only_while_it_still_verifies() {
         let dir = tempfile::tempdir().unwrap();
         let checkpoint = dir.path().join("registry-checkpoints/owner.json");
@@ -563,7 +597,6 @@ mod tests {
             Err(RegistryError::NotStored)
         ));
 
-        // An accepted snapshot is described offline, as fetched.
         let first = signed_snapshot(&owner, 1);
         let first_bytes = serde_json::to_vec(&first).unwrap();
         persist_checkpoint_at(&checkpoint, &CatalogueSnapshot::Full(first), &first_bytes).unwrap();
@@ -582,7 +615,6 @@ mod tests {
         let stranger = hex::encode(SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes());
         assert!(last_verified_at(&checkpoint, &stranger, 150).is_err());
 
-        // Once a newer snapshot is accepted, the older bytes are a rollback.
         let second = signed_snapshot(&owner, 2);
         let second_bytes = serde_json::to_vec(&second).unwrap();
         persist_checkpoint_at(&checkpoint, &CatalogueSnapshot::Full(second), &second_bytes)
@@ -594,7 +626,6 @@ mod tests {
             Err(RegistryError::Rollback)
         ));
 
-        // Bytes edited on disk fail their signatures.
         let mut tampered = signed_snapshot(&owner, 2);
         tampered.entries[0].name = "hijacked".into();
         std::fs::write(
@@ -664,7 +695,6 @@ mod tests {
 
     #[test]
     fn registry_client_accepts_only_authorized_monotonic_snapshots_from_safe_endpoints() {
-        // Phase `only_owner_authorized_snapshot_is_offerable`.
         {
             let owner = SigningKey::from_bytes(&[8; 32]);
             let snapshot = snapshot(&owner);
@@ -692,7 +722,6 @@ mod tests {
                 .is_err()
             );
         }
-        // Phase `durable_checkpoint_rejects_rollback_and_same_sequence_fork`.
         {
             let old = SnapshotCheckpoint {
                 sequence: 8,
@@ -709,7 +738,6 @@ mod tests {
             validate_checkpoint(&old, 8, &"aa".repeat(32)).unwrap();
             validate_checkpoint(&old, 9, &"bb".repeat(32)).unwrap();
         }
-        // Phase `registry_endpoint_rejects_credentials_remote_plaintext_and_redirectable_query`.
         {
             for base_url in [
                 "http://registry.test",

@@ -39,7 +39,8 @@ impl Announcing {
 }
 
 /// The native membership owner of one room. Every re-check of the room's
-/// membership surface reads its tasks, so the reads are the re-checks.
+/// membership surface asks whether it keeps the room, so the questions are
+/// the re-checks.
 #[cfg(target_os = "linux")]
 struct CountedRoom {
     room: String,
@@ -56,19 +57,8 @@ impl CountedRoom {
 #[cfg(target_os = "linux")]
 impl crate::services::WorkspaceMemberships for CountedRoom {
     fn requires_room(&self, room: &str) -> bool {
-        room == self.room
-    }
-
-    fn task_snapshot(
-        &self,
-        _: &str,
-    ) -> Result<tilo_peer_state::workspace_task::WorkspaceTaskSnapshot, String> {
         self.checks.lock().unwrap().push(tilo_clock::unix_now_ns());
-        Ok(tilo_peer_state::workspace_task::WorkspaceTaskSnapshot {
-            tasks: Vec::new(),
-            controls: std::collections::BTreeMap::default(),
-            grants: Vec::new(),
-        })
+        room == self.room
     }
 
     fn execute(&self, _: tilo_owner_commit::OwnerCommitRequest) -> tilo_owner_commit::CommitFuture {
@@ -85,7 +75,7 @@ fn owner_key() -> ed25519_dalek::SigningKey {
 /// and whose agent's at `agent_until` (Unix seconds).
 fn expiring_room(guest_until: u64, agent_until: u64) -> (WorkspaceTree, String) {
     let mut workspace = Workspace::new(WorkspaceId(71), "Expiring");
-    let room = workspace.room.to_string();
+    let room = workspace.room().to_string();
     let owner = principal_id_for_root(owner_key().verifying_key().to_bytes());
     workspace.set_owner(owner.clone());
     let reads = |id: &str, subject: Subject, until: u64| {
@@ -184,20 +174,38 @@ fn the_next_policy_change_is_the_first_grant_or_certificate_expiry() {
     );
 }
 
-/// An idle broker whose host announces its policy changes sleeps until a
-/// grant expires, re-checks within a second of it, and re-checks at once
-/// when a revocation is announced; in between its thread is not woken.
+/// An idle broker whose host announces its policy changes registers its
+/// grant's expiry with the policy clock, re-checks when that announces the
+/// expiry, and re-checks when a revocation is announced; in between its
+/// thread is not woken. The wall clock is held, so the expiry comes when the
+/// test moves it there and announces it as the policy clock would; the test
+/// runs in a process of its own, so no other test reads the held time.
 #[cfg(target_os = "linux")] // the thread's wakeups are read from /proc
 #[test]
 fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation_and_sleeps_in_between() {
-    /// Waking and re-checking on a loaded runner.
-    const SCHEDULING: Duration = Duration::from_millis(500);
+    tilo_test_env::in_own_process(
+        module_path!(),
+        "an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation_and_sleeps_in_between",
+        an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation,
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation() {
+    let start = tilo_clock::unix_now();
+    tilo_clock::freeze_wall(
+        std::time::UNIX_EPOCH
+            .checked_add(Duration::from_secs(start))
+            .unwrap(),
+    );
     let directory = tempfile::tempdir().expect("temporary socket directory");
     super::tests::secure_socket_parent(directory.path()).expect("private socket directory");
     let socket = directory.path().join("policy.sock");
-    let start = tilo_clock::unix_now();
-    let expiry = start.saturating_add(3);
-    let (tree, room) = expiring_room(expiry, start.saturating_add(3600));
+    // Far enough ahead that the policy clock's own timer, which follows the
+    // real wall clock, never fires during the test.
+    let expiry = start.saturating_add(3600);
+    let agent_expiry = start.saturating_add(7200);
+    let (tree, room) = expiring_room(expiry, agent_expiry);
     let authority = Arc::new(Announcing(tree.shared()));
     let owner = Arc::new(CountedRoom {
         room,
@@ -222,69 +230,56 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation_and_sleeps_in_betwee
         )
         .expect("test broker")
     });
-    let started = std::time::Instant::now();
-    while owner.checks().is_empty() {
-        assert!(
-            started.elapsed() < tilo_test_env::hang_bound(),
-            "the broker never checked its membership surface"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
     assert!(
         tilo_identity_host::policy_change::timers_reliable(),
         "Linux times expiries with a timerfd"
     );
+    let registered =
+        |at: u64| crate::policy_schedule::announced_at().contains(&at.saturating_mul(NS));
+    tilo_test_env::wait_until("the broker registered the grant's expiry", || {
+        registered(expiry)
+    });
 
-    // Quiet until shortly before the expiry: nothing is due.
-    std::thread::sleep(Duration::from_millis(300));
+    // Idle with nothing due: the thread sleeps through what a one-second
+    // clock would have woken it for twice.
     let epoch = tilo_identity_host::policy_change::epoch();
     let settled = tilo_test_env::idle::context_switches(&tid);
-    let quiet_until = expiry.saturating_mul(NS).saturating_sub(300_000_000);
-    std::thread::sleep(Duration::from_nanos(
-        quiet_until.saturating_sub(tilo_clock::unix_now_ns()),
-    ));
+    std::thread::sleep(RECHECK_INTERVAL.saturating_mul(2));
     let woke = tilo_test_env::idle::context_switches(&tid).saturating_sub(settled);
     // Another test of this process may announce; each costs a turn of about
-    // two switches. The one-second clock this replaces cost about five
-    // switches in this window.
+    // two switches. Parking after the start's check costs at most two more.
     let announced = tilo_identity_host::policy_change::epoch().wrapping_sub(epoch);
     assert!(
         woke <= announced.saturating_mul(2).saturating_add(2),
         "the idle broker thread woke {woke} times with {announced} announcements"
     );
 
-    // The grant ends: one re-check, within the bound.
+    // The grant ends, and the policy clock announces it: one re-check, at
+    // the expiry, which registers the next one.
     let before_expiry = owner.checks().len();
-    std::thread::sleep(Duration::from_nanos(
-        expiry
-            .saturating_mul(NS)
-            .saturating_add(1_500_000_000)
-            .saturating_sub(tilo_clock::unix_now_ns()),
-    ));
-    let at_expiry = owner.checks();
-    let recheck = at_expiry
-        .iter()
-        .skip(before_expiry)
-        .find(|at| **at >= expiry.saturating_mul(NS))
-        .copied()
-        .expect("the broker re-checked when the grant expired");
-    let late = Duration::from_nanos(recheck.saturating_sub(expiry.saturating_mul(NS)));
-    assert!(
-        late <= RECHECK_INTERVAL.saturating_add(SCHEDULING),
-        "re-checked {late:?} after the grant expired"
+    tilo_clock::freeze_wall(
+        std::time::UNIX_EPOCH
+            .checked_add(Duration::from_secs(expiry))
+            .unwrap(),
     );
+    tilo_identity_host::policy_change::announce();
+    tilo_test_env::wait_until("the re-check at the expiry", || {
+        owner.checks().len() > before_expiry
+    });
+    assert_eq!(
+        owner.checks()[before_expiry],
+        expiry.saturating_mul(NS),
+        "the broker re-checked when the grant expired"
+    );
+    tilo_test_env::wait_until("the broker registered the next expiry", || {
+        registered(agent_expiry)
+    });
 
-    // A revocation, announced: re-checked at once, not on a clock.
-    let revoked_at = tilo_clock::unix_now_ns();
-    let checks = at_expiry.len();
+    // A revocation, announced: re-checked on the announcement, not on a
+    // clock (the wall clock stands still).
+    let checks = owner.checks().len();
     authority.write(|tree| tree.workspaces[0].policy.owner = None);
-    let started = std::time::Instant::now();
-    while owner.checks().len() == checks {
-        assert!(
-            started.elapsed() < RECHECK_INTERVAL.saturating_add(SCHEDULING),
-            "the announced revocation was not re-checked promptly"
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    assert!(owner.checks().last().is_some_and(|at| *at >= revoked_at));
+    tilo_test_env::wait_until("the re-check of the announced revocation", || {
+        owner.checks().len() > checks
+    });
 }

@@ -248,10 +248,6 @@ fn temporary_name() -> Result<OsString> {
 /// temporary name, which is then renamed to `name` without replacing anything
 /// and with no window in which the published file has a second link. The
 /// temporary is removed and the directory synced whatever happened.
-///
-/// # Errors
-/// The writer's error, `EEXIST` when `name` already exists, or a failure to
-/// remove the temporary or sync the directory (which then wins).
 pub fn publish<F: Files + ?Sized>(
     files: &F,
     directory: BorrowedFd<'_>,
@@ -283,9 +279,6 @@ pub fn publish<F: Files + ?Sized>(
 /// existing file), copies `source` into it, then sets owner and `mode` and
 /// syncs it. Ownership comes before the mode, so a set-id bit in `mode` is
 /// kept.
-///
-/// # Errors
-/// Any failed call, or the source's read error.
 pub fn write_file<F: Files + ?Sized>(
     files: &F,
     directory: BorrowedFd<'_>,

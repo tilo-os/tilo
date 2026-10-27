@@ -6,7 +6,6 @@ use anyhow::{Context as _, anyhow};
 use iroh::endpoint::{Connection, presets};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl};
 
-/// Which relays an endpoint uses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Relays {
     /// The public n0 relays, and n0's lookup to find a device by its id.
@@ -18,9 +17,6 @@ pub enum Relays {
 
 impl Relays {
     /// `url`, or [`crate::RELAY_ENV`], or the public relays.
-    ///
-    /// # Errors
-    /// A relay that is not a URL.
     pub fn choose(url: Option<&str>) -> anyhow::Result<Self> {
         let configured = url
             .map(str::to_owned)
@@ -87,9 +83,6 @@ pub const ATTEMPT: Duration = Duration::from_secs(15);
 pub const REDIAL_AFTER: Duration = Duration::from_secs(2);
 
 /// Dial `addr` until it answers or `budget` runs out.
-///
-/// # Errors
-/// The last failure once the budget is spent.
 pub async fn dial(
     endpoint: &Endpoint,
     addr: &EndpointAddr,

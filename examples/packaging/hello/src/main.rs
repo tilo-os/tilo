@@ -50,7 +50,7 @@ fn main() {
     // identity.
     match identity::load() {
         Ok(id) => {
-            let hex = hex::encode(id.group_public_key());
+            let hex = hex::encode(id.metadata().group_public_key());
             println!("  identity : connected (pubkey={hex})");
         }
         Err(NotAvailable::ServiceFdMissing) => {

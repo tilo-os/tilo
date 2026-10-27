@@ -36,6 +36,8 @@ image = { workspace = true, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 bounded-zip = { version = "0.1.0", path = "../../doc/bounded-zip", features = ["epub"] }
 # Content addressing (same hash the rest of Tilo uses end-to-end).
 blake3.workspace = true
+# Icons and other vector images preview through the same Image path.
+resvg = { version = "0.47", default-features = false }
 # The system content store the encoded previews are kept in.
 tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false, features = ["dir"] }
 # The per-user preview cache location.

@@ -7,7 +7,7 @@ use crate::mcp::{MAX_ADMITTED, MAX_WORKING};
 use std::collections::HashSet;
 use std::io::{BufRead as _, Write as _};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::Completer;
 
@@ -59,6 +59,17 @@ impl GatedHost {
 
     fn owns(&self, caller: &Caller, id: &InvocationId) -> bool {
         self.owner.lock().unwrap().as_ref() == Some(caller) && self.invoked().contains(id)
+    }
+}
+
+impl GatedHost {
+    fn cancel_now(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
+        if !self.owns(caller, id) {
+            return Err(ActionHostError::UnknownInvocation);
+        }
+        self.cancelled.lock().unwrap().insert(*id);
+        self.wake();
+        Ok(())
     }
 }
 
@@ -128,13 +139,12 @@ impl ActionHost for GatedHost {
         Some(change)
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        if !self.owns(caller, id) {
-            return Err(ActionHostError::UnknownInvocation);
-        }
-        self.cancelled.lock().unwrap().insert(*id);
-        self.wake();
-        Ok(())
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(self.cancel_now(caller, id))
     }
 }
 
@@ -197,13 +207,12 @@ fn long_invoke(invocation: InvocationId) -> Value {
 /// Yield to the session's other requests until the host has been asked to
 /// start `count` invocations.
 async fn until_invoked(host: &GatedHost, count: usize) {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tilo_test_env::within("the invocation to reach the host", async {
         while host.invoked().len() < count {
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
     })
-    .await
-    .expect("the invocation reaches the host");
+    .await;
 }
 
 /// While a `tilo_invoke` waits, the same session's `tilo_status` answers;
@@ -213,14 +222,16 @@ async fn until_invoked(host: &GatedHost, count: usize) {
 fn status_answers_while_the_same_session_waits_on_an_invocation() {
     let host = GatedHost::default();
     let endpoint = gated_endpoint(host.clone());
-    // Many poll intervals of the old 25 ms loop.
+    // Many poll intervals of the old 25 ms loop, on the paused clock.
     let ran_for = std::time::Duration::from_millis(250);
-    run(async {
+    run_paused(async {
         let session = gated_session(&endpoint).await;
         let invocation = InvocationId::new();
         let invoking = call(&endpoint, &session, "tilo_invoke", long_invoke(invocation));
         let meanwhile = async {
             until_invoked(&host, 1).await;
+            // Well within the invoke's wait: an answer at all means the
+            // status did not wait behind it.
             let status = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 call(
@@ -267,7 +278,7 @@ fn status_answers_while_the_same_session_waits_on_an_invocation() {
 fn overlapping_calls_with_one_invocation_id_run_one_after_the_other() {
     let host = GatedHost::default();
     let endpoint = gated_endpoint(host.clone());
-    run(async {
+    run_paused(async {
         let session = gated_session(&endpoint).await;
         let shared = InvocationId::new();
         let other = InvocationId::new();
@@ -491,7 +502,9 @@ async fn states(
 fn a_cancel_answers_at_once_while_its_invoke_waits_and_stops_it() {
     let host = GatedHost::default();
     let endpoint = gated_endpoint(host.clone());
-    run(async {
+    // On the paused clock the cancel's answer takes no time unless it waits
+    // on a timer, as it would behind the invoke's wait.
+    run_paused(async {
         let session = gated_session(&endpoint).await;
         let invocation = InvocationId::new();
         let invoking = Box::pin(call(
@@ -502,7 +515,7 @@ fn a_cancel_answers_at_once_while_its_invoke_waits_and_stops_it() {
         ));
         let cancelling = async {
             until_invoked(&host, 1).await;
-            let asked = Instant::now();
+            let asked = tokio::time::Instant::now();
             let cancel = about(&endpoint, &session, "tilo_cancel", invocation).await;
             (cancel, asked.elapsed())
         };
@@ -531,7 +544,7 @@ fn a_cancel_answers_at_once_while_its_invoke_waits_and_stops_it() {
 fn a_session_works_its_calls_at_once_up_to_its_bound() {
     let host = GatedHost::default();
     let endpoint = gated_endpoint(host.clone());
-    run(async {
+    run_paused(async {
         let session = gated_session(&endpoint).await;
         let ids: Vec<_> = (0..=MAX_WORKING).map(|_| InvocationId::new()).collect();
         let calls = invoke_all(&endpoint, &session, &ids);
@@ -570,12 +583,11 @@ fn a_session_works_its_calls_at_once_up_to_its_bound() {
 fn a_session_refuses_calls_beyond_those_it_admits() {
     let host = GatedHost::default();
     let endpoint = gated_endpoint(host.clone());
-    run(async {
+    run_paused(async {
         let session = gated_session(&endpoint).await;
         let ids: Vec<_> = (0..MAX_ADMITTED).map(|_| InvocationId::new()).collect();
         let calls = invoke_all(&endpoint, &session, &ids);
         until_invoked(&host, MAX_WORKING).await;
-        // Time for every call to take its place.
         tokio::time::sleep(Duration::from_millis(100)).await;
         let request = json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{
             "name":"tilo_invoke","arguments":long_invoke(InvocationId::new())
@@ -608,24 +620,16 @@ fn a_session_refuses_calls_beyond_those_it_admits() {
     });
 }
 
-/// Wait, a bounded while, until `condition` holds.
-fn wait_until(condition: impl Fn() -> bool, what: &str) {
-    let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
-    while !condition() {
-        assert!(Instant::now() < deadline, "{what}");
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
-
 /// One MCP session over a newline-framed connection whose other end is
 /// `client`, used as an agent overlaps its calls: two invokes wait at once,
 /// a `tilo_status` and a `tilo_cancel` answer while they wait — the cancel
-/// in under 100 ms, stopping its invoke — and each reply comes back whole,
-/// on a line of its own, as soon as it is ready rather than in the order
-/// asked. Closing the client's side ends the connection.
+/// stopping its invoke, which a cancel queued behind the invoke's wait
+/// could not — and each reply comes back whole, on a line of its own, as
+/// soon as it is ready rather than in the order asked. Closing the client's
+/// side ends the connection.
 pub(crate) fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::UnixStream) {
     client
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let mut lines = std::io::BufReader::new(client.try_clone().unwrap()).lines();
     let mut reply = || -> Value {
@@ -654,9 +658,9 @@ pub(crate) fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::U
     let (cancelled, finished) = (InvocationId::new(), InvocationId::new());
     send(2, "tools/call", tool("tilo_invoke", cancelled));
     send(3, "tools/call", tool("tilo_invoke", finished));
-    wait_until(
+    tilo_test_env::wait_until(
+        "both invokes to reach the host while neither has finished",
         || host.invoked().len() == 2,
-        "both invokes reach the host while neither has finished",
     );
     send(4, "tools/call", tool("tilo_status", cancelled));
     let status = reply();
@@ -665,18 +669,12 @@ pub(crate) fn overlapping_lines(host: &GatedHost, client: &std::os::unix::net::U
         "the status answers while both invokes wait"
     );
     assert_eq!(state(&status), "accepted", "{status}");
-    let asked = Instant::now();
     send(5, "tools/call", tool("tilo_cancel", cancelled));
     let mut answered = std::collections::BTreeMap::new();
     while !answered.contains_key(&5) {
         let next = reply();
         answered.insert(next["id"].as_u64().unwrap(), next);
     }
-    let waited = asked.elapsed();
-    assert!(
-        waited < Duration::from_millis(100),
-        "the cancel answered after {waited:?}"
-    );
     assert_eq!(state(&answered[&5]), "cancelled", "{}", answered[&5]);
     if !answered.contains_key(&2) {
         let next = reply();

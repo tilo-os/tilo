@@ -677,7 +677,6 @@ mod tests {
         gamma.forget_applied();
         assert_eq!(gamma.describe(), "wanted=none applied=unknown");
         assert_eq!(gamma.pending_write(), Some((1.0, false)));
-        // The darkest dim the slider gives still lets light through.
         let darkest = gamma_lut(
             1024,
             os_actions::brightness::SOFTWARE_DIM_FLOOR,
@@ -767,12 +766,10 @@ mod tests {
         ];
         assert_eq!(colorspace_values(named), Some((0, 9)));
         assert_eq!(colorspace_values([(0, b"Default".as_slice())]), None);
-        // Phase `link_depth_is_at_least_ten_and_never_above_the_range`.
         assert_eq!(hdr_max_bpc(8, 16), Some(10));
         assert_eq!(hdr_max_bpc(12, 16), Some(12));
         assert_eq!(hdr_max_bpc(8, 10), Some(10));
         assert_eq!(hdr_max_bpc(8, 8), None);
-        // Phase `capability_reports_the_first_missing_piece`.
         assert_eq!(hdr_capability(false, None, None), (false, None));
         assert_eq!(
             hdr_capability(true, Some(HdrUnavailable::DriverUnsupported), None),
@@ -787,7 +784,6 @@ mod tests {
             (false, Some(HdrUnavailable::DriverRejected))
         );
         assert_eq!(hdr_capability(true, None, None), (true, None));
-        // Phase `a_connector_without_properties_is_driver_unsupported`.
         let bare = HdrSignal {
             max_bpc: None,
             colorspace: None,
@@ -855,7 +851,6 @@ mod tests {
 
     #[test]
     fn adaptive_sync_writes_only_changes_and_stops_after_a_refusal() {
-        // Phase `writes_follow_the_wanted_state_without_repeats`.
         {
             let mut sync = AdaptiveSync::new(Some(handle()), true);
             assert!(sync.supported());
@@ -870,7 +865,6 @@ mod tests {
             sync.record_write(false, true);
             assert!(!sync.active());
         }
-        // Phase `a_sink_without_vrr_or_a_driver_without_the_property_never_writes_on`.
         {
             let mut sink_cannot = AdaptiveSync::new(Some(handle()), false);
             sink_cannot.want(true);
@@ -881,7 +875,6 @@ mod tests {
             assert!(!no_property.supported());
             assert_eq!(no_property.pending_write(), None);
         }
-        // Phase `a_refused_write_latches_until_resume`.
         {
             let mut sync = AdaptiveSync::new(Some(handle()), true);
             sync.want(true);
@@ -893,7 +886,6 @@ mod tests {
             assert!(!sync.rejected());
             assert_eq!(sync.pending_write(), Some(true), "resume tries once more");
         }
-        // Phase `resume_rewrites_even_an_unchanged_off_state`.
         {
             let mut sync = AdaptiveSync::new(Some(handle()), true);
             sync.forget_applied();

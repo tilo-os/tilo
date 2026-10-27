@@ -5,13 +5,11 @@
 [ceilings]
 "apps/agent/src/model.rs" = 3500
 "apps/agent/src/session/agent_loop.rs" = 5500
-"apps/browser/src/browser_widget.rs" = 11000
+"apps/browser/src/browser_widget.rs" = 9500
 "apps/calendar/src/app.rs" = 5000
 "apps/calendar/src/app/tests.rs" = 4000
 "apps/camera/src/app.rs" = 5500
 "apps/canvas/src/surface.rs" = 4000
-"apps/chat/src/app.rs" = 5500
-"apps/chat/src/render_chat.rs" = 3437
 "apps/code-editor/src/editor_view.rs" = 4000
 "apps/contacts/src/app/tests.rs" = 5000
 "apps/ebook/src/app.rs" = 9500
@@ -37,14 +35,13 @@
 "apps/osk/src/widget.rs" = 5500
 "apps/pdf-viewer/src/app.rs" = 10000
 "apps/pdf-viewer/src/source.rs" = 3500
-"apps/remote/src/app.rs" = 3500
 "apps/settings-rare/src/panes/accounts.rs" = 5000
 "apps/settings-rare/src/panes/device_mesh.rs" = 3500
 "apps/settings-rare/src/panes/updates.rs" = 4000
 "apps/settings/src/panes/audio.rs" = 3500
 "apps/settings/src/panes/display.rs" = 3500
 "apps/settings/src/panes/mouse_keyboard.rs" = 3500
-"apps/settings/src/panes/network.rs" = 5500
+"apps/settings/src/panes/network.rs" = 4000
 "apps/sheets/src/app.rs" = 7000
 "apps/sheets/src/formula.rs" = 3500
 "apps/sheets/src/grid.rs" = 4000
@@ -52,7 +49,6 @@
 "apps/store/src/app.rs" = 6500
 "apps/terminal/src/main_body.rs" = 8000
 "apps/terminal/src/tests.rs" = 5000
-"apps/tube/src/app.rs" = 3500
 "apps/video-editor/src/app.rs" = 9000
 "apps/video-editor/src/app/tests.rs" = 11000
 "apps/video-editor/src/model.rs" = 5000
@@ -107,7 +103,6 @@
 "crates/sdk/ui-core/src/widget/activity_timeline.rs" = 6500
 "crates/sdk/ui-core/src/widget/block_editor.rs" = 13500
 "crates/sdk/ui-core/src/widget/button.rs" = 4000
-"crates/sdk/ui-core/src/widget/capture_studio.rs" = 3500
 "crates/sdk/ui-core/src/widget/cartesian_plot.rs" = 4000
 "crates/sdk/ui-core/src/widget/command_palette.rs" = 4500
 "crates/sdk/ui-core/src/widget/context_menu.rs" = 3500
@@ -126,13 +121,12 @@
 "crates/sdk/ui-core/src/widget/toggle_group.rs" = 4000
 "crates/sdk/ui-core/src/widget/toolbar.rs" = 4000
 "crates/sdk/ui-core/src/widget/tree_view.rs" = 7000
-"crates/sdk/ui-core/src/widget/window_group.rs" = 7000
-"crates/session/desktop-surface/src/activity/pane.rs" = 8000
-"crates/session/desktop-surface/src/activity/pane_tests.rs" = 4500
+"crates/sdk/ui-core/src/widget/window_group.rs" = 6500
+"crates/session/desktop-surface/src/activity/pane.rs" = 4000
+"crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/desktop/src/topbar.rs" = 7500
 "crates/session/desktop/src/workspace_settings.rs" = 6000
-"crates/session/desktop/src/workspace_settings/overlay.rs" = 4000
 "crates/session/greeter/src/greeter_app.rs" = 4500
 "crates/session/installer/src/installer_app.rs" = 7500
 "crates/session/shell/examples/redraw_bench.rs" = 7000
@@ -168,7 +162,6 @@
 "crates/session/shell/src/shell/search/providers/live_app_actions.rs" = 6500
 "crates/session/shell/src/shell/state.rs" = 10500
 "crates/session/shell/src/shell/tab_binding.rs" = 3500
-"crates/session/shell/src/shell/test_control.rs" = 4500
 "crates/session/shell/tests/clipboard_e2e.rs" = 7500
 "crates/system/fs/src/fs.rs" = 7500
 "crates/system/fs/src/fs/tests.rs" = 4000

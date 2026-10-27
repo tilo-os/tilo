@@ -156,11 +156,6 @@ impl SetupController {
     ///
     /// A successful scan demonstrates only that enumeration just succeeded.
     /// In particular it never establishes that two-way synchronization is safe.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `destination` is empty, duplicates another
-    /// remembered destination, or contains/is contained by one.
     pub fn add_folder(&mut self, scan: FolderScan, destination: PathBuf) -> Result<(), String> {
         if destination.as_os_str().is_empty() {
             return Err("folder destination cannot be empty".to_string());
@@ -245,11 +240,6 @@ impl SetupController {
     }
 
     /// Advance one explicit page after validating the current navigation gate.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no supported experience is selected, the selected
-    /// experience is no longer supported, or Review is already visible.
     #[allow(
         clippy::should_implement_trait,
         reason = "next is the setup wizard navigation verb required by its public contract"
@@ -402,7 +392,6 @@ mod tests {
     /// Desktop support, back navigation and capability loss.
     #[test]
     fn setup_navigation_keeps_folder_choices_and_blocks_on_lost_capability() {
-        // Phase `supported_linux_desktop_advances_and_windows_desktop_does_not`.
         {
             let mut linux = SetupController::new(linux_desktop());
             assert!(linux.choose_experience(Experience::Desktop));
@@ -419,7 +408,6 @@ mod tests {
             assert_eq!(windows.page(), SetupPage::Experience);
         }
 
-        // Phase `back_retains_folder_selections`.
         {
             let mut setup = SetupController::new(linux_desktop());
             assert!(setup.choose_experience(Experience::Desktop));
@@ -435,7 +423,6 @@ mod tests {
             assert_eq!(setup.plan().folders[0].bytes, 12);
         }
 
-        // Phase `live_capability_loss_blocks_navigation_without_forgetting_choices`.
         {
             let mut setup = SetupController::new(linux_desktop());
             assert!(setup.choose_experience(Experience::Desktop));
@@ -457,14 +444,12 @@ mod tests {
         }
     }
 
-    /// Later choices, remembered folders and overrides.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn later_and_remembered_folders_shape_the_effective_plan() {
-        // Phase `common_later_preserves_explicit_copy_and_connected_overrides`.
         {
             let mut setup = SetupController::new(linux_desktop());
             assert_eq!(setup.default_mode(), FolderMode::Copy);
@@ -506,7 +491,6 @@ mod tests {
             assert_eq!(setup.plan().folders[2].source, test_path("source/three"));
         }
 
-        // Phase `later_hides_remembered_folders_from_the_effective_plan`.
         {
             let mut setup = SetupController::new(linux_desktop());
             assert!(setup.choose_experience(Experience::Desktop));
@@ -526,7 +510,6 @@ mod tests {
             );
         }
 
-        // Phase `remembered_folder_details_support_view_removal_and_override_reset`.
         {
             let mut setup = SetupController::new(linux_desktop());
             assert!(setup.choose_experience(Experience::Desktop));
@@ -552,10 +535,8 @@ mod tests {
         }
     }
 
-    /// Review invalidation, destination validation and unresolved destinations.
     #[test]
     fn review_is_invalidated_and_unsafe_destinations_never_authorize_copy() {
-        // Phase `a_change_invalidates_review_and_a_scan_never_infers_safe_sync`.
         {
             let mut setup = SetupController::new(linux_desktop());
             assert!(setup.choose_experience(Experience::Desktop));
@@ -573,7 +554,6 @@ mod tests {
             assert!(!setup.plan().folders[0].safe_sync);
         }
 
-        // Phase `duplicate_and_nested_destinations_are_rejected`.
         {
             let mut setup = SetupController::new(linux_desktop());
             setup
@@ -594,7 +574,6 @@ mod tests {
             assert_eq!(setup.folders().len(), 1);
         }
 
-        // Phase `unresolved_destination_retains_reviewed_folder_intent_without_authorizing_copy`.
         {
             let mut setup = SetupController::new(linux_desktop());
             assert!(setup.choose_experience(Experience::Desktop));

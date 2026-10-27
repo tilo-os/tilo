@@ -20,7 +20,6 @@ pub enum Label {
     RelayEnrollResponse,
     /// A secret sealed to one device of the personal device fabric.
     DeviceFabricSecret,
-    /// A password-protected portable identity backup.
     IdentityBackup,
     /// A password-protected installer migration package and its content chunks.
     MigrationPackage,
@@ -57,11 +56,26 @@ pub enum Label {
     /// The key a process proves to that store that it holds the device
     /// identity with, when the store cannot read its executable.
     StoreCallerProof,
+    /// A probe asking which of the person's own devices are on the local
+    /// network: the key sealed to each device asked, and the asking
+    /// device's certificate under that key.
+    LanDiscoveryProbe,
+    /// An answer to a LAN discovery probe, sealed to the asking device.
+    LanDiscoveryReply,
+    /// A person's user key wrapped under a key stretched from their
+    /// passphrase, on a machine without a TPM.
+    SignInPassphrase,
+    /// A person's user key wrapped under a key derived from their recovery
+    /// key.
+    SignInRecovery,
+    /// The TPM's dictionary-attack reset authorisation, wrapped under the
+    /// admin's user key or the machine's recovery key.
+    TpmLockoutAuth,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 26] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -83,6 +97,11 @@ impl Label {
         Self::UnlockRelease,
         Self::SecretService,
         Self::StoreCallerProof,
+        Self::LanDiscoveryProbe,
+        Self::LanDiscoveryReply,
+        Self::SignInPassphrase,
+        Self::SignInRecovery,
+        Self::TpmLockoutAuth,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -110,6 +129,11 @@ impl Label {
             Self::UnlockRelease => "tilo-seal/v1/unlock-release",
             Self::SecretService => "tilo-seal/v1/secret-service",
             Self::StoreCallerProof => "tilo-seal/v1/store-caller-proof",
+            Self::LanDiscoveryProbe => "tilo-seal/v1/lan-discovery-probe",
+            Self::LanDiscoveryReply => "tilo-seal/v1/lan-discovery-reply",
+            Self::SignInPassphrase => "tilo-seal/v1/sign-in-passphrase",
+            Self::SignInRecovery => "tilo-seal/v1/sign-in-recovery",
+            Self::TpmLockoutAuth => "tilo-seal/v1/tpm-lockout-auth",
         }
     }
 

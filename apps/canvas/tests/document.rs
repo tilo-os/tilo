@@ -1,5 +1,3 @@
-//! The artwork as a document a person names, starts, opens, saves and
-//! exports, and the steps that leaves in its history.
 #![allow(
     clippy::unwrap_used,
     reason = "test assertions over exact, hand-written fixtures"
@@ -9,6 +7,18 @@ mod support;
 
 use canvas::App;
 use ui::prelude::TestApp;
+
+/// A view of the artwork, waited for as the job it is.
+fn view(app: &mut TestApp<App>, id: &str, args: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Object(args) = args else {
+        return serde_json::Value::Null;
+    };
+    let op = <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(id, &args).unwrap();
+    app.effect(&op)
+        .unwrap()
+        .value
+        .unwrap_or(serde_json::Value::Null)
+}
 
 fn labels(app: &TestApp<App>) -> Vec<String> {
     app.versions()
@@ -21,10 +31,12 @@ fn labels(app: &TestApp<App>) -> Vec<String> {
 fn naming_the_artwork_is_one_step_of_history() {
     let mut app = TestApp::<App>::new().unwrap();
     let before = app.versions().len();
-    app.harness().click_named("canvas-title").unwrap();
-    app.harness().type_text("Dawn");
-    app.harness().key("Enter");
-    app.harness().key("Tab");
+    // The window bar's location is the title: committing it renames the
+    // artwork through its own action.
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Commit {
+            text: "Dawn".to_owned(),
+        });
     assert_eq!(app.state().title, "Dawn");
     let after = labels(&app);
     assert_eq!(
@@ -226,6 +238,58 @@ fn a_person_opens_a_recent_artwork_from_the_welcome() {
     assert_eq!(app.versions().len(), before + 1, "opening is one step");
 }
 
+/// Every Canvas window starts an artwork of its own, so one made in a
+/// window that was closed is reached again from the next window's welcome,
+/// whether or not it was ever saved to a file.
+#[test]
+fn an_artwork_drawn_in_a_closed_window_opens_from_the_next_welcome() {
+    use canvas::actions::{Draw, NewMark};
+    use canvas::model::Shape;
+
+    let mut first = TestApp::<App>::new().unwrap();
+    first
+        .invoke(canvas::Artwork::DRAW.with(Draw {
+            layer: None,
+            marks: vec![NewMark {
+                id: Some("box".into()),
+                ..NewMark::new(Shape::Rect {
+                    x: 100.0,
+                    y: 100.0,
+                    width: 300.0,
+                    height: 200.0,
+                    radius: 0.0,
+                })
+            }],
+        }))
+        .unwrap();
+    let drawn = first.record().clone();
+
+    let mut app = first.another_window().unwrap();
+    assert_ne!(
+        app.record(),
+        &drawn,
+        "a new window starts an artwork of its own"
+    );
+    assert!(app.state().marks.is_empty(), "and it starts blank");
+    app.harness().key("Shift");
+    let earlier = "canvas-recent-artwork-0";
+    assert!(
+        app.harness().targets().contains_key(earlier),
+        "the welcome lists the earlier artwork among the recent ones"
+    );
+    app.harness().click_named(earlier).unwrap();
+    app.harness().key("Shift");
+    assert_eq!(
+        app.record(),
+        &drawn,
+        "the window opened the earlier artwork"
+    );
+    assert!(
+        app.state().marks.iter().any(|mark| mark.id == "box"),
+        "and shows its drawing"
+    );
+}
+
 #[test]
 fn the_panels_stay_put_away_on_a_narrow_window() {
     let mut app = TestApp::<App>::new().unwrap();
@@ -233,7 +297,10 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
     app.harness().key("Shift");
     let shown = |app: &mut TestApp<App>| app.harness().targets().contains_key("canvas-dock");
     let before = shown(&mut app);
-    app.harness().click_named("nav-shell-inspector").unwrap();
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "canvas.tools".to_owned(),
+        });
     for _ in 0..4 {
         app.harness().key("Shift");
     }
@@ -242,7 +309,10 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
         before,
         "the toggle shows or hides the panels"
     );
-    app.harness().click_named("nav-shell-inspector").unwrap();
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "canvas.tools".to_owned(),
+        });
     for _ in 0..4 {
         app.harness().key("Shift");
     }
@@ -309,10 +379,11 @@ fn folders_keep_paint_order_and_round_trip_through_history_and_saved_artwork() {
             .collect::<Vec<_>>(),
         before.layers.iter().map(|l| &l.order).collect::<Vec<_>>()
     );
-    let diff = app
-        .call("compare-versions", json!({"from":"before folder"}))
-        .unwrap()
-        .unwrap();
+    let diff = view(
+        &mut app,
+        "compare-versions",
+        json!({"from":"before folder"}),
+    );
     assert_eq!(diff["layers"]["changed"]["hut"], json!(["group"]));
     assert!(app.undo());
     assert_eq!(app.state().layer("hut").unwrap().group, "");
@@ -460,9 +531,11 @@ fn starting_a_regular_sheet_after_a_sprite_resets_the_pixel_brush() {
         .unwrap();
     app.harness().click_named("canvas-new-title").unwrap();
     app.harness().key("Enter");
-    app.harness().click_named("canvas-menu").unwrap();
-    app.harness().key("Home");
-    app.harness().key("Enter");
+    // New artwork, from the artwork menu the window bar holds.
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: "canvas.carry-out.new".to_owned(),
+        });
     app.harness().click_named("canvas-new-size-a4").unwrap();
     app.harness().click_named("canvas-new-start-paper").unwrap();
     app.harness().click_named("canvas-new-title").unwrap();
@@ -472,4 +545,150 @@ fn starting_a_regular_sheet_after_a_sprite_resets_the_pixel_brush() {
     app.harness().click_at(canvas.center().x, canvas.center().y);
     assert_eq!(app.state().marks.len(), 1);
     assert_ne!(app.state().marks[0].style.brush.as_deref(), Some("pixel"));
+}
+
+/// Open and Save as go through the host by contents: the chosen file's
+/// bytes come back (a browser page has no path to hand over) and the save
+/// goes to a destination, so both work on every host.
+#[test]
+fn open_and_save_as_read_and_write_through_the_host() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Valley.artwork");
+    {
+        let mut painter = TestApp::<App>::new().unwrap();
+        for action in canvas::sample::landscape() {
+            painter.invoke(action).unwrap();
+        }
+        painter
+            .call(
+                "save-artwork",
+                serde_json::json!({"path": path.display().to_string()}),
+            )
+            .unwrap();
+    }
+    let painted = canvas::document::read(&path).unwrap();
+
+    let mut app = TestApp::<App>::new().unwrap();
+    let (services, recorder) = ui::host::HostServices::recording();
+    let copy = dir.path().join("Valley copy.artwork");
+    ui::host::scoped(&services, || {
+        let work = ui::background::Pumped::new();
+        let _work = work.background().enter();
+        app.harness()
+            .perform_named("canvas", &ui::a11y::Action::Focus)
+            .unwrap();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path.clone()));
+        app.harness().set_modifiers(&["Ctrl".to_owned()]);
+        app.harness().key("o");
+        app.harness().set_modifiers(&[]);
+        app.settle();
+        work.run_pending();
+        app.settle();
+        assert_eq!(
+            app.state().marks.len(),
+            painted.marks.len(),
+            "the chosen artwork opened from its contents"
+        );
+
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(copy.clone()));
+        app.harness()
+            .set_modifiers(&["Ctrl".to_owned(), "Shift".to_owned()]);
+        app.harness().key("S");
+        app.harness().set_modifiers(&[]);
+        app.settle();
+        work.run_pending();
+        app.settle();
+        work.run_pending();
+        app.settle();
+    });
+    let saved = canvas::document::read(&copy).unwrap();
+    assert_eq!(saved.marks.len(), painted.marks.len(), "Save as wrote it");
+    assert_eq!(
+        recorder
+            .pick_requests()
+            .iter()
+            .map(ui::portal::PickRequest::is_open)
+            .collect::<Vec<_>>(),
+        [true, false],
+        "an Open chooser, then a Save chooser"
+    );
+}
+
+/// A host whose files have no paths (a browser page): every Save chooser
+/// answers with a place it keeps, and each write to it is recorded.
+#[derive(Default)]
+struct PathlessHost {
+    asked: std::sync::Mutex<usize>,
+    written: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+}
+
+impl ui::host::FilePicker for PathlessHost {
+    fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
+        answered(ui::portal::PortalOutcome::Failed("no paths".into()))
+    }
+    fn pick_multiple(&self, _: ui::portal::PickRequest) -> ui::portal::MultiChannel {
+        answered(ui::portal::MultiOutcome::Failed("no paths".into()))
+    }
+    fn open_file(&self, _: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
+        answered(ui::portal::OpenFileOutcome::Failed("no paths".into()))
+    }
+    fn launch(&self, _: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+        answered(ui::portal::LaunchOutcome::Failed("no paths".into()))
+    }
+    fn save_destination(&self, request: ui::portal::PickRequest) -> ui::portal::DestinationChannel {
+        let mut asked = self.asked.lock().unwrap();
+        *asked = asked.saturating_add(1);
+        drop(asked);
+        let written = std::sync::Arc::clone(&self.written);
+        let name = request.suggested_name().unwrap_or_default().to_owned();
+        ui::portal::DestinationChannel::answered(ui::portal::DestinationOutcome::Chosen(
+            ui::portal::SaveDestination::kept(name, move |bytes| {
+                written.lock().unwrap().push(bytes);
+                answered(ui::portal::SaveOutcome::Saved)
+            }),
+        ))
+    }
+}
+
+fn answered<T>(outcome: T) -> std::sync::mpsc::Receiver<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = tx.send(outcome);
+    rx
+}
+
+/// Where the chosen place has no path (a browser page's Save dialog file),
+/// the first Save asks where, every later Save writes there quietly, and
+/// only Save as asks again.
+#[test]
+fn a_place_with_no_path_is_kept_and_later_saves_write_there_quietly() {
+    let host = std::sync::Arc::new(PathlessHost::default());
+    let services = ui::host::HostServices::null().with_files(host.clone());
+    let mut app = TestApp::<App>::new().unwrap();
+    let press = |app: &mut TestApp<App>, modifiers: &[&str], key: &str| {
+        let modifiers: Vec<String> = modifiers.iter().map(|m| (*m).to_owned()).collect();
+        app.harness().set_modifiers(&modifiers);
+        app.harness().key(key);
+        app.harness().set_modifiers(&[]);
+        app.settle();
+        app.settle();
+    };
+    ui::host::scoped(&services, || {
+        app.harness()
+            .perform_named("canvas", &ui::a11y::Action::Focus)
+            .unwrap();
+        press(&mut app, &["Ctrl"], "s");
+        assert_eq!(*host.asked.lock().unwrap(), 1, "the first Save asks where");
+        assert_eq!(host.written.lock().unwrap().len(), 1, "and writes there");
+
+        press(&mut app, &["Ctrl"], "s");
+        assert_eq!(*host.asked.lock().unwrap(), 1, "the next Save asks nothing");
+        assert_eq!(
+            host.written.lock().unwrap().len(),
+            2,
+            "and writes there again"
+        );
+
+        press(&mut app, &["Ctrl", "Shift"], "S");
+        assert_eq!(*host.asked.lock().unwrap(), 2, "Save as asks again");
+    });
 }

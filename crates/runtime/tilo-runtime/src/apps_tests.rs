@@ -65,7 +65,6 @@ impl Store {
             BlobHash::of(&collection_bytes),
             key.verifying_key().to_bytes(),
         );
-        // The has-signature bit is part of the signed preimage.
         signed.signature = Some([0; 64]);
         signed.signature = Some(key.sign(&signed.signing_bytes()).to_bytes());
         let signed_bytes = signed.encode().to_vec();
@@ -110,7 +109,6 @@ impl Store {
     }
 }
 
-/// `package` as a `registry.toml` row.
 fn registry_row(package: &InstalledPackage) -> String {
     format!(
         "[[entry]]\nid = {:?}\nversion = {:?}\npackage_id_hex = {:?}\npayload_root = {:?}\n\

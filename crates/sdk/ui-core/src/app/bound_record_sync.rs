@@ -4,6 +4,7 @@ use super::{App, Widget};
 use crate::bound_dispatch::CallbackBinding;
 use crate::collaboration::PrimaryRouteWitness;
 use crate::state::DocumentFrontier;
+use tilo_sort::CompactSort as _;
 
 pub(super) struct BoundRecordSync {
     pub(super) binding: CallbackBinding,
@@ -25,7 +26,7 @@ impl BoundRecordSync {
     /// Whether every change up to `heads` (sorted) is already published.
     pub(super) fn published_through(&self, heads: &[automerge::ChangeHash]) -> bool {
         let mut published = self.frontier.heads().to_vec();
-        published.sort_unstable();
+        published.compact_sort();
         published == heads
     }
 

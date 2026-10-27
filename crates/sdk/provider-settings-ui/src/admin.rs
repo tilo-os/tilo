@@ -2,9 +2,9 @@
 use std::{future::Future, pin::Pin};
 
 use super::{
-    CredentialStatus, EndpointLocation, ErrorKind, HashMap, LimitFieldBuffers, ModelError,
-    PanelBindings, ProviderAdmin, ProviderConfig, ProviderEffect, ProviderPanel, ProviderSnapshot,
-    t,
+    CredentialStatus, EndpointLocation, ErrorKind, HashMap, LimitFieldBuffers, ModelDescriptor,
+    ModelError, PanelBindings, ProviderAdmin, ProviderConfig, ProviderEffect, ProviderPanel,
+    ProviderSnapshot, t,
 };
 use ui::lock::MutexRecover as _;
 use zeroize::Zeroize;
@@ -16,6 +16,8 @@ pub struct AdminRead {
     pub keys: HashMap<String, Result<CredentialStatus, String>>,
     pub outcome: Result<(), ModelError>,
     pub acknowledged: bool,
+    /// A provider's model list, when that was what was asked.
+    pub listed: Option<(String, Result<Vec<ModelDescriptor>, ModelError>)>,
 }
 
 impl AdminRead {
@@ -42,6 +44,7 @@ impl AdminRead {
             keys,
             outcome,
             acknowledged,
+            listed: None,
         }
     }
 
@@ -65,6 +68,7 @@ impl AdminRead {
                 keys: HashMap::new(),
                 outcome: outcome.and(Err(error)),
                 acknowledged,
+                listed: None,
             },
         }
     }
@@ -109,10 +113,6 @@ impl<H: PanelBindings> ProviderPanel<H> {
     }
 
     /// Submit host-specific metadata through the same serialized, revision-bound controller.
-    ///
-    /// # Errors
-    /// Returns an error while another operation is pending, administration is unavailable,
-    /// or the authoritative configuration has not been loaded.
     pub fn submit_config(
         &mut self,
         config: ProviderConfig,
@@ -140,11 +140,49 @@ impl<H: PanelBindings> ProviderPanel<H> {
         Ok(())
     }
 
-    /// Queue an administration effect against the current authoritative snapshot.
+    /// Store `key` for `profile_id`, first saving `config` (the provider it
+    /// belongs to) when given: a provider whose sign-in handed back a key.
     ///
     /// # Errors
-    /// Returns an error when administration is busy or unavailable, the snapshot is
-    /// missing, the proposed change is invalid, or account custody forbids a key edit.
+    /// As [`Self::submit_config`].
+    pub fn submit_config_with_key(
+        &mut self,
+        config: Option<ProviderConfig>,
+        profile_id: &str,
+        key: zeroize::Zeroizing<String>,
+        reply: ui::framework::EffectReply,
+    ) -> Result<(), String> {
+        if self.admin_pending.is_some() {
+            return Err(t("agent-provider-busy"));
+        }
+        let admin = self
+            .provider_admin
+            .get()
+            .map_err(|error| error.to_string())?;
+        let revision = self
+            .admin_snapshot
+            .as_ref()
+            .ok_or_else(|| t("agent-provider-refresh-required"))?
+            .revision
+            .clone();
+        let profile_id = profile_id.to_owned();
+        self.admin_pending = Some(Box::pin(async move {
+            let outcome = async {
+                if let Some(config) = config {
+                    admin.set_config(revision, config.sanitised()).await?;
+                }
+                admin.set_api_key(profile_id, key.to_string()).await
+            }
+            .await
+            .map(|()| None);
+            AdminRead::after(admin.as_ref(), outcome).await
+        }));
+        self.admin_reply = Some(reply);
+        self.changed = true;
+        Ok(())
+    }
+
+    /// Queue an administration effect against the current authoritative snapshot.
     pub fn submit_provider(
         &mut self,
         effect: ProviderEffect,
@@ -161,6 +199,8 @@ impl<H: PanelBindings> ProviderPanel<H> {
             self.admin_pending = Some(Box::pin(async move {
                 AdminRead::load(admin.as_ref(), Ok(())).await
             }));
+        } else if let ProviderEffect::ListProviderModels { provider } = effect {
+            self.admin_pending = Some(self.list_models(admin, provider)?);
         } else {
             let snapshot = self
                 .admin_snapshot
@@ -245,6 +285,40 @@ impl<H: PanelBindings> ProviderPanel<H> {
         self.admin_reply = Some(reply);
         self.changed = true;
         Ok(())
+    }
+}
+
+impl<H: PanelBindings> ProviderPanel<H> {
+    /// Ask `provider` for its models. A read: the configuration and key
+    /// statuses stay as they are.
+    fn list_models(
+        &self,
+        admin: std::sync::Arc<dyn ProviderAdmin>,
+        provider: String,
+    ) -> Result<PendingAdmin, String> {
+        let snapshot = self
+            .admin_snapshot
+            .clone()
+            .ok_or_else(|| t("agent-provider-refresh-required"))?;
+        if !snapshot
+            .config
+            .profiles
+            .iter()
+            .any(|profile| profile.id == provider)
+        {
+            return Err(t("agent-provider-gone"));
+        }
+        let keys = self.keys.clone();
+        Ok(Box::pin(async move {
+            let listed = admin.list_models(provider.clone()).await;
+            AdminRead {
+                snapshot: Some(snapshot),
+                keys,
+                outcome: listed.as_ref().map(|_| ()).map_err(Clone::clone),
+                acknowledged: false,
+                listed: Some((provider, listed)),
+            }
+        }))
     }
 }
 

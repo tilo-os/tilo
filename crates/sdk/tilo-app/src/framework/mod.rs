@@ -235,7 +235,7 @@
 //!   the item through the same door as every other action, and the handler
 //!   of `MyEffect` receives that value. An effect only ever offered this way
 //!   is `#[effect(row)]`, so the resource does not also offer it with an id
-//!   to type. No view or surface answers a raw `Widget::start_operation`
+//!   to type. No view or surface answers a raw `ResourceOperations::start_operation`
 //!   for it.
 //! * **Jobs nobody invoked** — a route fetched when the destination
 //!   changes, a feed refreshed when it opens — start through the view's or
@@ -243,7 +243,7 @@
 //!   the latest request takes over, and finish like an effect's.
 //! * **Projections** — an outside consequence an action recorded in the
 //!   document (an outbox, a filesystem operation, a device's configuration)
-//!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
+//!   — are drained with [`RecordEnv::outbox`]: the framework runs the drain in
 //!   the live app after every change, on every participant's device, and
 //!   the drain acknowledges each entry with an action.
 //! * **Files of the mounted filesystem** an app shows (a file manager's
@@ -308,6 +308,7 @@
 //!   [`TestApp::capture`](testing::HeadlessApp::capture) composes the exact
 //!   frame `--shots` writes in a test.
 
+mod adopt_windows;
 mod app;
 mod attached;
 mod chain;
@@ -324,15 +325,22 @@ mod effect;
 mod endpoint;
 mod env;
 mod form;
+// The headless host discovers native presentation, which the browser has not got.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod headless;
 pub mod history;
 mod kinds;
 mod launch;
 mod live;
+pub mod page_part;
 mod people;
 mod person;
 mod preview;
+mod query;
+mod reactions;
 mod reactive;
 mod record;
+pub mod reference;
 mod root;
 mod rows;
 mod saves;
@@ -348,6 +356,9 @@ mod switch;
 pub mod testing;
 mod text;
 mod view;
+pub mod views;
+mod workspace;
+mod workspace_emoji;
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use app::definition_launch_spec;
@@ -357,7 +368,7 @@ pub use app::run;
 pub use app::{AppName, FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_helper};
 pub use attached::{AttachedView, OpenView};
 pub use chain::{Chain, Chained};
-pub use children::{ChildRecord, Children, child_resource_id};
+pub use children::{ChildRecord, Children, Listed, child_resource_id};
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;
 pub use dispatch::{DispatchGroup, Dispatcher, Landed, Refused, Submit};
@@ -367,7 +378,7 @@ pub use effect::{
     JobProgress, Jobs, Progress, Projection,
 };
 pub use endpoint::{EffectCaller, EffectEndpoint};
-pub use env::RecordEnv;
+pub use env::{RecordEnv, WindowDocument};
 pub use form::{Form, FormSubmit};
 pub use kinds::{hosted_kinds, resource_kind, seed_record, seed_record_in_room};
 pub use launch::{Command, Helper, LaunchInput, OpenHere};
@@ -375,11 +386,13 @@ pub use live::Live;
 pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;
-pub use record::{OtherRecord, Records};
+pub use query::{Query, ReadFailure};
+pub use record::{Declare, OtherRecord, Records};
 pub use root::{reserved_action_ids, with_surface};
 pub use rows::LiveRow;
 pub use saves::Saves;
 pub use scenario::{Fixture, RunMode};
+pub use section::SettingsRecords;
 pub use settings::Setting;
 pub use share_link::host_link;
 pub use stage::{stage, time_frames};
@@ -388,10 +401,7 @@ pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::record::{chain_of_resource_id, chain_resource_id};
 pub use view::{Bindable, EffectsHandle, ViewCx};
-
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod headless_results_tests;
+pub use workspace::WorkspaceRecord;
 
 /// Record content, canonical hashing and picture headers. Use the store
 /// borrowed through `SurfaceCx::content` or `LaunchInput::content` so the host

@@ -3,6 +3,7 @@
 
 use automerge::{AutoCommit, ObjId};
 
+use crate::application_view::ApplicationViewState;
 use crate::widget::Widget;
 use crate::widget::capability::{capability, capability_mut};
 
@@ -25,9 +26,6 @@ pub trait DocumentHistory {
     /// Additional read-only veto for uncommitted app-local drafts in this
     /// scope. This does not confer authority or recursively consult
     /// independent owners.
-    ///
-    /// # Errors
-    /// Returns a reason when this exact root is not ready to restore the scope.
     fn history_restore_readiness(&self, _scope: &str) -> Result<(), String> {
         Ok(())
     }
@@ -85,9 +83,6 @@ pub trait FrameworkHistoryTopology {
 }
 
 /// `widget`'s History registration (none unless it owns History).
-///
-/// # Errors
-/// Returns the widget's registration error.
 pub fn history_registration(
     widget: &(impl Widget + ?Sized),
 ) -> Result<Option<super::HistoryRegistration>, super::HistoryRegistrationError> {
@@ -96,9 +91,6 @@ pub fn history_registration(
 }
 
 /// `widget`'s own restore veto for `scope`.
-///
-/// # Errors
-/// Returns the widget's reason it is not ready.
 pub fn history_restore_readiness(
     widget: &(impl Widget + ?Sized),
     scope: &str,
@@ -134,7 +126,6 @@ pub fn document_action_applied(
     }
 }
 
-/// Visit every framework History surface under `widget`.
 pub fn visit_framework_history(
     widget: &dyn Widget,
     visitor: &mut dyn FnMut(&super::FrameworkHistorySurface, &dyn Widget),
@@ -158,4 +149,81 @@ pub fn visit_framework_history_mut(
     for child in widget.children_mut() {
         visit_framework_history_mut(child, visitor);
     }
+}
+
+/// A live widget that presents its document's changes in the shared History
+/// view: the app says how each of its changes shows
+/// ([`crate::widget::HistoryEntryPresenter`]) and takes up the ones a person
+/// chooses to open. History stays the one service; this is only the app's
+/// word on what its changes look like.
+pub trait PresentsHistoryEntries {
+    /// How this app's changes show in History.
+    fn history_entry_presenter(
+        &self,
+    ) -> Option<std::rc::Rc<dyn crate::widget::HistoryEntryPresenter>>;
+
+    /// A person chose `entry` in History and its face opens it
+    /// ([`crate::widget::EntryFace::opens`]): History has closed, the app is
+    /// live again, and takes the change up (a calculation goes back into the
+    /// calculator). Returns whether it did.
+    fn open_history_entry(&mut self, entry: &crate::widget::HistoryEntry) -> bool {
+        let _ = entry;
+        false
+    }
+}
+
+/// The presenter of the first widget in `widget`'s tree that presents its
+/// History entries.
+pub fn history_entry_presenter(
+    widget: &dyn Widget,
+) -> Option<std::rc::Rc<dyn crate::widget::HistoryEntryPresenter>> {
+    if let Some(presents) = capability::<dyn PresentsHistoryEntries>(widget) {
+        return presents.history_entry_presenter();
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(history_entry_presenter)
+}
+
+/// The presentation of the first widget in `widget`'s tree that keeps one
+/// ([`ApplicationViewState`]): how the window shows its record (a mode, the
+/// open item), so History opens a past version as the window shows it.
+pub fn live_presentation(
+    widget: &dyn Widget,
+) -> Option<crate::application_view::ApplicationLocalView> {
+    if let Some(view) = capability::<dyn ApplicationViewState>(widget) {
+        return view.capture_application_view().ok().flatten();
+    }
+    widget.children().into_iter().find_map(live_presentation)
+}
+
+/// Show `local`, a live window's presentation, in the first widget in
+/// `widget`'s tree that keeps one, over the document `doc` it draws.
+/// Returns whether one took it.
+pub fn adopt_presentation(
+    widget: &mut dyn Widget,
+    local: &crate::application_view::ApplicationLocalView,
+    doc: &AutoCommit,
+) -> bool {
+    if let Some(view) = capability_mut::<dyn ApplicationViewState>(&mut *widget) {
+        return view.restore_application_view(local, doc).is_ok()
+            && view.finish_application_view_restore().is_ok();
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| adopt_presentation(child, local, doc))
+}
+
+/// Hand `entry` to the first widget in `widget`'s tree that presents History
+/// entries. Returns whether it took it up.
+pub fn open_history_entry(widget: &mut dyn Widget, entry: &crate::widget::HistoryEntry) -> bool {
+    if let Some(presents) = capability_mut::<dyn PresentsHistoryEntries>(&mut *widget) {
+        return presents.open_history_entry(entry);
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .any(|child| open_history_entry(child, entry))
 }

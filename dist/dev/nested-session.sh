@@ -21,7 +21,9 @@
 #   --install-tapp FILE  also install this signed package (repeatable): a
 #                      tilolang app `tilolang run` built for this session.
 #   --state DIR        state directory (default: $XDG_STATE_HOME/tilo-nested)
-#   --no-build         use the last build in target/nested-session
+#   --no-build         use the last build in target/nested-session (or in
+#                      $TILO_NESTED_SESSION_BUILD, where a check hands its
+#                      build over in a read-only tree)
 #   --prepare-only     build and install, then exit without starting the shell
 #   --reset-identity   discard the throwaway identity and mint a new one
 #   --fresh-desktop    forget workspaces and open windows; keep identity and apps
@@ -145,7 +147,7 @@ fi
 # --- 1. Build -------------------------------------------------------------------
 # One check builds the host programs, the thin apps and the runtime library
 # they link, on a t node; its outputs land in target/nested-session.
-build_out=$repo_root/target/nested-session
+build_out=${TILO_NESTED_SESSION_BUILD:-$repo_root/target/nested-session}
 bin=$build_out/bin
 thin=$build_out/thin-app
 if ((build)); then
@@ -378,6 +380,9 @@ stop_groups() {
     for pid in "$@"; do wait "$pid" 2>/dev/null || true; done
 }
 cleanup() {
+    # A second signal (the pair stops its whole group, then stops this
+    # script again) must not cut the cleanup short and leave the shell up.
+    trap '' INT TERM HUP
     stop_groups "${children[@]}"
     rm -f "$pidfile"
     # The document portal's FUSE mount under the runtime directory goes away

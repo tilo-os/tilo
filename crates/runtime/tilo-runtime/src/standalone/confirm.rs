@@ -1,5 +1,5 @@
 //! The person's confirmation, at this device, of what an agent does for
-//! them: the runtime's native prompt, answered for the agent's task.
+//! them: the runtime's native prompt, answered for that one action.
 
 use tilo_action_broker::app_actions::{
     AppActionConsent, AppActionConsentPrompter, AppActionConsentRequest,
@@ -24,12 +24,11 @@ pub(super) fn ask_the_person(
 /// Longest label a prompt quotes.
 const LABEL_CHARS: usize = 80;
 
-/// Asks the runtime's person to let an agent work in an app for its task,
-/// in the consent helper's native prompt (`--device-consent`, a process of
-/// its own because the daemon has no main-thread run loop). Only a clear
-/// Allow confirms: this invocation, and the agent's outside actions in that
-/// app until its run ends. An action whose own contract asks for
-/// confirmation still asks every time.
+/// Asks the runtime's person to confirm what an agent does for them, in the
+/// consent helper's native prompt (`--device-consent`, a process of its own
+/// because the daemon has no main-thread run loop). Only a clear Allow
+/// confirms, and only this invocation: what lets an agent act without
+/// asking is a grant, given and revoked as any other.
 struct ConfirmationPrompt {
     /// The person this runtime serves; nobody else is asked.
     person: String,
@@ -58,7 +57,7 @@ impl AppActionConsentPrompter for ConfirmationPrompt {
                         false
                     });
                 let _ = answer.send(if allowed {
-                    AppActionConsent::Session
+                    AppActionConsent::Once
                 } else {
                     AppActionConsent::Deny
                 });

@@ -25,7 +25,7 @@ pub enum WordProcessorEffect {
     /// Open document.
     ///
     /// Replaces the document with a file's content; Undo takes it back.
-    #[effect(job, destructive, device_only)]
+    #[effect(job, destructive)]
     OpenDocument {
         #[param("Direct filesystem path; omit to choose one")]
         path: Option<String>,
@@ -33,7 +33,7 @@ pub enum WordProcessorEffect {
     /// Save document.
     ///
     /// Writes the document to its file, or to the one given.
-    #[effect(job, destructive, device_only)]
+    #[effect(job, destructive)]
     Save {
         #[param("Direct filesystem path; omit to save to the document's file")]
         path: Option<String>,
@@ -41,7 +41,7 @@ pub enum WordProcessorEffect {
     /// Save document as.
     ///
     /// Writes the document to a file, in the format its name says.
-    #[effect(job, destructive, device_only)]
+    #[effect(job, destructive)]
     SaveAs {
         #[param("Direct filesystem path; omit to choose one")]
         path: Option<String>,
@@ -52,12 +52,54 @@ pub enum WordProcessorEffect {
     /// `OpenDocument`, RTF, HTML, EPUB or Markdown (a text file as itself),
     /// without opening it; the document here stays as it is. A long file
     /// answers in parts: read on from the `next` an answer gives.
-    #[effect(kind = "read", returns, idempotent, device_only)]
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
     ReadFile {
         #[param("Absolute path of the file")]
         file: String,
         #[param("The character to read from; the start when none")]
         from: Option<usize>,
+    },
+    /// Read a document kept as content.
+    ///
+    /// Answers with what a document kept as content says (an attachment, a
+    /// shared file), as Markdown, as `read-file` reads a file: its name tells
+    /// its format. A long one answers in parts: read on from the `next` an
+    /// answer gives. A picture (a scan, a photo) has no text: it answers with
+    /// `format` `picture`, its type and size, and an agent whose model sees
+    /// is shown it.
+    #[effect(kind = "read", returns, idempotent, audience = "agents")]
+    ReadContent {
+        #[param("The document's content address, `tilo.content:<hash>`")]
+        content: String,
+        #[param("Its file name, e.g. report.docx")]
+        name: String,
+        #[param("The character to read from; the start when none")]
+        from: Option<usize>,
+    },
+    /// Import a document kept as content.
+    ///
+    /// Replaces this document's body with a Word file (or `OpenDocument`,
+    /// Markdown, HTML, RTF, by its name) the room holds as content, while
+    /// the document is empty; a document someone wrote is never replaced.
+    /// Undo takes it back.
+    #[effect(returns, kind = "undoable", audience = "agents")]
+    ImportDocxContent {
+        #[param(content, "The document's content address, `tilo.content:<hash>`")]
+        content: String,
+        #[param(
+            "Its file name, e.g. report.docx, whose extension names the format; Word when none"
+        )]
+        name: Option<String>,
+    },
+    /// Export document as content.
+    ///
+    /// Keeps the document as a file in the content store, with no file to
+    /// write: Word unless `format` names another. The caller reads, attaches
+    /// or sends it by the content address it answers.
+    #[effect(content, kind = "read", idempotent)]
+    ExportContent {
+        #[param("docx (default), odt, md, html, rtf, txt or pdf")]
+        format: Option<String>,
     },
     /// Convert a file.
     ///
@@ -65,7 +107,7 @@ pub enum WordProcessorEffect {
     /// under a free name: PDF, Word, `OpenDocument`, Markdown, HTML, RTF or
     /// plain text. The original and the document here stay as they are.
     /// Answers with the new file's path.
-    #[effect(returns, device_only)]
+    #[effect(returns)]
     ConvertFile {
         #[param("Absolute path of the file")]
         file: String,
@@ -106,7 +148,7 @@ pub enum WordProcessorEffect {
     ///
     /// Moves your caret (collapsing your selection) to a point, or the
     /// document start, document end or end of the current paragraph.
-    #[effect(view, participant, idempotent)]
+    #[effect(view, participant, idempotent, audience = "agents")]
     MoveCaret {
         #[param(
             "point (default; needs block and offset), document-start, document-end or block-end",
@@ -122,7 +164,7 @@ pub enum WordProcessorEffect {
     ///
     /// Selects from (`start_block`, `start`) to (`end_block`, `end`); your caret
     /// ends at the end.
-    #[effect(view, participant, idempotent)]
+    #[effect(view, participant, idempotent, audience = "agents")]
     SelectRange {
         #[param("Block where the selection starts")]
         start_block: String,
@@ -136,7 +178,7 @@ pub enum WordProcessorEffect {
     /// Select paragraph.
     ///
     /// Selects one whole paragraph (block).
-    #[effect(view, participant, idempotent)]
+    #[effect(view, participant, idempotent, audience = "agents")]
     SelectBlock {
         #[param("Block id to select")]
         block: String,
@@ -150,7 +192,7 @@ pub enum WordProcessorEffect {
     ///
     /// Finds text (case-insensitive) and selects the first match; the
     /// results appear as search-hit resources.
-    #[effect(view, participant, idempotent)]
+    #[effect(view, participant, idempotent, audience = "agents")]
     FindText {
         #[param("Text to find (empty clears Find)")]
         query: String,
@@ -159,7 +201,7 @@ pub enum WordProcessorEffect {
     ///
     /// Types at your caret like the keyboard: it replaces your selection,
     /// and your caret moves past it. Repeat to keep typing.
-    #[effect(edit, participant)]
+    #[effect(edit, participant, audience = "agents")]
     TypeText {
         #[param(
             "Text typed at the caret, replacing the selection (empty only erases a selection)"
@@ -175,12 +217,12 @@ pub enum WordProcessorEffect {
     ///
     /// Presses Enter at your caret: splits the paragraph (an empty list item
     /// becomes a paragraph).
-    #[effect(edit, participant)]
+    #[effect(edit, participant, audience = "agents")]
     NewParagraph,
     /// Erase text.
     ///
     /// Backspace or Delete at your caret, or erases your selection.
-    #[effect(edit, participant)]
+    #[effect(edit, participant, audience = "agents")]
     EraseText {
         #[param(
             "backward (Backspace, default) or forward (Delete)",
@@ -241,7 +283,10 @@ pub enum WordProcessorEffect {
     /// list or a body paragraph.
     #[effect(edit, participant, job, returns)]
     SetParagraphStyle {
-        #[param("Paragraph kind", choices = ["paragraph", "heading", "list_item"])]
+        #[param(
+            "Paragraph kind; bullet and numbered are list items",
+            choices = ["paragraph", "heading", "list_item", "bullet", "numbered"]
+        )]
         kind: String,
         #[param("Heading level 1-6")]
         level: Option<i64>,
@@ -271,7 +316,7 @@ pub enum WordProcessorEffect {
     ///
     /// Pastes text or Markdown (headings, lists, pipe tables) at your caret,
     /// replacing your selection.
-    #[effect(edit, participant, job, returns)]
+    #[effect(edit, participant, job, returns, audience = "agents")]
     Paste {
         #[param("Plain text; each line becomes a paragraph")]
         text: Option<String>,
@@ -329,7 +374,7 @@ pub enum WordProcessorEffect {
     /// Replace selection.
     ///
     /// Replaces your selection with the text (empty deletes it).
-    #[effect(edit, participant)]
+    #[effect(edit, participant, audience = "agents")]
     ReplaceSelection {
         #[param("Text that replaces the current selection (empty deletes it)")]
         text: String,
@@ -354,16 +399,25 @@ pub enum WordProcessorEffect {
     },
     /// Place image.
     ///
-    /// Places an image another action produced at your caret.
-    #[effect(edit, participant)]
+    /// Places an image another action produced at your caret, at `at`, or
+    /// after the heading `after` names by its text. Answers with the blocks
+    /// it changed, the image's among them.
+    #[effect(edit, participant, job, returns, audience = "agents")]
     PlaceImage {
-        #[param(content, "The image another action produced, by its content hash")]
+        #[param(
+            content,
+            "The image another action produced: its content address (`tilo.content:<hash>`) or hash"
+        )]
         content: String,
         #[param(
             "Where to act (a paragraph, a point or a range in it); your caret or selection when not given",
             place = "blocks"
         )]
         at: Option<Place>,
+        #[param(
+            "The heading (or paragraph) the image goes after, by its text: an exact heading first, else the closest; not with at"
+        )]
+        after: Option<String>,
     },
     /// Go to.
     ///
@@ -553,7 +607,14 @@ impl WordProcessorEffect {
                 level,
                 ordered, ..
             } => {
-                if !matches!(kind.as_str(), "paragraph" | "heading" | "list_item") {
+                // A list named as a reader of the page sees it: a bullet or a
+                // numbered item is a list item of that kind.
+                let (kind, ordered) = match kind.as_str() {
+                    "bullet" => ("list_item", Some(false)),
+                    "numbered" => ("list_item", Some(true)),
+                    other => (other, *ordered),
+                };
+                if !matches!(kind, "paragraph" | "heading" | "list_item") {
                     Err(EditingError::Invalid(
                         "kind is paragraph, heading or list_item".into(),
                     ))
@@ -564,9 +625,9 @@ impl WordProcessorEffect {
                         view,
                         doc,
                         &ParagraphStyle {
-                            kind: kind.clone(),
+                            kind: kind.to_owned(),
                             level: *level,
-                            ordered: *ordered,
+                            ordered,
                         },
                     )
                 }

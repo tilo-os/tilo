@@ -1,4 +1,3 @@
-//! A keyless member's own sealed write, renewed through its key holder.
 use super::*;
 use crate::{InputDisposition, TransportOrigin};
 use collab_types::EncryptionMetadata;
@@ -30,7 +29,11 @@ fn fixture() -> Fixture {
     )
     .unwrap();
     member.select_admission_v5().unwrap();
-    for message in governor.bootstrap_messages(&governor_key, now).unwrap() {
+    for message in governor
+        .publication_mut()
+        .bootstrap_messages(&governor_key, now)
+        .unwrap()
+    {
         member
             .receive_from(origin(&governor_key), message, now)
             .unwrap();
@@ -361,6 +364,7 @@ fn a_revoked_author_renews_nothing() {
                 protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
                 cert: Box::new(fixture.governor.authority().clone()),
                 revocations: vec![revocation],
+                successions: Vec::new(),
             },
             later,
         )

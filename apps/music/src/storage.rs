@@ -22,6 +22,10 @@ pub struct DeviceProfile {
     /// Catalogue choice belongs to this device, never its collaborators.
     #[serde(default)]
     pub spotify_catalogue: bool,
+    /// Whether the person connected an online catalogue (Spotify or `YouTube`
+    /// Music) on this device. Until they do, Music contacts no provider.
+    #[serde(default)]
+    pub catalogue_connected: bool,
     /// The last explicitly opened file belongs only to this device.
     #[serde(default)]
     pub local_file: Option<crate::local_file::LocalFile>,
@@ -135,11 +139,6 @@ impl MediaCache {
 
     /// Atomically install complete media bytes, then atomically publish their
     /// manifest entry. A partial transfer is never accepted by this API.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for empty bytes, a failed local directory/object write,
-    /// or a failed atomic manifest replacement.
     #[cfg(test)]
     pub fn install_bytes(
         &mut self,
@@ -174,11 +173,6 @@ impl MediaCache {
     /// Atomically adopt a complete temporary media file into the content store.
     /// The temporary file must be on the same filesystem as `root`; callers
     /// write it under `root/partials` so the final rename is atomic.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for empty/unreadable partial data, a failed atomic
-    /// rename, quota eviction, or manifest replacement.
     pub fn install_completed_file(
         &mut self,
         root: &Path,
@@ -294,10 +288,6 @@ impl MediaCache {
 
 /// Finish a background partial transfer without exposing its path outside the
 /// device-local storage layer.
-///
-/// # Errors
-///
-/// Propagates validation, quota, rename, or manifest persistence errors.
 pub fn install_completed_media_file(
     root: &Path,
     track_id: &str,
@@ -326,6 +316,14 @@ impl DeviceProfile {
 
 /// Resolve the local-only profile path. `TILO_MUSIC_PROFILE` is useful for
 /// sandboxed tests; it is never a replication input.
+/// Whether this device keeps the playback profile in a file. A browser page
+/// has no file paths: the player keeps its state in memory there, and
+/// opening or playing a file never fails for want of saving it.
+pub fn device_profile_has_a_place() -> bool {
+    tilo_paths::availability(tilo_paths::Feature::NativePaths)
+        == tilo_paths::Availability::Available
+}
+
 pub fn device_profile_path() -> PathBuf {
     if let Ok(p) = std::env::var("TILO_MUSIC_PROFILE") {
         return PathBuf::from(p);
@@ -440,7 +438,6 @@ mod tests {
 
     #[test]
     fn media_cache_is_atomic_bounded_and_rejects_corruption() {
-        // Phase `media_cache_is_atomic_content_addressed_and_survives_reload`.
         {
             let root =
                 std::env::temp_dir().join(format!("tilo-music-media-{}", std::process::id()));
@@ -462,7 +459,6 @@ mod tests {
             let _ = std::fs::remove_dir_all(root);
         }
 
-        // Phase `media_cache_evicts_oldest_object_before_publishing_over_quota`.
         {
             let root =
                 std::env::temp_dir().join(format!("tilo-music-media-evict-{}", std::process::id()));
@@ -483,7 +479,6 @@ mod tests {
             let _ = std::fs::remove_dir_all(root);
         }
 
-        // Phase `media_cache_rejects_same_size_corruption_before_playback`.
         {
             let root = std::env::temp_dir()
                 .join(format!("tilo-music-media-same-size-{}", std::process::id()));
@@ -498,7 +493,6 @@ mod tests {
             let _ = std::fs::remove_dir_all(root);
         }
 
-        // Phase `media_cache_rejects_malicious_manifest_content_path`.
         {
             let root = std::env::temp_dir()
                 .join(format!("tilo-music-media-malicious-{}", std::process::id()));

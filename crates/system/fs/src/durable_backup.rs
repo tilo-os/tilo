@@ -64,11 +64,6 @@ struct RecoveryReceiptV1 {
 ///
 /// A missing primary remains missing. An invalid primary with no valid backup
 /// fails closed and is left byte-for-byte untouched.
-///
-/// # Errors
-///
-/// Returns an error for I/O or serialization failure, an oversized primary,
-/// or damaged state with no valid retained generation.
 pub fn read_or_recover(
     path: &Path,
     validate: impl Fn(&[u8]) -> bool,
@@ -154,11 +149,6 @@ pub fn read_or_recover(
 /// Validate and atomically replace a primary, retaining its previous valid
 /// contents as one bounded generation. A concurrently damaged primary is not
 /// overwritten and is not promoted into the backup set.
-///
-/// # Errors
-///
-/// Returns an error when either candidate or existing state is invalid or too
-/// large, or when directory, backup, atomic-write, or pruning I/O fails.
 pub fn write(path: &Path, bytes: &[u8], validate: impl Fn(&[u8]) -> bool) -> io::Result<()> {
     if !validate(bytes) {
         return Err(io::Error::new(
@@ -355,7 +345,6 @@ mod tests {
 
     #[test]
     fn backups_retain_generations_and_recover_from_the_newest_valid_one() {
-        // Phase `retains_three_generations_and_recovers_with_evidence`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("namespace.bin");
@@ -380,7 +369,6 @@ mod tests {
             assert_eq!(receipt.recovered_blake3, hash(b"valid:4"));
             assert!(receipt.completed);
         }
-        // Phase `a_corrupt_newest_backup_falls_back_to_an_older_valid_generation`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.json");
@@ -399,7 +387,6 @@ mod tests {
             let outcome = read_or_recover(&path, valid).unwrap().unwrap();
             assert_eq!(outcome.bytes, b"valid:one");
         }
-        // Phase `repeated_recovery_retains_distinct_evidence_and_receipts`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.json");
@@ -439,7 +426,6 @@ mod tests {
 
     #[test]
     fn damaged_or_oversized_primaries_are_preserved_untouched() {
-        // Phase `invalid_primary_without_valid_backup_is_preserved`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.json");
@@ -448,7 +434,6 @@ mod tests {
             assert_eq!(fs::read(&path).unwrap(), b"damaged");
             assert!(!backup_dir(&path).unwrap().exists());
         }
-        // Phase `write_refuses_to_overwrite_concurrently_damaged_primary`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.json");
@@ -458,7 +443,6 @@ mod tests {
             assert!(write(&path, b"valid:three", valid).is_err());
             assert_eq!(fs::read(&path).unwrap(), b"damaged");
         }
-        // Phase `oversized_primary_fails_before_allocation_and_remains_untouched`.
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("state.json");

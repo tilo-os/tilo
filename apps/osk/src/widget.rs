@@ -68,7 +68,7 @@
 //! keyboard's [`crate::resource::Osk`] preferences. The widget shows what it
 //! is [presented](OskWidget::present_preferences); a change it makes itself
 //! (a layout key, an emoji pick) is queued as a
-//! [`SetPreference`](crate::actions::SetPreference) for its host to submit
+//! [`SetPreference`] for its host to submit
 //! ([`OskWidget::take_preference_edits`]).
 //!
 //! ## Seams
@@ -102,10 +102,11 @@ use crate::emoji_panel::{EMOJI_SUGGESTIONS, EmojiPanel, PanelBands, PanelHit, Pa
 use crate::futo::FutoSwipeModel;
 use crate::i18n;
 use crate::imclient::{ImTransition, content_hint, may_learn};
-use crate::inject::Symbol;
+use crate::inject::{Keypress, Symbol};
 use crate::layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState};
 use crate::output::{OskOutput, TextMirror};
 use crate::predict::Predictor;
+use crate::resource::KeyboardSize;
 use crate::suggest::Suggestion;
 use crate::swipe::{GeometricSwipeModel, SwipeModel};
 
@@ -121,7 +122,7 @@ pub fn default_swipe_model() -> Box<dyn SwipeModel> {
     }
 }
 use crate::presentation::{AlternatesPopup, KeyboardPresentation, keyboard_geometry};
-use crate::toolbar::{OskToolbarAction, OskToolbarItem};
+use crate::toolbar::{Latch, ModifierKey, ModifierLatches, OskToolbarAction, OskToolbarItem};
 use crate::touch_model::{HitCell, NextKeyCache, TouchKey, TouchModel};
 
 /// A key row is one header-bar tall: well above the minimum touch target, and
@@ -130,7 +131,6 @@ use crate::touch_model::{HitCell, NextKeyCache, TouchKey, TouchModel};
 pub fn key_row_height(metrics: &ui::tokens::Metrics) -> f32 {
     metrics.header_height
 }
-/// The toolbar row.
 pub fn toolbar_row_height(spacing: &ui::tokens::Spacing) -> f32 {
     spacing.s12
 }
@@ -199,6 +199,8 @@ pub struct OskWidget {
     showing_symbols: bool,
     /// Current shift / caps state.
     shift: ShiftState,
+    /// The terminal row's Ctrl and Alt, held for the next key or locked.
+    modifiers: ModifierLatches,
     /// Toolbar descriptors (data-driven, replaceable).
     toolbar: Vec<OskToolbarItem>,
     custom_toolbar: Option<Vec<OskToolbarItem>>,
@@ -207,13 +209,17 @@ pub struct OskWidget {
     context_error: Option<String>,
     /// Key row height, from the theme's metrics (re-read at `build_layout`).
     target_key_height: f32,
-    /// Toolbar row height.
     toolbar_height: f32,
     /// Suggestion-bar row height.
     suggestion_height: f32,
     /// Whether candidate chips are shown. Turning this off leaves the stable
     /// suggestion band in place, avoiding geometry churn while typing.
     suggestions_enabled: bool,
+    /// Whether a finished word may be rewritten to a likely correction.
+    /// Independent of [`Self::suggestions_enabled`].
+    autocorrect_enabled: bool,
+    /// How tall the key rows are, as the person chose.
+    key_size: KeyboardSize,
     /// Whether the keyboard may adapt rankings and tap targets to this
     /// person's typing. What it learns is theirs alone: their host keeps it
     /// in the person's own record ([`crate::learned`]).
@@ -250,9 +256,11 @@ pub struct OskWidget {
     /// Host-issued reader of the person's shared local vocabulary. No app
     /// path fallback: an anonymous or unbound keyboard has no personal hints.
     personal_vocabulary: Option<std::sync::Arc<dyn ui::personal_dictionary::Vocabulary>>,
-    /// The language the preferred letter layout types; the predictor, the
-    /// autocorrector and the swipe decoder all serve it.
+    /// The language the dictionary, predictor, autocorrector and swipe
+    /// decoder serve; it may be chosen independently of the letter layout.
     language: Language,
+    /// The language the person chose, if any; `None` follows the layout.
+    typing_language: Option<Language>,
     /// The current ranked suggestion chips (swipe candidates or next-word
     /// predictions). Empty → the bar collapses to a hint row.
     suggestions: Vec<Suggestion>,
@@ -382,6 +390,7 @@ impl OskWidget {
             sentence_end: false,
             showing_symbols: false,
             shift: ShiftState::Off,
+            modifiers: ModifierLatches::default(),
             toolbar: OskToolbarItem::default_set(),
             custom_toolbar: None,
             context_generation: None,
@@ -391,6 +400,8 @@ impl OskWidget {
             toolbar_height: toolbar_row_height(&ui::tokens::Spacing::BASE),
             suggestion_height: suggestion_row_height(&ui::tokens::Metrics::BASE),
             suggestions_enabled: true,
+            autocorrect_enabled: true,
+            key_size: KeyboardSize::Standard,
             personalization_enabled: true,
             rect: Rect::ZERO,
             content_rect: Rect::ZERO,
@@ -411,6 +422,7 @@ impl OskWidget {
             predictor: Predictor::english(),
             personal_vocabulary: None,
             language: Language::English,
+            typing_language: None,
             suggestions: Vec::new(),
             current_word: String::new(),
             word_from_swipe: false,
@@ -457,8 +469,6 @@ impl OskWidget {
         me.refresh_next_word_suggestions();
         me
     }
-
-    // --- builders -------------------------------------------------------
 
     /// Use the host's keyboard panel, keeping themed row heights when it is
     /// taller than the keyboard and fitting shorter panels without overflow.
@@ -643,8 +653,6 @@ impl OskWidget {
         self
     }
 
-    // --- output accessors ----------------------------------------------
-
     /// What the focused field holds after the emitted output: committed text
     /// followed by the composing word.
     pub fn pending_text(&self) -> &str {
@@ -752,8 +760,6 @@ impl OskWidget {
         }
     }
 
-    // --- runtime configuration -----------------------------------------
-
     /// Switch the keyboard to the layout for `purpose` at runtime (the focused
     /// field changed). Registers the layout if absent, makes it active, drops
     /// the symbols layer, and raises `structure_dirty` so the host relays out
@@ -858,8 +864,6 @@ impl OskWidget {
         self.visible
     }
 
-    // --- state accessors -----------------------------------------------
-
     /// The field intent the keyboard is currently serving.
     pub fn purpose(&self) -> InputPurpose {
         self.purpose
@@ -895,6 +899,11 @@ impl OskWidget {
         &self.key_geom
     }
 
+    /// The toolbar items, indexed as [`toolbar_geometry`](Self::toolbar_geometry).
+    pub fn toolbar_items(&self) -> &[OskToolbarItem] {
+        &self.toolbar
+    }
+
     /// Frame toolbar geometry (index → rect).
     pub fn toolbar_geometry(&self) -> &[(usize, Rect)] {
         &self.toolbar_geom
@@ -926,7 +935,10 @@ impl OskWidget {
     pub fn present_preferences(&mut self, preferences: &crate::resource::OskPreferences) {
         self.present_layout_order(preferences);
         self.select_text_layout_from_preference(&preferences.layout);
+        self.set_typing_language(preferences.typing_language.as_deref());
         self.set_suggestions_enabled(preferences.suggestions);
+        self.set_autocorrect_enabled(preferences.autocorrect);
+        self.set_key_size(preferences.size);
         self.set_personalization_enabled(preferences.personalization);
         self.set_emoji_recents(&preferences.emoji_recents);
     }
@@ -1051,8 +1063,6 @@ impl OskWidget {
         }
     }
 
-    // --- programmatic activation (test/host helpers) -------------------
-
     /// Activate a key by id as if tapped. No-op for an out-of-range id.
     pub fn activate_key(&mut self, id: KeyId) {
         let action = match self.current_layout().key(id) {
@@ -1141,14 +1151,11 @@ impl OskWidget {
                     Some(ui::i18n::I18nManager::lookup_plain("osk-context-stale"))
                 };
             }
-            OskToolbarAction::Indent => {
+            OskToolbarAction::Key(symbol) => {
                 self.finish_editing_word();
-                self.emit(OskOutput::Key(Symbol::Tab));
+                self.press_key(*symbol);
             }
-            OskToolbarAction::Insert(text) => {
-                self.finish_editing_word();
-                self.emit(OskOutput::Commit(text.clone()));
-            }
+            OskToolbarAction::Modifier(key) => self.modifiers.tap(*key),
             OskToolbarAction::Paste => {
                 if let Some(text) = ui::clipboard_paste() {
                     self.finish_editing_word();
@@ -1158,7 +1165,7 @@ impl OskWidget {
             }
             OskToolbarAction::SelectionLeft | OskToolbarAction::SelectionRight => {
                 self.finish_editing_word();
-                self.emit(OskOutput::Key(
+                self.emit(OskOutput::key(
                     if *action == OskToolbarAction::SelectionLeft {
                         Symbol::Left
                     } else {
@@ -1174,14 +1181,69 @@ impl OskWidget {
         }
     }
 
+    /// Press `symbol` as a real key with the held modifiers. What was held
+    /// for this key alone is released; a locked modifier stays.
+    fn press_key(&mut self, symbol: Symbol) {
+        let modifiers = self.modifiers.held();
+        self.modifiers.spend();
+        self.emit(OskOutput::Key(Keypress { symbol, modifiers }));
+    }
+
+    /// What a screen reader says for a toolbar item: a modifier speaks
+    /// whether it is held or locked.
+    fn spoken_tool(&self, item: &OskToolbarItem) -> String {
+        let OskToolbarAction::Modifier(key) = item.action else {
+            return item.label.clone();
+        };
+        match (key, self.modifiers.get(key)) {
+            (_, Latch::Off) => item.label.clone(),
+            (ModifierKey::Ctrl, Latch::Once) => i18n::t("osk-key-ctrl-latched"),
+            (ModifierKey::Ctrl, Latch::Locked) => i18n::t("osk-key-ctrl-locked"),
+            (ModifierKey::Alt, Latch::Once) => i18n::t("osk-key-alt-latched"),
+            (ModifierKey::Alt, Latch::Locked) => i18n::t("osk-key-alt-locked"),
+        }
+    }
+
+    /// The terminal row's Ctrl and Alt.
+    #[must_use]
+    pub fn modifier_latches(&self) -> ModifierLatches {
+        self.modifiers
+    }
+
+    /// With Ctrl or Alt held, a key from the letters is a chord: the composing
+    /// word is finished and the key is pressed with the modifiers, never typed
+    /// as text. Returns whether `action` was pressed that way.
+    fn press_chord(&mut self, action: &KeyAction) -> bool {
+        if self.modifiers.held().is_empty() {
+            return false;
+        }
+        let symbol = match action {
+            KeyAction::Char(s) => {
+                let mut chars = s.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(c), None) => Symbol::Unicode(c),
+                    _ => return false,
+                }
+            }
+            KeyAction::Space => Symbol::Space,
+            KeyAction::Enter => Symbol::Return,
+            KeyAction::Backspace => Symbol::BackSpace,
+            _ => return false,
+        };
+        if self.shift == ShiftState::Shift {
+            self.shift = ShiftState::Off;
+        }
+        self.finish_editing_word();
+        self.press_key(symbol);
+        true
+    }
+
     fn finish_editing_word(&mut self) {
         self.last_correction = None;
         self.finish_word_with("", false);
         self.prev_word = None;
         self.suggestions.clear();
     }
-
-    // --- internals ------------------------------------------------------
 
     /// Make `purpose` the active intent: pick its layout name, register that
     /// layout on demand, set it active, and reset shift (a fresh numeric/pin
@@ -1190,6 +1252,7 @@ impl OskWidget {
     /// [`set_purpose`](Self::set_purpose).
     fn apply_purpose(&mut self, purpose: InputPurpose) {
         self.purpose = purpose;
+        self.modifiers = ModifierLatches::default();
         self.restore_toolbar();
         let name = if matches!(purpose, InputPurpose::Text | InputPurpose::Terminal) {
             self.preferred_text_layout.as_str()
@@ -1226,30 +1289,6 @@ impl OskWidget {
             .push(SetPreference::Layout(name.to_owned()));
         self.follow_layout_language();
         true
-    }
-
-    /// Switch the word data to the language the preferred letter layout
-    /// types. The previous language's context, corrections and learned words
-    /// do not carry over.
-    fn follow_layout_language(&mut self) {
-        let Some(language) = Language::for_layout(&self.preferred_text_layout) else {
-            return;
-        };
-        if language == self.language {
-            return;
-        }
-        self.language = language;
-        self.predictor = Predictor::for_language(language);
-        if self.personalization_enabled
-            && let Some(transitions) = self.learned.transitions.get(language.code())
-        {
-            self.predictor.adopt_learned(transitions);
-        }
-        self.swipe_model.set_language(language);
-        self.autocorrect = None;
-        self.last_correction = None;
-        self.prev_word = None;
-        self.refresh_completion_suggestions();
     }
 
     fn select_text_layout_from_preference(&mut self, name: &str) {
@@ -1300,6 +1339,10 @@ impl OskWidget {
     /// and becomes a real key press otherwise.
     fn apply_action(&mut self, action: KeyAction) {
         let correction = self.last_correction.take();
+        if self.press_chord(&action) {
+            self.log_key_action(action);
+            return;
+        }
         match &action {
             KeyAction::Char(s) => {
                 // One-shot shift resets after a character; caps is sticky.
@@ -1315,7 +1358,7 @@ impl OskWidget {
             KeyAction::Space => self.finish_word(" "),
             KeyAction::Enter => {
                 self.finish_word("");
-                self.emit(OskOutput::Key(Symbol::Return));
+                self.emit(OskOutput::key(Symbol::Return));
                 // A new line clears next-word context.
                 self.prev_word = None;
                 self.suggestions.clear();
@@ -1349,6 +1392,10 @@ impl OskWidget {
         ) {
             self.auto_capitalize();
         }
+        self.log_key_action(action);
+    }
+
+    fn log_key_action(&mut self, action: KeyAction) {
         if self.key_log.len() == MAX_KEY_LOG_ENTRIES {
             self.key_log.pop_front();
             self.dropped_key_actions = self.dropped_key_actions.saturating_add(1);
@@ -1392,7 +1439,10 @@ impl OskWidget {
                     }
                 }
             }
-            OskOutput::Key(Symbol::Return) => {
+            OskOutput::Key(Keypress {
+                symbol: Symbol::Return,
+                modifiers,
+            }) if modifiers.is_empty() => {
                 self.sentence_start = true;
                 self.sentence_end = false;
             }
@@ -1470,7 +1520,6 @@ impl OskWidget {
         }
         self.refresh_next_word_suggestions();
         if let Some(typed) = typed {
-            // Offer the word as typed first, the way it was before the fix.
             self.suggestions
                 .insert(0, Suggestion::new(format!("\u{201c}{typed}\u{201d}"), 1.0));
             self.suggestions.truncate(MAX_SUGGESTIONS);
@@ -1486,7 +1535,7 @@ impl OskWidget {
     /// text with suggestions on. Passwords, addresses and codes are typed
     /// verbatim.
     fn autocorrect_allowed(&self) -> bool {
-        self.purpose == InputPurpose::Text && self.suggestions_enabled && !self.is_secret_field()
+        self.purpose == InputPurpose::Text && self.autocorrect_enabled && !self.is_secret_field()
     }
 
     /// The correction for a finished `word`, if autocorrection applies and the
@@ -1515,7 +1564,7 @@ impl OskWidget {
     /// and never correct that word again.
     fn revert_correction(&mut self, c: Correction) {
         for _ in c.corrected.chars().chain(c.tail.chars()) {
-            self.emit(OskOutput::Key(Symbol::BackSpace));
+            self.emit(OskOutput::key(Symbol::BackSpace));
         }
         if let Some(ac) = &mut self.autocorrect {
             ac.keep(&c.typed);
@@ -1534,7 +1583,7 @@ impl OskWidget {
     /// with nothing composing it is a real key press.
     fn backspace(&mut self) {
         if self.current_word.is_empty() {
-            self.emit(OskOutput::Key(Symbol::BackSpace));
+            self.emit(OskOutput::key(Symbol::BackSpace));
             // Backspaced past the word start — context is now stale.
             self.prev_word = None;
             self.suggestions.clear();
@@ -1568,6 +1617,7 @@ impl OskWidget {
         self.sentence_start = true;
         self.sentence_end = false;
         self.shift = ShiftState::Off;
+        self.modifiers = ModifierLatches::default();
         self.refresh_next_word_suggestions();
         self.apply_hint_case();
     }
@@ -1754,8 +1804,6 @@ impl OskWidget {
         self.add_emoji_suggestions();
         true
     }
-
-    // --- emoji ------------------------------------------------------------
 
     /// This user's recently picked emoji, most recent first.
     pub fn emoji_recents(&self) -> &[String] {
@@ -2354,8 +2402,6 @@ impl OskWidget {
         }
     }
 
-    // --- press and hold, space-bar caret ----------------------------------
-
     /// Arm the long press (alternates) or repeat (Backspace) for `key`, held
     /// by `finger` (`None` for the pointer).
     fn begin_hold(&mut self, key: KeyId, finger: Option<u64>, now: Instant) {
@@ -2528,7 +2574,7 @@ impl OskWidget {
             Symbol::Right
         };
         for _ in 0..(steps.abs() as usize) {
-            self.emit(OskOutput::Key(symbol));
+            self.emit(OskOutput::key(symbol));
         }
         true
     }
@@ -2616,7 +2662,6 @@ impl OskWidget {
     }
 }
 
-/// One finger on the keys.
 #[derive(Clone, Debug)]
 struct Finger {
     /// The contact's `Touch::id`.
@@ -2674,7 +2719,6 @@ struct Hold {
     key: KeyId,
     /// The contact's `Touch::id`, or `None` for the pointer.
     finger: Option<u64>,
-    /// When the hold next acts.
     due: Instant,
     kind: HoldKind,
     /// It has acted at least once, so its release types nothing.
@@ -2700,6 +2744,9 @@ struct Correction {
     tail: String,
 }
 
+#[path = "keyboard_preferences.rs"]
+mod keyboard_preferences;
+
 #[cfg(test)]
 #[path = "personal_vocabulary_tests.rs"]
 mod personal_vocabulary_tests;
@@ -2717,7 +2764,7 @@ impl Widget for OskWidget {
     ) -> NodeId {
         self.spacing = theme.tokens.spacing;
         self.metrics = theme.tokens.metrics;
-        self.target_key_height = key_row_height(&self.metrics);
+        self.target_key_height = key_row_height(&self.metrics) * self.key_size.scale();
         self.toolbar_height = toolbar_row_height(&self.spacing);
         self.suggestion_height =
             if self.purpose == InputPurpose::Terminal && self.context_error.is_none() {
@@ -2810,6 +2857,7 @@ impl Widget for OskWidget {
             finger_keys: &finger_keys,
             hovered_tool: self.hovered_tool,
             pressed_tool: self.pressed_tool,
+            modifiers: self.modifiers,
             hovered_sugg: self.hovered_sugg,
             pressed_sugg: self.pressed_sugg,
             empty_hint: &empty_hint,
@@ -2956,7 +3004,7 @@ impl Widget for OskWidget {
             let target = item.semantic_target(*index);
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(item.label.clone())
+                    .with_name(self.spoken_tool(item))
                     .with_bounds(*rect)
                     .with_state(AccessState::new().focusable(true))
                     .with_hashed_key(&target)
@@ -3389,10 +3437,10 @@ mod tests {
         assert_eq!(
             osk.take_output(),
             vec![
-                OskOutput::Key(Symbol::BackSpace),
-                OskOutput::Key(Symbol::BackSpace),
-                OskOutput::Key(Symbol::BackSpace),
-                OskOutput::Key(Symbol::BackSpace),
+                OskOutput::key(Symbol::BackSpace),
+                OskOutput::key(Symbol::BackSpace),
+                OskOutput::key(Symbol::BackSpace),
+                OskOutput::key(Symbol::BackSpace),
                 commit("teh "),
             ]
         );
@@ -3401,7 +3449,6 @@ mod tests {
         type_word(&mut osk, "teh");
         osk.apply_action(KeyAction::Space);
         assert_eq!(osk.pending_text(), "teh teh ");
-        // A second Backspace is an ordinary one.
         osk.apply_action(KeyAction::Backspace);
         assert_eq!(osk.pending_text(), "teh teh");
     }
@@ -3468,8 +3515,8 @@ mod tests {
                 pre("g"),
                 pre("go"),
                 commit("go"),
-                OskOutput::Key(Symbol::Return),
-                OskOutput::Key(Symbol::Return),
+                OskOutput::key(Symbol::Return),
+                OskOutput::key(Symbol::Return),
             ]
         );
         assert_eq!(osk.pending_text(), "go\n\n");
@@ -3494,7 +3541,7 @@ mod tests {
             vec![
                 pre("n"),
                 pre(""),
-                OskOutput::Key(Symbol::BackSpace),
+                OskOutput::key(Symbol::BackSpace),
                 pre("t"),
             ]
         );
@@ -3540,7 +3587,6 @@ mod tests {
         lay_out(&mut osk, 800.0, 360.0);
         assert!(osk.activate_label("1"));
         assert_eq!(osk.pending_text(), "1");
-        // The structure-dirty flag was raised by the toggle.
     }
 
     #[test]
@@ -3643,7 +3689,6 @@ mod tests {
             lay_out(&mut osk, 800.0, 360.0);
             assert!(osk.activate_label("1"));
             assert_eq!(osk.pending_text(), "1");
-            // The structure-dirty flag was raised by the toggle.
         }
 
         eprintln!("phase toggle_raises_structure_dirty");
@@ -3770,8 +3815,6 @@ mod tests {
             assert_eq!(osk.pending_text(), "");
         }
     }
-
-    // --- input-type layouts via purpose --------------------------------
 
     #[test]
     fn configured_layout_order_controls_the_actual_language_key() {
@@ -3931,7 +3974,6 @@ mod tests {
 
             let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
             lay_out(&mut osk, 720.0, 360.0);
-            // Populate the bar via a swipe.
             let path = path_through(&osk, "quick");
             assert!(osk.swipe(&path));
             assert!(!osk.suggestions().is_empty());
@@ -3968,7 +4010,6 @@ mod tests {
             let n = osk.suggestions().len();
             assert!(n > 0);
             assert_eq!(osk.suggestion_geometry().len(), n, "one rect per chip");
-            // Chips fill the full width and sit within the toolbar..keys band.
             let geom = osk.suggestion_geometry();
             let leftmost = geom.iter().map(|(_, r)| r.x0).fold(f64::MAX, f64::min);
             let rightmost = geom.iter().map(|(_, r)| r.x1).fold(f64::MIN, f64::max);
@@ -4048,10 +4089,8 @@ mod tests {
             lay_out(&mut osk, 720.0, 360.0);
             let path = path_through(&osk, "quick");
             assert!(osk.swipe(&path), "swipe decoded a word");
-            // Top candidate composed in the field.
             assert_eq!(osk.pending_text(), "quick");
             assert_eq!(osk.take_output(), vec![pre("quick")]);
-            // The suggestion bar shows the candidates, with "quick" present.
             let words: Vec<&str> = osk.suggestions().iter().map(|s| s.word.as_str()).collect();
             assert!(!words.is_empty(), "suggestion bar populated");
             assert!(
@@ -4212,8 +4251,6 @@ mod tests {
         }
     }
 
-    // --- auto-show / visibility ---------------------------------------
-
     #[test]
     fn chip_corrects_a_swiped_word_in_place() {
         let mut osk = OskWidget::new();
@@ -4226,7 +4263,6 @@ mod tests {
         assert!(osk.activate_suggestion(1));
         assert_eq!(osk.take_output(), vec![pre(&chips[1])]);
         assert_eq!(osk.pending_text(), chips[1]);
-        // The alternatives stay up for another correction.
         assert_eq!(osk.suggestions().len(), chips.len());
     }
 
@@ -4367,7 +4403,7 @@ mod tests {
         osk.apply_action(KeyAction::Backspace);
         assert_eq!(
             osk.take_output().last(),
-            Some(&OskOutput::Key(Symbol::BackSpace))
+            Some(&OskOutput::key(Symbol::BackSpace))
         );
     }
 
@@ -4555,7 +4591,7 @@ mod tests {
         assert_eq!(osk.take_output(), vec![commit("a")]);
         assert_eq!(osk.pending_text(), "a");
         assert!(activate(&mut osk, backspace));
-        assert_eq!(osk.take_output(), vec![OskOutput::Key(Symbol::BackSpace)]);
+        assert_eq!(osk.take_output(), vec![OskOutput::key(Symbol::BackSpace)]);
         assert_eq!(osk.pending_text(), "");
         assert!(
             osk.current_word().is_empty(),
@@ -4816,8 +4852,6 @@ mod tests {
         assert_eq!(osk.emoji_panel().mode(), PanelMode::Closed);
     }
 
-    // --- press and hold, previews, caret drag ---------------------------
-
     fn finger(osk: &mut OskWidget, id: u64, phase: TouchPhase, at: Point) {
         let touch = Touch {
             device_id: winit::event::DeviceId::dummy(),
@@ -4993,56 +5027,64 @@ mod tests {
     }
 
     #[test]
-    fn terminal_tools_emit_real_indent_and_literal_commits_and_retire_on_field_change() {
+    fn the_terminal_row_speaks_its_latches_and_retires_on_field_change() {
         let mut osk = OskWidget::new();
         osk.set_purpose(crate::imclient::purpose_from_wire(
             crate::imclient::content_purpose::TERMINAL,
         ));
         lay_out(&mut osk, 390.0, 360.0);
-        let tool = |osk: &mut OskWidget, id: &str| {
-            let index = osk.toolbar.iter().position(|item| item.id == id).unwrap();
-            let label = osk.toolbar[index].label.clone();
-            let target = osk
-                .accessibility()
+        let ids: Vec<&str> = osk.toolbar.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "esc", "tab", "ctrl", "alt", "left", "down", "up", "right", "dismiss"
+            ]
+        );
+        let ctrl_name = |osk: &OskWidget| {
+            let index = osk
+                .toolbar
+                .iter()
+                .position(|item| item.id == "ctrl")
+                .unwrap();
+            let target = osk.toolbar[index].semantic_target(index);
+            osk.accessibility()
                 .unwrap()
                 .children
                 .into_iter()
-                .find(|node| node.name.as_deref() == Some(label.as_str()))
+                .find(|node| node.action_target.as_deref() == Some(target.as_str()))
                 .unwrap()
-                .action_target
-                .unwrap();
-            assert!(semantic(osk, &target, &AccessibilityAction::Activate));
+                .name
+                .unwrap()
         };
-        tool(&mut osk, "indent");
-        assert_eq!(osk.take_output(), vec![OskOutput::Key(Symbol::Tab)]);
-        tool(&mut osk, "{");
-        assert_eq!(osk.take_output(), vec![OskOutput::Commit("{".into())]);
-        assert!(
-            osk.toolbar_geom
+        let target = {
+            let index = osk
+                .toolbar
                 .iter()
-                .all(|(_, rect)| rect.width() >= 44.0)
-        );
-        let brace = osk.toolbar.iter().position(|item| item.id == "}").unwrap();
-        let target = osk
-            .toolbar_geom
-            .iter()
-            .find(|(index, _)| *index == brace)
-            .unwrap()
-            .1
-            .center();
-        finger(&mut osk, 17, TouchPhase::Started, target);
-        osk.set_purpose(InputPurpose::Password);
-        lay_out(&mut osk, 390.0, 360.0);
-        finger(&mut osk, 17, TouchPhase::Ended, target);
+                .position(|item| item.id == "ctrl")
+                .unwrap();
+            osk.toolbar[index].semantic_target(index)
+        };
+        assert_eq!(ctrl_name(&osk), "Ctrl");
+        assert!(semantic(&mut osk, &target, &AccessibilityAction::Activate));
+        assert_eq!(ctrl_name(&osk), "Ctrl, held for the next key");
+        assert!(semantic(&mut osk, &target, &AccessibilityAction::Activate));
+        assert_eq!(ctrl_name(&osk), "Ctrl, locked");
         assert!(
             osk.take_output().is_empty(),
-            "changing focused field cancels the old tool contact"
+            "a modifier alone sends nothing"
         );
-        assert!(!osk.toolbar.iter().any(|item| matches!(
-            item.action,
-            OskToolbarAction::Indent | OskToolbarAction::Insert(_)
-        )));
-        assert_eq!(osk.purpose(), InputPurpose::Password);
+
+        osk.set_purpose(InputPurpose::Password);
+        lay_out(&mut osk, 390.0, 360.0);
+        assert_eq!(osk.modifier_latches(), ModifierLatches::default());
+        assert!(!osk.toolbar.iter().any(OskToolbarItem::is_key));
+        osk.activate_label("c");
+        assert!(
+            osk.take_output()
+                .iter()
+                .all(|output| !matches!(output, OskOutput::Key(_))),
+            "a lock does not outlive the terminal field"
+        );
     }
 
     #[test]
@@ -5069,10 +5111,10 @@ mod tests {
         tool(&mut osk, "Move caret left");
         assert_eq!(
             osk.take_output(),
-            vec![commit("q"), OskOutput::Key(Symbol::Left)]
+            vec![commit("q"), OskOutput::key(Symbol::Left)]
         );
         tool(&mut osk, "Move caret right");
-        assert_eq!(osk.take_output(), vec![OskOutput::Key(Symbol::Right)]);
+        assert_eq!(osk.take_output(), vec![OskOutput::key(Symbol::Right)]);
         osk.take_lesson();
         tool(&mut osk, "Paste");
         assert_eq!(osk.take_output(), vec![commit("literal clipboard")]);
@@ -5216,7 +5258,6 @@ mod tests {
         osk.poll_hold(deadline);
         let cells = osk.alternates.as_ref().unwrap().1.cells.clone();
         assert_eq!(osk.alternates.as_ref().unwrap().1.chosen(), Some("e"));
-        // The row sits above the key, inside the keyboard.
         assert!(
             cells
                 .iter()
@@ -5251,7 +5292,6 @@ mod tests {
             let options = long_press_options(&mut osk, key);
             assert_eq!(&options[..leading.len()], leading, "{options:?}");
         }
-        // Every French accent is on offer.
         let all: Vec<String> = ["e", "a", "c", "u", "o", "i", "y"]
             .into_iter()
             .flat_map(|k| long_press_options(&mut osk, k))
@@ -5287,7 +5327,6 @@ mod tests {
                     .all(|c| c.x0 >= osk.content_rect.x0 - 0.5 && c.x1 <= osk.content_rect.x1 + 0.5),
                 "{label}: row spills out"
             );
-            // A small wobble keeps the letter.
             popup.track(rect.center().x + rect.width() * 0.3);
             assert_eq!(popup.chosen(), Some(label));
         }
@@ -5356,7 +5395,6 @@ mod tests {
         let c = space.center();
         let step = osk.key_scale() * CURSOR_STEP;
         finger(&mut osk, 1, TouchPhase::Started, c);
-        // A wobble under the threshold is still a tap-in-waiting.
         finger(&mut osk, 1, TouchPhase::Moved, Point::new(c.x - 3.0, c.y));
         assert!(!osk.cursor_drag_active());
         // Just past the threshold, so rounding in the key's centre cannot
@@ -5379,9 +5417,9 @@ mod tests {
             osk.take_output(),
             vec![
                 commit("hello"),
-                OskOutput::Key(Symbol::Left),
-                OskOutput::Key(Symbol::Left),
-                OskOutput::Key(Symbol::Left),
+                OskOutput::key(Symbol::Left),
+                OskOutput::key(Symbol::Left),
+                OskOutput::key(Symbol::Left),
             ],
             "the word commits as typed, the caret steps left, no space"
         );

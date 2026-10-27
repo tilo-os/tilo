@@ -31,6 +31,10 @@ impl App {
         if encoded.type_id == crate::host_chrome::edit::EDIT_OPERATION {
             return true;
         }
+        #[cfg(feature = "native")]
+        if encoded.type_id == crate::host_chrome::zoom::ZOOM_OPERATION {
+            return self.accessibility.zoom.in_window();
+        }
         self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(action.input(), tilo_actions::ActionInput::Immediate(Some(value)) if value.as_ref() == encoded))
     }
     pub(super) fn with_native_presentation<R>(
@@ -212,6 +216,9 @@ impl App {
             if self.document_history.has_search() {
                 resources.push(crate::search::search_resource());
             }
+            resources.extend(self.unsaved_changes_resources());
+            #[cfg(feature = "native")]
+            resources.extend(self.zoom_resource());
             return resources;
         }
         let revision = self.document_history.revision();
@@ -232,6 +239,9 @@ impl App {
         self.history_changed(revision, open);
         let mut resources = resources;
         resources.extend(self.close_admission.resources());
+        resources.extend(self.unsaved_changes_resources());
+        #[cfg(feature = "native")]
+        resources.extend(self.zoom_resource());
         resources
     }
 
@@ -268,6 +278,9 @@ impl App {
         if encoded.type_id == crate::close_admission::OPERATION {
             return self.invoke_close_encoded(encoded);
         }
+        if encoded.type_id == super::local_input_capture::UNSAVED_OPERATION {
+            return self.retry_unsaved_changes();
+        }
         if encoded.type_id == SEARCH_OPERATION {
             if !self.document_history.has_search() {
                 return Err("Search host is unavailable".into());
@@ -285,6 +298,10 @@ impl App {
         }
         if encoded.type_id == crate::host_chrome::edit::EDIT_OPERATION {
             return self.execute_edit_operation(encoded);
+        }
+        #[cfg(feature = "native")]
+        if encoded.type_id == crate::host_chrome::zoom::ZOOM_OPERATION {
+            return self.execute_zoom_operation(encoded);
         }
         let pane = self
             .document_history
@@ -440,7 +457,14 @@ impl App {
         count
     }
 
+    /// Build the layout of whatever the window presents, and check the map
+    /// it registered against the live tree at once.
     pub(super) fn build_history_presentation(&mut self) {
+        self.build_presentation_layout();
+        self.admit_layout_maps();
+    }
+
+    fn build_presentation_layout(&mut self) {
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
             self.layout.taffy = taffy::TaffyTree::new();
             dialog.sync(&self.state.doc, &self.state.root);
@@ -466,14 +490,12 @@ impl App {
 
         let width = self.layout.last_layout_logical.map_or(900.0, |size| size.0);
         self.refresh_framework_history(width);
-        let status = self
-            .document_sync_status()
-            .map(std::borrow::Cow::into_owned);
+        let status = self.window_status();
         crate::history_mode::embedded::refresh(
             self.root_widget.as_mut(),
             &self.state.doc,
             width,
-            status.as_deref(),
+            status.as_ref(),
         );
         // The palette owns its measured overlay geometry. Admit its absolute
         // leaf as a separate presentation root so app/legacy authority and
@@ -1077,7 +1099,6 @@ mod tests {
 
     #[test]
     fn legacy_history_observes_commits_and_invalidates_on_replacement() {
-        // Case `legacy_history_observes_committed_state_without_closing_pending_edits`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1104,7 +1125,6 @@ mod tests {
             assert!(app.document_history_snapshot().unwrap().is_none());
         }
 
-        // Case `replacing_legacy_document_invalidates_even_with_no_record_set`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1131,7 +1151,6 @@ mod tests {
 
     #[test]
     fn native_history_surface_chrome_door_and_presentation_follow_the_surface_kind() {
-        // Case `native_system_surface_omits_document_chrome_but_keeps_its_controls`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1160,7 +1179,6 @@ mod tests {
             assert!(app.action_ui_routes(&open).is_empty());
         }
 
-        // Case `native_document_surface_keeps_shared_chrome_by_default`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1231,7 +1249,6 @@ mod tests {
             assert!(app.document_history.is_open());
         }
 
-        // Case `native_history_chrome_stays_local_while_history_is_published_gated`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1321,7 +1338,6 @@ mod tests {
             assert!(!app.document_history.is_open());
         }
 
-        // Case `native_history_narrow_presentation_excludes_app_focus_and_accessibility`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1372,7 +1388,6 @@ mod tests {
             );
         }
 
-        // Case `native_history_redraw_probe_rebuilds_after_document_revocation`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1525,16 +1540,13 @@ mod tests {
             }))
         ));
 
-        // The autosaved document reopens at the restored version.
         app.autosave().unwrap().flush();
         assert_eq!(title(&reopen(dir.path())).as_deref(), Some("v1"));
 
-        // Ctrl+Z on an app-owned document is this call in the native runner.
         let author = app.local_author().clone();
         assert!(app.state.undo_as(Some(&author), None, None, None).is_some());
         assert_eq!(title(&app).as_deref(), Some("v3"));
 
-        // A review that the live document outgrows is refused, unwritten.
         layout(&mut app, 1200);
         app.select_document_history(&[versions[0]]).unwrap();
         layout(&mut app, 1200);
@@ -1596,7 +1608,6 @@ mod tests {
 
     #[test]
     fn native_history_finalization_and_moves_preserve_pending_app_state() {
-        // Case `native_history_click_finalization_preserves_pending_app_edits`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1629,7 +1640,6 @@ mod tests {
             );
         }
 
-        // Case `native_history_tab_finalization_preserves_pending_app_edits`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -1672,7 +1682,6 @@ mod tests {
             assert_eq!(app.state.doc.pending_ops(), pending);
         }
 
-        // Case `native_history_retained_widgets_survive_moving_initialized_app`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),

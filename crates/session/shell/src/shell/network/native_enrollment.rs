@@ -27,7 +27,6 @@ pub(super) struct State {
 #[derive(Default)]
 struct Background {
     running: bool,
-    /// When the last background open failed.
     failed_at: Option<Instant>,
     /// The owner the last background open produced, until it is retained.
     opened: Option<NativeWorkspaceOwner>,
@@ -210,52 +209,67 @@ impl ShellNetwork {
             .map(|runtime| runtime.handle().clone())
             .ok_or_else(|| "native runtime unavailable".into())
     }
-    /// Redeem a peer invitation into the local workspace `local`.
+    /// Join the workspace a peer invitation names, as a workspace of its own
+    /// that is that room from the start and says Joining… until its replica
+    /// installs ([`crate::shell::state::WorkspaceTree::join_native_room`]).
+    /// The workspace in front stays what it is.
     ///
     /// # Errors
     ///
-    /// Returns an error if the replica, device custody or native owner is
-    /// unavailable, the target workspace disappeared, or the enrollment cannot
-    /// be queued.
-    pub fn accept_peer_invitation(
-        &self,
-        local: WorkspaceId,
-        token: &str,
-    ) -> Result<PeerSyncResponse, String> {
-        self.accept_invitation_via(local, token, enrollment_driver::Via::Iroh)
+    /// Returns an error if the invitation does not verify, the replica,
+    /// device custody or native owner is unavailable, or the enrollment
+    /// cannot be queued.
+    pub fn accept_peer_invitation(&self, token: &str) -> Result<PeerSyncResponse, String> {
+        self.join_by_invitation(token, enrollment_driver::Via::Iroh)
     }
 
     /// [`Self::accept_peer_invitation`], reaching the issuing host `via` its
-    /// iroh endpoint or its HTTPS routes.
+    /// iroh endpoint or its HTTPS routes. A direct invitation of the shell's
+    /// own engine joins through it ([`Self::accept_invite`]).
+    pub(crate) fn join_by_invitation(
+        &self,
+        token: &str,
+        via: enrollment_driver::Via,
+    ) -> Result<PeerSyncResponse, String> {
+        if crate::network::invite::validate_invite_token(token).is_ok() {
+            return self
+                .accept_invite(token)
+                .map(|room| PeerSyncResponse::Message(room.to_string()));
+        }
+        let now = tilo_clock::try_unix_now_ns()
+            .ok_or_else(|| "the system clock is before the Unix epoch".to_owned())?;
+        let join = tilo_peer_state::join::decode_and_verify_invitation_text(
+            token.trim(),
+            None,
+            &tilo_user_identity::RevocationList::new(),
+            now,
+        )?;
+        let room = RoomId::parse(&join.grant().room).ok_or("invitation names an invalid room")?;
+        let tree = self
+            .replica
+            .lock()
+            .map_err(|_| "native replica unavailable")?
+            .tree
+            .clone();
+        if tree.read().holds_room(room) {
+            return Ok(PeerSyncResponse::Message(room.to_string()));
+        }
+        let local = tree
+            .write()
+            .join_native_room(&crate::shell::i18n::t("workspace-joined-name"), room)
+            .ok_or("that invitation is for a room that is not joined")?;
+        self.accept_invitation_via(local, token.trim(), via)
+    }
+
+    /// Redeem `token` into `local`, the workspace made for the room it
+    /// names, reaching the issuing host `via` its iroh endpoint or its HTTPS
+    /// routes.
     pub(crate) fn accept_invitation_via(
         &self,
         local: WorkspaceId,
         token: &str,
         via: enrollment_driver::Via,
     ) -> Result<PeerSyncResponse, String> {
-        if let Ok(legacy) = crate::network::invite::validate_invite_token(token) {
-            let replica = self
-                .replica
-                .lock()
-                .map_err(|_| "native replica unavailable")?;
-            let tree = replica.tree.read();
-            let target = RoomId::parse(&legacy.room_id).ok_or("invalid legacy room")?;
-            let previous = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.id == local)
-                .ok_or("target workspace disappeared")?
-                .room;
-            if tree.requires_native_owner(target) || tree.requires_native_owner(previous) {
-                return Err("certified native rooms require canonical enrollment".into());
-            }
-            drop(tree);
-            drop(replica);
-            return self
-                .accept_invite(local, token)
-                .map(|room| PeerSyncResponse::Message(room.to_string()));
-        }
         let owner = self.native_owner()?;
         let room = self
             .replica
@@ -267,7 +281,7 @@ impl ShellNetwork {
             .workspaces
             .iter()
             .find(|workspace| workspace.id == local)
-            .map(|workspace| workspace.room)
+            .map(crate::shell::state::Workspace::room)
             .ok_or("target workspace disappeared")?;
         let topic = room_topic_id(room);
         let certificate = self
@@ -281,8 +295,9 @@ impl ShellNetwork {
         if owner
             .with_current(room, |view| {
                 Ok(view.device() == &certificate
-                    && tilo_peer_state::join::encode_invitation_text(view.enrollment_invitation())
-                        == token)
+                    && view.enrollment_invitation().is_ok_and(|invitation| {
+                        tilo_peer_state::join::encode_invitation_text(invitation) == token
+                    }))
             })
             .unwrap_or(false)
         {
@@ -308,11 +323,6 @@ impl ShellNetwork {
         Ok(PeerSyncResponse::EnrollmentPending { id })
     }
     /// Finish the pending enrollment `id` once its remote exchange completed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the attempt is no longer active, or if installing the
-    /// enrolled room fails.
     pub fn poll_enrollment(&self, id: u64) -> Result<PeerSyncResponse, String> {
         // Which room and slot it is for: finishing it forgets its attempt.
         let target = self.enrollment_target(id);

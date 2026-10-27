@@ -35,7 +35,6 @@ fn guest() -> Result<Guest, String> {
     Ok(guest)
 }
 
-/// A root with busybox as its every tool.
 fn busybox_root(guest: &Guest, at: &Path) {
     std::fs::create_dir_all(at.join("bin")).unwrap();
     std::fs::copy(&guest.busybox, at.join("bin/busybox")).unwrap();

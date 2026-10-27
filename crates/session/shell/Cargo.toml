@@ -59,6 +59,7 @@ bench = false
 required-features = ["test-support"]
 
 [dependencies]
+tilo-handoff = { path = "../../platform/tilo-handoff" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # HTTPS to the hosts and web sites of workspaces this computer reaches over
 # the web: their entry, admission door and host routes.
@@ -81,7 +82,7 @@ tilo-owner-commit = { path = "../../collab/owner-commit" }
 tilo-automerge-isolate.workspace = true
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-files = { path = "../../platform/tilo-files", features = ["json"] }
+tilo-files = { path = "../../platform/tilo-files", features = ["json", "watch"] }
 bounded-command = { path = "../../system/bounded-command" }
 # The wire format of the network-answers helper search runs (exchange rates).
 tilo-net-answers = { path = "../../system/net-answers", default-features = false }
@@ -90,6 +91,9 @@ tilo-secrets.workspace = true
 tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
+# Settings' sections, which the session keeps as the person's records
+# whether or not Settings is open.
+settings-sections = { path = "../../system/settings-sections" }
 tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settings" }
 notify.workspace = true
 tilo-paths.workspace = true
@@ -137,7 +141,7 @@ qcms.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-gossip.workspace = true
-iroh-mdns-address-lookup.workspace = true
+tilo-lan-discovery = { path = "../../collab/tilo-lan-discovery" }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 bytes.workspace = true
 blake3.workspace = true
@@ -185,6 +189,8 @@ browser = { path = "../../../apps/browser" }
 notes = { path = "../../../apps/notes" }
 code-editor = { path = "../../../apps/code-editor" }
 word-processor = { path = "../../../apps/word-processor" }
+# The tracker's record, read for the runs of issues assigned to agents.
+tasks = { path = "../../../apps/tasks" }
 # The document-format registry. The shell asks it whether a path is an
 # editable document; which installed app opens it comes from the app
 # manifests, not from here.
@@ -198,6 +204,11 @@ mime_guess.workspace = true
 # Settings app can call the same bindings without depending on the
 # compositor. Quick Settings keeps only dispatcher aliases and fixture policy.
 os-actions = { path = "../../system/os-actions" }
+# Your devices as a VPN: the tunnel, and the helper's protocol (not the
+# helper itself).
+tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["tunnel"] }
+# Where the device is, for a time zone that follows it.
+tilo-location = { path = "../../platform/tilo-location" }
 # Session-owned balance/mono policy and PipeWire graph enumeration. Settings
 # persists intent; the compositor is the single long-lived actuator. Also the
 # video stack for shared surfaces, projection and recording: `realtime` is
@@ -221,7 +232,7 @@ tilo-winit-x11 = { version = "0.1.0", path = "../../sdk/winit-x11" }
 # XKB keysym values for the media keys winit reports only as raw keysyms.
 xkeysym = "0.2.1"
 # Publishes `Xft.dpi` on each workspace's X server.
-x11rb = { version = "0.13", default-features = false }
+x11rb = { version = "0.13", default-features = false, features = ["res"] }
 pollster.workspace = true
 sysinfo.workspace = true
 automerge.workspace = true
@@ -308,14 +319,19 @@ legacy-agent-protocol = { path = "../../runtime/legacy-agent-protocol" }
 # The wire of the shell's own file choosers, served to apps with no portal.
 tilo-dialogs.workspace = true
 # The system information service the session serves to apps, and the
-# readings its own System monitor widget shows.
-tilo-system-stats = { path = "../../system/system-stats" }
-package-store = { path = "../../packaging/package-store" }
+# readings its own System monitor widget shows; `udisks` adds each drive's
+# health to the storage it describes (Disks).
+tilo-system-stats = { path = "../../system/system-stats", features = ["udisks"] }
+# `store`: opening a downloaded app records its use for the size sweep
+# (`launcher::recorded_use`).
+package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
+# What leaves the person's apps goes to their Trash (`app_list`).
+host-fs = { path = "../../system/host-fs" }
 
 # The host's own applications: `.desktop` entries the compositor reads
 # so a Flatpak or a distribution binary is launchable and searchable.
-desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry", features = ["appimage"] }
 # User root identity + device cert + revocation. See
 # `network::identity` for the peer-side wiring: on connect we
 # expect the remote to present its device pubkey + cert; we validate
@@ -382,6 +398,8 @@ tokio-util.workspace = true
 # Drives the secret agent from a stand-in NetworkManager into the sheet.
 tilo-network-secret-agent = { path = "../network-secret-agent", features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
+# Site join tests pin the wall clock the host's threads read while it admits a page.
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path reads surfaces from.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Native Store publication through the same certified session fixture as Browser.
@@ -393,7 +411,6 @@ tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 
 # Exercise owner-selected bytes against the actual Store signed-package review.
 app-cli = { path = "../../packaging/app-cli" }
-flate2.workspace = true
 greeter = { path = "../greeter" }
 # Private native-pair acceptance uses the governed host's real voice relay.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents"] }
@@ -471,6 +488,12 @@ test = true
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# The liveness dump records each thread's stack from its signal handler
+# without allocating, and symbolizes it on the dumping thread.
+backtrace.workspace = true
+# The files a person chooses for an app in the shell's chooser, served into
+# that app's sandbox (compositor::chooser_service).
+tilo-documents = { workspace = true, features = ["mount"] }
 # The room render service the compositor's broker starts (compositor::render_broker).
 tilo-render-service = { path = "../render-service" }
 account-custody = { path = "../../system/account-custody" }

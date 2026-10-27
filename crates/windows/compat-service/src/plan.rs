@@ -15,7 +15,7 @@ use crate::store::{
 const PREFIX_MOUNT: &str = "/run/tilo/capsule/prefix";
 pub(crate) const HOME_MOUNT: &str = "/run/tilo/capsule/home";
 const FILES_MOUNT: &str = "/run/tilo/files";
-const SHIM_HOST: &str = "/usr/bin/tilo-launcher";
+const SHIM_HOST: &str = "/usr/libexec/tilo/tilo-launcher";
 const SHIM_MOUNT: &str = "/tilo-launcher";
 const LEASE_ROOT: &str = "/run/tilo/windows-compat/leases";
 const PINNED_PROTON: &str = "UMU-Proton-10.0-4";
@@ -1118,7 +1118,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn runtime_selection_follows_host_architecture_and_shipped_artifacts() {
-        // Phase `immutable_registry_matches_containerfile_artifacts`.
         {
             let wine = SystemRuntimeRegistry::resolve_for_host(
                 Layer::Wine,
@@ -1170,7 +1169,6 @@ mod tests {
             );
             assert!(proton.needs_nested_runtime);
         }
-        // Phase `host_architecture_selects_runtime_and_syscall_policy`.
         {
             for host in ["x86_64", "aarch64"] {
                 for layer in [Layer::Wine, Layer::Proton] {
@@ -1249,7 +1247,6 @@ mod tests {
                 }
             }
         }
-        // Phase `only_translated_runtimes_read_their_private_procfs`.
         {
             for host in ["x86_64", "aarch64"] {
                 for layer in [Layer::Wine, Layer::Proton] {
@@ -1300,7 +1297,6 @@ mod tests {
                 }
             }
         }
-        // Phase `arm_capsules_require_the_assembled_translated_provider`.
         {
             assert!(
                 require_translated_provider(Some(r#"{"provider":"fex-traditional-wine"}"#)).is_ok()
@@ -1317,7 +1313,6 @@ mod tests {
                 ));
             }
         }
-        // Phase `unknown_host_architecture_fails_closed`.
         {
             let error = SystemRuntimeRegistry::resolve_for_host(
                 Layer::Wine,
@@ -1329,7 +1324,6 @@ mod tests {
                 matches!(error, PlanError::UnsupportedHostArchitecture(host) if host == "riscv64")
             );
         }
-        // Phase `shipped_fex_manifests_match_the_fixed_mount_contract`.
         {
             let emulator: serde_json::Value = serde_json::from_str(include_str!(
                 "../../../../os/usr/share/tilo/windows/fex-emulator.json"
@@ -1372,7 +1366,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn wine_plans_are_default_deny_with_fixed_artifacts_and_no_injection() {
-        // Phase `uninstalled_runner_version_is_not_turned_into_a_path`.
         {
             let error = SystemRuntimeRegistry::new()
                 .resolve(Layer::Wine, &Runner::new("wine", "../../evil").unwrap())
@@ -1383,7 +1376,6 @@ mod tests {
                 .unwrap_err();
             assert!(matches!(error, PlanError::RunnerNotInstalled(_)));
         }
-        // Phase `catalogue_cannot_inject_environment_or_host_paths`.
         {
             let mut route = route(Layer::Wine);
             route
@@ -1406,7 +1398,6 @@ mod tests {
                 .unwrap_err();
             assert!(matches!(error, PlanError::ForbiddenEnvironment(key) if key == "LD_PRELOAD"));
         }
-        // Phase `wine_plan_is_default_deny_and_uses_fixed_artifacts`.
         {
             let route = route(Layer::Wine);
             let (_directory, store, state, program) = setup(&route);
@@ -1791,7 +1782,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn capsules_provision_private_storage_brokered_audio_and_proton_runtimes() {
-        // Phase `proton_provisions_immutable_runtime_with_private_lock_and_metadata`.
         {
             let route = route(Layer::Proton);
             let (_directory, store, state, program) = setup(&route);
@@ -1847,7 +1837,6 @@ mod tests {
             );
             assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
         }
-        // Phase `capsule_temporary_storage_is_private_and_writable`.
         {
             for layer in [Layer::Wine, Layer::Proton] {
                 let route = route(layer);
@@ -1884,7 +1873,6 @@ mod tests {
                 }));
             }
         }
-        // Phase `microphone_capsule_uses_brokered_audio_without_raw_sound_device`.
         {
             let route = route(Layer::Wine);
             let (_directory, store, state, program) = setup(&route);
@@ -1946,7 +1934,6 @@ mod tests {
                     .any(|arg| arg == "/run/user/1000/pipewire-0")
             );
         }
-        // Phase `private_stores_inside_a_file_grant_are_masked_at_its_mount`.
         {
             let route = route(Layer::Wine);
             let (_directory, store, state, program) = setup(&route);
@@ -1991,7 +1978,6 @@ mod tests {
                 "the store must be pinned and masked after the grant's mount: {argv:?}"
             );
         }
-        // Phase `planner_rejects_a_symlinked_capsule_data_component`.
         {
             use std::os::unix::fs::symlink;
 
@@ -2022,7 +2008,6 @@ mod tests {
                 "planner must not bind a path through an attacker symlink"
             );
         }
-        // Phase `proton_plan_uses_umu_and_protonpath_without_blocking_its_nested_runtime`.
         {
             let route = route(Layer::Proton);
             let (_directory, store, state, program) = setup(&route);

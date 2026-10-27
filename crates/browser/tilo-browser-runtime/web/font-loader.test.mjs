@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
+/** The shared hang bound: a wait this long means the code under test is stuck. */
+const HANG_BOUND_MS = Number(process.env.TILO_TEST_HANG_BOUND_SECS || 120) * 1000;
 
 const bytes={
   core:new Uint8Array([1,2,3]),
@@ -70,6 +72,17 @@ test('font descriptors still refuse paths, encoded paths and cross-origin names'
   }
 });
 
+test('a verified font carries the page digest the runtime checks instead of hashing again',async()=>{
+  const manifest=await descriptor();
+  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:async url=>{
+    if(String(url).endsWith('fonts.json'))return response(manifest);
+    return response(bytes[new URL(url).pathname.split('/').at(-1).replace('.ttf','')]);
+  }});
+  const arabic=await loader.request('arabic.ttf');
+  assert.equal(loader.digestOf(arabic),hashes.arabic);
+  assert.equal(loader.digestOf(new Uint8Array([4,5])),undefined,'only bytes this loader verified carry a digest');
+});
+
 test('optional demands are deduplicated and bounded to two concurrent fetches',async()=>{
   const manifest=await descriptor(),gates=new Map(),starts=[];let concurrent=0,peak=0;
   const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:async url=>{
@@ -94,7 +107,7 @@ test('CacheStorage cannot block verified startup font readiness',async()=>{
   });
   const outcome=await Promise.race([
     loader.startup(),
-    new Promise(resolve=>{timeout=setTimeout(()=>resolve('blocked'),100);}),
+    new Promise(resolve=>{timeout=setTimeout(()=>resolve('blocked'),HANG_BOUND_MS);}),
   ]);
   clearTimeout(timeout);
   assert.notEqual(outcome,'blocked');

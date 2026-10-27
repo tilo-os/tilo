@@ -6,8 +6,8 @@
 //! - which rows were chosen, how often and how recently
 //!   ([`tilo_search::Frecency`]). Within a provider it orders equally good
 //!   matches; at the merge it leads short queries, where launchers live
-//!   ("t" is the Terminal opened every day), and fills the empty palette's
-//!   recent choices;
+//!   ("t" is the Terminal opened every day), and leads the launcher's
+//!   Apps with the apps used most;
 //! - which row was chosen for which typed text: what "te" was for last time
 //!   is what it is for next time.
 
@@ -167,7 +167,7 @@ pub fn share(provider_id: &str, id: &str) -> f32 {
 
 /// `0.0..=1.0`: how often and how recently the row was chosen after typing
 /// `query` (or a text it starts the same way as, up to
-/// [`CHOICE_PREFIX_SCALARS`]).
+/// `CHOICE_PREFIX_SCALARS`).
 #[must_use]
 pub fn choice_share(query: &str, provider_id: &str, id: &str) -> f32 {
     let Some(text) = choice_texts(query).pop() else {
@@ -191,6 +191,15 @@ pub fn recent_choices(limit: usize) -> Vec<(String, String)> {
             Some((provider.to_owned(), id.to_owned()))
         })
         .collect()
+}
+
+/// When the row `provider_id`/`id` was last chosen, if ever.
+#[must_use]
+pub fn last_used(provider_id: &str, id: &str) -> Option<std::time::SystemTime> {
+    usage()
+        .frecency
+        .last_used(&key(provider_id, id))
+        .and_then(|secs| UNIX_EPOCH.checked_add(std::time::Duration::from_secs(secs)))
 }
 
 /// Hand the record to the state writer. A palette activation runs on the

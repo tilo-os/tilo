@@ -24,7 +24,6 @@ pub enum DeviceStanding {
     /// The user root certified the key, the certificate is valid now, and
     /// the key was never revoked.
     Certified,
-    /// The user root revoked the key.
     Revoked(RevocationReason),
     /// No certificate of this user's names the key, or none is valid now.
     Uncertified,
@@ -195,7 +194,6 @@ mod tests {
         ));
         assert_eq!(fleet.standing(&[6; 32], 500), DeviceStanding::Uncertified);
 
-        // A revocation outranks the certificate, whenever it took effect.
         let mut entry = RevocationEntry {
             user_public_key: user.public_key,
             revoked_device_public_key: host,

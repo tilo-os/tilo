@@ -225,57 +225,55 @@ pub enum MusicEffect {
     /// Choose music source
     ///
     /// Opens the source picker without starting sign-in or changing a grant.
-    #[effect(device_only)]
     Sources,
     /// Enable full Spotify library and device controls
     ///
     /// Explicitly requests editing, playlist, followed-artist and remote-device permissions.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ConnectSpotifyLibrary,
     /// Connect Spotify
     ///
     /// Requests profile and saved-library read access, without editing or remote control.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ConnectSpotify,
     /// Authorize Spotify playback
     ///
     /// Separately grants native streaming for the same Premium account.
-    #[effect(job, device_only)]
+    #[effect(attended, job)]
     ConnectSpotifyPlayback,
     /// Inspect Spotify account eligibility
     /// Reads existing grants only; returns product classifications and account matching.
-    #[effect(job, device_only, returns, idempotent, kind = "read")]
+    #[effect(job, returns, idempotent, kind = "read")]
     SpotifyAccountStatus,
     /// Refresh Spotify devices
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyDevices,
     /// Show Spotify's remote queue
     ///
     /// Reads a provider snapshot; never replaces this device's queue.
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyQueue,
     /// Load more Spotify library collections
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyLibraryMore,
     /// Name a new private Spotify playlist
-    #[effect(device_only)]
     NewSpotifyPlaylist,
     /// Create private Spotify playlist
     ///
     /// Creates an empty private playlist. Refresh before retrying an uncertain result.
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyCreatePlaylist {
         #[param("Playlist name")]
         name: String,
     },
     /// Transfer Spotify playback
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyTransfer {
         #[param("Spotify Connect device ID")]
         device: String,
     },
     /// Play on a Spotify device
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyRemotePlay {
         #[param("Spotify Connect device ID")]
         device: String,
@@ -283,25 +281,25 @@ pub enum MusicEffect {
         track: String,
     },
     /// Pause a Spotify device
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyRemotePause {
         #[param("Spotify Connect device ID")]
         device: String,
     },
     /// Save to Spotify library
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifySave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Remove from Spotify library
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyUnsave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Rename Spotify playlist
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyRenamePlaylist {
         #[param("Spotify playlist URI")]
         playlist: String,
@@ -309,7 +307,7 @@ pub enum MusicEffect {
         name: String,
     },
     /// Add to Spotify playlist
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyPlaylistAdd {
         #[param("Spotify playlist URI")]
         playlist: String,
@@ -319,7 +317,7 @@ pub enum MusicEffect {
     /// Remove from Spotify playlist
     ///
     /// Removes every occurrence of the track from this Spotify playlist.
-    #[effect(job, device_only, returns)]
+    #[effect(job, returns)]
     SpotifyPlaylistRemove {
         #[param("Spotify playlist URI")]
         playlist: String,
@@ -329,27 +327,27 @@ pub enum MusicEffect {
     /// Disconnect Spotify
     ///
     /// Forgets the local grant. Revoke Tilo in Spotify account settings to remove provider-side access.
-    #[effect(job, device_only)]
+    #[effect(job)]
     DisconnectSpotify,
     /// Browse Spotify
-    #[effect(job, device_only)]
+    #[effect(job)]
     BrowseSpotify,
     /// Browse `YouTube` Music
-    #[effect(job, device_only)]
+    #[effect(job)]
     BrowseYouTube,
 
     /// Search the remote catalogue
     /// Results join the canonical search index after the worker answers.
-    #[effect(job, device_only, kind = "read")]
+    #[effect(job, kind = "read")]
     Search { query: String },
     /// Inspect playback
     /// Device-local transport observations, with no account or credential data.
-    #[effect(row, device_only, returns, idempotent, kind = "read")]
+    #[effect(row, returns, idempotent, kind = "read")]
     PlaybackStatus,
     /// Open audio file
     ///
     /// Plays a local audio file the person chooses on this device.
-    #[effect(job, device_only, returns)]
+    #[effect(attended, job, returns)]
     OpenFile,
     /// Open
     #[effect(view, row)]
@@ -373,6 +371,12 @@ pub enum MusicEffect {
     /// It changes only the library, through its edits.
     #[effect(row, edit)]
     ToggleLike { track: String },
+    /// Like the song that plays
+    ///
+    /// Likes or unlikes whatever plays on this device when it runs, as
+    /// liking that song's own row does.
+    #[effect(row, edit)]
+    ToggleLikePlaying,
     /// Add to queue
     #[effect(row)]
     AddToQueue { track: String },
@@ -690,7 +694,7 @@ pub(crate) fn library_rows(ctx: &MusicResourceCtx) -> Vec<Resource> {
 pub(crate) fn live_device_resources(ctx: &MusicResourceCtx) -> Vec<Resource> {
     let mut resources = vec![
         with_transport(
-            Resource::new("music.player:player", "music.player", "Player"),
+            Resource::new(PLAYER_RESOURCE_ID, "music.player", "Player"),
             &ctx.playback,
         ),
         queue_resource(ctx),
@@ -719,16 +723,25 @@ fn navigation_view_resource(id: &str, label: &str) -> Resource {
     ))
 }
 
-/// The player's transport, bound to the player row: what is offered right
-/// now, and why the rest is not.
+/// This device's player, the row the transport's controls act on.
+pub(crate) const PLAYER_RESOURCE_ID: &str = "music.player:player";
+
+/// The player's transport, bound to the player row: every control is
+/// offered, those that cannot act right now with the reason why.
 fn with_transport(mut root: Resource, playback: &crate::model::Playback) -> Resource {
     root = root.with_action(MusicEffect::PlaybackStatus.bound());
-    if playback.current.is_some() {
-        root = root.with_action(bound(
-            &MusicEffect::PlayPause,
-            if playback.playing { "Pause" } else { "Play" },
-        ));
-    }
+    let play = bound(
+        &MusicEffect::PlayPause,
+        if playback.playing { "Pause" } else { "Play" },
+    );
+    root = root.with_action(if playback.current.is_some() {
+        play
+    } else {
+        play.unavailable(
+            "nothing_playing",
+            "Choose a track before using playback controls",
+        )
+    });
     root = root
         .with_action(MusicEffect::ToggleMute.bound())
         .with_action(bound(
@@ -740,6 +753,12 @@ fn with_transport(mut root: Resource, playback: &crate::model::Playback) -> Reso
             },
         ))
         .with_action(MusicEffect::CycleRepeat.bound());
+    let like = MusicEffect::ToggleLikePlaying.bound();
+    root = root.with_action(if playback.current.is_some() {
+        like
+    } else {
+        like.unavailable("nothing_playing", "Choose a track to like")
+    });
     let unavailable = if playback.current.is_none() {
         Some((
             "nothing_playing",
@@ -755,17 +774,12 @@ fn with_transport(mut root: Resource, playback: &crate::model::Playback) -> Reso
         Some((code, reason)) => previous.unavailable(code, reason),
         None => previous,
     });
-    // Music's on-screen shuffle permutation is intentionally device-local so
-    // it never leaks a random, non-replayable decision into the CRDT. A remote
-    // caller can still select a concrete track, but a generic "next" would be
-    // dishonest while that local permutation is active.
+    // Next steps through this device's own shuffle order while shuffle is
+    // on, as the transport's button does; the order stays device-local and
+    // never reaches the shared library.
     let next = MusicEffect::Next.bound();
     root.with_action(match unavailable {
         Some((code, reason)) => next.unavailable(code, reason),
-        None if playback.shuffle => next.unavailable(
-            "local_shuffle_order",
-            "Choose a concrete track while this device's shuffle order is active",
-        ),
         None => next,
     })
 }
@@ -776,15 +790,33 @@ fn track_id_from_resource(address: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
+/// One song joining or leaving a queue, at its position there. A queue can
+/// hold the same song twice side by side, so only the edit itself says which
+/// of the two moved, and with it which one a shuffled order has already
+/// played.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QueueEdit {
+    /// A song joined at this position, to be heard after the songs still to
+    /// come.
+    Added(usize),
+    /// A song joined at this position, right after the current one, to be
+    /// heard next.
+    PutNext(usize),
+    /// The song at this position left.
+    Removed(usize),
+}
+
 /// The playback `effect` leads to from `playback` on this device, for the
-/// transport and queue effects that only change it; `None` for any other
-/// effect. `known` says whether a track can be played here.
+/// transport and queue effects that only change it, with the queue edit it
+/// made; `None` for any other effect. `known` says whether a track can be
+/// played here.
 pub(crate) fn next_playback(
     effect: &MusicEffect,
     playback: &crate::model::Playback,
     known: &dyn Fn(&str) -> bool,
-) -> Option<Result<crate::model::Playback, String>> {
+) -> Option<Result<(crate::model::Playback, Option<QueueEdit>), String>> {
     let mut next = playback.clone();
+    let mut edit = None;
     let known_track = |address: &str| {
         let track = track_id_from_resource(address)
             .ok_or_else(|| "track must be a music.track resource".to_string())?;
@@ -846,6 +878,7 @@ pub(crate) fn next_playback(
         }
         MusicEffect::AddToQueue { track } => {
             if known(track) {
+                edit = Some(QueueEdit::Added(next.queue.len()));
                 next.queue.push(track.clone());
                 Ok(())
             } else {
@@ -865,21 +898,26 @@ pub(crate) fn next_playback(
             } else {
                 let at = (next.queue_index + 1).min(next.queue.len());
                 next.queue.insert(at, track.clone());
+                edit = Some(QueueEdit::PutNext(at));
             }
             Ok(())
         }
-        MusicEffect::QueueAdd { track } => known_track(track).map(|track| next.queue.push(track)),
-        MusicEffect::QueueRemove { track } => {
-            known_track(track).and_then(|track| remove_from_queue(&mut next, &track))
-        }
+        MusicEffect::QueueAdd { track } => known_track(track).map(|track| {
+            edit = Some(QueueEdit::Added(next.queue.len()));
+            next.queue.push(track);
+        }),
+        MusicEffect::QueueRemove { track } => known_track(track)
+            .and_then(|track| remove_from_queue(&mut next, &track))
+            .map(|index| edit = Some(QueueEdit::Removed(index))),
         _ => return None,
     };
-    Some(result.map(|()| next))
+    Some(result.map(|()| (next, edit)))
 }
 
-/// Take `track`'s first occurrence out of `playback`'s queue; removing the
-/// current one moves on to what follows it, or stops at the end.
-fn remove_from_queue(playback: &mut crate::model::Playback, track: &str) -> Result<(), String> {
+/// Take `track`'s first occurrence out of `playback`'s queue, answering
+/// where it was; removing the current one moves on to what follows it, or
+/// stops at the end.
+fn remove_from_queue(playback: &mut crate::model::Playback, track: &str) -> Result<usize, String> {
     let index = playback
         .queue
         .iter()
@@ -899,7 +937,7 @@ fn remove_from_queue(playback: &mut crate::model::Playback, track: &str) -> Resu
         }
         playback.position_ms = 0;
     }
-    Ok(())
+    Ok(index)
 }
 
 fn open_queue() -> ActionSpec {
@@ -1187,9 +1225,9 @@ pub fn resource_by_id(ctx: &MusicResourceCtx, id: &str) -> Option<Resource> {
             &membership.track,
         ));
     }
-    if id == "music.player:player" {
+    if id == PLAYER_RESOURCE_ID {
         return Some(with_transport(
-            Resource::new("music.player:player", "music.player", "Player"),
+            Resource::new(PLAYER_RESOURCE_ID, "music.player", "Player"),
             &ctx.playback,
         ));
     }
@@ -1457,7 +1495,6 @@ mod tests {
             assert!(flat.contains(&"Open in playlist"), "{flat:?}");
         }
 
-        // Phase `contextual_resources_are_bounded_but_late_catalog_items_resolve_lazily`.
         {
             let mut ctx = MusicResourceCtx::default();
             for number in 0..(OPEN_RESOURCE_CATEGORY_LIMIT + 9) {
@@ -1499,7 +1536,6 @@ mod tests {
             );
         }
 
-        // Phase `track_resource_exposes_exact_parent_navigation_targets`.
         {
             let track = CatalogTrackResource {
                 id: "track-1".into(),
@@ -1532,7 +1568,6 @@ mod tests {
             }
         }
 
-        // Phase `document_mutations_advertise_write_permission_and_views_advertise_read`.
         {
             let (app, doc) = seeded();
             let resources = app.palette_tree(&doc);
@@ -1557,7 +1592,6 @@ mod tests {
             }
         }
 
-        // Phase `every_top_level_destination_is_a_safe_canonical_view_resource`.
         {
             let ctx = MusicResourceCtx::default();
             let root = published_tree(&ctx)
@@ -1603,7 +1637,6 @@ mod tests {
             assert!(anchor_effect("music.view:../../etc/passwd").is_none());
         }
 
-        // Phase `published_resource_action_surface_validates_with_music_handlers`.
         {
             let (app, doc) = seeded();
             let resources = app.palette_tree(&doc);
@@ -1617,12 +1650,10 @@ mod tests {
 
     #[test]
     fn playlist_creation_and_covers_are_portable_and_validated() {
-        // Phase `portable_playlist_cover_replays_to_a_peer_without_a_local_path`.
         {
             let mut a = library();
             let mut b = a.fork();
             let playlist = first_playlist(&a).id;
-            // A tiny valid PNG, representative of the normalized portal output.
             let cover = tiny_portable_png();
             assert!(portable_cover_value(&cover));
             assert!(!cover.contains("file:"));
@@ -1644,7 +1675,6 @@ mod tests {
             );
         }
 
-        // Phase `playlist_cover_edit_refuses_local_unsafe_and_malformed_values`.
         {
             let mut library = library();
             let playlist = first_playlist(&library).id;
@@ -1672,7 +1702,6 @@ mod tests {
             }
         }
 
-        // Phase `new_playlist_verb_creates_a_playlist`.
         {
             let mut library = library();
             let before = library.state().unwrap().playlists.len();
@@ -1711,7 +1740,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn playback_and_queue_arguments_are_typed_canonical_and_fresh() {
-        // Phase `playback_and_queue_are_local_effects_with_typed_arguments`.
         {
             let mut ctx = MusicResourceCtx::default();
             ctx.playback.current = Some("track-1".into());
@@ -1740,7 +1768,7 @@ mod tests {
                     "this device's audio is outside the document: {id}"
                 );
                 assert!(
-                    !action.contract.reversible,
+                    !action.contract.can_be_undone(),
                     "local device effects cannot claim an executable undo: {id}"
                 );
             }
@@ -1805,7 +1833,6 @@ mod tests {
             );
         }
 
-        // Phase `queue_occurrences_are_canonical_and_duplicate_safe`.
         {
             let mut ctx = MusicResourceCtx::default();
             ctx.playback.queue = vec!["track-1".into(), "track-1".into(), "track-2".into()];
@@ -1866,7 +1893,6 @@ mod tests {
             );
         }
 
-        // Phase `resource_arguments_refuse_wrong_kind_and_stale_tracks`.
         {
             let (mut app, _doc) = seeded();
             let effects = MusicEffect::specs();
@@ -1897,7 +1923,6 @@ mod tests {
             );
         }
 
-        // Phase `stale_library_edits_are_refused`.
         {
             let mut library = library();
             let gone = Library::playlist_paths("gone").tracks.insert_as(
@@ -1920,7 +1945,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn playlist_membership_rows_resolve_lazily_and_edits_converge() {
-        // Phase `late_playlist_membership_resolves_lazily_with_canonical_actions`.
         {
             let playlist = PlaylistResource {
                 id: "playlist:日本語".into(),
@@ -1982,7 +2006,6 @@ mod tests {
             );
         }
 
-        // Phase `stale_membership_remove_is_refused_and_a_move_lands_once`.
         {
             let mut library = library();
             let playlist = first_playlist(&library);
@@ -2001,7 +2024,6 @@ mod tests {
             assert_eq!(first_playlist(&library).track_ids()[1], track);
         }
 
-        // Phase `divergent_playlist_edits_converge_by_stable_membership`.
         {
             let mut a = library();
             let mut b = a.fork();

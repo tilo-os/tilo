@@ -67,7 +67,7 @@ case "$arch" in
   aarch64) buildroot_var=KERNEL_BUILDROOT_AARCH64_REF ;;
 esac
 KERNEL_BUILDROOT_REF="${KERNEL_BUILDROOT_REF:-$(sed -n "s/^$buildroot_var=//p" "$repo/os/kernel-buildroot-snapshot.env")}"
-[ -n "$KERNEL_BUILDROOT_REF" ] || die "os/kernel-buildroot-snapshot.env has no $buildroot_var; run the build-buildroots workflow"
+[ -n "$KERNEL_BUILDROOT_REF" ] || die "os/kernel-buildroot-snapshot.env has no $buildroot_var; run t test image-kernel-buildroot-$arch"
 
 mkdir -p "$cache_root"
 started=$(date +%s)

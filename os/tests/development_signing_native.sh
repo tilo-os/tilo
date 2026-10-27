@@ -25,7 +25,7 @@ case ${1:-} in
   context)
     context=${2:?usage: development_signing_native.sh context OUT}
     rm -rf "$context"
-    mkdir -p "$context/dev" "$context/91tilo-rollback"
+    mkdir -p "$context/dev" "$context/91tilo-rollback" "$context/tools-tests"
     cp os/dev/{verify-development-source.py,development_boot.py,development_prediction.py,development-trust.py,install-public-trust.py,hardware_profile.py,development-signer.py,setup-development-signer.py,verify-authenticode-envelope.py,verify-development-loader.py,sign-development-rootfs.py,private_disk_image.py} "$context/dev/"
     cp os/dev/{retain-development-rootfs.py,import-development-rootfs.py,rebind-development-trust.py,initramfs-trust.py,complete-initramfs-rebind.py,rebind-development-rootfs.py} "$context/dev/"
     cp os/dev/{audit-rootfs-layers.py,installed_material_audit.py} "$context/dev/"
@@ -33,11 +33,12 @@ case ${1:-} in
     cp os/tests/{test_retain_development_rootfs.py,test_import_development_rootfs.py,test_rebind_development_trust.py,test_initramfs_trust.py,initramfs_trust_native.py,test_complete_initramfs_rebind.py,test_rebind_development_rootfs.py,test_development_trust.py,development_retention_native.py,tls_registry_fixture.py,test_tls_registry_fixture.py} "$context/"
     cp os/tests/{test_rootfs_layer_audit.py,development_layer_audit_native.py,development_rebind_native.py} "$context/"
     cp os/Containerfile.development-loader "$context/"
+    cp tools/tests/hang.py "$context/tools-tests/"
     cp -a os/usr/lib/dracut/modules.d/91tilo-rollback/. "$context/91tilo-rollback/"
     tools=${TMPDIR:-/tmp}/development-signing-tools
     mkdir -p "$tools"
-    RUNNER_TEMP=$tools GITHUB_PATH=$tools/path TILO_GITHUB_ASSET_CACHE=$tools/assets \
-      TILO_ASSET_STORE= bash os/dev/install-cached-cosign.sh >/dev/null
+    RUNNER_TEMP=$tools GITHUB_PATH=$tools/path TILO_GITHUB_ASSET_CACHE=/target/signing-tools \
+      TILO_ASSET_OFFLINE=1 bash os/dev/install-cached-cosign.sh >/dev/null
     cp "$tools/tilo-cosign-tools/cosign" "$context/cosign"
     cargo build --locked --release -p tilo-crypto
     cp "${CARGO_TARGET_DIR:-target}/release/tilo-crypto" "$context/tilo-crypto"

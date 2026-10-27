@@ -53,9 +53,6 @@ impl ExternalModerationOperation {
 
     /// Check structural bounds before approval or signing. The receiving server
     /// additionally checks its own destination and current wall clock.
-    ///
-    /// # Errors
-    /// Returns the invalid field's constraint.
     pub fn validate(&self) -> Result<(), String> {
         let url = &self.destination.base_url;
         let authority = url
@@ -183,9 +180,6 @@ pub(crate) fn binding_message(
 /// Sign an approved operation with a purpose- and destination-specific key.
 /// Only this fixed credential binding is signed by the identity key; arbitrary
 /// action payloads are never signed in the identity key's protocol domain.
-///
-/// # Errors
-/// Returns validation or canonical encoding errors.
 pub fn sign_external_moderation(
     operation: &ExternalModerationOperation,
     identity: &SigningKey,

@@ -76,15 +76,11 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
 }
 
 /// Canonical signing bytes shared by the publisher and consumer.
-/// # Errors
-/// Returns a serialization error for an unencodable payload.
 pub fn catalog_signing_bytes(payload: &CatalogPayload) -> Result<Vec<u8>, String> {
     signing_bytes_for_domain(payload, CATALOG_SIGNATURE_DOMAIN)
 }
 
 /// Signing bytes for the explicit developer channel.
-/// # Errors
-/// Returns serialization errors.
 pub fn developer_signing_bytes(payload: &CatalogPayload) -> Result<Vec<u8>, String> {
     signing_bytes_for_domain(payload, DEVELOPER_SIGNATURE_DOMAIN)
 }

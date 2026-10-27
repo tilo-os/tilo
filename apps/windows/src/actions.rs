@@ -424,7 +424,6 @@ mod tests {
 
     #[test]
     fn every_row_offers_effects_with_honest_contracts() {
-        // Case `every_catalogue_app_can_launch_and_no_row_edits_the_document`.
         {
             let res = sample_rows();
             let flattened = tilo_actions::flatten(&res);
@@ -443,7 +442,6 @@ mod tests {
                 action.id == "delete-data" && action.contract.risk == RiskLevel::Destructive
             }));
         }
-        // Case `every_background_operation_declares_a_job_result`.
         {
             let resources = sample_rows();
             for action in tilo_actions::flatten(&resources)
@@ -464,7 +462,6 @@ mod tests {
 
     #[test]
     fn windows_resources_form_an_honest_hierarchy() {
-        // Case `rows_form_an_appliance_application_hierarchy`.
         {
             let rows = sample_rows();
             let appliance = rows
@@ -493,7 +490,6 @@ mod tests {
                 3
             );
         }
-        // Case `private_capsules_are_hierarchical_resources_with_recovery_actions`.
         {
             let rows = sample_rows();
             let reader = rows
@@ -513,7 +509,6 @@ mod tests {
             );
             assert!(prefix.actions.iter().any(|action| action.id == "uninstall"));
         }
-        // Case `unavailable_guest_file_bridge_is_not_advertised_as_actionable`.
         {
             let rows = sample_rows();
             let studio = rows

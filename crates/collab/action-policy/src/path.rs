@@ -15,13 +15,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub enum Level {
     /// A room (a workspace, a shared space).
     Room,
-    /// An app published in the room.
     App,
     /// A resource kind the app publishes (`snippets.library`).
     Kind,
     /// One resource (record) of that kind.
     Resource,
-    /// One item of a collection.
     Item,
     /// A field, possibly nested; field edits are actions under it.
     Field,
@@ -73,12 +71,9 @@ impl Level {
     }
 }
 
-/// One segment of a path.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Segment {
-    /// A named node at a level.
     Name(Level, String),
-    /// Every node at a level.
     Any(Level),
     /// Any number of segments, including none.
     Rest,
@@ -276,7 +271,6 @@ impl TreePath {
         path
     }
 
-    /// The room this path is in.
     #[must_use]
     pub fn room_id(&self) -> Option<&str> {
         self.id_at(Level::Room)
@@ -313,7 +307,6 @@ impl TreePath {
         self.0.len()
     }
 
-    /// Whether the path is the root.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()

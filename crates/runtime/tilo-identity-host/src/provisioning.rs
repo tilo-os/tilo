@@ -181,16 +181,206 @@ impl DeviceClass {
         }
     }
 
-    /// A foreign device never keeps a native certificate it finds on disk.
-    /// Native provisioning keeps whatever verified certificate exists.
-    fn must_reissue(self, cert: &DeviceCert) -> bool {
-        match self {
+    /// A foreign device never keeps a native certificate it finds on disk,
+    /// and a throwaway never one that does not expire. Any certificate that
+    /// expires is reissued once it is due for renewal ([`renewal_due_at`]):
+    /// an expiring certificate is never how a device loses its rooms.
+    fn must_reissue(self, cert: &DeviceCert, now_ns: u64) -> bool {
+        let due = renewal_due_at(cert).is_some_and(|due| now_ns >= due);
+        due || match self {
             Self::Foreign => !cert.capabilities.foreign,
             Self::Native => false,
             #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
             Self::Throwaway => cert.expires_at_ns.is_none(),
         }
     }
+
+    /// The class of the identity in `identity_dir` provisioned as `class`:
+    /// a throwaway test identity stays one whoever provisions it again, so
+    /// its renewed certificate expires as the first did.
+    fn of(identity_dir: &Path, class: Self) -> Self {
+        #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+        if class == Self::Native && is_throwaway_test_identity(identity_dir) {
+            return Self::Throwaway;
+        }
+        let _ = identity_dir;
+        class
+    }
+}
+
+/// What a renewal can fail on changing: this device's identity custody
+/// becoming available, the network coming back, a relay or host becoming
+/// reachable again, room to write coming back. A renewal that failed waits
+/// for one of them, not for a clock ([`keep_device_certificates_renewed`]).
+pub struct RenewalCauses {
+    changes: std::sync::Mutex<u64>,
+    changed: std::sync::Condvar,
+}
+
+impl RenewalCauses {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            changes: std::sync::Mutex::new(0),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    /// Note that one of them changed.
+    pub fn changed(&self) {
+        let mut changes = self
+            .changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *changes = changes.wrapping_add(1);
+        drop(changes);
+        self.changed.notify_all();
+    }
+
+    /// The changes so far: [`Self::wait_past`] waits for one after them.
+    #[must_use]
+    pub fn seen(&self) -> u64 {
+        *self
+            .changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Wait for a change after `seen`, or until `timeout` passes when there
+    /// is one. Answers whether there was a change. A change noted between
+    /// [`Self::seen`] and this wait ends it at once.
+    pub fn wait_past(&self, seen: u64, timeout: Option<std::time::Duration>) -> bool {
+        let deadline = timeout.map(|timeout| std::time::Instant::now().checked_add(timeout));
+        let mut changes = self
+            .changes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *changes == seen {
+            changes = match deadline {
+                None | Some(None) => self
+                    .changed
+                    .wait(changes)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                Some(Some(deadline)) => {
+                    let left = deadline.saturating_duration_since(std::time::Instant::now());
+                    if left.is_zero() {
+                        return false;
+                    }
+                    self.changed
+                        .wait_timeout(changes, left)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0
+                }
+            };
+        }
+        drop(changes);
+        true
+    }
+}
+
+impl Default for RenewalCauses {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// This device's: the session notes changes here, and its renewal loop
+/// waits on them.
+pub static RENEWAL_CAUSES: RenewalCauses = RenewalCauses::new();
+
+/// The time and the changes a renewal loop runs by
+/// ([`keep_device_certificates_renewed`]).
+pub trait RenewalClock {
+    /// Now, in nanoseconds since the Unix epoch.
+    fn now_ns(&self) -> u64;
+    /// The changes so far to what a renewal can fail on
+    /// ([`RenewalCauses::seen`]).
+    fn changes(&self) -> u64;
+    /// Wait `duration`, or as long as it takes with `None`, unless one of
+    /// those changes after `seen` first. Answers whether to go on.
+    fn wait(&self, duration: Option<std::time::Duration>, seen: u64) -> bool;
+}
+
+/// Keep this device's expiring certificates for the identity in
+/// `identity_dir` renewed while the device runs: wait until the next is due
+/// ([`next_device_certificate_renewal`]), renew it through `renew` (the
+/// provisioning the session started with, which reissues what is due), and
+/// wait for the next. Returns once none of them expires, or when `clock`
+/// says to stop.
+///
+/// A renewal that fails is tried again when something it can fail on
+/// changes ([`RenewalCauses`]), never on a timer. Any such change also ends
+/// the wait for the next renewal early, to look at the wall clock again: a
+/// device that slept past the time a renewal was due renews when it wakes
+/// and its network comes back.
+pub fn keep_device_certificates_renewed(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    clock: &dyn RenewalClock,
+    mut renew: impl FnMut() -> io::Result<()>,
+) {
+    loop {
+        let Some(due) = next_device_certificate_renewal(identity_dir, paths) else {
+            return;
+        };
+        let seen = clock.changes();
+        let now = clock.now_ns();
+        let wait = if due > now {
+            Some(std::time::Duration::from_nanos(due.saturating_sub(now)))
+        } else {
+            match renew() {
+                Ok(())
+                    if next_device_certificate_renewal(identity_dir, paths)
+                        .is_some_and(|next| next <= now) =>
+                {
+                    tracing::warn!("a renewed device certificate is due again at once");
+                    None
+                }
+                Ok(()) => {
+                    tracing::info!("renewed this device's certificate before it expires");
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "could not renew this device's certificate; trying again when what it failed on changes"
+                    );
+                    None
+                }
+            }
+        };
+        if !clock.wait(wait, seen) {
+            return;
+        }
+    }
+}
+
+/// When `cert` is due for renewal: halfway through its lifetime. `None` for
+/// a certificate that never expires.
+#[must_use]
+pub fn renewal_due_at(cert: &DeviceCert) -> Option<u64> {
+    let expires = cert.expires_at_ns?;
+    let lifetime = expires.saturating_sub(cert.issued_at_ns);
+    Some(cert.issued_at_ns.saturating_add(lifetime / 2))
+}
+
+/// When the next of this device's certificates for the identity in
+/// `identity_dir` is due for renewal ([`renewal_due_at`]): the device's own
+/// certificate and the one keyed by the identity's root. `None` when none
+/// of them expires, or none can be read.
+#[must_use]
+pub fn next_device_certificate_renewal(identity_dir: &Path, paths: &IdentityPaths) -> Option<u64> {
+    let mut certificates = vec![paths.device_cert.clone()];
+    if let Some(record) = runtime_identity::resolve_active_identity(identity_dir)
+        && let Ok(identity) = runtime_identity::load_from_path(record)
+    {
+        certificates.push(paths.device_cert_for_user(&identity.group_public_key()));
+    }
+    certificates
+        .iter()
+        .filter_map(|path| persist::read_device_cert(path).ok())
+        .filter_map(|cert| renewal_due_at(&cert))
+        .min()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -303,7 +493,7 @@ fn ensure_primary_identity_in_context(
     let record = IdentityRecord::from_threshold_identity(
         &identity,
         &display_name,
-        [128, 128, 128],
+        runtime_identity::DEFAULT_AVATAR_COLOR,
         std::time::SystemTime::now(),
     )
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -619,7 +809,7 @@ pub fn enroll_from_local_identity(
     if !identity.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "threshold identity requires the multi-device certificate ceremony",
+            crate::certification_ceremony::cannot_sign_alone(),
         ));
     }
     let user_public_key = identity.group_public_key();
@@ -1017,6 +1207,39 @@ pub fn prepare_identity_directory(identity_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// This device's certificate, when it verifies but the clock's reading at
+/// `now_ns` is outside its validity: the identity is intact and the clock is
+/// wrong. `None` when the certificate is valid now, missing, or refused for
+/// any other reason (which the identity checks report themselves).
+#[must_use]
+pub fn device_certificate_clock_refusal(
+    paths: &IdentityPaths,
+    now_ns: u64,
+) -> Option<tilo_user_identity::CertificateClockError> {
+    let cert = persist::read_device_cert(&paths.device_cert).ok()?;
+    let error = tilo_user_identity::verify_device_cert_at(&cert, now_ns).err()?;
+    tilo_user_identity::CertificateClockError::of(&cert, now_ns, &error)
+}
+
+/// Why an enrolled device's identity cannot be used. A certificate refused
+/// for the clock's reading alone keeps its
+/// [`tilo_user_identity::CertificateClockError`], so startup tells a wrong
+/// clock apart from a broken identity and never offers to replace one that
+/// is intact.
+fn joined_device_unusable(error: persist::PersistError) -> io::Error {
+    match error {
+        persist::PersistError::Io(error)
+            if tilo_user_identity::CertificateClockError::in_io(&error).is_some() =>
+        {
+            error
+        }
+        error => io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("pre-enrolled device identity is not usable: {error}"),
+        ),
+    }
+}
+
 fn ensure_collaboration_identity_in_context(
     identity_dir: &Path,
     paths: &IdentityPaths,
@@ -1026,16 +1249,25 @@ fn ensure_collaboration_identity_in_context(
     approved_label: Option<&str>,
 ) -> Result<ProvisionOutcome, io::Error> {
     prepare_identity_directory(identity_dir)?;
+    let class = DeviceClass::of(identity_dir, class);
 
-    match persist::joined_device_is_ready(paths, tilo_clock::unix_now_ns()) {
-        Ok(true) => return Ok(ProvisionOutcome::Existing),
-        Ok(false) => {}
-        Err(error) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("pre-enrolled device identity is not usable: {error}"),
-            ));
+    let now_ns = tilo_clock::unix_now_ns();
+    match persist::joined_device_is_ready(paths, now_ns) {
+        Ok(true) => {
+            // `Existing` promises a record this account can resolve. The
+            // enrollment (person's key, device key, certificate) lives in the
+            // system identity tree, the public record in this account's
+            // config, and the two can part: a login account that never ran
+            // the join, or a config tree reset while the enrollment
+            // survived. Take the person up again here rather than report an
+            // identity that nothing can read.
+            if runtime_identity::resolve_active_identity(identity_dir).is_none() {
+                complete_enrolled_device(identity_dir, paths, now_ns)?;
+            }
+            return Ok(ProvisionOutcome::Existing);
         }
+        Ok(false) => {}
+        Err(error) => return Err(joined_device_unusable(error)),
     }
 
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
@@ -1054,7 +1286,7 @@ fn ensure_collaboration_identity_in_context(
     if !signer.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "threshold identity requires the multi-device certificate ceremony",
+            crate::certification_ceremony::cannot_sign_alone(),
         ));
     }
     paths.ensure_directories()?;
@@ -1065,54 +1297,15 @@ fn ensure_collaboration_identity_in_context(
     // identity-keyed certificate for the same device key.
     let device_owner = claim_device_owner(&paths.user_pubkey, &root_public)?;
 
-    let mut device_label = approved_label
-        .unwrap_or(if device_owner {
-            "Primary device"
-        } else {
-            "Shared device"
-        })
-        .to_owned();
-    let (device, _) =
-        persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
-    if device_owner && paths.device_cert.exists() {
-        let cert = persist::read_device_cert(&paths.device_cert)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        tilo_user_identity::verify_device_cert(&cert)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        if cert.user_public_key != root_public
-            || cert.device_public_key != device.verifying_key().to_bytes()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "device certificate does not match the provisioned identity keys",
-            ));
-        }
-        device_label.clone_from(&cert.device_label);
-        if class.must_reissue(&cert) {
-            let cert = issue_device_certificate(
-                &signer,
-                cert.device_public_key,
-                &cert.device_label,
-                class,
-            )?;
-            persist::write_device_cert(&paths.device_cert, &cert)
-                .map_err(|e| io::Error::other(e.to_string()))?;
-        }
-    } else if device_owner {
-        let cert = issue_device_certificate(
-            &signer,
-            device.verifying_key().to_bytes(),
-            &device_label,
-            class,
-        )?;
-        persist::write_device_cert(&paths.device_cert, &cert)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-    }
+    let device_label = approved_label.unwrap_or(if device_owner {
+        "Primary device"
+    } else {
+        "Shared device"
+    });
 
-    // Keep an identity-keyed copy as well. A device has one keypair, but it
-    // needs a separate root-signed certificate for every identity it may
-    // present in a workspace.
-    ensure_device_certificate_for_identity(&signer, paths, &device_label, class)?;
+    // The device's certificate for this identity: the owner's is also the
+    // device's system-facing certificate, one certificate in both places.
+    ensure_device_certificate_for_identity(&signer, paths, device_label, class)?;
 
     // Register the primary record in the multi-identity registry. A registry
     // write failure is a provisioning failure: silently creating a key that no
@@ -1231,7 +1424,7 @@ fn read_claimed_owner(path: &Path) -> io::Result<[u8; 32]> {
 /// Whether the identity this account signs in with owns the device.
 ///
 /// The owner is the identity that claimed the machine at its first login
-/// ([`claim_device_owner`]) and holds the device's primary certificate; the
+/// (`claim_device_owner`) and holds the device's primary certificate; the
 /// account that signs in with it is the device admin. Another account on the
 /// same machine has its own identity and a shared-device certificate, and an
 /// account that has not finished first login has no identity at all: both
@@ -1288,6 +1481,16 @@ pub fn ensure_device_certificate_for_record(
     ensure_device_certificate_for_identity(&identity, paths, "This device", DeviceClass::Native)
 }
 
+/// Ensure this device holds its certificate for `identity`, labelled
+/// `device_label` when it is issued now. A device presents one certificate
+/// per identity: for the identity that owns the device it is written both
+/// as the device's system-facing certificate (`device_cert`) and as the
+/// identity-keyed one, the same bytes, so the network's custody and the
+/// broker's trusted device are the same certificate. A certificate already
+/// held for the device's key is kept (the system-facing one first) and
+/// written wherever the other copy differs; a new one is issued only when
+/// none is held or the held one is due for renewal, and then written to
+/// every place at once.
 fn ensure_device_certificate_for_identity(
     identity: &runtime_identity::SigningIdentity,
     paths: &IdentityPaths,
@@ -1296,32 +1499,53 @@ fn ensure_device_certificate_for_identity(
 ) -> Result<PathBuf, io::Error> {
     let (device, _) =
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
+    let device_public_key = device.verifying_key().to_bytes();
     let user_public_key = identity.group_public_key();
     let cert_path = paths.device_cert_for_user(&user_public_key);
-    let label = if cert_path.exists() {
-        let cert = persist::read_device_cert(&cert_path)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        tilo_user_identity::verify_device_cert(&cert)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        if cert.user_public_key != user_public_key
-            || cert.device_public_key != device.verifying_key().to_bytes()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "identity-specific device certificate does not match its keys",
-            ));
+    let owns_device =
+        read_claimed_owner(&paths.user_pubkey).is_ok_and(|owner| owner == user_public_key);
+    let mut places = Vec::with_capacity(2);
+    if owns_device {
+        places.push((
+            paths.device_cert.clone(),
+            "device certificate does not match the provisioned identity keys",
+        ));
+    }
+    places.push((
+        cert_path.clone(),
+        "identity-specific device certificate does not match its keys",
+    ));
+    let mut held = Vec::with_capacity(places.len());
+    for (path, mismatch) in places {
+        let cert = if path.exists() {
+            let cert = persist::read_device_cert(&path)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+            tilo_user_identity::verify_device_cert(&cert)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+            if cert.user_public_key != user_public_key
+                || cert.device_public_key != device_public_key
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, mismatch));
+            }
+            Some(cert)
+        } else {
+            None
+        };
+        held.push((path, cert));
+    }
+    let current = held.iter().find_map(|(_, cert)| cert.clone());
+    let cert = match current {
+        Some(cert) if !class.must_reissue(&cert, tilo_clock::unix_now_ns()) => cert,
+        Some(cert) => {
+            issue_device_certificate(identity, device_public_key, &cert.device_label, class)?
         }
-        if !class.must_reissue(&cert) {
-            return Ok(cert_path);
-        }
-        cert.device_label
-    } else {
-        device_label.to_owned()
+        None => issue_device_certificate(identity, device_public_key, device_label, class)?,
     };
-
-    let cert =
-        issue_device_certificate(identity, device.verifying_key().to_bytes(), &label, class)?;
-    persist::write_device_cert(&cert_path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
+    for (path, existing) in &held {
+        if existing.as_ref() != Some(&cert) {
+            persist::write_device_cert(path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
+        }
+    }
     Ok(cert_path)
 }
 
@@ -1331,7 +1555,22 @@ fn issue_device_certificate(
     device_label: &str,
     class: DeviceClass,
 ) -> Result<DeviceCert, io::Error> {
-    let issued_at_ns = tilo_clock::unix_now_ns();
+    issue_device_certificate_at(
+        identity,
+        device_public_key,
+        device_label,
+        class,
+        tilo_clock::unix_now_ns(),
+    )
+}
+
+fn issue_device_certificate_at(
+    identity: &runtime_identity::SigningIdentity,
+    device_public_key: [u8; 32],
+    device_label: &str,
+    class: DeviceClass,
+    issued_at_ns: u64,
+) -> Result<DeviceCert, io::Error> {
     let expires_at_ns = match class {
         DeviceClass::Native | DeviceClass::Foreign => None,
         #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
@@ -1399,12 +1638,7 @@ pub fn verify_collaboration_identity(
     }
     // A joined device holds no share of the identity's key: its record only
     // names the identity, and its certificate binds this device's key to it.
-    let joined = persist::joined_device_is_ready(paths, now_ns).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("pre-enrolled device identity is not usable: {error}"),
-        )
-    })?;
+    let joined = persist::joined_device_is_ready(paths, now_ns).map_err(joined_device_unusable)?;
     if joined {
         let metadata = runtime_identity::load_metadata_from_path(&primary_path)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -1423,7 +1657,7 @@ pub fn verify_collaboration_identity(
     if !identity.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "threshold identity requires the multi-device certificate ceremony",
+            crate::certification_ceremony::cannot_sign_alone(),
         ));
     }
     let root_public = persist::read_public_key(&paths.user_pubkey)
@@ -1431,8 +1665,12 @@ pub fn verify_collaboration_identity(
     let device = persist::load_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
     let cert = persist::read_device_cert(&paths.device_cert)
         .map_err(|e| io::Error::other(e.to_string()))?;
-    tilo_user_identity::verify_device_cert_at(&cert, now_ns)
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    tilo_user_identity::verify_device_cert_at(&cert, now_ns).map_err(|error| {
+        tilo_user_identity::CertificateClockError::of(&cert, now_ns, &error).map_or_else(
+            || io::Error::other(error.to_string()),
+            tilo_user_identity::CertificateClockError::into_io,
+        )
+    })?;
 
     let expected_root = identity.group_public_key();
     if root_public != expected_root || cert.user_public_key != expected_root {
@@ -1511,10 +1749,52 @@ fn protect_identity_record_at(
 }
 
 #[cfg(test)]
+mod renewal_tests;
+
+#[cfg(test)]
+mod one_cert_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     const FILES: IdentityStorage = IdentityStorage::Files;
+
+    #[test]
+    fn a_device_certificate_the_clock_reads_before_is_a_clock_refusal_and_nothing_else() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(temp.path());
+        assert_eq!(
+            device_certificate_clock_refusal(&paths, 10),
+            None,
+            "no certificate"
+        );
+        let root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+
+        let refusal = device_certificate_clock_refusal(&paths, 500).expect("the clock is behind");
+        assert_eq!(refusal.valid_at_ns(), Some(1_000));
+        assert_eq!(device_certificate_clock_refusal(&paths, 1_000), None);
+
+        cert.device_label.push_str(" (tampered)");
+        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
+        assert_eq!(
+            device_certificate_clock_refusal(&paths, 500),
+            None,
+            "a forged certificate is not a clock problem"
+        );
+    }
 
     #[test]
     fn installer_device_label_is_signed_once_and_existing_custody_is_unchanged() {
@@ -1612,11 +1892,30 @@ mod tests {
         )
         .unwrap();
 
+        // Every consumer resolves the person through the account's active
+        // record: an `Existing` with nothing to resolve strands the session
+        // in recovery although the enrollment is sound.
+        let held_by_account = || {
+            let record = runtime_identity::resolve_active_identity(&identity_dir)
+                .expect("the joined person has a record the account resolves");
+            runtime_identity::load_metadata_from_path(&record)
+                .unwrap()
+                .group_public_key
+        };
         let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
         assert_eq!(outcome, ProvisionOutcome::Existing);
+        assert_eq!(held_by_account(), root.verifying_key().to_bytes());
         assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
         assert!(!paths.user_privkey.exists());
         assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
+
+        // The account's config is reset while the system-wide enrollment
+        // survives: the person is taken up again, never replaced.
+        fs::remove_dir_all(&identity_dir).unwrap();
+        let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
+        assert_eq!(outcome, ProvisionOutcome::Existing);
+        assert_eq!(held_by_account(), root.verifying_key().to_bytes());
+        assert!(!paths.user_privkey.exists());
     }
 
     /// A device approved from a nearby device: a public-only record selected

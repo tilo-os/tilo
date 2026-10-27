@@ -144,7 +144,6 @@ mod tests {
     /// Placeholder recognition, splitting, unclosed text, editor marking and palette role.
     #[test]
     fn placeholders_are_highlighted_in_every_language() {
-        // Case `placeholder_is_recognised_in_any_language`.
         {
             for lang in Language::ALL {
                 let spans = line("echo ${name} done", lang);
@@ -154,20 +153,17 @@ mod tests {
             }
         }
 
-        // Case `placeholder_splits_the_string_it_sits_in`.
         {
             let spans = line("git commit -m \"${message} now\"", Language::Git);
             assert!(has(&spans, PLACEHOLDER, "${message}"));
             assert!(has(&spans, TokenKind::StringLit, " now\""));
         }
 
-        // Case `unclosed_placeholder_is_text`.
         {
             assert!(placeholders("echo ${name").is_empty());
             assert_eq!(placeholders("${a}${b}"), [0..4, 4..8]);
         }
 
-        // Case `editor_highlighter_marks_placeholders`.
         {
             let hl = EditorHighlighter::new(Language::Shell);
             let spans = hl.spans("echo ${name}", 0).spans;
@@ -178,7 +174,6 @@ mod tests {
             );
         }
 
-        // Case `placeholder_uses_the_palette_markup_role`.
         {
             use ui::ColorCompat;
             let theme = ui::theme::Theme::dark();
@@ -193,7 +188,6 @@ mod tests {
     /// Rust, comments, SQL, TOML/Dockerfile, multi-line constructs and plain text.
     #[test]
     fn language_grammars_highlight_their_tokens() {
-        // Case `rust_keyword_number_and_string`.
         {
             let spans = line("let x = 42; let s = \"hi\";", Language::Rust);
             assert_eq!(spans[0].kind, TokenKind::Keyword);
@@ -202,21 +196,18 @@ mod tests {
             assert!(has(&spans, TokenKind::StringLit, "\"hi\""));
         }
 
-        // Case `comment_line_is_one_span`.
         {
             let spans = line("# a shell comment", Language::Shell);
             assert_eq!(spans.len(), 1);
             assert_eq!(spans[0].kind, TokenKind::Comment);
         }
 
-        // Case `sql_keywords_and_string`.
         {
             let spans = line("SELECT * FROM users WHERE name = 'x'", Language::Sql);
             assert!(has(&spans, TokenKind::Keyword, "SELECT"));
             assert!(has(&spans, TokenKind::StringLit, "'x'"));
         }
 
-        // Case `toml_and_dockerfile_keep_highlighting`.
         {
             let spans = line("name = \"tilo\" # note", Language::Toml);
             assert!(has(&spans, TokenKind::StringLit, "\"tilo\""));
@@ -225,13 +216,11 @@ mod tests {
             assert!(has(&spans, TokenKind::Keyword, "FROM"));
         }
 
-        // Case `multi_line_constructs_carry_between_lines`.
         {
             let lines: Vec<_> = highlight_lines("/* open\nstill\n*/", Language::Rust).collect();
             assert!(lines[1].iter().all(|s| s.kind == TokenKind::Comment));
         }
 
-        // Case `plain_text_is_one_run`.
         {
             let spans = line("a b c", Language::PlainText);
             assert_eq!(spans.len(), 1);

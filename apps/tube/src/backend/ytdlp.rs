@@ -347,8 +347,6 @@ fn playback_source_from_print(v: &Value) -> Option<PlaybackSource> {
     })
 }
 
-// --- small JSON accessors ---------------------------------------------------
-
 fn str_field(v: &Value, key: &str) -> String {
     v.get(key)
         .and_then(|s| s.as_str())
@@ -424,7 +422,6 @@ mod date_tests {
 
     #[test]
     fn upload_dates_read_as_relative_or_absolute() {
-        // Case `relative_ages_read_naturally`.
         {
             assert_eq!(age_label(0, "x"), "today");
             assert_eq!(age_label(1, "x"), "yesterday");
@@ -436,13 +433,11 @@ mod date_tests {
             assert_eq!(age_label(800, "Nov 3, 2023"), "Nov 3, 2023");
             assert_eq!(age_label(-5, "Nov 3, 2023"), "Nov 3, 2023");
         }
-        // Case `full_yyyymmdd_absolute_beyond_a_year`.
         {
             // A date well over a year old renders as a tidy absolute date, never a
             // raw ISO string.
             assert_eq!(humanize_date("20200704"), "Jul 4, 2020");
         }
-        // Case `non_date_passes_through`.
         {
             assert_eq!(humanize_date("3 days ago"), "3 days ago");
             assert_eq!(humanize_date(""), "");
@@ -608,15 +603,21 @@ impl YtBackend for YtDlpBackend {
         Ok(BackendResult::Videos(videos_from_entries(&v, "Trending")))
     }
 
-    fn resolve_playback_source(&self, id: &str) -> Result<PlaybackSource, BackendError> {
+    fn resolve_playback_source(
+        &self,
+        id: &str,
+        max_height: Option<u32>,
+    ) -> Result<PlaybackSource, BackendError> {
         // Let yt-dlp's format selector pick a single playable stream — a
         // progressive muxed https format (audio+video in one URL) when available,
         // else the best mp4/whatever — so only that one format's `nsig` is
-        // deciphered (~2s). GStreamer negotiates the codec regardless.
-        const SELECTOR: &str = "best[protocol^=https][vcodec!=none][acodec!=none]/best[ext=mp4][protocol^=https]/best[protocol^=https]/best";
+        // deciphered (~2s). GStreamer negotiates the codec regardless. The
+        // height the person chose caps the preferred formats first, then falls
+        // back to anything playable rather than refusing to play.
+        let selector = format_selector(max_height);
         let url = format!("https://www.youtube.com/watch?v={id}");
         let v = self.run_print(
-            Some(SELECTOR),
+            Some(&selector),
             &[
                 "url",
                 "width",
@@ -639,9 +640,43 @@ impl YtBackend for YtDlpBackend {
     }
 }
 
+/// The yt-dlp format selector for a request no larger than `max_height`
+/// (`None` asks for the best available). A format under the cap that carries
+/// picture and sound in one file comes first, then the same cap without the
+/// muxed requirement, then anything playable at all: a person who chose 480p
+/// on a metered connection must not silently get 720p, and a video with no
+/// small format must still play.
+fn format_selector(max_height: Option<u32>) -> String {
+    const MUXED: &str = "best[protocol^=https][vcodec!=none][acodec!=none]";
+    const FALLBACK: &str = "best[protocol^=https][vcodec!=none][acodec!=none]/best[ext=mp4][protocol^=https]/best[protocol^=https]/best";
+    match max_height {
+        None => FALLBACK.to_string(),
+        Some(height) => format!(
+            "{MUXED}[height<={height}]/best[ext=mp4][protocol^=https][height<={height}]/best[height<={height}]/{FALLBACK}"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quality_choice_caps_the_formats_before_anything_else() {
+        assert_eq!(
+            format_selector(None),
+            "best[protocol^=https][vcodec!=none][acodec!=none]/best[ext=mp4][protocol^=https]/best[protocol^=https]/best"
+        );
+        let capped = format_selector(Some(480));
+        assert!(
+            capped.starts_with("best[protocol^=https][vcodec!=none][acodec!=none][height<=480]/"),
+            "the capped muxed format is tried first: {capped}"
+        );
+        assert!(
+            capped.ends_with("best[protocol^=https]/best"),
+            "a source with nothing that small still plays: {capped}"
+        );
+    }
 
     #[test]
     fn search_entries_map_to_videos_and_channel_images() {
@@ -670,7 +705,6 @@ mod tests {
             assert_eq!(v.channel_id, "UCz75RVbH8q2jdBJ4SnwuZZQ");
             assert_eq!(v.duration, 465);
             assert_eq!(v.views, 10_815_517);
-            // Largest thumbnail is chosen.
             assert_eq!(
                 v.thumbnail_url,
                 "https://i.ytimg.com/vi/WhWc3b3KhnY/hq720.jpg"
@@ -733,7 +767,6 @@ mod tests {
             assert_eq!(banner, "https://x/banner", "widest → banner");
             assert_eq!(avatar, "https://x/avatar", "square → avatar");
         }
-        // Case `channel_url_normalises_id_handle_and_url`.
         {
             assert_eq!(
                 YtDlpBackend::channel_videos_url("UCabc"),

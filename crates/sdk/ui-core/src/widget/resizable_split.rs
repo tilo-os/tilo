@@ -143,6 +143,10 @@ pub struct SplitHandle {
     label: String,
     test_id: Option<String>,
     layout_dirty: bool,
+    /// The most the first pane can use, when the host knows it: past it
+    /// the divider stands at it and the rest goes to the second pane,
+    /// while the ratio the person chose is kept for when it fits again.
+    first_max: Option<f64>,
 }
 
 impl SplitHandle {
@@ -161,6 +165,7 @@ impl SplitHandle {
             label: "Resize panes".to_string(),
             test_id: None,
             layout_dirty: false,
+            first_max: None,
         }
     }
 
@@ -168,6 +173,14 @@ impl SplitHandle {
     #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = label.into();
+        self
+    }
+
+    /// Give the divider a stable identity: assistive technology and agents
+    /// address it by it ([`Widget::perform_semantic_action`]).
+    #[must_use]
+    pub fn with_test_id(mut self, id: impl Into<String>) -> Self {
+        self.test_id = Some(id.into());
         self
     }
 
@@ -188,6 +201,43 @@ impl SplitHandle {
         self.place();
     }
 
+    /// The most the first pane can use (a picture that already fills its
+    /// width); `None`: all the ratio gives it. The ratio itself is kept.
+    pub fn set_first_max(&mut self, max: Option<f64>) {
+        self.first_max = max.map(|max| max.max(0.0));
+        self.place();
+    }
+
+    /// The first pane's length on the split's extent `total`: the ratio's,
+    /// up to what the pane can use.
+    fn first_extent(&self, total: f64) -> f64 {
+        let extent = self.ratio.first_extent(total);
+        self.first_max.map_or(extent, |max| extent.min(max))
+    }
+
+    /// The share the first pane shows, which is the ratio's unless the
+    /// pane can use less.
+    fn shown_position(&self) -> f32 {
+        let total = match self.orientation {
+            SplitOrientation::Horizontal => self.rect.width(),
+            SplitOrientation::Vertical => self.rect.height(),
+        };
+        if total <= 0.0 {
+            return self.ratio.position();
+        }
+        crate::num::f32_of_f64(self.first_extent(total) / total)
+    }
+
+    /// Step the first pane smaller from where the divider stands, not from
+    /// a ratio past what the pane can use, so the step shows.
+    fn step_back(&mut self) -> bool {
+        let shown = self.shown_position();
+        if shown < self.ratio.position() {
+            self.ratio.set(shown);
+        }
+        self.ratio.step(-KEY_STEP)
+    }
+
     /// Move the split to `rect`, keeping the hit area from the last
     /// [`Self::set_rect`] (`rhythm.tight` each side by default), for a host
     /// that lays out without a theme in hand.
@@ -200,11 +250,11 @@ impl SplitHandle {
         let r = self.rect;
         self.divider = match self.orientation {
             SplitOrientation::Horizontal => {
-                let x = (r.x0 + self.ratio.first_extent(r.width())).round();
+                let x = (r.x0 + self.first_extent(r.width())).round();
                 Rect::new(x - self.hit_half, r.y0, x + self.hit_half, r.y1)
             }
             SplitOrientation::Vertical => {
-                let y = (r.y0 + self.ratio.first_extent(r.height())).round();
+                let y = (r.y0 + self.first_extent(r.height())).round();
                 Rect::new(r.x0, y - self.hit_half, r.x1, y + self.hit_half)
             }
         };
@@ -325,7 +375,7 @@ impl SplitHandle {
                     SplitOrientation::Vertical => (NamedKey::ArrowUp, NamedKey::ArrowDown),
                 };
                 let moved = match &event.logical_key {
-                    Key::Named(key) if *key == back => self.ratio.step(-KEY_STEP),
+                    Key::Named(key) if *key == back => self.step_back(),
                     Key::Named(key) if *key == forward => self.ratio.step(KEY_STEP),
                     Key::Named(NamedKey::Home) => self.ratio.set(0.0),
                     Key::Named(NamedKey::End) => self.ratio.set(1.0),
@@ -343,7 +393,7 @@ impl SplitHandle {
     pub fn perform_action(&mut self, action: &crate::a11y::Action) -> bool {
         let moved = match action {
             crate::a11y::Action::Increment => self.ratio.step(KEY_STEP),
-            crate::a11y::Action::Decrement => self.ratio.step(-KEY_STEP),
+            crate::a11y::Action::Decrement => self.step_back(),
             crate::a11y::Action::SetValue(value) => value
                 .trim_end_matches('%')
                 .trim()
@@ -379,7 +429,7 @@ impl SplitHandle {
             }
         };
         let colour = if active {
-            theme.tokens.colors.intent.neutral_fill
+            theme.tokens.colors.intent.value_fill
         } else {
             crate::surface::edge_on(ground)
         };
@@ -395,7 +445,10 @@ impl SplitHandle {
         use crate::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Separator)
             .with_name(self.label.clone())
-            .with_value(format!("{}%", self.ratio.percent()))
+            .with_value(format!(
+                "{}%",
+                SplitRatio::new(self.shown_position()).percent()
+            ))
             .with_state(AccessState::new().focusable(true).focused(self.focused))
     }
 }
@@ -534,6 +587,15 @@ impl Widget for SplitHandle {
 }
 
 /// Two panes and the divider between them.
+/// The first pane's extent on its way from where it was drawn to where the
+/// layout puts it (`motion::PanelSlide`).
+struct SplitGlide {
+    /// The drawn extent of the first pane along the split.
+    first: crate::motion::MotionValue<f64>,
+    from: f64,
+    to: f64,
+}
+
 pub struct ResizableSplit<L: Widget, R: Widget> {
     left: L,
     right: R,
@@ -546,6 +608,24 @@ pub struct ResizableSplit<L: Widget, R: Widget> {
     /// The ratio moved since the panes were last laid out.
     layout_dirty: bool,
     rect: Rect,
+    /// Where a double-click on the divider puts it back: the position the
+    /// split was built with, or the first pane's content size.
+    rest: f32,
+    resets_to_content: bool,
+    /// The first pane's extent when it was last laid out at its content
+    /// size: where a reset to the content size glides to.
+    content_extent: Option<f64>,
+    /// A reset or a change a pointer asked for glides the divider
+    /// (`motion::PanelSlide`); dragging stays welded to the hand.
+    glide: Option<SplitGlide>,
+    /// The panes are laid out for a glide: each at the wider of its two
+    /// extents, so no frame of the glide lays them out again and each
+    /// reflows once, at its wide end.
+    glide_laid: bool,
+    /// The motion the person allows, from the last theme seen.
+    motion: crate::tokens::EffectiveMotion,
+    /// When the divider was last pressed, for a double-click.
+    last_divider_press: Option<crate::time::Instant>,
 }
 
 impl<L: Widget, R: Widget> ResizableSplit<L, R> {
@@ -559,6 +639,13 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             first_content_size: taffy::Dimension::auto(),
             layout_dirty: false,
             rect: Rect::ZERO,
+            rest: SPLIT_DEFAULT,
+            resets_to_content: false,
+            content_extent: None,
+            glide: None,
+            glide_laid: false,
+            motion: crate::tokens::EffectiveMotion::default(),
+            last_divider_press: None,
         }
     }
 
@@ -567,6 +654,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     #[must_use]
     pub fn with_split_position(mut self, position: f32) -> Self {
         self.handle.ratio_mut().set(position);
+        self.rest = self.handle.ratio().position();
         self
     }
 
@@ -575,6 +663,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     pub fn with_bounds(mut self, min: f32, max: f32) -> Self {
         let ratio = self.handle.ratio().with_bounds(min, max);
         *self.handle.ratio_mut() = ratio;
+        self.rest = ratio.position();
         self
     }
 
@@ -583,6 +672,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     #[must_use]
     pub fn with_content_sized_first(mut self) -> Self {
         self.content_sized_first = true;
+        self.resets_to_content = true;
         self
     }
 
@@ -604,19 +694,169 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         self.handle.ratio().position()
     }
 
-    /// Move the divider (clamped).
+    /// Move the divider (clamped). Asked for by a pointer (a button that
+    /// collapses or expands a pane) it glides there; by a key, an agent or
+    /// the app on its own it lands.
     pub fn set_split_position(&mut self, position: f32) {
+        let from = self.drawn_first_extent();
         if self.handle.ratio_mut().set(position) {
             self.content_sized_first = false;
             self.layout_dirty = true;
+            let to = self.handle.ratio().first_extent(self.axis_extent());
+            self.glide_to(from, to, Self::hand_source());
         }
     }
 
+    /// Whether the first pane stands at its content size: built so
+    /// ([`Self::with_content_sized_first`]) or reset to it, and the divider
+    /// not moved since. A control that resets the split has nothing to do
+    /// while this holds.
+    #[must_use]
+    pub fn is_at_content_size(&self) -> bool {
+        self.content_sized_first && !self.handle.layout_dirty
+    }
+
     /// Restore the first pane's natural content size after manual resizing.
+    /// Asked for by a pointer it glides there; otherwise it lands.
     pub fn reset_to_content_size(&mut self) {
+        self.reset_to_content_from(Self::hand_source());
+    }
+
+    fn reset_to_content_from(&mut self, source: crate::tokens::MotionSource) {
+        let from = self.drawn_first_extent();
         self.content_sized_first = true;
         self.layout_dirty = true;
         self.handle.layout_dirty = false;
+        match self.content_extent {
+            Some(to) => self.glide_to(from, to, source),
+            None => self.glide = None,
+        }
+    }
+
+    /// Put the divider back where it rests (a double-click on it): the
+    /// position the split was built with, or the first pane's content size.
+    fn reset(&mut self, source: crate::tokens::MotionSource) {
+        if self.resets_to_content {
+            self.reset_to_content_from(source);
+            return;
+        }
+        let from = self.drawn_first_extent();
+        self.handle.ratio_mut().set(self.rest);
+        self.handle.place();
+        self.content_sized_first = false;
+        self.layout_dirty = true;
+        let to = self.handle.ratio().first_extent(self.axis_extent());
+        self.glide_to(from, to, source);
+    }
+
+    /// The input a programmatic change follows: a pointer or a finger the
+    /// person just used, else a change nobody watches move (it lands).
+    fn hand_source() -> crate::tokens::MotionSource {
+        crate::motion::recent_input(crate::motion::frame_now())
+            .unwrap_or(crate::tokens::MotionSource::Action)
+    }
+
+    /// The split's length along its axis.
+    fn axis_extent(&self) -> f64 {
+        match self.orientation {
+            SplitOrientation::Horizontal => self.rect.width(),
+            SplitOrientation::Vertical => self.rect.height(),
+        }
+    }
+
+    /// The first pane's laid-out length along the axis.
+    fn laid_first_extent(&self) -> f64 {
+        let first = self.left.get_rect();
+        match self.orientation {
+            SplitOrientation::Horizontal => first.width(),
+            SplitOrientation::Vertical => first.height(),
+        }
+    }
+
+    /// Whether the divider is gliding now.
+    fn is_gliding(&self) -> bool {
+        self.glide
+            .as_ref()
+            .is_some_and(|glide| glide.first.is_moving(crate::motion::frame_now()))
+    }
+
+    /// How long the first pane is drawn now.
+    fn drawn_first_extent(&self) -> f64 {
+        match &self.glide {
+            Some(glide) if self.glide_laid || self.is_gliding() => {
+                glide.first.get(crate::motion::frame_now())
+            }
+            _ => self.laid_first_extent(),
+        }
+    }
+
+    /// Glide the first pane from `from` to `to` (`motion::PanelSlide`): a
+    /// key, an agent, reduced motion or a change too small to see lands. A
+    /// glide already under way continues from where it is drawn.
+    fn glide_to(&mut self, from: f64, to: f64, source: crate::tokens::MotionSource) {
+        use crate::motion::{Direction, PanelSlide};
+        let timing = PanelSlide::SPEC.timing(Direction::of(to >= from), self.motion, source);
+        if timing.is_instant() || (to - from).abs() < 0.5 || self.axis_extent() <= 0.0 {
+            self.glide = None;
+            return;
+        }
+        let now = crate::motion::frame_now();
+        let mut first = match self.glide.take() {
+            Some(glide) if self.is_gliding_value(&glide) => glide.first,
+            _ => crate::motion::MotionValue::new(from).with_tolerance(0.25),
+        };
+        first.set(to, timing, now);
+        if let Some(until) = first.settles_at() {
+            crate::motion::want_frames_until(until);
+        }
+        self.glide = Some(SplitGlide { first, from, to });
+        self.layout_dirty = true;
+    }
+
+    fn is_gliding_value(&self, glide: &SplitGlide) -> bool {
+        glide.first.is_moving(crate::motion::frame_now())
+    }
+
+    /// The panes' lengths while a glide is laid out: each at the wider of
+    /// its two ends.
+    fn glide_lengths(&self) -> Option<(f64, f64)> {
+        let glide = self.glide.as_ref().filter(|_| self.is_gliding())?;
+        let extent = self.axis_extent();
+        Some((
+            glide.from.max(glide.to),
+            (extent - glide.from).max(extent - glide.to),
+        ))
+    }
+
+    /// Where the panes are drawn now, and how far the second is drawn from
+    /// where it is laid out: while a glide is laid out the first is clipped
+    /// at the drawn divider and the second slides with it.
+    fn drawn_panes(&self) -> (Rect, Rect, vello::kurbo::Vec2) {
+        let (left, right) = (self.left.get_rect(), self.right.get_rect());
+        let Some(glide) = self.glide.as_ref().filter(|_| self.glide_laid) else {
+            return (left, right, vello::kurbo::Vec2::ZERO);
+        };
+        let drawn = glide.first.get(crate::motion::frame_now());
+        let laid = glide.from.max(glide.to);
+        let r = self.rect;
+        match self.orientation {
+            SplitOrientation::Horizontal => {
+                let x = r.x0 + drawn;
+                (
+                    Rect::new(r.x0, r.y0, x, r.y1),
+                    Rect::new(x, r.y0, r.x1, r.y1),
+                    vello::kurbo::Vec2::new(drawn - laid, 0.0),
+                )
+            }
+            SplitOrientation::Vertical => {
+                let y = r.y0 + drawn;
+                (
+                    Rect::new(r.x0, r.y0, r.x1, y),
+                    Rect::new(r.x0, y, r.x1, r.y1),
+                    vello::kurbo::Vec2::new(0.0, drawn - laid),
+                )
+            }
+        }
     }
 
     /// The first (leading or top) pane.
@@ -632,6 +872,8 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     fn moved(&mut self) {
         self.content_sized_first = false;
         self.layout_dirty = true;
+        // Dragged or stepped: the divider is welded to the hand or lands.
+        self.glide = None;
     }
 
     /// Grow factors for the two panes: the ratio, or the first pane at its
@@ -688,8 +930,8 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             _ => None,
         };
 
-        let left_rect = self.left.get_rect();
-        let right_rect = self.right.get_rect();
+        // While a glide is laid out the panes are hit where they are drawn.
+        let (left_rect, right_rect, right_offset) = self.drawn_panes();
         if let Some(pt) = cursor_pt {
             if let WindowEvent::CursorMoved { device_id, .. } = event {
                 self.clear_inactive_hover(pt, *device_id, ctx);
@@ -702,8 +944,9 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             } else if right_rect.contains(pt)
                 && let Some(n) = right_node
             {
+                let event = super::event_offset(event, right_offset, ctx.scale_factor);
                 self.right
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+                    .handle_event(&event, &mut ctx.reborrow(ctx.path, n));
             }
             return;
         }
@@ -732,13 +975,14 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         let leave = WindowEvent::CursorLeft { device_id };
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let handled = *ctx.handled;
-        if !self.left.get_rect().contains(point)
+        let (left_rect, right_rect, _) = self.drawn_panes();
+        if !left_rect.contains(point)
             && let Some(&node) = children.first()
         {
             self.left
                 .handle_event(&leave, &mut ctx.reborrow(ctx.path, node));
         }
-        if !self.right.get_rect().contains(point)
+        if !right_rect.contains(point)
             && let Some(&node) = children.get(1)
         {
             self.right
@@ -753,6 +997,13 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         left_node: NodeId,
         right_node: NodeId,
     ) -> bool {
+        if let Some((first, second)) = self.glide_lengths() {
+            return Self::style_gliding_panes(
+                taffy,
+                self.orientation,
+                [(left_node, first), (right_node, second)],
+            );
+        }
         let (left_grow, right_grow, content_sized) = self.grows();
         let cross = match self.orientation {
             SplitOrientation::Horizontal => taffy::Size {
@@ -802,6 +1053,86 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     }
 }
 
+impl<L: Widget, R: Widget> ResizableSplit<L, R> {
+    /// The panes as a glide draws them: each laid out once at its wide end,
+    /// the first clipped at the drawn divider and the second sliding with
+    /// it, clipped at the split's end; the divider drawn where it is.
+    fn draw_gliding(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let (first, second, offset) = self.drawn_panes();
+        let fill = vello::peniko::Fill::NonZero;
+        let blend = vello::peniko::BlendMode::default();
+        scene.push_layer(fill, blend, 1.0, transform, &first);
+        self.left
+            .draw(scene, transform, text_renderer, theme, presence);
+        scene.pop_layer();
+        scene.push_layer(fill, blend, 1.0, transform, &second);
+        self.right.draw(
+            scene,
+            transform * Affine::translate(offset),
+            text_renderer,
+            theme,
+            presence,
+        );
+        scene.pop_layer();
+        // The divider stands where the layout puts it at rest; it is drawn
+        // where the first pane now ends.
+        let rest = self.handle.hit_rect().center();
+        let shift = match self.orientation {
+            SplitOrientation::Horizontal => vello::kurbo::Vec2::new(first.x1 - rest.x, 0.0),
+            SplitOrientation::Vertical => vello::kurbo::Vec2::new(0.0, first.y1 - rest.y),
+        };
+        self.handle.paint(
+            scene,
+            transform * Affine::translate(shift),
+            theme.tokens.colors.surfaces.content,
+            theme,
+        );
+    }
+
+    /// Each pane at a fixed length along the split while a glide is laid
+    /// out; the second may run past the split's end, where it is clipped.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a pane's length is a small logical-pixel value"
+    )]
+    fn style_gliding_panes(
+        taffy: &mut TaffyTree<()>,
+        orientation: SplitOrientation,
+        panes: [(NodeId, f64); 2],
+    ) -> bool {
+        let mut changed = false;
+        for (node, along) in panes {
+            if let Ok(current) = taffy.style(node) {
+                let mut style = current.clone();
+                match orientation {
+                    SplitOrientation::Horizontal => {
+                        style.size.width = length(along as f32);
+                        style.size.height = percent(1.0_f32);
+                    }
+                    SplitOrientation::Vertical => {
+                        style.size.width = percent(1.0_f32);
+                        style.size.height = length(along as f32);
+                    }
+                }
+                style.flex_basis = taffy::Dimension::auto();
+                style.flex_grow = 0.0;
+                style.flex_shrink = 0.0;
+                if *current != style {
+                    changed |= taffy.set_style(node, style).is_ok();
+                }
+            }
+        }
+        changed
+    }
+}
+
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
@@ -827,6 +1158,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
         let left_node = self.left.build_layout(taffy, theme, node_map);
         let right_node = self.right.build_layout(taffy, theme, node_map);
         if let Ok(style) = taffy.style(left_node) {
@@ -841,6 +1173,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             children.push(self.handle.build_layout(taffy, theme, node_map));
         }
         self.style_panes(taffy, left_node, right_node);
+        self.glide_laid = self.glide_lengths().is_some();
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: match self.orientation {
@@ -870,6 +1203,11 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             self.moved();
         }
         let mut changed = self.style_panes(taffy, left, right);
+        // A glide that has arrived is laid out once more, at rest.
+        self.glide_laid = self.glide_lengths().is_some();
+        if !self.glide_laid && !self.is_gliding() {
+            self.glide = None;
+        }
         if let Some(&divider) = children.get(2) {
             changed |= self.handle.adjust_layout_style(taffy, divider, text);
         }
@@ -879,6 +1217,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty
             || self.handle.layout_dirty
+            || self.glide_laid != self.is_gliding()
             || self.left.is_layout_dirty()
             || self.right.is_layout_dirty()
     }
@@ -890,6 +1229,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     fn layout_needs_measure(&self) -> bool {
         self.layout_dirty
             || self.handle.layout_dirty
+            || self.glide_laid != self.is_gliding()
             || self.left.layout_needs_measure()
             || self.right.layout_needs_measure()
     }
@@ -905,7 +1245,10 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         if let Some(&n) = children.get(1) {
             self.right.apply_layout(taffy, n, new_origin);
         }
-        let divider_followed_content = self.content_sized_first && {
+        if self.content_sized_first && !self.glide_laid {
+            self.content_extent = Some(self.laid_first_extent());
+        }
+        let divider_followed_content = self.content_sized_first && !self.glide_laid && {
             // The divider sits where the content-sized pane ends.
             let first = self.left.get_rect();
             let (along, extent) = match self.orientation {
@@ -932,6 +1275,11 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     ) {
         // Children first — the divider paints on top.
         use crate::widget::draw_child;
+        self.motion = theme.motion();
+        if self.glide_laid && self.glide.is_some() {
+            self.draw_gliding(scene, transform, text_renderer, theme, presence);
+            return;
+        }
         draw_child(
             &mut self.left,
             scene,
@@ -956,7 +1304,49 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         );
     }
 
+    /// Frames while the divider glides, and one more to lay the panes out
+    /// at rest; none after.
+    fn needs_animation_frame(&self) -> bool {
+        self.is_gliding()
+            || self.glide_laid
+            || self.left.needs_animation_frame()
+            || self.right.needs_animation_frame()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.is_gliding()
+            || self.glide_laid
+            || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let pressed = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        );
+        if pressed && self.glide_laid {
+            // A hand taking the divider mid-glide takes it where it is drawn:
+            // the glide stops there and the drag starts from it.
+            let (first, _, _) = self.drawn_panes();
+            let (along, start, extent) = match self.orientation {
+                SplitOrientation::Horizontal => (first.x1, self.rect.x0, self.rect.width()),
+                SplitOrientation::Vertical => (first.y1, self.rect.y0, self.rect.height()),
+            };
+            let half = self.handle.hit_half;
+            let near = match self.orientation {
+                SplitOrientation::Horizontal => (self.handle.cursor.x - along).abs() <= half,
+                SplitOrientation::Vertical => (self.handle.cursor.y - along).abs() <= half,
+            };
+            if near {
+                self.handle.ratio_mut().follow(along, start, extent);
+                self.handle.place();
+                self.moved();
+            }
+        }
         let was_dragging = self.handle.is_dragging();
         let divider = ctx
             .taffy
@@ -971,6 +1361,23 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         };
         if moved {
             self.moved();
+            // A press that dragged is no half of a double-click.
+            self.last_divider_press = None;
+        }
+        if pressed && !was_dragging && self.handle.is_dragging() {
+            // A double-click on the divider puts it back where it rests,
+            // gliding; the press does not start a drag that would undo it.
+            let now = crate::time::now();
+            let double = self.last_divider_press.is_some_and(|at| {
+                now.saturating_duration_since(at) < crate::gesture::multi_click_interval()
+            });
+            if double {
+                self.last_divider_press = None;
+                self.handle.drag = None;
+                self.reset(crate::tokens::MotionSource::Pointer);
+            } else {
+                self.last_divider_press = Some(now);
+            }
         }
 
         if *ctx.handled || was_dragging {
@@ -1471,10 +1878,16 @@ mod tests {
             .with_divider_id("request-divider");
         let (mut tree, node) = solve(&mut split, 400.0, 300.0);
         assert_eq!(split.left().get_rect().width(), 120.0);
+        assert!(split.is_at_content_size());
         split.set_split_position(0.7);
+        assert!(
+            !split.is_at_content_size(),
+            "a moved divider has something to reset"
+        );
         relayout(&mut split, &mut tree, node, 400.0, 300.0);
         assert_eq!(split.left().get_rect().width(), 280.0);
         split.reset_to_content_size();
+        assert!(split.is_at_content_size());
         relayout(&mut split, &mut tree, node, 400.0, 300.0);
         assert_eq!(split.left().get_rect().width(), 120.0);
         assert_eq!(split.handle.hit_rect().center().x, 120.0);
@@ -1501,6 +1914,121 @@ mod tests {
         assert_eq!(tree.children(node).expect("split children").len(), 2);
         assert!((s.left().rect.width() - 320.0).abs() < 0.1);
         assert!((s.right().rect.width() - 680.0).abs() < 0.1);
+    }
+
+    /// Whether the split itself asks for a layout (its panes aside).
+    fn own_layout_dirty<L: Widget + 'static, R: Widget + 'static>(
+        s: &ResizableSplit<L, R>,
+    ) -> bool {
+        s.layout_dirty || s.handle.layout_dirty || s.glide_laid != s.is_gliding()
+    }
+
+    fn double_click_divider<L: Widget + 'static, R: Widget + 'static>(
+        s: &mut ResizableSplit<L, R>,
+        tree: &TaffyTree<()>,
+        node: NodeId,
+        at: Point,
+    ) {
+        dispatch(s, tree, node, &cursor_moved(at.x, at.y));
+        for _ in 0..2 {
+            dispatch(s, tree, node, &mouse_press());
+            dispatch(s, tree, node, &mouse_release());
+        }
+    }
+
+    #[test]
+    fn a_double_click_glides_the_divider_home_and_each_pane_reflows_once() {
+        let mut s = split(SplitOrientation::Horizontal);
+        let (mut tree, node) = solve(&mut s, 400.0, 300.0);
+        s.set_split_position(0.75);
+        relayout(&mut s, &mut tree, node, 400.0, 300.0);
+        assert!((s.left().rect.width() - 300.0).abs() < 0.5);
+
+        // The frame's instant is held, so the test reads the glide where it
+        // starts.
+        let _frame = crate::motion::pin_frame();
+        double_click_divider(&mut s, &tree, node, Point::new(300.0, 150.0));
+        assert!(
+            (s.split_position() - 0.5).abs() < 1e-4,
+            "the divider is home at once for input"
+        );
+        assert!(!s.handle.is_dragging(), "the second press starts no drag");
+        assert!(s.is_gliding(), "and it glides there");
+        assert!(Widget::needs_animation_frame(&s));
+        relayout(&mut s, &mut tree, node, 400.0, 300.0);
+        // Laid out once for the glide: each pane at its wider end.
+        assert!((s.left().rect.width() - 300.0).abs() < 0.5);
+        assert!((s.right().rect.width() - 200.0).abs() < 0.5);
+        assert!(
+            !own_layout_dirty(&s),
+            "no frame of the glide lays the panes out again"
+        );
+        let (first, second, offset) = s.drawn_panes();
+        assert!((first.x1 - 300.0).abs() < 0.5, "drawn where it stood");
+        assert!((second.x0 - 300.0).abs() < 0.5);
+        assert!(offset.x.abs() < 0.5);
+
+        // Arrived: laid out once more, at rest, and no more frames.
+        let _settled = crate::motion::testing::settled();
+        assert!(own_layout_dirty(&s), "the narrowing pane reflows once");
+        relayout(&mut s, &mut tree, node, 400.0, 300.0);
+        assert!((s.left().rect.width() - 200.0).abs() < 0.5);
+        assert!((s.right().rect.width() - 200.0).abs() < 0.5);
+        assert!(!own_layout_dirty(&s));
+        assert!(!Widget::needs_animation_frame(&s));
+    }
+
+    #[test]
+    fn taking_the_divider_mid_glide_welds_it_to_the_hand() {
+        let mut s = split(SplitOrientation::Horizontal);
+        let (mut tree, node) = solve(&mut s, 400.0, 300.0);
+        s.set_split_position(0.75);
+        relayout(&mut s, &mut tree, node, 400.0, 300.0);
+        let _frame = crate::motion::pin_frame();
+        double_click_divider(&mut s, &tree, node, Point::new(300.0, 150.0));
+        relayout(&mut s, &mut tree, node, 400.0, 300.0);
+        assert!(s.is_gliding());
+        // Pressed where it is drawn, and dragged: it follows the pointer.
+        dispatch(&mut s, &tree, node, &cursor_moved(300.0, 150.0));
+        dispatch(&mut s, &tree, node, &mouse_press());
+        assert!(!s.is_gliding(), "the glide stops where it is drawn");
+        assert!(s.handle.is_dragging());
+        dispatch(&mut s, &tree, node, &cursor_moved(120.0, 150.0));
+        dispatch(&mut s, &tree, node, &mouse_release());
+        assert!((s.split_position() - 0.3).abs() < 1e-3);
+        relayout(&mut s, &mut tree, node, 400.0, 300.0);
+        assert!((s.left().rect.width() - 120.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn a_pointer_asked_change_glides_and_a_key_or_reduced_motion_lands() {
+        let mut s = split(SplitOrientation::Horizontal);
+        let (mut tree, node) = solve(&mut s, 400.0, 300.0);
+        let _frame = crate::motion::pin_frame();
+
+        // A button the person clicked collapses the second pane.
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        s.set_split_position(0.9);
+        assert!(
+            s.is_gliding(),
+            "a programmatic change a click asked for glides"
+        );
+
+        // The same by a key lands.
+        crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+        s.set_split_position(0.25);
+        assert!(!s.is_gliding(), "a key's result lands");
+        relayout(&mut s, &mut tree, node, 400.0, 300.0);
+        assert!((s.left().rect.width() - 100.0).abs() < 0.5);
+
+        // Under reduced motion a double-click lands too.
+        s.motion = Theme::dark().with_reduce_motion(true).motion();
+        double_click_divider(&mut s, &tree, node, Point::new(100.0, 150.0));
+        assert!((s.split_position() - 0.5).abs() < 1e-4);
+        assert!(!s.is_gliding());
+        relayout(&mut s, &mut tree, node, 400.0, 300.0);
+        assert!((s.left().rect.width() - 200.0).abs() < 0.5);
+        assert!(!Widget::needs_animation_frame(&s));
     }
 
     #[test]
@@ -1533,7 +2061,6 @@ mod tests {
         );
         assert!(!s.layout_dirty, "laid out at the new ratio");
 
-        // Dragging past either end clamps.
         dispatch(&mut s, &tree, node, &cursor_moved(100.0, 150.0));
         dispatch(&mut s, &tree, node, &mouse_press());
         dispatch(&mut s, &tree, node, &cursor_moved(2.0, 150.0));
@@ -1620,5 +2147,36 @@ mod tests {
         assert!(ratio.set(0.9));
         assert!((ratio.position() - 0.6).abs() < 1e-6);
         assert!(!ratio.step(0.1), "already at the bound");
+    }
+
+    #[test]
+    fn a_capped_first_pane_keeps_the_chosen_ratio() {
+        let theme = Theme::dark();
+        let mut handle = SplitHandle::new(SplitOrientation::Vertical, SplitRatio::new(0.6));
+        handle.set_rect(Rect::new(0.0, 0.0, 400.0, 500.0), &theme);
+        handle.set_first_max(Some(200.0));
+        let (top, bottom) = handle.pane_rects();
+        assert!(
+            (top.height() - 200.0).abs() < 0.5,
+            "the divider stands at the cap"
+        );
+        assert!((bottom.height() - 300.0).abs() < 0.5, "the rest goes below");
+        assert!(
+            (handle.ratio().position() - 0.6).abs() < 1e-6,
+            "the ratio is kept"
+        );
+        handle.set_first_max(Some(1000.0));
+        let (top, _) = handle.pane_rects();
+        assert!(
+            (top.height() - 300.0).abs() < 0.5,
+            "with room, the ratio is back"
+        );
+        handle.set_first_max(Some(200.0));
+        assert!(handle.perform_action(&crate::a11y::Action::Decrement));
+        let (top, _) = handle.pane_rects();
+        assert!(
+            top.height() < 199.5,
+            "a step back moves from where the divider stands"
+        );
     }
 }

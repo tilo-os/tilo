@@ -139,6 +139,10 @@ impl Scheduler {
     }
 }
 
+/// A wait for another reader's fetch to give its ranges back
+/// ([`Flights::claim`]).
+type Released = std::pin::Pin<Box<tokio::sync::futures::OwnedNotified>>;
+
 /// Ranges of each content id being fetched right now.
 #[derive(Default)]
 pub(crate) struct Flights {
@@ -150,13 +154,12 @@ impl Flights {
         self.ranges.lock_recover()
     }
 
-    /// Claims the parts of `wanted` nobody is fetching. Returns them, and a
-    /// notification to wait on when others hold the rest.
-    fn claim(
-        &self,
-        content: Hash,
-        wanted: &[Range<u64>],
-    ) -> (Vec<Range<u64>>, Option<Arc<Notify>>) {
+    /// Claims the parts of `wanted` nobody is fetching. Returns them, and,
+    /// when others hold the rest, a wait for them to give ranges back. The
+    /// wait is registered before the claim lets go of the lock, so a fetch
+    /// that fails and gives its ranges back before the caller waits still
+    /// wakes it.
+    fn claim(&self, content: Hash, wanted: &[Range<u64>]) -> (Vec<Range<u64>>, Option<Released>) {
         let mut claimed = Vec::new();
         let mut blocked = false;
         let mut map = self.lock();
@@ -175,7 +178,11 @@ impl Flights {
         for range in &claimed {
             busy.insert(range.clone());
         }
-        let wait = blocked.then(|| Arc::clone(notify));
+        let wait = blocked.then(|| {
+            let mut released = Box::pin(Arc::clone(notify).notified_owned());
+            released.as_mut().enable();
+            released
+        });
         drop(map);
         (claimed, wait)
     }
@@ -190,6 +197,32 @@ impl Flights {
             if busy.is_empty() {
                 map.remove(&content);
             }
+        }
+    }
+}
+
+/// Ranges claimed from [`Flights`], given back when dropped: a fetch
+/// abandoned part way (a predictive prefetch cancelled when the policy
+/// changes) never leaves them claimed for readers to wait on forever.
+struct Claim<'a> {
+    flights: &'a Flights,
+    content: Hash,
+    ranges: Vec<Range<u64>>,
+}
+
+impl Claim<'_> {
+    /// Gives the ranges back and returns them.
+    fn release(mut self) -> Vec<Range<u64>> {
+        let ranges = std::mem::take(&mut self.ranges);
+        self.flights.release(self.content, &ranges);
+        ranges
+    }
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        if !self.ranges.is_empty() {
+            self.flights.release(self.content, &self.ranges);
         }
     }
 }
@@ -295,7 +328,7 @@ impl Hydrator {
             tokio::task::spawn_blocking(move || files.ensure(&key, size, retention, &chunks))
                 .await??;
         } else if priority == Priority::Pinned {
-            files.set_retention(&key, Retention::Pinned)?;
+            files.keep_offline(&key, true)?;
         }
         // Interactive work claims all of it at once; background work claims
         // request by request, so it never holds ranges while it waits.
@@ -356,20 +389,22 @@ impl Hydrator {
             let (claimed, wait) = self.flights.claim(content, &missing);
             if claimed.is_empty() {
                 drop(admission);
-                if let Some(notify) = wait {
-                    let released = notify.notified();
-                    tokio::pin!(released);
-                    released.as_mut().enable();
-                    if !files.missing(&key, &piece).is_empty() {
-                        released.await;
-                    }
+                if let Some(released) = wait
+                    && !files.missing(&key, &piece).is_empty()
+                {
+                    released.await;
                 }
                 continue;
             }
+            let claim = Claim {
+                flights: &self.flights,
+                content,
+                ranges: claimed,
+            };
             let result = self
-                .fetch_claimed(content, manifest, &claimed, priority)
+                .fetch_claimed(content, manifest, &claim.ranges, priority)
                 .await;
-            self.flights.release(content, &claimed);
+            let claimed = claim.release();
             drop(admission);
             result?;
             fetched.extend(claimed);
@@ -718,6 +753,22 @@ mod tests {
         assert_eq!(c, vec![0..100]);
     }
 
+    /// A reader waiting on another's fetch is woken when that fetch gives
+    /// its ranges back, even when it fails at once (no peer answers) and
+    /// gives them back before the waiter got round to waiting: nothing
+    /// became resident, so the waiter must wake to fetch them itself.
+    #[tokio::test]
+    async fn a_fetch_released_before_its_waiter_waits_still_wakes_it() {
+        let flights = Flights::default();
+        let content = Hash::from([1; 32]);
+        let (mine, _) = flights.claim(content, &[0..100]);
+        let (theirs, wait) = flights.claim(content, &[0..100]);
+        assert!(theirs.is_empty());
+        let released = wait.expect("0..100 is someone else's");
+        flights.release(content, &mine);
+        tilo_test_env::within("the waiter wakes to fetch what was given back", released).await;
+    }
+
     use crate::test_bytes::pseudo;
 
     /// A peer serving `data` as one file version, and an empty client.
@@ -862,27 +913,57 @@ mod tests {
         );
     }
 
+    /// A fetch abandoned while a quiet peer holds its ranges (a predictive
+    /// prefetch cancelled when the policy changes) gives them back, so the
+    /// next reader asks for them itself instead of waiting on a fetch that
+    /// no longer exists.
+    #[tokio::test]
+    async fn an_abandoned_fetch_gives_its_ranges_back() {
+        use iroh::endpoint::{Endpoint, presets};
+        let data = pseudo(3 * 1024 * 1024, 17);
+        let source = crate::store::ContentStore::memory();
+        let id = source.write_content(&data).await.unwrap().unwrap();
+        let quiet = crate::hydration::test_peers::silent().await;
+        let hydrator = Hydrator::new(
+            Endpoint::bind(presets::N0).await.unwrap(),
+            Arc::new(crate::store::ContentStore::memory()),
+        );
+        // The manifest is here; the bytes only the quiet peer holds.
+        let manifest = source.local(id).await.unwrap();
+        assert_eq!(hydrator.store.ingest(manifest).await.unwrap(), id);
+        hydrator.add_peer(quiet.endpoint().addr());
+
+        let abandoned = tokio::time::timeout(
+            Duration::from_millis(500),
+            hydrator.read_with(id, 0, 64 * 1024, Priority::Predictive),
+        )
+        .await;
+        assert!(abandoned.is_err(), "a quiet peer serves nothing");
+        assert_eq!(
+            hydrator
+                .flights
+                .lock()
+                .get(&id)
+                .map(|(busy, _)| busy.clone()),
+            None,
+            "the abandoned fetch still claims ranges"
+        );
+    }
+
     #[tokio::test]
     async fn background_work_waits_for_interactive_requests() {
         let scheduler = Arc::new(Scheduler::default());
         let reader = scheduler.admit(Priority::Foreground).await;
         assert_eq!(scheduler.interactive_in_flight(), 1);
-        let waiting = {
-            let scheduler = Arc::clone(&scheduler);
-            tokio::spawn(async move {
-                let _slot = scheduler.admit(Priority::Backfill).await;
-            })
-        };
-        let mut waiting = waiting;
+        let mut waiting = Box::pin(scheduler.admit(Priority::Backfill));
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), &mut waiting)
-                .await
-                .is_err(),
+            waiting
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending(),
             "backfill waits for the reader"
         );
         drop(reader);
-        tilo_test_env::within("the backfill after the reader drops", waiting)
-            .await
-            .unwrap();
+        drop(tilo_test_env::within("the backfill after the reader drops", waiting).await);
     }
 }

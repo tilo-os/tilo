@@ -4,7 +4,11 @@
   "architecture": "aarch64",
   "devicetree": "qcom/x1e80100-lenovo-yoga-slim7x.dtb",
   "kernel_args": [
-    "systemd.tpm2_wait=0"
+    "systemd.tpm2_wait=0",
+    "systemd.watchdog_sec=30",
+    "sbsa_gwdt.action=1",
+    "softlockup_panic=1",
+    "nmi_watchdog=panic"
   ],
   "system_firmware": [
     "qcom/a740_sqe.fw",
@@ -51,6 +55,11 @@
     "cdsp_dtbs.elf": "qcom/x1e80100/LENOVO/83ED/cdsp_dtbs.elf"
   },
   "wifi_wake_on_wlan": 0,
+  "crash_record": {
+    "storage": "ramoops",
+    "watchdog": "hardware",
+    "lockup": "buddy"
+  },
   "internal_keyboards": [
     {
       "name": "hid-over-i2c 048D:8987",

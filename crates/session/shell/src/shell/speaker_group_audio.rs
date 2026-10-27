@@ -14,11 +14,10 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
-const SINK_NODE_NAME: &str = "tilo-speaker-group";
+const SINK_NODE_NAME: &str = media::audio::SPEAKER_GROUP_SINK;
 const SINK_WAIT: Duration = Duration::from_millis(1500);
 const SINK_POLL: Duration = Duration::from_millis(50);
 
-/// Which audio a tap moves into the group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TapSelection {
     /// Everything this device plays, including streams started later.
@@ -128,7 +127,14 @@ impl GroupTap {
 impl Drop for GroupTap {
     fn drop(&mut self) {
         let control = media::audio::real_control();
-        if let Some(previous) = self.previous_default {
+        // The output from before comes back only while the group's sink is
+        // still the one in use: an output the person chose meanwhile (in
+        // Sound, on leaving the speaker set) stays theirs.
+        if let Some(previous) = self.previous_default
+            && media::audio::enumerate()
+                .default_sink()
+                .is_none_or(|sink| sink.serial == self.serial)
+        {
             let _ = control.set_default_sink(previous);
         }
         for stream in &self.moved_streams {

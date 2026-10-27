@@ -216,9 +216,10 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
             crate::agent_identity::AgentIdentityStyle::Solid,
         );
     } else {
-        // One initial: in a stack the next face covers the edge of this one.
-        let first = face.name.split_whitespace().next().unwrap_or(face.name);
-        let avatar = AvatarFace::new(first, face.identity).presence(face.colour);
+        // The same initials as everywhere this person is shown
+        // (`initials_for_name`), so nobody reads as "ED" to themselves and
+        // "E" to everyone else, and two "Eager …" visitors stay apart.
+        let avatar = AvatarFace::new(face.name, face.identity).presence(face.colour);
         let avatar = if face.dimmed {
             avatar.idle_on(ground)
         } else {
@@ -254,6 +255,44 @@ mod tests {
         );
     }
 
+    /// A face in a stack wears the same initials as the person's own
+    /// avatar: two visitors who share a first word ("Eager Dolphin",
+    /// "Eager Badger") paint apart, and the letters are the first and last
+    /// word's, as `initials_for_name` picks them.
+    #[test]
+    fn stacked_faces_wear_the_full_initials() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = crate::theme::Theme::default();
+        let blue = Color::from_rgb8(0x25, 0x63, 0xeb);
+        let render = |name: &str| {
+            let mut scene = vello::Scene::new();
+            let mut text = crate::text_render::TextRenderer::new();
+            let mut ctx = PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            );
+            FaceStack::BAR.paint(
+                &mut ctx,
+                (60.0, 30.0),
+                (&[Face::new(name, "same-id", blue)], 0),
+                Color::BLACK,
+            );
+            OffscreenRenderer::new(80, 60).render(&scene, Color::BLACK)
+        };
+        assert_ne!(
+            render("Eager Dolphin"),
+            render("Eager Badger"),
+            "the second initial tells two visitors with one first word apart"
+        );
+        assert_eq!(
+            render("Eager Dolphin"),
+            render("Eager Brave Dolphin"),
+            "first and last word"
+        );
+    }
+
     /// A dimmed face paints fainter than a present one; a call adds a ring
     /// past the colour ring.
     #[test]
@@ -277,7 +316,6 @@ mod tests {
         let mut idle = Face::new("Ada", "ada", blue);
         idle.dimmed = true;
         let idle = render(idle);
-        // On the colour ring, left of the face's centre.
         let width = FaceStack::BAR.width(1);
         let center_x = 60.0 - width / 2.0;
         let ring_x = (center_x - 12.0 - GAP - RING / 2.0) as u32;

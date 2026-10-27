@@ -357,8 +357,12 @@ impl StandaloneHistoryHost {
     /// Offer the History control to the app's header row before the app is
     /// built. Where the app draws one, the window draws no bar of its own.
     pub(crate) fn place_in_app_header(&mut self, root: &mut dyn Widget) {
+        let control = self.control();
+        // An app whose controls are its window bar's slots keeps History
+        // there too: whoever shows the slots shows it.
         self.app_presents_button =
-            crate::widget::window_header::offer_history_control(root, self.control());
+            crate::widget::window_header::offer_history_control(root, control)
+                || (control.is_some() && crate::window_toolbar::declared().is_some());
     }
 
     /// Keep the window's own History control in step with the session: on
@@ -942,6 +946,19 @@ impl StandaloneHistoryHost {
         Ok(self.session.as_ref())
     }
 
+    /// Each widget [`Self::build_layout`] can lay out, for a check that a
+    /// retained layout still names only live widgets.
+    pub(crate) fn for_each_widget(&self, visit: &mut dyn FnMut(&dyn Widget)) {
+        if let Some(button) = &self.toolbar {
+            visit(button);
+        }
+        if let Some(button) = &self.search {
+            visit(button);
+        }
+        visit(&self.pane);
+        visit(&self.canvas);
+    }
+
     /// App construction and lifecycle stay with the caller. Build chrome only,
     /// then compose its nodes and the already-built app node in the same arena.
     pub(crate) fn build_layout(
@@ -1292,9 +1309,11 @@ fn open_resource() -> Resource {
         "tilo.host.history",
         I18nManager::lookup_plain("standalone-history-title"),
     )
+    // Named by what it does: a row reads "Show History", never the
+    // resource's own name twice.
     .with_action(operation(
         "open",
-        "standalone-history-title",
+        "host-history-show",
         &HistoryCommand::Open,
     ))
     .with_action(open_at_operation())
@@ -1347,7 +1366,7 @@ fn open_at_operation() -> ActionSpec {
                 .expect("validated history entry serializes")
         },
     )
-    .programmatic()
+    .for_audience(tilo_actions::Audience::Agents)
 }
 #[expect(
     clippy::expect_used,
@@ -1433,7 +1452,6 @@ fn restore_operation(session: uuid::Uuid) -> ActionSpec {
     .expect("history restore serializes")
     .of_kind(tilo_actions::ActionKind::Undoable)
     .destructive()
-    .reversible()
 }
 
 pub(crate) fn encode_entry(id: HistoryEntryId) -> String {
@@ -1459,7 +1477,6 @@ pub(crate) fn decode_entry(value: &str) -> Result<HistoryEntryId, HistoryHostErr
 mod tests {
     #[test]
     fn standalone_history_host_search_selection_and_session_follow_host_conventions() {
-        // Case `search_is_opt_in_and_uses_host_shortcut_conventions`.
         {
             use crate::platform::{Platform, PlatformConventions, Shortcut};
             use crate::widget::Widget;
@@ -1483,7 +1500,6 @@ mod tests {
             }
         }
 
-        // Case `canonical_three_change_selection_preserves_typing_and_rejects_old_session`.
         {
             let mut doc = AutoCommit::new();
             doc.put(ROOT, "value", "before").unwrap();
@@ -1536,7 +1552,6 @@ mod tests {
             assert!(host.session.as_ref().unwrap().selection().is_empty());
         }
 
-        // Case `replacing_document_removes_private_presentation_and_session_actions`.
         {
             let mut doc = AutoCommit::new();
             doc.put(ROOT, "private", "saved").unwrap();
@@ -1572,7 +1587,6 @@ mod tests {
             assert_eq!(host.local_resources(&context).unwrap().len(), 1);
         }
 
-        // Case `shared_arena_composition_preserves_app_grid_and_hides_content_when_narrow`.
         {
             let doc = AutoCommit::new();
             let permissions = PermissionContext::permissive();
@@ -1763,7 +1777,6 @@ mod tests {
     fn an_app_header_row_takes_the_history_control() {
         use crate::widget::window_header::offer_history_control;
 
-        // Case `the_header_row_is_found_anywhere_in_the_app_tree`.
         {
             let mut plain = crate::widget::Row::new().push(Box::new(Text::new("app")));
             assert!(!offer_history_control(
@@ -1778,7 +1791,6 @@ mod tests {
             ));
         }
 
-        // Case `the_window_draws_no_bar_while_the_app_has_a_header_row`.
         {
             let mut host = StandaloneHistoryHost::new();
             let mut app = Text::new("app");
@@ -1801,7 +1813,6 @@ mod tests {
             assert_eq!(tree.children(layout.root).unwrap(), vec![layout.content]);
         }
 
-        // Case `the_control_is_one_named_glyph_that_reads_as_on_while_open`.
         {
             for control in [HistoryControl::Closed, HistoryControl::Open] {
                 let button = history_control_button(BAR_BUTTON_ID, control);
@@ -1887,12 +1898,8 @@ mod tests {
         assert_eq!(doc.base_heads(), before);
         published_invoke(&mut host, &context, review_address, Some(&arguments), false).unwrap();
         let restore_address = tilo_actions::ActionAddress::new(&resource, "restore");
-        assert_eq!(
-            published_invoke(&mut host, &context, restore_address.clone(), None, false),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
-        );
         assert!(host.take_confirmed_restore().is_none());
-        published_invoke(&mut host, &context, restore_address, None, true).unwrap();
+        published_invoke(&mut host, &context, restore_address, None, false).unwrap();
         let confirmed = host.take_confirmed_restore().unwrap();
         assert_eq!(encode_entry(confirmed.review.entry), entry);
         assert!(matches!(confirmed.target, HistoryTarget::Legacy {
@@ -2052,9 +2059,12 @@ mod tests {
             .unwrap();
         assert_eq!(restore.kind, OperationKind::Effect);
         assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Undoable);
+        // The person reviewed the restore, and Undo takes it back: going
+        // ahead asks nothing more.
+        assert!(restore.contract.can_be_undone());
         assert_eq!(
             restore.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
+            tilo_actions::ConfirmationPolicy::None
         );
         assert!(!restore.contract.availability.is_available());
         let cancel = session

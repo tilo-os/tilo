@@ -31,6 +31,30 @@ use tilo_user_identity::{
 use crate::common::client_endpoint;
 
 const FILE_WORKSPACE: u64 = 42;
+
+/// How long each `tilo-enroll` side waits for the other, as `--timeout`.
+/// Both write durably between the exchanges, and on a loaded worker that
+/// can outlast a fixed minute; only a hang should run out the shared bound.
+fn enrollment_window() -> String {
+    tilo_test_env::hang_bound().as_secs().to_string()
+}
+
+/// Wait for both enrollment processes and require both to succeed. Each
+/// side's failure is reported with the other's account: a recipient that
+/// never saw `Finalized` is explained by what the approver ran into.
+fn both_succeed(recipient: std::process::Child, approval: std::process::Child) {
+    let recipient = recipient.wait_with_output().unwrap();
+    let approval = approval.wait_with_output().unwrap();
+    assert!(
+        recipient.status.success() && approval.status.success(),
+        "enrollment failed\nrecipient ({}): {}\napprover ({}): {}",
+        recipient.status,
+        String::from_utf8_lossy(&recipient.stderr),
+        approval.status,
+        String::from_utf8_lossy(&approval.stderr),
+    );
+}
+
 fn wait_for_file(path: &std::path::Path, what: &str) {
     tilo_test_env::wait_until(format_args!("{what} at {}", path.display()), || {
         path.is_file()
@@ -176,7 +200,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
     let recipient_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&recipient));
 
-    let enroll = std::path::PathBuf::from(env!("CARGO_BIN_EXE_tilo-enroll"));
+    let enroll = tilo_test_env::package_binary!("tilo-enroll");
     let status_file = recipient_identities.join("pairing-status.json");
     let requester = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
     let recipient_process = Command::new(&enroll)
@@ -184,7 +208,9 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         .arg(&recipient_root)
         .args(["--identity-dir"])
         .arg(&recipient_identities)
-        .args(["--label", "New laptop", "--timeout", "60", "--status-file"])
+        .args(["--label", "New laptop", "--timeout"])
+        .arg(enrollment_window())
+        .arg("--status-file")
         .arg(&status_file)
         .arg("--requester-pid")
         .arg(requester.pid().to_string())
@@ -209,24 +235,13 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
             "--expected-service",
             &recipient_service,
             "--timeout",
-            "60",
         ])
+        .arg(enrollment_window())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let recipient_output = recipient_process.wait_with_output().unwrap();
-    assert!(
-        recipient_output.status.success(),
-        "recipient enrollment failed: {}",
-        String::from_utf8_lossy(&recipient_output.stderr)
-    );
-    let approval_output = approval.wait_with_output().unwrap();
-    assert!(
-        approval_output.status.success(),
-        "approval failed: {}",
-        String::from_utf8_lossy(&approval_output.stderr)
-    );
+    both_succeed(recipient_process, approval);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&std::fs::read(&status_file).unwrap()).unwrap()
             ["state"],
@@ -391,20 +406,16 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
     let recipient_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&recipient));
 
-    let enroll = std::path::PathBuf::from(env!("CARGO_BIN_EXE_tilo-enroll"));
+    let enroll = tilo_test_env::package_binary!("tilo-enroll");
     let status_file = recipient_identities.join("pairing-status.json");
     let recipient_process = Command::new(&enroll)
         .args(["pair-device", "--headless", "--identity-root"])
         .arg(&recipient_root)
         .args(["--identity-dir"])
         .arg(&recipient_identities)
-        .args([
-            "--label",
-            "Headless board",
-            "--timeout",
-            "60",
-            "--status-file",
-        ])
+        .args(["--label", "Headless board", "--timeout"])
+        .arg(enrollment_window())
+        .arg("--status-file")
         .arg(&status_file)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -422,24 +433,13 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
             "--expected-service",
             &recipient_service,
             "--timeout",
-            "60",
         ])
+        .arg(enrollment_window())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let recipient_output = recipient_process.wait_with_output().unwrap();
-    assert!(
-        recipient_output.status.success(),
-        "recipient enrollment failed: {}",
-        String::from_utf8_lossy(&recipient_output.stderr)
-    );
-    let approval_output = approval.wait_with_output().unwrap();
-    assert!(
-        approval_output.status.success(),
-        "approval failed: {}",
-        String::from_utf8_lossy(&approval_output.stderr)
-    );
+    both_succeed(recipient_process, approval);
 
     let member_cert =
         tilo_user_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
@@ -459,12 +459,12 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     );
 }
 
-/// The polkit helper deliberately has a fixed `/usr/bin/tilo-enroll` route.
+/// The polkit helper deliberately has a fixed `/usr/libexec/tilo/tilo-enroll` route.
 /// Exercise that route only where CI provides the mount capability needed to
 /// put the freshly-built binary at the production path without touching the
 /// runner's mount namespace.
 #[test]
-#[ignore = "requires root plus CAP_SYS_ADMIN; ci-filesystem.yml runs this explicitly"]
+#[ignore = "requires root plus CAP_SYS_ADMIN; t's real-fuse-privileged check runs it"]
 #[allow(
     clippy::too_many_lines,
     reason = "keeps privileged helper setup and ownership assertions in one auditable trace"
@@ -514,8 +514,8 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
             .unwrap();
         let recipient_id = hex::encode(recipient.verifying_key().to_bytes());
         let recipient_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&recipient));
-        let enroll = env!("CARGO_BIN_EXE_tilo-enroll");
-        let helper = env!("CARGO_BIN_EXE_tilo-home-peer-control");
+        let enroll = tilo_test_env::package_binary!("tilo-enroll");
+        let helper = tilo_test_env::package_binary!("tilo-home-peer-control");
         let ownership = Command::new("chown")
             .args(["-R", &format!("{REQUEST_UID}:{REQUEST_UID}")])
             .arg(scope.path())
@@ -523,8 +523,6 @@ fn privileged_helper_preserves_user_owned_personal_device_projection() {
             .unwrap();
         assert!(ownership.success(), "prepare non-root identity ownership");
 
-        // Keep the bind mount private. The helper itself retains its hardened,
-        // non-configurable `/usr/bin/tilo-enroll` path.
         let script = r#"
 set -eu
 exec 9</usr/bin/mount
@@ -537,9 +535,10 @@ printf '%s\n' 'tiloaccept:x:42424:42424::/home/tiloaccept:/sbin/nologin' >/etc/p
 /proc/self/fd/9 -t tmpfs tmpfs /home
 mkdir -p /home/tiloaccept
 /proc/self/fd/9 --bind "$TILO_SCOPE" /home/tiloaccept
-/proc/self/fd/9 -t tmpfs tmpfs /usr/bin
-: > /usr/bin/tilo-enroll
-/proc/self/fd/9 --bind "$TILO_ENROLL_BIN" /usr/bin/tilo-enroll
+/proc/self/fd/9 -t tmpfs tmpfs /usr/libexec
+mkdir /usr/libexec/tilo
+: > /usr/libexec/tilo/tilo-enroll
+/proc/self/fd/9 --bind "$TILO_ENROLL_BIN" /usr/libexec/tilo/tilo-enroll
 export PKEXEC_UID=42424
 /proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /proc/self/fd/7 300 &
 requester=$!
@@ -561,7 +560,7 @@ requester_start=$(/proc/self/fd/6 '{print $22}' "/proc/$requester/stat")
 "$TILO_HELPER" approve-device --identity-root "$TILO_APPROVER_ROOT" --identity-dir "$TILO_APPROVER_IDENTITIES" --expected-device "$TILO_RECIPIENT_ID" --expected-service "$TILO_RECIPIENT_SERVICE" &
 approval=$!
 # The joining device runs as the person, never through the broker.
-/proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /usr/bin/tilo-enroll pair-device --identity-root "$TILO_RECIPIENT_ROOT" --identity-dir "$TILO_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$TILO_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
+/proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /usr/libexec/tilo/tilo-enroll pair-device --identity-root "$TILO_RECIPIENT_ROOT" --identity-dir "$TILO_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$TILO_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
 wait "$approval"
 "#;
         let output = Command::new("unshare")
@@ -639,4 +638,65 @@ wait "$approval"
             assert_eq!(metadata.gid(), REQUEST_UID, "{} gid", path.display());
         }
     }
+}
+
+/// The root helper names the person whose identity directory an approval
+/// writes. While it waits for the other device, the person can replace that
+/// directory with a link to one root owns: the write is refused rather than
+/// made through the link.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_named_person_s_identity_directory_is_never_written_through_a_link() {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let work = tempfile::tempdir().unwrap();
+    let root_key = work.path().join("root.key");
+    std::fs::write(&root_key, [5_u8; 32]).unwrap();
+    std::fs::set_permissions(&root_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let person = std::fs::metadata(work.path()).unwrap().uid().to_string();
+    let device = hex::encode(SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes());
+    let elsewhere = work.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let enroll = tilo_test_env::package_binary!("tilo-enroll");
+    let certify = |identity_dir: &std::path::Path| {
+        Command::new(&enroll)
+            .arg("certify")
+            .arg("--root-key")
+            .arg(&root_key)
+            .arg("--identity-root")
+            .arg(work.path().join("system"))
+            .arg("--identity-dir")
+            .arg(identity_dir)
+            .args(["--person-uid", &person, "--device", &device])
+            .arg("--out")
+            .arg(work.path().join("device.cert"))
+            .output()
+            .unwrap()
+    };
+
+    let planted = work.path().join("planted");
+    std::os::unix::fs::symlink(&elsewhere, &planted).unwrap();
+    let refused = certify(&planted);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("identity directory"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+    let identity_dir = work.path().join("identity");
+    std::fs::create_dir(&identity_dir).unwrap();
+    let written = certify(&identity_dir);
+    assert!(
+        written.status.success(),
+        "{}",
+        String::from_utf8_lossy(&written.stderr)
+    );
+    assert_eq!(
+        std::fs::read_dir(identity_dir.join("fleets"))
+            .unwrap()
+            .count(),
+        1
+    );
 }

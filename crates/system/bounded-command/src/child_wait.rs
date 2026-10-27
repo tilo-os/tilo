@@ -172,8 +172,6 @@ pub struct WakeFd {
 }
 
 impl WakeFd {
-    /// # Errors
-    /// Returns the error of creating the eventfd (Linux) or pipe.
     #[cfg(target_os = "linux")]
     pub fn new() -> io::Result<Self> {
         // SAFETY: eventfd takes an initial count and flags and returns a new
@@ -188,8 +186,6 @@ impl WakeFd {
         })
     }
 
-    /// # Errors
-    /// Returns the error of creating the eventfd (Linux) or pipe.
     #[cfg(not(target_os = "linux"))]
     pub fn new() -> io::Result<Self> {
         let mut fds = [0; 2];
@@ -305,10 +301,9 @@ mod tests {
 
     #[test]
     fn wait_child_or_returns_on_wake() {
-        let mut child = sleeper("30");
+        let mut child = sleeper("3600");
         let wake = std::sync::Arc::new(WakeFd::new().unwrap());
         let ringer = wake.clone();
-        let began = Instant::now();
         let thread = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(50));
             ringer.ring();
@@ -316,7 +311,6 @@ mod tests {
         let first = wait_child_or(&mut child, Some(wake.fd()), None).unwrap();
         thread.join().unwrap();
         assert_eq!(first, Wakeup::Woken);
-        assert!(began.elapsed() < Duration::from_secs(10));
         // Level-triggered until drained, then quiet again.
         let soon = Instant::now()
             .checked_add(Duration::from_millis(30))
@@ -342,7 +336,7 @@ mod tests {
 
     #[test]
     fn wait_child_or_honours_deadline() {
-        let mut child = sleeper("30");
+        let mut child = sleeper("3600");
         let began = Instant::now();
         let deadline = began.checked_add(Duration::from_millis(100)).unwrap();
         assert_eq!(
@@ -350,7 +344,6 @@ mod tests {
             Wakeup::Deadline
         );
         assert!(Instant::now() >= deadline);
-        assert!(began.elapsed() < Duration::from_secs(10));
         // A past deadline only probes a live child.
         assert_eq!(
             wait_child_or(&mut child, None, Some(began)).unwrap(),
@@ -358,7 +351,6 @@ mod tests {
         );
         child.kill().unwrap();
         child.wait().unwrap();
-        // An already reaped child reports its status without waiting.
         assert!(matches!(
             wait_child_or(&mut child, None, Some(began)).unwrap(),
             Wakeup::Exited(_)

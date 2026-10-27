@@ -17,6 +17,8 @@ mod click_link_navigates;
 mod cold_start;
 #[path = "complete_capture.rs"]
 mod complete_capture;
+#[path = "content_reference.rs"]
+mod content_reference;
 #[path = "document_actions.rs"]
 mod document_actions;
 #[path = "e2e_smoke.rs"]
@@ -100,6 +102,8 @@ mod canonical_actions;
 
 #[path = "canonical_views.rs"]
 mod canonical_views;
+#[path = "sidebar_selection.rs"]
+mod sidebar_selection;
 
 #[path = "hosted_header_controls.rs"]
 mod hosted_header_controls;
@@ -107,6 +111,8 @@ mod hosted_header_controls;
 mod note_context_menu;
 #[path = "note_header.rs"]
 mod note_header;
+#[path = "note_reactions.rs"]
+mod note_reactions;
 #[path = "semantic_input.rs"]
 mod semantic_input;
 
@@ -154,8 +160,12 @@ mod paragraph_damage;
 #[path = "perf_scroll.rs"]
 mod perf_scroll;
 
+#[path = "desktop_open_work.rs"]
+mod desktop_open_work;
 #[path = "desktop_pan_frame.rs"]
 mod desktop_pan_frame;
+#[path = "typing_frame_work.rs"]
+mod typing_frame_work;
 
 #[path = "perf_interaction.rs"]
 mod perf_interaction;

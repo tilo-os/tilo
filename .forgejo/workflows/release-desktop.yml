@@ -254,15 +254,6 @@ jobs:
           path: signed-fedora/*
           if-no-files-found: error
 
-  # The amd64 Fedora RPMs this run built, installed on stock Fedora in a KVM
-  # VM and logged into through a display manager, with apps opened.
-  host-session-e2e:
-    if: ${{ !cancelled() && needs.package.result == 'success' && (!startsWith(github.ref, 'refs/tags/desktop-v') || needs.sign-rpm.result == 'success') }}
-    needs: [package, sign-rpm]
-    uses: ./.forgejo/workflows/host-session-e2e.yml
-    with:
-      rpm-artifact: ${{ startsWith(github.ref, 'refs/tags/desktop-v') && 'signed-fedora-44-amd64' || 'fedora-44-amd64' }}
-
   publish-os-payload:
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     needs: package
@@ -274,9 +265,9 @@ jobs:
           path: release
       - name: Publish immutable desktop payloads and advance their channels
         env:
-          # The CI account's package token writes the immutable payload (as
-          # build-kernel.yml does); the repository-scoped release token
-          # advances the payload channel variables. The Authorized Integration
+          # The CI account's package token writes the immutable payload; the
+          # repository-scoped release token advances the payload channel
+          # variables. The Authorized Integration
           # this used before was rejected ("authGroup.Verify") and Forgejo has
           # no API to repair it.
           PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
@@ -356,9 +347,10 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/desktop-v')
-    # Publication must retain the native session result for these exact RPMs.
-    # The reviewed Desktop catalog additionally requires the complete journey.
-    needs: [validate, package, sign-rpm, host-session-e2e]
+    # The login test of these RPMs on stock Fedora is t's check host-session-e2e
+    # (tools/ci/products.toml), which no job here runs. The reviewed Desktop
+    # catalog additionally requires the complete journey.
+    needs: [validate, package, sign-rpm]
     runs-on: runner
     timeout-minutes: 60
     steps:

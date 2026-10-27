@@ -262,13 +262,8 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
-    // currently have open, it just pushes the apps next to it further away, it
-    // does not need to resize them. i can resize as i want, it doesnt change
-    // the actual size of any other app."
     #[test]
     fn the_seam_belongs_to_the_window_you_are_in_else_half_to_each() {
-        // Phase `unfocused_seam_is_split_down_the_middle`.
         {
             let s = seam(false, false);
             assert_eq!(seam_owner(&s, 594.0), LEFT_TRAILING, "inside the left grip");
@@ -297,7 +292,6 @@ mod tests {
                 assert_eq!(seam_owner(&files_on_the_left, x), LEFT_TRAILING, "x = {x}");
             }
         }
-        // Phase `an_edge_knows_who_is_across_it`.
         {
             assert_eq!(LEFT_TRAILING.across(5), Some(4));
             assert_eq!(RIGHT_LEADING.across(5), Some(3));
@@ -314,13 +308,8 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): "if i increase the width of the thing i
-    // currently have open, it just pushes the apps next to it further away, it
-    // does not need to resize them. i can resize as i want, it doesnt change
-    // the actual size of any other app."
     #[test]
     fn a_plain_drag_resizes_only_the_grabbed_window_and_holds_its_opposite_edge() {
-        // Phase `trailing_edge_follows_the_pointer_and_the_leading_edge_stays`.
         {
             let drag = EdgeDrag {
                 edge: WindowEdge::Trailing,
@@ -355,12 +344,8 @@ mod tests {
         }
     }
 
-    // USER REQUIREMENT (2026-10-18): Shift+drag is zero-sum between the two
-    // windows at the seam: "i can resize as i want, it doesnt change the actual
-    // size of any other app" unless asked to.
     #[test]
     fn shift_drag_trades_width_between_the_two_windows_at_the_seam_only() {
-        // Phase `trailing_edge_with_shift`.
         {
             let drag = EdgeDrag {
                 edge: WindowEdge::Trailing,
@@ -393,7 +378,6 @@ mod tests {
             min: 320.0,
             max: f64::INFINITY,
         };
-        // Phase `push_stops_at_the_apps_minimum`.
         {
             let drag = EdgeDrag {
                 edge: WindowEdge::Leading,
@@ -408,7 +392,6 @@ mod tests {
             assert_eq!(r.width, 320.0, "the app's real minimum, not the floor");
             assert_eq!(r.pan, -80.0, "the right edge still holds");
         }
-        // Phase `zero_sum_stops_when_either_window_reaches_its_limit`.
         {
             let drag = EdgeDrag {
                 edge: WindowEdge::Trailing,
@@ -428,7 +411,6 @@ mod tests {
             let r = drag.resize(-1000.0);
             assert_eq!((r.width, r.other_width), (160.0, Some(740.0)));
         }
-        // Phase `a_client_maximum_stops_the_edge_too`.
         {
             let drag = EdgeDrag {
                 edge: WindowEdge::Trailing,
@@ -444,7 +426,6 @@ mod tests {
             };
             assert_eq!(drag.resize(400.0).width, 640.0);
         }
-        // Phase `there_is_no_felt_maximum`.
         {
             let drag = EdgeDrag {
                 edge: WindowEdge::Trailing,

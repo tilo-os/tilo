@@ -1137,7 +1137,7 @@ pub fn host_resource(committer: &Arc<dyn Committer>) -> Resource {
                 })
         },
     )
-    .programmatic();
+    .for_audience(tilo_actions::Audience::Agents);
     let mut host =
         Resource::new(HOST_RESOURCE, crate::surface::HOST_KIND, "tilolang").with_action(commit);
     for spec in <crate::effects::HostEffect as tilo_resource::Effect>::specs() {

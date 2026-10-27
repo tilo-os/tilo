@@ -82,9 +82,6 @@ pub trait RetainedIoAuthority: super::ServiceAuthority {
         ))
     }
     /// Clone the independently admitted root-protected source namespace.
-    ///
-    /// # Errors
-    /// Refuses missing namespace custody and propagates descriptor clone errors.
     fn removal_namespace(&self) -> io::Result<File> {
         Err(refused(
             "Root protected source namespace not independently admitted",

@@ -1,5 +1,3 @@
-//! Exercise the actual overview row and source-owned sign-in controls.
-
 #[test]
 fn current_website_signins_brand_pixels() {
     use super::super::visual_review_tests::evidence;
@@ -398,6 +396,7 @@ fn website_signins_row_routes_to_source_groups_not_flatpak_details() {
         preview.dirty = true;
     })
     .unwrap();
+    super::super::visual_tests::scroll_into_view(&mut app, "installer.sessions.overview");
     app.harness()
         .click_named("installer.sessions.overview")
         .unwrap();

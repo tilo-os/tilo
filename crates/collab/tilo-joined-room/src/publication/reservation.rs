@@ -300,9 +300,6 @@ pub fn preflight_storage(storage: &record::NativeAuthorityStorage) -> Result<(),
 /// The most bytes `storage` may pretty-print to: the cap, less the recovery
 /// its rooms reserved. [`preflight_storage`] refuses a record past it; a host
 /// that pretty-prints the record anyway counts against it in that one pass.
-///
-/// # Errors
-/// A room's reserve is out of bounds or exceeds the cap.
 pub fn authority_limit(storage: &record::NativeAuthorityStorage) -> Result<usize, String> {
     store::MAX_AUTHORITY_BYTES
         .checked_sub(extra(storage, false)?)
@@ -311,9 +308,6 @@ pub fn authority_limit(storage: &record::NativeAuthorityStorage) -> Result<usize
 /// Bytes a host file that embeds `storage` one level deeper than the record
 /// itself (the desktop session's state file) must keep free for the
 /// recovery its rooms reserved.
-///
-/// # Errors
-/// A room's reserve is out of bounds.
 pub fn reserved_file_bytes(storage: &record::NativeAuthorityStorage) -> Result<usize, String> {
     extra(storage, true)
 }

@@ -151,10 +151,6 @@ pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// As with [`write()`], callers must control the containing directory: resolution
 /// is not a defense against concurrent hostile namespace changes. This retains
 /// permission bits, not extended ACLs, ownership, or other inode metadata.
-///
-/// # Errors
-/// Returns resolution/access errors, rejects unsupported targets, and propagates
-/// [`write()`] durability errors (which may occur after publication).
 pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return write(path, bytes),
@@ -303,10 +299,6 @@ pub fn create_private_directory(dir: &Path) -> io::Result<()> {
 /// **exclusively** (`create_new`); an `AlreadyExists` error makes the next
 /// name be tried. The file is synced, renamed over `path` and the directory
 /// synced exactly as [`write()`] does.
-///
-/// # Errors
-///
-/// Returns `open_temp`'s error, or any error [`write()`] documents.
 pub fn write_with_temp_opener(
     path: &Path,
     bytes: &[u8],
@@ -446,7 +438,7 @@ pub fn write_regenerable_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Publish {
+pub(super) enum Publish {
     /// Rename over whatever `path` currently names.
     Replace,
     /// Hard-link into place only while `path` is still absent.
@@ -455,7 +447,7 @@ enum Publish {
     ReplaceUnsynced,
 }
 
-fn publish(
+pub(super) fn publish(
     path: &Path,
     bytes: &[u8],
     open: impl FnMut(&Path) -> io::Result<File>,
@@ -511,9 +503,6 @@ fn parent_or_current(path: &Path) -> &Path {
 /// Windows requires a writable directory handle with backup semantics for
 /// `FlushFileBuffers`; opening it with `File::open` fails before the flush.
 /// Callers requiring a strict durability barrier should propagate this result.
-///
-/// # Errors
-/// Returns the open/flush error, or `InvalidInput` if `path` is not a directory.
 pub fn sync_directory(path: &Path) -> io::Result<()> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -573,13 +562,11 @@ mod tests {
 
     #[test]
     fn directory_barriers_target_the_containing_directory() {
-        // Phase `the_directory_barrier_targets_the_containing_directory`.
         {
             assert_eq!(parent_or_current(Path::new("/a/b/c")), Path::new("/a/b"));
             assert_eq!(parent_or_current(Path::new("c")), Path::new("."));
             assert_eq!(parent_or_current(Path::new("/")), Path::new("."));
         }
-        // Phase `directory_barrier_flushes_the_directory_and_reports_invalid_targets`.
         {
             let root = tempfile::tempdir().unwrap();
             let file = root.path().join("saved.txt");
@@ -594,14 +581,12 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn writes_publish_only_complete_values_and_leave_no_temporary_files() {
-        // Phase `writes_the_bytes`.
         {
             let d = TempDir::new().unwrap();
             let p = d.path().join("a.json");
             write(&p, b"hello").unwrap();
             assert_eq!(fs::read(&p).unwrap(), b"hello");
         }
-        // Phase `replaces_existing_contents_completely`.
         {
             // Not a truncate-in-place: a shorter write must not leave a tail of the previous contents behind.
             let d = TempDir::new().unwrap();
@@ -610,7 +595,6 @@ mod tests {
             write(&p, b"short").unwrap();
             assert_eq!(fs::read(&p).unwrap(), b"short");
         }
-        // Phase `regenerable_writes_replace_completely_too`.
         {
             let d = TempDir::new().unwrap();
             let p = d.path().join("a.idx");
@@ -623,7 +607,6 @@ mod tests {
                 "no temp file left"
             );
         }
-        // Phase `private_regenerable_writes_keep_their_mode`.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -642,7 +625,6 @@ mod tests {
                 "no temp file left"
             );
         }
-        // Phase `empty_content_is_a_valid_write`.
         {
             let d = TempDir::new().unwrap();
             let p = d.path().join("a.json");
@@ -650,7 +632,6 @@ mod tests {
             write(&p, b"").unwrap();
             assert_eq!(fs::read(&p).unwrap(), b"");
         }
-        // Phase `leaves_no_temp_file_behind`.
         {
             let d = TempDir::new().unwrap();
             write(&d.path().join("a.json"), b"x").unwrap();
@@ -662,7 +643,6 @@ mod tests {
                 .collect();
             assert!(left.is_empty(), "left {left:?}");
         }
-        // Phase `a_crashed_writers_temp_file_does_not_block_the_next_save`.
         {
             // A fixed `path.tmp` name opened with `create_new` would fail forever
             // after one crash; a truncating open would share it between writers.
@@ -674,7 +654,6 @@ mod tests {
             write(&p, b"saved").unwrap();
             assert_eq!(fs::read(&p).unwrap(), b"saved");
         }
-        // Phase `concurrent_writers_publish_only_complete_values`.
         {
             use std::sync::{Arc, Barrier};
 
@@ -698,7 +677,6 @@ mod tests {
             assert_eq!(final_value.len(), 64 * 1024);
             assert!(final_value.iter().all(|byte| *byte == final_value[0]));
         }
-        // Phase `a_failed_rename_cleans_up_and_preserves_the_target`.
         {
             let d = TempDir::new().unwrap();
             let target = d.path().join("target");
@@ -741,14 +719,12 @@ mod tests {
                 );
             }
         }
-        // Phase `a_missing_parent_is_an_error_not_a_silent_success`.
         {
             let d = TempDir::new().unwrap();
             let p = d.path().join("nope").join("a.json");
             assert!(write(&p, b"x").is_err(), "must not pretend to have written");
             assert!(!p.exists());
         }
-        // Phase `write_creating_parent_makes_the_directory`.
         {
             let d = TempDir::new().unwrap();
             let p = d.path().join("deep").join("er").join("a.json");
@@ -760,7 +736,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn private_writes_apply_owner_only_modes_before_publication() {
-        // Phase `write_creating_parent_with_mode_is_private`.
         {
             use std::os::unix::fs::PermissionsExt;
 
@@ -772,7 +747,6 @@ mod tests {
                 0o600
             );
         }
-        // Phase `mode_is_applied_before_the_file_is_visible`.
         {
             use std::os::unix::fs::PermissionsExt;
             let d = TempDir::new().unwrap();
@@ -782,7 +756,6 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600, "a secret must land owner-only");
             assert_eq!(fs::read(&p).unwrap(), b"secret");
         }
-        // Phase `write_private_creates_and_tightens_an_owner_only_parent`.
         {
             use std::os::unix::fs::PermissionsExt;
             let d = TempDir::new().unwrap();
@@ -826,7 +799,6 @@ mod tests {
         }
         // Phase `a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones` (defined above).
         a_custom_opener_sees_hidden_sibling_names_and_retries_taken_ones();
-        // Phase `a_rejecting_opener_leaves_the_target_untouched`.
         {
             let d = TempDir::new().unwrap();
             let p = d.path().join("identity");
@@ -838,7 +810,6 @@ mod tests {
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
             assert_eq!(fs::read(&p).unwrap(), b"original");
         }
-        // Phase `create_publishes_only_while_the_name_is_free`.
         {
             let d = TempDir::new().unwrap();
             let p = d.path().join("broker-identity");
@@ -903,7 +874,6 @@ mod document_target_tests {
     #[cfg(unix)]
     #[test]
     fn document_save_follows_symlinks_but_refuses_dangling_and_hard_links() {
-        // Phase `document_save_follows_relative_symlink_and_preserves_private_mode`.
         {
             use std::os::unix::fs::{PermissionsExt, symlink};
             let dir = tempfile::tempdir().unwrap();
@@ -921,7 +891,6 @@ mod document_target_tests {
             );
             assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
         }
-        // Phase `document_save_refuses_dangling_and_multiple_hard_links`.
         {
             use std::os::unix::fs::{MetadataExt, symlink};
             let dir = tempfile::tempdir().unwrap();

@@ -82,10 +82,29 @@ impl MigrationIntent {
         refs: Vec<InstalledRef>,
         policy: crate::setup::migration_handoff::HomePolicy,
     ) -> io::Result<Self> {
+        Self::capture_reviewed_selection(home, directory, categories, refs, policy, &[])
+    }
+
+    /// The same reviewed capture with the person's nested source exclusions.
+    /// Exclusions are consent metadata: the plan carries them and the receiving
+    /// producer revalidates each path under its own pinned source.
+    ///
+    /// # Errors
+    /// Refuses unsafe grants, unavailable private state and malformed exclusions.
+    pub fn capture_reviewed_selection(
+        home: &Path,
+        directory: &Path,
+        categories: [bool; 3],
+        refs: Vec<InstalledRef>,
+        policy: crate::setup::migration_handoff::HomePolicy,
+        exclusions: &[NativePath],
+    ) -> io::Result<Self> {
         if categories[0] && categories[1] {
-            Self::capture_computer_applications(home, directory, categories, refs)
+            Self::capture_computer_applications_selected(
+                home, directory, categories, refs, exclusions,
+            )
         } else {
-            Self::capture_with_policy(home, directory, categories, refs, policy)
+            Self::capture_source_selection(home, directory, categories, refs, policy, exclusions)
         }
     }
     /// Reattest the exact applications selected alongside a retained home.
@@ -186,6 +205,20 @@ impl MigrationIntent {
         selected: Vec<InstalledRef>,
         home_policy: crate::setup::migration_handoff::HomePolicy,
     ) -> io::Result<Self> {
+        Self::capture_source_selection(source, directory, categories, selected, home_policy, &[])
+    }
+    /// Capture one source scope with explicit nested exclusions.
+    ///
+    /// # Errors
+    /// Refuses unsafe grants, unavailable private state and malformed exclusions.
+    pub fn capture_source_selection(
+        source: &Path,
+        directory: &Path,
+        categories: [bool; 3],
+        selected: Vec<InstalledRef>,
+        home_policy: crate::setup::migration_handoff::HomePolicy,
+        exclusions: &[NativePath],
+    ) -> io::Result<Self> {
         Self::capture_inner(
             source,
             directory,
@@ -193,6 +226,7 @@ impl MigrationIntent {
             selected,
             home_policy,
             crate::setup::migration_handoff::capture,
+            exclusions,
         )
     }
     #[cfg(any(test, feature = "test-support"))]
@@ -211,6 +245,7 @@ impl MigrationIntent {
             selected,
             home_policy,
             capture,
+            &[],
         )
     }
     fn capture_inner(
@@ -220,6 +255,7 @@ impl MigrationIntent {
         selected: Vec<InstalledRef>,
         home_policy: crate::setup::migration_handoff::HomePolicy,
         capture: Capture,
+        exclusions: &[NativePath],
     ) -> io::Result<Self> {
         let categories = Categories {
             home: categories[0],
@@ -236,6 +272,7 @@ impl MigrationIntent {
         let operation = uuid::Uuid::new_v4().to_string();
         let mut plan = capture(source, &operation, categories)?;
         plan.home_policy = home_policy;
+        plan.home_exclusions = exclusions.to_vec();
         plan.validate()?;
         let flatpak = if categories.flatpak {
             let bind = |root: &Path| {
@@ -351,6 +388,21 @@ impl MigrationIntent {
     pub fn source_plan(&self) -> Plan {
         self.grant.plan.clone()
     }
+
+    /// Bind an already written private source journal to this reviewed grant.
+    /// This changes only the plan's opaque locator; source custody, identity
+    /// and selection authority stay with the existing intent.
+    ///
+    /// # Errors
+    /// Refuses a locator that does not match the reviewed UID 1000 plan.
+    pub fn attach_deferred_handoff(
+        &self,
+        handoff: crate::setup::migration_handoff::DeferredHandoff,
+    ) -> io::Result<Self> {
+        let mut attached = self.clone();
+        attached.grant.plan.attach_deferred_handoff(handoff)?;
+        Ok(attached)
+    }
     /// Re-attest a granted original home before sealing USB setup metadata.
     /// No destination geometry is invented; the USB installer must check the
     /// retained partition against its actual chosen target before mutation.
@@ -366,6 +418,9 @@ impl MigrationIntent {
             self.grant.plan.categories,
         )?;
         current.home_policy = self.grant.plan.home_policy;
+        current
+            .deferred_handoff
+            .clone_from(&self.grant.plan.deferred_handoff);
         if current != self.grant.plan {
             return Err(error("The reviewed migration source changed"));
         }
@@ -493,6 +548,9 @@ impl MigrationIntent {
             &self.grant.plan.operation_id,
             self.grant.plan.categories,
         )?;
+        current
+            .deferred_handoff
+            .clone_from(&self.grant.plan.deferred_handoff);
         if current != self.grant.plan {
             return Err(error("Original pending source authority changed"));
         }
@@ -554,6 +612,9 @@ impl MigrationIntent {
             grant.plan.categories,
         )?;
         current.home_policy = grant.plan.home_policy;
+        current
+            .deferred_handoff
+            .clone_from(&grant.plan.deferred_handoff);
         if current != grant.plan {
             return Err(error("The reviewed migration source changed"));
         }
@@ -601,6 +662,9 @@ impl MigrationIntent {
             self.grant.plan.categories,
         )?;
         current.home_policy = self.grant.plan.home_policy;
+        current
+            .deferred_handoff
+            .clone_from(&self.grant.plan.deferred_handoff);
         self.bind_attested(current, operation, installation)
     }
     fn bind_attested(

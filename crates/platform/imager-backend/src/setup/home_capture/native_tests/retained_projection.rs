@@ -271,7 +271,7 @@ fn source_worker(
         )
     }));
     let endpoint = receive
-        .recv_timeout(Duration::from_secs(15))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("actual source namespace enrolled");
     (worker, endpoint)
 }
@@ -301,7 +301,7 @@ fn target_worker(
         )
     }));
     let endpoint = receive
-        .recv_timeout(Duration::from_secs(15))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("actual target namespace enrolled");
     (worker, endpoint)
 }
@@ -413,10 +413,10 @@ fn consumer(view: &File, state: &File, source: &File) -> (Consumer, UnixStream) 
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
     let (parent, child) = UnixStream::pair().unwrap();
     parent
-        .set_read_timeout(Some(Duration::from_secs(30)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     parent
-        .set_write_timeout(Some(Duration::from_secs(30)))
+        .set_write_timeout(Some(tilo_test_env::hang_bound()))
         .unwrap();
     let descriptors = [
         view.as_raw_fd(),
@@ -548,7 +548,7 @@ fn signed_private_projection_preserves_source_identity_and_normal_target_credent
             .unwrap(),
         Arc::clone(&authority),
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     let source_stream = loop {
         match endpoint.connect() {
             Ok(stream) => break stream,
@@ -622,7 +622,7 @@ fn signed_private_projection_preserves_source_identity_and_normal_target_credent
     signal.write_all(b"R").unwrap();
     signal.read_exact(&mut response).unwrap();
     assert_eq!(&response, b"E");
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         if let Some(status) = child.child.try_wait().unwrap() {
             assert!(status.success());

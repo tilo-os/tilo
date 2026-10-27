@@ -37,6 +37,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 mod contractions;
@@ -82,11 +83,8 @@ const DEFAULT_MAX_SUGGESTIONS: usize = 5;
 /// - a URL or email-looking token.
 pub fn check(dict: &Dictionary, text: &str) -> Vec<Misspelling> {
     let mut out = Vec::new();
-    for tok in tokenize(text) {
-        if !is_spellable(tok.text) {
-            continue;
-        }
-        if dict.contains(tok.text) || is_likely_proper_name(text, &tok) {
+    for tok in checkable_words(text) {
+        if dict.contains(&english_lookup_form(tok.text)) || is_likely_proper_name(text, &tok) {
             continue;
         }
         let suggestions = suggest(dict, tok.text, DEFAULT_MAX_SUGGESTIONS);
@@ -106,13 +104,95 @@ pub fn check(dict: &Dictionary, text: &str) -> Vec<Misspelling> {
 /// distances across the dictionary. Drawing a squiggle needs only the
 /// positions, so this avoids suggestion work when rendering underlines.
 pub fn spans(dict: &Dictionary, text: &str) -> Vec<(usize, usize)> {
-    tokenize(text)
+    checkable_words(text)
         .into_iter()
         .filter(|tok| {
-            is_spellable(tok.text) && !dict.contains(tok.text) && !is_likely_proper_name(text, tok)
+            !dict.contains(&english_lookup_form(tok.text)) && !is_likely_proper_name(text, tok)
         })
         .map(|tok| (tok.start, tok.end))
         .collect()
+}
+
+/// The words of `text` a checker judges, with their byte offsets: every
+/// spellable token, a hyphenated compound split into its parts, which are
+/// judged one by one ("ten-minute" is "ten" and "minute"; "well-knwon"
+/// flags only "knwon").
+fn checkable_words(text: &str) -> Vec<Token<'_>> {
+    let mut words = Vec::new();
+    for token in tokenize(text) {
+        if !is_spellable(token.text) {
+            continue;
+        }
+        let mut start = token.start;
+        for part in token.text.split('-') {
+            let end = start.saturating_add(part.len());
+            if is_spellable(part) {
+                words.push(Token {
+                    text: part,
+                    start,
+                    end,
+                });
+            }
+            start = end.saturating_add(1);
+        }
+    }
+    words
+}
+
+/// How an English word is looked up: with a typographic apostrophe made
+/// plain, and a possessive judged by the word it belongs to ("studio's" is
+/// spelled right when "studio" is).
+fn english_lookup_form(word: &str) -> Cow<'_, str> {
+    let word = normalize_lookup_word(word);
+    let stem = word
+        .strip_suffix("'s")
+        .or_else(|| word.strip_suffix("'S"))
+        .filter(|stem| stem.chars().any(char::is_alphabetic))
+        .map(str::to_owned);
+    match stem {
+        Some(stem) => Cow::Owned(stem),
+        None => word,
+    }
+}
+
+/// Which of `words` English spells right: the system's Hunspell dictionary
+/// for the language (affix rules, plurals, possessives, which words take a
+/// capital), else the embedded word list; the product names and common
+/// first names the embedded list adds count in both. `None` while neither
+/// is ready.
+fn english_results(language: &str, words: &[&str]) -> Option<Vec<bool>> {
+    let lookups: Vec<Cow<'_, str>> = words.iter().map(|word| english_lookup_form(word)).collect();
+    let lookups: Vec<&str> = lookups.iter().map(AsRef::as_ref).collect();
+    // A program building the embedded list in idle steps (a browser page,
+    // without threads) never loads a system dictionary on a keystroke.
+    let system = if BUILT_IN_STEPS.load(Ordering::Acquire) {
+        None
+    } else {
+        hunspell_results(english_dictionary_name(language), &lookups)
+    };
+    let known = if let Some(known) = system {
+        known
+    } else {
+        let english = shared_english()?;
+        lookups.iter().map(|word| english.contains(word)).collect()
+    };
+    Some(
+        known
+            .into_iter()
+            .zip(&lookups)
+            .map(|(known, word)| known || dictionary::is_extra_word(word))
+            .collect(),
+    )
+}
+
+/// The Hunspell dictionary English is checked with: the language's own
+/// region, and American English for a bare `en`.
+fn english_dictionary_name(language: &str) -> &str {
+    if language.len() <= 2 {
+        "en_US"
+    } else {
+        language
+    }
 }
 
 /// Spell-check text in a BCP-47-ish language such as en-US or de-DE.
@@ -130,15 +210,21 @@ pub fn spans_for_language(language: &str, text: &str) -> Vec<(usize, usize)> {
 }
 
 fn dictionary_spans(language: &str, text: &str) -> Vec<(usize, usize)> {
-    if is_english(language) {
-        return spans(shared_english(), text);
-    }
-    let tokens: Vec<_> = tokenize(text)
-        .into_iter()
-        .filter(|token| is_spellable(token.text))
-        .collect();
+    let tokens = checkable_words(text);
     if tokens.is_empty() {
         return Vec::new();
+    }
+    if is_english(language) {
+        let words: Vec<&str> = tokens.iter().map(|token| token.text).collect();
+        let Some(correct) = english_results(language, &words) else {
+            return Vec::new();
+        };
+        return tokens
+            .into_iter()
+            .zip(correct)
+            .filter(|(token, correct)| !correct && !is_likely_proper_name(text, token))
+            .map(|(token, _)| (token.start, token.end))
+            .collect();
     }
 
     // Hunspell dictionaries conventionally use ASCII apostrophes even when a
@@ -173,7 +259,7 @@ pub fn suggestions_for_language(language: &str, word: &str, max: usize) -> Vec<S
 
 fn dictionary_suggestions(language: &str, word: &str, max: usize) -> Vec<String> {
     if is_english(language) {
-        return suggest(shared_english(), word, max);
+        return shared_english().map_or_else(Vec::new, |english| suggest(english, word, max));
     }
     let lookup = normalize_lookup_word(word);
     if let Some(mut suggestions) = hunspell_suggestions(language, lookup.as_ref()) {
@@ -293,7 +379,7 @@ fn dictionary_correction(language: &str, word: &str, lower: &str) -> Option<Stri
         return None;
     }
     if is_english(language) {
-        let candidate = unique_adjacent_transposition(shared_english(), lower)?;
+        let candidate = unique_adjacent_transposition(shared_english()?, lower)?;
         return Some(match_word_case(word, &candidate));
     }
     let candidate = dictionary_suggestions(language, word, 1)
@@ -382,9 +468,10 @@ pub struct Dictionaries {
     spans: fn(&str, &str) -> Vec<(usize, usize)>,
     suggestions: fn(&str, &str, usize) -> Vec<String>,
     correction: fn(&str, &str, &str) -> Option<String>,
+    prepare: fn(&mut dyn FnMut() -> bool) -> bool,
 }
 
-/// Hands over [`Dictionaries`], for [`install_dictionaries`].
+/// Hands over [`Dictionaries`], for `install_dictionaries`.
 pub type MakeDictionaries = fn() -> Dictionaries;
 
 /// The dictionaries this crate checks with.
@@ -394,6 +481,7 @@ pub fn builtin_dictionaries() -> Dictionaries {
         spans: dictionary_spans,
         suggestions: dictionary_suggestions,
         correction: dictionary_correction,
+        prepare: prepare_english,
     }
 }
 
@@ -411,8 +499,7 @@ mod loading {
 
     /// How many times the dictionaries arrived: never, as they were always
     /// there.
-    #[must_use]
-    pub fn dictionaries_generation() -> u64 {
+    pub(crate) fn loaded_generation() -> u64 {
         0
     }
 }
@@ -447,10 +534,8 @@ mod loading {
         dictionaries
     }
 
-    /// Bumped when the dictionaries arrive: a field that checked before
-    /// checks again once this moved.
-    #[must_use]
-    pub fn dictionaries_generation() -> u64 {
+    /// Bumped when the dictionaries arrive.
+    pub(crate) fn loaded_generation() -> u64 {
         GENERATION.load(Ordering::Acquire)
     }
 
@@ -474,13 +559,65 @@ mod loading {
     }
 }
 
-pub use loading::dictionaries_generation;
 #[cfg(feature = "lazy-dictionaries")]
 pub use loading::{defer_dictionaries, dictionaries_load_failed, install_dictionaries};
 
-fn shared_english() -> &'static Dictionary {
-    static DICTIONARY: OnceLock<Dictionary> = OnceLock::new();
-    DICTIONARY.get_or_init(Dictionary::builtin)
+/// Bumped when the dictionaries arrive, or the English one is built in steps
+/// ([`prepare_dictionaries`]): a field that checked before checks again once
+/// this moved.
+#[must_use]
+pub fn dictionaries_generation() -> u64 {
+    loading::loaded_generation().wrapping_add(ENGLISH_GENERATION.load(Ordering::Acquire))
+}
+
+static ENGLISH: OnceLock<Dictionary> = OnceLock::new();
+static ENGLISH_GENERATION: AtomicU64 = AtomicU64::new(0);
+static BUILT_IN_STEPS: AtomicBool = AtomicBool::new(false);
+
+/// The program builds the English dictionary in steps, in its idle time
+/// ([`prepare_dictionaries`]), instead of on the first check: a check before
+/// it is built flags nothing, and the fields check again once it is.
+///
+/// For a browser page, which has no thread to build it on: built on the
+/// first check, its 89,000 words held the keystroke that asked for well
+/// over a hundred milliseconds.
+pub fn build_dictionaries_in_steps() {
+    BUILT_IN_STEPS.store(true, Ordering::Release);
+}
+
+/// Build the English dictionary while `more` answers true. Fetches the
+/// dictionaries' code first when it is still to come (`None` until it is
+/// in); then true once the dictionary is built.
+pub fn prepare_dictionaries(more: &mut dyn FnMut() -> bool) -> Option<bool> {
+    loading::dictionaries().map(|dictionaries| (dictionaries.prepare)(more))
+}
+
+fn prepare_english(more: &mut dyn FnMut() -> bool) -> bool {
+    static BUILDER: Mutex<Option<dictionary::BuiltinBuilder>> = Mutex::new(None);
+    if ENGLISH.get().is_some() {
+        return true;
+    }
+    let Ok(mut builder) = BUILDER.lock() else {
+        return false;
+    };
+    if !builder.get_or_insert_with(Default::default).step(more) {
+        return false;
+    }
+    if let Some(built) = builder.take()
+        && ENGLISH.set(built.finish()).is_ok()
+    {
+        ENGLISH_GENERATION.fetch_add(1, Ordering::AcqRel);
+    }
+    true
+}
+
+/// The English dictionary, built on first use unless the program builds it
+/// in steps ([`build_dictionaries_in_steps`]); then `None` until it is.
+fn shared_english() -> Option<&'static Dictionary> {
+    if BUILT_IN_STEPS.load(Ordering::Acquire) {
+        return ENGLISH.get();
+    }
+    Some(ENGLISH.get_or_init(Dictionary::builtin))
 }
 
 /// Begin loading `language`'s dictionary before the first field is focused.
@@ -512,7 +649,9 @@ pub fn warm_up_language(language: &str) {
         .name("spellcheck-warmup".to_string())
         .spawn(move || {
             if is_english(&language) {
-                let _ = shared_english();
+                if !hunspell::warm_up(english_dictionary_name(&language)) {
+                    let _ = shared_english();
+                }
             } else {
                 hunspell::warm_up(&language);
             }
@@ -632,14 +771,15 @@ fn is_spellable(word: &str) -> bool {
 
 /// Unknown title-cased words inside a sentence are overwhelmingly proper
 /// nouns (people, places, products). Avoiding those noisy squiggles is more
-/// useful than guessing at a correction; sentence-initial words are still
-/// checked, where capitalization carries no proper-name signal.
+/// useful than guessing at a correction. A sentence-initial word carries no
+/// such signal and is still checked, unless the next word is title-cased
+/// too: "Lena Hoffmann" opening a line is a name.
 fn is_likely_proper_name(text: &str, token: &Token<'_>) -> bool {
-    let mut chars = token.text.chars();
-    if !chars.next().is_some_and(char::is_uppercase)
-        || !chars.all(|character| !character.is_uppercase())
-    {
+    if !is_title_case(token.text) {
         return false;
+    }
+    if opens_a_name(text, token) {
+        return true;
     }
     let Some(prefix) = text.get(..token.start) else {
         return false;
@@ -656,6 +796,30 @@ fn is_likely_proper_name(text: &str, token: &Token<'_>) -> bool {
         return false;
     };
     !matches!(previous, '.' | '!' | '?' | '\n' | '\r')
+}
+
+/// Whether `word` is capitalised and otherwise lowercase ("Lena").
+fn is_title_case(word: &str) -> bool {
+    let mut chars = word.chars();
+    chars.next().is_some_and(char::is_uppercase) && chars.all(|character| !character.is_uppercase())
+}
+
+/// Whether the word right after `token`, on the same line, is title-cased:
+/// the two are a name ("Lena Hoffmann", "Northwind Studio").
+fn opens_a_name(text: &str, token: &Token<'_>) -> bool {
+    let Some(rest) = text.get(token.end..) else {
+        return false;
+    };
+    let rest = rest.trim_start_matches([' ', '\t', '\u{a0}']);
+    let next: String = rest
+        .chars()
+        .take_while(|character| character.is_alphabetic() || matches!(character, '\'' | '\u{2019}'))
+        .collect();
+    next.chars()
+        .filter(|character| character.is_alphabetic())
+        .count()
+        >= 2
+        && is_title_case(&next)
 }
 
 /// Heuristic: does the token look like a bare domain name (`name.tld`)?
@@ -685,7 +849,6 @@ mod tests {
 
     #[test]
     fn check_flags_misspellings_but_accepts_conversational_english_and_names() {
-        // Phase `teh_is_flagged_and_suggests_the`.
         {
             let dict = builtin();
             let result = check(&dict, "teh");
@@ -697,7 +860,6 @@ mod tests {
                 result[0].suggestions
             );
         }
-        // Phase `correct_sentence_has_no_misspellings`.
         {
             let dict = builtin();
             let text = "the quick brown fox jumps over the lazy dog";
@@ -707,7 +869,6 @@ mod tests {
                 "expected zero misspellings, got {result:?}"
             );
         }
-        // Phase `conversational_english_accepts_contractions_smart_quotes_and_common_names`.
         {
             let dict = builtin();
             for word in ["I'm", "I\u{2019}m", "James", "Emma", "Michael", "Sophia"] {
@@ -721,7 +882,6 @@ mod tests {
                 );
             }
         }
-        // Phase `titlecase_unknowns_are_treated_as_names_only_inside_a_sentence`.
         {
             let dict = builtin();
             assert!(spans(&dict, "I met Qwordz today").is_empty());
@@ -729,12 +889,10 @@ mod tests {
             assert_eq!(spans(&dict, "Hello. Qwordz arrived"), vec![(7, 13)]);
             assert_eq!(spans(&dict, "Hello\nQwordz arrived"), vec![(6, 12)]);
         }
-        // Phase `mixed_case_identifiers_and_brands_are_not_spellchecked`.
         {
             let dict = builtin();
             assert!(spans(&dict, "TextInput iPhone GitHub").is_empty());
         }
-        // Phase `unknown_word_with_suggestions_records_span`.
         {
             let dict = builtin();
             let text = "a wrold of color";
@@ -767,7 +925,6 @@ mod tests {
                 .collect();
             assert_eq!(spans(&dict, text), full);
             assert!(!full.is_empty(), "the fixture has to contain a misspelling");
-            // Guards against both paths agreeing on the same wrong answer.
             let flagged: Vec<&str> = full.iter().map(|&(s, e)| &text[s..e]).collect();
             assert_eq!(flagged, vec!["recieve", "teh"]);
         }
@@ -790,7 +947,6 @@ mod tests {
                 );
             }
         }
-        // Phase `numbers_urls_and_allcaps_are_skipped`.
         {
             let dict = builtin();
             let text =
@@ -802,7 +958,6 @@ mod tests {
                 "numbers/URLs/emails/ALL-CAPS should be skipped, but flagged: {flagged:?}"
             );
         }
-        // Phase `allcaps_acronym_alone_is_skipped`.
         {
             let dict = builtin();
             assert!(check(&dict, "NASA").is_empty());
@@ -810,7 +965,6 @@ mod tests {
             // A single capital is a real one-letter word, still checked (and valid).
             assert!(check(&dict, "I").is_empty());
         }
-        // Phase `pure_numbers_skipped`.
         {
             let dict = builtin();
             for n in ["0", "42", "3.14", "1,000", "2024", "100th"] {
@@ -820,7 +974,6 @@ mod tests {
                 );
             }
         }
-        // Phase `tokenize_offsets_round_trip_a_slice`.
         {
             let text = "Hello, world! It's a   test.";
             for tok in tokenize(text) {
@@ -835,20 +988,17 @@ mod tests {
 
     #[test]
     fn dictionaries_and_corrections_are_usable_ranked_and_conservative() {
-        // Phase `case_insensitive_membership`.
         {
             let dict = builtin();
             // Mixed/upper case of a known word must not be flagged.
             assert!(check(&dict, "The Quick Brown Fox").is_empty());
         }
-        // Phase `add_word_removes_a_word_from_check_results`.
         {
             let mut dict = Dictionary::from_words(["the", "quick", "brown", "fox"]);
             // "tilo" is unknown → flagged.
             let before = check(&dict, "the tilo fox");
             assert_eq!(before.len(), 1, "got {before:?}");
             assert_eq!(before[0].word, "tilo");
-            // Accept it into the user dictionary.
             assert!(dict.add_word("tilo"));
             // Re-check: no longer flagged.
             let after = check(&dict, "the tilo fox");
@@ -857,7 +1007,6 @@ mod tests {
                 "expected no misspellings after add_word, got {after:?}"
             );
         }
-        // Phase `from_words_builds_a_usable_dictionary`.
         {
             let dict = Dictionary::from_words(["alpha", "beta", "gamma"]);
             assert!(dict.contains("ALPHA"));
@@ -868,7 +1017,6 @@ mod tests {
             // None of the three short, distant words is within edit distance 2.
             assert!(result[0].suggestions.is_empty());
         }
-        // Phase `suggestions_are_ranked_by_distance_then_length`.
         {
             // Build a small dictionary where ordering is deterministic and checkable.
             let dict = Dictionary::from_words(["cat", "cart", "cats", "scat", "cataract"]);
@@ -876,7 +1024,6 @@ mod tests {
             // "cat" is distance 1; the 4-letter ones are distance >= 1 too but longer.
             assert_eq!(s.first().map(String::as_str), Some("cat"));
         }
-        // Phase `probable_corrections_are_conservative_and_preserve_case`.
         {
             assert_eq!(probable_correction("en_US", "teh").as_deref(), Some("the"));
             assert_eq!(
@@ -920,7 +1067,6 @@ mod tests {
             }
             assert_eq!(probable_correction("fr_FR", "doesnt"), None);
         }
-        // Phase `builtin_dictionary_is_substantial`.
         {
             let dict = builtin();
             assert!(
@@ -929,5 +1075,37 @@ mod tests {
                 dict.len()
             );
         }
+    }
+
+    #[test]
+    fn correct_words_names_compounds_and_possessives_are_not_flagged() {
+        let letter = "Dear Ms Okafor,\n\
+            I saw the position advertised on your website last week. \
+            Your studio\u{2019}s work is the reason I am writing; the office is a ten-minute walk away.\n\
+            Yours sincerely,\n\
+            Lena Hoffmann";
+        let dict = builtin();
+        assert!(
+            spans(&dict, letter).is_empty(),
+            "{:?}",
+            spans(&dict, letter)
+        );
+        assert!(
+            spans_for_language("en_US", letter).is_empty(),
+            "{:?}",
+            spans_for_language("en_US", letter)
+        );
+        assert!(spans(&dict, "Website first. Minutes later.").is_empty());
+
+        // A compound is judged by its parts: only the misspelled part is marked.
+        let compound = "a well-knwon fact";
+        assert_eq!(spans(&dict, compound), vec![(7, 12)]);
+        assert_eq!(&compound[7..12], "knwon");
+        // A possessive is judged by its word, so a misspelled one still shows.
+        assert_eq!(spans(&dict, "the wrold's end"), vec![(4, 11)]);
+        // A capitalised misspelling opening a sentence is still marked; a run
+        // of capitalised words opening a line is a name.
+        assert_eq!(spans(&dict, "Wrold peace"), vec![(0, 5)]);
+        assert!(spans(&dict, "Qwordz Brightwater sent it").is_empty());
     }
 }

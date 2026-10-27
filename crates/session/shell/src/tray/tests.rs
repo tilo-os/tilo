@@ -451,7 +451,7 @@ fn password_manager() -> crate::shell::host_apps::HostApp {
     crate::shell::host_apps::HostApp {
         desktop_id: "com.onepassword.OnePassword.desktop".into(),
         name: "1Password".into(),
-        source_label: "Flatpak",
+        kind: desktop_entry::EntryKind::Flatpak,
         categories: Vec::new(),
         keywords: Vec::new(),
         window_identities: vec![
@@ -462,6 +462,7 @@ fn password_manager() -> crate::shell::host_apps::HostApp {
         mime_types: Vec::new(),
         terminal: false,
         icon: None,
+        downloaded: None,
     }
 }
 

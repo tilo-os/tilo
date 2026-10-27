@@ -313,7 +313,6 @@ mod tests {
         session.key(&backspace, None, none);
         assert_eq!(session.text(), "a仮名");
 
-        // A commit replaces the selection, as typing does.
         session.key(
             &Key::Named(NamedKey::ArrowLeft),
             None,

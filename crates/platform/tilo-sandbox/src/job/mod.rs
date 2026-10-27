@@ -140,18 +140,6 @@ impl<'a> Launch<'a> {
         self
     }
 
-    /// Start the job inside the cgroup named by this directory descriptor,
-    /// for a caller that makes and limits its own cgroups and only wants the
-    /// atomic placement (`CLONE_INTO_CGROUP`): t, whose jobs (micro-VM
-    /// steps' QEMU among them) have cgroups it meters itself. The descriptor
-    /// must stay open until [`Launch::spawn`] returns.
-    #[cfg(target_os = "linux")]
-    #[must_use]
-    pub fn cgroup_fd(mut self, dir: BorrowedFd<'a>) -> Self {
-        self.cgroup = Some(dir);
-        self
-    }
-
     /// Run `hook` after the job's namespaces exist and before any of it
     /// runs: attach its network, for instance. An error stops the job.
     #[must_use]
@@ -204,9 +192,6 @@ impl<'a> Launch<'a> {
 /// Create the mount points `spec` needs in an image root, as the caller,
 /// before the job starts: the job itself can't write into its read-only
 /// root. Directories for directory sources, empty files for file sources.
-///
-/// # Errors
-/// Returns the first mount point that could not be made.
 pub fn prepare_mount_points(spec: &JobSpec) -> std::io::Result<()> {
     let Root::Image(root) = &spec.root else {
         return Ok(());

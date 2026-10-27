@@ -14,6 +14,11 @@ pub const MAX_DISPLAY_CONTROL_BYTES: usize = 64 * 1024;
 pub enum DisplayCommand {
     Inspect,
     Identify,
+    /// Flash one display's number on that display alone, as when a person
+    /// points at it or picks it in Settings.
+    IdentifyDisplay {
+        display: String,
+    },
     Apply {
         observed_set: DisplaySet,
         candidate: DisplayConfig,
@@ -173,10 +178,6 @@ fn decide(
 
 /// Execute admitted intent against the host's fresh runtime snapshot and
 /// settings source. The host derives prior state and transaction identity.
-///
-/// # Errors
-/// Refuses stale outputs, unsupported intent, expired decisions, oversized
-/// replies and persistence errors without changing other settings sections.
 pub fn execute(
     source: &dyn SettingsSource,
     observed: DisplayHardwareSnapshot,
@@ -195,13 +196,30 @@ pub fn execute(
         .unwrap_or_default();
     let mut current = transaction(&document)?;
     let mutates = command.mutates();
-    let identify = matches!(command, DisplayCommand::Identify).then(|| {
-        crate::display_identify::IdentifyRequest {
+    let identify = match &command {
+        DisplayCommand::Identify => Some(crate::display_identify::IdentifyRequest {
             requested_unix_ms: tilo_clock::unix_now_ms(),
+            display: None,
+        }),
+        DisplayCommand::IdentifyDisplay { display } => {
+            if !observed
+                .outputs
+                .iter()
+                .any(|output| output.descriptor.connector == *display)
+            {
+                return Err("That display is not connected.".into());
+            }
+            Some(crate::display_identify::IdentifyRequest {
+                requested_unix_ms: tilo_clock::unix_now_ms(),
+                display: Some(display.clone()),
+            })
         }
-    });
+        _ => None,
+    };
     match command {
-        DisplayCommand::Inspect | DisplayCommand::Identify => {}
+        DisplayCommand::Inspect
+        | DisplayCommand::Identify
+        | DisplayCommand::IdentifyDisplay { .. } => {}
         DisplayCommand::Apply {
             observed_set,
             candidate,
@@ -228,7 +246,7 @@ pub fn execute(
     if bytes.len() > MAX_DISPLAY_CONTROL_BYTES {
         return Err("The display reply exceeds its wire bound.".into());
     }
-    if let Some(request) = identify {
+    if let Some(request) = reply.identify.clone() {
         if reply.observed.outputs.is_empty() {
             return Err("No connected display can be identified.".into());
         }
@@ -325,6 +343,8 @@ mod tests {
 
     #[test]
     fn host_identify_uses_the_existing_request_section_without_creating_a_preview() {
+        // Freshness is judged in wall time; it stands still here.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let source = HostDocument::new(
             serde_json::json!({"unrelated":{"keep":true}})
                 .as_object()
@@ -342,6 +362,40 @@ mod tests {
         assert_eq!(source.load()["unrelated"]["keep"], true);
         assert!(source.load().get("display_transaction").is_none());
         assert!(reply.transaction.is_none());
+    }
+
+    #[test]
+    fn identifying_one_display_flashes_it_alone_and_refuses_an_unknown_one() {
+        tilo_clock::freeze_wall(tilo_clock::wall());
+        let source = HostDocument::new(serde_json::Map::new(), |_| Ok(()));
+        let reply = execute(
+            &source,
+            observed(),
+            DisplayCommand::IdentifyDisplay {
+                display: "eDP-1".into(),
+            },
+        )
+        .unwrap();
+        let request = reply.identify.expect("the flash is stamped");
+        assert_eq!(request.display.as_deref(), Some("eDP-1"));
+        assert_eq!(source.load()["display_identify"]["display"], "eDP-1");
+        assert!(reply.transaction.is_none(), "a flash is no preview");
+        let every = execute(&source, observed(), DisplayCommand::Identify).unwrap();
+        assert_eq!(every.identify.and_then(|request| request.display), None);
+        assert!(
+            source.load()["display_identify"]["display"].is_null(),
+            "the next request for every display is not narrowed by the last flash"
+        );
+        assert!(
+            execute(
+                &source,
+                observed(),
+                DisplayCommand::IdentifyDisplay {
+                    display: "Virtual-1".into(),
+                },
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -463,6 +517,8 @@ mod tests {
 
     #[test]
     fn decisions_require_the_current_host_transaction_and_connected_outputs() {
+        // The confirmation deadline is wall time; it stands still here.
+        tilo_clock::freeze_wall(tilo_clock::wall());
         let source = HostDocument::new(serde_json::Map::default(), |_| Ok(()));
         let mut transaction = execute(&source, observed(), request(&observed()))
             .unwrap()
@@ -632,7 +688,7 @@ mod compare_tests {
 
     #[test]
     fn session_records_do_not_overwrite_a_newer_compositor_decision() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_dir();
         let paths = SessionPaths::beside(directory.path().join("settings.json"));
         let session = SessionSettings::open(paths).unwrap();
         refuses_stale_confirmation(&session);
@@ -642,12 +698,11 @@ mod compare_tests {
 
     #[test]
     fn host_transaction_accepts_durable_state_when_the_copy_needs_repair() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = crate::test_dir();
         let paths = SessionPaths::beside(directory.path().join("settings.json"));
         let session = SessionSettings::open(paths.clone()).unwrap();
         let before = session.load();
         let copy = std::fs::read(&paths.copy).unwrap();
-        // Save the device record, then fail publication of the readable copy.
         tilo_files::native::atomic::test_support::with_failure_on_nth(
             tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
             2,

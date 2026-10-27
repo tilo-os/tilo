@@ -26,9 +26,22 @@ pub const ANNOTATION_KIND: &str = "Annotations";
 /// A precise, lazy full-text match. Unlike a chapter row this resource names
 /// the exact immutable block that satisfied a query, so activating a search
 /// hit never guesses at a nearby reading location.
-pub const LOCATION_KIND: &str = "Reading locations";
+pub const LOCATION_KIND: &str = "Passages";
 
-fn chapter_label(chapter: &crate::model::Chapter, index: usize) -> String {
+/// The filter naming the book a result is in.
+pub const BOOK_FACET: &str = "book";
+/// The filter naming who wrote it.
+pub const AUTHOR_FACET: &str = "author";
+
+/// What a filter is called.
+fn facet_label(key: &str) -> &'static str {
+    match key {
+        BOOK_FACET => "Book",
+        _ => "Author",
+    }
+}
+
+pub(crate) fn chapter_label(chapter: &crate::model::Chapter, index: usize) -> String {
     if chapter.title.trim().is_empty() {
         format!("Chapter {}", index + 1)
     } else {
@@ -251,9 +264,12 @@ impl BookSearch {
 
         // `fields` beyond the title and subtitle (an author, a subject, a
         // note) are what else the entry is found by, each at its weight.
+        // `facets` are the filters a result answers to: its book, its
+        // author.
         let mut add = |result: SearchResult,
                        target: SearchTarget,
                        fields: &[(&str, SearchWeight)],
+                       facets: &[(&'static str, &str)],
                        body: Option<SearchBody>|
          -> bool {
             let anchor = result.action_id.clone();
@@ -269,6 +285,11 @@ impl BookSearch {
                 .grouped(result.kind.clone());
             for (text, weight) in fields {
                 entry = entry.field(*text, *weight);
+            }
+            for (key, value) in facets {
+                if !value.trim().is_empty() {
+                    entry = entry.facet(*key, facet_label(key), *value);
+                }
             }
             if let Some(subtitle) = &result.subtitle {
                 entry = entry.subtitled(subtitle.clone());
@@ -292,7 +313,13 @@ impl BookSearch {
             if !book.author.trim().is_empty() {
                 result = result.with_subtitle(book.author.clone());
             }
-            if !add(result, SearchTarget::Book(book_index), &[], None) {
+            if !add(
+                result,
+                SearchTarget::Book(book_index),
+                &[],
+                &[(BOOK_FACET, &title), (AUTHOR_FACET, &book.author)],
+                None,
+            ) {
                 return Self::unavailable(books, annotations, registry);
             }
             let chapter_bodies = prior
@@ -330,6 +357,7 @@ impl BookSearch {
                         (&title, SearchWeight::Subtitle),
                         (&book.author, SearchWeight::Metadata),
                     ],
+                    &[(BOOK_FACET, &title), (AUTHOR_FACET, &book.author)],
                     chapter_bodies.get(chapter_index).cloned(),
                 ) {
                     return Self::unavailable(books, annotations, registry);
@@ -357,6 +385,7 @@ impl BookSearch {
                 result,
                 SearchTarget::RemoteBook(registry_index),
                 &[(&entry.subject, SearchWeight::Metadata)],
+                &[(BOOK_FACET, &title), (AUTHOR_FACET, &entry.author)],
                 None,
             ) {
                 return Self::unavailable(books, annotations, registry);
@@ -411,6 +440,7 @@ impl BookSearch {
                     (&author, SearchWeight::Metadata),
                     (&kind, SearchWeight::Metadata),
                 ],
+                &[(BOOK_FACET, &title), (AUTHOR_FACET, &author)],
                 None,
             ) {
                 return Self::unavailable(books, annotations, registry);
@@ -468,7 +498,7 @@ impl BookSearch {
         })
     }
 
-    fn book_title(book: &Book) -> &str {
+    pub(crate) fn book_title(book: &Book) -> &str {
         if book.title.trim().is_empty() {
             "Untitled"
         } else {
@@ -497,7 +527,7 @@ impl BookSearch {
         }
     }
 
-    fn location_anchor(book_id: &str, chapter: usize, block: usize) -> String {
+    pub(crate) fn location_anchor(book_id: &str, chapter: usize, block: usize) -> String {
         format!("ebook.location:{book_id}:{chapter}:{block}")
     }
 
@@ -574,6 +604,7 @@ impl BookSearch {
                         title: candidate.title.clone(),
                         author: candidate.author.clone(),
                         subject: candidate.subject.clone(),
+                        index: ui::tilo_resource::Bytes::Empty,
                         ..LibraryEntry::default()
                     })
             })?;
@@ -602,6 +633,12 @@ impl BookSearch {
         let row = *self.resource_rows.get(id)?;
         let entry = self.entries.get(row)?;
         self.resource_for(entry, id)
+    }
+
+    /// The library's entries this projection was built over: every book
+    /// the person or a collaborator has, on this device or not.
+    pub(crate) fn registry(&self) -> &[LibraryEntry] {
+        &self.registry
     }
 
     /// What opening the hit anchored at `id` runs: the reader opens the
@@ -905,6 +942,7 @@ mod tests {
                 shared: true,
                 added: 1,
                 content: ui::tilo_resource::Bytes::Empty,
+                index: ui::tilo_resource::Bytes::Empty,
             };
             let provider = BookSearchProvider::new_with_registry(&[], &[], &[entry]);
             let hit = provider.search("mira").pop().expect("metadata");
@@ -938,7 +976,7 @@ mod tests {
                 .expect("remote remove");
             assert_eq!(remove.contract.risk, RiskLevel::Destructive);
             assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
-            assert!(remove.contract.reversible);
+            assert!(!remove.contract.can_be_undone());
         }
     }
 
@@ -1181,7 +1219,6 @@ mod tests {
         BookSearchProvider::new(&books, &[])
     }
 
-    /// Body pages are clamped and complete and resume inside oversized blocks and spans without prose copies.
     #[test]
     fn body_pages_clamp_and_resume_without_prose_copies() {
         // --- phase: body_pages_are_clamped_and_complete ---
@@ -1377,7 +1414,9 @@ mod tests {
                 .expect("remove");
             assert_eq!(remove.contract.risk, RiskLevel::Destructive);
             assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
-            assert!(remove.contract.reversible);
+            // Undo puts the row back but not this device's access to the
+            // book's file, so removing asks first through every door.
+            assert!(!remove.contract.can_be_undone());
 
             let highlight_resource = provider
                 .books

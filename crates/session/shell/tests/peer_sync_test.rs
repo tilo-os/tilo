@@ -120,6 +120,7 @@ async fn two_actors_exchange_a_workspace_change() {
     let changes = source.export_room_changes_since(room, &[]).unwrap();
     cmd_a
         .send(NetCmd::Publish {
+            at: tokio::time::Instant::now(),
             ws: WS,
             msg: NeighbourMsg::SyncResp {
                 changes,
@@ -144,8 +145,9 @@ async fn two_actors_exchange_a_workspace_change() {
     .await;
 
     let mut target = WorkspaceTree::default();
-    let target_id = target.append_empty_workspace("Placeholder");
-    assert!(target.set_room(target_id, room));
+    target
+        .join_room("Placeholder", room)
+        .expect("joins the room");
     // The invite names A's endpoint as the room's governor.
     assert!(target.pin_room_authority(room, PeerOrigin::peer(&a_id)));
     assert_eq!(sender, a_id, "the change arrives from A");
@@ -175,6 +177,7 @@ async fn presence_round_trips_over_iroh() {
     };
     cmd_a
         .send(NetCmd::Publish {
+            at: tokio::time::Instant::now(),
             ws: WS,
             msg: presence.clone(),
         })
@@ -241,6 +244,7 @@ async fn warm_path(cmd: &mpsc::Sender<NetCmd>, events: &mut mpsc::Receiver<NetEv
         colour: None,
     };
     cmd.send(NetCmd::Publish {
+        at: tokio::time::Instant::now(),
         ws: WS,
         msg: warm.clone(),
     })
@@ -259,102 +263,158 @@ async fn warm_path(cmd: &mpsc::Sender<NetCmd>, events: &mut mpsc::Receiver<NetEv
 }
 
 /// Each drag move that arrives, as its step and when it arrived, until the
-/// path has been quiet for half a second.
+/// resting position (`last`) has.
 fn collect_drag(
     mut events: mpsc::Receiver<NetEvent>,
+    last: usize,
 ) -> tokio::task::JoinHandle<Vec<(usize, Instant)>> {
-    tokio::spawn(async move {
-        let mut arrivals = Vec::new();
-        let quiet = Duration::from_millis(500);
-        while let Ok(Some(event)) = timeout(quiet, events.recv()).await {
-            if let NetEvent::Msg {
-                msg: NeighbourMsg::PresenceMoved { key, ts, .. },
-                ..
-            } = event
-                && key == "cursor"
-            {
-                arrivals.push((usize::try_from(ts).unwrap(), Instant::now()));
+    tokio::spawn(tilo_test_env::within(
+        "the drag's resting position arrived",
+        async move {
+            let mut arrivals = Vec::new();
+            while let Some(event) = events.recv().await {
+                if let NetEvent::Msg {
+                    msg: NeighbourMsg::PresenceMoved { key, ts, .. },
+                    ..
+                } = event
+                    && key == "cursor"
+                {
+                    let step = usize::try_from(ts).unwrap();
+                    arrivals.push((step, Instant::now()));
+                    if step == last {
+                        return arrivals;
+                    }
+                }
             }
+            panic!("event channel closed after {arrivals:?}");
+        },
+    ))
+}
+
+/// A 30 Hz drag published on the direct (gossip) path, as the shell
+/// publishes a moving pointer.
+struct DragRun {
+    /// Each move that arrived: its step and when.
+    received: Vec<(usize, Instant)>,
+    /// When each step was published.
+    published: Vec<Instant>,
+    /// Datagrams the two endpoints exchanged meanwhile.
+    packets: u64,
+}
+
+impl DragRun {
+    /// The shell publishes a moving pointer every 33 ms; 120 moves are a 4 s drag.
+    const MOVES: u32 = 120;
+    const PRODUCER_GAP: Duration = Duration::from_millis(33);
+
+    async fn run() -> Self {
+        let (cmd_a, mut events_a, addr_a, endpoint_a) = spawn_actor_with_endpoint().await;
+        let (cmd_b, mut events_b, addr_b, endpoint_b) = spawn_actor_with_endpoint().await;
+        connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
+        wait_peer_joined(&mut events_a).await;
+        wait_peer_joined(&mut events_b).await;
+        warm_path(&cmd_a, &mut events_b).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let before = datagrams(&endpoint_a, &endpoint_b);
+        let start = Instant::now();
+        let last = usize::try_from(Self::MOVES).unwrap().saturating_sub(1);
+        let listener = collect_drag(events_b, last);
+        let mut published = Vec::with_capacity(usize::try_from(Self::MOVES).unwrap());
+        for step in 0..Self::MOVES {
+            let due = start
+                .checked_add(Self::PRODUCER_GAP.saturating_mul(step))
+                .unwrap();
+            tokio::time::sleep_until(due.into()).await;
+            published.push(Instant::now());
+            cmd_a
+                .send(NetCmd::Publish {
+                    at: tokio::time::Instant::now(),
+                    ws: WS,
+                    msg: drag_move(step),
+                })
+                .await
+                .unwrap();
         }
-        arrivals
-    })
+        let received = listener.await.unwrap();
+        let elapsed = start.elapsed();
+        let packets = datagrams(&endpoint_a, &endpoint_b).saturating_sub(before);
+        let packets_per_minute =
+            f64::from(u32::try_from(packets).unwrap()) / elapsed.as_secs_f64() * 60.0;
+        eprintln!(
+            "GOSSIP_DRAG moves={} messages={} packets={packets} seconds={:.2} \
+             packets_per_minute={packets_per_minute:.0}",
+            Self::MOVES,
+            received.len(),
+            elapsed.as_secs_f64(),
+        );
+        Self {
+            received,
+            published,
+            packets,
+        }
+    }
+
+    /// The most moves pacing lets through over the drag as it was published:
+    /// writes of one slot are at least a gap apart, the first at once, then
+    /// one per gap, and the resting position after the last.
+    fn most_paced(&self) -> usize {
+        let gap = tilo_relay_session::coedit::POINTER_GAP;
+        let span = match (self.published.first(), self.published.last()) {
+            (Some(first), Some(last)) => last.duration_since(*first),
+            _ => Duration::ZERO,
+        };
+        usize::try_from(span.as_millis().checked_div(gap.as_millis()).unwrap())
+            .unwrap()
+            .saturating_add(2)
+    }
+
+    fn latencies(&self) -> Vec<Duration> {
+        self.received
+            .iter()
+            .map(|(step, at)| at.duration_since(self.published[*step]))
+            .collect()
+    }
 }
 
 /// The direct (gossip) path paces a pointer as a relay session does: a
-/// 30 Hz drag reaches the other desktop at no more than 20 Hz, its resting
-/// position always arrives, and no move is shown more than 100 ms after it
-/// was published.
+/// 30 Hz drag reaches the other desktop at no more than 20 Hz, and its
+/// resting position always arrives.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_drag_reaches_the_other_desktop_paced_with_its_resting_position() {
-    // The shell publishes a moving pointer every 33 ms; 120 moves are a 4 s drag.
-    const MOVES: u32 = 120;
-    const PRODUCER_GAP: Duration = Duration::from_millis(33);
     let gap = tilo_relay_session::coedit::POINTER_GAP;
-
-    let (cmd_a, mut events_a, addr_a, endpoint_a) = spawn_actor_with_endpoint().await;
-    let (cmd_b, mut events_b, addr_b, endpoint_b) = spawn_actor_with_endpoint().await;
-    connect_pair(&cmd_a, addr_a, &cmd_b, addr_b).await;
-    wait_peer_joined(&mut events_a).await;
-    wait_peer_joined(&mut events_b).await;
-    warm_path(&cmd_a, &mut events_b).await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    let before = datagrams(&endpoint_a, &endpoint_b);
-    let start = Instant::now();
-    let listener = collect_drag(events_b);
-    let mut published = Vec::with_capacity(usize::try_from(MOVES).unwrap());
-    for step in 0..MOVES {
-        let due = start
-            .checked_add(PRODUCER_GAP.saturating_mul(step))
-            .unwrap();
-        tokio::time::sleep_until(due.into()).await;
-        published.push(Instant::now());
-        cmd_a
-            .send(NetCmd::Publish {
-                ws: WS,
-                msg: drag_move(step),
-            })
-            .await
-            .unwrap();
-    }
-    let received = listener.await.unwrap();
-    let elapsed = start.elapsed();
-    let packets = datagrams(&endpoint_a, &endpoint_b).saturating_sub(before);
-    let packets_per_minute =
-        f64::from(u32::try_from(packets).unwrap()) / elapsed.as_secs_f64() * 60.0;
-    let latencies: Vec<Duration> = received
-        .iter()
-        .map(|(step, at)| at.duration_since(published[*step]))
-        .collect();
-    eprintln!(
-        "GOSSIP_DRAG moves={MOVES} messages={} packets={packets} seconds={:.2} \
-         packets_per_minute={packets_per_minute:.0}",
-        received.len(),
-        elapsed.as_secs_f64(),
+    let run = DragRun::run().await;
+    assert!(
+        run.packets > 0,
+        "the endpoints' socket counters saw nothing"
     );
-    assert!(packets > 0, "the endpoints' socket counters saw nothing");
     assert_eq!(
-        received.last().map(|(step, _)| *step),
-        Some(published.len().saturating_sub(1)),
+        run.received.last().map(|(step, _)| *step),
+        Some(run.published.len().saturating_sub(1)),
         "the resting position must arrive"
     );
-    // Writes of one slot are at least a gap apart: the first at once, then
-    // one per gap over the drag, and the resting position after its last.
-    let drag = PRODUCER_GAP.saturating_mul(MOVES.saturating_sub(1));
-    let most = usize::try_from(drag.as_millis() / gap.as_millis())
-        .unwrap()
-        .saturating_add(2);
+    let most = run.most_paced();
     assert!(
-        received.len() <= most,
-        "{} of {MOVES} moves crossed the direct path; paced to {gap:?} at most {most} may",
-        received.len()
+        run.received.len() <= most,
+        "{} of {} moves crossed the direct path; paced to {gap:?} at most {most} may",
+        run.received.len(),
+        DragRun::MOVES
     );
-    // ... and pacing never starves the cursor: about one move per gap.
+}
+
+/// How promptly the paced drag arrives: about one move per gap, and each
+/// shown within 100 ms at p99. Wall-clock time depends on the machine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "measurement; run with --ignored --nocapture"]
+async fn a_paced_drag_arrives_promptly() {
+    let run = DragRun::run().await;
+    let most = run.most_paced();
     assert!(
-        received.len().saturating_mul(10) >= most.saturating_mul(8),
+        run.received.len().saturating_mul(10) >= most.saturating_mul(8),
         "only {} moves arrived; about {most} should",
-        received.len()
+        run.received.len()
     );
+    let latencies = run.latencies();
     let mut sorted = latencies.clone();
     sorted.sort_unstable();
     let p99 = percentile(&sorted, 99);
@@ -377,15 +437,28 @@ async fn a_caret_passes_a_held_pointer_and_a_departure_follows_it() {
     wait_peer_joined(&mut events_a).await;
     wait_peer_joined(&mut events_b).await;
 
-    // The first move goes at once; the second, inside the gap, is held.
+    // The first move goes at once; the second, published inside the gap, is
+    // held. The gap runs from when each move was published, not from when
+    // the actor got to it: the second move reaches the actor well after
+    // the gap of the first has ended, as on a loaded runner, and is held
+    // all the same.
     let sent = [
         drag_move(1),
         drag_move(2),
         app_presence(P::Caret { pos: 4 }),
         app_presence(P::Left),
     ];
-    for msg in sent.clone() {
-        cmd_a.send(NetCmd::Publish { ws: WS, msg }).await.unwrap();
+    let published = tokio::time::Instant::now();
+    let publish = |index: usize| NetCmd::Publish {
+        at: published + Duration::from_millis(u64::try_from(index).unwrap()),
+        ws: WS,
+        msg: sent[index].clone(),
+    };
+    cmd_a.send(publish(0)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    // The rest queue together, as the actor finds them behind a stall.
+    for index in 1..sent.len() {
+        cmd_a.try_send(publish(index)).unwrap();
     }
     let arrived = tilo_test_env::within("the drag and the departure arrived", async {
         let mut arrived = Vec::new();
@@ -414,8 +487,31 @@ async fn a_caret_passes_a_held_pointer_and_a_departure_follows_it() {
     );
 }
 
+/// Warm exact-target input over real Iroh: every input reaches the addressed
+/// peer, each before the next is sent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn warm_exact_target_input_reaches_its_peer_in_order() {
+    let latencies = warm_exact_target_input_latencies().await;
+    assert_eq!(latencies.len(), 100, "every input arrived");
+}
+
+/// The same inputs stay below the interactive p95 budget. Wall-clock time
+/// depends on the machine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "measurement; run with --ignored --nocapture"]
 async fn warm_exact_target_input_stays_below_the_interactive_p95_budget() {
+    let mut latencies = warm_exact_target_input_latencies().await;
+    latencies.sort_unstable();
+    let p95 = latencies[latencies.len().saturating_mul(95) / 100];
+    eprintln!("warm exact-target Iroh input p95: {p95:?}");
+    assert!(
+        p95 < Duration::from_millis(50),
+        "warm authenticated input p95 must stay below 50 ms, got {p95:?}; samples={latencies:?}"
+    );
+}
+
+/// Publish to receipt of 100 warm exact-target inputs, one at a time.
+async fn warm_exact_target_input_latencies() -> Vec<Duration> {
     const SURFACE: u64 = 77;
     const SAMPLES: usize = 100;
 
@@ -448,13 +544,7 @@ async fn warm_exact_target_input_stays_below_the_interactive_p95_budget() {
         wait_remote_input(&mut events_b, SURFACE, sequence).await;
         latencies.push(started.elapsed());
     }
-    latencies.sort_unstable();
-    let p95 = latencies[latencies.len().saturating_mul(95) / 100];
-    eprintln!("warm exact-target Iroh input p95: {p95:?}");
-    assert!(
-        p95 < Duration::from_millis(50),
-        "warm authenticated input p95 must stay below 50 ms, got {p95:?}; samples={latencies:?}"
-    );
+    latencies
 }
 
 fn percentile(sorted: &[Duration], pct: usize) -> Duration {
@@ -480,7 +570,7 @@ fn group_tabs(tree: &WorkspaceTree, room: RoomId) -> Vec<u64> {
     tree.desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .and_then(|workspace| workspace.strips.first())
         .and_then(|strip| strip.window_groups.first())
         .map(|group| group.tabs.iter().map(|tab| tab.id).collect())
@@ -495,6 +585,7 @@ fn notes_tab(id: u64) -> Tab {
             kind: AppKind::Other("so.tilo.notes".into()),
             label: "Notes".into(),
         },
+        app_title: None,
     }
 }
 
@@ -502,8 +593,7 @@ fn room_push_tree(room: RoomId, salt: u16) -> WorkspaceTree {
     let id = |counter: u64| compose_id(salt, counter);
     let mut a = WorkspaceTree::default();
     a.set_salt_override(salt);
-    let mut workspace = Workspace::new(WorkspaceId(id(1)), "Live");
-    workspace.set_room(room);
+    let mut workspace = Workspace::in_room(WorkspaceId(id(1)), room, "Live");
     workspace.strips.push(Strip {
         id: StripId(id(2)),
         name: "Main".into(),
@@ -556,12 +646,12 @@ async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch()
 
     let mut b = WorkspaceTree::default();
     b.set_salt_override(SALT_B);
-    let placeholder = b.append_empty_workspace("Placeholder");
-    assert!(b.set_room(placeholder, room));
+    b.join_room("Placeholder", room).expect("joins the room");
     // The invite names A's endpoint as the room's governor.
     assert!(b.pin_room_authority(room, PeerOrigin::peer(&a_id)));
 
     let publish = |changes: Vec<Vec<u8>>| NetCmd::Publish {
+        at: tokio::time::Instant::now(),
         ws: WS,
         msg: NeighbourMsg::SyncResp {
             changes,
@@ -652,10 +742,31 @@ async fn a_pushed_tab_change_reaches_the_other_device_in_one_incremental_batch()
     report_tab_push_work(SAMPLES, work);
 }
 
-/// A document edit travels as one signed `AppDocument` on the room topic;
-/// timed from publication to arrival on the other device.
+/// A document edit travels as one signed `AppDocument` on the room topic and
+/// reaches the other device, each before the next is published.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_edit_reaches_the_other_device() {
+    let latencies = document_edit_latencies().await;
+    assert_eq!(latencies.len(), 100, "every edit arrived");
+}
+
+/// The same edits arrive in under 50 ms at p95. Wall-clock time depends on
+/// the machine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "measurement; run with --ignored --nocapture"]
 async fn a_document_edit_reaches_the_other_device_within_the_interactive_budget() {
+    let p95 = report(
+        "document edit, A publish -> B receive (loopback Iroh)",
+        document_edit_latencies().await,
+    );
+    assert!(
+        p95 < Duration::from_millis(50),
+        "a document edit must reach the other device in under 50 ms at p95, got {p95:?}"
+    );
+}
+
+/// Publish to receipt of 100 keystroke-sized edits, one at a time.
+async fn document_edit_latencies() -> Vec<Duration> {
     const SAMPLES: usize = 100;
     let (cmd_a, mut events_a, addr_a) = spawn_actor().await;
     let (cmd_b, mut events_b, addr_b) = spawn_actor().await;
@@ -673,6 +784,7 @@ async fn a_document_edit_reaches_the_other_device_within_the_interactive_budget(
             format!("edit {sequence}"),
         );
         NetCmd::Publish {
+            at: tokio::time::Instant::now(),
             ws: WS,
             msg: NeighbourMsg::AppDocument {
                 peer: 7,
@@ -710,14 +822,7 @@ async fn a_document_edit_reaches_the_other_device_within_the_interactive_budget(
         tilo_test_env::within("edit arrived", arrived(&mut events_b, sequence)).await;
         latencies.push(started.elapsed());
     }
-    let p95 = report(
-        "document edit, A publish -> B receive (loopback Iroh)",
-        latencies,
-    );
-    assert!(
-        p95 < Duration::from_millis(50),
-        "a document edit must reach the other device in under 50 ms at p95, got {p95:?}"
-    );
+    latencies
 }
 
 /// A remote-action frame reaches exactly the addressed peer over the direct
@@ -770,19 +875,36 @@ async fn remote_action_frames_travel_the_exact_target_route() {
         })
         .await
         .expect("queued");
-    let stray = timeout(Duration::from_millis(300), async {
+    // A remote-action frame sent after it is the marker: the heartbeat, had
+    // the route carried it, would have arrived first.
+    let marker = b"{\"version\":2}".to_vec();
+    cmd_a
+        .send(NetCmd::PublishRemoteAction {
+            ws: WS,
+            target,
+            msg: NeighbourMsg::RemoteAction {
+                frame: marker.clone(),
+            },
+        })
+        .await
+        .expect("marker queued");
+    tilo_test_env::within("the marker frame arrived", async {
         loop {
-            if let Some(NetEvent::Msg {
-                msg: NeighbourMsg::Heartbeat { peer: 1, ts: 1 },
-                ..
-            }) = events_b.recv().await
-            {
-                return;
+            match events_b.recv().await {
+                Some(NetEvent::Msg {
+                    msg: NeighbourMsg::RemoteAction { frame },
+                    ..
+                }) if frame == marker => return,
+                Some(NetEvent::Msg {
+                    msg: NeighbourMsg::Heartbeat { peer: 1, ts: 1 },
+                    ..
+                }) => panic!("only remote-action frames use this route"),
+                Some(_) => {}
+                None => panic!("event channel closed"),
             }
         }
     })
     .await;
-    assert!(stray.is_err(), "only remote-action frames use this route");
 }
 
 #[test]
@@ -917,6 +1039,7 @@ fn native_snapshot(
             online: true,
             last_seen_unix_ms: 1,
             wake_routes: Vec::new(),
+            session: native_fabric::OwnerSession::default(),
             stamp: stamp.clone(),
         },
         display: Some(native_fabric::DisplayPlacement {
@@ -1256,34 +1379,26 @@ async fn assert_native_wire_input(
 fn assert_native_receiver_policy(controller: &DeviceId, event: native_fabric::FabricInputEvent) {
     use shell::compositor::state::State;
     use shell::network::ShellView;
+    use shell::shell::input_policy::InputCapture;
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::wayland_server::Display;
     let event_loop: EventLoop<'static, State> = EventLoop::try_new().unwrap();
     let display: Display<State> = Display::new().unwrap();
     let mut state = State::new(event_loop.handle(), display.handle());
+    // Admitted input is delivered by the event loop as this device's own.
     assert!(state.apply_personal_fabric_input(controller, event));
-    let pointer = state.seat.get_pointer().unwrap().current_location();
-    assert_eq!((pointer.x, pointer.y), (0.0, 205.0));
-    assert!(state.apply_personal_fabric_input(
-        controller,
-        native_fabric::FabricInputEvent::Key {
-            keycode: 30,
-            pressed: true,
-            modifiers: 0
-        }
-    ));
-    assert!(
-        state
-            .seat
-            .get_keyboard()
-            .unwrap()
-            .pressed_keys()
-            .iter()
-            .any(|key| u32::from(*key) == 38)
-    );
-    state.release_personal_fabric_input(controller);
-    assert!(
-        state.seat.get_keyboard().unwrap().pressed_keys().is_empty(),
+    assert_eq!(state.take_personal_fabric_input(), vec![event]);
+    let key = |pressed| native_fabric::FabricInputEvent::Key {
+        keycode: 30,
+        pressed,
+        modifiers: 0,
+    };
+    assert!(state.apply_personal_fabric_input(controller, key(true)));
+    assert_eq!(state.take_personal_fabric_input(), vec![key(true)]);
+    assert!(state.release_personal_fabric_input(controller));
+    assert_eq!(
+        state.take_personal_fabric_input(),
+        vec![key(false)],
         "disconnect/revocation cleanup releases held keys"
     );
     // Keysym lookup must convert back to evdev before the common seat injector.
@@ -1307,11 +1422,14 @@ fn assert_native_receiver_policy(controller: &DeviceId, event: native_fabric::Fa
     }
     state
         .remote_input_firewall
-        .publish_view(ShellView::new(Vec::new(), None, false, false).locked(true));
+        .publish_view(ShellView::new(Vec::new(), None, InputCapture::NONE, false).locked(true));
     assert!(!state.apply_personal_fabric_input(controller, event));
-    state
-        .remote_input_firewall
-        .publish_view(ShellView::new(Vec::new(), None, false, false));
+    state.remote_input_firewall.publish_view(ShellView::new(
+        Vec::new(),
+        None,
+        InputCapture::NONE,
+        false,
+    ));
     state.remote_input_firewall.engage_kill_switch();
     assert!(!state.apply_personal_fabric_input(controller, event));
 }

@@ -116,9 +116,6 @@ impl Background {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns [`Unsupported`] when the executor refuses background work.
     pub fn spawn(
         &self,
         name: &'static str,
@@ -302,6 +299,11 @@ struct PoolState {
     timer_thread: bool,
     /// Bumped whenever a job finishes or a timer fires, for [`Executor::park`].
     progress: u64,
+    /// The [`Self::progress`] each parking thread last returned with. A
+    /// park waits for progress past it, not past the moment it is called:
+    /// a job that finished between the caller's last check and its park
+    /// would otherwise be missed, and the park would sleep to its deadline.
+    parked: std::collections::HashMap<std::thread::ThreadId, u64>,
 }
 
 struct PoolShared {
@@ -460,14 +462,19 @@ impl Executor for ThreadPool {
     }
 
     fn park(&self, deadline: Instant) {
-        let state = self.shared.state.lock_recover();
-        let seen = state.progress;
+        let thread = std::thread::current().id();
+        let mut state = self.shared.state.lock_recover();
+        // A thread's first park counts everything since the pool started.
+        let seen = state.parked.get(&thread).copied().unwrap_or(0);
         let timeout = deadline.saturating_duration_since(tilo_clock::now());
-        let _state = self
+        state = self
             .shared
             .progress
             .wait_timeout_while(state, timeout, |state| state.progress == seen)
-            .unwrap_or_else(PoisonError::into_inner);
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+        let now = state.progress;
+        state.parked.insert(thread, now);
     }
 }
 
@@ -709,15 +716,36 @@ mod tests {
             pool.spawn("gated", Box::new(move || gate.recv().unwrap()))
                 .unwrap();
             release.send(()).unwrap();
-            let started = tilo_clock::now();
-            pool.park(started + Duration::from_secs(30));
-            assert!(started.elapsed() < Duration::from_secs(10));
+            let deadline = tilo_clock::now() + tilo_test_env::hang_bound();
+            pool.park(deadline);
+            assert!(
+                tilo_clock::now() < deadline,
+                "park waited for its deadline, not the finished job"
+            );
+        }
+
+        // Case `thread_pool_park_sees_a_job_that_finished_before_it`: the
+        // caller checked, the job finished, then the caller parked.
+        {
+            let pool = ThreadPool::new(1);
+            let (done, finished) = mpsc::channel();
+            pool.spawn("quick", Box::new(move || done.send(()).unwrap()))
+                .unwrap();
+            tilo_test_env::recv("the quick job", &finished);
+            tilo_test_env::wait_until("the pool to count the quick job", || {
+                pool.shared.state.lock_recover().progress > 0
+            });
+            let deadline = tilo_clock::now() + tilo_test_env::hang_bound();
+            pool.park(deadline);
+            assert!(
+                tilo_clock::now() < deadline,
+                "park missed a job that finished before it was called"
+            );
         }
     }
 
     #[test]
     fn pumped_executor_runs_only_when_pumped_on_a_virtual_clock() {
-        // Case `pumped_runs_nothing_until_pumped`.
         {
             let pumped = Pumped::new();
             let ran = Arc::new(AtomicUsize::new(0));
@@ -746,7 +774,6 @@ mod tests {
             assert_eq!(ran.load(Ordering::SeqCst), 2);
         }
 
-        // Case `pumped_timers_follow_the_virtual_clock`.
         {
             let start = tilo_clock::now();
             let pumped = Pumped::starting_at(start);
@@ -761,7 +788,6 @@ mod tests {
             assert_eq!(pumped.next_deadline(), None);
         }
 
-        // Case `pumped_park_jumps_to_the_next_timer_without_waiting`.
         {
             let start = tilo_clock::now();
             let pumped = Pumped::starting_at(start);
@@ -774,7 +800,6 @@ mod tests {
             assert_eq!(pumped.now(), start + Duration::from_secs(120));
         }
 
-        // Case `entered_executor_is_captured_and_restored`.
         {
             let pumped = Pumped::new();
             {

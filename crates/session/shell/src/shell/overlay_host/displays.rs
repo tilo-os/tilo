@@ -2,14 +2,15 @@
 //!
 //! With more than one display, a strip is one sub-row per display: every
 //! window group belongs to exactly one display ([`OutputPartition`]), is laid
-//! out, panned and clipped there only, and is never drawn on another. The
-//! primary display carries the strip's leading gutter and the full top bar; every other
-//! display a compact bar along its own top edge. New windows open on the
+//! out, panned and clipped there only, and is never drawn on another. Every
+//! display keeps the strip's edge gutter at both ends of its lane. The
+//! primary display carries the full top bar; every other display a compact
+//! bar along its own top edge. New windows open on the
 //! display with focus; focus moves between displays with the pointer and
 //! with Super+Left/Right past a display's last window, and a group moves to
 //! the neighbouring display with the configured chord or by being dragged
-//! onto another display. Every display stacks all of the workspace's strips
-//! in its own height (see [`strip_bands`]).
+//! onto another display. Every display shows the workspace's strips as
+//! full-height screens, one at a time (see [`strip_bands`]).
 //!
 //! The partition is this device's layout, kept in the local desktop tree and
 //! never replicated. The window groups' order stays the strip's; the rows
@@ -99,50 +100,20 @@ fn displays_of(outputs: &[OutputGeometry]) -> Vec<Display> {
 }
 
 /// One strip's place in every display's height: the fractions of the
-/// workspace column from its top to the strip's row's top and bottom, and
-/// the column's own top and bottom.
+/// work area from its top to the strip's top and bottom, and the work
+/// area's own top and bottom.
 type StripBand = ((f64, f64), (f64, f64));
 
-/// Where each strip sits in every display's height, for rows in the order
-/// the workspace column stacks them.
-///
-/// Every display stacks all of the workspace's strips in its own height, the
-/// way a single display does, rather than showing only the part of the
-/// column that happens to pass over it: with strips stacked down a column
-/// taller than one display, a strip would otherwise land wholly on one
-/// display of a vertical stack and its windows on the other would have
-/// nowhere to be drawn. Before the rows have been laid out once, the strips
-/// share the column below `top` equally.
-fn strip_bands(rows: &[Rect], top: f64) -> Vec<StripBand> {
-    let laid_out: Vec<&Rect> = rows.iter().filter(|r| r.height() > 0.0).collect();
-    let column = (
-        laid_out.iter().map(|r| r.y0).fold(f64::INFINITY, f64::min),
-        laid_out
-            .iter()
-            .map(|r| r.y1)
-            .fold(f64::NEG_INFINITY, f64::max),
-    );
-    let height = column.1 - column.0;
-    if laid_out.is_empty() || height <= 0.0 {
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "a workspace has a handful of strips"
-        )]
-        let n = rows.len().max(1) as f64;
-        return (0..rows.len())
-            .map(|k| {
-                #[allow(clippy::cast_precision_loss, reason = "as above")]
-                let k = k as f64;
-                ((k / n, (k + 1.0) / n), (top, f64::INFINITY))
-            })
-            .collect();
-    }
-    rows.iter()
-        .map(|r| {
-            let share = |y: f64| ((y - column.0) / height).clamp(0.0, 1.0);
-            ((share(r.y0), share(r.y1)), column)
-        })
-        .collect()
+/// Where each of `count` strips sits in every display's height: each is a
+/// full-height screen in the strip deck's area (`deck`, as laid out where
+/// the deck rests), never a share of it; the deck moves the rows up and
+/// down from there. Before the deck has been laid out once, every strip
+/// takes the height below `top`.
+fn strip_bands(count: usize, deck: Option<Rect>, top: f64) -> Vec<StripBand> {
+    let column = deck
+        .filter(|deck| deck.height() > 0.0)
+        .map_or((top, f64::INFINITY), |deck| (deck.y0, deck.y1));
+    vec![((0.0, 1.0), column); count]
 }
 
 /// `lanes` cut to one strip's band (see [`strip_bands`]): each display's
@@ -187,7 +158,7 @@ impl ShellOverlayHost {
                 .is_some_and(|c| c.borrow().tree().desktop.outputs.displays.len() >= 2)
     }
 
-    /// The display the strip's leading gutter and the full top bar live on: the first
+    /// The display the full top bar lives on: the first
     /// the backend lists, which is the primary chosen in Settings.
     pub(super) fn primary_output(&self) -> Option<OutputGeometry> {
         distinct_outputs(&self.outputs)
@@ -233,7 +204,7 @@ impl ShellOverlayHost {
     /// caret or pointer it came from) sits on: the one holding the anchor,
     /// else the focused display. The one placement rule for every shell
     /// surface, shared with the overlay stack's layers
-    /// ([`super::layers::LayerGeometry::display_for`]): across a 2x laptop
+    /// (`super::layers::LayerGeometry::display_for`): across a 2x laptop
     /// panel and a 1x monitor beside it the host's own rect is both
     /// displays, centred on the seam and taller than the panel.
     pub fn surface_area(&self, anchor: Option<Point>) -> Rect {
@@ -261,7 +232,7 @@ impl ShellOverlayHost {
     }
 
     /// Frame each strip's focused group again on the next layout.
-    fn reframe_desktop(&mut self) {
+    pub(super) fn reframe_desktop(&mut self) {
         if let Some(surface) = self.desktop_surface_mut() {
             surface.reframe_all();
         }
@@ -349,7 +320,6 @@ impl ShellOverlayHost {
             .filter_map(|id| {
                 let o = self.outputs.iter().find(|o| o.id == *id)?;
                 let leading_display = Some(o.id) == primary;
-                let leading = leading_display;
                 // Every display but the primary draws its own bar along its
                 // top, and so does the primary below the desktop's top
                 // edge; the windows start beneath it. Taken from the
@@ -361,12 +331,14 @@ impl ShellOverlayHost {
                 } else {
                     0.0
                 };
-                let gutter = if leading { STRIP_EDGE_GUTTER_PX } else { 0.0 };
+                // Every display keeps the gutter at both ends of its lane:
+                // a window's edge is drawn just outside it, so one flush
+                // with a display's edge, a seam included, is cut off there.
                 Some(StripLane {
                     output: o.id,
                     area: Rect::new(o.x, o.y + band, o.x + o.width, o.y + o.height),
-                    usable: (o.width - gutter - STRIP_TRAILING_GUTTER_PX).max(1.0),
-                    leading,
+                    usable: (o.width - STRIP_EDGE_GUTTER_PX - STRIP_TRAILING_GUTTER_PX).max(1.0),
+                    leading: true,
                 })
             })
             .collect()
@@ -420,8 +392,10 @@ impl ShellOverlayHost {
                 Some((*id, unsafe { (&*ptr).get_rect() }))
             })
             .collect();
-        let rects: Vec<Rect> = rows.iter().map(|(_, rect)| *rect).collect();
-        let bands = strip_bands(&rects, self.rect.y0 + own_top_band());
+        let deck = self
+            .desktop_surface_mut()
+            .and_then(|surface| surface.strip_deck().map(ui::widget::Widget::get_rect));
+        let bands = strip_bands(rows.len(), deck, self.rect.y0 + own_top_band());
         let fullscreen_area = self.fullscreen_lane_area(&assignment);
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // A row of a strip outside the active workspace keeps one
@@ -465,6 +439,7 @@ impl ShellOverlayHost {
             .map(OutputGeometry::rect)
             .collect();
         let presenting = self.focused_output();
+        let scope = self.launchpad_scope();
         if let Some(surface) = self.desktop_surface_mut() {
             if let Some(backdrop) = surface.backdrop_mut() {
                 backdrop.set_displays(&screens);
@@ -472,13 +447,7 @@ impl ShellOverlayHost {
             if let Some(bar) = surface.topbar_mut() {
                 bar.set_placement(primary.map(|p| p.rect()));
             }
-            if let Some(launchpad) = surface
-                .empty_workspace_mut()
-                .and_then(ui::widget::Widget::as_any_mut)
-                .and_then(|w| w.downcast_mut::<tilo_desktop::launchpad::CollaborationLaunchpad>())
-            {
-                launchpad.set_presentation_area(presenting.map(|o| o.rect()));
-            }
+            present_launchpad(surface, presenting.map(|o| o.rect()), scope);
             if let Some(bars) = surface
                 .display_chrome_mut()
                 .and_then(ui::widget::Widget::as_any_mut)
@@ -847,5 +816,24 @@ impl ShellOverlayHost {
         drop(tree);
         drop(state);
         summary
+    }
+}
+
+/// Centre the empty workspace's launchpad on the display being worked on and
+/// tell it who sees what is made there, while it shows.
+fn present_launchpad(
+    surface: &mut tilo_desktop::composition::DesktopSurface,
+    display: Option<Rect>,
+    scope: Option<tilo_desktop::launchpad::WorkspaceScope>,
+) {
+    if let Some(launchpad) = surface
+        .empty_workspace_mut()
+        .and_then(ui::widget::Widget::as_any_mut)
+        .and_then(|w| w.downcast_mut::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+    {
+        launchpad.set_presentation_area(display);
+        if let Some(scope) = scope {
+            launchpad.set_scope(scope);
+        }
     }
 }

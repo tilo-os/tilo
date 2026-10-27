@@ -137,7 +137,7 @@ mod files_clipboard_tests {
                     .unwrap();
                     let client = runtime_collab::CollabClient::from_raw(connection.bootstrap());
                     let channel = tokio::time::timeout(
-                        std::time::Duration::from_secs(10),
+                        tilo_test_env::hang_bound(),
                         client.join_channel_as_kind(&room, &presentation, &agent, "agent", ""),
                     )
                     .await
@@ -150,7 +150,7 @@ mod files_clipboard_tests {
                             .encode()
                             .unwrap();
                         let result = tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
+                            tilo_test_env::hang_bound(),
                             channel.remote_action(&bytes),
                         )
                         .await
@@ -225,7 +225,7 @@ mod files_clipboard_tests {
 
         fn start_session(profile: &Path, restarting: bool) -> crate::runtime_host::Session {
             let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(5))
+                .checked_add(tilo_test_env::hang_bound())
                 .expect("bounded restart deadline");
             loop {
                 let mut stage = String::new();
@@ -380,7 +380,7 @@ mod files_clipboard_tests {
             entry_label: Option<&str>,
         ) -> tilo_actions::InvocationUpdate {
             let (job, _) = self.start_invoke_at(index, action, arguments, entry_label);
-            self.settle_job(job)
+            self.settle_named(job, action)
         }
 
         fn start_invoke_at(
@@ -430,15 +430,46 @@ mod files_clipboard_tests {
         }
 
         fn settle_job(&mut self, job: u64) -> tilo_actions::InvocationUpdate {
-            let mut update = None;
+            self.settle_named(job, "the job")
+        }
+
+        /// Frames until `job`, started for `action`, settles. A wait that
+        /// runs out names the action, how long it waited and the job's last
+        /// status, so a slow step is told from one that never moved.
+        fn settle_named(&mut self, job: u64, action: &str) -> tilo_actions::InvocationUpdate {
+            struct Settling<'a> {
+                action: &'a str,
+                started: std::time::Instant,
+                last: &'a std::cell::RefCell<Option<tilo_actions::InvocationUpdate>>,
+            }
+            impl std::fmt::Display for Settling<'_> {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(
+                        f,
+                        "actual Files {} settles; after {:?} its job was {:?}",
+                        self.action,
+                        self.started.elapsed(),
+                        self.last.borrow()
+                    )
+                }
+            }
+            let last = std::cell::RefCell::new(None);
+            let what = Settling {
+                action,
+                started: std::time::Instant::now(),
+                last: &last,
+            };
             let [first, second] = &mut self.shown;
-            until(&mut [first, second], "actual Files job settles", || {
-                update = self.broker.state().invocation_status(job);
-                update
+            until(&mut [first, second], &what, || {
+                let update = self.broker.state().invocation_status(job);
+                let settled = update
                     .as_ref()
-                    .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
+                    .is_some_and(tilo_actions::InvocationUpdate::is_terminal);
+                *last.borrow_mut() = update;
+                settled
             });
-            update.unwrap()
+            let settled = last.borrow_mut().take();
+            settled.unwrap()
         }
 
         fn agent_invoke(
@@ -496,7 +527,7 @@ mod files_clipboard_tests {
                 "actual agent admission refused: {result:?}"
             );
             let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(5))
+                .checked_add(tilo_test_env::hang_bound())
                 .expect("bounded test deadline");
             loop {
                 let pending = agent.request(Message::observe(invocation));
@@ -563,7 +594,7 @@ mod files_clipboard_tests {
 
         fn wait_for_paste_history(&mut self, undone: Option<bool>, failure: &str) {
             let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_secs(5))
+                .checked_add(tilo_test_env::hang_bound())
                 .expect("bounded history deadline");
             loop {
                 let history = self.succeeds(1, "history");
@@ -855,6 +886,116 @@ mod files_clipboard_tests {
         }
     }
 
+    /// A paste of several files killed at each phase of its batch (staged,
+    /// intent written, partly published, published but not completed) is
+    /// rolled back by recovery: nothing pasted or half-written is shown in
+    /// the receiving folder, and every source is back with its bytes, for
+    /// Copy and for Cut.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one kill-and-recover scenario per phase, read top to bottom"
+    )]
+    fn mounted_files_recovers_a_batch_killed_at_each_phase() {
+        use std::os::unix::process::ExitStatusExt as _;
+        const TEST: &str = "shell::in_process::tests::files_clipboard_tests::mounted_files_recovers_a_batch_killed_at_each_phase";
+        const SOURCES: [(&str, &[u8]); 3] = [
+            ("report", b"original source"),
+            ("second", b"second source"),
+            ("third", b"third source"),
+        ];
+        let Some(profile) = isolated_session_root(TEST) else {
+            return;
+        };
+        if let Some(action) = std::env::var_os("TILO_CLIPBOARD_TEST_ACTION") {
+            let mut fixture = Fixture::new(&profile);
+            for (name, bytes) in &SOURCES[1..] {
+                std::fs::write(fixture.folders[0].join(name), bytes).unwrap();
+            }
+            fixture.succeeds(0, "refresh");
+            fixture.succeeds(0, "select-all");
+            fixture.succeeds(0, action.to_str().unwrap());
+            fixture.succeeds(1, "paste");
+            drop(fixture);
+            panic!("the batch phase was not reached");
+        }
+        let shown = |folder: &Path| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(folder)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| !name.starts_with('.'))
+                .collect();
+            names.sort();
+            names
+        };
+        let hidden = |folder: &Path, prefix: &str| -> bool {
+            std::fs::read_dir(folder).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(prefix)
+            })
+        };
+        for action in ["copy-selection", "cut-selection"] {
+            for phase in [
+                "batch-staged",
+                "batch-intent",
+                "batch-midway",
+                "batch-published",
+            ] {
+                let root = profile.join(action).join(phase);
+                let status = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", TEST, "--nocapture"])
+                    .env("TILO_IN_PROCESS_TEST_ROOT", &root)
+                    .env("TILO_CLIPBOARD_TEST_KILL_AT", phase)
+                    .env("TILO_CLIPBOARD_TEST_ACTION", action)
+                    .status()
+                    .unwrap();
+                assert_eq!(
+                    status.signal(),
+                    Some(libc::SIGKILL),
+                    "must kill the paste at {action} {phase}: {status}"
+                );
+                let mut fixture = Fixture::resume(&root);
+                let result = fixture.succeeds(1, "recover-clipboard-transfers");
+                // Before its intent, a batch has touched no source and
+                // published nothing; there is nothing to roll back.
+                let expected = u64::from(phase != "batch-staged");
+                assert_eq!(
+                    result["completed"], expected,
+                    "recovery settles the interrupted paste: {action} {phase}: {result}"
+                );
+                assert_eq!(
+                    shown(&root.join("receiving")),
+                    ["other"],
+                    "nothing pasted or half-written is shown: {action} {phase}"
+                );
+                for (name, bytes) in SOURCES {
+                    assert_eq!(
+                        std::fs::read(root.join("source").join(name)).unwrap(),
+                        bytes,
+                        "every source is back with its bytes: {action} {phase} {name}"
+                    );
+                }
+                assert!(
+                    !hidden(&root.join("source"), ".tilo-transfer-source-"),
+                    "no hidden source quarantine is left: {action} {phase}"
+                );
+                assert!(
+                    !hidden(&root.join("receiving"), ".tilo-transfer-"),
+                    "recovery leaves no staging behind: {action} {phase}"
+                );
+                assert_eq!(
+                    fixture.succeeds(1, "recover-clipboard-transfers")["completed"],
+                    0,
+                    "recovery is idempotent: {action} {phase}"
+                );
+                drop(fixture);
+            }
+        }
+    }
+
     // Tests that pause a transfer midway use the Linux file clipboard's
     // transfer hook (`TestTransferPause`), so they exist only on Linux.
     #[cfg(target_os = "linux")]
@@ -945,15 +1086,28 @@ mod files_clipboard_tests {
             );
         }
         let receiving = fixture.folders[1].clone();
-        let first = std::fs::read_dir(&receiving)
-            .unwrap()
-            .map(Result::unwrap)
-            .map(|entry| entry.path())
+        // What a person sees in the folder: the batch's private staging
+        // folder is hidden and holds nothing published.
+        let shown = |folder: &Path| -> Vec<PathBuf> {
+            std::fs::read_dir(folder)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    !path
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(".tilo-transfer-")
+                })
+                .collect()
+        };
+        let first = shown(&receiving)
+            .into_iter()
             .find(|path| path.file_name().unwrap() != "other")
             .unwrap();
         let first_bytes = std::fs::read(&first).unwrap();
         assert_eq!(
-            std::fs::read_dir(&receiving).unwrap().count(),
+            shown(&receiving).len(),
             2,
             "only one clipboard object is actually published at this phase"
         );
@@ -1013,12 +1167,17 @@ mod files_clipboard_tests {
     fn mounted_apps(profile: &Path, author: &str) -> InProcessApps {
         let apps_root = profile.join("apps");
         if std::env::var_os("TILO_CLIPBOARD_TEST_DEFER_DOC_SAVE").is_none() {
-            return InProcessApps::at(&apps_root, author).unwrap();
+            return InProcessApps::at(&apps_root, &apps_root.join("person"), author).unwrap();
         }
         // Keep the real native store and its acknowledgements. Only this crash
         // child's write schedule differs: Paste is explicitly flushed before Undo.
         std::fs::create_dir_all(&apps_root).unwrap();
         let native = ui::application::NativeProfile::open(&apps_root, None).unwrap();
+        let person = crate::shell::settings_records::Holder::held(
+            (apps_root.join("person"), author.to_owned()),
+            &apps_root,
+        )
+        .unwrap();
         InProcessApps::new(
             Rc::new(app_state::FsStore::with_debounce(
                 apps_root,
@@ -1026,6 +1185,7 @@ mod files_clipboard_tests {
             )),
             native.device_id(),
             author,
+            person,
         )
     }
 
@@ -2258,7 +2418,7 @@ mod files_clipboard_tests {
         fixture.succeeds(0, "select-all");
         fixture.command_key(0, "c");
         let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
+            .checked_add(tilo_test_env::hang_bound())
             .expect("bounded test deadline");
         while fixture.succeeds(1, "clipboard-status")["offer"].is_null() {
             assert!(
@@ -2282,7 +2442,7 @@ mod files_clipboard_tests {
         fixture.command_key(1, "z");
         let [first, second] = &mut fixture.shown;
         let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
+            .checked_add(tilo_test_env::hang_bound())
             .expect("bounded test deadline");
         until(
             &mut [first, second],
@@ -2313,7 +2473,7 @@ mod files_clipboard_tests {
         );
         let [first, second] = &mut fixture.shown;
         let deadline = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(5))
+            .checked_add(tilo_test_env::hang_bound())
             .expect("bounded restart deadline");
         until(
             &mut [first, second],

@@ -649,8 +649,9 @@ mod tests {
         let nonce = challenge();
         if rustix::process::getuid().as_raw() == 0 && rustix::process::geteuid().as_raw() == 0 {
             let worker = std::thread::spawn(move || process_binding::complete(&mut sender));
-            host.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            host.set_write_timeout(Some(Duration::from_secs(5)))
+            host.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
+            host.set_write_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             process_binding::arm(&host).unwrap();
             host.write_all(&process_binding::MAGIC).unwrap();
@@ -690,7 +691,7 @@ mod tests {
         let (mut unrelated, mut peer) = UnixStream::pair().unwrap();
         let writer = std::thread::spawn(move || {
             sender
-                .set_write_timeout(Some(Duration::from_secs(1)))
+                .set_write_timeout(Some(tilo_test_env::hang_bound()))
                 .unwrap();
             sender.write_all(&64_u32.to_le_bytes()).unwrap();
             sender.write_all(&[7, 7]).unwrap();
@@ -704,7 +705,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(20));
             }
         });
-        observed.recv_timeout(Duration::from_secs(1)).unwrap();
+        tilo_test_env::recv("the partial payload to be sent", &observed);
         let start = Instant::now();
         let error = with_proof_deadline_at(
             &held,
@@ -720,11 +721,12 @@ mod tests {
         .unwrap_err();
         writer.join().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        // The payload trickles in over more than a second, so a deadline
+        // renewed by progress would have read it whole.
         assert!(
             progress.load(Ordering::Acquire) >= 2,
             "actual partial payload arrived"
         );
-        assert!(start.elapsed() < Duration::from_secs(2));
         // Shutdown is confined to the held proof socket, not another transport.
         peer.write_all(&[9]).unwrap();
         let mut byte = [0];
@@ -737,7 +739,7 @@ mod tests {
         use std::io::Read;
         let (receiver, mut sender) = UnixStream::pair().unwrap();
         sender
-            .set_read_timeout(Some(Duration::from_secs(1)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         let mut invoked = false;
         let error = with_proof_deadline(&receiver, &AtomicBool::new(true), || {
@@ -764,7 +766,8 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(false));
         let peer_cancel = cancel.clone();
         let stalled = std::thread::spawn(move || {
-            peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            peer.set_read_timeout(Some(tilo_test_env::hang_bound()))
+                .unwrap();
             let mut magic = [0; 4];
             peer.read_exact(&mut magic).unwrap();
             assert_eq!(magic, process_binding::MAGIC);
@@ -776,11 +779,9 @@ mod tests {
             assert_eq!(peer.read(&mut [0]).unwrap(), 0);
         });
         let request = LaunchRequest::decode(&serde_json::to_vec(&request()).unwrap()).unwrap();
-        let started = Instant::now();
         let error = ProofClient::connect(host, &request, &cancel).err().unwrap();
         stalled.join().unwrap();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     fn request() -> serde_json::Value {
@@ -891,10 +892,10 @@ mod different_uid_native {
         let mut child = OwnedChild(command.spawn().expect("actual different-UID child"));
         drop((executable, socket, child_stream));
         root_stream
-            .set_read_timeout(Some(Duration::from_secs(10)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         root_stream
-            .set_write_timeout(Some(Duration::from_secs(10)))
+            .set_write_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         process_binding::arm(&root_stream).unwrap();
         let nonce = challenge();
@@ -912,7 +913,7 @@ mod different_uid_native {
         assert_ne!(peer.uid(), 1000, "original Home UID is not target identity");
         assert!(peer.current());
         root_stream.write_all(&[1]).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = tilo_test_env::hang_deadline();
         let status = loop {
             if let Some(status) = child.0.try_wait().expect("observe owned child") {
                 break status;

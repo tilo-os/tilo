@@ -127,7 +127,6 @@ pub(crate) enum RoomOperation {
     Publish,
     /// Replaying retained state to a subscriber.
     Replay,
-    /// A browser live-plane grant or its observation.
     #[cfg(any(test, feature = "web"))]
     Live,
     /// A browser live-plane grant that only receives, or its observation:
@@ -141,7 +140,6 @@ pub(crate) enum RoomOperation {
     ChannelReadKeys,
     /// Discovering the room's content endpoints.
     ContentDiscovery,
-    /// Attaching to the room's compute plane.
     Compute,
     /// Opening or attaching to an environment in the room.
     Environment,
@@ -163,7 +161,6 @@ pub(crate) enum RoomOperation {
 enum OwnerDevice {
     /// Admit it and persist it as a member.
     Enrol,
-    /// Admit it without enrolling it.
     Admit,
     /// Refuse: this plane serves only devices already enrolled.
     Refuse,
@@ -308,7 +305,6 @@ impl DenyReason {
 /// Relay-wide certificate validity and agent delegation: one copy.
 #[derive(Clone, Copy)]
 pub(crate) struct RelayTrust<'a> {
-    /// Live revocation list.
     pub(crate) revocations: &'a RwLock<RevocationList>,
     /// Live handshake trust policy.
     pub(crate) policy: &'a RwLock<TrustPolicy>,
@@ -333,10 +329,6 @@ impl RelayTrust<'_> {
 
     /// Whether `peer`'s certificate is current relay-wide at `now_ns`. A
     /// poisoned list or policy refuses.
-    ///
-    /// # Errors
-    ///
-    /// The first reason the certificate is not current.
     pub(crate) fn cert(&self, peer: &AuthenticatedPeer, now_ns: u64) -> Result<(), DenyReason> {
         if peer
             .cert
@@ -485,7 +477,6 @@ pub(crate) struct Room<'a> {
 }
 
 impl<'a> Room<'a> {
-    /// The room as its runtime holds it.
     pub(crate) const fn current(runtime: &'a WorkspaceRuntime) -> Self {
         Self {
             runtime,

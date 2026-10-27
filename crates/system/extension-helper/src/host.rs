@@ -130,9 +130,6 @@ pub trait Host {
     }
 
     /// Open `url`, from byte `offset` on when it is not 0.
-    ///
-    /// # Errors
-    /// The server's error status, or why it could not be reached.
     fn http_open(&self, url: &str, offset: u64) -> Result<Box<dyn Response>, HttpError> {
         http_open(url, offset)
     }
@@ -141,10 +138,6 @@ pub trait Host {
     /// the release root, `signature` is a Rekor bundle whose operational
     /// certificate the root issued for extension manifests in the current
     /// epoch; otherwise a bare signature by the extension-manifest key.
-    ///
-    /// # Errors
-    /// `Pack` when the image lacks its trust material or the signature does
-    /// not verify.
     fn verify_signature(
         &self,
         layout: &Layout,
@@ -210,7 +203,7 @@ pub trait Host {
 
     /// The signature checker.
     fn tilo_crypto(&self) -> PathBuf {
-        PathBuf::from("/usr/bin/tilo-crypto")
+        PathBuf::from("/usr/libexec/tilo/tilo-crypto")
     }
 
     /// `NetworkManager`'s cached connectivity state (no probe is sent). An
@@ -282,9 +275,6 @@ pub trait Host {
     /// Runs systemd-sysext directly: its boot-time service stays masked on
     /// the sealed image, so only this activation, right after rebuilding every
     /// part from verified bytes, ever merges.
-    ///
-    /// # Errors
-    /// systemd-sysext fails.
     fn sysext_refresh(&self, layout: &Layout) -> Result<()> {
         if !layout.is_host_root() || !Path::new("/run/systemd/system").is_dir() {
             return Ok(());
@@ -296,9 +286,6 @@ pub trait Host {
     ///
     /// For the paths that refuse: a refresh there would merge whatever else
     /// is in the search path, which is exactly what was refused.
-    ///
-    /// # Errors
-    /// systemd-sysext fails.
     fn sysext_unmerge(&self, layout: &Layout) -> Result<()> {
         if !layout.is_host_root() || !Path::new("/run/systemd/system").is_dir() {
             return Ok(());
@@ -327,9 +314,6 @@ pub trait Host {
 
     /// Have PID 1 run the activation unit: it merges in the host's mount
     /// namespace, which the sandboxed install unit does not share.
-    ///
-    /// # Errors
-    /// systemctl fails.
     fn start_activation_unit(&self) -> Result<()> {
         run(
             &[
@@ -343,9 +327,6 @@ pub trait Host {
     }
 
     /// Label the tree as the files it overlays would be, when `SELinux` is on.
-    ///
-    /// # Errors
-    /// setfiles fails.
     fn relabel(&self, tree: &Path) -> Result<()> {
         let contexts = Path::new("/etc/selinux/targeted/contexts/files/file_contexts");
         if !Path::new("/sys/fs/selinux/enforce").exists()
@@ -382,9 +363,6 @@ pub trait Host {
     }
 
     /// `os.replace`: rename over `to`.
-    ///
-    /// # Errors
-    /// The rename's error, unworded (callers check for EXDEV).
     fn replace(&self, from: &Path, to: &Path) -> io::Result<()> {
         fs::rename(from, to)
     }

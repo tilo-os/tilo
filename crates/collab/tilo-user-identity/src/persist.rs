@@ -425,10 +425,6 @@ fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistErr
 /// Atomically write a 32-byte Ed25519 public key to disk with
 /// [`PUBLIC_FILE_MODE`] — public keys are non-secret. Atomic
 /// replacement avoids both partial trust roots and following a final symlink.
-///
-/// # Errors
-///
-/// Returns an error if writing to `path` fails.
 pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
@@ -638,11 +634,6 @@ fn secret_key_owner_is_accepted(policy: SecretOwner, owner: u32, reader: u32) ->
 }
 
 /// Write a 32-byte Ed25519 signing key to disk with mode 0600.
-///
-/// # Errors
-///
-/// Returns an error if `path` has no parent directory, or if the
-/// atomic write fails.
 pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     protect_secret_process()?;
     // A partial write must leave the previous secret intact, and the mode is
@@ -731,11 +722,6 @@ pub fn load_device_key(paths: &IdentityPaths) -> Result<SigningKey, PersistError
 }
 
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
-///
-/// # Errors
-///
-/// Returns an error if `path` has no parent directory, or if the
-/// atomic write fails.
 pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     protect_secret_process()?;
     path.parent()
@@ -1272,20 +1258,30 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
     let pubkey = read_public_key(&paths.user_pubkey)?;
     let device = read_device_key(&paths.device_privkey)?;
     let cert = read_device_cert(&paths.device_cert)?;
-    verify_device_cert_at(&cert, now_ns).map_err(|error| {
-        PersistError::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("enrolled device certificate did not verify: {error}"),
-        ))
-    })?;
     // A primary device can admit further devices. That is an ordinary
     // machine, not one the imager already enrolled, even when its root
     // secret lives in the identity record rather than
     // user-identity/privkey.bin, so first-boot provisioning must still run
-    // for each OS user.
+    // for each OS user: it verifies the certificate, and renews one that
+    // is due before it is ever refused for having expired.
     if cert.capabilities.can_admit_devices {
         return Ok(false);
     }
+    verify_device_cert_at(&cert, now_ns).map_err(|error| {
+        // Refused for the clock's reading alone, the certificate still
+        // proves the enrolment: say so in a form callers can tell apart.
+        PersistError::Io(
+            crate::CertificateClockError::of(&cert, now_ns, &error).map_or_else(
+                || {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("enrolled device certificate did not verify: {error}"),
+                    )
+                },
+                crate::CertificateClockError::into_io,
+            ),
+        )
+    })?;
     if cert.user_public_key != pubkey || cert.device_public_key != device.verifying_key().to_bytes()
     {
         return Err(PersistError::Io(io::Error::new(
@@ -1551,7 +1547,6 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
 
         if rustix::process::geteuid().as_raw() == 0 {
-            // Root reaches the key whatever its directory's mode.
             return;
         }
         let dir = identity_tempdir();

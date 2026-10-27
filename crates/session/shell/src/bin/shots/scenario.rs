@@ -13,7 +13,7 @@
 //!   - **window mode** — runs the scenario as a "pre-roll" before
 //!     handing control to the live winit event loop.
 //!
-//! Built-in catalogue is the [`SCENARIOS`] table at the bottom: name,
+//! Built-in catalogue is the [`scenarios()`] table at the bottom: name,
 //! description, and an action list. `--list-scenarios` and `--scenario NAME`
 //! read that table. The apply engine above stays code; the scenes are data.
 
@@ -29,6 +29,15 @@ use shell::shell::state::StripId;
 use ui::widget::GroupRow;
 
 use super::driver::ShellDriver;
+
+mod file_chooser;
+pub mod film;
+mod launcher;
+mod motion_gallery;
+mod motion_review;
+mod one_place;
+mod window_bar_reactions;
+mod window_search;
 
 /// One tab of a window seeded for the window-bar shots.
 #[derive(Debug, Clone, Copy)]
@@ -84,6 +93,9 @@ pub enum Action {
     /// hover-driven — a tab pill opening its control cluster — where a
     /// literal coordinate would go stale the moment the row re-sizes.
     MoveCursorNamed(&'static str),
+    /// Show every display's Identify card, named and numbered as a laptop
+    /// panel with a desk monitor beside it would be.
+    IdentifyDisplays,
     /// Move to a live group's empty tab-bar grab zone. Unlike raw screen
     /// coordinates this remains valid in compact and normal viewport sweeps.
     MoveCursorGroupGrab(usize),
@@ -110,6 +122,17 @@ pub enum Action {
     CompositorPointer(Point),
     /// Turn "hide the top bar until the pointer is near it" on or off.
     HideTopBar(bool),
+    /// A secondary click on the named target: what a long-press by touch
+    /// becomes.
+    SecondaryClickNamed(&'static str),
+    /// A finger dragged from one point to the other, as raw touch.
+    TouchSwipe(Point, Point),
+    /// A notification banner arrives: title and body.
+    Notify(&'static str, &'static str),
+    /// The focused window goes full screen, or leaves it.
+    FullScreenFocused(bool),
+    /// The key that asks for a fullscreen window's bar (Super) goes down.
+    FullscreenBarKey,
     /// Synthesise a left-button `Pressed` at the current cursor.
     /// Caller owns the matching `MouseRelease`.
     MousePress,
@@ -138,6 +161,20 @@ pub enum Action {
     Modifiers(ModifiersState),
     /// Step animation `n` frames (~16 ms each).
     Wait(u32),
+    /// Step frames until the active workspace's strips stop moving (no
+    /// pan glide or snap, no slot or width spring), at most `max` frames.
+    ///
+    /// The frame clock is real time and a frame's length depends on how
+    /// busy the machine is, so a fixed [`Action::Wait`] can end with a
+    /// spring a pixel short of its target, or with a just-opened window
+    /// still growing and the strip's content width moving under the next
+    /// gesture. Reach for this before a capture that reads a resting strip.
+    WaitStripSettled(u32),
+    /// Step frames until the work a person would see finish a moment
+    /// later has finished (a search index building, an icon arriving), as
+    /// a scene-set capture does; what is still pending after the bound is
+    /// stuck, and the next capture shows it.
+    WaitSettled,
     /// Re-run layout without stepping the clock.
     ///
     /// A tab title's shaped width is recorded during `draw` and consumed
@@ -160,24 +197,13 @@ pub enum Action {
     /// state can be reviewed without starting a filesystem encoder in the
     /// deterministic visual harness.
     CaptureRecordingActive(bool),
-    /// Pin the launch-to-top-bar recorder transition for visual review. The
-    /// live shell uses elapsed time; shots use permille so every phase remains
-    /// inspectable even under a slow software renderer.
-    CaptureRecordingTransition(u16),
     /// Pin the selected-pixels-to-PiP morph for deterministic visual review.
     /// PNG rendering can be slower than the live animation, so wall-clock
     /// snapshot sequences cannot faithfully expose its intermediate frames.
     CapturePipTransition(u16),
-    /// Toggle the visual recorder session between live and paused without
-    /// starting an encoder, for deterministic indicator review.
-    CaptureRecordingPaused(bool),
-    /// Pin pause/resume label and icon morphs under slow software rendering.
-    CaptureRecordingStateTransition(u16),
-    /// Transition the active pill through the same compositor-confirmed save
-    /// receipt used after a successful file flush.
+    /// End the recording through the same compositor-confirmed save receipt
+    /// used after a successful file flush.
     CaptureRecordingFinished,
-    /// Pin the saved receipt entrance under slow software rendering.
-    CaptureRecordingReceiptTransition(u16),
     CaptureReplayActive(bool),
     CaptureReplayBuffered(u8),
     CaptureReplaySaved,
@@ -197,28 +223,27 @@ pub enum Action {
     /// Run queued capture intents through the production compositor executor.
     /// Opt-in avoids filesystem work in unrelated deterministic scenarios.
     CaptureExecutionEnabled(bool),
-    /// Seed real collaborative room changes and open one of the two history
-    /// surfaces. `explore = false` captures outcome-first Catch up;
-    /// `true` captures the full three-panel browser.
-    SeedRoomActivity {
-        explore: bool,
+    /// The client of `surface_id` commits a new buffer, filled with `rgba`,
+    /// at its window's size: a window that changes while the person looks.
+    ClientCommit {
+        surface_id: u64,
+        rgba: [u8; 4],
     },
-    /// Focus a recap outcome already present in the responsive render. Enter
-    /// remains the production activation path.
-    FocusFirstRoomActivityWorkSession,
-    /// Seed two context-grouped sessions without writing named ranges. Used
-    /// to prove the first human seam correction materializes shared bounds.
-    SeedAutomaticWorkSessions,
-    ExpandAutomaticWorkSession,
-    CorrectAutomaticWorkSession,
-    /// Switch the seeded causal history into workspace replay.
-    ShowRoomActivityReplay,
-    /// Narrow the open activity surface to Ada's real authored changes so a
-    /// collaboration proof cannot accidentally show only the local author.
-    FilterRoomActivityToAda,
+    /// The active Terminal window's session prints lines `from..=to`.
+    TerminalPrints {
+        from: u32,
+        to: u32,
+    },
+    /// Seed real collaborative room changes, a second person's among them.
+    SeedRoomHistory,
     /// Add two present collaborators and representative shares to the active
     /// workspace through the production capability path.
     SeedSharedWorkspace,
+    /// Nobody else in any workspace: the launcher on a fresh device.
+    SeedLauncherFresh,
+    /// People in two workspaces, a call ringing, something shared with the
+    /// person and notes they opened lately: the launcher's busy state.
+    SeedLauncherBusy,
     /// Three strips in the shown workspace with people on two of them.
     SeedStripsWithPeople,
     /// Admit a named agent and expose one real foreign surface to its live
@@ -250,6 +275,8 @@ pub enum Action {
     },
     /// Open this person's cursor chat with `text` typed.
     OpenCursorChat(&'static str),
+    /// Open the app chooser an app asks for, to choose an app for `purpose`.
+    OpenAppChooser(&'static str),
     /// Follow the collaborator with this roster id, or stop with `None`.
     FollowPeer(Option<&'static str>),
     /// Open someone's row in the roster.
@@ -279,8 +306,6 @@ pub enum Action {
     /// The driver retains the same identity and capability record rather
     /// than replacing the row with a screenshot-only fake.
     AdmitInvitedCollaborator,
-    /// Select a real timeline row so provenance and comparison are exercised.
-    SelectRoomActivityEntry(usize),
     /// Apply a real forward revert to an earlier room-history entry.
     RevertRoomActivity,
     /// Move the named live collaborator to Files and focus that native app,
@@ -298,7 +323,7 @@ pub enum Action {
         surface_id: u64,
     },
     /// Activate an app whose window has not mapped yet: the production
-    /// launch holds its place with the opening card from this frame.
+    /// launch holds its place from this frame, where its window arrives.
     HoldLaunchPlace {
         app_id: &'static str,
         label: &'static str,
@@ -508,6 +533,8 @@ pub enum Action {
     /// A player in another workspace and three people here, for the desk
     /// widgets.
     SeedDesk,
+    /// Quick Settings open on its root page.
+    OpenQuickSettings,
     /// A key reached the focused window.
     DeskTyping,
     /// Super alone: tapped, held, released.
@@ -529,6 +556,11 @@ pub enum Action {
         frames: u32,
         every_ms: u64,
     },
+    /// Record every frame of a motion at 60 Hz until it settles; see
+    /// [`film::Film`]. Needs the shell's `test-support` feature.
+    Film(film::Film),
+    /// A shell-side cue or set-up step of the films; see [`film::Step`].
+    Step(film::Step),
     /// Open `app` as a window of its own, `width` per mille of the display
     /// wide, as every app runs on a device: its surface shows the frames it
     /// draws in a frame of its own, and the window's bar reaches it only over
@@ -593,6 +625,18 @@ pub trait SnapshotSink {
     /// Called whenever the scenario emits a `Snapshot(name)`. The sink
     /// has full driver access so it can render, serialise, or both.
     fn capture(&mut self, driver: &mut ShellDriver, name: &str);
+    /// Called with every frame an [`Action::Film`] painted; a sink that
+    /// keeps no images ignores them.
+    #[cfg_attr(
+        not(feature = "test-support"),
+        allow(
+            dead_code,
+            reason = "only a test-support build pins the clock a film records on"
+        )
+    )]
+    fn film(&mut self, driver: &mut ShellDriver, prefix: &str, frames: Vec<film::FilmFrame>) {
+        let _ = (driver, prefix, frames);
+    }
 }
 
 /// Default no-op sink used by window mode (you watch the screen).
@@ -684,6 +728,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
     apply_desk(driver, action);
     apply_motion_frames(driver, action, sink);
     apply_own_process_window(driver, action);
+    film::apply(driver, action, sink);
 }
 
 /// The long note [`Action::SeedLongNotes`] writes: more than a window shows.
@@ -741,7 +786,9 @@ fn apply_own_process_window(driver: &mut ShellDriver, action: &Action) {
         );
     }
     #[cfg(feature = "test-support")]
-    if let Err(error) = run_own_process_app(driver, *app, &window[0]) {
+    if let Some(tab) = window.first()
+        && let Err(error) = run_own_process_app(driver, *app, tab)
+    {
         eprintln!("scenario: {app:?} did not run as a window of its own: {error}");
     }
 }
@@ -767,7 +814,7 @@ fn run_own_process_app(
                 .find(|tab| {
                     matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == window.surface_id)
                 })
-                .map(|tab| (workspace.room.to_string(), tab.id))
+                .map(|tab| (workspace.room().to_string(), tab.id))
         })
     };
     let (room, tab) = target.ok_or("its window did not open")?;
@@ -830,7 +877,7 @@ fn apply_motion_frames<S: SnapshotSink>(driver: &mut ShellDriver, action: &Actio
         let start = ui::time::now();
         let every = std::time::Duration::from_millis(*every_ms);
         for i in 0..*frames {
-            let at = start + every * i;
+            let at = start.checked_add(every.saturating_mul(i)).unwrap_or(start);
             ui::time::testing::with_monotonic_time(at, || {
                 if i == 0 {
                     apply_motion_cue(driver, cue);
@@ -851,7 +898,7 @@ fn apply_motion_cue(driver: &mut ShellDriver, cue: &MotionCue) {
     match cue {
         MotionCue::OpenQuickSettings => driver.with_chrome(ShellDriver::seed_laptop_quick_settings),
         MotionCue::CloseQuickSettings => {
-            driver.with_chrome(|st| st.overlays.quick_settings = false)
+            driver.with_chrome(|st| st.overlays.quick_settings = false);
         }
         MotionCue::QuickSettingsSection(section) => {
             let section = *section;
@@ -877,6 +924,9 @@ fn apply_motion_cue(driver: &mut ShellDriver, cue: &MotionCue) {
 fn apply_desk(driver: &mut ShellDriver, action: &Action) {
     match action {
         Action::SeedDesk => driver.seed_desk_for_shots(),
+        Action::OpenQuickSettings => {
+            driver.with_chrome(ShellDriver::seed_laptop_quick_settings);
+        }
         Action::DeskTyping => driver.desk_typing_for_shots(),
         Action::Super(gesture) => driver.super_gesture_for_shots(*gesture),
         Action::SetTextCaret(caret) => driver.set_text_caret_for_shots(*caret),
@@ -931,6 +981,15 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.move_cursor(*p);
         }
         Action::HideTopBar(hide) => driver.host_mut().set_hide_top_bar_for_tests(*hide),
+        Action::IdentifyDisplays => {
+            let snapshot = identify_snapshot(driver.host().output_geometry());
+            driver.host_mut().identify_displays_now(&snapshot);
+        }
+        Action::SecondaryClickNamed(name) => one_place::secondary_click_named(driver, name),
+        Action::TouchSwipe(from, to) => one_place::touch_swipe(driver, *from, *to),
+        Action::FullscreenBarKey => driver.host_mut().reveal_fullscreen_bar_by_key(),
+        Action::Notify(title, body) => one_place::notify(driver, title, body),
+        Action::FullScreenFocused(on) => one_place::full_screen_focused(driver, *on),
         Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.move_cursor(p),
             None => eprintln!(
@@ -977,6 +1036,10 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::Type(s) => driver.type_str(s),
         Action::Modifiers(m) => driver.set_modifiers(*m),
         Action::Wait(n) => driver.step_frames(*n),
+        Action::WaitStripSettled(max) => wait_strip_settled(driver, *max),
+        Action::WaitSettled => {
+            let _ = driver.paint_settled();
+        }
         Action::Snapshot(name) => {
             // Always settle the layout pass before capturing — overlay
             // toggles since the last snapshot may have changed
@@ -1002,23 +1065,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::CaptureRecordingActive(active) => {
             driver.set_capture_recording_active(*active);
         }
-        Action::CaptureRecordingTransition(permille) => {
-            driver.set_capture_recording_transition_progress(*permille);
-        }
         Action::CapturePipTransition(permille) => {
             driver.set_capture_pip_transition_progress(*permille);
         }
-        Action::CaptureRecordingPaused(paused) => {
-            driver.set_capture_recording_paused(*paused);
-        }
-        Action::CaptureRecordingStateTransition(permille) => {
-            driver.set_capture_recording_state_transition_progress(*permille);
-        }
         Action::CaptureRecordingFinished => {
             driver.set_capture_recording_finished();
-        }
-        Action::CaptureRecordingReceiptTransition(permille) => {
-            driver.set_capture_recording_receipt_transition_progress(*permille);
         }
         Action::CaptureReplayActive(active) => {
             driver.set_capture_replay_active(
@@ -1054,32 +1105,35 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::CaptureExecutionEnabled(enabled) => {
             driver.set_capture_execution_enabled(*enabled);
         }
+        Action::TerminalPrints { from, to } => {
+            let text = (*from..=*to).fold(String::new(), |mut text, line| {
+                use std::fmt::Write as _;
+                let _ = write!(text, "output line {line}\r\n");
+                text
+            });
+            if let Err(error) = driver.feed_active_terminal(&text) {
+                eprintln!("shots: terminal prints: {error}");
+            }
+        }
+        Action::ClientCommit { surface_id, rgba } => {
+            let store = shell::compositor::foreign::store();
+            if let Some((w, h)) = store.viewport(*surface_id)
+                && let Some(texels) = w
+                    .checked_mul(h)
+                    .filter(|texels| *texels > 0)
+                    .and_then(|texels| usize::try_from(texels).ok())
+            {
+                store.publish_rgba(*surface_id, &rgba.repeat(texels), w, h);
+            }
+        }
         Action::ShowHostDesktopOnboarding => driver.show_host_desktop_onboarding(),
         Action::SetOnboardingVisual(state) => driver.set_onboarding_visual_state(*state),
         Action::SetLockVisual(state) => driver.set_lock_visual_state(*state),
         Action::ReduceTransparency(on) => driver.set_reduce_transparency(*on),
-        Action::SeedRoomActivity { explore } => {
-            driver.seed_room_activity_for_shots(*explore);
-        }
-        Action::FocusFirstRoomActivityWorkSession => assert!(
-            driver.focus_first_room_activity_work_session_for_shots(),
-            "scenario: the settled recap must render a focusable work session"
-        ),
-        Action::SeedAutomaticWorkSessions => driver.seed_automatic_work_sessions_for_shots(),
-        Action::ExpandAutomaticWorkSession => assert!(
-            driver.expand_automatic_work_session_for_shots(),
-            "scenario: automatic work session must be available to expand"
-        ),
-        Action::CorrectAutomaticWorkSession => assert!(
-            driver.correct_automatic_work_session_for_shots(),
-            "scenario: automatic work-session seam correction must succeed"
-        ),
-        Action::ShowRoomActivityReplay => driver.show_room_activity_replay_for_shots(),
-        Action::FilterRoomActivityToAda => assert!(
-            driver.filter_room_activity_to_ada_for_shots(),
-            "scenario: attributed history requires a real change authored by Ada"
-        ),
+        Action::SeedRoomHistory => driver.seed_room_history_for_shots(),
         Action::SeedSharedWorkspace => driver.seed_shared_workspace_for_shots(),
+        Action::SeedLauncherFresh => driver.seed_launcher_fresh_for_shots(),
+        Action::SeedLauncherBusy => driver.seed_launcher_busy_for_shots(),
         Action::SeedStripsWithPeople => driver.seed_strips_with_people_for_shots(),
         Action::SeedAgentScreenExposure { surface_id } => {
             driver.seed_agent_screen_exposure_for_shots(*surface_id);
@@ -1093,6 +1147,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         }
         Action::RemoteReaction { who, emoji } => driver.remote_reaction_for_shots(who, emoji),
         Action::OpenCursorChat(text) => driver.host_mut().open_cursor_chat_for_shots(text),
+        Action::OpenAppChooser(purpose) => driver.host_mut().open_app_chooser_for_shots(purpose),
         Action::FollowPeer(id) => driver.host_mut().follow_for_shots(*id),
         Action::ExpandRosterRow(id) => driver.host_mut().expand_collaborator_for_shots(id),
         Action::StopFollowingByInput => driver.host_mut().stop_following_by_input_for_shots(),
@@ -1113,9 +1168,6 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.admit_invited_collaborator_for_shots(),
             "scenario: collaboration journey cannot show live editing before Ada's pending invite is admitted"
         ),
-        Action::SelectRoomActivityEntry(index) => {
-            driver.select_room_activity_entry(*index);
-        }
         Action::RevertRoomActivity => assert!(
             driver.revert_room_activity_for_shots(),
             "scenario: collaboration journey cannot label a frame 'reverted' without a forward revert"
@@ -1130,14 +1182,14 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
 
 /// `Action::SeedNoteHistory`: an afternoon of work on the long note by Ada
 /// and the agent working for her, merged as their replicas send it.
-fn seed_note_history(driver: &mut ShellDriver, group_idx: usize) {
+fn seed_note_history(driver: &ShellDriver, group_idx: usize) {
     let target = {
         let chrome = driver.chrome();
         let tree = chrome.tree();
         tree.desktop.active_workspace().and_then(|workspace| {
             let strip = workspace.strips.first()?;
             let group = strip.window_groups.get(group_idx)?;
-            Some((workspace.room.to_string(), group.active_tab))
+            Some((workspace.room().to_string(), group.active_tab))
         })
     };
     let Some((room, tab)) = target else {
@@ -1149,7 +1201,7 @@ fn seed_note_history(driver: &mut ShellDriver, group_idx: usize) {
 
 /// An afternoon of work by Ada and her agent on the note tab `tab` of
 /// `room` shows, merged as their replicas send it.
-fn seed_note_history_of_tab(driver: &mut ShellDriver, room: &str, tab: u64) {
+fn seed_note_history_of_tab(driver: &ShellDriver, room: &str, tab: u64) {
     // The agent writes as its own device key, which the session verified as
     // delegated by Ada: its changes read as the agent's, for Ada.
     let agent_device = [0x5a_u8; 32];
@@ -1293,6 +1345,10 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
 /// short. The windows are adopted the way a client's toplevel is, titled
 /// the way its client titles them, gathered into one group as dragging
 /// their bars together would, and stood in for with a plain frame.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one screenshot fixture staged top to bottom"
+)]
 fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
     use shell::shell::state::TileContent;
     if let Action::DeclareBarSlots { surface_id, slots } = action {
@@ -1330,7 +1386,7 @@ fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
         TileContent::Foreign { surface_id, .. } => Some(*surface_id),
         _ => None,
     };
-    for tab in tabs.iter() {
+    for tab in *tabs {
         // Opened as any window is: placed, adopted, stood in for.
         apply_open_window(
             driver,
@@ -1387,7 +1443,7 @@ fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
                     if let Some(group) = strip.window_groups.first_mut() {
                         group.active_tab = gathered
                             .get(*active)
-                            .or(gathered.first())
+                            .or_else(|| gathered.first())
                             .map_or(group.active_tab, |tab| tab.id);
                         group.tabs = gathered;
                         target = Some((strip.id, group.id));
@@ -1403,7 +1459,7 @@ fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
     driver.relayout();
     apply_make_space_sample_and_widths(driver, &Action::SetWindowWidths(*width), &mut NullSink);
     driver.relayout();
-    let ids: Vec<(u64, Option<fn() -> ui::window_toolbar::WindowToolbar>)> = {
+    let ids: Vec<(u64, Option<ToolbarOf>)> = {
         let chrome = driver.chrome();
         let tree = chrome.tree();
         tabs.iter()
@@ -1427,7 +1483,7 @@ fn apply_seed_window_bar(driver: &mut ShellDriver, action: &Action) {
     driver.relayout();
     // The stand-in frames are drawn at the size the windows have now that
     // their bars show the apps' slots.
-    for tab in tabs.iter() {
+    for tab in *tabs {
         if let Some((w, h)) = shell::compositor::foreign::store().viewport(tab.surface_id)
             && w > 0
             && h > 0
@@ -1483,6 +1539,7 @@ fn apply_add_hosted_tab(driver: &mut ShellDriver, action: &Action) {
                     kind: shell::shell::state::AppKind::Other(app.to_string()),
                     label: title.to_string(),
                 },
+                app_title: None,
             });
             group.active_tab = id;
             added = Some(id);
@@ -1586,6 +1643,42 @@ fn apply_reveal_samples<S: SnapshotSink>(driver: &mut ShellDriver, action: &Acti
             );
         }
     }
+}
+
+/// [`Action::WaitStripSettled`]: step a frame at a time until no strip of
+/// the active workspace is panning on its own and every window's slot has
+/// reached its width. The windows' content may keep animating (a caret, a
+/// spinner); it moves nothing the strip is measured by.
+fn wait_strip_settled(driver: &mut ShellDriver, max: u32) {
+    let strips: Vec<StripId> = {
+        let st = driver.chrome();
+        let tree = st.tree();
+        tree.desktop
+            .active_workspace()
+            .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+            .unwrap_or_default()
+    };
+    for _ in 0..max {
+        // One frame first: what the last action started (a focus reveal, a
+        // resize) only begins moving on the frame that sees it.
+        driver.step_frames(1);
+        let moving = strips.iter().any(|sid| {
+            driver
+                .host_mut()
+                .group_row_mut_for_tests(*sid)
+                .is_some_and(|row| {
+                    row.direct_pan_in_progress()
+                        || row
+                            .groups
+                            .iter()
+                            .any(|g| (g.dest_width_px() - g.layout_width_px()).abs() > 0.25)
+                })
+        });
+        if !moving {
+            return;
+        }
+    }
+    eprintln!("scenario: the strip was still moving after {max} frames");
 }
 
 /// Capture `{prefix}-{ms}ms` at each of `at_ms`, with every strip's row
@@ -1708,7 +1801,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
         Action::SeedStatus(preset) => {
             let status = status_preset(preset);
             driver.with_chrome(|st: &mut ChromeState| {
-                st.status = status.clone();
+                st.quick_settings.status = status.clone();
                 st.bump();
             });
         }
@@ -1718,100 +1811,7 @@ fn apply_seed_status_and_file_picker(driver: &mut ShellDriver, action: &Action) 
                 st.show_osd(osd);
             });
         }
-        Action::SeedFilePicker(mode) => {
-            use shell::portal::{
-                FilePickerOptions, FilePickerQueue, FilePickerSpawner, PickerFilter, PortalCaller,
-                PromptQueueHandle, PromptResolver,
-            };
-            use shell::shell::state::WorkspaceId;
-            let mode = *mode;
-            // Only one dialog is on screen at a time — a second request
-            // while one is up is answered rather than stacked. So a
-            // scenario capturing several shapes has to dismiss the
-            // previous one first, the way the user would.
-            if let Some(picker) = driver.host_mut().file_picker_mut() {
-                picker.click_cancel();
-            }
-            driver.host_mut().pump_file_picker();
-            seed_file_picker_fixture(driver);
-            // The writer's Document tab is the window that asks: in front,
-            // focused, and the window the chooser is a sheet on.
-            let mut document = None;
-            driver.with_chrome(|chrome| {
-                let mut tree = chrome.tree_mut();
-                for strip in tree
-                    .desktop
-                    .workspaces
-                    .iter_mut()
-                    .flat_map(|workspace| &mut workspace.strips)
-                {
-                    for group in &mut strip.window_groups {
-                        if let Some(tab) = group.tabs.iter_mut().find(|tab| tab.title == "Document")
-                        {
-                            tab.tile = shell::shell::state::TileContent::Foreign {
-                                app_id: "so.tilo.word-processor".into(),
-                                surface_id: tab.id,
-                            };
-                            document = Some((strip.id, group.id, tab.id));
-                        }
-                    }
-                }
-            });
-            driver.relayout();
-            if let Some((strip, group, tab)) = document {
-                driver.host_mut().focus_window_on_strip(strip, group, tab);
-            }
-            driver.relayout();
-            let queue = FilePickerQueue::new();
-            driver.host_mut().set_portal_queues(
-                PromptQueueHandle::new(PromptResolver::Channel),
-                queue.clone(),
-            );
-
-            let save = mode == "save";
-            let caller = PortalCaller::new(WorkspaceId(1), "so.tilo.word-processor");
-            let opts = FilePickerOptions::new(
-                caller,
-                if save {
-                    "Save Document"
-                } else {
-                    "Open Document"
-                },
-                save,
-            )
-            .multiple(mode == "open_multiple")
-            .filters(vec![
-                PickerFilter::from_pairs(
-                    "Documents",
-                    &[(0, "*.odt".into()), (0, "*.md".into()), (0, "*.txt".into())],
-                ),
-                PickerFilter::from_pairs("Images", &[(1, "image/png".into())]),
-            ])
-            .current_name(save.then(|| "Untitled.md".to_string()));
-            // The scenario waits on the answer the way the asking app does:
-            // a request whose app has gone is closed at the next frame.
-            thread_local! {
-                static WAITING: std::cell::RefCell<Vec<tokio::sync::oneshot::Receiver<Option<Vec<std::path::PathBuf>>>>> =
-                    const { std::cell::RefCell::new(Vec::new()) };
-            }
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            WAITING.with(|waiting| waiting.borrow_mut().push(rx));
-            queue.spawn(shell::portal::FilePickerRequest {
-                caller: opts.caller,
-                parent_window: None,
-                title: opts.title,
-                save: opts.save,
-                directory: opts.directory,
-                writable_directory: opts.writable_directory,
-                multiple: opts.multiple,
-                accept_label: opts.accept_label,
-                current_name: opts.current_name,
-                filters: opts.filters,
-                scope: None,
-                reply: tx,
-            });
-            driver.host_mut().pump_file_picker();
-        }
+        Action::SeedFilePicker(mode) => file_chooser::seed(driver, mode),
         _ => {}
     }
 }
@@ -1855,43 +1855,6 @@ fn seed_drive_consent(driver: &mut ShellDriver, preset: &str) {
     // Nobody answers a screenshot; the dropped receiver reads as "Not now".
     let _ = queue.enqueue_drive_consent(request);
     driver.host_mut().pump_portal_dialogs();
-}
-
-/// Fill the picker's fixture folder like a person's home — the usual
-/// folders and a few documents with sizes and dates — so the capture shows
-/// the sidebar and every column. The fixture is a throwaway directory the
-/// capture owns; nothing here exists outside `--shots`.
-fn seed_file_picker_fixture(driver: &mut ShellDriver) {
-    let mut home = None;
-    driver.with_chrome(|st: &mut ChromeState| {
-        home = st
-            .hosted_inputs()
-            .picker_scope
-            .as_ref()
-            .map(|scope| scope.initial_dir.clone());
-    });
-    let Some(home) = home else {
-        return;
-    };
-    for folder in ["Documents", "Downloads", "Pictures", "Music", "Projects"] {
-        let _ = std::fs::create_dir_all(home.join(folder));
-    }
-    for (name, kilobytes) in [
-        ("Quarterly report.odt", 84_u64),
-        ("Meeting notes.md", 3),
-        ("Budget 2027.ods", 212),
-        ("Holiday photo.png", 2_480),
-        ("Invoice March.pdf", 156),
-        ("Reading list.txt", 1),
-    ] {
-        let path = home.join(name);
-        if !path.exists() {
-            let _ = std::fs::write(
-                &path,
-                vec![b'x'; usize::try_from(kilobytes.saturating_mul(1000)).unwrap_or(0)],
-            );
-        }
-    }
 }
 
 /// `Action::SeedWifiPrompt` and `Action::SelectGroup` — split out of
@@ -2027,7 +1990,7 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                 tree.desktop.active_workspace().and_then(|workspace| {
                     let strip = workspace.strips.first()?;
                     let group = strip.window_groups.get(*group_idx)?;
-                    Some((strip.id, workspace.room.to_string(), group.active_tab))
+                    Some((strip.id, workspace.room().to_string(), group.active_tab))
                 })
             };
             let inputs = driver.chrome().hosted_inputs().clone();
@@ -2131,6 +2094,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         WsTab::Agents => "agents",
         WsTab::Permissions => "permissions",
         WsTab::Apps => "apps",
+        WsTab::Emoji => "emoji",
     };
     let palette_visible = host.palette_visible();
     let palette_query = host.palette_query();
@@ -2145,12 +2109,6 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
                 .collect()
         })
         .collect();
-    let room_activity_view = match host.room_activity().view() {
-        shell::shell::room_activity::ActivityView::CatchUp => "catch_up",
-        shell::shell::room_activity::ActivityView::Tasks => "tasks",
-        shell::shell::room_activity::ActivityView::Explore => "explore",
-        shell::shell::room_activity::ActivityView::Replay => "replay",
-    };
     serde_json::json!({
         "scenario_step": "",
         "active_workspace_id": active,
@@ -2161,11 +2119,6 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         "overlay_ws_settings": st.overlays.ws_settings,
         "overlay_collaborators": st.overlays.collaborators,
         "overlay_room_activity": st.overlays.room_activity,
-        "workspace_activity_open":
-            shell::shell::tab_binding::active_workspace_activity_tab(&st.tree()).is_some(),
-        "room_activity_view": room_activity_view,
-        "room_activity_compared": host.room_activity().has_comparison(),
-        "room_activity_focus": host.room_activity().focused_control_label().unwrap_or_default(),
         "qs_level": qs_level,
         "qs_section": format!("{:?}", st.quick_settings.section),
         "ws_settings_tab": ws_tab,
@@ -2233,6 +2186,10 @@ impl SnapshotSink for JsonDirSink<'_> {
 /// snap curve is 200 ms of real wall time, and a frame sleeps 16 ms.
 const PAN_SETTLE_FRAMES: u32 = 16;
 
+/// Bound on [`Action::WaitStripSettled`]: about two seconds of frames, far
+/// past any strip spring, so only a strip that never comes to rest reaches it.
+const STRIP_SETTLE_MAX_FRAMES: u32 = 120;
+
 /// Window width the strip is held at, in per-mille of the display's
 /// usable width. Half a screen each puts two windows in view with a
 /// third clipped at the edge.
@@ -2286,42 +2243,49 @@ fn status_preset(name: &str) -> shell::shell::status::SystemStatus {
     match name {
         "healthy" => SystemStatus {
             battery: Some(batt(72, BatteryState::Discharging)),
+            battery_time: None,
             link: Some(wifi(4)),
             volume: Some(vol(0.45, false)),
             media: Vec::new(),
         },
         "charging" => SystemStatus {
             battery: Some(batt(38, BatteryState::Charging)),
+            battery_time: None,
             link: Some(wifi(3)),
             volume: Some(vol(0.45, false)),
             media: Vec::new(),
         },
         "low" => SystemStatus {
             battery: Some(batt(14, BatteryState::Discharging)),
+            battery_time: None,
             link: Some(wifi(2)),
             volume: Some(vol(0.20, false)),
             media: Vec::new(),
         },
         "critical" => SystemStatus {
             battery: Some(batt(3, BatteryState::Discharging)),
+            battery_time: None,
             link: Some(wifi(1)),
             volume: Some(vol(0.20, false)),
             media: Vec::new(),
         },
         "muted" => SystemStatus {
             battery: Some(batt(88, BatteryState::Full)),
+            battery_time: None,
             link: Some(wifi(4)),
             volume: Some(vol(0.6, true)),
             media: Vec::new(),
         },
         "offline" => SystemStatus {
             battery: Some(batt(64, BatteryState::Discharging)),
+            battery_time: None,
             link: Some(LinkStatus::offline()),
             volume: Some(vol(0.45, false)),
             media: Vec::new(),
         },
         "wired" => SystemStatus {
             battery: None,
+            battery_time: None,
             link: Some(LinkStatus {
                 kind: LinkKind::Wired,
                 name: Some("Wired connection 1".to_string()),
@@ -2582,7 +2546,9 @@ fn build_scenarios() -> Vec<Scenario> {
         window_bar_browser_scenario(),
         window_bar_tabbed_scenario(),
         window_bar_files_scenario(),
+        window_bar_terminal_scenario(),
         window_bar_writer_scenario(),
+        window_bar_reactions::window_bar_reactions(),
         window_bar_overflow_scenario(),
         window_bar_suggestions_scenario(),
         desk_widgets_scenario(),
@@ -2692,6 +2658,19 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "now_playing_cards",
+            description: "What plays, as Quick Settings and the lock screen show it.",
+            actions: vec![
+                Action::Step(film::Step::NowPlaying),
+                Action::OpenQuickSettings,
+                Action::Wait(30),
+                Action::Relayout,
+                Action::Snapshot("01-quick-settings"),
+                Action::SetLockVisual(super::driver::LockVisualState::NowPlaying),
+                Action::Snapshot("02-lock-screen"),
+            ],
+        },
+        Scenario {
             name: "lock_screen_states",
             description: "Render settled production lock-screen states without locking the live session.",
             actions: vec![
@@ -2709,76 +2688,169 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "capture_studio",
-            description: "Open the shared screenshot, recording and PiP selector.",
+            description: "The capture bar over the desktop: the output, the target, the shutter and the options, see-through.",
             actions: vec![
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
+                Action::MoveCursor(Point::new(700.0, 300.0)),
+                Action::Snapshot("capture-open"),
                 Action::Drag {
                     from: Point::new(360.0, 220.0),
                     to: Point::new(980.0, 590.0),
                     steps: 8,
                 },
-                Action::Snapshot("capture-studio"),
-                Action::MoveCursorNamed("capture.record"),
-                Action::Snapshot("capture-mode-hover"),
-                Action::MoveCursorNamed("capture.window"),
-                Action::Snapshot("capture-source-hover"),
-                Action::MoveCursorNamed("capture.save"),
-                Action::Snapshot("capture-primary-hover"),
-                Action::ClickNamed("capture.delay"),
+                Action::Snapshot("capture-selection"),
+                Action::MoveCursorNamed("capture.shutter"),
+                Action::WaitWall(600),
+                Action::Snapshot("capture-shutter-tooltip"),
+                Action::ClickNamed("capture.options"),
                 Action::WaitWall(300),
                 Action::Wait(4),
-                Action::Snapshot("capture-delay-list"),
+                Action::Snapshot("capture-options"),
                 Action::Key(Key::Named(NamedKey::Escape)),
-                Action::ClickNamed("capture.window"),
-                Action::Snapshot("capture-window-source"),
-                Action::ClickNamed("capture.area"),
-                Action::ClickNamed("capture.record"),
-                Action::Snapshot("capture-recording-mode"),
-                Action::ClickNamed("capture.pip"),
-                Action::Snapshot("capture-pip-mode"),
+                Action::ClickNamed("capture.output.recording"),
+                Action::Snapshot("capture-recording-selection"),
+                Action::ClickNamed("capture.output.pip"),
+                Action::Snapshot("capture-pip-selection"),
+                Action::ClickNamed("capture.target.screen"),
+                Action::Snapshot("capture-pip-screen"),
+                Action::ClickNamed("capture.target.strip"),
+                Action::Snapshot("capture-pip-strip"),
             ],
         },
         Scenario {
-            name: "capture_multi_selection",
-            description: "Multi-region capture replaces by default, extends with Shift, and keeps selection chrome out of the chosen pixels.",
+            name: "capture_window",
+            description: "Screenshot of a window: only the picked window is outlined, the rest dimmed; moving focus the usual way picks the next one.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(None),
+                Action::OpenWindow {
+                    app_id: "org.example.current",
+                    surface_id: 5441,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(700),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(24),
+                Action::Relayout,
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(12),
+                Action::ClickNamed("capture.target.window"),
+                Action::MoveCursor(Point::new(700.0, 300.0)),
+                Action::Snapshot("window-picked"),
+                Action::SelectGroup(Some(1)),
+                Action::Wait(40),
+                Action::Relayout,
+                Action::MoveCursor(Point::new(700.0, 300.0)),
+                Action::Snapshot("window-picked-after-focus-move"),
+            ],
+        },
+        Scenario {
+            name: "capture_frozen",
+            description: "A screenshot freezes the windows when it opens: a client that draws meanwhile still shows what it showed, the strip still moves, and closing shows what it drew.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(None),
+                Action::OpenWindow {
+                    app_id: "org.example.current",
+                    surface_id: 5451,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(700),
+                Action::SelectGroup(Some(0)),
+                Action::Wait(24),
+                Action::Relayout,
+                Action::CaptureExecutionEnabled(true),
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(12),
+                Action::ClientCommit {
+                    surface_id: 5451,
+                    rgba: [0xD8, 0x3A, 0x4A, 0xFF],
+                },
+                Action::Wait(8),
+                Action::MoveCursor(Point::new(700.0, 300.0)),
+                Action::Snapshot("frozen-after-client-drew"),
+                Action::ClickNamed("capture.target.window"),
+                Action::SelectGroup(Some(1)),
+                Action::Wait(40),
+                Action::Relayout,
+                Action::MoveCursor(Point::new(700.0, 300.0)),
+                Action::Snapshot("frozen-window-picked-after-focus-move"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(8),
+                Action::Snapshot("released-after-close"),
+            ],
+        },
+        Scenario {
+            name: "capture_frozen_terminal",
+            description: "A screenshot opened while the terminal prints: the terminal holds still at the line it showed when the screenshot opened while it goes on printing, and closing shows what it printed meanwhile.",
+            actions: vec![
+                Action::OpenHostedWindow {
+                    app: "Terminal",
+                    title: "Terminal",
+                },
+                Action::Wait(24),
+                Action::TerminalPrints { from: 1, to: 40 },
+                Action::Wait(4),
+                Action::CaptureExecutionEnabled(true),
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(4),
+                Action::Snapshot("terminal-held-as-opened"),
+                Action::TerminalPrints { from: 41, to: 120 },
+                Action::Wait(4),
+                Action::Snapshot("terminal-still-held-while-printing"),
+                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::Wait(4),
+                Action::Snapshot("terminal-released-after-close"),
+            ],
+        },
+        Scenario {
+            name: "capture_two_selections",
+            description: "Shift and a new drag add a second selection; each carries its own remove; a plain drag replaces them.",
             actions: vec![
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
-                Action::ClickNamed("capture.multi"),
                 Action::Drag {
                     from: Point::new(180.0, 170.0),
                     to: Point::new(500.0, 350.0),
                     steps: 7,
                 },
-                Action::Snapshot("multi-single"),
-                Action::Drag {
-                    from: Point::new(530.0, 210.0),
-                    to: Point::new(740.0, 390.0),
-                    steps: 7,
-                },
-                Action::Snapshot("multi-replaced"),
+                Action::Snapshot("selection-one"),
                 Action::Modifiers(ModifiersState::SHIFT),
                 Action::Drag {
-                    from: Point::new(70.0, 400.0),
-                    to: Point::new(300.0, 590.0),
+                    from: Point::new(620.0, 400.0),
+                    to: Point::new(980.0, 620.0),
                     steps: 7,
                 },
                 Action::Modifiers(ModifiersState::empty()),
-                Action::Snapshot("multi-shift-added"),
+                Action::MoveCursor(Point::new(1_200.0, 200.0)),
+                Action::Snapshot("selection-two"),
                 Action::MoveCursorNamed("capture.selection.0.remove"),
-                Action::Snapshot("multi-remove-hover"),
+                Action::WaitWall(600),
+                Action::Snapshot("selection-remove-hover"),
                 Action::ClickNamed("capture.selection.0.remove"),
-                Action::Snapshot("multi-removed"),
+                Action::Snapshot("selection-removed"),
+                Action::Drag {
+                    from: Point::new(300.0, 500.0),
+                    to: Point::new(520.0, 680.0),
+                    steps: 7,
+                },
+                Action::Snapshot("selection-replaced"),
             ],
         },
         Scenario {
             name: "capture_selection_editing",
-            description: "A screenshot region is moved, resized from its live handle, and nudged precisely without being redrawn.",
+            description: "A screenshot selection is moved, resized from its handle, and nudged precisely without being redrawn.",
             actions: vec![
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("s".into())),
@@ -2810,16 +2882,18 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "capture_countdown",
-            description: "Undimmed, input-transparent delayed-capture countdown and its compact timer control.",
+            description: "A delayed screenshot counts down in the bar, which shrinks to the shutter and the seconds left.",
             actions: vec![
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
-                Action::ClickNamed("capture.screen"),
-                Action::Key(Key::Character("t".into())),
-                Action::Snapshot("countdown-armed"),
-                Action::ClickNamed("capture.save"),
+                Action::ClickNamed("capture.target.screen"),
+                Action::ClickNamed("capture.options"),
+                Action::WaitWall(300),
+                Action::Wait(4),
+                Action::ClickNamed("capture.option.delay-3"),
+                Action::ClickNamed("capture.shutter"),
                 Action::Snapshot("countdown-live"),
             ],
         },
@@ -2842,29 +2916,21 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::CaptureScreenshotTransition(0),
                 Action::Snapshot("receipt-enter-000"),
-                Action::CaptureScreenshotTransition(250),
-                Action::Snapshot("receipt-enter-250"),
                 Action::CaptureScreenshotTransition(500),
                 Action::Snapshot("receipt-enter-500"),
-                Action::CaptureScreenshotTransition(750),
-                Action::Snapshot("receipt-enter-750"),
                 Action::CaptureScreenshotTransition(1_000),
                 Action::Snapshot("receipt-enter-1000"),
                 Action::MoveCursorNamed("capture.screenshot-thumbnail"),
                 Action::Snapshot("receipt-thumbnail-hover"),
                 Action::MoveCursorNamed("capture.edit-screenshot"),
                 Action::Snapshot("receipt-edit-hover"),
-                Action::MoveCursorNamed("capture.open-screenshot"),
-                Action::Snapshot("receipt-open-hover"),
-                Action::MoveCursorNamed("capture.show-screenshot"),
-                Action::Snapshot("receipt-reveal-hover"),
                 Action::ClickNamed("capture.dismiss-screenshot"),
                 Action::Snapshot("receipt-dismissed"),
             ],
         },
         Scenario {
             name: "capture_screenshot_copied_receipt",
-            description: "A copied screenshot settles into one uncrowded top-bar status line.",
+            description: "A copied screenshot settles into one uncrowded status line.",
             actions: vec![
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("s".into())),
@@ -2884,6 +2950,98 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "capture_every_target",
+            description: "A screenshot of each target the capture tool offers, through the production executor: a selection inside a window, a selection across windows, a window, the screen and the strip.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(None),
+                Action::OpenWindow {
+                    app_id: "org.example.current",
+                    surface_id: 5451,
+                },
+                Action::Wait(20),
+                Action::SelectGroup(None),
+                Action::OpenWindow {
+                    app_id: "org.example.next",
+                    surface_id: 5452,
+                },
+                Action::Wait(20),
+                Action::SetWindowWidths(700),
+                Action::SelectGroup(Some(1)),
+                Action::Wait(24),
+                Action::Relayout,
+                Action::CaptureExecutionEnabled(true),
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(12),
+                Action::Drag {
+                    from: Point::new(120.0, 160.0),
+                    to: Point::new(420.0, 420.0),
+                    steps: 6,
+                },
+                Action::ClickNamed("capture.shutter"),
+                Action::Wait(2),
+                Action::CaptureScreenshotTransition(1_000),
+                Action::Wait(2),
+                Action::Snapshot("every-target-selection-in-window"),
+                Action::ClickNamed("capture.dismiss-screenshot"),
+                Action::Wait(2),
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(12),
+                Action::Drag {
+                    from: Point::new(600.0, 160.0),
+                    to: Point::new(1_100.0, 420.0),
+                    steps: 6,
+                },
+                Action::ClickNamed("capture.shutter"),
+                Action::Wait(2),
+                Action::CaptureScreenshotTransition(1_000),
+                Action::Wait(2),
+                Action::Snapshot("every-target-screen-region"),
+                Action::ClickNamed("capture.dismiss-screenshot"),
+                Action::Wait(2),
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(12),
+                Action::ClickNamed("capture.target.window"),
+                Action::ClickNamed("capture.shutter"),
+                Action::Wait(2),
+                Action::CaptureScreenshotTransition(1_000),
+                Action::Wait(2),
+                Action::Snapshot("every-target-window"),
+                Action::ClickNamed("capture.dismiss-screenshot"),
+                Action::Wait(2),
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(12),
+                Action::ClickNamed("capture.target.screen"),
+                Action::ClickNamed("capture.shutter"),
+                Action::Wait(2),
+                Action::CaptureScreenshotTransition(1_000),
+                Action::Wait(2),
+                Action::Snapshot("every-target-screen"),
+                Action::ClickNamed("capture.dismiss-screenshot"),
+                Action::Wait(2),
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(12),
+                Action::ClickNamed("capture.target.strip"),
+                Action::ClickNamed("capture.shutter"),
+                Action::Wait(2),
+                Action::CaptureScreenshotTransition(1_000),
+                Action::Wait(2),
+                Action::Snapshot("every-target-strip"),
+                Action::ClickNamed("capture.dismiss-screenshot"),
+                Action::Wait(2),
+            ],
+        },
+        Scenario {
             name: "capture_screenshot_markup",
             description: "A real saved capture opens in the native exact-pixel markup workspace.",
             actions: vec![
@@ -2897,7 +3055,7 @@ fn build_scenarios() -> Vec<Scenario> {
                     steps: 8,
                 },
                 Action::CaptureExecutionEnabled(true),
-                Action::ClickNamed("capture.save"),
+                Action::ClickNamed("capture.shutter"),
                 Action::Wait(1),
                 Action::CaptureScreenshotTransition(1_000),
                 Action::ClickNamed("capture.edit-screenshot"),
@@ -2970,11 +3128,11 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
-            name: "opening_card",
-            description: "An app asked for holds its place with the moving opening card from the \
-                          first frame, says so when the start runs long, and says what it is \
-                          doing while its app is still being fetched from the registry, with \
-                          how much has arrived once the download reports it.",
+            name: "pending_window",
+            description: "An app asked for holds its place from the first frame: the ground \
+                          alone, then the skeleton once its window misses the grace period; an \
+                          app still being fetched from the registry says how much of it has \
+                          arrived once the download reports it.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
@@ -2984,36 +3142,28 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::Wait(1),
                 Action::Relayout,
-                Action::Snapshot("opening-first-frame"),
-                Action::WaitWall(5_500),
+                Action::Snapshot("pending-first-frame"),
+                Action::WaitWall(400),
                 Action::Relayout,
-                Action::Snapshot("opening-slow"),
+                Action::Snapshot("pending-skeleton"),
                 Action::SelectGroup(None),
                 Action::HoldInstallPlace {
                     app_id: "so.tilo.slides",
                     label: "Slides",
                 },
-                Action::Wait(20),
-                Action::Relayout,
-                Action::Snapshot("opening-installing"),
-                Action::WaitWall(5_500),
-                Action::Relayout,
-                Action::Snapshot("opening-installing-slow"),
                 Action::InstallBytes {
                     app_id: "so.tilo.slides",
                     received: 4_200_000,
                     total: 18_000_000,
                 },
-                // Past the dots-to-bar crossfade, so the shot shows where
-                // it settles rather than a frame of the fade.
                 Action::WaitWall(400),
                 Action::Relayout,
-                Action::Snapshot("opening-installing-progress"),
+                Action::Snapshot("pending-installing-progress"),
             ],
         },
         Scenario {
             name: "capture_screenshot_markup_full_app",
-            description: "A taller-than-screen app opens in markup, then zooms and pans without altering its pixels.",
+            description: "A taller-than-screen window, picked by focusing it, opens in markup whole, then zooms and pans without altering its pixels.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
@@ -3029,7 +3179,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::Wait(20),
                 Action::SetWindowWidths(1_000),
-                Action::SelectGroup(Some(2)),
+                Action::SelectGroup(Some(0)),
                 Action::Wait(24),
                 Action::Relayout,
                 Action::SeedLongNotes(0),
@@ -3039,11 +3189,10 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
-                Action::ClickNamed("capture.window"),
-                Action::ClickNamed("capture.picker:Notes"),
-                Action::ClickNamed("capture.extent.full-app"),
+                Action::ClickNamed("capture.target.window"),
+                Action::Snapshot("full-app-window-picked"),
                 Action::CaptureExecutionEnabled(true),
-                Action::ClickNamed("capture.save"),
+                Action::ClickNamed("capture.shutter"),
                 Action::Wait(1),
                 Action::CaptureScreenshotTransition(1_000),
                 Action::ClickNamed("capture.edit-screenshot"),
@@ -3065,91 +3214,59 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
-            name: "capture_screenshot_full_app",
-            description: "A complete off-screen app flows through the real compositor into a saved image.",
-            actions: vec![
-                Action::LoneWindow(0),
-                Action::SelectGroup(None),
-                Action::OpenWindow {
-                    app_id: "org.example.current",
-                    surface_id: 5411,
-                },
-                Action::Wait(20),
-                Action::SelectGroup(None),
-                Action::OpenWindow {
-                    app_id: "org.example.next",
-                    surface_id: 5412,
-                },
-                Action::Wait(20),
-                Action::SetWindowWidths(1_000),
-                Action::SelectGroup(Some(2)),
-                Action::Wait(24),
-                Action::Relayout,
-                Action::SeedLongNotes(0),
-                Action::Wait(2),
-                Action::Relayout,
-                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
-                Action::Key(Key::Character("s".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Wait(12),
-                Action::ClickNamed("capture.window"),
-                Action::ClickNamed("capture.picker:Notes"),
-                Action::ClickNamed("capture.extent.full-app"),
-                Action::Snapshot("shot-full-app-ready"),
-                Action::MoveCursorNamed("capture.pin"),
-                Action::Snapshot("shot-full-app-pin-hover"),
-                Action::CaptureExecutionEnabled(true),
-                Action::ClickNamed("capture.pin"),
-                Action::Wait(2),
-                Action::CapturePipTransition(0),
-                Action::Snapshot("shot-full-app-pin-handoff-000"),
-                Action::CapturePipTransition(100),
-                Action::Snapshot("shot-full-app-pin-handoff-100"),
-                Action::CapturePipTransition(200),
-                Action::Snapshot("shot-full-app-pin-handoff-200"),
-                Action::CapturePipTransition(300),
-                Action::Snapshot("shot-full-app-pin-handoff-300"),
-                Action::CapturePipTransition(400),
-                Action::Snapshot("shot-full-app-pin-handoff-400"),
-                Action::CapturePipTransition(500),
-                Action::Snapshot("shot-full-app-pin-handoff-500"),
-                Action::CapturePipTransition(600),
-                Action::Snapshot("shot-full-app-pin-handoff-600"),
-                Action::CapturePipTransition(700),
-                Action::Snapshot("shot-full-app-pin-handoff-700"),
-                Action::CapturePipTransition(800),
-                Action::Snapshot("shot-full-app-pin-handoff-800"),
-                Action::CapturePipTransition(900),
-                Action::Snapshot("shot-full-app-pin-handoff-900"),
-                Action::CapturePipTransition(1_000),
-                Action::Snapshot("shot-full-app-pin-handoff-1000"),
-            ],
-        },
-        Scenario {
-            name: "capture_recording_audio",
-            description: "Recording setup with independently editable desktop and microphone tracks.",
+            name: "capture_recording_options",
+            description: "Recording setup: the rare settings, audio among them, live in the options popover.",
             actions: vec![
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
                 Action::CaptureAudioAvailable(true),
                 Action::Wait(12),
-                Action::ClickNamed("capture.record"),
-                Action::ClickNamed("capture.screen"),
-                Action::ClickNamed("capture.system-audio"),
-                Action::ClickNamed("capture.microphone"),
-                Action::Snapshot("record-audio-ready"),
-                Action::ClickNamed("capture.delay"),
-                Action::Snapshot("record-audio-delay-list"),
+                Action::ClickNamed("capture.output.recording"),
+                Action::ClickNamed("capture.target.screen"),
+                Action::Snapshot("record-screen-ready"),
+                Action::ClickNamed("capture.options"),
+                Action::WaitWall(300),
+                Action::Wait(4),
+                Action::Snapshot("record-options"),
+                Action::ClickNamed("capture.option.microphone"),
+                Action::ClickNamed("capture.options"),
+                Action::WaitWall(300),
+                Action::Wait(4),
+                Action::Snapshot("record-options-microphone-on"),
             ],
         },
         Scenario {
-            name: "capture_recording_full_app",
-            description: "Recording controls targeting a complete app beyond the visible monitor.",
+            name: "capture_recording_active",
+            description: "A recording in progress: the bar shrinks to the red stop shutter and the elapsed time, and the saved receipt offers to play it.",
             actions: vec![
-                // Put Notes outside the current physical viewport while keeping
-                // it alive on the continuous strip. The picker must still offer
-                // and capture it without first dragging it back on screen.
+                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
+                Action::Key(Key::Character("s".into())),
+                Action::Modifiers(ModifiersState::empty()),
+                Action::Wait(12),
+                Action::ClickNamed("capture.output.recording"),
+                Action::ClickNamed("capture.target.screen"),
+                Action::ClickNamed("capture.shutter"),
+                Action::Snapshot("recording-preparing"),
+                Action::CaptureRecordingActive(true),
+                Action::MoveCursor(Point::new(300.0, 300.0)),
+                Action::Snapshot("recording-in-progress"),
+                Action::MoveCursorNamed("capture.stop"),
+                Action::WaitWall(600),
+                Action::Snapshot("recording-stop-hover"),
+                Action::MoveCursor(Point::new(300.0, 300.0)),
+                Action::CaptureRecordingFinished,
+                Action::Snapshot("recording-saved"),
+                Action::MoveCursorNamed("capture.play-recording"),
+                Action::Snapshot("recording-saved-play-hover"),
+                Action::ClickNamed("capture.dismiss-recording"),
+                Action::Snapshot("recording-receipt-dismissed"),
+            ],
+        },
+        Scenario {
+            name: "capture_recording_window",
+            description: "Recording a window: the window is picked by focus and recorded wherever it goes.",
+            actions: vec![
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
@@ -3163,189 +3280,62 @@ fn build_scenarios() -> Vec<Scenario> {
                     surface_id: 5402,
                 },
                 Action::Wait(20),
-                // With three wide groups and the last selected, Notes remains
-                // live on the strip but is wholly beyond the physical output.
-                Action::SetWindowWidths(1000),
-                Action::SelectGroup(Some(2)),
+                Action::SetWindowWidths(1_000),
+                Action::SelectGroup(Some(1)),
                 Action::Wait(24),
                 Action::Relayout,
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
-                Action::ClickNamed("capture.record"),
-                Action::ClickNamed("capture.window"),
-                Action::ClickNamed("capture.picker:Notes"),
-                Action::ClickNamed("capture.extent.full-app"),
-                Action::Snapshot("record-full-app"),
-                Action::ClickNamed("capture.save"),
-                Action::Snapshot("record-full-app-preparing"),
+                Action::ClickNamed("capture.output.recording"),
+                Action::ClickNamed("capture.target.window"),
+                Action::Snapshot("record-window-ready"),
+                Action::ClickNamed("capture.shutter"),
                 Action::CaptureRecordingActive(true),
-                Action::Snapshot("record-full-app-start"),
-                Action::CaptureRecordingTransition(250),
-                Action::Snapshot("record-full-app-flight-25"),
-                Action::CaptureRecordingTransition(500),
-                Action::Snapshot("record-full-app-flight-50"),
-                Action::CaptureRecordingTransition(750),
-                Action::Snapshot("record-full-app-flight-75"),
-                Action::CaptureRecordingTransition(1_000),
-                Action::Snapshot("record-full-app-pill"),
-            ],
-        },
-        Scenario {
-            name: "capture_recording_active",
-            description: "Recorder start, pause/resume, and the compositor-confirmed saved receipt.",
-            actions: vec![
-                // Establish a real source before simulating compositor success so
-                // the first frames also exercise the undimmed scope confirmation.
-                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
-                Action::Key(Key::Character("s".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Wait(12),
-                Action::ClickNamed("capture.record"),
-                Action::ClickNamed("capture.screen"),
-                Action::ClickNamed("capture.save"),
-                Action::Snapshot("recording-preparing"),
-                Action::CaptureRecordingActive(true),
-                Action::Snapshot("recording-start"),
-                Action::CaptureRecordingTransition(250),
-                Action::Snapshot("recording-flight-25"),
-                Action::CaptureRecordingTransition(500),
-                Action::Snapshot("recording-flight-50"),
-                Action::CaptureRecordingTransition(750),
-                Action::Snapshot("recording-flight-75"),
-                Action::CaptureRecordingTransition(1_000),
-                Action::Snapshot("recording-pill"),
-                Action::MoveCursorNamed("capture.recording-status"),
-                Action::Snapshot("recording-status-detail"),
-                Action::MoveCursor(Point::new(20.0, 300.0)),
-                Action::CaptureRecordingPaused(true),
-                Action::CaptureRecordingStateTransition(0),
-                Action::Snapshot("recording-pause-000"),
-                Action::CaptureRecordingStateTransition(250),
-                Action::Snapshot("recording-pause-250"),
-                Action::CaptureRecordingStateTransition(500),
-                Action::Snapshot("recording-pause-500"),
-                Action::CaptureRecordingStateTransition(750),
-                Action::Snapshot("recording-pause-750"),
-                Action::CaptureRecordingStateTransition(1_000),
-                Action::Snapshot("recording-paused"),
-                Action::CaptureRecordingPaused(false),
-                Action::CaptureRecordingStateTransition(0),
-                Action::Snapshot("recording-resume-000"),
-                Action::CaptureRecordingStateTransition(250),
-                Action::Snapshot("recording-resume-250"),
-                Action::CaptureRecordingStateTransition(500),
-                Action::Snapshot("recording-resume-500"),
-                Action::CaptureRecordingStateTransition(750),
-                Action::Snapshot("recording-resume-750"),
-                Action::CaptureRecordingStateTransition(1_000),
-                Action::Snapshot("recording-resumed"),
-                Action::CaptureRecordingFinished,
-                Action::CaptureRecordingReceiptTransition(0),
-                Action::Snapshot("recording-saved-000"),
-                Action::CaptureRecordingReceiptTransition(250),
-                Action::Snapshot("recording-saved-250"),
-                Action::CaptureRecordingReceiptTransition(500),
-                Action::Snapshot("recording-saved-500"),
-                Action::CaptureRecordingReceiptTransition(750),
-                Action::Snapshot("recording-saved-750"),
-                Action::CaptureRecordingReceiptTransition(1_000),
-                Action::Snapshot("recording-saved-1000"),
-                Action::MoveCursorNamed("capture.play-recording"),
-                Action::Snapshot("recording-saved-play-hover"),
-                Action::MoveCursorNamed("capture.show-recording"),
-                Action::Snapshot("recording-saved-folder-hover"),
-                Action::MoveCursorNamed("capture.dismiss-recording"),
-                Action::Snapshot("recording-saved-dismiss-hover"),
-                // Release the pin by starting a fresh live receipt, then prove the
-                // normal three-second lifecycle still hands the clock back.
-                Action::CaptureRecordingActive(true),
-                Action::CaptureRecordingFinished,
-                Action::Wait(200),
-                Action::Snapshot("recording-receipt-dismissed"),
-            ],
-        },
-        Scenario {
-            name: "capture_recording_dock_midpoint",
-            description: "The recorder's sentence-to-timer rolling handoff at its most overlap-prone frame.",
-            actions: vec![
-                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
-                Action::Key(Key::Character("s".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Wait(12),
-                Action::ClickNamed("capture.record"),
-                Action::ClickNamed("capture.screen"),
-                Action::ClickNamed("capture.save"),
-                Action::CaptureRecordingActive(true),
-                Action::CaptureRecordingTransition(500),
-                Action::Snapshot("recording-dock-midpoint"),
-            ],
-        },
-        Scenario {
-            name: "capture_recording_receipt_actions",
-            description: "The saved recording receipt teaches play, reveal, and dismiss without reopening a modal.",
-            actions: vec![
-                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
-                Action::Key(Key::Character("s".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Wait(12),
-                Action::ClickNamed("capture.record"),
-                Action::ClickNamed("capture.screen"),
-                Action::ClickNamed("capture.save"),
-                Action::CaptureRecordingActive(true),
-                Action::CaptureRecordingFinished,
-                Action::CaptureRecordingReceiptTransition(1_000),
-                Action::MoveCursorNamed("capture.play-recording"),
-                Action::Snapshot("recording-receipt-play"),
-                Action::MoveCursorNamed("capture.show-recording"),
-                Action::Snapshot("recording-receipt-reveal"),
-                Action::MoveCursorNamed("capture.dismiss-recording"),
-                Action::Snapshot("recording-receipt-dismiss"),
+                Action::Snapshot("record-window-in-progress"),
             ],
         },
         Scenario {
             name: "capture_replay_active",
-            description: "Explicit recent-capture warmup, ready state, save feedback, and privacy-visible audio sources.",
+            description: "Keeping the last 30 seconds: the bar offers Save and the stop shutter; a save offers to play it.",
             actions: vec![
                 Action::CaptureReplayActive(true),
-                Action::CaptureReplayBuffered(4),
+                Action::CaptureReplayBuffered(0),
                 Action::Snapshot("replay-warming"),
-                Action::SnapshotSequence {
-                    prefix: "replay-settle",
-                    frames: 5,
-                    gap_frames: 4,
-                },
                 Action::CaptureReplayBuffered(30),
                 Action::Snapshot("replay-ready"),
-                Action::MoveCursorNamed("capture.replay-status"),
-                Action::Snapshot("replay-status-detail"),
+                Action::MoveCursorNamed("capture.save-replay"),
+                Action::Snapshot("replay-save-hover"),
                 Action::MoveCursor(Point::new(24.0, 180.0)),
                 Action::CaptureReplaySaved,
                 Action::Snapshot("replay-saved"),
-                Action::MoveCursorNamed("capture.play-replay"),
+                Action::MoveCursorNamed("capture.play-recording"),
                 Action::Snapshot("replay-saved-play-hover"),
-                Action::MoveCursorNamed("capture.show-replay"),
-                Action::Snapshot("replay-saved-folder-hover"),
                 Action::CaptureReplayActive(false),
                 Action::Snapshot("replay-off"),
             ],
         },
         Scenario {
             name: "capture_replay_shortcut",
-            description: "The global replay chord opens directly in recording setup and teaches its instant-save reuse.",
+            description: "The global recording chord opens recording setup, where keeping the last 30 seconds is an option.",
             actions: vec![
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("r".into())),
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
-                Action::MoveCursorNamed("capture.start-replay"),
                 Action::Snapshot("replay-shortcut-setup"),
+                Action::ClickNamed("capture.target.screen"),
+                Action::ClickNamed("capture.options"),
+                Action::WaitWall(300),
+                Action::Wait(4),
+                Action::MoveCursorNamed("capture.option.keep-recent"),
+                Action::Snapshot("replay-shortcut-option"),
             ],
         },
         Scenario {
             name: "capture_pip_shortcut",
-            description: "The global PiP chord lands directly in a fast live-area picker and teaches the reusable shortcut.",
+            description: "The global PiP chord lands in the capture bar with picture in picture chosen.",
             actions: vec![
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("p".into())),
@@ -3353,102 +3343,92 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(12),
                 Action::MoveCursor(Point::new(500.0, 300.0)),
                 Action::Snapshot("pip-shortcut-ready"),
-                Action::MoveCursorNamed("capture.pip"),
-                Action::Snapshot("pip-shortcut-setup"),
             ],
         },
         Scenario {
             name: "capture_pip_region",
-            description: "A selected live area peels into a persistent floating PiP without a first-frame jump.",
+            description: "A selection inside a window peels into a persistent floating PiP of that part of that window.",
             actions: vec![
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
-                Action::ClickNamed("capture.pip"),
+                Action::ClickNamed("capture.output.pip"),
                 Action::Drag {
-                    // Span the live Notes focal content at compact and wide
-                    // viewports; a tiny fixed-left sample becomes empty at 1600.
                     from: Point::new(330.0, 160.0),
                     to: Point::new(1_050.0, 620.0),
                     steps: 7,
                 },
                 Action::Snapshot("pip-region-ready"),
                 Action::CaptureExecutionEnabled(true),
-                Action::ClickNamed("capture.create-pip"),
+                Action::ClickNamed("capture.shutter"),
                 Action::Wait(1),
                 Action::CapturePipTransition(0),
                 Action::Snapshot("pip-region-handoff-000"),
-                Action::CapturePipTransition(400),
-                Action::Snapshot("pip-region-handoff-400"),
-                Action::CapturePipTransition(800),
-                Action::Snapshot("pip-region-handoff-800"),
+                Action::CapturePipTransition(500),
+                Action::Snapshot("pip-region-handoff-500"),
                 Action::CapturePipTransition(1_000),
                 Action::Snapshot("pip-region-live"),
                 Action::MoveCursor(Point::new(20.0, 320.0)),
                 Action::Wait(90),
                 Action::Snapshot("pip-region-clean"),
-                Action::MoveCursorNamed("floating.chrome"),
-                Action::Wait(12),
-                Action::Snapshot("pip-region-controls-hover"),
             ],
         },
         Scenario {
-            name: "capture_pip_full_app",
-            description: "A complete app outside the physical monitor enters PiP from its virtual-desktop edge.",
+            name: "capture_pip_window",
+            description: "A PiP of a window keeps showing that window wherever the strip scrolls.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
                     app_id: "org.example.current",
-                    surface_id: 5421,
+                    surface_id: 5431,
                 },
                 Action::Wait(20),
                 Action::SelectGroup(None),
                 Action::OpenWindow {
                     app_id: "org.example.next",
-                    surface_id: 5422,
+                    surface_id: 5432,
                 },
                 Action::Wait(20),
                 Action::SetWindowWidths(1_000),
-                Action::SelectGroup(Some(2)),
+                Action::SelectGroup(Some(0)),
                 Action::Wait(24),
-                Action::Relayout,
-                Action::SeedLongNotes(0),
-                Action::Wait(2),
                 Action::Relayout,
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
-                Action::ClickNamed("capture.pip"),
-                Action::ClickNamed("capture.window"),
-                Action::ClickNamed("capture.picker:Notes"),
-                Action::ClickNamed("capture.extent.full-app"),
-                Action::Snapshot("pip-full-app-ready"),
+                Action::ClickNamed("capture.output.pip"),
+                Action::ClickNamed("capture.target.window"),
+                Action::Snapshot("pip-window-ready"),
                 Action::CaptureExecutionEnabled(true),
-                Action::ClickNamed("capture.create-pip"),
+                Action::ClickNamed("capture.shutter"),
                 Action::Wait(1),
-                Action::CapturePipTransition(0),
-                Action::Snapshot("pip-full-app-edge-000"),
-                Action::CapturePipTransition(400),
-                Action::Snapshot("pip-full-app-edge-400"),
-                Action::CapturePipTransition(800),
-                Action::Snapshot("pip-full-app-edge-800"),
                 Action::CapturePipTransition(1_000),
-                Action::Snapshot("pip-full-app-live"),
+                Action::MoveCursor(Point::new(20.0, 320.0)),
+                Action::Wait(90),
+                Action::Snapshot("pip-window-live"),
+                Action::MoveCursorNamed("floating.chrome"),
+                Action::Wait(12),
+                Action::Snapshot("pip-window-hover"),
+                Action::MoveCursor(Point::new(20.0, 320.0)),
+                Action::Wait(90),
+                Action::SelectGroup(Some(2)),
+                Action::Wait(60),
+                Action::Relayout,
+                Action::Snapshot("pip-window-after-scroll"),
             ],
         },
         Scenario {
-            name: "capture_pip_multi",
-            description: "Fast multi-region selection composed into one floating PiP surface.",
+            name: "capture_pip_two_selections",
+            description: "Two selections composed into one floating PiP, combined as a grid from the options.",
             actions: vec![
                 Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
                 Action::Key(Key::Character("s".into())),
                 Action::Modifiers(ModifiersState::empty()),
                 Action::Wait(12),
-                Action::ClickNamed("capture.pip"),
-                Action::ClickNamed("capture.multi"),
+                Action::ClickNamed("capture.output.pip"),
                 Action::Drag {
                     from: Point::new(250.0, 180.0),
                     to: Point::new(500.0, 330.0),
@@ -3456,42 +3436,23 @@ fn build_scenarios() -> Vec<Scenario> {
                 },
                 Action::Modifiers(ModifiersState::SHIFT),
                 Action::Drag {
-                    from: Point::new(520.0, 300.0),
-                    to: Point::new(740.0, 470.0),
+                    from: Point::new(620.0, 360.0),
+                    to: Point::new(900.0, 560.0),
                     steps: 7,
                 },
                 Action::Modifiers(ModifiersState::empty()),
-                Action::ClickNamed("capture.pip.grid"),
-                Action::Snapshot("pip-multi-grid"),
+                Action::ClickNamed("capture.options"),
+                Action::WaitWall(300),
+                Action::Wait(4),
+                Action::ClickNamed("capture.option.combine-grid"),
+                Action::Snapshot("pip-two-ready"),
                 Action::CaptureExecutionEnabled(true),
-                Action::ClickNamed("capture.create-pip"),
-                // Give the production executor one paint to create the live
-                // mirror, then freeze representative phases immediately before
-                // each software-rendered PNG.
+                Action::ClickNamed("capture.shutter"),
                 Action::Wait(1),
                 Action::CapturePipTransition(0),
-                Action::Snapshot("pip-handoff-000"),
-                Action::CapturePipTransition(200),
-                Action::Snapshot("pip-handoff-200"),
-                Action::CapturePipTransition(400),
-                Action::Snapshot("pip-handoff-400"),
-                Action::CapturePipTransition(600),
-                Action::Snapshot("pip-handoff-600"),
-                Action::CapturePipTransition(700),
-                Action::Snapshot("pip-handoff-700-reflow"),
-                Action::CapturePipTransition(800),
-                Action::Snapshot("pip-handoff-800"),
+                Action::Snapshot("pip-two-handoff-000"),
                 Action::CapturePipTransition(1_000),
-                Action::Snapshot("pip-handoff-1000"),
-                Action::Snapshot("pip-live"),
-                Action::MoveCursor(Point::new(20.0, 320.0)),
-                Action::Wait(90),
-                Action::Snapshot("pip-resting-clean"),
-                Action::MoveCursorNamed("floating.chrome"),
-                Action::Wait(12),
-                Action::Snapshot("pip-controls-hover"),
-                Action::MoveCursorNamed("floating.close"),
-                Action::Snapshot("pip-close-hover"),
+                Action::Snapshot("pip-two-live"),
             ],
         },
         Scenario {
@@ -3524,6 +3485,22 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("04-tab-menu-cancelled"),
             ],
         },
+        // The app chooser an app asks for (Settings choosing an app to set
+        // how it pastes): the palette over the installed apps.
+        Scenario {
+            name: "app_chooser",
+            description: "Open the app chooser Settings asks for, then type to filter the apps.",
+            actions: vec![
+                Action::OpenAppChooser("set how it pastes"),
+                Action::Wait(2),
+                Action::Snapshot("01-app-chooser"),
+                Action::Type("te"),
+                Action::Wait(2),
+                Action::Snapshot("02-app-chooser-filtered"),
+            ],
+        },
+        launcher::fresh(),
+        launcher::busy(),
         Scenario {
             name: "palette_typing",
             description: "Open the command palette, type 'h', clear it with Esc, then close it with Esc.",
@@ -3573,7 +3550,7 @@ fn build_scenarios() -> Vec<Scenario> {
         // and Escape clearing the query before it closes.
         Scenario {
             name: "palette_interaction",
-            description: "Search 's', page and tab through it, hold Shift on an app, pick a value for 'lock after', Escape out.",
+            description: "Search 's', page and tab through it, hold Shift on an app, pick a value for 'screen off after', Escape out.",
             actions: vec![
                 Action::OpenPalette,
                 Action::Wait(2),
@@ -3594,13 +3571,13 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(1),
                 Action::Snapshot("05-editor-shift-held"),
                 Action::Key(Key::Named(NamedKey::Escape)),
-                Action::Type("lock after"),
+                Action::Type("screen off after"),
                 Action::Wait(2),
-                Action::Snapshot("06-lock-after"),
+                Action::Snapshot("06-screen-off-after"),
                 Action::Key(Key::Named(NamedKey::ArrowDown)),
                 Action::Key(Key::Named(NamedKey::Enter)),
                 Action::Wait(2),
-                Action::Snapshot("07-lock-after-values"),
+                Action::Snapshot("07-screen-off-after-values"),
                 Action::Key(Key::Named(NamedKey::Escape)),
                 Action::Wait(2),
                 Action::Snapshot("08-back-to-results"),
@@ -3750,63 +3727,45 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("03-ws0-again"),
             ],
         },
+        one_place::strip_switcher(),
+        one_place::one_place(),
+        one_place::fullscreen_bar(),
         Scenario {
-            name: "strip_switcher",
-            description: "The strip switcher on three strips with people on two: the ribbon \
-             at rest with faces beside its marks, the pointer coming to rest on it laying \
-             out the strips' names, a label lit under the pointer, New strip making a \
-             strip and naming it in place, and Super+S for the keyboard.",
+            name: "strip_deck",
+            description: "Four strips, each a full-height screen: the first fills the work \
+             area, the wheel on the strip ribbon slides the deck to the second (every frame \
+             of the slide recorded), Ctrl+Super+Down slides on to the third.",
             actions: vec![
                 Action::SeedStripsWithPeople,
+                Action::CreateStrip("Strip 4"),
+                Action::FocusStrip(0),
                 Action::MoveCursor(Point::new(800.0, 500.0)),
-                Action::WaitWall(1700),
-                Action::Snapshot("00-rest"),
-                Action::MoveCursor(Point::new(1200.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1350.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1450.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1515.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1552.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1572.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1582.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1587.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1589.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1590.0, 462.0)),
-                Action::WaitWall(8),
-                Action::WaitWall(120),
-                Action::Wait(10),
-                Action::Snapshot("01-hover-labels"),
-                Action::MoveCursorNamed("strip_switcher.strip.2"),
-                Action::WaitWall(200),
+                Action::WaitWall(600),
                 Action::Wait(4),
-                Action::Snapshot("02-label-lit"),
-                Action::ClickNamed("strip_switcher.new_strip"),
-                Action::Wait(6),
-                Action::Snapshot("03-new-strip-named-in-place"),
-                Action::Type("Sketches"),
-                Action::Wait(4),
-                Action::Snapshot("04-typing-the-name"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(4),
-                Action::Snapshot("05-named"),
+                Action::Snapshot("00-first-strip-fills"),
+                Action::MoveCursorNamed("strip_switcher"),
+                Action::Wait(2),
+                Action::MouseWheel { dx: 0.0, dy: -1.0 },
+                Action::SnapshotSequence {
+                    prefix: "01-sliding-to-the-second",
+                    frames: 10,
+                    gap_frames: 1,
+                },
+                Action::WaitWall(500),
                 Action::MoveCursor(Point::new(800.0, 500.0)),
-                Action::WaitWall(300),
-                Action::Modifiers(ModifiersState::SUPER),
-                Action::Key(Key::Character("s".into())),
+                Action::Wait(4),
+                Action::Snapshot("02-second-strip-fills"),
+                Action::Modifiers(ModifiersState::CONTROL | ModifiersState::SUPER),
+                Action::Key(Key::Named(NamedKey::ArrowDown)),
                 Action::Modifiers(ModifiersState::empty()),
-                Action::Wait(10),
-                Action::Snapshot("06-super-s"),
-                Action::Key(Key::Named(NamedKey::Escape)),
+                Action::SnapshotSequence {
+                    prefix: "03-sliding-to-the-third",
+                    frames: 6,
+                    gap_frames: 1,
+                },
+                Action::WaitWall(400),
                 Action::Wait(4),
-                Action::Snapshot("07-closed"),
+                Action::Snapshot("04-third-strip-fills"),
             ],
         },
         Scenario {
@@ -3968,7 +3927,7 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "collaboration_product_proof",
-            description: "Prove solo work, a pending invite, live editing, attributed history, forward revert, and cross-app presence.",
+            description: "Prove solo work, a pending invite, live editing, a forward revert, and cross-app presence.",
             actions: vec![
                 Action::Wait(4),
                 Action::Relayout,
@@ -3979,18 +3938,13 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::AdmitInvitedCollaborator,
                 Action::Wait(2),
                 Action::Snapshot("03-ada-editing-notes"),
-                Action::SeedRoomActivity { explore: true },
-                Action::FilterRoomActivityToAda,
-                Action::Wait(2),
-                Action::Snapshot("04-attributed-history"),
-                Action::SelectRoomActivityEntry(0),
-                Action::Snapshot("05-history-comparison"),
+                Action::SeedRoomHistory,
                 Action::RevertRoomActivity,
                 Action::Wait(18),
-                Action::Snapshot("06-reverted-forward"),
+                Action::Snapshot("04-reverted-forward"),
                 Action::ShowCollaboratorInFiles,
                 Action::Wait(2),
-                Action::Snapshot("07-ada-in-files"),
+                Action::Snapshot("05-ada-in-files"),
             ],
         },
         Scenario {
@@ -4135,6 +4089,18 @@ fn build_scenarios() -> Vec<Scenario> {
             ],
         },
         Scenario {
+            name: "display_identify",
+            description: "Settings' Identify: every display shows a large card \
+             with its number in the accent and its name, as its canvas tile in \
+             Settings does. Run with `--outputs docked-laptop`.",
+            actions: vec![
+                Action::Wait(2),
+                Action::IdentifyDisplays,
+                Action::Wait(12),
+                Action::Snapshot("00-identify"),
+            ],
+        },
+        Scenario {
             name: "top_bar_hidden_reveal",
             description: "Hide the top bar until the pointer is near it: the \
              window takes the bar's strip; a push to the top edge shows the bar \
@@ -4190,49 +4156,10 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("02-back-to-start"),
             ],
         },
-        Scenario {
-            name: "notes_search_in_place",
-            description: "Search in the window bar: the control after the title expands into a field, the long note highlights every match with n of m, and Enter steps on.",
-            actions: vec![
-                Action::SeedLongNotes(0),
-                Action::Wait(2),
-                Action::Relayout,
-                Action::Snapshot("00-control-at-rest"),
-                Action::ClickNamed("window-search-open"),
-                Action::Wait(24),
-                Action::Type("capture 1"),
-                Action::Wait(8),
-                Action::Snapshot("01-search-in-place"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(8),
-                Action::Snapshot("02-third-match"),
-            ],
-        },
-        Scenario {
-            name: "own_process_notes_search",
-            description: "Notes as a window of its own, as on a device: the window bar's search opens on it over its shell-ui connection, the long note highlights every match with n of m, and Enter steps on. Notes draws no search control of its own.",
-            actions: vec![
-                Action::OwnProcessWindow {
-                    app: OwnApp::Notes,
-                    width: 700,
-                },
-                Action::Wait(4),
-                Action::Relayout,
-                Action::Snapshot("00-control-at-rest"),
-                Action::ClickNamed("window-search-open"),
-                Action::Wait(24),
-                Action::Type("capture 1"),
-                Action::Wait(8),
-                Action::Relayout,
-                Action::Snapshot("01-search-in-place"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(8),
-                Action::Relayout,
-                Action::Snapshot("02-third-match"),
-            ],
-        },
+        window_search::notes_search_in_place(),
+        window_search::notes_search_options(),
+        window_search::notes_replace_in_place(),
+        window_search::own_process_notes_search(),
         Scenario {
             name: "own_process_notes_history",
             description: "Notes as a window of its own: the window bar's History control opens Notes' History panel over its shell-ui connection, with the changes Ada and her agent made.",
@@ -4249,25 +4176,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("01-history-panel"),
             ],
         },
-        Scenario {
-            name: "own_process_files_search",
-            description: "Files as a window of its own: the window bar's search narrows its list over its shell-ui connection, with the count it answers.",
-            actions: vec![
-                Action::OwnProcessWindow {
-                    app: OwnApp::Files,
-                    width: 700,
-                },
-                Action::Wait(4),
-                Action::Relayout,
-                Action::Snapshot("00-control-at-rest"),
-                Action::ClickNamed("window-search-open"),
-                Action::Wait(24),
-                Action::Type("re"),
-                Action::Wait(8),
-                Action::Relayout,
-                Action::Snapshot("01-search-in-place"),
-            ],
-        },
+        window_search::own_process_files_search(),
         Scenario {
             name: "own_process_files_history",
             description: "Files as a window of its own: the window bar's History control opens its History panel over its shell-ui connection.",
@@ -4450,7 +4359,7 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "room_activity_from_palette",
-            description: "Search 'workspace activity' in the palette and open the sheet from the result.",
+            description: "Search 'workspace activity' in the palette and find the command that opens it.",
             actions: vec![
                 Action::Snapshot("01-desktop"),
                 Action::OpenPalette,
@@ -4458,112 +4367,6 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Type("workspace activity"),
                 Action::Wait(2),
                 Action::Snapshot("02-palette-result"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(20),
-                Action::Snapshot("03-room-activity-open"),
-            ],
-        },
-        Scenario {
-            name: "room_activity_catch_up_keyboard",
-            description: "Open the tiled recap, expand a high-level outcome, then follow it into Full history.",
-            actions: vec![
-                Action::SeedRoomActivity { explore: false },
-                // Opening a tiled window first reconciles it into the retained
-                // group row, then eases the focused group into view. Capture the
-                // settled destination, not the first frame at the strip edge.
-                Action::Relayout,
-                Action::Wait(20),
-                Action::Snapshot("01-recap"),
-                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
-                Action::Key(Key::Named(NamedKey::ArrowLeft)),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Modifiers(ModifiersState::SUPER),
-                Action::Key(Key::Character("-".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Relayout,
-                Action::Wait(20),
-                Action::Snapshot("02-window-reordered-and-resized"),
-                Action::FocusFirstRoomActivityWorkSession,
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(12),
-                Action::Relayout,
-                Action::Snapshot("03-outcome-expanded"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Relayout,
-                Action::Snapshot("04-full-history"),
-            ],
-        },
-        Scenario {
-            name: "automatic_work_session_correction",
-            description: "Expand two automatically grouped work sessions, then move their seam and persist the human correction.",
-            actions: vec![
-                Action::SeedAutomaticWorkSessions,
-                Action::Relayout,
-                Action::Snapshot("01-automatic-sessions"),
-                Action::ExpandAutomaticWorkSession,
-                Action::Relayout,
-                Action::Snapshot("02-automatic-seam"),
-                Action::CorrectAutomaticWorkSession,
-                Action::Relayout,
-                Action::Snapshot("03-human-correction-shared"),
-            ],
-        },
-        Scenario {
-            name: "room_activity_explore_keyboard",
-            description: "Open responsive Explorer and traverse lenses; capture at wide and narrow sweep viewports.",
-            actions: vec![
-                Action::SeedRoomActivity { explore: true },
-                // As in the recap: let the strip ease the new group into view.
-                Action::Relayout,
-                Action::Wait(20),
-                Action::Snapshot("01-explorer-three-panel"),
-                Action::Key(Key::Named(NamedKey::Home)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Snapshot("02-explorer-browse-focus-visible"),
-            ],
-        },
-        Scenario {
-            name: "room_activity_explore_detail_compare",
-            description: "Select a real history action, show provenance, and materialize its exact comparison.",
-            actions: vec![
-                Action::SeedRoomActivity { explore: true },
-                Action::SelectRoomActivityEntry(0),
-                Action::Relayout,
-                Action::Wait(20),
-                Action::Key(Key::Named(NamedKey::Home)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Snapshot("01-selected-detail"),
-                Action::Key(Key::Named(NamedKey::End)),
-                Action::Key(Key::Named(NamedKey::ArrowLeft)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(2),
-                Action::Snapshot("02-exact-comparison"),
-            ],
-        },
-        Scenario {
-            name: "room_activity_replay",
-            description: "Replay exact causal workspace layouts with checkpoint controls and presence trails.",
-            actions: vec![
-                Action::SeedRoomActivity { explore: true },
-                Action::ShowRoomActivityReplay,
-                Action::Relayout,
-                Action::Wait(20),
-                Action::Snapshot("01-replay-checkpoint"),
-                Action::Key(Key::Named(NamedKey::End)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(3),
-                Action::Snapshot("02-replay-playing"),
             ],
         },
         Scenario {
@@ -4639,8 +4442,9 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "window_maximize_sibling_fade",
-            description: "Super+M fades neighbour windows on the fast curve instead of \
-                      collapsing them, then Super+M again fades them back in.",
+            description: "Super+M covers neighbour windows at once (nothing of them paints \
+                      over the maximized one), then Super+M again fades them back \
+                      in on the fast curve.",
             actions: vec![
                 Action::LoneWindow(0),
                 Action::OpenWindow {
@@ -5034,22 +4838,31 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Wait(PLACEMENT_SETTLE_FRAMES),
                 Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
                 Action::Wait(4),
+                // The last window still grows into its half after the resize;
+                // the pan's bounds follow the content width, so let it land
+                // before anything is measured against them.
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
                 Action::Snapshot("04-four-windows"),
-                // Back to the first window, which pans it flush with the screen
-                // edge (the least pan that shows it) — the starting position
-                // for the travel.
+                // Back to the first window, which brings the strip home, its
+                // gutter before the window — the starting position for the
+                // travel. The reveal glides on the group-move spring, which
+                // from the far end takes longer than a fixed wait to come
+                // within a pixel.
                 Action::SelectGroup(Some(0)),
                 Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
                 Action::Snapshot("05-strip-at-rest"),
                 Action::StripPan(10_000.0),
                 Action::Relayout,
                 Action::Snapshot("06-held-past-trailing-edge"),
                 Action::EndStripPan,
                 Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
                 Action::Snapshot("07-settled-trailing-room"),
                 Action::StripPan(-10_000.0),
                 Action::EndStripPan,
                 Action::Wait(PAN_SETTLE_FRAMES),
+                Action::WaitStripSettled(STRIP_SETTLE_MAX_FRAMES),
                 Action::Snapshot("08-panned-back"),
             ],
         },
@@ -5352,11 +5165,35 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("03-save"),
             ],
         },
+        Scenario {
+            name: "file_chooser_window_sizes",
+            description: "The file dialog is a system sheet: the same size and centred on the display whether a narrow or a wide window asks.",
+            actions: vec![
+                Action::SetWindowWidths(250),
+                Action::SeedFilePicker("open"),
+                Action::Wait(6),
+                Action::Snapshot("01-small-window-open"),
+                Action::SeedFilePicker("save"),
+                Action::Wait(6),
+                Action::Snapshot("02-small-window-save"),
+                Action::SeedFilePicker("folder"),
+                Action::Wait(6),
+                Action::Snapshot("03-small-window-folder"),
+                Action::SetWindowWidths(1_000),
+                Action::SeedFilePicker("open"),
+                Action::Wait(6),
+                Action::Snapshot("04-large-window-open"),
+            ],
+        },
     ]
 }
 
 /// A stand-in favicon: a 16 px orange disc with a white centre, as PNG
 /// bytes, the way the engine hands a page's icon over.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "pixel arithmetic on a 16 by 16 image"
+)]
 fn favicon_png() -> Vec<u8> {
     let mut rgba = Vec::with_capacity(16 * 16 * 4);
     for y in 0..16_i32 {
@@ -5389,6 +5226,12 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
         name: name.into(),
         enabled: true,
         on: false,
+        menu: false,
+        items: Vec::new(),
+        navigates: false,
+        toggles: false,
+        destructive: false,
+        labelled: false,
     };
     WindowToolbar {
         sidebar: None,
@@ -5412,6 +5255,7 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
             action("bookmark", "star", "Bookmark this page"),
             action("library", "history", "History and bookmarks"),
         ],
+        ..WindowToolbar::default()
     }
 }
 
@@ -5429,6 +5273,12 @@ fn files_slots() -> ui::window_toolbar::WindowToolbar {
         name: name.into(),
         enabled: true,
         on: false,
+        menu: false,
+        items: Vec::new(),
+        navigates: false,
+        toggles: false,
+        destructive: false,
+        labelled: false,
     };
     let segment = |label: &str, value: &str| LocationSegment {
         label: label.into(),
@@ -5457,34 +5307,78 @@ fn files_slots() -> ui::window_toolbar::WindowToolbar {
             action("terminal", "square-terminal", "Open terminal here"),
             action("hidden", "eye", "Show hidden files"),
         ],
+        ..WindowToolbar::default()
     }
 }
 
-/// The browser's slots while "rust" is typed into its address: the
-/// omnibox's rows under the field.
+/// The terminal's slots, as Terminal declares them on the device's own
+/// shell: where the shell runs as the window's title, and the places the
+/// target picker offers, the current one checked.
+fn terminal_slots() -> ui::window_toolbar::WindowToolbar {
+    use ui::window_toolbar::{LocationChoice, ToolbarLocation, WindowToolbar};
+    let choice = |label: &str, value: &str, current: bool, separated: bool| LocationChoice {
+        label: label.into(),
+        value: value.into(),
+        current,
+        separated,
+    };
+    WindowToolbar {
+        location: Some(ToolbarLocation {
+            label: "Your shell on this device".into(),
+            name: "Choose where this runs".into(),
+            choices: vec![
+                choice("Default", "open:default", false, false),
+                choice("Work", "open:work", false, false),
+                choice("Your shell on this device", "open:host", true, false),
+                choice("linux virtual machine", "open:linux", false, false),
+                choice("Manage environments…", "manage", false, true),
+            ],
+            ..ToolbarLocation::default()
+        }),
+        ..WindowToolbar::default()
+    }
+}
+
+/// The browser's slots while "youtube.com" is typed into its address: the
+/// omnibox's rows under the field, as Browser answers (the address, the
+/// search with its engine, pages visited before with their addresses, the
+/// engine's own searches).
 fn browser_suggesting_slots() -> ui::window_toolbar::WindowToolbar {
     use ui::window_toolbar::LocationSuggestion;
-    let row = |label: &str, value: &str, icon: &str| LocationSuggestion {
+    let row = |label: &str, detail: &str, value: &str, icon: &str| LocationSuggestion {
         label: label.into(),
         value: value.into(),
         icon: Some(icon.into()),
+        detail: detail.into(),
     };
     let mut slots = browser_slots();
     if let Some(location) = slots.location.as_mut() {
         location.suggestions = vec![
-            row("rust", "rust", "search"),
+            row("youtube.com", "", "https://youtube.com", "globe"),
             row(
-                "Rust Programming Language",
-                "https://www.rust-lang.org/",
+                "youtube.com",
+                "Search with DuckDuckGo",
+                "https://duckduckgo.com/?q=youtube.com",
+                "search",
+            ),
+            row(
+                "YouTube",
+                "youtube.com",
+                "https://www.youtube.com/",
                 "history",
             ),
             row(
-                "The Rust Book",
-                "https://doc.rust-lang.org/book/",
+                "Me at the zoo - YouTube",
+                "youtube.com/watch?v=jNQXAC9IVRw",
+                "https://www.youtube.com/watch?v=jNQXAC9IVRw",
                 "history",
             ),
-            row("rust analyzer", "rust analyzer", "search"),
-            row("rust tutorial", "rust tutorial", "search"),
+            row(
+                "youtube music",
+                "",
+                "https://duckduckgo.com/?q=youtube+music",
+                "search",
+            ),
         ];
     }
     slots
@@ -5501,6 +5395,12 @@ const BAR_FILES: BarTab = BarTab {
     title: "Downloads",
     surface_id: 9102,
     slots: Some(files_slots),
+};
+const BAR_TERMINAL: BarTab = BarTab {
+    app_id: "so.tilo.terminal",
+    title: "Terminal",
+    surface_id: 9104,
+    slots: Some(terminal_slots),
 };
 /// A foreign app: no slots, its client's title is its location.
 const BAR_WRITER: BarTab = BarTab {
@@ -5596,6 +5496,29 @@ fn window_bar_files_scenario() -> Scenario {
     }
 }
 
+fn window_bar_terminal_scenario() -> Scenario {
+    Scenario {
+        name: "window-bar-terminal",
+        description: "A terminal's window: where its shell runs is the \
+             window's title in its bar, a picker with a chevron; a click opens \
+             the system menu of the places it can run, the current one checked, \
+             and Manage environments… after a separator.",
+        actions: vec![
+            Action::SeedWindowBar {
+                tabs: &[BAR_TERMINAL],
+                active: 0,
+                width: 700,
+            },
+            Action::Wait(30),
+            Action::Relayout,
+            Action::Snapshot("01-title"),
+            Action::ClickNamed("window_location"),
+            Action::Wait(20),
+            Action::Snapshot("02-picker"),
+        ],
+    }
+}
+
 fn window_bar_overflow_scenario() -> Scenario {
     Scenario {
         name: "window-bar-overflow",
@@ -5639,7 +5562,7 @@ fn window_bar_suggestions_scenario() -> Scenario {
             Action::Relayout,
             Action::ClickNamed("window_location"),
             Action::Wait(4),
-            Action::Type("rust"),
+            Action::Type("youtube.com"),
             Action::DeclareBarSlots {
                 surface_id: 9101,
                 slots: browser_suggesting_slots,
@@ -5650,6 +5573,9 @@ fn window_bar_suggestions_scenario() -> Scenario {
             Action::Key(Key::Named(NamedKey::ArrowDown)),
             Action::Wait(10),
             Action::Snapshot("02-second-chosen"),
+            Action::MoveCursorNamed("window_suggestion:3"),
+            Action::Wait(10),
+            Action::Snapshot("03-pointer-over-a-visited-page"),
         ],
     }
 }
@@ -5672,9 +5598,80 @@ fn window_bar_writer_scenario() -> Scenario {
     }
 }
 
+/// The compositor snapshot a laptop panel with desk monitors would publish
+/// for `outputs`: the first the built-in panel, the next a named monitor on
+/// `DP-1`, any further ones bare ports.
+fn identify_snapshot(
+    outputs: &[shell::shell::overlay_host::OutputGeometry],
+) -> settings_store::hardware::DisplayHardwareSnapshot {
+    use settings_store::hardware::{
+        DisplayHardwareSnapshot, DisplayOutputSnapshot, LiveOutputPlacement, MonitorIdentity,
+        OutputDescriptor, OutputMode,
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a display's logical position and size fit i32"
+    )]
+    fn round(value: f64) -> i32 {
+        value.round() as i32
+    }
+    let mut snapshot = DisplayHardwareSnapshot::default();
+    for (index, output) in outputs.iter().enumerate() {
+        let connector = if index == 0 {
+            "eDP-1".to_owned()
+        } else {
+            format!("DP-{index}")
+        };
+        let mode = OutputMode {
+            width: u32::try_from(round(output.width * output.scale)).unwrap_or(1920),
+            height: u32::try_from(round(output.height * output.scale)).unwrap_or(1080),
+            refresh_mhz: 60_000,
+        };
+        snapshot.outputs.push(DisplayOutputSnapshot {
+            descriptor: OutputDescriptor {
+                connector: connector.clone(),
+                connector_label: connector.clone(),
+                modes: vec![mode],
+                hdr: false,
+                vrr: false,
+                color_profiles: Vec::new(),
+                monitor: (index == 1).then(|| MonitorIdentity {
+                    make: "Dell".into(),
+                    model: "DELL U2724DE".into(),
+                    ..MonitorIdentity::default()
+                }),
+            },
+            current_mode: mode,
+            scale: output.scale,
+            builtin: index == 0,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            unavailable_reason: None,
+            color_profile_labels: std::collections::BTreeMap::new(),
+        });
+        snapshot.layout.push(LiveOutputPlacement {
+            connector,
+            x: round(output.x),
+            y: round(output.y),
+            width: u32::try_from(round(output.width)).unwrap_or(0),
+            height: u32::try_from(round(output.height)).unwrap_or(0),
+        });
+    }
+    snapshot
+}
+
 pub fn scenarios() -> &'static [Scenario] {
     use std::sync::LazyLock;
-    static TABLE: LazyLock<Vec<Scenario>> = LazyLock::new(build_scenarios);
+    static TABLE: LazyLock<Vec<Scenario>> = LazyLock::new(|| {
+        [
+            build_scenarios(),
+            motion_review::all(),
+            motion_gallery::all(),
+        ]
+        .concat()
+    });
     &TABLE
 }
 
@@ -5695,6 +5692,9 @@ pub fn lookup(name: &str) -> Option<Scenario> {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use shell::shell::state::WorkspaceExt as _;
+
+/// A window's own toolbar, as its app declares it.
+type ToolbarOf = fn() -> ui::window_toolbar::WindowToolbar;
 
 #[cfg(test)]
 #[allow(
@@ -5891,10 +5891,8 @@ mod tests {
                     "01-solo-workspace",
                     "02-invite-pending",
                     "03-ada-editing-notes",
-                    "04-attributed-history",
-                    "05-history-comparison",
-                    "06-reverted-forward",
-                    "07-ada-in-files",
+                    "04-reverted-forward",
+                    "05-ada-in-files",
                 ],
                 "the proof must retain every product state rather than skipping from invite to history"
             );
@@ -5916,7 +5914,6 @@ mod tests {
             let mut driver = ShellDriver::new((1600, 900));
             let mut sink = CollaborationProofSink {
                 pending_invite_is_durable: false,
-                ada_activity_is_visible: false,
                 forward_revert_is_announced: false,
                 ada_is_active_in_files: false,
             };
@@ -5929,10 +5926,6 @@ mod tests {
             assert!(
                 sink.pending_invite_is_durable,
                 "the pending-invite frame must show both durable access and non-live presence"
-            );
-            assert!(
-                sink.ada_activity_is_visible,
-                "the attributed-history frame must visibly filter to Ada's authored changes"
             );
             assert!(
                 sink.forward_revert_is_announced,
@@ -5948,13 +5941,8 @@ mod tests {
     /// Snapshot names are a contract with the visual review suite. Check the
     /// actual state at each consequential frame as well, so a future fixture
     /// regression cannot quietly emit a plausible but false PNG.
-    #[allow(
-        clippy::struct_excessive_bools,
-        reason = "each flag records an independent collaboration-proof invariant"
-    )]
     struct CollaborationProofSink {
         pending_invite_is_durable: bool,
-        ada_activity_is_visible: bool,
         forward_revert_is_announced: bool,
         ada_is_active_in_files: bool,
     }
@@ -5982,25 +5970,13 @@ mod tests {
                             && workspace.role_of("ada").is_some()
                     });
                 }
-                "04-attributed-history" => {
-                    let activity = driver.host().room_activity();
-                    self.ada_activity_is_visible = activity
-                        .author_filter()
-                        .is_some_and(|author| author.eq_ignore_ascii_case("ada"))
-                        && activity.visible_len() > 0
-                        && (0..activity.visible_len()).all(|index| {
-                            activity
-                                .visible_entry(index)
-                                .is_some_and(|entry| entry.author.name.eq_ignore_ascii_case("ada"))
-                        });
-                }
-                "06-reverted-forward" => {
+                "04-reverted-forward" => {
                     self.forward_revert_is_announced = state.notifications().iter().any(|notice| {
                         notice.title == "Reverted a workspace change"
                             && notice.body.contains("Written forward")
                     });
                 }
-                "07-ada-in-files" => {
+                "05-ada-in-files" => {
                     let files_tab = workspace
                         .strips
                         .iter()
@@ -6160,11 +6136,12 @@ mod tests {
             (rest_inset - 32.0).abs() < 0.5,
             "the leading inset is the 32 px edge gutter (leading inset = {rest_inset})"
         );
-        // Focusing the first window reveals it by the least pan: flush with
-        // the screen edge, the edge gutter scrolled off to its left.
+        // Focusing the first window brings the strip home: the window's
+        // edge is drawn just outside it, so stopping flush with the screen
+        // edge would cut its border off.
         assert!(
-            rest_x <= rest_inset + 1.0,
-            "the strip starts with its first window flush at the screen edge \
+            rest_x < 1.0,
+            "the strip starts home, the gutter before its first window \
              (scroll_x = {rest_x}, leading inset = {rest_inset})"
         );
         assert!(
@@ -6177,7 +6154,8 @@ mod tests {
             "the held gesture must visibly pull beyond its legal resting end \
              (scroll_x = {held_x}, pan_max_scroll_x = {held_pan_max})"
         );
-        let viewport = (held_pan_max - held_max) / 0.20;
+        // `max_scroll_x` keeps the gutter after the last window too.
+        let viewport = (held_pan_max - held_max + rest_inset) / 0.20;
         assert!(
             held_x < held_pan_max + viewport * 0.28,
             "rubber-band travel must stay below its 28%-viewport asymptote \

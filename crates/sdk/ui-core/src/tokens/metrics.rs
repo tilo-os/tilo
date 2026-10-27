@@ -37,7 +37,6 @@ pub struct Metrics {
     pub min_pointer_target: f32,
     /// A utility Panel such as quick settings.
     pub panel_width_utility: f32,
-    /// A roster or list Panel.
     pub panel_width_list: f32,
     /// A sheet carrying a form.
     pub panel_width_sheet: f32,
@@ -54,6 +53,11 @@ pub struct Metrics {
     /// stronger chrome edge. `ui_scale` multiplies it; a theme's spacing
     /// preference does not.
     pub chrome_rule_px: f32,
+    /// The edge a display wears while a call rings on another one.
+    pub call_edge_px: f32,
+    /// The edge every display wears for a visual alert: obvious without a
+    /// full-screen flash.
+    pub alert_edge_px: f32,
     /// A genuine navigation sidebar (HIG §1a) when docked.
     pub sidebar_width: f32,
     /// An overlay drawer; equal to [`Metrics::panel_width_utility`] so a
@@ -81,8 +85,15 @@ pub struct Metrics {
     /// The inspector column at the trailing edge of a window.
     pub inspector_width: f32,
     /// Narrowest a person can drag a docked sidebar; dragging it below this
-    /// hides it.
+    /// hides it. The same width a docked panel keeps beside a content column
+    /// before it floats over it ([`Self::panel_min_width`]).
     pub sidebar_min_width: f32,
+    /// The narrowest a sidebar or panel works at beside a painted app's own
+    /// content column, as a split of the app's window: a name beside its
+    /// value, a destination's label whole. Beside a content *kind*'s minimum
+    /// a shell panel shrinks toward this first
+    /// (`SidebarDrawer::content_kind`) and stops docking there.
+    pub panel_min_width: f32,
     /// Widest a person can drag a docked sidebar.
     pub sidebar_max_width: f32,
     /// A generous content column: the width of a sheet
@@ -144,7 +155,6 @@ pub struct Metrics {
     pub icon_control: f32,
     /// The leading app or location icon of a bar.
     pub icon_bar: f32,
-    /// An avatar leading a one-line row.
     pub avatar_inline: f32,
     /// An avatar leading a two-line row: the row grows to
     /// [`Self::row_avatar`].
@@ -175,7 +185,6 @@ pub struct Metrics {
     pub row_arrow: f32,
     /// A slider at a row's trailing end (an app's volume).
     pub row_slider_width: f32,
-    /// The narrowest a row's slider gets.
     pub row_slider_min_width: f32,
     /// A row's slider with its value beside it (the output volume).
     pub row_slider_valued_width: f32,
@@ -187,8 +196,16 @@ pub struct Metrics {
     pub aside_min_width: f32,
     /// A pane's figure (the time-zone globe), at the default text size.
     pub figure_size: f32,
+    /// The narrowest picture tile a chooser shows (a theme or wallpaper
+    /// preview) before its grid drops a column.
+    pub picture_tile_min_width: f32,
+    /// The width a picture tile asks for when nothing bounds its grid.
+    pub picture_tile_width: f32,
     /// How far a press may move and still be a click.
     pub click_slop: f32,
+    /// The line a drag draws where the dragged item would land, and the
+    /// outline of the ghost it carries under the pointer.
+    pub drag_line_px: f32,
 }
 
 impl Metrics {
@@ -210,6 +227,8 @@ impl Metrics {
         icon_lg: 24.0,
         icon_label_gap: 6.0,
         chrome_rule_px: 1.0,
+        call_edge_px: 3.0,
+        alert_edge_px: 7.0,
         sidebar_width: 280.0,
         drawer_width: 320.0,
         overview_width: 340.0,
@@ -220,6 +239,7 @@ impl Metrics {
         rail_max_width: 160.0,
         inspector_width: 300.0,
         sidebar_min_width: 200.0,
+        panel_min_width: 200.0,
         sidebar_max_width: 420.0,
         content_min_width: 560.0,
         detail_min_width: 360.0,
@@ -261,7 +281,10 @@ impl Metrics {
         chart_height: 168.0,
         aside_min_width: 240.0,
         figure_size: 280.0,
+        picture_tile_min_width: 104.0,
+        picture_tile_width: 168.0,
         click_slop: 4.0,
+        drag_line_px: 2.0,
     };
 
     /// The factor a **text-sized** width or breakpoint grows by at a given
@@ -329,6 +352,8 @@ impl Metrics {
             icon_lg: self.icon_lg * factor,
             icon_label_gap: self.icon_label_gap * factor,
             chrome_rule_px: self.chrome_rule_px * factor,
+            call_edge_px: self.call_edge_px * factor,
+            alert_edge_px: self.alert_edge_px * factor,
             sidebar_width: self.sidebar_width * factor,
             drawer_width: self.drawer_width * factor,
             overview_width: self.overview_width * factor,
@@ -339,6 +364,7 @@ impl Metrics {
             rail_max_width: self.rail_max_width * factor,
             inspector_width: self.inspector_width * factor,
             sidebar_min_width: self.sidebar_min_width * factor,
+            panel_min_width: self.panel_min_width * factor,
             sidebar_max_width: self.sidebar_max_width * factor,
             content_min_width: self.content_min_width * factor,
             detail_min_width: self.detail_min_width * factor,
@@ -380,7 +406,10 @@ impl Metrics {
             chart_height: self.chart_height * factor,
             aside_min_width: self.aside_min_width * factor,
             figure_size: self.figure_size * factor,
+            picture_tile_min_width: self.picture_tile_min_width * factor,
+            picture_tile_width: self.picture_tile_width * factor,
             click_slop: self.click_slop * factor,
+            drag_line_px: self.drag_line_px * factor,
         }
     }
 }
@@ -414,7 +443,6 @@ mod tests {
         }
         let theme = crate::Theme::dark().with_ui_scale(2.0);
         assert!((theme.tokens.metrics.readable_width - 1440.0).abs() < 1e-3);
-        // A readable column still fits beside a docked sidebar's content.
         assert!(base.reading_measure <= base.readable_width);
         assert!(base.chooser_width < base.content_min_width);
     }

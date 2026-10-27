@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "The current process and, later, child processes: one API on Linux, macOS and the web, where there are none."
@@ -23,6 +23,8 @@ runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", def
 tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
 
 [target.'cfg(unix)'.dependencies]
+# Reading the login shell's PATH, bounded in time and size.
+bounded-command = { version = "0.1.0", path = "../../system/bounded-command" }
 # The rendezvous lock and the socket wait.
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 libc.workspace = true
@@ -36,3 +38,4 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }

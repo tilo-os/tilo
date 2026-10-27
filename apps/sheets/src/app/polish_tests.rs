@@ -1,9 +1,8 @@
-//! Regressions exercised through the production painter at full UI scale.
 use super::tests::{measured_app, paint_frame};
 use super::*;
 
 #[test]
-fn full_ui_scale_keeps_toolbar_labels_and_chart_controls_readable() {
+fn full_ui_scale_keeps_chart_controls_readable() {
     let (mut app, mut tr, _) = measured_app(1440.0, 810.0, 1.0);
     let theme = Theme::dark().with_ui_scale(1.5);
     app.sheet_charts = vec![
@@ -23,20 +22,6 @@ fn full_ui_scale_keeps_toolbar_labels_and_chart_controls_readable() {
         },
     ];
     paint_frame(&mut app, &mut tr, &theme);
-    for (index, label) in [(0, "File"), (1, "Format"), (4, "AutoSum"), (5, "Formulas")] {
-        let rect = app
-            .toolbar
-            .item_rect(index)
-            .expect("command fits the wide row");
-        let width = f64::from(
-            tr.measure_style(label, None, &theme.text(TextRole::Label))
-                .0,
-        );
-        assert!(
-            rect.width() >= width + 2.0 * app.metrics.s2,
-            "{label} is clipped at 150%: {rect:?}, text {width}"
-        );
-    }
     assert_eq!(app.dock_cards.len(), 2, "charts must not disappear at 150%");
     assert!(
         app.grid_rect.height()

@@ -26,7 +26,7 @@ fn local_app_at(desktop: &DesktopTree, tab: TabId) -> Option<(RoomId, &str)> {
                 }
                 match &candidate.tile {
                     TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
-                        Some((workspace.room, app_id.as_str()))
+                        Some((workspace.room(), app_id.as_str()))
                     }
                     _ => None,
                 }
@@ -72,8 +72,23 @@ impl WorkspaceTree {
         .then_some(record.record_instance)
     }
 
+    /// The room and app `tab` shows and the window instance the launcher
+    /// started it for, when it shows one.
+    pub(crate) fn local_app_window(&self, tab: TabId) -> Option<(RoomId, &str, u64)> {
+        let (room, app) = self.local_app_at(tab)?;
+        Some((room, app, self.local_app_record(tab, room, app)?))
+    }
+
     pub(crate) fn prune_local_app_records(&mut self) {
-        Self::prune_local_app_records_of(&self.desktop, &mut self.local_app_records);
+        if self.archived_workspaces.is_empty() {
+            Self::prune_local_app_records_of(&self.desktop, &mut self.local_app_records);
+            return;
+        }
+        // An archived workspace's windows keep what is theirs.
+        let mut held = self.desktop.clone();
+        held.workspaces
+            .extend(self.archived_workspaces.iter().cloned());
+        Self::prune_local_app_records_of(&held, &mut self.local_app_records);
     }
 
     /// Drop the records in `records` whose tab no longer shows their room's

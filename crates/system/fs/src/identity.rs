@@ -305,12 +305,62 @@ pub fn load_certified_mount_identity(
     Ok(CertifiedMountIdentity { mount, credentials })
 }
 
-/// Read an already-certified device for recovery without first-boot key creation.
+/// [`load_certified_mount_identity`] at the wall clock's reading, waiting
+/// while the certificate is refused only because the clock reads a time
+/// before its issuance.
+///
+/// A machine whose real-time clock came up behind refuses its own,
+/// intact certificate until network time steps the clock. The daemon stays
+/// up and waits for that step (or for the issuance instant) instead of
+/// exiting into a restart loop or idling for good: the wait is a timerfd
+/// that the kernel ends when the clock changes, and the certificate is read
+/// again after each wake, so one written anew meanwhile counts too.
 ///
 /// # Errors
 ///
-/// Returns an error for missing, insecure or inconsistent existing credentials,
-/// or a certificate that is not valid at `now_ns`. No directory or key is made.
+/// As [`load_certified_mount_identity`], for every refusal other than a
+/// clock behind the certificate; and the clock refusal itself when the
+/// clock cannot be waited on.
+pub async fn load_certified_mount_identity_once_valid(
+    paths: &IdentityPaths,
+) -> std::result::Result<CertifiedMountIdentity, CertifiedIdentityError> {
+    loop {
+        let now_ns = crate::clock::unix_now_ns();
+        let refused = match load_certified_mount_identity(paths, now_ns) {
+            Err(CertifiedIdentityError::Certificate(DeviceCertError::NotYetValid)) => {
+                CertifiedIdentityError::Certificate(DeviceCertError::NotYetValid)
+            }
+            loaded => return loaded,
+        };
+        let valid_from_ns =
+            tilo_user_identity::persist::read_device_cert(&paths.device_cert)?.issued_at_ns;
+        if valid_from_ns <= now_ns {
+            // Written anew between the two reads: check it again.
+            continue;
+        }
+        eprintln!(
+            "device certificate is valid from {valid_from_ns} ns and the clock reads {now_ns} ns; \
+             waiting for the clock"
+        );
+        let waited = tokio::task::spawn_blocking(move || {
+            tilo_user_identity::wait_for_wall_clock(valid_from_ns)
+        })
+        .await;
+        match waited {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
+                eprintln!("cannot wait for the clock: {error}");
+                return Err(refused);
+            }
+            Err(error) => {
+                eprintln!("the wait for the clock ended without an answer: {error}");
+                return Err(refused);
+            }
+        }
+    }
+}
+
+/// Read an already-certified device for recovery without first-boot key creation.
 pub fn load_existing_certified_mount_identity(
     paths: &IdentityPaths,
     now_ns: u64,
@@ -374,6 +424,40 @@ mod tests {
             Ok(_) => panic!("certified identity unexpectedly loaded"),
             Err(err) => err,
         }
+    }
+
+    #[tokio::test]
+    async fn a_certificate_issued_after_the_clocks_reading_loads_once_the_clock_reaches_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(tmp.path());
+        let device = install_fixed_device(&paths);
+        // The refusal is judged at the reading the certificate was dated from, so a slow
+        // node that takes longer than the margin to write it cannot make it valid already.
+        let read_at_ns = crate::clock::unix_now_ns();
+        let issued_at_ns = read_at_ns + 200_000_000;
+        let cert = signed_cert(device.verifying_key().to_bytes(), issued_at_ns, None);
+        write_device_cert(&paths.device_cert, &cert).unwrap();
+        assert!(matches!(
+            load_certified_mount_identity(&paths, read_at_ns),
+            Err(CertifiedIdentityError::Certificate(
+                DeviceCertError::NotYetValid
+            ))
+        ));
+
+        let loaded = load_certified_mount_identity_once_valid(&paths)
+            .await
+            .expect("the daemon waits for the clock instead of giving up");
+        assert_eq!(loaded.credentials.cert, cert);
+        assert!(crate::clock::unix_now_ns() >= issued_at_ns);
+
+        // Refusals the clock cannot cure are reported at once.
+        let other = ed25519_dalek::SigningKey::from_bytes(&[99; 32]);
+        let foreign = signed_cert(other.verifying_key().to_bytes(), 1, None);
+        write_device_cert(&paths.device_cert, &foreign).unwrap();
+        assert!(matches!(
+            load_certified_mount_identity_once_valid(&paths).await,
+            Err(CertifiedIdentityError::DeviceKeyMismatch)
+        ));
     }
 
     #[test]
@@ -453,7 +537,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn certified_loading_requires_a_valid_current_certificate_for_this_device() {
-        // Phase `certified_identity_pairs_transport_key_with_human_certificate`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -485,7 +568,6 @@ mod tests {
                 cert.device_public_key
             );
         }
-        // Phase `missing_certificate_fails_certified_loading`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -497,7 +579,6 @@ mod tests {
                     if io_err.kind() == std::io::ErrorKind::NotFound
             ));
         }
-        // Phase `malformed_certificate_fails_certified_loading`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -508,7 +589,6 @@ mod tests {
                 CertifiedIdentityError::CertificateFile(PersistError::Canonical(_))
             ));
         }
-        // Phase `tampered_certificate_fails_certified_loading`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -521,7 +601,6 @@ mod tests {
                 CertifiedIdentityError::Certificate(DeviceCertError::BadSignature)
             ));
         }
-        // Phase `expired_or_future_certificate_fails_certified_loading`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -544,7 +623,6 @@ mod tests {
                 CertifiedIdentityError::Certificate(DeviceCertError::NotYetValid)
             ));
         }
-        // Phase `certificate_for_another_device_fails_certified_loading`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -561,7 +639,6 @@ mod tests {
 
     #[test]
     fn workspace_share_issuers_load_only_for_the_certified_owner() {
-        // Phase `workspace_share_issuer_is_the_certified_human_root_or_absent`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
@@ -594,7 +671,6 @@ mod tests {
                 Err(WorkspaceShareIssuerError::RootKeyMismatch)
             ));
         }
-        // Phase `non_owner_device_never_loads_a_workspace_share_issuer`.
         {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());

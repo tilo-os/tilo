@@ -84,7 +84,6 @@ pub trait CommittedWorkspace {
 pub struct DescriptorAuthority<'a> {
     /// Actual current committed governed workspace.
     pub peer: &'a dyn CommittedWorkspace,
-    /// Independently pinned exact governor certificate.
     pub pinned_governor: &'a DeviceCert,
     /// Independently appointed exact service host; never taken from this hint.
     pub pinned_host: &'a DeviceCert,
@@ -134,10 +133,6 @@ struct DescriptorPayload {
 /// Issue under the actual current governed host, using the existing hint signer.
 /// The caller must persist its revision and gate actual route installation before
 /// publishing this hint; creating signed wire bytes does not install a service.
-///
-/// # Errors
-///
-/// Returns `DescriptorError` if the inputs violate this operation's bounds or invariants.
 pub fn issue_transport_hint(
     settings: &DescriptorSettings,
     current: &DescriptorAuthority<'_>,
@@ -149,10 +144,6 @@ pub fn issue_transport_hint(
 /// Sign an explicit known media mask. This is only a wire signing utility, not
 /// proof of installation. A native publisher must retain its private live service
 /// witness through the owner barrier before requesting a nonzero mask.
-///
-/// # Errors
-///
-/// Returns `DescriptorError` if the inputs violate this operation's bounds or invariants.
 pub fn issue_transport_hint_with_media(
     settings: &DescriptorSettings,
     current: &DescriptorAuthority<'_>,
@@ -217,7 +208,6 @@ pub struct PersistedHintMetadata {
 pub struct PinnedHintScope {
     /// Canonical signed origin, not an independently established audience.
     pub origin: String,
-    /// Signed workspace to compare with independently enrolled custody.
     pub workspace: u64,
     /// Signed workspace root to compare with independently enrolled custody.
     pub workspace_root: [u8; 32],
@@ -225,36 +215,11 @@ pub struct PinnedHintScope {
     pub metadata: PersistedHintMetadata,
 }
 
-/// Inspect bounded signed routing fields before current governance is available.
-/// The caller must match its independent enrollment scope and origin, and check
-/// freshness before using this only for the signed governance handoff. Ordinary
-/// requests still require `verify_transport_hint` against actual current state.
-///
-/// # Errors
-///
-/// Returns `DescriptorError` if the value fails validation or verification.
-pub fn inspect_pinned_hint_scope(
-    hint: &TransportHint,
-    pinned_host: &DeviceCert,
-) -> Result<PinnedHintScope, DescriptorError> {
-    let (payload, metadata) = inspect_pinned_payload(hint, pinned_host)?;
-    Ok(PinnedHintScope {
-        origin: payload.origin,
-        workspace: payload.workspace,
-        workspace_root: payload.workspace_root,
-        metadata,
-    })
-}
-
 /// Inspect canonical owner-stored bytes under an independently pinned host cert.
 /// Verifies the signature at its signed issue time, even after descriptor expiry.
 /// Revocation, current roster/policy, current expiry and client pin admission are
 /// deliberately NOT established: use `verify_transport_hint` for every current use.
 /// Callers may only use this to retain/advance the stored descriptor revision.
-///
-/// # Errors
-///
-/// Returns `DescriptorError` if the value fails validation or verification.
 pub fn inspect_persisted_hint(
     hint: &TransportHint,
     pinned_host: &DeviceCert,
@@ -330,10 +295,6 @@ fn inspect_pinned_payload(
 
 /// Verify exact signed bytes against independently pinned current native state.
 /// A valid self-signed URL alone cannot construct this opaque result.
-///
-/// # Errors
-///
-/// Returns `DescriptorError` if the value fails validation or verification.
 pub fn verify_transport_hint(
     hint: &TransportHint,
     current: &DescriptorAuthority<'_>,
@@ -388,18 +349,10 @@ impl VerifiedDescriptor {
         self.digest
     }
     /// Recheck current authority, expiry, host pins and persisted revision.
-    ///
-    /// # Errors
-    ///
-    /// Returns `DescriptorError` if the value fails validation or verification.
     pub fn revalidate(&self, current: &DescriptorAuthority<'_>) -> Result<(), DescriptorError> {
         check_hint(&self.hint, current).map(|_| ())
     }
     /// Derive independently pinned client scope; boot remains freshly host-proved.
-    ///
-    /// # Errors
-    ///
-    /// Returns `DescriptorError` if the value fails validation or verification.
     pub fn client_scope(
         &self,
         current: &DescriptorAuthority<'_>,
@@ -423,10 +376,6 @@ impl VerifiedDescriptor {
         })
     }
     /// Derive server scope using only that server's own nonzero current boot.
-    ///
-    /// # Errors
-    ///
-    /// Returns `DescriptorError` if the value fails validation or verification.
     pub fn server_binding(
         &self,
         current: &DescriptorAuthority<'_>,

@@ -471,52 +471,61 @@ async fn personal_continuity_latest_only_replay_uses_both_publishers() {
     }
 }
 
-#[tokio::test]
-async fn personal_continuity_newest_replay_preserves_all_retained_receipts() {
-    for prefix in [false, true] {
-        let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
-        let mut published = Vec::new();
-        for (time, snapshot) in [(1, vec![1]), (2, Vec::new()), (3, vec![1])] {
-            let (channel, body) = fixture.continuity_checkpoint(snapshot);
-            let frame = fixture.checkpoint_frame(time, channel, body);
-            fixture
-                .publish_checkpoint_frame(frame.clone(), prefix, true)
-                .await;
-            fixture.assert_checkpoint_written(&frame).await;
-            published.push(frame);
-        }
-        fixture.drained_wait().await;
-        let retained = published
-            .iter()
-            .map(|frame| crate::transport::encode(frame).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            fixture.store.load_retained().unwrap(),
-            retained,
-            "authenticated receipt append changed bytes/order, retired history or deduplicated a new receipt by its old body"
-        );
-        let mut wire = Vec::new();
-        Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
-        let mut reader = SessionReader::new(wire.as_slice());
-        let mut replayed = Vec::new();
-        while let Some(frame) = reader.read_next().await.unwrap() {
-            match frame {
-                EnvelopeV2::State(envelope @ Envelope::Delta { .. }) => replayed.push(envelope),
-                EnvelopeV2::State(Envelope::Ready { .. }) => {}
-                other => panic!("unexpected continuity replay frame: {other:?}"),
-            }
-        }
-        assert_eq!(
-            replayed,
-            vec![published.last().unwrap().clone()],
-            "replay did not choose the newest accepted receipt"
-        );
-        assert_eq!(
-            fixture.store.load_retained().unwrap(),
-            retained,
-            "replay selection changed or physically retired retained continuity history"
-        );
+mod personal_continuity_newest_replay_preserves_all_retained_receipts {
+    #[tokio::test]
+    async fn serial() {
+        Box::pin(super::newest_replay_preserves_all_retained_receipts(false)).await;
     }
+
+    #[tokio::test]
+    async fn prefix() {
+        Box::pin(super::newest_replay_preserves_all_retained_receipts(true)).await;
+    }
+}
+
+async fn newest_replay_preserves_all_retained_receipts(prefix: bool) {
+    let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
+    let mut published = Vec::new();
+    for (time, snapshot) in [(1, vec![1]), (2, Vec::new()), (3, vec![1])] {
+        let (channel, body) = fixture.continuity_checkpoint(snapshot);
+        let frame = fixture.checkpoint_frame(time, channel, body);
+        fixture
+            .publish_checkpoint_frame(frame.clone(), prefix, true)
+            .await;
+        fixture.assert_checkpoint_written(&frame).await;
+        published.push(frame);
+    }
+    fixture.drained_wait().await;
+    let retained = published
+        .iter()
+        .map(|frame| crate::transport::encode(frame).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        fixture.store.load_retained().unwrap(),
+        retained,
+        "authenticated receipt append changed bytes/order, retired history or deduplicated a new receipt by its old body"
+    );
+    let mut wire = Vec::new();
+    Box::pin(fixture.replay_to(&mut wire)).await.unwrap();
+    let mut reader = SessionReader::new(wire.as_slice());
+    let mut replayed = Vec::new();
+    while let Some(frame) = reader.read_next().await.unwrap() {
+        match frame {
+            EnvelopeV2::State(envelope @ Envelope::Delta { .. }) => replayed.push(envelope),
+            EnvelopeV2::State(Envelope::Ready { .. }) => {}
+            other => panic!("unexpected continuity replay frame: {other:?}"),
+        }
+    }
+    assert_eq!(
+        replayed,
+        vec![published.last().unwrap().clone()],
+        "replay did not choose the newest accepted receipt"
+    );
+    assert_eq!(
+        fixture.store.load_retained().unwrap(),
+        retained,
+        "replay selection changed or physically retired retained continuity history"
+    );
 }
 
 #[tokio::test]
@@ -981,121 +990,145 @@ async fn personal_continuity_prefix_revocation_before_promotion_keeps_prior_curr
     assert!(reader.read_next().await.unwrap().is_none());
 }
 
-#[tokio::test]
-async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates() {
+/// A generic checkpoint that matches no continuity receipt (`case` names
+/// how), on serial ingress or as a checkpoint prefix, is kept and delivered
+/// once until the recipient asks for a checkpoint again.
+async fn nonmatching_checkpoint_keeps_once_and_rearms_gates(prefix: bool, case: &str) {
+    let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
+    let (mut channel, mut body) = fixture.continuity_checkpoint(vec![1]);
+    match case {
+        "opaque" => body = vec![1; 64],
+        "unknown" => body = vec![255; 8],
+        "malformed" => {
+            body.pop();
+        }
+        "trailing" => body.push(0),
+        "foreign_root" => {
+            let msg = neighbour_wire::NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key: [77; 32],
+                publisher: 7,
+                snapshot: vec![1],
+            };
+            channel = neighbour_wire::retention(&msg, false).unwrap().0;
+            body = postcard::to_stdvec(&msg).unwrap();
+        }
+        "channel_mismatch" => channel[0] ^= 1,
+        "other_variant" => {
+            body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::PersonalContinuityRequest {
+                user_public_key: fixture.source.peer.user_public_key,
+                requester: 7,
+            })
+            .unwrap();
+        }
+        "signed_shell" => (channel, body) = signed_shell_checkpoint(),
+        "no_source" | "outer_trailing" => {}
+        _ => unreachable!(),
+    }
+    let authenticated = case != "no_source";
+    for (time, expected_delivery) in [(1, true), (2, false), (3, true), (4, false)] {
+        if time == 3 {
+            fixture
+                .workspace
+                .lock()
+                .await
+                .request_checkpoint(&fixture.recipient.device_public_key);
+        }
+        let mut frame = fixture.checkpoint_frame(time, channel, body.clone());
+        if case == "outer_trailing" {
+            let Envelope::Delta { delta, .. } = &mut frame else {
+                unreachable!()
+            };
+            delta.push(0);
+        }
+        fixture
+            .publish_checkpoint_frame(frame.clone(), prefix, authenticated)
+            .await;
+        if expected_delivery {
+            assert!(
+                !fixture.recipient_rx.is_empty(),
+                "{case} checkpoint not delivered (prefix={prefix}, time={time})"
+            );
+            fixture.assert_checkpoint_written(&frame).await;
+        } else {
+            assert!(
+                fixture.recipient_rx.try_recv().is_err(),
+                "{case} bypassed checkpoint gate (prefix={prefix})"
+            );
+        }
+        assert!(
+            !fixture
+                .workspace
+                .lock()
+                .await
+                .needs_checkpoint(&fixture.recipient.device_public_key, &channel),
+            "{case} did not mark generic checkpoint served"
+        );
+    }
+    assert!(fixture.recipient_disconnected.try_recv().is_err());
+}
+
+/// The channel and body of a signed shell document checkpoint, from the
+/// selection fixtures.
+fn signed_shell_checkpoint() -> ([u8; 32], Vec<u8>) {
     use tilo_relay_shell::selection::fixtures::{producer_frame, producer_metadata};
     let metadata = producer_metadata();
     let raw = producer_frame(&metadata, &metadata["baseline"][1], 1);
     let Envelope::Delta { delta, .. } = crate::transport::decode(&raw[4..]).unwrap() else {
         panic!("signed checkpoint fixture was not a delta")
     };
-    let crate::coedit::CoeditPayload::Checkpoint {
-        channel: signed_channel,
-        body: signed_body,
-    } = crate::coedit::CoeditPayload::decode(&delta).unwrap()
+    let crate::coedit::CoeditPayload::Checkpoint { channel, body } =
+        crate::coedit::CoeditPayload::decode(&delta).unwrap()
     else {
         panic!("signed checkpoint fixture was not a checkpoint")
     };
     assert!(matches!(
-        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&signed_body).unwrap(),
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body).unwrap(),
         neighbour_wire::NeighbourMsg::AppDocument { .. }
     ));
-    for prefix in [false, true] {
-        for case in [
-            "opaque",
-            "unknown",
-            "malformed",
-            "trailing",
-            "outer_trailing",
-            "foreign_root",
-            "channel_mismatch",
-            "other_variant",
-            "signed_shell",
-            "no_source",
-        ] {
-            // Prefix admission already requires a complete wrapper and a
-            // StateSource. Exercise these generic fallbacks on serial ingress.
-            if prefix && matches!(case, "no_source" | "outer_trailing") {
-                continue;
-            }
-            let mut fixture = Box::pin(Fixture::for_checkpoint_path(prefix)).await;
-            let (mut channel, mut body) = fixture.continuity_checkpoint(vec![1]);
-            match case {
-                "opaque" => body = vec![1; 64],
-                "unknown" => body = vec![255; 8],
-                "malformed" => {
-                    body.pop();
-                }
-                "trailing" => body.push(0),
-                "foreign_root" => {
-                    let msg = neighbour_wire::NeighbourMsg::PersonalContinuityCheckpoint {
-                        user_public_key: [77; 32],
-                        publisher: 7,
-                        snapshot: vec![1],
-                    };
-                    channel = neighbour_wire::retention(&msg, false).unwrap().0;
-                    body = postcard::to_stdvec(&msg).unwrap();
-                }
-                "channel_mismatch" => channel[0] ^= 1,
-                "other_variant" => {
-                    body = postcard::to_stdvec(
-                        &neighbour_wire::NeighbourMsg::PersonalContinuityRequest {
-                            user_public_key: fixture.source.peer.user_public_key,
-                            requester: 7,
-                        },
-                    )
-                    .unwrap();
-                }
-                "signed_shell" => {
-                    channel = signed_channel;
-                    body = signed_body.clone();
-                }
-                "no_source" | "outer_trailing" => {}
-                _ => unreachable!(),
-            }
-            let authenticated = case != "no_source";
-            for (time, expected_delivery) in [(1, true), (2, false), (3, true), (4, false)] {
-                if time == 3 {
-                    fixture
-                        .workspace
-                        .lock()
-                        .await
-                        .request_checkpoint(&fixture.recipient.device_public_key);
-                }
-                let mut frame = fixture.checkpoint_frame(time, channel, body.clone());
-                if case == "outer_trailing" {
-                    let Envelope::Delta { delta, .. } = &mut frame else {
-                        unreachable!()
-                    };
-                    delta.push(0);
-                }
-                fixture
-                    .publish_checkpoint_frame(frame.clone(), prefix, authenticated)
+    (channel, body)
+}
+
+/// One test per case: each publishes four checkpoints, whose barriers take
+/// seconds on a busy CI disk, so one test looping over every case took
+/// minutes alone.
+macro_rules! nonmatching_checkpoint_cases {
+    ($($name:ident: $prefix:literal, $case:literal;)*) => {
+        mod personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates {
+            $(
+                #[tokio::test]
+                async fn $name() {
+                    Box::pin(super::nonmatching_checkpoint_keeps_once_and_rearms_gates(
+                        $prefix, $case,
+                    ))
                     .await;
-                if expected_delivery {
-                    assert!(
-                        !fixture.recipient_rx.is_empty(),
-                        "{case} checkpoint not delivered (prefix={prefix}, time={time})"
-                    );
-                    fixture.assert_checkpoint_written(&frame).await;
-                } else {
-                    assert!(
-                        fixture.recipient_rx.try_recv().is_err(),
-                        "{case} bypassed checkpoint gate (prefix={prefix})"
-                    );
                 }
-                assert!(
-                    !fixture
-                        .workspace
-                        .lock()
-                        .await
-                        .needs_checkpoint(&fixture.recipient.device_public_key, &channel),
-                    "{case} did not mark generic checkpoint served"
-                );
-            }
-            assert!(fixture.recipient_disconnected.try_recv().is_err());
+            )*
         }
-    }
+    };
+}
+
+// Prefix admission already requires a complete wrapper and a StateSource:
+// `no_source` and `outer_trailing` exercise those generic fallbacks on serial
+// ingress only.
+nonmatching_checkpoint_cases! {
+    serial_opaque: false, "opaque";
+    serial_unknown: false, "unknown";
+    serial_malformed: false, "malformed";
+    serial_trailing: false, "trailing";
+    serial_outer_trailing: false, "outer_trailing";
+    serial_foreign_root: false, "foreign_root";
+    serial_channel_mismatch: false, "channel_mismatch";
+    serial_other_variant: false, "other_variant";
+    serial_signed_shell: false, "signed_shell";
+    serial_no_source: false, "no_source";
+    prefix_opaque: true, "opaque";
+    prefix_unknown: true, "unknown";
+    prefix_malformed: true, "malformed";
+    prefix_trailing: true, "trailing";
+    prefix_foreign_root: true, "foreign_root";
+    prefix_channel_mismatch: true, "channel_mismatch";
+    prefix_other_variant: true, "other_variant";
+    prefix_signed_shell: true, "signed_shell";
 }
 
 #[tokio::test]
@@ -2169,11 +2202,29 @@ impl Fixture {
         &self,
     ) -> Result<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>), PeerError> {
         let (state_tx, _state_rx) = mpsc::channel(32);
-        let session = SessionCtx {
+        let session = self.recipient_session(&state_tx);
+        let mut replay = None;
+        handle_subscribe(
+            &self.recipient,
+            &session,
+            &mut Vec::new(),
+            &mut replay,
+            self.store.workspace_id(),
+            Subscription::Whole,
+        )
+        .await?;
+        replay.ok_or_else(|| PeerError::Protocol("subscribe produced no replay".into()))
+    }
+
+    fn recipient_session<'a>(
+        &'a self,
+        state_tx: &'a mpsc::Sender<StateDelivery>,
+    ) -> SessionCtx<'a> {
+        SessionCtx {
             workspaces: &self.registry,
             autobind: None,
             outbound: &self.recipient_tx,
-            state_outbound: Some(&state_tx),
+            state_outbound: Some(state_tx),
             connection_live: None,
             own_user_public_key: &self.source.own_user,
             own_device_cert: &self.source.peer.cert,
@@ -2192,22 +2243,55 @@ impl Fixture {
             member_limits: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
-        };
-        let mut replay = None;
-        handle_subscribe(
-            &self.recipient,
-            &session,
-            &mut Vec::new(),
-            &mut replay,
-            self.store.workspace_id(),
-            Subscription::Whole,
-        )
-        .await?;
-        replay.ok_or_else(|| PeerError::Protocol("subscribe produced no replay".into()))
+        }
     }
 
     async fn subscribe_ticket(&self) -> (u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>) {
         self.subscribe_result().await.unwrap()
+    }
+}
+
+/// A newer connection of the same device (a page that reconnected, a second
+/// tab) taking the slot ends the older session as the handover it is, not as
+/// a protocol failure; a device the room no longer lets in ends as the
+/// authorization change it is, replaced or not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_replaced_session_ends_as_superseded_unless_its_device_lost_the_room() {
+    for revoked in [false, true] {
+        let fixture = Fixture::new();
+        let device = fixture.recipient.device_public_key;
+        let (replacement, _receiver) = mpsc::channel(32);
+        fixture.workspace.lock().await.add_subscriber(Subscriber {
+            device_public_key: device,
+            role: PeerRole::Device,
+            tx: replacement,
+            disconnect: fixture.recipient_disconnect.clone(),
+        });
+        if revoked {
+            fixture.revoke(device);
+        }
+        let (state_tx, _state_rx) = mpsc::channel(32);
+        let session = fixture.recipient_session(&state_tx);
+        let error = audit_subscriber_access(
+            &fixture.recipient,
+            &session,
+            &[fixture.store.workspace_id()],
+        )
+        .await
+        .unwrap_err();
+        let lost = lost_session(
+            &*fixture.workspace.lock().await,
+            &fixture.recipient,
+            &session,
+            RoomOperation::State,
+        );
+        if revoked {
+            assert!(matches!(error, PeerError::Protocol(_)), "{error}");
+            assert!(matches!(lost, PeerError::Protocol(_)), "{lost}");
+        } else {
+            assert!(matches!(error, PeerError::Superseded), "{error}");
+            assert!(matches!(lost, PeerError::Superseded), "{lost}");
+        }
     }
 }
 
@@ -2987,6 +3071,81 @@ async fn cancelled_before_pending_catchup_preserves_semantic_update_for_reconnec
     );
 }
 
+/// A catch-up that replays only the commits it held unlinks nothing from
+/// the device's queue: it writes `Ready` without a cleanup turn of the
+/// owner, and its held commits are gone once it is written.
+#[tokio::test]
+async fn catch_up_of_held_commits_alone_takes_no_cleanup_turn() {
+    let fixture = Arc::new(Fixture::new());
+    fixture.enqueue(1).await;
+    fixture.drained_wait().await;
+    let root = fixture.store.root().to_path_buf();
+    let (prepare_release, prepare_reached) =
+        crate::store::test_barrier::install(&root, "replay-manifest-prepare");
+    let replaying = fixture.clone();
+    let mut task = tokio::spawn(async move {
+        let mut wire = Vec::new();
+        Box::pin(replaying.replay_to(&mut wire))
+            .await
+            .map(|()| wire)
+    });
+    prepare_reached.await.unwrap();
+    fixture.enqueue(2).await;
+    fixture.drained_wait().await;
+    assert_eq!(
+        fixture.count_held(),
+        1,
+        "the commit made during the replay was not held for its catch-up"
+    );
+    // The first replay's cleanup, in the turn that cuts the catch-up.
+    let (boundary_release, boundary_reached) =
+        crate::store::test_barrier::install(&root, "replay-cleanup");
+    drop(prepare_release);
+    boundary_reached.await.unwrap();
+    // Any cleanup after it is the catch-up's own turn.
+    let (_catch_up_release, catch_up_cleanup) =
+        crate::store::test_barrier::install(&root, "replay-cleanup");
+    drop(boundary_release);
+    let wire = tokio::select! {
+        result = &mut task => result.unwrap().unwrap(),
+        _ = catch_up_cleanup => panic!("a catch-up of held commits alone took a cleanup turn"),
+    };
+    let mut reader = tilo_delivery_protocol::transport_v2::SessionReader::new(wire.as_slice());
+    let mut deltas = Vec::new();
+    let ready = loop {
+        match reader.read_next().await.unwrap() {
+            Some(EnvelopeV2::State(envelope @ Envelope::Delta { .. })) => deltas.push(envelope),
+            Some(EnvelopeV2::State(Envelope::Ready { pending_deltas, .. })) => {
+                break pending_deltas;
+            }
+            frame => panic!("unexpected replay frame: {frame:?}"),
+        }
+    };
+    for kind in [1, 2] {
+        assert_eq!(
+            deltas
+                .iter()
+                .filter(|envelope| **envelope == fixture.envelope(kind))
+                .count(),
+            1,
+            "commit {kind} was not replayed exactly once"
+        );
+    }
+    assert_eq!(ready as usize, deltas.len());
+    assert_eq!(
+        fixture.count_held(),
+        0,
+        "the written catch-up left its held commits"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .count_pending(&fixture.recipient.device_public_key)
+            .unwrap(),
+        0
+    );
+}
+
 #[tokio::test]
 async fn replay_boundary_cross_workspace_full_live_queue_fences_exact_session() {
     let mut fixture = Fixture::with_delivery_capacity(1);
@@ -3490,15 +3649,18 @@ async fn interrupted_second_batch_preserves_entire_replay_until_reconnect() {
 #[tokio::test]
 async fn dropped_ticket_reclaims_without_abort_admission_on_full_owner_queue() {
     let fixture = Fixture::new();
-    for i in 0..257 {
-        fixture
-            .store
-            .enqueue_pending(
-                &fixture.recipient.device_public_key,
-                i,
-                &crate::transport::encode(&fixture.envelope(0)).unwrap(),
-            )
-            .unwrap();
+    // The first delta is queued through the store, which provisions the
+    // queue; the rest are written beside it as `enqueue_pending` leaves them,
+    // without its barriers, which on a busy CI disk took most of a minute.
+    let frame = crate::transport::encode(&fixture.envelope(0)).unwrap();
+    let first = fixture
+        .store
+        .enqueue_pending(&fixture.recipient.device_public_key, 0, &frame)
+        .unwrap();
+    let queue = first.parent().unwrap();
+    let digest = blake3::hash(&frame).to_hex();
+    for i in 1..257_u64 {
+        std::fs::write(queue.join(format!("{i:016x}-{digest}.delta")), &frame).unwrap();
     }
     let (_, ticket, _, _) = fixture.subscribe_ticket().await;
     let owner = crate::persistence::handle(&fixture.workspace).await;

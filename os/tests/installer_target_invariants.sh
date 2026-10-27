@@ -25,7 +25,6 @@ secret_policy="$repo_root/os/usr/libexec/tilo-startup-secret-policy"
 prediction_signer="$repo_root/os/dev/sign-target-prediction.sh"
 # shellcheck source=lib/containerfile.sh
 . "$repo_root/os/tests/lib/containerfile.sh"
-os_image_workflow="$repo_root/.forgejo/workflows/build-image.yml"
 fail=0
 
 ok() { printf 'ok    %s\n' "$*"; }
@@ -234,10 +233,14 @@ else
 fi
 
 # The backend resolves its update origin with the compiled hardware-profile
-# reader; the fixture runs this checkout's build of it.
-cargo build --quiet --manifest-path "$repo_root/Cargo.toml" -p tilo-board-successor \
-  || bad "could not build tilo-board-successor"
-board_successor="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-board-successor"
+# reader; the fixture runs this checkout's build of it, or the one
+# TILO_BOARD_SUCCESSOR_BIN names.
+board_successor="${TILO_BOARD_SUCCESSOR_BIN:-}"
+if [ -z "$board_successor" ]; then
+  cargo build --quiet --manifest-path "$repo_root/Cargo.toml" -p tilo-board-successor \
+    || bad "could not build tilo-board-successor"
+  board_successor="${CARGO_TARGET_DIR:-$repo_root/target}/debug/tilo-board-successor"
+fi
 
 installer_identity_fixture() (
   id() { printf 0; }
@@ -291,6 +294,20 @@ else
   bad "native Tilo installer can bypass encryption or the startup secret"
 fi
 
+# Unattended credentials cross the privileged boundary as private stdin, and
+# an explicit passphrase plan cannot silently turn into a TPM keyslot.
+if grep -Fq -- '--password-hash' "$backend" \
+   && grep -Fq 'PASSWORD_IS_HASH=1' "$backend" \
+   && grep -Fq 'valid_sha512_crypt' "$backend" \
+   && grep -Fq -- '--startup-passphrase-only' "$backend" \
+   && grep -Fq 'FORCE_PASSPHRASE=0' "$backend" \
+   && [ "$(grep -c 'FORCE_PASSPHRASE.*-eq 0' "$backend")" -ge 2 ] \
+   && ! grep -Fq 'PASSWORD_IS_HASH=1' <(grep -F 'argv' "$backend" || true); then
+  ok "unattended credentials use stdin and an explicit passphrase plan cannot become a TPM slot"
+else
+  bad "unattended credential transport or explicit startup-secret mode regressed"
+fi
+
 if [ -x "$secret_policy" ] \
    && printf '%s\n' 'correct horse battery' | "$secret_policy" \
    && printf '%s\n' '12345678901234567890' | "$secret_policy" \
@@ -326,23 +343,16 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq '"$signer" sign-efi' "$prediction_signer" \
    && grep -Fq '"$signer" export-efi-cert' "$prediction_signer" \
    && grep -Fq 'TILO_EFI_SIGNING_CERT_SHA256' "$prediction_signer" \
-   && grep -Fq 'verify-efi /work/efi-signing.crt' "$prediction_signer" \
+   && grep -Fq 'image_crypto verify-efi "$work/efi-signing.crt"' "$prediction_signer" \
    && grep -Fq 'verify-authenticode-envelope.py' "$prediction_signer" \
-   && grep -Fq 'sign-sha256-rsa-pkcs1 "$work/target.efi" "$prediction.uki.sig"' "$prediction_signer" \
+   && grep -Fq '"$signer" sign-sha256-rsa-pkcs1 "$work/target.efi.signed" "$work/target.uki.sig"' "$prediction_signer" \
+   && grep -Fq 'sign-target-prediction.sh sign "$out/boot"' "$repo_root/tools/ci/publish/os-release.sh" \
    && grep -Fq 'broker signed the prediction with a key other than Tilo' "$prediction_signer" \
    && ! grep -Eq 'PRIVATE[_-]?KEY|private-key' "$prediction_signer" \
    && grep -Fq 'TILO_REQUIRE_PCR_PREDICTION' "$repo_root/os/dev/build-custom-installer.sh" \
    && grep -Fq 'sign-target-prediction.sh" "$TILO_IMAGE"' "$repo_root/os/dev/build-image.sh" \
-   && grep -Fq 'if [[ "$publish" == true ]]; then' "$os_image_workflow" \
-   && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=1' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
-   && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
-   && grep -Fq 'PROTECTED_PCR_PREDICTION_SIGNER:' "$os_image_workflow" \
-   && grep -Fq "github.event.inputs.release == 'true'" "$os_image_workflow" \
-   && ! grep -Fq 'TILO_PCR_PREDICTION_SIGNER: ${{ vars.TILO_PCR_PREDICTION_SIGNER }}' "$os_image_workflow" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-image.sh" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \
-   && grep -Fq 'sign-target-prediction.sh "$repro_image"' "$os_image_workflow" \
-   && grep -Fq 'enable-openid-connect: true' "$os_image_workflow" \
    && grep -Fq "TILO_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" \
       "$repo_root/.forgejo/workflows/release-imager.yml"; then
   ok "release prediction path uses systemd-measure and a broker signer without private-key custody"
@@ -433,9 +443,10 @@ else
   bad "first-boot password hash grammar rejects valid installer output or accepts malformed input"
 fi
 
-if ! python3 -B "$repo_root/os/tests/test_installer_firstboot_runtime.py"; then
-  bad "installer does not provision firstboot accounts on older signed targets"
-fi
+# That the installer provisions firstboot accounts on older signed targets is
+# os/tests/test_installer_firstboot_runtime.py, which copies the compiled
+# firstboot helpers into its fixture; tilo-install-helpers' native_python test
+# builds them and runs it.
 
 firstboot_unit="$repo_root/os/usr/lib/systemd/system/tilo-firstboot-user.service"
 for policy in \

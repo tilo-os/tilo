@@ -197,6 +197,7 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
     doc.put(ROOT, "title", "First note").unwrap();
     doc.commit_edit("fixture", "title");
     let bootstrap = member_peer
+        .publication_mut()
         .publish_incremental(
             OPENED,
             "",
@@ -214,6 +215,55 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
         |peer, _| first_state(peer).as_deref() == Some("First note"),
     )
     .await;
+
+    // A viewer's client that skips its own checks and writes the record
+    // anyway, as a modified page could: the relay neither keeps nor
+    // forwards the write. Another member's replica would refuse it loudly
+    // (`receive_until` unwraps every delta it applies), and only the
+    // editor's later write reaches it.
+    let viewer_session = session(&relay, &viewer, workspace).await;
+    let mut viewer_peer = replica();
+    receive_until(
+        "the viewer holds the member's first state",
+        &viewer_session,
+        &mut viewer_peer,
+        &mut Vec::new(),
+        |peer, _| first_state(peer).as_deref() == Some("First note"),
+    )
+    .await;
+    let retitle = |peer: &mut StatePeer, title: &str, key: &ed25519_dalek::SigningKey| {
+        let mut doc = AutoCommit::load(&peer.document(OPENED, "").unwrap()).unwrap();
+        let heads = doc.get_heads();
+        doc.put(ROOT, "title", title).unwrap();
+        doc.commit_edit("fixture", "title");
+        peer.publication_mut()
+            .publish_incremental(OPENED, "", doc.save_after(&heads), key, SystemTime::now())
+            .unwrap()
+    };
+    // The viewer's own replica refuses to sign the write, so the page
+    // builds it from a member's replica and signs it as the viewer.
+    let mut forged = retitle(&mut member_peer.clone(), "A viewer's note", &member.sk);
+    if let NeighbourMsg::AppDocument { peer, envelope, .. } = &mut forged {
+        *peer = tilo_peer_state::peer_handle(&viewer.device_pubkey());
+        envelope.author = collab_types::Ed25519PublicKey::from_bytes(viewer.device_pubkey());
+        envelope.seq = 1;
+        collab_types::sign_op(envelope, &viewer.sk).unwrap();
+    }
+    publish(&viewer_session, &forged);
+    // Past the time the relay takes a write in, so a forwarded forgery
+    // would arrive before the editor's write below.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let second = retitle(&mut member_peer, "Second note", &member.sk);
+    publish(&member_session, &second);
+    receive_until(
+        "another member's replica takes the editor's write and nothing of the viewer's",
+        &laptop_session,
+        &mut laptop_peer,
+        &mut Vec::new(),
+        |peer, _| first_state(peer).as_deref() == Some("Second note"),
+    )
+    .await;
+    viewer_session.close().await;
     member_session.close().await;
     let editor = subscribed(&relay, &member, workspace).await;
     let retry = outcome(ask(&editor, &host, workspace, prepare(&room.room, OPENED)).await).unwrap();

@@ -1,11 +1,15 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from hang import HANG_BOUND
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools" / "ci"))
+import t_matrix  # noqa: E402
 WRAPPER = ROOT / "tools" / "ci" / "native-mold-linker.sh"
 
 
@@ -39,7 +43,7 @@ class NativeMoldLinkerTests(unittest.TestCase):
             env=self.environment,
             text=True,
             capture_output=True,
-            timeout=5,
+            timeout=HANG_BOUND,
         )
 
     def test_native_mold_wrapper_links_only_explicit_native_targets_with_hardening(self) -> None:
@@ -114,9 +118,7 @@ class NativeMoldBuilderPolicyTests(unittest.TestCase):
             assets = (ROOT / "os" / "external-assets" / "github-assets.tsv").read_text(
                 encoding="utf-8"
             )
-            workflow = (
-                ROOT / ".forgejo" / "workflows" / "build-ci-builder.yml"
-            ).read_text(encoding="utf-8")
+            checks = {check["name"]: check for check in t_matrix.checks(ROOT)}
             self.assertNotIn("dnf install -y --setopt=install_weak_deps=False mold", recipe)
             self.assertIn("mold-source.txt", recipe)
             for architecture, checksum in (
@@ -141,7 +143,8 @@ class NativeMoldBuilderPolicyTests(unittest.TestCase):
                 "tools/ci/native-mold-linker.sh",
                 "tools/ci/verify-native-mold.sh",
             ):
-                self.assertIn(f'- "{path}"', workflow)
+                for architecture in ("x86_64", "aarch64"):
+                    self.assertIn(path, checks[f"image-ci-builder-{architecture}"]["inputs"])
             self.assertIn("bash /tmp/verify-native-mold.sh", recipe)
         with self.subTest(phase='builder makes mold the native default linker'):
             recipe = (ROOT / "os" / "Containerfile.builder").read_text(encoding="utf-8")

@@ -95,11 +95,10 @@ fn assert_xrgb_pixels_eq(actual: &[u8], expected: &[u8], label: &str) {
 
 /// A settled fixture, and the guard pinning the bar's clock while it lives: two paints
 /// compared pixel for pixel must not straddle a minute.
-fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
+pub(super) fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
     settled_builder_in(Theme::dark())
 }
 
-/// [`settled_builder`] dressed in `theme`.
 fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
     let mut clock = tilo_test_env::ScopedEnv::new();
     clock.set("TILO_CLOCK", "09:41");
@@ -135,6 +134,31 @@ fn settled_builder_in(theme: Theme) -> (PopulatedShellFixture, tilo_test_env::Sc
     (frame, clock)
 }
 
+/// Let the desk come to rest. The fixture's pointer resting in the corner
+/// reaches the desk: once it has paused there, the team glance shows,
+/// fading in (reduced motion keeps fades). Two paints a moment apart, while
+/// that pause runs out or the fade runs, catch the glance at different
+/// opacities, so a comparison of two paints waits for both.
+pub(super) fn settle_desk(frame: &mut PopulatedShellFixture) {
+    let deadline = tilo_test_env::hang_deadline();
+    let desk_pending = |frame: &PopulatedShellFixture| {
+        let now = std::time::Instant::now();
+        frame.host.desk_animating(now)
+            || frame.host.desk_wake_deadline(now).is_some_and(|due| {
+                due.saturating_duration_since(now) < std::time::Duration::from_secs(10)
+            })
+    };
+    while desk_pending(frame) || frame.needs_animation_frame() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the settled desktop kept animating"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        frame.relayout();
+        let _ = frame.paint();
+    }
+}
+
 fn assert_legacy_and_segmented_match(
     frame: &mut FrameBuilder,
     label: &str,
@@ -143,7 +167,7 @@ fn assert_legacy_and_segmented_match(
     let _ = legacy_and_segmented_pixels(frame, label, expect_quick_settings);
 }
 
-fn legacy_and_segmented_pixels(
+pub(super) fn legacy_and_segmented_pixels(
     frame: &mut FrameBuilder,
     label: &str,
     expect_quick_settings: bool,
@@ -234,6 +258,7 @@ fn paint_retained_and_compare(
 #[test]
 fn native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle() {
     let (mut frame, _clock) = settled_builder();
+    settle_desk(&mut frame);
 
     assert!(!frame.chrome().overlays.quick_settings);
     let initial_pixels = legacy_and_segmented_pixels(&mut frame, "initial desktop", false);
@@ -274,6 +299,7 @@ fn sparse_refusal_details(previous: Option<&ProducedSections>, frame: &FrameBuil
 #[test]
 fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense() {
     let (mut frame, _clock) = settled_builder();
+    settle_desk(&mut frame);
     frame.theme.tokens.elevation.floating.blur = 120.0;
     frame.theme.tokens.elevation.floating.offset_y = 40.0;
 
@@ -448,7 +474,7 @@ fn workspace_root_rebuild_frames_carry_the_new_scene() {
         !rebuilt.scene.encoding().is_empty(),
         "the rebuilt workspace root reaches the screen"
     );
-    // The rest of the switch's frame run draws the same desktop. A presenter
+    // Any frame after the switch draws the same desktop. A presenter
     // keeps every pixel it already shows, on one display or several.
     for index in 0..3 {
         let following = frame.paint_with_damage();
@@ -854,7 +880,7 @@ fn foreign_replacement_pixel_oracle(
     let mut clock = tilo_test_env::ScopedEnv::new();
     clock.set("TILO_CLOCK", "09:41");
     let surface = if imported { 8_493_104 } else { 8_493_103 };
-    let (mut fixture, size) = foreign_damage_fixture(window_width, surface);
+    let (mut fixture, size, opened) = foreign_damage_fixture(window_width, surface);
     let store = crate::shell::foreign::store();
     let mut retained = bridge();
     let mut oracle = bridge();
@@ -864,7 +890,8 @@ fn foreign_replacement_pixel_oracle(
         [255, 0, 0, 255],
         imported.then_some(&retained),
     );
-    let first = fixture.paint_with_damage();
+    // Pinned: the client answers the instant it is asked, so set-up is no slow client.
+    let first = ui::time::testing::with_monotonic_time(opened, || fixture.paint_with_damage());
     assert_eq!(
         fixture
             .last_produced_sections
@@ -953,12 +980,28 @@ fn foreign_replacement_pixel_oracle(
 fn foreign_damage_fixture(
     window_width: ui::widget::WindowWidth,
     surface: u64,
-) -> (PopulatedShellFixture, (u32, u32)) {
+) -> (PopulatedShellFixture, (u32, u32), ui::time::Instant) {
     foreign_damage_fixture_on(window_width, surface, (NATIVE_WIDTH, NATIVE_HEIGHT))
 }
 
-/// [`foreign_damage_fixture`] on a desktop of `output` pixels.
+/// [`foreign_damage_fixture`] on a desktop of `output` pixels. Also returns
+/// the instant the window was asked for, at which a test paints its first
+/// frame.
 fn foreign_damage_fixture_on(
+    window_width: ui::widget::WindowWidth,
+    surface: u64,
+    output: (u32, u32),
+) -> (PopulatedShellFixture, (u32, u32), ui::time::Instant) {
+    let opened = ui::time::now();
+    let (fixture, size) = ui::time::testing::with_monotonic_time(opened, || {
+        foreign_damage_window(window_width, surface, output)
+    });
+    (fixture, size, opened)
+}
+
+/// The window [`foreign_damage_fixture_on`] opens, asked for at the instant
+/// its caller pins.
+fn foreign_damage_window(
     window_width: ui::widget::WindowWidth,
     surface: u64,
     output: (u32, u32),
@@ -1172,7 +1215,7 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
         // frame resident while its next one arrives, and two 2x frames of a
         // taller tile cannot be stacked in it, so the new one would be
         // omitted (an atlas budget, not the damage tracking under test).
-        let (mut fixture, logical_size) = foreign_damage_fixture_on(
+        let (mut fixture, logical_size, opened) = foreign_damage_fixture_on(
             ui::widget::WindowWidth::Wide,
             surface,
             (NATIVE_WIDTH, NATIVE_HEIGHT - 32),
@@ -1188,7 +1231,8 @@ fn wide_foreign_commit_damage_tracks_exact_buffers_and_matches_dense_gpu_pixels(
             [255, 0, 0, 255],
             imported.then_some(&retained),
         );
-        let first = fixture.paint_with_damage();
+        // Pinned: the client answers the instant it is asked, so set-up is no slow client.
+        let first = ui::time::testing::with_monotonic_time(opened, || fixture.paint_with_damage());
         paint_retained_and_compare(&mut retained, &mut oracle, &first, "wide original buffer");
         let logical_rect = fixture.foreign_surface_rect(surface).unwrap();
         let placement = fixture.layout_rect_to_scene(logical_rect).unwrap();
@@ -1281,13 +1325,15 @@ fn one_line_of_client_damage_repaints_only_that_line() {
     let mut clock = tilo_test_env::ScopedEnv::new();
     clock.set("TILO_CLOCK", "09:41");
     let surface = 8_493_301;
-    let (mut fixture, size) = foreign_damage_fixture(ui::widget::WindowWidth::Narrow, surface);
+    let (mut fixture, size, opened) =
+        foreign_damage_fixture(ui::widget::WindowWidth::Narrow, surface);
     let mut retained = bridge();
     let mut oracle = bridge();
     let mut pixels = [32, 32, 32, 255].repeat(size.0 as usize * size.1 as usize);
     let store = crate::shell::foreign::store();
     store.publish_rgba(surface, &pixels, size.0, size.1);
-    let first = fixture.paint_with_damage();
+    // Pinned: the client answers the instant it is asked, so set-up is no slow client.
+    let first = ui::time::testing::with_monotonic_time(opened, || fixture.paint_with_damage());
     paint_retained_and_compare(&mut retained, &mut oracle, &first, "the empty grid");
     // One line of a text grid, 20 buffer rows, across the whole buffer.
     let line = Rect::new(0.0, 100.0, f64::from(size.0), 120.0);
@@ -1363,6 +1409,10 @@ fn one_line_of_client_damage_repaints_only_that_line() {
     );
     store.forget(surface);
 }
+
+#[cfg(target_os = "linux")]
+#[path = "frame_offscreen_damage_tests.rs"]
+mod offscreen_damage_tests;
 
 #[cfg(target_os = "linux")]
 fn render_cpu(scene: &Scene, (width, height): (u32, u32)) -> Vec<u8> {
@@ -1482,7 +1532,7 @@ fn acknowledge_notes_saves_of(frame: &mut PopulatedShellFixture, surfaces: usize
             .desktop
             .active_workspace()
             .expect("fixture workspace")
-            .room
+            .room()
             .to_string();
         let apps = chrome
             .hosted_inputs()
@@ -2232,7 +2282,6 @@ fn assert_pan_composites_like_full_renders(desktop: PanDesktop) {
             let full = render_whole(&mut dense, &painted.scene, painted.revision, &label);
             let apart = pixels_apart(&shown, &full, size.0);
             let max = apart.iter().map(|&(_, _, step)| step).max().unwrap_or(0);
-            // Every fourth frame, against the desktop drawn without layers.
             if step % 4 == 3 {
                 assert_nothing_lost(&mut frame, &mut dense, (&shown, &painted), size, &label);
             }
@@ -2887,7 +2936,6 @@ fn the_desktop_comes_to_rest_after_a_pan_without_a_dense_frame() {
             assert_shows_a_full_render(&layered, &mut dense, &painted, &label);
         }
         frame.host_mut().end_active_strip_pan(Instant::now(), false);
-        // What the last frame that came as layers rasterised.
         let mut last_layered = None;
         for step in 0..10 {
             frame.relayout();
@@ -2980,7 +3028,6 @@ fn assert_rests_in_screen_space(frame: &mut FrameBuilder, name: &str) {
     );
 }
 
-/// A layered pan steps by one device pixel, in layout pixels.
 #[test]
 fn layered_pans_step_by_one_device_pixel() {
     assert_eq!(pan_step(1.0), Some(1.0));
@@ -3096,7 +3143,7 @@ fn point_peer_at(frame: &mut FrameBuilder, at: (f64, f64)) {
             .workspaces
             .iter()
             .find(|workspace| workspace.id == tree.desktop.active)
-            .map(|workspace| workspace.room.to_string())
+            .map(|workspace| workspace.room().to_string())
             .expect("the fixture has an active workspace")
     };
     frame.presence.pointers.insert(
@@ -3187,9 +3234,16 @@ fn overview_fade_repaints_one_display_and_matches_dense_in_every_theme() {
             OutputGeometry::unscaled(0.0, 0.0, 1920.0, 2160.0).with_id(0),
             OutputGeometry::unscaled(1920.0, 0.0, 1920.0, 2160.0).with_id(1),
         ]);
-        frame.relayout();
-        // The fade itself is under test, not the reduced-motion snap.
+        // The fade itself is under test, not the reduced-motion snap. The
+        // overview latches its transition with the motion it was last laid
+        // out for, so motion is restored before that layout.
         frame.theme.reduce_motion = false;
+        frame.relayout();
+        // The fixture's pointer rests in the second display's corner, which
+        // brings the desk's team glance in a moment later: let it arrive
+        // first, so the frames before the chord are settled and the fade is
+        // the only thing that moves.
+        settle_desk(&mut frame);
         let mut frames = vec![frame.paint_with_damage(), frame.paint_with_damage()];
         frame.with_chrome(|chrome| {
             chrome.overlays.overview = true;
@@ -3386,7 +3440,6 @@ fn part_refusals(previous: Option<&ProducedSections>, frame: &FrameBuilder) -> S
                 }));
             }
         }
-        // And which named widgets are there.
         let names = bounds.map_or_else(Vec::new, |(x0, y0, x1, y1)| {
             let px = |value: usize| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
             let changed = Rect::new(px(x0), px(y0), px(x1) + 1.0, px(y1) + 1.0);
@@ -3631,7 +3684,7 @@ fn settle_notes(frame: &mut FrameBuilder) {
             .desktop
             .active_workspace()
             .expect("fixture workspace")
-            .room
+            .room()
             .to_string();
         let apps = chrome
             .hosted_inputs()
@@ -3887,7 +3940,11 @@ fn a_blurred_surface_joins_only_the_damage_its_blur_can_see() {
 /// rail, and shows what a dense render shows, in every theme.
 #[cfg(target_os = "linux")]
 #[test]
-fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
+fn moving_to_another_strip_shows_the_whole_other_screen() {
+    // Each strip is a full-height screen ("Strip two is a full other
+    // screen, not just halving the vertical space", 2026-10-21): moving to
+    // another strip replaces the whole work area. The frame that shows it
+    // must be exactly what a dense render of it shows.
     let mut oracle = ChangeOracle::new();
     for (name, theme) in THEMES {
         let mut clock = tilo_test_env::ScopedEnv::new();
@@ -3901,26 +3958,31 @@ fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
             frame.relayout();
             let _ = frame.paint_with_damage();
         }
-        // The six Notes windows' startup writes, acknowledged before the
-        // move: Saving turning Saved is not what the move repaints.
         acknowledge_notes_saves_of(&mut frame, 6);
         frame.relayout();
         let _ = frame.paint_with_damage();
         for (direction, way) in [(1, "down"), (-1, "up")] {
             let label = format!("moving {way} a strip, {name}");
-            // Two windows' edges (their corners and thin bands along their
-            // sides, in 16-pixel tiles), the ribbon and the rail: 5.2-6.2 %
-            // of a 4K output. Edge bands as deep as the corners made it
-            // about 7.6 % (strip_pan_bench), and the whole stretch between
-            // the ribbon and the rail was another 26 %.
-            let damage =
-                assert_change_repaints_under(&mut frame, &mut oracle, &label, 7, |frame| {
-                    let mut moved = false;
-                    frame.with_chrome(|chrome| moved = chrome.switch_strip(direction));
-                    assert!(moved, "{label}: the desktop has another strip to move to");
-                    frame.relayout();
-                });
-            eprintln!("{label}: damage {damage:?}");
+            oracle.retained.forget_retained_for_test();
+            let settled = frame.paint_with_damage();
+            paint_retained_and_compare(
+                &mut oracle.retained,
+                &mut oracle.dense,
+                &settled,
+                &format!("{label}: before"),
+            );
+            let mut moved = false;
+            frame.with_chrome(|chrome| moved = chrome.switch_strip(direction));
+            assert!(moved, "{label}: the desktop has another strip to move to");
+            frame.relayout();
+            let changed = frame.paint_with_damage();
+            paint_retained_and_compare(&mut oracle.retained, &mut oracle.dense, &changed, &label);
+            let pixels = raster_pixels(&changed);
+            let output = u64::from(NATIVE_WIDTH) * u64::from(NATIVE_HEIGHT);
+            assert!(
+                pixels * 2 > output,
+                "{label}: the whole work area shows the other strip, repainted {pixels} of {output}"
+            );
         }
     }
 }
@@ -3928,3 +3990,6 @@ fn moving_to_another_strip_repaints_the_focus_and_the_strip_chrome() {
 #[cfg(target_os = "linux")]
 #[path = "frame_scroll_copy_tests.rs"]
 mod scroll_copy;
+
+#[path = "frame_modal_paint_tests.rs"]
+mod modal_paint;

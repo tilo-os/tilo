@@ -1,4 +1,3 @@
-//! UI fixture entry point for the separately linked native qualification tests.
 #[test]
 fn native_fixture() {
     if std::env::var("TILO_IMAGER_FRONTEND_FIXTURE").as_deref() != Ok("1") {

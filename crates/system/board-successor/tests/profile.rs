@@ -247,12 +247,70 @@ fn profile_inputs_must_be_trusted_paths() {
 
 #[test]
 fn shipped_definitions_validate() {
-    for name in ["lenovo-83ed", "orangepi-3b-v2-1"] {
-        assert!(validate_definition(shipped(name)).is_ok(), "{name}");
+    for name in shipped_names() {
+        assert!(validate_definition(shipped(&name)).is_ok(), "{name}");
     }
     let minimal = json!({"schema_version": 1, "id": "board", "architecture": "x86_64",
                          "devicetree": null, "firmware": {}});
     assert!(validate_definition(minimal).is_ok());
+}
+
+/// Every definition the image ships, found rather than listed, so a board
+/// added to `os/hardware/profiles` is validated without a second edit here.
+fn shipped_names() -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(PROFILES)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "json"))
+        .map(|path| path.file_stem().unwrap().to_str().unwrap().to_owned())
+        .collect();
+    names.sort();
+    assert!(!names.is_empty(), "no shipped definitions were found");
+    names
+}
+
+/// A firmware-described board watches its own DMI identity: the quirk a
+/// definition writes names a model, and a model without a device tree has no
+/// other name to be confined by.
+#[test]
+fn a_firmware_described_board_is_confined_by_its_dmi_identity() {
+    let keyboard = json!({"name": "AT Translated Set 2 keyboard", "bus": "i2c",
+                          "vendor": "0001", "product": "0001", "devicetree_compatible": null});
+    let board = json!({"schema_version": 2, "id": "handheld-board", "architecture": "x86_64",
+                       "devicetree": null, "system_firmware": [], "firmware": {},
+                       "crash_record": {"storage": "efi-variable", "watchdog": "none",
+                                        "lockup": "none"},
+                       "dmi": {"sys_vendor": "Valve", "product_name": "Jupiter"},
+                       "internal_keyboards": [keyboard]});
+    assert!(validate_definition(board.clone()).is_ok());
+    for (label, mutate) in [
+        ("a compatible on a board without a device tree", 0),
+        ("a DMI identity beside a device tree", 1),
+        ("a DMI identity missing a field", 2),
+        ("a DMI identity with an unknown field", 3),
+        ("a DMI value holding the modalias separator", 4),
+        ("a DMI value that is not text", 5),
+        ("internal keyboards with no identity to confine them", 6),
+    ] {
+        let mut refused = board.clone();
+        match mutate {
+            0 => refused["internal_keyboards"][0]["devicetree_compatible"] = json!("valve,jupiter"),
+            1 => refused["devicetree"] = json!("qcom/board.dtb"),
+            2 => {
+                refused["dmi"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("product_name");
+            }
+            3 => refused["dmi"]["board_name"] = json!("Jupiter"),
+            4 => refused["dmi"]["product_name"] = json!("Jup:iter"),
+            5 => refused["dmi"]["sys_vendor"] = json!(7),
+            _ => {
+                refused.as_object_mut().unwrap().remove("dmi");
+            }
+        }
+        assert!(validate_definition(refused).is_err(), "{label}");
+    }
 }
 
 #[test]
@@ -298,6 +356,31 @@ fn definition_mutations_are_refused() {
             json!([{"name": "kb", "bus": "i2c", "vendor": "048d",
                                         "product": "8987", "devicetree_compatible": "lenovo,yoga"}]),
         ),
+        (
+            "crash_record",
+            json!({"storage": "ramoops", "watchdog": "hardware"}),
+        ),
+        (
+            "dmi",
+            json!({"sys_vendor": "Valve", "product_name": "Jupiter"}),
+        ),
+        (
+            "crash_record",
+            json!({"storage": "flash", "watchdog": "hardware", "lockup": "buddy"}),
+        ),
+        (
+            "crash_record",
+            json!({"storage": "ramoops", "watchdog": "none", "lockup": "buddy"}),
+        ),
+        (
+            "crash_record",
+            json!({"storage": "ramoops", "watchdog": "hardware", "lockup": "none"}),
+        ),
+        (
+            "crash_record",
+            json!({"storage": "ramoops", "watchdog": "hardware", "lockup": "buddy",
+                   "pstore_path": "/sys/fs/pstore"}),
+        ),
         ("unknown", json!(1)),
     ];
     for (key, value) in mutations {
@@ -323,6 +406,65 @@ fn definition_mutations_are_refused() {
     assert!(
         validate_definition(schema1).is_err(),
         "schema 1 has no optional fields"
+    );
+}
+
+#[test]
+fn every_board_declares_a_crash_record_its_kernel_arguments_keep() {
+    let lenovo = shipped("lenovo-83ed");
+    let record = &lenovo["crash_record"];
+    assert_eq!(record["storage"], json!("ramoops"));
+    assert_eq!(record["watchdog"], json!("hardware"));
+    assert_eq!(record["lockup"], json!("buddy"));
+    // The Orange Pi 3B's command line reserves no memory for a record, feeds
+    // no watchdog and panics from no detector, and its definition says so
+    // rather than leaving it out.
+    let orangepi = shipped("orangepi-3b-v2-1");
+    assert_eq!(orangepi["crash_record"]["storage"], json!("none"));
+    assert_eq!(orangepi["crash_record"]["watchdog"], json!("none"));
+    assert_eq!(orangepi["crash_record"]["lockup"], json!("none"));
+    // A board without a device tree cannot claim reserved memory.
+    let mut ramoops = json!({"schema_version": 2, "id": "board", "architecture": "x86_64",
+                            "devicetree": null, "firmware": {}, "system_firmware": [],
+                            "kernel_args": ["nowayout=1"],
+                            "crash_record": {"storage": "ramoops", "watchdog": "hardware",
+                                            "lockup": "none"}});
+    assert!(
+        validate_definition(ramoops.clone()).is_err(),
+        "ramoops needs a device tree"
+    );
+    // UEFI machines keep the record in firmware variables instead.
+    ramoops["crash_record"]["storage"] = json!("efi-variable");
+    assert!(validate_definition(ramoops.clone()).is_ok());
+    // A watchdog driver has to reach the initramfs to be fed from boot.
+    ramoops["crash_record"]["watchdog"] = json!("module");
+    assert!(
+        validate_definition(ramoops.clone()).is_err(),
+        "no watchdog module"
+    );
+    ramoops["boot_modules"] = json!(["dw_wdt"]);
+    assert!(validate_definition(ramoops.clone()).is_ok());
+    // Claiming a watchdog requires the argument that feeds it.
+    ramoops["kernel_args"] = json!([]);
+    assert!(
+        validate_definition(ramoops.clone()).is_err(),
+        "unfed watchdog"
+    );
+    ramoops["crash_record"]["watchdog"] = json!("none");
+    assert!(validate_definition(ramoops.clone()).is_ok());
+    // A board whose detector only reports cannot claim it panics.
+    ramoops["crash_record"]["lockup"] = json!("nmi");
+    assert!(
+        validate_definition(ramoops.clone()).is_err(),
+        "no panicking detector"
+    );
+    ramoops["kernel_args"] = json!(["softlockup_panic=1"]);
+    assert!(validate_definition(ramoops.clone()).is_ok());
+    // Nor may it leave out a detector its command line already panics from.
+    ramoops["crash_record"]["lockup"] = json!("none");
+    assert!(
+        validate_definition(ramoops).is_err(),
+        "a panicking command line"
     );
 }
 
@@ -651,7 +793,7 @@ fn an_install_records_the_profile_origin_or_a_validated_override() {
 #[test]
 fn the_installer_command_prints_the_origin_of_the_running_image() {
     let run = |override_ref: &str| {
-        std::process::Command::new(env!("CARGO_BIN_EXE_tilo-board-successor"))
+        std::process::Command::new(tilo_test_env::package_binary!("tilo-board-successor"))
             .args(["install-update-origin", override_ref])
             .output()
             .unwrap()

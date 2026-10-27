@@ -127,7 +127,6 @@ impl Document {
         }
     }
 
-    /// The node's text when it is a text node.
     pub fn text_node(&self, id: NodeId) -> Option<&str> {
         match &self.nodes.get(id)?.kind {
             Kind::Text(text) => Some(text),
@@ -749,7 +748,6 @@ impl Selector {
         Ok(Self(list))
     }
 
-    /// Whether the element `id` matches.
     pub fn matches(&self, doc: &Document, id: NodeId) -> bool {
         self.0.iter().any(|c| c.matches(doc, id))
     }

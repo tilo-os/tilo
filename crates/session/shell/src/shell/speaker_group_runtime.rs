@@ -35,7 +35,10 @@ use crate::shell::speaker_group::{
     SpeakerRole, SpeakerTrim,
 };
 
+mod endpoints;
 mod listening;
+
+use endpoints::local_endpoints;
 pub use listening::{ListenerCandidate, ListenerState};
 
 /// How long an unanswered join prompt stays on the member device.
@@ -46,9 +49,6 @@ const INVITE_RETRY: Duration = Duration::from_secs(30);
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Upper bound on concurrent sessions in either direction.
 pub const MAX_SPEAKER_SESSIONS: usize = 4;
-/// How stale the published endpoint list may get before it is re-enumerated
-/// off the calling thread.
-const ENDPOINT_REFRESH: Duration = Duration::from_secs(5);
 
 /// One fabric action to send to one exact device.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +72,8 @@ pub enum GroupAudioSource {
     PickerToken(u64),
     /// A local media session, by its logical id.
     MediaSession(String),
+    /// Everything this device plays: the group is its output.
+    System,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,11 +229,6 @@ impl SpeakerGroupCore {
     }
 
     /// Create a group this device leads and invite its remote members.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the name or member set is invalid, a member is
-    /// not a certified device that can join, or too many groups exist.
     pub fn create_group(
         &mut self,
         fabric: &DeviceFabric,
@@ -259,10 +256,6 @@ impl SpeakerGroupCore {
     /// Replace the name and members of a group this device leads. Members
     /// keep their calibration while their output and role stay the same;
     /// removed members are told to leave, changed ones are asked again.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message for an unknown group or an inadmissible member set.
     pub fn update_group(
         &mut self,
         fabric: &DeviceFabric,
@@ -311,11 +304,6 @@ impl SpeakerGroupCore {
 
     /// Replace the calibration trims of a led group, member by member. The
     /// member set is unchanged, so no consent is asked again.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the group is unknown, a trim names no member,
-    /// or a trim is out of bounds.
     pub fn set_trims(
         &mut self,
         id: SpeakerGroupId,
@@ -343,10 +331,6 @@ impl SpeakerGroupCore {
     }
 
     /// Delete a group this device leads and release every member.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message for an unknown group.
     pub fn delete_group(&mut self, id: SpeakerGroupId) -> Result<Vec<Egress>, String> {
         let groups = self.groups_mut();
         let index = groups
@@ -425,11 +409,6 @@ impl SpeakerGroupCore {
     }
 
     /// Resolve a join prompt on this device.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the prompt expired or no longer matches the
-    /// group as its leader publishes it.
     pub fn resolve_consent(
         &mut self,
         fabric: &DeviceFabric,
@@ -472,10 +451,6 @@ impl SpeakerGroupCore {
     }
 
     /// Withdraw this device's consent to a group led elsewhere.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when this device is not in that group.
     pub fn leave(&mut self, group_id: SpeakerGroupId) -> Result<Vec<Egress>, String> {
         let memberships = self.memberships_mut();
         let index = memberships
@@ -492,11 +467,6 @@ impl SpeakerGroupCore {
     }
 
     /// Start playing `source` to a group from this device.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the group is unknown, no member is ready, or
-    /// too many sessions are active.
     pub fn start_session(
         &mut self,
         fabric: &DeviceFabric,
@@ -566,10 +536,6 @@ impl SpeakerGroupCore {
     }
 
     /// Stop one session in either direction.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message when the session is no longer active.
     pub fn stop_session(&mut self, session_id: [u8; 16]) -> Result<Vec<Egress>, String> {
         if let Some(session) = self.outbound.remove(&session_id) {
             return Ok(stop_members(&session));
@@ -1402,7 +1368,6 @@ impl SpeakerGroupView {
 /// Which of the two consents a group's leader asks a device for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SpeakerConsentKind {
-    /// Play in the group on one of this device's outputs.
     Play,
     /// Listen with one of this device's microphones while calibrating.
     Listen,
@@ -2222,7 +2187,9 @@ fn audio_source(source: &GroupAudioSource) -> crate::shell::remote_audio::GroupR
         }
         // The media keeps decoding here, so everything this device plays is
         // what the group should hear.
-        GroupAudioSource::MediaSession(_) => crate::shell::remote_audio::GroupRouteSource::System,
+        GroupAudioSource::MediaSession(_) | GroupAudioSource::System => {
+            crate::shell::remote_audio::GroupRouteSource::System
+        }
     }
 }
 
@@ -2305,10 +2272,6 @@ fn with_core<T>(
 }
 
 /// Create a group led by this device.
-///
-/// # Errors
-///
-/// Returns a message for an invalid or inadmissible group.
 pub fn create_group(
     network: &crate::shell::network::ShellNetwork,
     name: &str,
@@ -2322,10 +2285,6 @@ pub fn create_group(
 }
 
 /// Rename or re-member a group led by this device.
-///
-/// # Errors
-///
-/// Returns a message for an unknown group or an inadmissible member set.
 pub fn update_group(
     network: &crate::shell::network::ShellNetwork,
     id: SpeakerGroupId,
@@ -2339,10 +2298,6 @@ pub fn update_group(
 }
 
 /// Store calibration trims on a group led by this device.
-///
-/// # Errors
-///
-/// Returns a message for an unknown group or member, or out-of-range trims.
 pub fn set_trims(
     network: &crate::shell::network::ShellNetwork,
     id: SpeakerGroupId,
@@ -2355,10 +2310,6 @@ pub fn set_trims(
 }
 
 /// Delete a group led by this device.
-///
-/// # Errors
-///
-/// Returns a message for an unknown group.
 pub fn delete_group(
     network: &crate::shell::network::ShellNetwork,
     id: SpeakerGroupId,
@@ -2367,10 +2318,6 @@ pub fn delete_group(
 }
 
 /// Answer a join or microphone prompt on this device.
-///
-/// # Errors
-///
-/// Returns a message for an expired or changed request.
 pub fn resolve_consent(
     network: &crate::shell::network::ShellNetwork,
     group: SpeakerGroupId,
@@ -2396,10 +2343,6 @@ pub fn resolve_consent(
 
 /// Leave a group led by another device, or stop letting it listen with
 /// this device's microphone.
-///
-/// # Errors
-///
-/// Returns a message when this device gave no such consent.
 pub fn leave_group(
     network: &crate::shell::network::ShellNetwork,
     group: SpeakerGroupId,
@@ -2433,10 +2376,6 @@ pub fn listener_candidates(
 
 /// Ask the devices of `microphones` that have not answered yet to let this
 /// device listen while calibrating `group`.
-///
-/// # Errors
-///
-/// Returns a message when the speaker runtime is unavailable.
 pub fn invite_listeners(
     network: &crate::shell::network::ShellNetwork,
     group: &SpeakerGroup,
@@ -2451,10 +2390,6 @@ pub fn invite_listeners(
 }
 
 /// Play `source` from this device to a group.
-///
-/// # Errors
-///
-/// Returns a message when the group is unavailable or no member is ready.
 pub fn start_session(
     network: &crate::shell::network::ShellNetwork,
     group: SpeakerGroupId,
@@ -2468,10 +2403,6 @@ pub fn start_session(
 }
 
 /// Stop one session in either direction.
-///
-/// # Errors
-///
-/// Returns a message when the session already ended.
 pub fn stop_session(
     network: &crate::shell::network::ShellNetwork,
     session_id: [u8; 16],
@@ -2584,49 +2515,6 @@ pub fn endpoints_from_graph(
         .filter(|endpoint| !endpoint.label.is_empty() && seen.insert(endpoint.selector))
         .take(crate::shell::speaker_group::MAX_AUDIO_ENDPOINTS)
         .collect()
-}
-
-#[derive(Default)]
-struct EndpointCache {
-    endpoints: Option<(Instant, Vec<AudioEndpoint>)>,
-    refreshing: bool,
-}
-
-fn endpoint_cache() -> &'static Mutex<EndpointCache> {
-    static CACHE: OnceLock<Mutex<EndpointCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(EndpointCache::default()))
-}
-
-/// The cached endpoint list; a stale list is refreshed on a worker thread so
-/// the compositor never waits on the audio graph.
-fn local_endpoints(local: &DeviceId, now: Instant) -> Vec<AudioEndpoint> {
-    let Ok(mut cache) = endpoint_cache().lock() else {
-        return Vec::new();
-    };
-    let stale = cache
-        .endpoints
-        .as_ref()
-        .is_none_or(|(updated, _)| now.saturating_duration_since(*updated) >= ENDPOINT_REFRESH);
-    if stale && !cache.refreshing {
-        cache.refreshing = true;
-        let local = local.clone();
-        let spawned = std::thread::Builder::new()
-            .name("speaker-endpoints".into())
-            .spawn(move || {
-                let endpoints = endpoints_from_graph(&local, &media::audio::enumerate());
-                if let Ok(mut cache) = endpoint_cache().lock() {
-                    cache.endpoints = Some((Instant::now(), endpoints));
-                    cache.refreshing = false;
-                }
-            });
-        if spawned.is_err() {
-            cache.refreshing = false;
-        }
-    }
-    cache
-        .endpoints
-        .as_ref()
-        .map_or_else(Vec::new, |(_, endpoints)| endpoints.clone())
 }
 
 #[cfg(test)]

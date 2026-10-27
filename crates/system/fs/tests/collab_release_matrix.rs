@@ -1,6 +1,8 @@
-// This executable integration-test target uses panic/unwrap as assertion
-// boundaries while driving child processes and mandatory system facilities.
-#![allow(clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    reason = "assertion boundaries while driving child processes and mandatory system facilities"
+)]
 
 use std::collections::BTreeSet;
 use std::ffi::CString;
@@ -711,7 +713,7 @@ fn shipped_daemons_partition_restart_and_converge_through_real_fuse() {
     let host_gate = host_cache.join("transport-gate.sock");
     let peer_gate = peer_cache.join("transport-gate.sock");
     let reader_gate = reader_cache.join("transport-gate.sock");
-    let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+    let binary = &tilo_test_env::package_binary!("fs");
     let seed = temp.path().join("seed");
     std::fs::create_dir(&seed).unwrap();
     std::fs::write(seed.join("seeded.txt"), b"signed-before-ticket").unwrap();
@@ -992,7 +994,7 @@ macro_rules! run_nas_replica_lifecycle_scenario {
             serde_json::to_vec(&collab_types::FsAuthority::from(caps.clone())).unwrap(),
         )
         .unwrap();
-        let binary = Path::new(env!("CARGO_BIN_EXE_fs"));
+        let binary = &tilo_test_env::package_binary!("fs");
         let owner_mount = temp.path().join("owner-mount");
         std::fs::create_dir(&owner_mount).unwrap();
         let owner_cache = temp.path().join("owner-cache");
@@ -1065,11 +1067,6 @@ macro_rules! run_nas_replica_lifecycle_scenario {
         });
         let updated_manifest = Hash::from(updated_manifest);
         let replica_workspace_cache = replica_cache.join(original.workspace_id().to_string());
-        // The replica advertises a complete generation that is exactly the
-        // namespace it holds durably, and that namespace has the change. The
-        // namespace may move on after the change first lands (the records
-        // that go with it are projected after it); the proof is for the
-        // generation the replica advertises.
         tilo_test_env::wait_for("the replica to hold the change durably", || {
             if let Some(exit) = nas.child.try_wait().unwrap() {
                 panic!(

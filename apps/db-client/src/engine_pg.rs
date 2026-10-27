@@ -442,10 +442,6 @@ pub(crate) fn pg_config(profile: &crate::model::ConnectionProfile) -> Config {
 impl PostgresEngine {
     /// Open a real connection. A refused socket or a failed auth surfaces as
     /// the driver's own error string — never a fabricated success.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if the TCP connection is refused or
-    /// authentication fails.
     pub fn connect(profile: &crate::model::ConnectionProfile) -> Result<Self, String> {
         let cfg = pg_config(profile);
         let client = cfg.connect(NoTls).map_err(|e| e.to_string())?;
@@ -458,11 +454,6 @@ impl PostgresEngine {
 
     /// Introspect every user schema (skipping `pg_catalog` /
     /// `information_schema`) into the shared [`DatabaseSchema`] shape.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if any of the underlying catalog
-    /// queries (listing schemas/tables, or a table's columns, foreign keys
-    /// or indexes) fail.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         let rows = self
             .client
@@ -644,10 +635,6 @@ impl PostgresEngine {
     /// Run a single SQL statement. Uses a prepared statement to learn column
     /// names + whether the statement returns rows, then streams bounded rows
     /// through the prepared cursor. Multiple statements are rejected.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if `sql` fails to execute, either
-    /// through the prepared-statement path.
     pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
         let trimmed = sql.trim();
         if trimmed.is_empty() {
@@ -665,7 +652,7 @@ impl PostgresEngine {
                     elapsed_ms: elapsed_ms(start),
                     rows_affected: Some(affected as i64),
                     is_select: false,
-                    truncated: false,
+                    truncation: None,
                 })
             }
             Ok(stmt) => {
@@ -679,19 +666,19 @@ impl PostgresEngine {
                     .query_raw(&stmt, std::iter::empty::<&str>())
                     .map_err(|e| e.to_string())?;
                 let mut rows = Vec::new();
-                let mut truncated = false;
+                let mut truncation: Option<crate::model::Truncation> = None;
                 let mut retained_bytes = 0usize;
                 let mut retained_cells = 0usize;
                 while let Some(row) = cursor.next().map_err(|e| e.to_string())? {
                     if rows.len() == MAX_QUERY_ROWS {
-                        truncated = true;
+                        truncation = Some(crate::model::Truncation::RowLimit);
                         break;
                     }
                     let cells = (0..row.len())
                         .map(|i| pg_stream_cell(&row, i))
                         .collect::<Result<Vec<_>, _>>()?;
                     if !can_retain_result_row(retained_bytes, retained_cells, &cells) {
-                        truncated = true;
+                        truncation = Some(crate::model::Truncation::Payload);
                         break;
                     }
                     retained_bytes += row_retained_bytes(&cells);
@@ -704,7 +691,7 @@ impl PostgresEngine {
                     elapsed_ms: elapsed_ms(start),
                     rows_affected: None,
                     is_select: true,
-                    truncated,
+                    truncation,
                 })
             }
             Err(error) => Err(format!(
@@ -891,7 +878,6 @@ mod tests {
             assert_eq!(cfg.get_ports(), &[6543]);
             assert_eq!(cfg.get_user(), Some("reader"));
             assert_eq!(cfg.get_dbname(), Some("analytics"));
-            // Host list carries the TCP host.
             assert!(
                 cfg.get_hosts()
                     .iter()

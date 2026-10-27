@@ -16,6 +16,10 @@
 //!   when dropped, including while unwinding from a failed assertion.
 //! - [`TestHome`] points `HOME` and every XDG base directory at a fresh
 //!   temporary tree.
+//! - [`Fixture`] is a temporary tree a test fills with the files, documents
+//!   and workspace it starts from, for a test that needs no environment.
+//! - [`runtime_tempdir`] is a private temporary directory with a path as
+//!   short as a real runtime directory's, for tests that bind sockets.
 //! - [`lock`] is the single process-wide lock both of them hold. Every
 //!   scope in the process is serialised on it, and it is re-entrant, so
 //!   scopes nest on one thread.
@@ -32,6 +36,45 @@
 //! - [`require_isolated_desktop`] refuses to go on when a test binary was
 //!   started outside the test environment, where it could reach the caller's
 //!   session bus, portals, media players or display.
+//! - [`package_binary!`] finds a binary of the package under test where the
+//!   test run put it, which an archived run moves away from Cargo's path.
+//! - [`in_own_process`] runs a test that changes what the whole process
+//!   sees, such as a held wall clock, in a process no other test shares.
+//! - [`scenario!`] folds a group of related tests into one test with a
+//!   labelled phase per former test, each phase in its own scope, and still
+//!   reports a failure by the case it came from.
+//!
+//! ## Scenarios
+//!
+//! A scenario is the one test a group of related tests becomes. Every case
+//! keeps its own fixture and every assertion; it is called a *phase*, and a
+//! second group of statements in the same scenario is a *step*. Both keep their
+//! own scope, so two of them may bind the same names, as two tests did:
+//!
+//! ```ignore
+//! scenario! {
+//!     fn a_saved_project_opens_as_the_same_timeline;
+//!
+//!     phase saving_writes_a_file_that_opens_back;
+//!     /// What a file is for, end to end through the app.
+//!     {
+//!         let (app, doc) = app_and_doc();
+//!         assert!(path.is_file(), "the file is on disk");
+//!     }
+//!
+//!     steps {
+//!         // Between two phases: a fixture the phases below share, run once.
+//!     }
+//! }
+//! ```
+//!
+//! [`scenario!`] writes the case function itself: a `#[test]` that runs every
+//! case in one pass, through the hook in [`scenario`]. `#[scenario]` is for a
+//! group that already has its test and only needs its cases collected. A case
+//! that fails is reported by phase, with the line inside it that raised, and
+//! the scenario's cases after it still run, so one pass shows every failure. A
+//! `#[cfg]` above the `fn` in [`scenario!`] applies to the function, as it
+//! would above any other `fn`.
 //!
 //! The lock only orders code that takes it. Code under test that reads the
 //! environment from a thread of its own is still racing any other test that
@@ -40,8 +83,12 @@
 pub mod allocation;
 mod capability;
 mod desktop;
+mod fixture;
 pub mod hang;
 pub mod idle;
+mod own_process;
+pub mod scenario;
+pub mod swtpm;
 
 pub use capability::{Capability, Probe, capability_unavailable};
 #[cfg(target_os = "linux")]
@@ -49,7 +96,9 @@ pub use capability::{bubblewrap, mount_namespace, user_namespace};
 #[cfg(unix)]
 pub use capability::{chown_to, switch_identity};
 pub use desktop::{TEST_ENVIRONMENT, desktop_isolation, require_isolated_desktop};
+pub use fixture::{Fixture, WORKSPACE_DOCUMENT};
 pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, within};
+pub use own_process::in_own_process;
 
 use std::ffi::{OsStr, OsString};
 use std::marker::PhantomData;
@@ -58,6 +107,144 @@ use std::sync::{Condvar, Mutex, PoisonError};
 use std::thread::{self, ThreadId};
 use std::{env, fs, io};
 use tilo_lock::MutexRecover as _;
+
+/// One test with a labelled case per former test.
+///
+/// Its body holds three kinds of statement. Anything else it holds — a
+/// constant, a helper, a declaration — stays exactly where it was written,
+/// ahead of the cases.
+///
+/// - `phase NAME;` — the case `NAME`, which starts here and runs the
+///   statements in the braces that follow it;
+/// - `step NAME;` — the same, kept apart for a fixture written between cases
+///   rather than a test of its own;
+/// - `steps;` — the same, named for the file it came from.
+///
+/// Each case runs in a scope of its own, so two may bind the same names as two
+/// separate tests did, and the whole scenario runs in one pass: a failure is
+/// reported by the phase it came from, and the cases after it still run.
+///
+/// ```ignore
+/// scenario! {
+///     fn a_saved_project_opens_as_the_same_timeline;
+///
+///     phase saving_writes_a_file_that_opens_back;
+///     {
+///         let (app, doc) = app_and_doc();
+///         assert!(app.save(&doc, path).is_ok(), "the file is on disk");
+///     }
+///
+///     phase an_open_is_one_undoable_action;
+///     {
+///         // A fresh fixture, as the test this came from built.
+///         let (app, doc) = app_and_doc();
+///         assert!(opened_in_one_edit(&app), "an open is one edit");
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! scenario {
+    ($(#[$meta:meta])* fn $name:ident; $($rest:tt)*) => {
+        #[test]
+        $(#[$meta])*
+        fn $name() {
+            $crate::__scenario! {
+                @cases [] @rest
+                $($rest)*
+            }
+        }
+    };
+}
+
+/// The scenario's cases so far, and the statements after them.
+///
+/// A case is buffered as its name, the `file!()` and `line!()` it is written
+/// at, and the tokens of its body — never as the expression that becomes it.
+/// A path written into a buffer with `$crate` and spliced back out is matched
+/// by this macro's `$crate`, which is the crate the case ends up in only by
+/// accident. Everything is expanded once, at the end, in the caller's file.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __scenario {
+    // A case named `NAME`, of kind `phase` or `step` (or `steps`), which runs
+    // the statements in the braces that follow it, in a closure that keeps its
+    // bindings inside — inside a scope of its own, as the test it came from
+    // had, so two cases may bind the same names.
+    //
+    // The braces are captured as tokens and become the closure's body where
+    // they were written. A `block` fragment would be checked against the
+    // closure's own context before it could be handed on, and a block checked
+    // there does not fit back into a body.
+    (
+        @cases [$($case:tt)*] @rest
+        $kind:ident $($name:ident)? ; { $($body:tt)* } $($rest:tt)*
+    ) => {
+        $crate::__scenario! {
+            @cases [
+                $($case)*
+                (
+                    $crate::__scenario_name!($kind $($name)?),
+                    ::core::concat!(::core::file!(), ":", ::core::line!()),
+                    { $($body)* }
+                )
+            ]
+            @rest $($rest)*
+        }
+    };
+
+    // Nothing left: make a phase of each case and run them together.
+    (@cases [$(($name:expr, $location:expr, $body:tt))*] @rest) => {
+        $crate::scenario::run(::std::vec![
+            $(
+                $crate::__scenario_phase!($name, $location, $body)
+            ),*
+        ])
+        .assert_green()
+    };
+}
+
+/// One buffered case, as a phase.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __scenario_phase {
+    ($name:expr, $location:expr, { $($body:tt)* }) => {
+        $crate::scenario::Phase::new($name, $location, || { $($body)* })
+    };
+}
+
+/// The name a case is reported by.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __scenario_name {
+    (phase $name:ident) => {
+        ::core::stringify!($name)
+    };
+    (step $name:ident) => {
+        ::core::stringify!($name)
+    };
+    (steps) => {
+        "steps"
+    };
+}
+
+/// A binary of the package under test, by its Cargo target name: where an
+/// archived nextest run relocated it (`NEXTEST_BIN_EXE_<name>`), else where
+/// Cargo built it (`CARGO_BIN_EXE_<name>`). A test that starts the build path
+/// directly finds nothing once the run moves its binaries.
+#[macro_export]
+macro_rules! package_binary {
+    ($name:literal) => {
+        $crate::package_binary_at($name, env!(concat!("CARGO_BIN_EXE_", $name)))
+    };
+}
+
+/// [`package_binary!`] with Cargo's path given: `NEXTEST_BIN_EXE_<name>`
+/// when the run relocated the binary, else `built_at`.
+#[must_use]
+pub fn package_binary_at(name: &str, built_at: &str) -> PathBuf {
+    env::var_os(format!("NEXTEST_BIN_EXE_{name}"))
+        .map_or_else(|| PathBuf::from(built_at), PathBuf::from)
+}
 
 struct LockState {
     owner: Option<ThreadId>,
@@ -227,6 +414,7 @@ pub struct TestHome {
     cache: PathBuf,
     runtime: PathBuf,
     root: tempfile::TempDir,
+    _runtime_root: tempfile::TempDir,
 }
 
 impl TestHome {
@@ -244,14 +432,10 @@ impl TestHome {
         let config = home.join(".config");
         let state = home.join(".local/state");
         let cache = home.join(".cache");
-        let runtime = root.path().join("runtime");
-        for dir in [&data, &config, &state, &cache, &runtime] {
+        let runtime_root = runtime_tempdir()?;
+        let runtime = runtime_root.path().to_owned();
+        for dir in [&data, &config, &state, &cache] {
             fs::create_dir_all(dir)?;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
         }
         let mut env = ScopedEnv::new();
         env.set("HOME", &home)
@@ -269,6 +453,7 @@ impl TestHome {
             cache,
             runtime,
             root,
+            _runtime_root: runtime_root,
         })
     }
 
@@ -277,7 +462,6 @@ impl TestHome {
         self.root.path()
     }
 
-    /// `$HOME`.
     pub fn home(&self) -> &Path {
         &self.home
     }
@@ -302,7 +486,7 @@ impl TestHome {
         &self.cache
     }
 
-    /// `$XDG_RUNTIME_DIR`.
+    /// `$XDG_RUNTIME_DIR`: a [`runtime_tempdir`], outside [`Self::root`].
     pub fn runtime(&self) -> &Path {
         &self.runtime
     }
@@ -311,6 +495,54 @@ impl TestHome {
     /// are undone with them.
     pub fn env(&mut self) -> &mut ScopedEnv {
         &mut self.env
+    }
+}
+
+/// The longest socket path, in bytes, a local socket address holds on every
+/// Unix Tilo runs on: `sun_path` is 104 bytes on macOS and 108 on Linux, one
+/// of them the terminating NUL.
+const LOCAL_SOCKET_PATH_MAX: usize = 103;
+
+/// Room left below a [`runtime_tempdir`] for the names tests put there (a
+/// service directory and its socket, a uuid-named socket).
+const RUNTIME_NAMES_BUDGET: usize = 64;
+
+/// A fresh private (`0700`) temporary directory whose path is short enough
+/// that sockets below it fit a local socket address, as below a real runtime
+/// directory (`/run/user/<uid>`).
+///
+/// A test that binds a socket in [`tempfile::tempdir`] inherits the length of
+/// `$TMPDIR`, which on macOS (`/var/folders/…/T/`) and on CI runners' per-job
+/// scratch directories leaves too little of the 104 bytes macOS allows. This
+/// is `$TMPDIR` when that leaves room for `RUNTIME_NAMES_BUDGET` bytes of
+/// names below it, else `/tmp`, where the directory's random name and mode
+/// keep it private like any other temporary directory.
+///
+/// # Errors
+///
+/// Returns the I/O error if the directory cannot be created.
+pub fn runtime_tempdir() -> io::Result<tempfile::TempDir> {
+    const PREFIX: &str = "tilo-rt-";
+    // `/<prefix><6 random characters>`, then the names below it.
+    const LONGEST_BASE: usize =
+        LOCAL_SOCKET_PATH_MAX - RUNTIME_NAMES_BUDGET - (1 + PREFIX.len() + 6);
+    let builder = {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(PREFIX);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o700));
+        }
+        builder
+    };
+    let temp = env::temp_dir();
+    // Code that canonicalizes a path sees macOS's `/var` as `/private/var`.
+    let resolved = fs::canonicalize(&temp).unwrap_or_else(|_| temp.clone());
+    if cfg!(unix) && resolved.as_os_str().len() > LONGEST_BASE {
+        builder.tempdir_in("/tmp")
+    } else {
+        builder.tempdir_in(temp)
     }
 }
 
@@ -358,10 +590,6 @@ impl Script {
 /// file is replaced atomically. Run the result with
 /// [`Script::exec_argv`] or [`Script::command`], not by executing `path`
 /// directly; see [`Script::exec_argv`] for why.
-///
-/// # Errors
-///
-/// Returns the I/O error from creating, writing, syncing or renaming the file.
 #[cfg(unix)]
 pub fn script(path: impl AsRef<Path>, body: &str) -> io::Result<Script> {
     use std::io::Write as _;
@@ -391,6 +619,7 @@ pub fn script(path: impl AsRef<Path>, body: &str) -> io::Result<Script> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scenario;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -399,6 +628,25 @@ mod tests {
 
     fn read(key: &str) -> Option<String> {
         env::var(key).ok()
+    }
+
+    #[test]
+    fn a_runtime_tempdir_leaves_room_for_sockets_and_is_private() {
+        let dir = runtime_tempdir().unwrap();
+        let resolved = fs::canonicalize(dir.path()).unwrap();
+        assert!(
+            resolved.as_os_str().len() + RUNTIME_NAMES_BUDGET <= LOCAL_SOCKET_PATH_MAX,
+            "{} leaves no room for a socket below it",
+            resolved.display()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+            let socket = dir.path().join(format!("{:0>48}", "s.sock"));
+            std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        }
     }
 
     /// Setting restores an absent variable to absent; set and remove restore the prior value; nested
@@ -520,27 +768,39 @@ mod tests {
         }
     }
 
-    /// Test home points every base directory into one temporary tree and restores the previous home.
     #[test]
     fn test_home_redirects_every_base_directory_and_restores_home() {
         // Phase: test_home_points_every_base_directory_into_one_temporary_tree.
         {
             let root;
+            let runtime;
             {
                 let home = TestHome::new().unwrap();
                 root = home.root().to_path_buf();
+                runtime = home.runtime().to_path_buf();
                 for (key, dir) in [
                     ("HOME", home.home()),
                     ("XDG_DATA_HOME", home.data()),
                     ("XDG_CONFIG_HOME", home.config()),
                     ("XDG_STATE_HOME", home.state()),
                     ("XDG_CACHE_HOME", home.cache()),
-                    ("XDG_RUNTIME_DIR", home.runtime()),
                 ] {
                     assert_eq!(env::var_os(key).as_deref(), Some(dir.as_os_str()), "{key}");
                     assert!(dir.is_dir(), "{key} exists");
                     assert!(dir.starts_with(&root), "{key} is inside the fixture");
                 }
+                // The runtime directory is a runtime_tempdir of its own, so
+                // its sockets fit a local socket address.
+                assert_eq!(
+                    env::var_os("XDG_RUNTIME_DIR").as_deref(),
+                    Some(runtime.as_os_str())
+                );
+                assert!(runtime.is_dir(), "XDG_RUNTIME_DIR exists");
+                assert!(
+                    fs::canonicalize(&runtime).unwrap().as_os_str().len() + RUNTIME_NAMES_BUDGET
+                        <= LOCAL_SOCKET_PATH_MAX,
+                    "XDG_RUNTIME_DIR leaves room for sockets"
+                );
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -549,6 +809,10 @@ mod tests {
                 }
             }
             assert!(!root.exists(), "the tree is removed on drop");
+            assert!(
+                !runtime.exists(),
+                "the runtime directory is removed on drop"
+            );
             let _guard = lock();
             assert!(
                 env::var_os("XDG_DATA_HOME").is_none_or(|dir| !Path::new(&dir).starts_with(&root))
@@ -636,6 +900,92 @@ mod tests {
             for handle in handles {
                 handle.join().unwrap();
             }
+        }
+    }
+    /// The cases a probe scenario ran, in order, so the test below can say
+    /// that a failure did not stop the cases after it.
+    fn note(ran: &std::sync::Mutex<Vec<&'static str>>, case: &'static str) {
+        ran.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(case);
+    }
+
+    #[test]
+    fn a_scenario_runs_every_case_in_its_own_scope_and_reports_each_by_name() {
+        let ran = std::sync::Mutex::new(Vec::new());
+        let report = scenario::run(vec![
+            scenario::Phase::new("first", "here:1", || note(&ran, "first")),
+            scenario::Phase::new("fails", "here:20", || {
+                note(&ran, "fails");
+                assert_eq!(1, 2, "a case that fails says which one");
+            }),
+            scenario::Phase::new("after_a_failure", "here:30", || {
+                note(&ran, "after_a_failure");
+            }),
+        ]);
+        assert_eq!(
+            ran.into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ["first", "fails", "after_a_failure"],
+            "a failing case does not stop the ones after it",
+        );
+        assert_eq!(report.total(), 3);
+        let failed: Vec<_> = report
+            .cases()
+            .filter(|(_, _, failure)| failure.is_some())
+            .collect();
+        assert_eq!(failed.len(), 1, "only the case that failed fails");
+        assert_eq!(failed[0].0, "fails");
+        let shown = std::panic::catch_unwind(|| report.assert_green());
+        let message = shown.expect_err("a failed case fails the scenario");
+        let message = message
+            .downcast_ref::<String>()
+            .map_or_else(String::new, Clone::clone);
+        assert!(
+            message.contains("phase `fails`") && message.contains("here:20"),
+            "the report names the case and where it starts: {message}",
+        );
+    }
+
+    #[test]
+    fn a_scenario_with_no_case_proves_nothing_and_says_so() {
+        let empty = scenario::run(Vec::new());
+        assert_eq!(empty.total(), 0);
+        assert!(
+            std::panic::catch_unwind(|| empty.assert_green()).is_err(),
+            "a scenario that ran nothing must not pass",
+        );
+    }
+
+    // A `scenario!` body collects its `phase`, `step` and `steps` statements
+    // into one test, in order, keeps a binding two phases share apart, and
+    // reads a declaration beside them without collecting it.
+    scenario! {
+        fn a_scenario_collects_phases_steps_and_declarations;
+
+        phase a_case_binds_a_name_the_next_one_binds_too;
+        {
+            const SHARED: usize = 7;
+            let value = SHARED;
+            assert_eq!(value, 7, "a declaration beside the cases is read");
+        }
+
+        step a_fixture_between_cases;
+        {
+            let shared = 1 + 1;
+            assert_eq!(shared, 2, "a step runs on its own");
+        }
+
+        steps;
+        {
+            let shared = "a name the cases also bind";
+            assert_eq!(shared.len(), 26, "a file of steps runs on its own");
+        }
+
+        phase the_last_case_runs_last;
+        {
+            let shared = [3, 1, 2];
+            assert_eq!(shared.len(), 3, "a case's bindings do not outlive it");
         }
     }
 }

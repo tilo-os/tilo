@@ -91,7 +91,7 @@ fn job(target: BuildTarget) -> BuildJob {
 }
 
 fn run(root: &Path, path: &str, job: &BuildJob) -> (JobLine, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+    let mut child = Command::new(tilo_test_env::package_binary!("tilo-vmd"))
         .args([
             "build",
             "--apply",
@@ -209,7 +209,6 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
         .unwrap();
         assert!(record["bytes"].as_u64().unwrap() > 0);
 
-        // The same build again is the same layer.
         let (again, _) = run(root.path(), &path, &shell());
         assert!(matches!(
             again.result,
@@ -217,7 +216,7 @@ fn in_vm_builds_import_layers_and_report_errors_with_hints() {
         ));
 
         // gc sees the build dir and evicts it when told to keep none.
-        let mut rpc = Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+        let mut rpc = Command::new(tilo_test_env::package_binary!("tilo-vmd"))
             .args(["rpc", "--apply", "record", "--root"])
             .arg(root.path().join("state"))
             .stdin(Stdio::piped())

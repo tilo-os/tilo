@@ -159,6 +159,64 @@ id = "add-title"
 kind = "undoable"
 params = [
   { name = "text", required = true, schema = { type = "string" } },
+  { name = "colour", required = false, schema = { type = ["string", "null"] } },
+  { name = "size", required = false, schema = { type = ["number", "null"] } },
+  { name = "align", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-title"
+kind = "undoable"
+params = [
+  { name = "media", required = true, schema = { type = "string" } },
+  { name = "text", required = false, schema = { type = ["string", "null"] } },
+  { name = "colour", required = false, schema = { type = ["string", "null"] } },
+  { name = "size", required = false, schema = { type = ["number", "null"] } },
+  { name = "align", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "add-clip"
+kind = "undoable"
+params = [
+  { name = "media", required = true, schema = { type = "string" } },
+  { name = "track", required = false, schema = { type = ["string", "null"] } },
+  { name = "at", required = false, schema = { type = ["number", "null"] } },
+  { name = "in", required = false, schema = { type = ["number", "null"] } },
+  { name = "out", required = false, schema = { type = ["number", "null"] } },
+  { name = "fade_in", required = false, schema = { type = ["number", "null"] } },
+  { name = "fade_out", required = false, schema = { type = ["number", "null"] } },
+]
+
+[[resources.verbs]]
+id = "move-clip"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "at", required = true, schema = { type = "number" } },
+  { name = "track", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "set-clip"
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "fade_in", required = false, schema = { type = ["number", "null"] } },
+  { name = "fade_out", required = false, schema = { type = ["number", "null"] } },
+  { name = "opacity", required = false, schema = { type = ["number", "null"] } },
+  { name = "volume", required = false, schema = { type = ["number", "null"] } },
+  { name = "transition", required = false, schema = { type = ["string", "null"] } },
+  { name = "transition_duration", required = false, schema = { type = ["number", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove-clip"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "clip", required = true, schema = { type = "string" } },
+  { name = "ripple", required = false, schema = { type = ["boolean", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -167,6 +225,20 @@ kind = "undoable"
 params = [
   { name = "at", required = true, schema = { type = "number" } },
   { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "place-two-angles"
+kind = "undoable"
+params = [
+  { name = "at", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "unplace-two-angles"
+kind = "undoable"
+params = [
+  { name = "at", required = true, schema = { type = "number" } },
 ]
 
 [[resources.verbs]]

@@ -126,6 +126,36 @@ else
   bad "enrol printed no recovery key — the recovery factor cannot be used"
 fi
 
+if grep -q 'tilo-startup-secret' <(cryptsetup luksDump "$IMG"); then
+  bad "a separate disk passphrase was marked as the account password"
+else
+  ok "a separate disk passphrase is not marked as the account password"
+fi
+
+printf '## the account password as the startup secret (the wizard'"'"'s one secret)\n'
+ACCOUNT_IMG="$WORK/account.luks"; ACCOUNT_KEY="$WORK/account.key"
+new_volume "$ACCOUNT_IMG" "$ACCOUNT_KEY" || { bad "could not create the account-password test volume"; exit 1; }
+if "$DISK_ENCRYPT" enrol "$ACCOUNT_IMG" --key-file "$ACCOUNT_KEY" --pin-file "$WORK/pin" \
+     --pin-is-account-password > "$WORK/account.out" 2>&1; then
+  ok "enrol --pin-is-account-password exited 0"
+else
+  bad "enrol --pin-is-account-password exited non-zero:"$'\n'"$(cat "$WORK/account.out")"
+fi
+# The token names exactly the slot the password opens, so the boot screen
+# asks for the password there and for the recovery key in its own slot.
+password_slot="$(cryptsetup open --test-passphrase --verbose --key-file "$WORK/pin" "$ACCOUNT_IMG" 2>&1 \
+  | sed -nE 's/^Key slot ([0-9]+) unlocked\.$/\1/p')"
+marked="$(cryptsetup luksDump "$ACCOUNT_IMG" | awk '
+  /^Tokens:/ { tokens = 1; next }
+  /^[^ \t]/ { tokens = 0 }
+  tokens && /^  [0-9]+: / { ours = ($2 == "tilo-startup-secret") }
+  tokens && ours && $1 == "Keyslot:" { print $2 }')"
+if [ -n "$password_slot" ] && [ "$marked" = "$password_slot" ]; then
+  ok "a tilo-startup-secret token names the account password's slot ($marked)"
+else
+  bad "expected a tilo-startup-secret token on slot ${password_slot:-?}, found '${marked}'"
+fi
+
 printf '## no passphrase (the recovery key is the boot secret)\n'
 IMG2="$WORK/rec.luks"; KEY2="$WORK/rec.key"
 new_volume "$IMG2" "$KEY2" || { bad "could not create the second test volume"; exit 1; }

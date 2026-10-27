@@ -14,10 +14,9 @@ pub const TAB_RECORD_KEY: &str = "record_id";
 
 /// The exact app a tile belongs to, as grants and launchers key it:
 /// built-in kinds by their package id, every other app by its
-/// own id. `None` for a device-local surface that belongs to no app.
+/// own id.
 pub fn canonical_app_id(tile: &TileContent) -> Option<AppId> {
     match tile {
-        TileContent::WorkspaceActivity => None,
         TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
             Some(kind.app_id())
         }
@@ -97,7 +96,7 @@ fn child(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
     doc.get(parent, key).ok().flatten().map(|(_, id)| id)
 }
 
-/// An application a desktop can open, as launchers and "Open <App>" actions
+/// An application a desktop can open, as launchers and "Open \<App\>" actions
 /// name it: its durable app id and display title.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpenableApp {

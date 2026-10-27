@@ -16,7 +16,6 @@
 )]
 
 use std::num::NonZeroU64;
-use std::time::{Duration, Instant};
 
 use automerge::legacy::{Key, ObjectId, Op, OpId, OpType, SortedVec};
 use automerge::transaction::Transactable;
@@ -188,10 +187,11 @@ fn incoming_map_patches_match_upstream() {
     }
 }
 
-/// The fastest time of taking in a change that rewrites `"desktop"`, which
-/// 20,000 changes rewrote before it, and of one that rewrites `"a"`, which
-/// sorts before it and has next to no history, into the same replica.
-fn overwrite_costs() -> (Duration, Duration) {
+/// The most doc ops taking in a change that rewrites `"desktop"`, which
+/// 20,000 changes rewrote before it, walked one by one, and the most a
+/// change that rewrites `"a"`, which sorts before it and has next to no
+/// history, walked, in the same replica.
+fn overwrite_costs() -> (u64, u64) {
     let mut source = AutoCommit::new();
     let mut change = |key: &str, i: usize| {
         let heads = source.get_heads();
@@ -205,14 +205,15 @@ fn overwrite_costs() -> (Duration, Duration) {
         .collect();
     let mut replica = AutoCommit::new();
     replica.load_incoming(&history).unwrap();
-    let (mut busy, mut fresh) = (Duration::MAX, Duration::MAX);
+    let walked = |replica: &mut AutoCommit, change: &[u8]| {
+        let before = automerge::work().walked_ops;
+        replica.load_incoming(change).unwrap();
+        automerge::work().walked_ops - before
+    };
+    let (mut busy, mut fresh) = (0, 0);
     for (desktop, a) in &probes {
-        let started = Instant::now();
-        replica.load_incoming(desktop).unwrap();
-        busy = busy.min(started.elapsed());
-        let started = Instant::now();
-        replica.load_incoming(a).unwrap();
-        fresh = fresh.min(started.elapsed());
+        busy = busy.max(walked(&mut replica, desktop));
+        fresh = fresh.max(walked(&mut replica, a));
     }
     assert_eq!(replica.save(), source.save());
     (busy, fresh)
@@ -221,12 +222,11 @@ fn overwrite_costs() -> (Duration, Duration) {
 #[test]
 fn a_map_overwrite_costs_no_more_after_a_long_history() {
     let (busy, fresh) = overwrite_costs();
-    // The two changes cost the same but for walking the 20,000 overwritten
-    // values of "desktop": about 1.7 ms in an optimised build. With debug
-    // assertions on, Automerge also re-checks the order of every op after
-    // each apply, which both pay alike.
+    // Walking the 20,000 overwritten values of "desktop" for every change
+    // cost about 1.7 ms in an optimised build; seeking, rewriting it walks no
+    // more than rewriting a key without history.
     assert!(
-        busy <= fresh * 3 / 2 + Duration::from_micros(50),
-        "rewriting a key with 20,000 changes of history took {busy:?}, one without {fresh:?}"
+        busy <= fresh * 3 / 2 + 16,
+        "rewriting a key with 20,000 changes of history walked {busy} ops, one without {fresh}"
     );
 }

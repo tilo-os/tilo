@@ -77,4 +77,5 @@ These checks record the actual inputs; they do not establish compiler lineage.
 The CRDT buffer and the source file remain distinct: the native proof checks that
 editing leaves the fixture's disk bytes unchanged. A coding check must first use
 an explicit owner-admitted export into its authorized source snapshot. This
-capability does not grant an Agent the existing device-only Save operations.
+capability does not grant an Agent the existing Save operations, outside
+effects its person's answers decide.

@@ -27,6 +27,19 @@ the corrected antialiasing changes sparse edge pixels by at most 12 channel
 steps. Only these two Linux references changed; comparison tolerances and
 retained-pan coverage remain unchanged.
 
+The current Linux references follow two intended reader changes: text is
+set ragged by default (`9d637b1ff10259070b7ba6c0596aceb55045617c`) and the
+progress slider ends in a percentage (`34b668de79b2681ba2ad3ce853129b80c20c1177`). Glyphs, formula
+structure and the page frame are unchanged; they were rendered on the
+builder image in `.config/visual-goldens-image`.
+
+The Linux math reference follows the superscript fix in the shared math
+layout: an exponent's baseline sits a fixed shift above its base's instead of
+its cell resting on the line, so `c²` and `x²` are raised, the inline formula
+sits on its sentence's baseline, and the lines after it no longer carry the
+extra ascent the old placement reserved. Nothing else moved. The Windows math
+reference predates that fix and was not re-rendered.
+
 Prewarm the ignored cache before testing offline:
 
 ```sh

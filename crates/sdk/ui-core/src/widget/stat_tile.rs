@@ -236,7 +236,7 @@ impl<'a> StatTileFace<'a> {
         h.ceil()
     }
 
-    /// Paint the tile into `rect` (its height from [`Self::measure`]).
+    /// Paint the tile into `rect` (its height from [`Self::height`]).
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -449,9 +449,15 @@ pub struct StatTile {
 
 impl StatTile {
     pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::new_owned(label.into(), value.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(label: String, value: String) -> Self {
         Self {
-            label: label.into(),
-            value: value.into(),
+            label,
+            value,
             unit: None,
             note: None,
             change: None,
@@ -605,7 +611,8 @@ impl StatTile {
 impl Widget for StatTile {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn build_layout(
@@ -692,19 +699,6 @@ impl Widget for StatTile {
 
     crate::widget::pressable!(rect);
 
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.activation.native_handlers()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.activation.start_native(op)
-    }
-
     crate::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
@@ -735,6 +729,21 @@ impl Widget for StatTile {
         let mut node = self.face().accessibility(self.rect);
         node.bounds = None;
         Some(node)
+    }
+}
+
+impl crate::widget::ResourceOperations for StatTile {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.activation.native_handlers()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.activation.start_native(op)
     }
 }
 

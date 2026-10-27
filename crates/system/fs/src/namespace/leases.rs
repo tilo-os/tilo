@@ -215,7 +215,6 @@ impl Namespace {
             .max()
     }
 
-    /// Claims the lease authority for `device`.
     pub fn put_lease_authority(&mut self, device: [u8; 32]) -> bool {
         put_value(self, AUTHORITY_KEY, &device)
     }
@@ -231,7 +230,6 @@ impl Namespace {
         put_value(self, &key, &request)
     }
 
-    /// Withdraws `device`'s request for `record`'s lease.
     pub fn remove_lease_request(&mut self, record: FileRecordId, device: [u8; 32]) {
         let key = format!("{REQUEST_PREFIX}{}/{}", record.0, hex::encode(device));
         let _ = self.doc.delete(&ROOT, key.as_str());
@@ -254,7 +252,6 @@ impl Namespace {
             .collect()
     }
 
-    /// Every lease in the namespace.
     pub fn write_leases(&self) -> Vec<(FileRecordId, WriteLease)> {
         self.doc
             .keys(&ROOT)
@@ -277,7 +274,6 @@ mod tests {
 
     #[test]
     fn lease_takes_resolve_by_epoch_grant_and_holder_with_exact_fences() {
-        // Phase `a_free_or_lapsed_lease_is_taken_with_a_new_epoch`.
         {
             let first = WriteLease::take(None, ME, 1_000, TTL).unwrap();
             assert_eq!(
@@ -302,14 +298,12 @@ mod tests {
             let handed_over = WriteLease::take(Some(released), OTHER, 45_000, TTL).unwrap();
             assert_eq!(handed_over.epoch, 2, "a released lease is a new tenancy");
         }
-        // Phase `concurrent_takes_resolve_by_epoch_then_holder_and_keep_every_tenancy`.
         {
             let mut a = Namespace::new("a").unwrap();
             let record = FileRecordId::new();
             let first = WriteLease::take(None, [5; 32], 0, TTL).unwrap();
             assert!(a.put_write_lease(record, &first));
             let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
-            // Released, then taken by both at once.
             let released = WriteLease {
                 expires_ms: 1,
                 ..first
@@ -331,7 +325,6 @@ mod tests {
                 assert_eq!(ns.lease_holder(record, 2), Some([9; 32]));
                 assert_eq!(ns.lease_holder(record, 1), Some([5; 32]));
             }
-            // A renewal racing a newer tenancy loses to it.
             let renewed = WriteLease {
                 expires_ms: 99_999,
                 ..on_b
@@ -348,7 +341,6 @@ mod tests {
             b.apply_incremental(&from_a).unwrap();
             assert_eq!(b.write_lease(record), Some(next));
         }
-        // Phase `a_granted_lease_wins_over_an_optimistic_one_of_the_same_epoch`.
         {
             let mut a = Namespace::new("a").unwrap();
             let record = FileRecordId::new();
@@ -369,7 +361,6 @@ mod tests {
                 assert_eq!(ns.lease_holder(record, 1), Some([1; 32]));
             }
         }
-        // Phase `a_version_fence_names_the_tenancy_of_exactly_that_content`.
         {
             let mut ns = Namespace::new("a").unwrap();
             let record = FileRecordId::new();
@@ -385,7 +376,6 @@ mod tests {
 
     #[test]
     fn lease_requests_and_holders_replicate_and_converge() {
-        // Phase `requests_and_the_authority_replicate`.
         {
             let mut a = Namespace::new("a").unwrap();
             let record = FileRecordId::new();
@@ -401,7 +391,6 @@ mod tests {
             a.remove_lease_request(record, [2; 32]);
             assert!(a.lease_requests().is_empty());
         }
-        // Phase `leases_replicate_and_concurrent_takes_converge_on_one_holder`.
         {
             let mut a = Namespace::new("a").unwrap();
             let record = FileRecordId::new();
@@ -416,7 +405,6 @@ mod tests {
             let mut b = Namespace::from_bytes("b", &a.save()).unwrap();
             assert_eq!(b.write_lease(record), Some(first));
 
-            // Both devices take the lapsed lease at once.
             a.put_write_lease(
                 record,
                 &WriteLease {

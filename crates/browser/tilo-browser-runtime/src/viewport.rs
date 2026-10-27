@@ -1,10 +1,19 @@
 //! Viewport work is applied by redraw, and acknowledged only after presentation.
 
-/// Widest or tallest canvas backing store the renderer draws.
-pub(crate) const MAX_SURFACE_SIDE: u32 = 4096;
-/// Pixels one frame renders: a 4K screen. A full-screen canvas on a 6K
-/// Retina display would otherwise be 20 million pixels per compute frame.
-pub(crate) const MAX_SURFACE_PIXELS: u64 = 3840 * 2160;
+/// Widest or tallest canvas backing store the renderer draws: the largest
+/// texture side WebGPU guarantees on every adapter
+/// (`maxTextureDimension2D`), and the one the device is opened with.
+pub(crate) const MAX_SURFACE_SIDE: u32 = 8192;
+/// The side of one of vello's bins, in pixels.
+const BIN_SIDE: u32 = 256;
+/// The bins vello draws in one pass: its binning stage tracks every bin of
+/// the target in one 256-wide workgroup, and a target with more is drawn
+/// with holes where the bins past them fall.
+const MAX_BINS: u32 = 256;
+/// Pixels one frame renders: all vello draws in one pass, so a 5K display
+/// (a 2560 x 1440 window at 2x) draws at its full device resolution and a
+/// full-screen 6K Retina canvas (20 million pixels) a little below it.
+pub(crate) const MAX_SURFACE_PIXELS: u64 = (BIN_SIDE as u64).pow(2) * MAX_BINS as u64;
 /// Device pixel ratio the renderer draws at, whatever the page zoom.
 pub(crate) const MAX_DPR: f64 = 2.0;
 
@@ -23,6 +32,14 @@ impl SurfaceCaps {
         max_pixels: MAX_SURFACE_PIXELS,
         max_dpr: MAX_DPR,
     };
+    /// What a mount draws within once its GPU failed at the standard caps
+    /// (the device was lost or ran out of memory): a 4K frame, which every
+    /// WebGPU adapter in use draws comfortably.
+    pub const REDUCED: Self = Self {
+        max_side: 4096,
+        max_pixels: 3840 * 2160,
+        max_dpr: MAX_DPR,
+    };
     /// `WebKit`'s GPU process holds every surface and binding of a frame
     /// resident on top of a large fixed cost, under Safari's 600 MB limit.
     /// The scratch and atlas budgets carry most of that saving
@@ -34,6 +51,19 @@ impl SurfaceCaps {
         max_pixels: 3024 * 1964,
         max_dpr: MAX_DPR,
     };
+
+    /// The caps a mount recovers with after its GPU failed at these: one
+    /// step smaller, so a device that cannot hold a full-resolution frame
+    /// keeps drawing, slightly softer, instead of failing again. The smaller
+    /// caps stay as they are.
+    #[must_use]
+    pub fn after_gpu_failure(self) -> Self {
+        if self == Self::STANDARD {
+            Self::REDUCED
+        } else {
+            self
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,7 +105,9 @@ impl Viewport {
                 caps.max_dpr / self.dpr
             } else {
                 1.0
-            });
+            })
+            .min(1.0);
+        let scale = scale.min(Self::one_pass_scale(width * scale, height * scale) * scale);
         if scale >= 1.0 {
             return self;
         }
@@ -84,6 +116,24 @@ impl Viewport {
             height: ((height * scale).floor() as u32).max(1),
             dpr: self.dpr * scale,
         }
+    }
+
+    /// The largest scale, at most 1, at which a `width` x `height` target
+    /// covers no more than [`MAX_BINS`] bins: of every split of the bins
+    /// into columns and rows, the one that keeps the most of the target.
+    fn one_pass_scale(width: f64, height: f64) -> f64 {
+        let side = f64::from(BIN_SIDE);
+        let bins = |length: f64| (length / side).ceil().max(1.0);
+        if bins(width) * bins(height) <= f64::from(MAX_BINS) {
+            return 1.0;
+        }
+        (1..=MAX_BINS)
+            .map(|columns| {
+                let rows = MAX_BINS.checked_div(columns).unwrap_or(0);
+                (f64::from(columns) * side / width).min(f64::from(rows) * side / height)
+            })
+            .fold(0.0, f64::max)
+            .min(1.0)
     }
     #[allow(
         clippy::cast_possible_truncation,
@@ -124,6 +174,14 @@ impl ViewportState {
             presented: None,
             outdated_reconfigured: false,
         }
+    }
+    /// Draw within `caps` from the next request on.
+    pub fn set_caps(&mut self, caps: SurfaceCaps) {
+        self.caps = caps;
+    }
+    /// What the page draws within.
+    pub fn caps(&self) -> SurfaceCaps {
+        self.caps
     }
     pub fn request(&mut self, observed: Viewport) -> bool {
         self.observed = (observed.width, observed.height);
@@ -202,6 +260,10 @@ impl ViewportState {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "a ratio the bounds leave alone is the exact value it was given"
+)]
 mod tests {
     use super::*;
 
@@ -257,6 +319,89 @@ mod tests {
             (macbook.width, macbook.height, macbook.dpr),
             (2880, 1800, 2.0)
         );
+    }
+
+    // Catches a 1440p window on a 2x display drawing at 1.5x and being
+    // stretched by the browser: the whole desktop looked soft on a 5K screen.
+    #[test]
+    fn a_big_window_on_a_retina_display_draws_at_full_device_resolution() {
+        let five_k = Viewport {
+            width: 5120,
+            height: 2880,
+            dpr: 2.0,
+        };
+        assert_eq!(five_k.bounded(), five_k);
+        let (lw, lh) = five_k.bounded().logical_size();
+        assert_eq!((lw, lh), (2560, 1440));
+
+        // A laptop's full-screen window too, as every 4K one before.
+        for observed in [
+            Viewport {
+                width: 3024,
+                height: 1964,
+                dpr: 2.0,
+            },
+            Viewport {
+                width: 3840,
+                height: 2160,
+                dpr: 1.5,
+            },
+        ] {
+            assert_eq!(observed.bounded(), observed);
+        }
+
+        // Past what vello draws in one pass (a 16-inch MacBook's 2560 x 1600
+        // at 2x is 260 bins), a frame draws just below the device scale
+        // rather than with holes; no extent, however tall or wide, does.
+        let sixteen_inch = Viewport {
+            width: 5120,
+            height: 3200,
+            dpr: 2.0,
+        }
+        .bounded();
+        assert!(sixteen_inch.dpr > 1.9, "{sixteen_inch:?}");
+        for (width, height) in [
+            (5120, 3200),
+            (6016, 3384),
+            (8000, 4000),
+            (4100, 4100),
+            (8192, 2100),
+            (10000, 200),
+            (300, 9000),
+        ] {
+            let bounded = Viewport {
+                width,
+                height,
+                dpr: 2.0,
+            }
+            .bounded();
+            assert!(
+                bounded.width.div_ceil(BIN_SIDE) * bounded.height.div_ceil(BIN_SIDE) <= MAX_BINS,
+                "{width}x{height} -> {bounded:?}"
+            );
+        }
+
+        // A GPU that failed at that size recovers one step smaller, at the
+        // same logical size; the smaller caps do not shrink further.
+        let reduced = SurfaceCaps::STANDARD.after_gpu_failure();
+        assert_eq!(reduced, SurfaceCaps::REDUCED);
+        let fallback = five_k.bounded_by(reduced);
+        assert!(u64::from(fallback.width) * u64::from(fallback.height) <= 3840 * 2160);
+        assert!(fallback.dpr < 2.0 && fallback.dpr > 1.4, "{fallback:?}");
+        let (lw, _) = fallback.logical_size();
+        assert!(lw.abs_diff(2560) <= 1, "{lw}");
+        assert_eq!(reduced.after_gpu_failure(), reduced);
+        assert_eq!(
+            SurfaceCaps::CONSERVATIVE.after_gpu_failure(),
+            SurfaceCaps::CONSERVATIVE
+        );
+
+        // A state stepped down mid-life requests the smaller frame next.
+        let mut state = ViewportState::new(five_k);
+        assert_eq!(state.requested(), five_k);
+        state.set_caps(reduced);
+        assert!(state.request(five_k));
+        assert_eq!(state.requested(), fallback);
     }
 
     #[test]

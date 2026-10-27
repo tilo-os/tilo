@@ -8,26 +8,9 @@ use crate::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 const SEGMENT_INSET_PX: f64 = 2.0;
-/// Toggle `kind` in the chip selection. Content kinds combine; the empty
+/// Toggle `kind` in the chip selection. Kinds combine; the empty
 /// selection means everything shows.
-///
-/// Applications and Host Apps are the exception: they are alternative
-/// launch sources, not additive content facets. A picker opened for a new
-/// window starts with both sources available, and choosing Host Apps must
-/// narrow to host rows rather than toggle that source out and leave the
-/// Tilo-app rows behind.
 pub fn toggle_kind(selected: &mut Vec<ResourceKind>, kind: ResourceKind) {
-    if matches!(
-        kind,
-        ResourceKind::Application | ResourceKind::HostApplication
-    ) {
-        if selected.as_slice() == std::slice::from_ref(&kind) {
-            selected.clear();
-        } else {
-            *selected = vec![kind];
-        }
-        return;
-    }
     if let Some(pos) = selected.iter().position(|k| k == &kind) {
         selected.remove(pos);
     } else {

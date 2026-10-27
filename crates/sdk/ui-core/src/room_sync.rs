@@ -10,11 +10,17 @@
 //! (or this device) has to update before anything syncs. An app's own empty
 //! state shows only once the room has synced, or in a window whose
 //! workspace syncs with no host at all (the shell says nothing then).
+//!
+//! What the room holds is also a read ([`holdings`]): a view over a record
+//! this device has not got yet shows it arriving from the workspace's host
+//! until the room's first sync, and the record (or that there is none) once
+//! it completed.
 
 use std::cell::{Cell, RefCell};
 
 use serde::{Deserialize, Serialize};
 
+use crate::arriving::{Arrival, Arriving, Source};
 use crate::time::Instant;
 
 /// Where this device stands with the host of the room a window is in.
@@ -69,8 +75,40 @@ struct Told {
     since: Instant,
 }
 
+/// Why what the room holds cannot arrive: nothing syncs until one side
+/// updates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomUnreachable {
+    /// The workspace's host speaks an older peer protocol.
+    HostNeedsUpdate,
+    /// This device speaks an older peer protocol.
+    DeviceNeedsUpdate,
+    /// The shell hosting the window went away before it said where the
+    /// room stands, and nothing reconnects the window to a shell.
+    ShellGone,
+}
+
+impl std::fmt::Display for RoomUnreachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&crate::i18n::I18nManager::lookup_plain(match self {
+            Self::HostNeedsUpdate => "room-sync-host-needs-update",
+            Self::DeviceNeedsUpdate => "room-sync-device-needs-update",
+            Self::ShellGone => "room-sync-shell-gone",
+        }))
+    }
+}
+
 thread_local! {
     static TOLD: RefCell<Option<Told>> = const { RefCell::new(None) };
+    /// Whether a shell hosts this window ([`hosted_by_shell`]): it says
+    /// where the window's room stands.
+    static SHELL: Cell<bool> = const { Cell::new(false) };
+    /// Whether the shell has said where the window's room stands.
+    static HEARD: Cell<bool> = const { Cell::new(false) };
+    /// Whether the shell went away before it said ([`shell_lost`]).
+    static LOST: Cell<bool> = const { Cell::new(false) };
+    /// What the room holds, as a read ([`holdings`]).
+    static HOLDINGS: RefCell<Option<Arriving<(), RoomUnreachable>>> = const { RefCell::new(None) };
     /// The permissions of the components a workspace launch hosts, which
     /// follow [`RoomSync::writable`] (`follow_participation`).
     static FOLLOWERS: RefCell<Vec<std::rc::Weak<RefCell<crate::permissions::PermissionContext>>>> =
@@ -86,6 +124,111 @@ thread_local! {
 /// the window's workspace syncs with no host (or the shell said nothing).
 /// Answers whether that changed what the app shows.
 pub fn set(sync: Option<RoomSync>) -> bool {
+    LOST.with(|lost| lost.set(false));
+    let first = !HEARD.with(|heard| heard.replace(true));
+    let changed = tell(sync);
+    // The first word settles what the room holds even when it says what
+    // was assumed (no room): a view waiting on it shows now.
+    let settled = (first || changed) && settle_holdings();
+    changed || settled
+}
+
+/// A shell hosts this window: what its room holds waits for the shell to
+/// say where the room stands. A window no shell hosts holds what this
+/// device has.
+pub fn hosted_by_shell() {
+    if !SHELL.with(|shell| shell.replace(true)) {
+        let _ = settle_holdings();
+    }
+}
+
+/// The shell hosting this window went away. A shell says where the room
+/// stands in its first message to a window (every shell does: the app and
+/// the shell speak one shell-ui version, or do not connect), so a window
+/// still waiting for that word never gets it: what the room holds cannot
+/// arrive, and the window says so ([`RoomUnreachable::ShellGone`]). Whether
+/// that changed what the window shows.
+pub fn shell_lost() -> bool {
+    if !SHELL.with(Cell::get) || HEARD.with(Cell::get) {
+        return false;
+    }
+    LOST.with(|lost| lost.set(true));
+    settle_holdings()
+}
+
+/// What the room this window is in holds, as a read: pending (from this
+/// device, briefly) until the shell hosting the window said where the room
+/// stands, then from
+/// the workspace's host until the room's first sync completed; failed while
+/// one side has to update first; ready once it synced, or in a room with no
+/// host. A record this device lacks once it is ready is one the room does
+/// not have. Every call shares one read.
+#[must_use]
+pub fn holdings() -> Arriving<(), RoomUnreachable> {
+    HOLDINGS.with(|holdings| {
+        holdings
+            .borrow_mut()
+            .get_or_insert_with(|| {
+                let arriving = Arriving::pending(Source::Local);
+                arriving.stand(standing());
+                arriving
+            })
+            .clone()
+    })
+}
+
+/// Where what the room holds stands now.
+fn standing() -> Arrival<(), RoomUnreachable> {
+    if SHELL.with(Cell::get) && !HEARD.with(Cell::get) {
+        if LOST.with(Cell::get) {
+            return Arrival::Failed(RoomUnreachable::ShellGone);
+        }
+        return Arrival::Pending {
+            from: Source::Local,
+        };
+    }
+    match current() {
+        None => Arrival::Ready(()),
+        Some(sync) => match sync.state {
+            RoomSyncState::NeverSynced | RoomSyncState::Connecting => Arrival::Pending {
+                from: Source::host(sync.workspace.trim()),
+            },
+            RoomSyncState::HostNeedsUpdate => Arrival::Failed(RoomUnreachable::HostNeedsUpdate),
+            RoomSyncState::DeviceNeedsUpdate => Arrival::Failed(RoomUnreachable::DeviceNeedsUpdate),
+            RoomSyncState::Synced => Arrival::Ready(()),
+        },
+    }
+}
+
+/// Bring the shared read of what the room holds to where the room stands.
+/// A read still pending keeps when it was asked, now waiting on where the
+/// room said; one that settled and waits again was asked now. Whether it
+/// moved.
+fn settle_holdings() -> bool {
+    let Some(holdings) = HOLDINGS.with(|holdings| holdings.borrow().clone()) else {
+        return false;
+    };
+    let next = standing();
+    let moved = holdings.with(|now| *now != next);
+    if moved {
+        holdings.stand(next);
+    }
+    moved
+}
+
+/// Where what this window's room holds and this device lacks comes from:
+/// the workspace's host, by the workspace's name, when the room has one;
+/// otherwise the workspace's other devices, which no one names here.
+#[must_use]
+pub fn source() -> Source {
+    match current() {
+        Some(sync) => Source::host(sync.workspace.trim()),
+        None => Source::peer(""),
+    }
+}
+
+/// Keep what the shell says; answers whether it changed.
+fn tell(sync: Option<RoomSync>) -> bool {
     TOLD.with(|told| {
         let mut told = told.borrow_mut();
         if told.as_ref().map(|told| &told.sync) == sync.as_ref() {
@@ -252,7 +395,6 @@ mod tests {
         })
     }
 
-    // USER REQUIREMENT (2026-10-19): "If a v6 client meets the v5 relay, the user must see a clear "update needed" state, never a silent empty room."
     #[test]
     fn a_room_that_never_synced_says_so_instead_of_looking_empty() {
         set(None);
@@ -278,6 +420,75 @@ mod tests {
     }
 
     #[test]
+    fn what_the_room_holds_arrives_from_its_host_until_its_first_sync() {
+        let held = holdings();
+        hosted_by_shell();
+        assert_eq!(
+            held.get(),
+            Arrival::local(),
+            "this device asks the shell where the room stands"
+        );
+        set(told(RoomSyncState::Connecting));
+        assert_eq!(
+            held.get(),
+            Arrival::Pending {
+                from: Source::host("Lounge")
+            },
+            "then waits on the workspace's host"
+        );
+        assert_eq!(
+            holdings().get(),
+            held.get(),
+            "every view shares the one read"
+        );
+        set(told(RoomSyncState::DeviceNeedsUpdate));
+        assert_eq!(
+            held.get(),
+            Arrival::Failed(RoomUnreachable::DeviceNeedsUpdate)
+        );
+        set(told(RoomSyncState::Synced));
+        assert_eq!(held.get(), Arrival::Ready(()));
+        set(None);
+        assert_eq!(
+            held.get(),
+            Arrival::Ready(()),
+            "what is here is all there is"
+        );
+    }
+
+    #[test]
+    fn a_window_whose_shell_goes_before_its_first_word_says_its_room_cannot_arrive() {
+        let held = holdings();
+        hosted_by_shell();
+        assert!(held.get().is_pending());
+        assert!(shell_lost(), "the window shows the change");
+        assert_eq!(
+            held.get(),
+            Arrival::Failed(RoomUnreachable::ShellGone),
+            "a word that never comes ends the wait"
+        );
+        set(told(RoomSyncState::Synced));
+        assert_eq!(held.get(), Arrival::Ready(()), "a shell's word still lands");
+        assert!(!shell_lost(), "a shell gone after it spoke changes nothing");
+        assert_eq!(held.get(), Arrival::Ready(()));
+    }
+
+    #[test]
+    fn the_shells_first_word_shows_what_a_window_waited_on() {
+        let held = holdings();
+        hosted_by_shell();
+        assert!(held.get().is_pending());
+        assert!(set(None), "no room: what is here shows now");
+        assert_eq!(held.get(), Arrival::Ready(()));
+    }
+
+    #[test]
+    fn a_window_no_shell_hosts_has_what_this_device_has() {
+        assert_eq!(holdings().get(), Arrival::Ready(()));
+        assert_eq!(source(), Source::peer(""), "no host to name");
+    }
+
+    #[test]
     fn the_spinner_damages_only_its_slot_and_only_when_its_pose_moves() {
         let slot = vello::kurbo::Rect::new(100.0, 80.0, 148.0, 128.0);
         set(told(RoomSyncState::Connecting));
@@ -295,7 +506,6 @@ mod tests {
         set(None);
     }
 
-    // USER REQUIREMENT (2026-10-19): "An app's write permission must follow grants live. When the room's grants change (authorship granted or withdrawn, role changed), open apps switch between read-only and writable without a restart"
     #[test]
     fn a_launch_opened_read_only_becomes_writable_when_its_authorship_arrives_and_back() {
         use crate::permissions::{ActionKind, PermissionContext, PermissionScope, Role};

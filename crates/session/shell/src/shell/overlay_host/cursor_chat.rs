@@ -29,6 +29,16 @@ pub(crate) enum ChatOut {
     React(String),
 }
 
+/// Where the composer is between closed and open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Phase {
+    #[default]
+    Closed,
+    /// The keyboard route claimed the `/` press that opens the composer.
+    Armed,
+    Open,
+}
+
 /// This person's cursor chat.
 #[derive(Default)]
 pub(crate) struct CursorChatComposer {
@@ -37,9 +47,7 @@ pub(crate) struct CursorChatComposer {
     /// What is said would reach a shared window: one is under the pointer,
     /// or one was said to before in this workspace.
     reachable: bool,
-    /// The keyboard route claimed the `/` press that opens the composer.
-    armed: bool,
-    open: bool,
+    phase: Phase,
     text: String,
     selection: Selection,
     field: Option<TextInput>,
@@ -54,7 +62,7 @@ impl std::fmt::Debug for CursorChatComposer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CursorChatComposer")
             .field("available", &self.available)
-            .field("open", &self.open)
+            .field("phase", &self.phase)
             .field("text", &self.text)
             .finish_non_exhaustive()
     }
@@ -78,8 +86,7 @@ impl CursorChatComposer {
     }
 
     fn close(&mut self) {
-        self.open = false;
-        self.armed = false;
+        self.phase = Phase::Closed;
         self.text.clear();
         self.selection = Selection::default();
         self.field = None;
@@ -117,7 +124,7 @@ impl CursorChatComposer {
         }
         let mut kept = String::new();
         for (count, character) in self.text.chars().enumerate() {
-            if count >= max_chars || kept.len() + character.len_utf8() > max_bytes {
+            if count >= max_chars || kept.len().saturating_add(character.len_utf8()) > max_bytes {
                 break;
             }
             kept.push(character);
@@ -136,7 +143,7 @@ impl CursorChatComposer {
             && now.saturating_duration_since(*at) >= ui::presence::CURSOR_CHAT_LINGER
         {
             self.sent = None;
-            if !self.open {
+            if self.phase != Phase::Open {
                 self.outbox.push(ChatOut::Say(None));
             }
         }
@@ -145,6 +152,128 @@ impl CursorChatComposer {
         {
             self.reaction = None;
         }
+    }
+}
+
+impl CursorChatComposer {
+    /// The open composer beside the pointer at `who`'s position, in their
+    /// colour; returns the bounds it painted.
+    fn paint_open(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        who: (vello::kurbo::Point, &str, vello::peniko::Color),
+        area: Rect,
+    ) -> Rect {
+        let (_, _, colour) = who;
+        let placeholder = crate::shell::i18n::t("cursor-chat-placeholder");
+        let shown = if self.text.is_empty() {
+            placeholder.as_str()
+        } else {
+            self.text.as_str()
+        };
+        let (bubble, line) = ui::presence::paint_own_chat_bubble(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            who,
+            (shown, 120.0, area),
+        );
+        let field = self.field.get_or_insert_with(|| {
+            TextInput::new(Vec::new())
+                .with_plain_chrome()
+                .with_spellcheck(false)
+                .with_autocorrect(false)
+                .with_text_role(ui::TextRole::Body)
+        });
+        field.set_text(&self.text);
+        field.set_selection(self.selection.anchor, self.selection.cursor);
+        field.set_focus(true);
+        field.apply_layout_external(line);
+        // The field paints in the bubble's ink, on the talker's colour.
+        let ink = ui::presence::contrast_ink(colour);
+        let mut on_colour = theme.clone();
+        on_colour.tokens.colors.text_primary = ink;
+        on_colour.tokens.colors.text_dim = ui::presence::contrast_ink_dim(colour);
+        if self.text.is_empty() {
+            text_renderer.draw_style(
+                scene,
+                &placeholder,
+                ui::presence::contrast_ink_dim(colour),
+                transform.pre_translate((line.x0, line.y0).into()),
+                None,
+                &theme.text(ui::TextRole::Body),
+            );
+        }
+        field.draw(
+            scene,
+            transform,
+            text_renderer,
+            &on_colour,
+            &ui::presence::PresenceCtx::default(),
+        );
+        transform.transform_rect_bbox(bubble.inflate(8.0, 8.0))
+    }
+
+    /// What was sent, fading over its linger; the bounds it painted, if
+    /// any of it shows.
+    fn paint_sent(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        who: (vello::kurbo::Point, &str, vello::peniko::Color),
+        area: Rect,
+        now: Instant,
+    ) -> Option<Rect> {
+        let (_, _, colour) = who;
+        let (text, sent) = self.sent.as_ref()?;
+        let motion = theme.motion();
+        let shown = ui::motion::Transient::opacity(
+            ui::motion::Transient::READOUT,
+            (
+                *sent,
+                sent.checked_add(ui::presence::CURSOR_CHAT_LINGER)
+                    .unwrap_or(*sent),
+            ),
+            now,
+            motion,
+        );
+        if shown <= 0.0 {
+            return None;
+        }
+        let mut layer = Scene::new();
+        let (bubble, line) = ui::presence::paint_own_chat_bubble(
+            &mut layer,
+            Affine::IDENTITY,
+            text_renderer,
+            theme,
+            who,
+            (text, 0.0, area),
+        );
+        text_renderer.draw_style(
+            &mut layer,
+            text,
+            ui::presence::contrast_ink(colour),
+            Affine::translate((line.x0, line.y0)),
+            None,
+            &theme.text(ui::TextRole::Body),
+        );
+        let bounds = bubble.inflate(8.0, 8.0);
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            shown,
+            transform,
+            &bounds,
+        );
+        scene.append(&layer, Some(transform));
+        scene.pop_layer();
+        Some(transform.transform_rect_bbox(bounds))
     }
 }
 
@@ -160,7 +289,7 @@ impl super::ShellOverlayHost {
     /// that the focused window takes no text.
     pub(crate) fn cursor_chat_claims(&self, key: &Key, modifiers: ModifiersState) -> bool {
         self.cursor_chat.available
-            && !self.cursor_chat.open
+            && self.cursor_chat.phase != Phase::Open
             && !self.person_cursor_controls_suppressed()
             && opens_chat(key, modifiers)
     }
@@ -170,7 +299,7 @@ impl super::ShellOverlayHost {
     /// the shared window under it, or the one it last went to. Says so when
     /// there is no shared window to say it in.
     pub(crate) fn open_cursor_chat_on_request(&mut self) {
-        if self.cursor_chat.open || self.person_cursor_controls_suppressed() {
+        if self.cursor_chat.phase == Phase::Open || self.person_cursor_controls_suppressed() {
             return;
         }
         if !self.cursor_chat.reachable {
@@ -183,8 +312,7 @@ impl super::ShellOverlayHost {
             return;
         }
         let chat = &mut self.cursor_chat;
-        chat.armed = false;
-        chat.open = true;
+        chat.phase = Phase::Open;
         chat.sent = None;
     }
 
@@ -197,12 +325,14 @@ impl super::ShellOverlayHost {
     /// The keyboard route kept this `/` from the focused window: the
     /// chrome's dispatch of the same press opens the composer.
     pub(crate) fn arm_cursor_chat(&mut self) {
-        self.cursor_chat.armed = true;
+        if self.cursor_chat.phase == Phase::Closed {
+            self.cursor_chat.phase = Phase::Armed;
+        }
     }
 
     /// The composer is open and takes every key.
     pub(crate) fn cursor_chat_open(&self) -> bool {
-        self.cursor_chat.open
+        self.cursor_chat.phase == Phase::Open
     }
 
     /// What to say on the live plane since the last call, oldest first.
@@ -220,7 +350,11 @@ impl super::ShellOverlayHost {
             || chat.sent.as_ref().is_some_and(|(_, sent)| {
                 ui::motion::Transient::is_moving(
                     ui::motion::Transient::READOUT,
-                    (*sent, *sent + ui::presence::CURSOR_CHAT_LINGER),
+                    (
+                        *sent,
+                        sent.checked_add(ui::presence::CURSOR_CHAT_LINGER)
+                            .unwrap_or(*sent),
+                    ),
                     now,
                     motion,
                 )
@@ -230,7 +364,9 @@ impl super::ShellOverlayHost {
     /// When this person's sent message starts to fade, or goes.
     pub(super) fn cursor_chat_deadline(&self) -> Option<Instant> {
         let (_, sent) = self.cursor_chat.sent.as_ref()?;
-        let gone = *sent + ui::presence::CURSOR_CHAT_LINGER;
+        let gone = sent
+            .checked_add(ui::presence::CURSOR_CHAT_LINGER)
+            .unwrap_or(*sent);
         let now = Instant::now();
         [
             ui::motion::Transient::exit_starts(
@@ -259,13 +395,12 @@ impl super::ShellOverlayHost {
                 },
                 ..
             } => {
-                if !chat.open {
+                if chat.phase != Phase::Open {
                     if *state == ElementState::Pressed
-                        && chat.armed
+                        && chat.phase == Phase::Armed
                         && opens_chat(logical_key, modifiers)
                     {
-                        chat.armed = false;
-                        chat.open = true;
+                        chat.phase = Phase::Open;
                         chat.sent = None;
                         return true;
                     }
@@ -290,12 +425,29 @@ impl super::ShellOverlayHost {
                 }
                 true
             }
-            WindowEvent::Ime(winit::event::Ime::Commit(text)) if chat.open => {
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) if chat.phase == Phase::Open => {
                 if text_entry::commit(text, &mut chat.text, &mut chat.selection) == Edit::Changed {
                     chat.clamp();
                     chat.say_typed();
                 }
                 true
+            }
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+                if chat.phase == Phase::Open =>
+            {
+                let Some(field) = chat.field.as_mut() else {
+                    return false;
+                };
+                let took = field.handle_chrome_pointer(
+                    event,
+                    1.0,
+                    winit::event::Modifiers::from(modifiers),
+                );
+                if took {
+                    let (anchor, cursor) = field.selection_anchor_focus_or_caret();
+                    chat.selection = ui::text_selection::Selection { anchor, cursor };
+                }
+                took
             }
             _ => false,
         }
@@ -313,7 +465,7 @@ impl super::ShellOverlayHost {
     ) -> Vec<Rect> {
         let mut painted = Vec::new();
         let chat = &self.cursor_chat;
-        if !chat.open && chat.sent.is_none() && chat.reaction.is_none() {
+        if chat.phase != Phase::Open && chat.sent.is_none() && chat.reaction.is_none() {
             return painted;
         }
         let Some(at) = self.last_cursor else {
@@ -328,92 +480,13 @@ impl super::ShellOverlayHost {
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| crate::shell::i18n::t("cursor-chat-you"));
         let chat = &mut self.cursor_chat;
-        if chat.open {
-            let placeholder = crate::shell::i18n::t("cursor-chat-placeholder");
-            let shown = if chat.text.is_empty() {
-                placeholder.as_str()
-            } else {
-                chat.text.as_str()
-            };
-            let (bubble, line) = ui::presence::paint_own_chat_bubble(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                (at, &name, colour),
-                (shown, 120.0, self.rect),
-            );
-            painted.push(transform.transform_rect_bbox(bubble.inflate(8.0, 8.0)));
-            let field = chat.field.get_or_insert_with(|| {
-                TextInput::new(Vec::new())
-                    .with_plain_chrome()
-                    .with_spellcheck(false)
-                    .with_autocorrect(false)
-                    .with_text_role(ui::TextRole::Body)
-            });
-            field.set_text(&chat.text);
-            field.set_selection(chat.selection.anchor, chat.selection.cursor);
-            field.set_focus(true);
-            field.apply_layout_external(line);
-            // The field paints in the bubble's ink, on the talker's colour.
-            let ink = ui::presence::contrast_ink(colour);
-            let mut on_colour = theme.clone();
-            on_colour.tokens.colors.text_primary = ink;
-            on_colour.tokens.colors.text_dim = ui::presence::contrast_ink_dim(colour);
-            if chat.text.is_empty() {
-                text_renderer.draw_style(
-                    scene,
-                    &placeholder,
-                    ui::presence::contrast_ink_dim(colour),
-                    transform * Affine::translate((line.x0, line.y0)),
-                    None,
-                    &theme.text(ui::TextRole::Body),
-                );
-            }
-            field.draw(
-                scene,
-                transform,
-                text_renderer,
-                &on_colour,
-                &ui::presence::PresenceCtx::default(),
-            );
-        } else if let Some((text, sent)) = &chat.sent {
-            let shown = ui::motion::Transient::opacity(
-                ui::motion::Transient::READOUT,
-                (*sent, *sent + ui::presence::CURSOR_CHAT_LINGER),
-                now,
-                motion,
-            );
-            if shown > 0.0 {
-                let mut layer = Scene::new();
-                let (bubble, line) = ui::presence::paint_own_chat_bubble(
-                    &mut layer,
-                    Affine::IDENTITY,
-                    text_renderer,
-                    theme,
-                    (at, &name, colour),
-                    (text, 0.0, self.rect),
-                );
-                text_renderer.draw_style(
-                    &mut layer,
-                    text,
-                    ui::presence::contrast_ink(colour),
-                    Affine::translate((line.x0, line.y0)),
-                    None,
-                    &theme.text(ui::TextRole::Body),
-                );
-                let bounds = bubble.inflate(8.0, 8.0);
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    shown,
-                    transform,
-                    &bounds,
-                );
-                scene.append(&layer, Some(transform));
-                scene.pop_layer();
-                painted.push(transform.transform_rect_bbox(bounds));
-            }
+        let who = (at, name.as_str(), colour);
+        if chat.phase == Phase::Open {
+            painted.push(chat.paint_open(scene, transform, text_renderer, theme, who, self.rect));
+        } else if let Some(bounds) =
+            chat.paint_sent(scene, transform, text_renderer, theme, who, self.rect, now)
+        {
+            painted.push(bounds);
         }
         if let Some((emoji, started)) = &chat.reaction
             && let Some((rise, opacity)) =
@@ -433,6 +506,20 @@ impl super::ShellOverlayHost {
             ));
         }
         painted
+    }
+}
+
+#[cfg(feature = "hosted-test-control")]
+impl super::ShellOverlayHost {
+    pub(super) fn cursor_chat_open_for_shots(&mut self, text: &str) {
+        let chat = &mut self.cursor_chat;
+        chat.phase = Phase::Open;
+        text.clone_into(&mut chat.text);
+        let end = chat.text.chars().count();
+        chat.selection = Selection {
+            anchor: end,
+            cursor: end,
+        };
     }
 }
 
@@ -458,7 +545,7 @@ mod tests {
     #[test]
     fn typing_is_said_live_enter_sends_and_escape_takes_it_back() {
         let mut chat = CursorChatComposer {
-            open: true,
+            phase: Phase::Open,
             ..CursorChatComposer::default()
         };
         typed(&mut chat, "hi");
@@ -472,7 +559,7 @@ mod tests {
         chat.outbox.clear();
         let now = Instant::now();
         chat.send(now);
-        assert!(!chat.open);
+        assert_ne!(chat.phase, Phase::Open);
         assert_eq!(chat.outbox, vec![ChatOut::Say(Some(("hi".into(), true)))]);
         chat.outbox.clear();
         chat.expire(now + std::time::Duration::from_secs(1));
@@ -481,21 +568,21 @@ mod tests {
         assert_eq!(chat.outbox, vec![ChatOut::Say(None)]);
 
         let mut chat = CursorChatComposer {
-            open: true,
+            phase: Phase::Open,
             ..CursorChatComposer::default()
         };
         typed(&mut chat, "oops");
         chat.outbox.clear();
         chat.cancel();
         assert_eq!(chat.outbox, vec![ChatOut::Say(None)]);
-        assert!(chat.text.is_empty() && !chat.open);
+        assert!(chat.text.is_empty() && chat.phase != Phase::Open);
     }
 
     /// One emoji alone is a reaction, not a message.
     #[test]
     fn one_emoji_is_sent_as_a_reaction() {
         let mut chat = CursorChatComposer {
-            open: true,
+            phase: Phase::Open,
             text: "\u{1f389}".into(),
             ..CursorChatComposer::default()
         };
@@ -508,7 +595,7 @@ mod tests {
     #[test]
     fn a_message_stops_at_the_live_planes_bound() {
         let mut chat = CursorChatComposer {
-            open: true,
+            phase: Phase::Open,
             ..CursorChatComposer::default()
         };
         typed(
@@ -557,19 +644,5 @@ mod tests {
             &Key::Named(NamedKey::Enter),
             ModifiersState::empty()
         ));
-    }
-}
-
-#[cfg(feature = "hosted-test-control")]
-impl super::ShellOverlayHost {
-    pub(super) fn cursor_chat_open_for_shots(&mut self, text: &str) {
-        let chat = &mut self.cursor_chat;
-        chat.open = true;
-        chat.text = text.to_owned();
-        let end = chat.text.chars().count();
-        chat.selection = Selection {
-            anchor: end,
-            cursor: end,
-        };
     }
 }

@@ -1,6 +1,6 @@
 //! Asking an agent about what the person selected in the focused window.
 //!
-//! The desktop's ask-agent chord, and the "Ask agent…" entry a Tilo app's
+//! The desktop's ask-agent chord, and the "Tell an agent…" entry a Tilo app's
 //! menus offer, open the agent quick composer seeded with the selection: the
 //! person types what they want ("tighten this", "why does this fail?") and
 //! the composer queues a task about the selection (its subject, never a
@@ -44,7 +44,9 @@ const CONTEXT_CHARS: usize = 160;
 pub(crate) fn desktop_area(bounds: Option<[f64; 4]>, window: Option<Rect>) -> Option<Rect> {
     let local = ui::floating_surface::protocol_rect(bounds?).ok()?;
     let window = window?;
-    let area = (local + window.origin().to_vec2()).intersect(window);
+    let area = vello::kurbo::Affine::translate(window.origin().to_vec2())
+        .transform_rect_bbox(local)
+        .intersect(window);
     (area.width() > 0.0 && area.height() > 0.0).then_some(area)
 }
 
@@ -201,6 +203,9 @@ pub(crate) struct SelectionRequests {
     /// Connections whose app announced it answers selection requests, by
     /// the app id the launcher vouched for.
     capable: HashMap<u64, String>,
+    /// The resource each connection's window shows, with its app id as the
+    /// launcher vouched for it.
+    windows: HashMap<u64, (String, tilo_actions::ActionResource)>,
     pressed: bool,
     waiting: Option<Waiting>,
     /// The agent last asked in each room, asked again while it is live.
@@ -209,13 +214,55 @@ pub(crate) struct SelectionRequests {
 }
 
 impl SelectionRequests {
-    /// `app_id` on `connection` answers selection requests.
     pub(crate) fn capable(&mut self, connection: u64, app_id: &str) {
         self.capable.insert(connection, app_id.to_owned());
     }
 
     pub(crate) fn disconnected(&mut self, connection: u64) {
         self.capable.remove(&connection);
+        self.windows.remove(&connection);
+    }
+
+    /// The window of `app_id` on `connection` shows `resource` now.
+    pub(crate) fn window_resource(
+        &mut self,
+        connection: u64,
+        app_id: &str,
+        resource: Option<tilo_actions::ActionResource>,
+    ) {
+        match resource {
+            Some(resource) => {
+                self.windows
+                    .insert(connection, (app_id.to_owned(), resource));
+            }
+            None => {
+                self.windows.remove(&connection);
+            }
+        }
+    }
+
+    /// The resource a window of `app_id` shows, when one said.
+    pub(crate) fn window_of(&self, app_id: &str) -> Option<&tilo_actions::ActionResource> {
+        let mut windows: Vec<_> = self
+            .windows
+            .iter()
+            .filter(|(_, (app, _))| app == app_id)
+            .collect();
+        windows.sort_unstable_by_key(|(connection, _)| **connection);
+        windows.last().map(|(_, (_, resource))| resource)
+    }
+
+    /// The shell-ui connections of `app` that answer what the shell asks
+    /// about its focused window (its selection, the control at a point).
+    pub(crate) fn connections_of(&self, app: &str) -> Vec<u64> {
+        let mut connections: Vec<u64> = self
+            .capable
+            .iter()
+            .filter(|(_, capable)| capable.as_str() == app)
+            .map(|(connection, _)| *connection)
+            .collect();
+        connections.sort_unstable();
+        connections
     }
 
     /// The chord was pressed.
@@ -233,17 +280,11 @@ impl SelectionRequests {
             self.waiting = None;
             return Some(ChordRoute::Open);
         };
-        let mut connections: Vec<u64> = self
-            .capable
-            .iter()
-            .filter(|(_, capable)| capable.as_str() == app)
-            .map(|(connection, _)| *connection)
-            .collect();
+        let connections = self.connections_of(app);
         if connections.is_empty() {
             self.waiting = None;
             return Some(ChordRoute::Open);
         }
-        connections.sort_unstable();
         self.waiting = Some(Waiting {
             app_id: app.to_owned(),
             deadline: now.checked_add(ANSWER_WAIT).unwrap_or(now),
@@ -252,7 +293,7 @@ impl SelectionRequests {
     }
 
     /// Whether `app_id` may open the composer with its answer: the app the
-    /// chord asked, or (an "Ask agent…" entry) the focused app itself. A
+    /// chord asked, or (an "Tell an agent…" entry) the focused app itself. A
     /// window in the background never opens one.
     pub(crate) fn accept(&mut self, app_id: &str, focused_app: Option<&str>) -> bool {
         if self
@@ -343,7 +384,6 @@ impl SelectionRequests {
             .cloned()
     }
 
-    /// `agent` was asked in `room`.
     pub(crate) fn asked(&mut self, room: &str, agent: &str) {
         self.last_agent.insert(room.to_owned(), agent.to_owned());
     }
@@ -650,5 +690,24 @@ mod tests {
             missing.is_empty(),
             "share a selection without shell-ui: {missing:?}"
         );
+    }
+
+    #[test]
+    fn a_window_s_resource_is_its_apps_latest_and_leaves_with_its_connection() {
+        let resource = |id: &str| tilo_actions::ActionResource {
+            id: id.into(),
+            kind: "notes.notebook".into(),
+            label: "Notebook".into(),
+        };
+        let mut requests = SelectionRequests::default();
+        requests.window_resource(3, "so.tilo.notes", Some(resource("a")));
+        requests.window_resource(7, "so.tilo.notes", Some(resource("b")));
+        requests.window_resource(5, "so.tilo.mail", Some(resource("m")));
+        assert_eq!(requests.window_of("so.tilo.notes"), Some(&resource("b")));
+        requests.disconnected(7);
+        assert_eq!(requests.window_of("so.tilo.notes"), Some(&resource("a")));
+        requests.window_resource(3, "so.tilo.notes", None);
+        assert_eq!(requests.window_of("so.tilo.notes"), None);
+        assert_eq!(requests.window_of("so.tilo.mail"), Some(&resource("m")));
     }
 }

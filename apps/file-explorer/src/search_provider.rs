@@ -78,7 +78,6 @@ struct PlacesSnapshot {
 }
 
 impl PlacesSearch {
-    /// Create a snapshot of `favorites`.
     pub fn new(favorites: &[Favorite]) -> Self {
         let provider = Self {
             snapshot: Arc::new(RwLock::new(PlacesSnapshot {
@@ -703,7 +702,6 @@ mod tests {
                 "the exact late hit exhausted its posting"
             );
 
-            // Broad searches remain bounded and carry an explicit continuation.
             let first = provider.search_page(&ui::search::SearchQuery::new("record"), None, 7, 7);
             assert_eq!(first.inspected, 7);
             assert_eq!(first.results.len(), 7);

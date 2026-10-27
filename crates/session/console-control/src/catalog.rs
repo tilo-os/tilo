@@ -308,7 +308,6 @@ mod tests {
         reason = "scenario test: each labelled phase keeps one former test's fixture and assertions"
     )]
     fn catalog_projects_actions_and_admits_only_exact_bindings() {
-        // Phase `ids_round_trip_and_reject_non_ids`.
         {
             let address = ActionAddress::new("installer.disk:/dev/vdb", "select");
             assert_eq!(id_for(&address), "select@installer.disk:/dev/vdb");
@@ -317,7 +316,6 @@ mod tests {
                 assert_eq!(parse_id(bad), None, "{bad}");
             }
         }
-        // Phase `enumeration_projects_confirmation_and_availability_without_handles`.
         {
             let listed = enumerate("test", &tree(), "");
             assert_eq!(listed["count"], 4);
@@ -346,7 +344,6 @@ mod tests {
             assert_eq!(enumerate("test", &tree(), "power OFF")["count"], 1);
             assert_eq!(enumerate("test", &tree(), "nothing-matches")["count"], 0);
         }
-        // Phase `admission_binds_strictly_and_refuses_by_code`.
         {
             let tree = tree();
             let admitted = admit(
@@ -392,7 +389,6 @@ mod tests {
                 Some("action_unavailable")
             );
         }
-        // Phase `destructive_actions_need_their_exact_confirmation`.
         {
             let tree = tree();
             let refused = |value: Value| {

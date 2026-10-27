@@ -42,7 +42,6 @@ pub fn to_blocks(html: &str) -> Vec<ContentBlock> {
                 tag.clear();
             }
             '&' => {
-                // Decode a basic entity.
                 let mut ent = String::new();
                 while let Some(&n) = chars.peek() {
                     if n == ';' {

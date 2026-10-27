@@ -2,7 +2,7 @@
 //!
 //! KMS hardware cursor plane (`set_cursor2`/`move_cursor`, software cursor as fallback) plus
 //! two buffer rings per output, each ping-ponged by page flips. Every flip goes through
-//! [`super::kms_flip::KmsFlip`]: an atomic commit of the primary plane where the driver
+//! `super::kms_flip::KmsFlip`: an atomic commit of the primary plane where the driver
 //! takes atomic, else a legacy `drmModePageFlip`:
 //!
 //! - **Direct** ([`DirectScanoutTargets`]): two GBM buffers the size of the output's mode,
@@ -22,7 +22,7 @@
 //! smithay's `DrmCompositor` drives GLES, not vello, so neither ring uses it.
 //!
 //! HDR: an output driven in HDR scans out `XBGR2101010` (or `ABGR16161616F`) buffers holding a
-//! PQ BT.2020 signal, with the connector's HDR properties set by [`super::output_signal`]. The
+//! PQ BT.2020 signal, with the connector's HDR properties set by `super::output_signal`. The
 //! direct path renders into imported GBM buffers; the readback path swaps in a second pair of
 //! `XBGR2101010` dumb buffers and encodes on the CPU. Any refusal falls back to 8-bit SDR.
 
@@ -55,12 +55,17 @@ use super::output_link::{
     AtomicLink, Completion, LinkFailure, LinkStep, LinkTarget, OutputLink, Power,
 };
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
+use super::wake_check::{WakeStage, WakeVerdict};
 use super::xrgb_history::{
     XrgbHistoryCommit, XrgbHistoryIdentity, XrgbTargetHistory, XrgbWritePlan,
 };
+
+#[path = "scanout_wake.rs"]
+mod wake;
 use crate::compositor::backend::OutputId;
 use crate::compositor::cursor::{self, CursorBitmap, CursorShape, PointerImage};
 use vello::{FineDamageRect, Scene};
+use wake::OutputWake;
 
 use super::output_signal::{
     AdaptiveSync, CrtcGamma, HdrRequest, HdrSignal, OutputSignalStatus, adaptive_sync_capability,
@@ -391,8 +396,10 @@ pub(super) enum Flip {
 
 /// Imported Vulkan aliases must drop before their GBM allocation and KMS
 /// framebuffer IDs.  Field order makes that teardown relationship explicit.
-pub struct DirectScanoutTargets {
-    imported: [ui::dmabuf_import::ImportedRenderTarget; DIRECT_SLOTS],
+pub struct DirectScanoutTargets<T = ui::dmabuf_import::ImportedRenderTarget> {
+    /// Each scanout buffer as the renderer draws into it: vello's import,
+    /// or the GLES compositor's ([`super::gl_compose`]).
+    imported: [T; DIRECT_SLOTS],
     buffers: GbmScanoutBuffers,
     format: ScanoutFormat,
     /// The CRTC was modeset onto one of these buffers. A legacy page flip
@@ -468,23 +475,12 @@ impl DirectScanoutTargets {
         format: ScanoutFormat,
         output_size: (u32, u32),
     ) -> Result<Self, String> {
-        let mode = scanout.size();
-        if mode != output_size {
-            return Err(format!(
-                "scanout mode {}x{} is not the output's {}x{} extent",
-                mode.0, mode.1, output_size.0, output_size.1
-            ));
-        }
-        let buffers = scanout.allocate_gbm_scanout_buffers(format)?;
         let fourcc = match format {
             ScanoutFormat::Xrgb8888 => media::dmabuf::DRM_FORMAT_XRGB8888,
             ScanoutFormat::Xbgr2101010 => media::dmabuf::DRM_FORMAT_XBGR2101010,
             ScanoutFormat::Abgr16161616f => media::dmabuf::DRM_FORMAT_ABGR16161616F,
         };
-        let import = |index: usize| -> Result<ui::dmabuf_import::ImportedRenderTarget, String> {
-            let slot = buffers
-                .slot(index)
-                .ok_or_else(|| format!("GBM scanout slot[{index}] is unavailable"))?;
+        Self::build(scanout, format, output_size, |slot| {
             let plane = ui::dmabuf_import::PlaneRef {
                 fd: slot.fd,
                 offset: slot.offset,
@@ -499,7 +495,38 @@ impl DirectScanoutTargets {
                     height: slot.height,
                     colorimetry: media::dmabuf::Colorimetry::RGB,
                 })
-                .map_err(|error| format!("import GBM scanout slot[{index}]: {error}"))
+                .map_err(|error| error.to_string())
+        })
+    }
+}
+
+impl<T> DirectScanoutTargets<T> {
+    /// [`DirectScanoutTargets::new`] for any renderer: `import` makes each
+    /// scanout buffer something it draws into.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the output's extent is not the scanout mode, GBM cannot
+    /// allocate the scanout buffers, or `import` fails for one of them.
+    pub fn build(
+        scanout: &DrmScanout,
+        format: ScanoutFormat,
+        output_size: (u32, u32),
+        mut import: impl FnMut(GbmScanoutSlot<'_>) -> Result<T, String>,
+    ) -> Result<Self, String> {
+        let mode = scanout.size();
+        if mode != output_size {
+            return Err(format!(
+                "scanout mode {}x{} is not the output's {}x{} extent",
+                mode.0, mode.1, output_size.0, output_size.1
+            ));
+        }
+        let buffers = scanout.allocate_gbm_scanout_buffers(format)?;
+        let mut import = |index: usize| -> Result<T, String> {
+            let slot = buffers
+                .slot(index)
+                .ok_or_else(|| format!("GBM scanout slot[{index}] is unavailable"))?;
+            import(slot).map_err(|error| format!("import GBM scanout slot[{index}]: {error}"))
         };
         let imported = [import(0)?, import(1)?, import(2)?];
         Ok(Self {
@@ -557,7 +584,7 @@ impl DirectScanoutTargets {
         }
     }
 
-    pub fn render_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
+    pub fn render_slot(&self) -> Option<(usize, &T)> {
         let index = self.state.render_slot()?;
         self.imported.get(index).map(|target| (index, target))
     }
@@ -573,14 +600,26 @@ impl DirectScanoutTargets {
     }
 
     /// The slot neither shown nor pending, to render while a flip is pending.
-    /// It may be queued once that flip retired ([`DirectScanoutState::submit`]).
-    pub fn overlap_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
+    /// It may be queued once that flip retired (`DirectScanoutState::submit`).
+    pub fn overlap_slot(&self) -> Option<(usize, &T)> {
         let index = self.state.overlap_slot()?;
         self.imported.get(index).map(|target| (index, target))
     }
 
     fn framebuffer(&self, index: usize) -> Option<framebuffer::Handle> {
         self.buffers.slot(index).map(|slot| slot.framebuffer)
+    }
+
+    /// The queued flip retired: what it replaced is free again.
+    pub fn retire_flip(&mut self) {
+        // The buffer the retired flip replaced is no longer read: a client
+        // buffer goes back to its client once nothing else holds it.
+        match self.state.complete_flip() {
+            Some(Flip::Client) => self.client.client_flip_retired(),
+            Some(Flip::Slot(_)) => self.client.target_flip_retired(),
+            None => {}
+        }
+        self.flip_queued_at = None;
     }
 }
 
@@ -1147,7 +1186,7 @@ impl CardHandle {
         }
     }
 
-    /// Ask the hardware what is connected now (see [`probe_connected`]).
+    /// Ask the hardware what is connected now (see `probe_connected`).
     /// Only startup calls this on the loop thread; a hotplug probes through a
     /// [`ConnectorProber`] on a worker thread.
     pub fn connected(&self) -> Vec<ConnectorSnapshot> {
@@ -1294,7 +1333,6 @@ impl CardHandle {
                 hdr_unavailable_reason,
                 sink_vrr,
                 vrr_unavailable_reason,
-                // Set by the runtime, which knows which outputs failed to light.
                 unavailable_reason: None,
                 color_profile_labels: profiles.clone(),
             });
@@ -1304,12 +1342,6 @@ impl CardHandle {
     }
 
     /// Modeset one connector onto a crtc not in `used`.
-    ///
-    /// # Errors
-    ///
-    /// Why the connector stays dark (no free crtc, a refused modeset), for
-    /// the caller's journal. It is local to this connector, so the other
-    /// outputs keep working.
     pub fn bring_up(
         &self,
         snapshot: &ConnectorSnapshot,
@@ -1335,6 +1367,7 @@ impl CardHandle {
             crtc,
             snapshot.mode,
             self.pci_bus_id.clone(),
+            is_builtin_connector(&snapshot.connector_name),
         )?;
         Ok(ScanoutBuild {
             device_id: self.device_id,
@@ -1366,7 +1399,7 @@ impl ConnectorProber {
         self.device_id
     }
 
-    /// Force-probe what is connected now ([`probe_connected`]).
+    /// Force-probe what is connected now (`probe_connected`).
     pub fn connected(&self) -> Vec<ConnectorSnapshot> {
         probe_connected(&self.card, &self.card_path)
     }
@@ -1545,7 +1578,7 @@ fn mode_refresh_mhz(mode: &Mode) -> u32 {
 
 /// Repositions the hardware cursor plane without touching the framebuffer, decoupled from the
 /// paint/flip cadence. Its ioctl runs on the output's cursor mover thread
-/// ([`super::cursor_plane`]), never on the compositor loop: a commit holding the CRTC blocks it.
+/// (`super::cursor_plane`), never on the compositor loop: a commit holding the CRTC blocks it.
 pub struct HwCursor {
     card: Card,
     crtc: crtc::Handle,
@@ -1933,6 +1966,8 @@ pub struct DrmScanout {
     /// binds it once proven up: the legacy cursor ioctl commits, and on a
     /// CRTC still modesetting that commit waits for the modeset.
     cursor_bound: bool,
+    /// How this output's wakes are checked ([`super::wake_check`]).
+    wake: OutputWake,
 }
 
 /// Two dumb buffers and their framebuffers, in one pixel format.
@@ -2040,6 +2075,7 @@ impl DrmScanout {
         crtc: crtc::Handle,
         mode: Mode,
         pci_bus_id: Option<String>,
+        builtin: bool,
     ) -> Result<Self, String> {
         let (mw, mh) = mode.size();
         let (width, height) = (u32::from(mw), u32::from(mh));
@@ -2149,6 +2185,7 @@ impl DrmScanout {
             flip,
             link,
             cursor_bound,
+            wake: OutputWake::new(builtin),
         })
     }
 
@@ -2297,7 +2334,7 @@ impl DrmScanout {
         self.repaint_hw_cursor();
     }
 
-    fn cursor_bitmap(&self) -> Option<std::sync::Arc<CursorBitmap>> {
+    pub(crate) fn cursor_bitmap(&self) -> Option<std::sync::Arc<CursorBitmap>> {
         self.pointer_image.bitmap(self.cursor_pixel_size())
     }
 
@@ -2673,9 +2710,15 @@ impl DrmScanout {
             self.crtc_gamma.forget_applied();
             self.hdr_signal.forget();
             self.cursor_bound = false;
+            self.wake.check = None;
+            self.wake.reason = Some("resume");
             self.with_link(|link, device| link.resume(device, false));
+            self.begin_wake();
             return;
         }
+        // The wake is judged when the panel is asked to light again
+        // (`set_dpms`), which re-binds the mode once more.
+        self.wake.reason = Some("resume");
         // Re-binding the mode is what the kernel needs to scan out again.
         if let Some(fb) = self.fb_at(self.front) {
             if let Err(e) = self.card.set_crtc(
@@ -2772,11 +2815,6 @@ impl DrmScanout {
     /// This is intentionally separate from [`Self::present_into`]: arbitrary callers retain the
     /// established complete-destination contract, while this path can prove both dumb-buffer
     /// identity and every skipped scene delta.
-    ///
-    /// # Errors
-    ///
-    /// Returns a bridge error if rendering, retained readback, or the complete tracked XRGB
-    /// write fails. Such a failure invalidates the destination-age history before it is returned.
     pub fn present_scene_damage(
         &mut self,
         cursor: Option<(f64, f64)>,
@@ -3487,6 +3525,7 @@ impl DrmScanout {
     }
 
     fn log_flip_completion(&mut self) {
+        self.note_wake_flip();
         let Some(queued_at) = self.flip_queued_at.take() else {
             return;
         };
@@ -3502,9 +3541,9 @@ impl DrmScanout {
 
     /// Queue one already-completed imported target. The direct state advances
     /// only after the kernel accepted the flip.
-    pub fn submit_direct_target(
+    pub fn submit_direct_target<T>(
         &mut self,
-        targets: &mut DirectScanoutTargets,
+        targets: &mut DirectScanoutTargets<T>,
         index: usize,
     ) -> DirectSubmit {
         if !self.use_pageflip
@@ -3556,9 +3595,9 @@ impl DrmScanout {
 
     /// Show the first frame of HDR direct targets: signal on, then a modeset
     /// onto the 10-bit (or half-float) framebuffer. Undone on any refusal.
-    fn bind_hdr_target(
+    fn bind_hdr_target<T>(
         &mut self,
-        targets: &mut DirectScanoutTargets,
+        targets: &mut DirectScanoutTargets<T>,
         index: usize,
     ) -> DirectSubmit {
         let Some(framebuffer) = targets.framebuffer(index) else {
@@ -3609,22 +3648,15 @@ impl DrmScanout {
     }
 
     /// Retire the imported target for this output after its page-flip event.
-    pub fn mark_direct_flip_complete(
+    pub fn mark_direct_flip_complete<T>(
         &mut self,
-        targets: &mut DirectScanoutTargets,
+        targets: &mut DirectScanoutTargets<T>,
         crtc: crtc::Handle,
     ) {
         if crtc == self.crtc {
             self.log_flip_completion();
             self.flip_pending = false;
-            // The buffer the retired flip replaced is no longer read: a client
-            // buffer goes back to its client once nothing else holds it.
-            match targets.state.complete_flip() {
-                Some(Flip::Client) => targets.client.client_flip_retired(),
-                Some(Flip::Slot(_)) => targets.client.target_flip_retired(),
-                None => {}
-            }
-            targets.flip_queued_at = None;
+            targets.retire_flip();
         }
     }
 
@@ -3684,9 +3716,9 @@ impl DrmScanout {
     /// Queue a flip onto a client's buffer in place of the targets. The
     /// targets hold the buffer from here until the flip that replaces it
     /// retires.
-    pub(super) fn submit_client_framebuffer(
+    pub(super) fn submit_client_framebuffer<T>(
         &mut self,
-        targets: &mut DirectScanoutTargets,
+        targets: &mut DirectScanoutTargets<T>,
         client: ClientScanout,
     ) -> DirectSubmit {
         if !self.use_pageflip || self.flip_pending || targets.state.pending.is_some() {
@@ -3824,6 +3856,19 @@ impl DrmScanout {
                     "tilo compositor: DRM scanout: output failed connector={} reason={reason:?}",
                     u32::from(self.connector)
                 );
+                let stage = match self.link_failure() {
+                    Some(LinkFailure::Refused(_)) => WakeStage::Commit,
+                    _ => WakeStage::Link,
+                };
+                self.judge_wake(Some(stage));
+            }
+            LinkStep::Redone => {
+                eprintln!(
+                    "tilo compositor: DRM scanout: no vblank after the modeset connector={}; redoing it from the CRTC switched off",
+                    u32::from(self.connector)
+                );
+                // The link already switches the CRTC off and modesets it again.
+                self.judge_wake(Some(WakeStage::Link));
             }
             LinkStep::Pending | LinkStep::Off => {}
         }
@@ -3855,6 +3900,11 @@ impl DrmScanout {
             self.crtc_gamma.describe(),
             os_actions::display::backlight_state().unwrap_or_else(|| "none".into()),
         );
+        if let Some(WakeVerdict::Redo(_)) = self.judge_wake(None) {
+            let flip_unread = self.flip_pending;
+            self.with_link(|link, device| link.redo(device, flip_unread));
+            return;
+        }
         if self.hw_cursor_active
             && !self.cursor_bound
             && let Some(buf) = self.cursor_buffer.as_ref()
@@ -3884,7 +3934,7 @@ impl DrmScanout {
     /// per `drm_mode.h`; virtio-gpu may ignore it) and a CRTC toggle (the reliable cross-driver path). Both best-effort; the backend skips `Self::present` while blanked.
     ///
     /// An atomic output instead makes one nonblocking commit of its CRTC's
-    /// `ACTIVE` ([`super::output_link`]) and presents again once it is
+    /// `ACTIVE` (`super::output_link`) and presents again once it is
     /// proven up; `flip_unread` says a flip's event is still to be read.
     /// The legacy DPMS property is not written there: on an atomic driver
     /// it is a blocking commit of its own.
@@ -3897,6 +3947,21 @@ impl DrmScanout {
         self.physical_identity.cancel_pending(self.flip_pending);
         self.invalidate_xrgb_history();
         let power = if on { Power::On } else { Power::Off };
+        if !on {
+            // A blank ends a wake still being judged.
+            self.wake.check = None;
+            self.wake.reason = None;
+            if let Some((link, _)) = self.link.as_mut() {
+                link.disarm_wake_redo();
+            }
+        }
+        if let Some((link, _)) = self.link.as_ref()
+            && on
+            && !link.wanted_on()
+            && link.failure().is_none()
+        {
+            self.begin_wake();
+        }
         if self
             .with_link(|link, device| link.want(power, device, flip_unread))
             .is_some()
@@ -3905,25 +3970,18 @@ impl DrmScanout {
         }
         self.set_dpms_property(on);
         if on {
-            // Re-modeset the saved framebuffer + mode so the last frame is back on screen; the next `present` resumes normal blitting.
-            let Some(fb) = self.fb_at(self.front) else {
-                tracing::warn!(
-                    "DRM scanout: set_dpms(on) has no front framebuffer; skipping restore"
-                );
-                return;
-            };
-            if let Err(e) = self.card.set_crtc(
-                self.crtc,
-                Some(fb),
-                (0, 0),
-                &[self.connector],
-                Some(self.mode),
-            ) {
-                tracing::warn!("DRM scanout: set_dpms(on) restore set_crtc failed: {e}");
-            } else {
-                tracing::info!("DRM scanout: display restored (DPMS on)");
+            self.begin_wake();
+            let committed = self.legacy_light();
+            if let Some(WakeVerdict::Redo(_)) =
+                self.judge_wake((!committed).then_some(WakeStage::Commit))
+            {
+                // The wake's one recovery: modeset again from the CRTC off.
+                if let Err(e) = self.card.set_crtc(self.crtc, None, (0, 0), &[], None) {
+                    tracing::warn!("DRM scanout: switching off to redo the modeset failed: {e}");
+                }
+                let committed = self.legacy_light();
+                self.judge_wake((!committed).then_some(WakeStage::Commit));
             }
-            self.match_signal_to_dumb_front();
         } else {
             // Blank: detach the CRTC so nothing is scanned out.
             if let Err(e) = self.card.set_crtc(self.crtc, None, (0, 0), &[], None) {
@@ -3932,6 +3990,31 @@ impl DrmScanout {
                 tracing::info!("DRM scanout: display blanked (DPMS off)");
             }
         }
+    }
+
+    /// Re-modeset the saved framebuffer and mode, so the last frame is back
+    /// on screen; the next `present` resumes normal blitting. Whether the
+    /// driver took it.
+    fn legacy_light(&mut self) -> bool {
+        let Some(fb) = self.fb_at(self.front) else {
+            tracing::warn!("DRM scanout: set_dpms(on) has no front framebuffer; skipping restore");
+            return false;
+        };
+        let lit = if let Err(e) = self.card.set_crtc(
+            self.crtc,
+            Some(fb),
+            (0, 0),
+            &[self.connector],
+            Some(self.mode),
+        ) {
+            tracing::warn!("DRM scanout: set_dpms(on) restore set_crtc failed: {e}");
+            false
+        } else {
+            tracing::info!("DRM scanout: display restored (DPMS on)");
+            true
+        };
+        self.match_signal_to_dumb_front();
+        lit
     }
 
     /// Best-effort legacy DPMS toggle: a missing property (atomic-only drivers) or ioctl error is ignored — the CRTC toggle in [`Self::set_dpms`] is the load-bearing path.
@@ -4417,37 +4500,31 @@ mod tests {
 
     #[test]
     fn only_connected_real_display_connectors_with_modes_are_scanout_eligible() {
-        // Phase `connected_virtual_connector_with_usable_mode_is_scanout_eligible`.
         assert!(connector_is_scanout_eligible(
             connector::State::Connected,
             connector::Interface::Virtual,
             true
         ));
-        // Phase `disconnected_connector_is_not_scanout_eligible`.
         assert!(!connector_is_scanout_eligible(
             connector::State::Disconnected,
             connector::Interface::HDMIA,
             true
         ));
-        // Phase `connector_without_usable_mode_is_not_scanout_eligible`.
         assert!(!connector_is_scanout_eligible(
             connector::State::Connected,
             connector::Interface::HDMIA,
             false
         ));
-        // Phase `writeback_connector_is_not_scanout_eligible`.
         assert!(!connector_is_scanout_eligible(
             connector::State::Connected,
             connector::Interface::Writeback,
             true
         ));
-        // Phase `unknown_connector_is_not_scanout_eligible`.
         assert!(!connector_is_scanout_eligible(
             connector::State::Connected,
             connector::Interface::Unknown,
             true
         ));
-        // Phase `usb_c_display_interfaces_are_scanout_targets`.
         assert!(is_display_connector(connector::Interface::DisplayPort));
         assert!(is_display_connector(connector::Interface::USB));
         assert!(is_display_connector(connector::Interface::HDMIA));
@@ -4457,12 +4534,10 @@ mod tests {
 
     #[test]
     fn virtual_scanout_presents_the_next_frame_without_waiting_for_vblank() {
-        // Phase `a_virtual_connector_publishes_without_waiting_for_vblank`.
         assert!(
             !pageflip_for_connector(connector::Interface::Virtual),
             "a virtual CRTC has no vblank; page-flipping it stalls the next frame"
         );
-        // Phase `a_panel_connector_still_waits_until_its_page_flip_is_accepted`.
         assert!(pageflip_for_connector(connector::Interface::HDMIA));
         assert!(pageflip_for_connector(connector::Interface::DisplayPort));
         assert!(pageflip_for_connector(connector::Interface::USB));
@@ -4473,13 +4548,11 @@ mod tests {
         // Phase `a_transition_clip_starts_while_a_virtual_flip_would_still_be_pending`.
         let virtual_pageflip = pageflip_for_connector(connector::Interface::Virtual);
         assert!(!pending_pageflip_refuses_frame(virtual_pageflip, true));
-        // Phase `an_interaction_frame_starts_before_virtual_flip_acceptance`.
         assert!(!pending_pageflip_refuses_frame(virtual_pageflip, true));
     }
 
     #[test]
     fn virtual_dirty_accept_retires_without_a_page_flip_event() {
-        // Phase `an_accepted_virtual_clip_drops_the_in_flight_count`.
         assert_eq!(
             inflight_after_publish(false, true, true),
             0,
@@ -4490,18 +4563,15 @@ mod tests {
             !pending_pageflip_refuses_frame(false, true),
             "the next transition frame starts while a virtual flip would still be pending"
         );
-        // Phase `a_real_connector_stays_in_flight_until_the_page_flip_event`.
         assert_eq!(inflight_after_publish(true, true, true), 1);
         assert_eq!(inflight_after_publish(true, false, true), 1);
         assert_eq!(inflight_after_page_flip_event(1), 0);
         assert!(pending_pageflip_refuses_frame(true, true));
         assert!(!pending_pageflip_refuses_frame(true, false));
-        // Phase `a_busy_dirty_does_not_fall_through_to_a_blocking_modeset`.
         assert!(dirty_errno_is_transient(libc::EBUSY));
         assert!(dirty_errno_is_transient(libc::EAGAIN));
         assert!(!dirty_errno_is_transient(libc::ENOSYS));
         assert!(!dirty_errno_is_transient(0));
-        // Phase `a_transition_clip_is_the_rectangle_dirty_framebuffer_accepts`.
         let clip = damage_to_clip(80, 40, 300, 200).expect("non-empty damage");
         assert_eq!(
             (clip.x1(), clip.y1(), clip.x2(), clip.y2()),
@@ -4511,7 +4581,6 @@ mod tests {
 
     #[test]
     fn direct_scanout_device_identity_must_match_exactly() {
-        // Phase `card_and_udev_share_the_same_dev_t_identity`.
         {
             // UdevEvent carries libc::dev_t and Card::dev_id reads
             // fstat(card_fd).st_rdev, also libc::dev_t.  This conversion is the
@@ -4519,7 +4588,6 @@ mod tests {
             let dev_t: libc::dev_t = 0x10203;
             assert_eq!(device_id_from_dev_t(dev_t), 0x10203);
         }
-        // Phase `pci_bdf_parser_accepts_vulkan_and_drm_forms`.
         {
             let expected = PciBdf {
                 domain: 0,
@@ -4531,7 +4599,6 @@ mod tests {
             assert_eq!(parse_pci_bdf("pci:0000:03:00.1"), Some(expected));
             assert_eq!(parse_pci_bdf("PCI:0000:03:00.1"), None);
         }
-        // Phase `direct_scanout_requires_the_same_pci_function`.
         assert!(renderer_matches_drm_card(
             "0000:03:00.0",
             "pci:0000:03:00.0"
@@ -4544,7 +4611,6 @@ mod tests {
             "0000:03:00.0",
             "pci:0000:03:00.1"
         ));
-        // Phase `direct_scanout_fails_closed_for_missing_or_malformed_identity`.
         for identity in [
             "",
             "03:00.0",
@@ -4560,7 +4626,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn sysfs_pci_identity_is_bound_to_the_exact_pci_device() {
-        // Phase `sysfs_pci_identity_is_bound_to_the_exact_device_number`.
         {
             use std::os::unix::fs::symlink;
 
@@ -4588,7 +4653,6 @@ mod tests {
                 "another card's dev_t must not inherit this identity"
             );
         }
-        // Phase `sysfs_pci_identity_rejects_non_pci_and_malformed_devices`.
         {
             use std::os::unix::fs::symlink;
 
@@ -4616,7 +4680,6 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn direct_scanout_slots_never_reuse_busy_buffers_and_fail_safe() {
-        // Phase `direct_scanout_never_renders_front_or_flip_pending_slots`.
         {
             let mut state = DirectScanoutState::new(0);
             assert_eq!(state.render_slot(), Some(1));
@@ -4654,7 +4717,6 @@ mod tests {
             );
             assert!(!state.submit(1), "the front is never queued");
         }
-        // Phase `overlapped_rendering_never_touches_a_slot_kms_reads`.
         {
             // Every frame renders while the previous flip is pending, then queues once it
             // retired: the rendered slot is never the front nor the one queued.
@@ -4670,7 +4732,6 @@ mod tests {
                 assert!(state.submit(slot));
             }
         }
-        // Phase `direct_scanout_renderer_or_pageflip_failure_keeps_back_slot_available`.
         {
             let state = DirectScanoutState::new(0);
             let slot = state.render_slot().expect("initial back slot");
@@ -4687,7 +4748,6 @@ mod tests {
             assert_eq!(state.render_slot(), Some(slot));
             assert_eq!(state.front, 0);
         }
-        // Phase `a_client_flip_owns_the_crtc_until_it_retires`.
         {
             let mut state = DirectScanoutState::new(0);
             assert!(state.submit_client());
@@ -4695,7 +4755,6 @@ mod tests {
             assert!(!state.submit_client(), "one flip at a time");
             assert!(!state.submit(1), "no slot flip behind it");
             assert_eq!(state.complete_flip(), Some(Flip::Client));
-            // The client's next buffer replaces it directly.
             assert!(state.submit_client());
             assert_eq!(state.complete_flip(), Some(Flip::Client));
             // Compositing again renders into a slot while the client's buffer
@@ -4706,7 +4765,6 @@ mod tests {
             assert_eq!(state.front, 1);
             assert_eq!(state.complete_flip(), None, "duplicate completion");
         }
-        // Phase `direct_scanout_completion_rotates_through_the_slots`.
         {
             let mut state = DirectScanoutState::new(0);
             for expected in [1, 2, 0, 1] {
@@ -4717,7 +4775,6 @@ mod tests {
             }
             assert!(!state.complete(), "duplicate completion is ignored");
         }
-        // Phase `direct_retirement_waits_for_the_exact_crtc`.
         {
             let awaited = crtc::Handle::from(std::num::NonZeroU32::new(7).unwrap());
             let sibling = crtc::Handle::from(std::num::NonZeroU32::new(9).unwrap());
@@ -4733,12 +4790,10 @@ mod tests {
                 Some(DirectRetirement::TimedOut)
             );
         }
-        // Phase `pageflip_history_failure_does_not_skip_the_flip_decision`.
         assert!(pageflip_history_commit_is_safe(true, true));
         assert!(!pageflip_history_commit_is_safe(false, true));
         assert!(!pageflip_history_commit_is_safe(true, false));
         assert!(!pageflip_history_commit_is_safe(false, false));
-        // Phase `failed_paint_never_authorizes_presenting_the_back_buffer`.
         assert_eq!(paint_completed::<&str>(Ok(())), Ok(true));
         assert_eq!(
             paint_completed(Err("readback timed out")),
@@ -4752,7 +4807,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn card_and_connector_config_identity_survives_reenumeration() {
-        // Phase `card_config_identity_prefers_bus_then_stable_sysfs_before_dev_t`.
         assert_eq!(
             config_identity(
                 Some("pci:0000:03:00.0".into()),
@@ -4790,7 +4844,6 @@ mod tests {
                 Some("sysfs-0000:04:00.0")
             ));
         }
-        // Phase `duplicate_connector_labels_become_card_qualified_but_unique_stay_legacy`.
         {
             let first = DrmOutputKey {
                 device: 10,
@@ -4834,7 +4887,6 @@ mod tests {
                 "single-GPU and unique-connector configs stay unchanged"
             );
         }
-        // Phase `qualified_connector_config_survives_duplicate_peer_unplug_and_replug`.
         {
             use settings_store::hardware::{DisplayConfig, OutputConfig, OutputMode};
 
@@ -4912,7 +4964,6 @@ mod tests {
 
     #[test]
     fn software_cursor_writes_clips_and_reports_damage() {
-        // Phase `cursor_bitmap_writes_opaque_and_transparent_pixels`.
         {
             // 64×64 ARGB, tight pitch.
             let pitch = (CURSOR_DIM * 4) as usize;
@@ -4946,7 +4997,6 @@ mod tests {
                 .any(|p| p == [fill.b(), fill.g(), fill.r(), 0xFF]);
             assert!(any_fill, "cursor must contain opaque fill pixels");
         }
-        // Phase `software_cursor_draws_into_xrgb_buffer`.
         {
             // 32×32 XRGB destination, clamp-safe.
             let (w, h) = (32usize, 32usize);
@@ -4960,7 +5010,6 @@ mod tests {
             // A pixel far from the cursor is untouched (still zero).
             assert_eq!(&dst[0..4], &[0, 0, 0, 0]);
         }
-        // Phase `software_cursor_clamps_at_edges_without_panic`.
         {
             // Drawing partially off the right/bottom edge must not panic.
             let (w, h) = (20usize, 20usize);
@@ -4969,7 +5018,6 @@ mod tests {
             draw_cursor(&mut dst, pitch, w, h, 18, 18, &arrow(24));
             draw_cursor(&mut dst, pitch, w, h, -3, -3, &arrow(24));
         }
-        // Phase `software_cursor_damage_footprint_covers_every_clipped_write`.
         {
             let (width, height) = (80_usize, 80_usize);
             let pitch = width * 4;
@@ -5273,7 +5321,6 @@ mod tests {
 
     #[test]
     fn cursor_routing_picks_the_output_under_the_pointer() {
-        // Phase `cursor_routing_single_output_is_global_coords`.
         {
             // One output at the origin contains every in-bounds point, so routing always selects index 0.
             let rects = [(0, 0, 1920u32, 1080u32)];
@@ -5281,7 +5328,6 @@ mod tests {
             assert_eq!(output_index_at(&rects, 1919, 1079), Some(0));
             assert_eq!(output_index_at(&rects, 1920, 0), None);
         }
-        // Phase `cursor_routing_picks_output_under_pointer`.
         {
             // Two 1920x1080 outputs side by side: [0,1920) -> output 0, [1920,3840) -> output 1 — decides which crtc's cursor plane a pointer move drives.
             let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1920u32, 1080u32)];
@@ -5291,14 +5337,12 @@ mod tests {
             assert_eq!(output_index_at(&rects, 3000, 500), Some(1));
             assert_eq!(output_index_at(&rects, 3840, 500), None);
         }
-        // Phase `cursor_routing_gap_between_mismatched_heights_is_none`.
         {
             // A shorter second output leaves a gap below it; a point in that gap belongs to no output and must not panic / mis-route.
             let rects = [(0, 0, 1920u32, 1080u32), (1920, 0, 1280u32, 720u32)];
             assert_eq!(output_index_at(&rects, 2000, 700), Some(1));
             assert_eq!(output_index_at(&rects, 2000, 800), None);
         }
-        // Phase `cursor_coordinates_follow_output_rotation`.
         {
             use settings_store::hardware::OutputTransform as T;
             // Portrait logical 1080×1920 on a physical 1920×1080 panel.
@@ -5320,7 +5364,6 @@ mod tests {
     #[test]
     fn resume_keeps_logind_granted_master_without_set_master() {
         use super::super::session::{SessionAction, SessionState};
-        // Phase `resume_from_sleep_on_a_master_fd_issues_no_set_master`.
         {
             // logind opened the node and keeps master across suspend. The
             // kernel refuses SET_MASTER from this unprivileged process with
@@ -5339,7 +5382,6 @@ mod tests {
             }
             assert_eq!(set_master_calls, 0);
         }
-        // Phase `fd_without_master_still_asks_the_kernel`.
         {
             let mut asked = false;
             let outcome = reclaim_master(Ok(false), || {
@@ -5349,7 +5391,6 @@ mod tests {
             assert!(asked);
             assert!(matches!(outcome, MasterReclaim::Acquired));
         }
-        // Phase `refused_set_master_is_reported_not_granted`.
         {
             let outcome = reclaim_master(Ok(false), || {
                 Err(std::io::Error::from_raw_os_error(libc::EACCES))
@@ -5359,7 +5400,6 @@ mod tests {
                 MasterReclaim::NotGranted(ref e) if e.raw_os_error() == Some(libc::EACCES)
             ));
         }
-        // Phase `unprobeable_fd_falls_back_to_set_master`.
         {
             // A non-DRM fd cannot answer the probe; that is "unknown", not "master".
             let null = std::fs::File::open("/dev/null").expect("open /dev/null");

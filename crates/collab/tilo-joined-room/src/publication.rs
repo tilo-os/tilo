@@ -304,7 +304,8 @@ fn allowed(
     }
     Ok(allowed)
 }
-/// Whether a host file of layout `version` may carry `storage`.
+/// Whether a host file of layout `version` may carry `storage`. Room
+/// records came in with layout 4; later layouts carry them as it does.
 ///
 /// # Errors
 /// A room record or its publication does not belong in that layout.
@@ -314,8 +315,8 @@ pub fn validate_file_layout(
 ) -> Result<(), String> {
     for room in storage.rooms.values() {
         match (version, room.version, room.publication.is_some()) {
-            (4, 2, true) if room.effect_history_root.is_none() => {}
-            (4, 3, true) if room.effect_history_root.is_some() => {}
+            (4.., 2, true) if room.effect_history_root.is_none() => {}
+            (4.., 3, true) if room.effect_history_root.is_some() => {}
             _ => return Err("native publication record/file layout mismatch".into()),
         }
         if let Some(publication) = &room.publication {
@@ -463,7 +464,12 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
         MAX_BYTES,
     )
 }
+/// Room for `bytes` in the outgoing custody. A room governed here keeps
+/// none: its governor, this device, admitted the write already.
 pub(crate) fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), String> {
+    if view.governed_here() {
+        return Ok(());
+    }
     let publication = state(view)?;
     let total = bounds(publication)?;
     if publication.entries.len() >= MAX_ENTRIES
@@ -632,6 +638,9 @@ fn append(view: &mut NativeCommittedView, bytes: Vec<u8>, projected: bool) -> Re
     Ok(())
 }
 pub(crate) fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
+    if view.governed_here() {
+        return Ok(());
+    }
     append(view, bytes, false)?;
     reservation::refresh(view)
 }
@@ -854,9 +863,6 @@ pub(crate) fn retry_covered(view: &NativeCommittedView, bytes: &[u8]) -> Result<
 }
 impl NativeWorkspaceOwner {
     /// Read `room`'s outgoing custody: what the relay session may send now.
-    ///
-    /// # Errors
-    /// The room is fenced, this device may not publish, or `read` fails.
     pub fn with_outgoing<T>(
         &self,
         room: RoomId,
@@ -875,8 +881,6 @@ impl NativeWorkspaceOwner {
             )
         })
     }
-    /// # Errors
-    /// The room is fenced.
     #[cfg(any(test, feature = "test-support"))]
     pub fn outgoing_status(
         &self,

@@ -955,7 +955,7 @@ fn native_reclaim_record_publishes_private_migration_for_every_policy() {
         }
         fs::write(&handoff, serde_json::to_vec(&document).unwrap()).unwrap();
         let invoke = || {
-            Command::new(env!("CARGO_BIN_EXE_tilo-staging-handoff"))
+            Command::new(tilo_test_env::package_binary!("tilo-staging-handoff"))
                 .args(["write-reclaim-record", "--handoff"])
                 .arg(&handoff)
                 .arg("--target-var")
@@ -1243,14 +1243,17 @@ fn accepted_candidate_migrations_revalidate_source_identity_before_install() {
 /// Stage the real ELF pair together so `current_exe` sibling lookup works even
 /// when a remote runner copies test artifacts out of Cargo's target directory.
 fn native_retained_runtime() -> tempfile::TempDir {
-    let helper = Path::new(env!("CARGO_BIN_EXE_tilo-staging-handoff"));
+    let helper = tilo_test_env::package_binary!("tilo-staging-handoff");
+    let helper = helper.as_path();
     // The package-local target compiles the production extractor source,
     // not a replacement implementation. The explicit path also supports
     // runners that provision the separately built imager binary.
     let extractor = std::env::var_os("TILO_PREPARED_EXTRACT_BINARY")
         .map(PathBuf::from)
         .or_else(|| {
-            option_env!("CARGO_BIN_EXE_staging-handoff-native-extractor").map(PathBuf::from)
+            option_env!("CARGO_BIN_EXE_staging-handoff-native-extractor").map(|built| {
+                tilo_test_env::package_binary_at("staging-handoff-native-extractor", built)
+            })
         })
         .unwrap_or_else(|| helper.with_file_name("tilo-installer-prepared-setup-extract"));
     let runtime = tempfile::tempdir().unwrap();

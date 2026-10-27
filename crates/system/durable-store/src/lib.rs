@@ -18,6 +18,7 @@ use std::path::PathBuf;
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 mod memory;
+pub mod waiting;
 
 pub use memory::{MemoryStore, PendingWrite};
 
@@ -177,6 +178,17 @@ pub enum Durability {
     Failed(String),
 }
 
+/// What [`DurableStore::wake_when_settled`] did with its wake.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettleWatch {
+    /// Writes or a sync were outstanding for the key: the wake is called
+    /// once, from any thread, when they have all resolved.
+    Armed,
+    /// Nothing was outstanding for the key: the wake was dropped, and its
+    /// durability is what [`DurableStore::durability`] says now.
+    Settled,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum StoreError {
     #[error("another writer holds {0}")]
@@ -189,8 +201,9 @@ pub enum StoreError {
     SourceChanged(String),
     #[error("{0} has writes its host has not yet committed")]
     Pending(String),
-    /// [`DurableStore::prepare_shared`]: the store's own thread is still
-    /// opening the key.
+    /// On a thread that must not wait on storage ([`waiting`]): the store's
+    /// own thread is still opening or reading the key, and calls the
+    /// thread's [wake](waiting::wake) once when it is done.
     #[error("{0} is still being opened")]
     Opening(String),
     #[error("revision {0} is not awaiting acknowledgement")]
@@ -202,8 +215,8 @@ pub enum StoreError {
 /// Ownership of one key, held for as long as the value lives.
 pub type Lease = Box<dyn Any>;
 
-/// Called, from any thread, when work a caller declined to wait for is done
-/// (see [`DurableStore::prepare_shared`]).
+/// Called, from any thread, when work a caller must not wait for is done
+/// (see [`waiting::wake`]).
 pub type ReadyWake = std::sync::Arc<dyn Fn() + Send + Sync>;
 
 /// A non-exclusive claim on one key, for documents several processes may
@@ -271,11 +284,38 @@ pub trait DurableStore {
         self.flush(Some(key))
     }
 
+    /// [`Self::flush`] where this thread may wait on storage; on a thread
+    /// that must not ([`waiting::forbid_on_this_thread`]: a frame loop),
+    /// [`Self::flush_without_waiting`], whose [`StoreError::Pending`] means
+    /// the store's own thread is committing and [`Self::durability`] tells
+    /// how it went.
+    ///
+    /// # Errors
+    /// As the call it makes.
+    fn flush_where_allowed(&self, key: &StorageKey) -> Result<(), StoreError> {
+        if waiting::forbidden() {
+            self.flush_without_waiting(key)
+        } else {
+            self.flush(Some(key))
+        }
+    }
+
     /// Whether everything read from or accepted for `key` is on stable
     /// storage now. Does not wait where the store has a thread of its own.
     fn is_settled(&self, key: &StorageKey) -> bool {
         self.flush(Some(key)).is_ok()
     }
+
+    /// Call `wake` once, from any thread, when every write accepted for `key`
+    /// and every sync asked for it before this call has committed or failed:
+    /// how a window still showing "Saving…" hears that it is done without
+    /// asking again and again. Never called at once: when nothing is
+    /// outstanding the answer is [`SettleWatch::Settled`]. The same wake
+    /// ([`waiting::same_wake`]) armed twice is called once.
+    ///
+    /// Every store answers it: a window showing "Saving…" has no other way
+    /// to learn the write landed, and never polls for it.
+    fn wake_when_settled(&self, key: &StorageKey, wake: ReadyWake) -> SettleWatch;
 
     /// Become the key's only writer until the returned lease is dropped.
     ///
@@ -291,20 +331,19 @@ pub trait DurableStore {
     /// [`StoreError::Busy`] while an exclusive lease is held; an invalid key.
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError>;
 
-    /// For a caller that must not wait on storage (a UI thread): make sure a
-    /// [`Self::lease_shared`] of `key`, and the reads that follow it, create
-    /// nothing and find what they read already fetched. `Ok` when that is
-    /// so; otherwise [`StoreError::Opening`], the work left to the store's
-    /// own thread, which calls `ready` once it is done (a later call then
-    /// returns `Ok`, or the error the work met). A store with no thread of
-    /// its own returns `Ok`, and its lease waits as it always did.
-    ///
-    /// # Errors
-    /// [`StoreError::Opening`] while the work runs; an invalid key; the
-    /// failure the work met.
-    fn prepare_shared(&self, key: &StorageKey, ready: &ReadyWake) -> Result<(), StoreError> {
-        let _ = (key, ready);
-        Ok(())
+    /// Whether a lease or read the calling thread makes may answer
+    /// [`StoreError::Opening`]: on a thread that must not wait on storage
+    /// ([`waiting`], a frame loop), [`Self::lease`], [`Self::lease_shared`]
+    /// and [`Self::read`] of a key the store has not opened for this thread
+    /// answer it while the store's own thread opens or reads the key, and
+    /// that thread calls the caller's [wake](waiting::wake) once it has:
+    /// asked again, they then wait on nothing. Reads of a key this thread
+    /// leased answer what was read for the lease, with the writes accepted
+    /// since, and [`Self::read_hint`] answers only a hint already read.
+    /// Other threads are unaffected. A store with no thread of its own
+    /// works in place, and answers `false`.
+    fn declined_waiting_here(&self) -> bool {
+        false
     }
 
     /// Grant custody of `key` to exactly one `claimant`, durably: the first

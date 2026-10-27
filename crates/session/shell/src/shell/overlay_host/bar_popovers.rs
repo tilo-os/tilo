@@ -44,7 +44,7 @@ impl BarPopovers {
 }
 
 /// A command about workspaces the native shell lists in the workspace
-/// menu, beside switching, renaming, the overview and a new desk. A command
+/// menu, beside switching, renaming, the overview and a new strip. A command
 /// added here is offered there and carried out in
 /// [`ShellOverlayHost::run_native_workspace_action`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,12 +60,16 @@ pub(crate) enum NativeWorkspaceAction {
     /// Leave this workspace, held through the web: it goes from this
     /// computer and is not joined again unasked.
     Leave,
+    /// Try again to join this workspace, whose join failed or whose host
+    /// stopped admitting the person.
+    JoinAgain,
 }
 
 impl NativeWorkspaceAction {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::New,
         Self::Join,
+        Self::JoinAgain,
         Self::Settings,
         Self::Report,
         Self::Leave,
@@ -78,6 +82,7 @@ impl NativeWorkspaceAction {
             Self::Join => "join-workspace",
             Self::Report => "report-workspace",
             Self::Leave => "leave-workspace",
+            Self::JoinAgain => "join-workspace-again",
         }
     }
 
@@ -92,6 +97,7 @@ impl NativeWorkspaceAction {
             Self::Join => ("workspace-menu-join", false),
             Self::Report => ("workspace-menu-report", false),
             Self::Leave => ("workspace-menu-leave", true),
+            Self::JoinAgain => ("workspace-menu-join-again", false),
         };
         WorkspaceAction {
             id: self.id().to_owned(),
@@ -101,10 +107,12 @@ impl NativeWorkspaceAction {
     }
 
     /// Whether the menu offers it for the workspace shown, given the site
-    /// it is held through (`None`: on this computer, or shared directly).
-    fn offered(self, site: Option<&crate::shell::network::SiteRoom>) -> bool {
+    /// it is held through (`None`: on this computer, or shared directly) and
+    /// whether its join failed or needs doing again.
+    fn offered(self, site: Option<&crate::shell::network::SiteRoom>, unjoined: bool) -> bool {
         match self {
             Self::New | Self::Settings | Self::Join => true,
+            Self::JoinAgain => unjoined,
             Self::Leave => site.is_some(),
             // Only a workspace joined from a directory has a door to
             // report it at.
@@ -121,6 +129,9 @@ enum NativeProfileAction {
     /// Say something beside the pointer to the people in the window under
     /// it (cursor chat), whatever has the keyboard.
     SaySomething,
+    /// Point at what is wrong to report it, where reports have a
+    /// destination.
+    ReportProblem,
     /// Their identities on this device and how each is protected.
     Identities,
     /// An encrypted backup of their identity, to recover it elsewhere.
@@ -130,8 +141,9 @@ enum NativeProfileAction {
 }
 
 impl NativeProfileAction {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::SaySomething,
+        Self::ReportProblem,
         Self::Identities,
         Self::Backup,
         Self::PairDevice,
@@ -140,6 +152,7 @@ impl NativeProfileAction {
     fn id(self) -> &'static str {
         match self {
             Self::SaySomething => "say-something",
+            Self::ReportProblem => "report-problem",
             Self::Identities => "identities",
             Self::Backup => "identity-backup",
             Self::PairDevice => "pair-device",
@@ -155,36 +168,42 @@ impl NativeProfileAction {
         match self {
             Self::Identities => Some("settings://users"),
             Self::Backup => Some("settings://about"),
-            Self::PairDevice | Self::SaySomething => None,
+            Self::PairDevice | Self::SaySomething | Self::ReportProblem => None,
         }
     }
 
     fn profile_action(self) -> ProfileAction {
         let (title, group, icon) = match self {
             Self::SaySomething => (
-                "profile-action-say-something",
+                t("profile-action-say-something"),
                 ProfileGroup::Together,
                 ui::icons::Icon::MessageCircle,
             ),
+            // The desktop's own copy, the entry the browser offers too.
+            Self::ReportProblem => (
+                tilo_desktop::i18n::t("feedback-report-problem"),
+                ProfileGroup::Together,
+                ui::icons::Icon::Flag,
+            ),
             Self::Identities => (
-                "profile-action-identities",
+                t("profile-action-identities"),
                 ProfileGroup::Identity,
                 ui::icons::Icon::Fingerprint,
             ),
             Self::Backup => (
-                "profile-action-backup",
+                t("profile-action-backup"),
                 ProfileGroup::Identity,
                 ui::icons::Icon::Download,
             ),
             Self::PairDevice => (
-                "profile-action-pair-device",
+                t("profile-action-pair-device"),
                 ProfileGroup::Devices,
                 ui::icons::Icon::MonitorSmartphone,
             ),
         };
         ProfileAction {
             id: self.id().to_owned(),
-            title: t(title),
+            title,
             group,
             icon,
         }
@@ -242,7 +261,10 @@ impl ShellOverlayHost {
         }
     }
 
-    fn main_bar_rect(&mut self, rect: fn(&tilo_desktop::topbar::TopBarChrome) -> Rect) -> Rect {
+    pub(super) fn main_bar_rect(
+        &mut self,
+        rect: fn(&tilo_desktop::topbar::TopBarChrome) -> Rect,
+    ) -> Rect {
         self.desktop_surface_mut()
             .and_then(|surface| surface.topbar().map(rect))
             .unwrap_or(Rect::ZERO)
@@ -257,24 +279,26 @@ impl ShellOverlayHost {
         let state = chrome.borrow();
         let (workspaces, active_room) = {
             let tree = state.tree();
-            let workspaces = tree
-                .desktop
-                .workspaces
-                .iter()
-                .map(|workspace| WorkspaceChoice {
-                    key: workspace.id.0.to_string(),
-                    name: workspace.name.clone(),
-                    current: workspace.id == tree.desktop.active,
-                })
-                .collect();
             let active_room = tree
                 .desktop
                 .active_workspace()
-                .map(|workspace| workspace.room);
-            (workspaces, active_room)
+                .map(crate::shell::state::Workspace::room);
+            (
+                tree.desktop
+                    .workspaces
+                    .iter()
+                    .map(|workspace| WorkspaceChoice {
+                        key: workspace.id.0.to_string(),
+                        name: workspace.name.clone(),
+                        current: workspace.id == tree.desktop.active,
+                    })
+                    .collect::<Vec<_>>(),
+                active_room,
+            )
         };
         let site_rooms = self.site_rooms();
         let site = active_room.and_then(|room| site_rooms.iter().find(|site| site.room == room));
+        let unjoined = active_room.is_some_and(|room| self.join_failed(room));
         WorkspaceMenuModel {
             workspaces,
             // A workspace held through the web is hosted by its site; the
@@ -282,11 +306,11 @@ impl ShellOverlayHost {
             host: site.and_then(|site| site.site.clone()),
             actions: NativeWorkspaceAction::ALL
                 .into_iter()
-                .filter(|action| action.offered(site))
+                .filter(|action| action.offered(site, unjoined))
                 .map(NativeWorkspaceAction::menu_action)
                 .collect(),
             can_rename: state.may_rename_active_workspace(),
-            can_add_desk: state.can_add_strip(),
+            can_add_strip: state.can_add_strip(),
         }
     }
 
@@ -312,6 +336,10 @@ impl ShellOverlayHost {
             // accounts yet; none hides the section rather than showing a
             // service the person cannot link from here.
             linked: Vec::new(),
+            // The native bar shows no account key yet, and this is your own
+            // card, not someone else's.
+            key: None,
+            other: None,
 
             // The name is the identity's own; no rename of it is reachable
             // from the shell, so the card shows it and Settings' identities
@@ -322,6 +350,9 @@ impl ShellOverlayHost {
             ask_name: !crate::shell::network::own_name_is_chosen(),
             actions: NativeProfileAction::ALL
                 .into_iter()
+                .filter(|action| {
+                    *action != NativeProfileAction::ReportProblem || self.feedback_configured()
+                })
                 .map(NativeProfileAction::profile_action)
                 .collect(),
             offers_presence: true,
@@ -342,7 +373,7 @@ impl ShellOverlayHost {
                     .tree()
                     .desktop
                     .active_workspace()
-                    .map(|workspace| (workspace.room, workspace.name.clone()));
+                    .map(|workspace| (workspace.room(), workspace.name.clone()));
                 drop(state);
                 let (room, name) = workspace?;
                 Some(tilo_desktop::profile_card::WorkspaceSight {
@@ -350,6 +381,9 @@ impl ShellOverlayHost {
                     visibility: self.presence_visibility(room),
                 })
             }),
+            // A native desktop is always its person's own, never a spectator's.
+            seen: tilo_desktop::profile_card::Seen::Here,
+            control_hints: Some(self.control_hints_enabled()),
         }
     }
 
@@ -397,14 +431,8 @@ impl ShellOverlayHost {
                 // through; a key that chose it keeps the flight short.
                 self.latch_overview_transition();
             }
-            WorkspaceMenuChoice::NewDesk => {
-                if let Some(bar) = self
-                    .desktop_surface_mut()
-                    .and_then(tilo_desktop::composition::DesktopSurface::topbar_mut)
-                {
-                    bar.begin_new_desk();
-                }
-            }
+            // Made in the strip switcher, the one place strips are.
+            WorkspaceMenuChoice::NewStrip => self.new_strip_in_switcher(),
             WorkspaceMenuChoice::Rename => {
                 if let Some(bar) = self
                     .desktop_surface_mut()
@@ -425,7 +453,7 @@ impl ShellOverlayHost {
             .tree()
             .desktop
             .active_workspace()
-            .map(|workspace| workspace.room);
+            .map(crate::shell::state::Workspace::room);
         match action {
             NativeWorkspaceAction::New => {
                 state.add_workspace(t("search-action-workspace-create-default-name"));
@@ -439,6 +467,11 @@ impl ShellOverlayHost {
             NativeWorkspaceAction::Leave => {
                 if let Some(room) = active_room {
                     state.push_peer_sync_request(super::PeerSyncAction::LeaveSite { room });
+                }
+            }
+            NativeWorkspaceAction::JoinAgain => {
+                if let Some(room) = active_room {
+                    state.push_peer_sync_request(super::PeerSyncAction::RetryJoin { room });
                 }
             }
             NativeWorkspaceAction::Report => {
@@ -479,8 +512,11 @@ impl ShellOverlayHost {
             ProfileChoice::Visibility(choice) => {
                 let room = self.chrome.as_ref().and_then(|chrome| {
                     let state = chrome.borrow();
-                    let room = state.tree().desktop.active_workspace().map(|w| w.room);
-                    room
+                    state
+                        .tree()
+                        .desktop
+                        .active_workspace()
+                        .map(crate::shell::state::Workspace::room)
                 });
                 if let Some(room) = room {
                     self.set_presence_visibility(room, *choice);
@@ -492,7 +528,17 @@ impl ShellOverlayHost {
                 self.set_own_name(name);
                 return;
             }
-            ProfileChoice::Link(_) | ProfileChoice::Unlink(_) => {
+            ProfileChoice::ControlHints(on) => {
+                self.set_control_hints_enabled(*on);
+                return;
+            }
+            // Someone else's card is not opened from the native bar yet.
+            ProfileChoice::Link(_)
+            | ProfileChoice::Unlink(_)
+            | ProfileChoice::Accept(_)
+            | ProfileChoice::Decline(_)
+            | ProfileChoice::Follow(_)
+            | ProfileChoice::Message(_) => {
                 return;
             }
         };
@@ -501,6 +547,10 @@ impl ShellOverlayHost {
         };
         if action == NativeProfileAction::SaySomething {
             self.open_cursor_chat_on_request();
+            return;
+        }
+        if action == NativeProfileAction::ReportProblem {
+            self.open_feedback_picker();
             return;
         }
         let Some(link) = action.settings_link() else {
@@ -519,7 +569,7 @@ impl ShellOverlayHost {
     /// Name this person's identity `name`, as the avatar menu asked them:
     /// their active identity record takes it, so their own desktop and the
     /// people they work with see it from now on. Says so when it could not.
-    pub(super) fn set_own_name(&mut self, name: &str) {
+    pub(super) fn set_own_name(&self, name: &str) {
         let saved = runtime_identity::identity_dir_from_env().and_then(|dir| {
             let record = runtime_identity::resolve_active_identity(&dir).ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, "no active identity")
@@ -675,14 +725,7 @@ impl ShellOverlayHost {
         chosen
     }
 
-    /// Whether the profile card is open.
     pub fn profile_card_open(&self) -> bool {
         self.bar_popovers.profile.is_open()
-    }
-
-    /// The open profile card's bounds.
-    pub fn profile_card_rect(&self) -> Option<Rect> {
-        self.profile_card_open()
-            .then(|| self.bar_popovers.profile.rect())
     }
 }

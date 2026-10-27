@@ -3,12 +3,12 @@ pub use crate::theme_document::{
     ThemeShape, ThemeType,
 };
 pub use crate::theme_layers::{
-    AccessibilityLayer, CUSTOM_THEMES_KEY, ContentSurface, DARK_THEME_KEY, DENSITY_KEY,
-    DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_DEFAULTS_SCHEMA_VERSION, DISTRIBUTION_LAYER_ID,
-    DistributionDefaults, DistributionPolicy, LIGHT_THEME_KEY, MODE_KEY, PIN_DENSITY, PIN_EMPHASIS,
-    PIN_MATERIAL, PIN_MOTION, PIN_PALETTE, PIN_PRESENCE, PIN_SHAPE, PIN_TYPE, PINNABLE,
-    ThemeLayerStack, WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers, user_document,
-    workspace_temperature_override,
+    APPEARANCE_SECTION, AccessibilityLayer, CUSTOM_THEMES_KEY, ContentSurface, DARK_THEME_KEY,
+    DENSITY_KEY, DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_DEFAULTS_SCHEMA_VERSION,
+    DISTRIBUTION_LAYER_ID, DistributionDefaults, DistributionPolicy, LIGHT_THEME_KEY, MODE_KEY,
+    PIN_DENSITY, PIN_EMPHASIS, PIN_MATERIAL, PIN_MOTION, PIN_PALETTE, PIN_PRESENCE, PIN_SHAPE,
+    PIN_TYPE, PINNABLE, ThemeLayerStack, WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers,
+    user_document, workspace_temperature_override,
 };
 pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
 use crate::tokens::{Colors, PresenceHue, Tokens};
@@ -108,7 +108,15 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     tokens
 }
 
-#[derive(Debug, PartialEq)]
+/// How many pages wide a pane is before a document's text grows
+/// ([`Theme::document_zoom`]): a page then fills about two fifths of it.
+pub const DOCUMENT_ROOM: f64 = 2.6;
+/// The most a document's text grows in a wide pane: body text from 14 px to
+/// 21 px, about what the same page reads at on a laptop held at arm's length
+/// against a desktop display across the desk.
+pub const MAX_DOCUMENT_ZOOM: f32 = 1.5;
+
+#[derive(Debug)]
 pub struct Theme {
     pub name: String,
     /// The document this theme was built from, as applied: after the
@@ -156,6 +164,61 @@ pub struct Theme {
     /// High contrast or forced colours is the active track. Content surfaces
     /// ask [`Theme::colors_are_forced`] instead of comparing [`Theme::name`].
     pub forced_colors: bool,
+    /// The shape of the surface the window is drawn on, in the coordinates
+    /// of the scene being drawn, when its host says: rounded at the radius
+    /// the compositor draws the window with, square while it is drawn edge
+    /// to edge. `None` when no host said; nothing then keeps out of corners.
+    /// Set where the window is drawn, not part of the configured theme.
+    pub surface: Option<SurfaceShape>,
+}
+
+// Written out rather than derived: a derived `eq` is `#[inline]`, so every
+// app whose generic toolkit code compares themes (a tree view's or an
+// embedded view's layout) compiled its own copy of this comparison, about
+// 7 KB each. The destructuring keeps it in step with the fields.
+impl PartialEq for Theme {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            name,
+            document,
+            tokens,
+            border_standard,
+            border_focus,
+            text_primary,
+            text_dim,
+            text_tertiary,
+            status_success,
+            radius_standard,
+            padding_standard,
+            gap_standard,
+            reduce_motion,
+            reduce_transparency,
+            text_scale,
+            ui_scale,
+            caret_width,
+            forced_colors,
+            surface,
+        } = self;
+        *name == other.name
+            && *document == other.document
+            && *tokens == other.tokens
+            && *border_standard == other.border_standard
+            && *border_focus == other.border_focus
+            && *text_primary == other.text_primary
+            && *text_dim == other.text_dim
+            && *text_tertiary == other.text_tertiary
+            && *status_success == other.status_success
+            && *radius_standard == other.radius_standard
+            && *padding_standard == other.padding_standard
+            && *gap_standard == other.gap_standard
+            && *reduce_motion == other.reduce_motion
+            && *reduce_transparency == other.reduce_transparency
+            && *text_scale == other.text_scale
+            && *ui_scale == other.ui_scale
+            && *caret_width == other.caret_width
+            && *forced_colors == other.forced_colors
+            && *surface == other.surface
+    }
 }
 
 impl Clone for Theme {
@@ -182,6 +245,7 @@ impl Clone for Theme {
             ui_scale: self.ui_scale,
             caret_width: self.caret_width,
             forced_colors: self.forced_colors,
+            surface: self.surface,
         }
     }
 }
@@ -277,6 +341,7 @@ impl Theme {
             ui_scale: 1.0,
             caret_width: 2.0,
             forced_colors: document.palette.high_contrast,
+            surface: None,
             document,
             tokens,
         }
@@ -303,7 +368,6 @@ impl Theme {
         Self::preset(Preset::Dark)
     }
 
-    /// The light theme.
     pub fn light() -> Self {
         Self::preset(Preset::Light)
     }
@@ -362,7 +426,8 @@ impl Theme {
         c.text_tertiary = on.ink_tertiary;
         c.intent.selection = c.selected_on(ground);
         c.intent.selection_hover = c.lift_on(ground, 0.5);
-        c.intent.neutral_fill = crate::tokens::colors::mix8(ground, on.ink, 0.9);
+        c.intent.value_fill =
+            crate::tokens::colors::value_fill_on(c.intent.accent_ink, ground, c.intent.selection);
         let ground_dark = crate::color::relative_luminance(ground) < Self::POLARITY_LUMINANCE;
         if ground_dark != c.palette.dark && matches!(c.emphasis, crate::tokens::Emphasis::Inverted)
         {
@@ -531,6 +596,93 @@ impl Theme {
         resolve_theme_layers(&stack)
     }
 
+    /// The accessibility comforts the person chose in this process's
+    /// settings document (the installed source, else the settings file), with
+    /// what the launcher requested ([`crate::host::environment()`]) on top:
+    /// high contrast, text size, interface scale and reduced motion. The
+    /// layer [`Theme::configured`] leaves to its host, which applies it over
+    /// that theme on every settings change, so a change in Settings reaches a
+    /// running window without a restart.
+    #[must_use]
+    pub fn configured_accessibility() -> crate::theme_layers::AccessibilityLayer {
+        Self::configured_comforts().or_default()
+    }
+
+    /// [`Self::configured_accessibility`], saying which comforts the
+    /// document names at all: a host keeps its own value for one it does not.
+    #[must_use]
+    pub fn configured_comforts() -> ConfiguredComforts {
+        let document = match settings_store::installed_source() {
+            Some(source) => serde_json::Value::Object(source.load()),
+            None => serde_json::Value::Object(
+                settings_store::settings_path()
+                    .map(|path| settings_store::load_at(&path))
+                    .unwrap_or_default(),
+            ),
+        };
+        Self::comforts_in(&document, crate::host::environment().accessibility)
+    }
+
+    /// [`Self::configured_accessibility`] of an explicit settings document
+    /// and launch request.
+    #[must_use]
+    pub fn accessibility_in(
+        document: &serde_json::Value,
+        requested: crate::host::AccessibilityInputs,
+    ) -> crate::theme_layers::AccessibilityLayer {
+        Self::comforts_in(document, requested).or_default()
+    }
+
+    /// [`Self::configured_comforts`] of an explicit settings document and
+    /// launch request. The launcher's request is a floor for contrast and
+    /// motion (it can add them, never take them away) and gives the scales
+    /// until the document names its own: the document is the person's
+    /// current choice, the request a copy of it from when the window opened.
+    /// A layer this build rejects names nothing.
+    #[must_use]
+    pub fn comforts_in(
+        document: &serde_json::Value,
+        requested: crate::host::AccessibilityInputs,
+    ) -> ConfiguredComforts {
+        let stack = crate::theme_layers::ThemeLayerStack::from_settings_json(
+            &document.to_string(),
+            local_moment(),
+        );
+        let admitted = stack.accessibility.materialize().ok();
+        let appearance = document.get("appearance");
+        let named = |key: &str| {
+            admitted.is_some()
+                && appearance.is_some_and(|section| {
+                    section.get(key).is_some()
+                        || section
+                            .get(crate::theme_layers::ACCESSIBILITY_LAYER_KEY)
+                            .is_some_and(|layer| layer.get(key).is_some())
+                })
+        };
+        let file = admitted.unwrap_or_default();
+        let flag = |key: &str, chosen: bool, floor: bool| {
+            if named(key) {
+                Some(chosen || floor)
+            } else {
+                floor.then_some(true)
+            }
+        };
+        let scale = |key: &str, chosen: f32, launched: Option<f32>| {
+            if named(key) {
+                Some(chosen)
+            } else {
+                launched.filter(|value| value.is_finite())
+            }
+        };
+        ConfiguredComforts {
+            high_contrast: flag("high_contrast", file.high_contrast, requested.high_contrast),
+            reduce_motion: flag("reduce_motion", file.reduce_motion, requested.reduce_motion),
+            text_scale: scale("text_scale", file.text_scale, requested.text_scale),
+            ui_scale: scale("ui_scale", file.ui_scale, requested.ui_scale),
+            layer: file,
+        }
+    }
+
     /// The user's theme in a settings document, if it names one this build
     /// admits. Automatic mode resolves against the local time now.
     pub fn from_settings_json(text: &str) -> Option<Self> {
@@ -648,6 +800,37 @@ impl Theme {
             theme.text_scale = 1.0;
         }
         theme
+    }
+
+    /// How much larger a document draws its text in a pane `width` wide,
+    /// whose page (reading column and its gutters) is `page` wide at this
+    /// theme's size: `1.0` until the pane is [`DOCUMENT_ROOM`] pages wide,
+    /// then growing with the pane up to [`MAX_DOCUMENT_ZOOM`], in steps of a
+    /// sixteenth so resizing a window re-sets the text about once per pixel
+    /// of type size rather than every frame.
+    ///
+    /// A page at its laptop size in a window on a large display is a narrow
+    /// strip of small text in a field of empty space; grown, it keeps its
+    /// measure and fills the screen the way a page held closer would. A
+    /// laptop or phone window is never wide enough to grow it.
+    #[must_use]
+    pub fn document_zoom(width: f64, page: f64) -> f32 {
+        if !(width.is_finite() && page.is_finite() && page > 0.0) {
+            return 1.0;
+        }
+        let zoom = (width / (page * DOCUMENT_ROOM)).clamp(1.0, f64::from(MAX_DOCUMENT_ZOOM));
+        crate::num::f32_of_f64((zoom * 16.0).floor() / 16.0)
+    }
+
+    /// This theme with its type grown by `zoom` on top of the reader's own
+    /// text scale ([`Theme::document_zoom`]); `1.0` is this theme.
+    #[must_use]
+    pub fn with_document_zoom(&self, zoom: f32) -> Self {
+        if (zoom - 1.0).abs() <= f32::EPSILON {
+            return self.clone();
+        }
+        let scale = self.text_scale * zoom;
+        self.at_unit_text_scale().with_text_scale(scale)
     }
 
     /// `1.0` = unchanged. Multiplies spacing, radii, and type together,
@@ -781,6 +964,33 @@ impl Theme {
     }
 }
 
+/// The comforts a settings document names ([`Theme::configured_comforts`]):
+/// `None` where it names none, which leaves the host's own value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConfiguredComforts {
+    pub high_contrast: Option<bool>,
+    pub reduce_motion: Option<bool>,
+    pub text_scale: Option<f32>,
+    pub ui_scale: Option<f32>,
+    /// The document's whole admitted layer, for the comforts not listed.
+    pub layer: crate::theme_layers::AccessibilityLayer,
+}
+
+impl ConfiguredComforts {
+    /// The layer with every comfort the document leaves unnamed at its
+    /// default.
+    #[must_use]
+    pub fn or_default(self) -> crate::theme_layers::AccessibilityLayer {
+        crate::theme_layers::AccessibilityLayer {
+            high_contrast: self.high_contrast.unwrap_or(false),
+            reduce_motion: self.reduce_motion.unwrap_or(false),
+            text_scale: self.text_scale.unwrap_or(1.0),
+            ui_scale: self.ui_scale.unwrap_or(1.0),
+            ..self.layer
+        }
+    }
+}
+
 /// What the host showing a window knows about where, and for whom, it is
 /// shown: the temperature of the workspace the window is in and the colour
 /// of the person sitting at it. The shell resolves both and hands them to
@@ -795,6 +1005,69 @@ pub struct WindowAppearance {
     /// The person's own colour ("your colour"), `None` when the host does
     /// not know who sits here.
     pub your_colour: Option<PresenceHue>,
+    /// How round the host draws the window's corners, in logical pixels:
+    /// the theme's window radius (`radii.tile`) while the window stands
+    /// framed among others, 0 while it is drawn edge to edge (a maximized
+    /// window filling its display). `None` when no host said: a window on
+    /// another desktop, whose shape is not known.
+    pub corner_radius: Option<f32>,
+}
+
+/// The surface a window's content is drawn on, as the scene being drawn
+/// sees it: its bounds and the radius of each of its corners, 0 where a
+/// corner is square. A host that knows the shape it shows a window in puts
+/// it on the window's theme ([`Theme::surface`]); what runs along the
+/// window's edges (a scroll bar) keeps its ends out of a rounded corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SurfaceShape {
+    pub bounds: vello::kurbo::Rect,
+    pub radii: vello::kurbo::RoundedRectRadii,
+}
+
+impl SurfaceShape {
+    #[must_use]
+    pub fn rounded(bounds: vello::kurbo::Rect, radius: f64) -> Self {
+        Self {
+            bounds,
+            radii: vello::kurbo::RoundedRectRadii::from_single_radius(radius.max(0.0)),
+        }
+    }
+
+    #[must_use]
+    pub fn is_rounded(&self) -> bool {
+        let r = self.radii;
+        [r.top_left, r.top_right, r.bottom_right, r.bottom_left]
+            .into_iter()
+            .any(|radius| radius > 0.0)
+    }
+
+    /// The shape where `transform` takes it: its bounds' box, and radii
+    /// scaled by the transform's scale. Transforms that place surfaces
+    /// translate and scale uniformly.
+    #[must_use]
+    pub fn transformed(&self, transform: vello::kurbo::Affine) -> Self {
+        let scale = transform.determinant().abs().sqrt();
+        let r = self.radii;
+        Self {
+            bounds: transform.transform_rect_bbox(self.bounds),
+            radii: vello::kurbo::RoundedRectRadii::new(
+                r.top_left * scale,
+                r.top_right * scale,
+                r.bottom_right * scale,
+                r.bottom_left * scale,
+            ),
+        }
+    }
+
+    /// The shape as a widget that draws with `transform` sees it, in its
+    /// own coordinates: the inverse of [`Self::transformed`].
+    #[must_use]
+    pub fn seen_through(&self, transform: vello::kurbo::Affine) -> Self {
+        if transform.determinant().abs() <= f64::EPSILON {
+            return *self;
+        }
+        self.transformed(transform.inverse())
+    }
 }
 
 impl Theme {
@@ -831,6 +1104,105 @@ pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
 mod tests {
     use super::*;
 
+    /// Every control fill in every shipped theme, on every ground a control
+    /// stands on, clears the non-text contrast floor there and is never the
+    /// text colour; and a control's face (an unchecked box, a button, a
+    /// track) is a surface that body text reads on, never ink. A filled
+    /// progress bar or an unchecked box that renders as a black slab on a
+    /// light window fails here.
+    #[test]
+    fn every_control_fill_reads_on_its_ground_and_is_never_the_text_colour() {
+        use crate::a11y::contrast_ratio;
+        use crate::color::Oklch;
+        use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, composite};
+        let lab = |c: Color| {
+            let o = Oklch::from_color(c);
+            let h = f64::from(o.h).to_radians();
+            (
+                f64::from(o.l),
+                f64::from(o.c) * h.cos(),
+                f64::from(o.c) * h.sin(),
+            )
+        };
+        let distance = |a: Color, b: Color| {
+            let ((l1, a1, b1), (l2, a2, b2)) = (lab(a), lab(b));
+            ((l1 - l2).powi(2) + (a1 - a2).powi(2) + (b1 - b2).powi(2)).sqrt()
+        };
+        for preset in Preset::ALL {
+            let base = Theme::preset(preset);
+            let s = &base.tokens.colors.surfaces;
+            for (ground_name, ground) in [
+                ("content", s.content),
+                ("sidebar", s.sidebar),
+                ("inspector", s.inspector),
+                ("raised", s.raised),
+                ("overlay", composite(s.overlay, s.content)),
+            ] {
+                let theme = base.on_ground(ground);
+                let c = &theme.tokens.colors;
+                let ink = c.text_primary;
+                for (token, fill) in [
+                    ("value_fill", c.intent.value_fill),
+                    ("on_state", c.intent.on_state),
+                ] {
+                    let ratio = contrast_ratio(fill, ground);
+                    assert!(
+                        ratio >= NON_TEXT_MIN_CONTRAST - 0.01,
+                        "{}: {token} reaches only {ratio:.2}:1 on the {ground_name} ground",
+                        base.name
+                    );
+                    assert!(
+                        distance(fill, ink) >= 0.08,
+                        "{}: {token} {fill:?} is the text colour {ink:?} on the {ground_name} ground",
+                        base.name
+                    );
+                }
+                let track = contrast_ratio(c.intent.value_fill, c.intent.selection);
+                assert!(
+                    track >= NON_TEXT_MIN_CONTRAST - 0.01,
+                    "{}: value_fill reaches only {track:.2}:1 on its track on the {ground_name} ground",
+                    base.name
+                );
+                assert!(
+                    distance(c.intent.value_fill, c.border_focus) >= 0.08,
+                    "{}: value_fill is the focus ring's colour on the {ground_name} ground",
+                    base.name
+                );
+                let face = contrast_ratio(c.surfaces.raised, ink);
+                assert!(
+                    face >= 4.5 - 0.01,
+                    "{}: a control face on the {ground_name} ground carries text at only {face:.2}:1, so it reads as ink",
+                    base.name
+                );
+            }
+        }
+    }
+
+    // Catches a note maximised on a 1440p-class display reading as a narrow
+    // strip of laptop-sized text in a field of empty space.
+    #[test]
+    fn a_document_grows_its_text_only_in_a_pane_much_wider_than_its_page() {
+        let page = 560.0;
+        // Laptop, phone and a 1440p display at 1.5x keep the stock size.
+        for width in [0.0, 360.0, 1000.0, 1427.0] {
+            assert!((Theme::document_zoom(width, page) - 1.0).abs() < f32::EPSILON);
+        }
+        let grown = Theme::document_zoom(1700.0, page);
+        assert!(grown > 1.0 && grown < MAX_DOCUMENT_ZOOM, "{grown}");
+        // Whole sixteenths: a window resized by a pixel re-sets no text.
+        assert!((grown * 16.0 - (grown * 16.0).round()).abs() < 1e-6);
+        assert!((Theme::document_zoom(2280.0, page) - MAX_DOCUMENT_ZOOM).abs() < f32::EPSILON);
+        assert!((Theme::document_zoom(f64::NAN, page) - 1.0).abs() < f32::EPSILON);
+
+        // The zoom multiplies the reader's text scale, never replaces it.
+        let large = Theme::dark().with_text_scale(1.25);
+        let zoomed = large.with_document_zoom(1.5);
+        assert!((zoomed.text_scale - 1.875).abs() < 1e-5);
+        let body = |t: &Theme| t.text(crate::TextRole::Body).size;
+        assert!((body(&zoomed) / body(&large) - 1.5).abs() < 1e-3);
+        assert_eq!(large.with_document_zoom(1.0), large);
+    }
+
     #[test]
     fn a_primary_control_on_a_flipped_ground_stays_legible() {
         use crate::a11y::contrast_ratio;
@@ -848,7 +1220,6 @@ mod tests {
             );
             assert_ne!(i.accent, i.accent_hover);
         }
-        // A ground of the palette's own polarity keeps the authored fill.
         let dark = Theme::dark();
         let sidebar = dark.tokens.colors.surfaces.sidebar;
         assert_eq!(
@@ -1109,7 +1480,6 @@ mod tests {
 
     #[test]
     fn text_and_ui_scale_multiply_compose_and_clamp() {
-        // Case `text_scale_multiplies_every_type_size`.
         {
             let base = Theme::dark();
             let scaled = Theme::dark().with_text_scale(1.5);
@@ -1119,13 +1489,11 @@ mod tests {
             }
         }
 
-        // Case `text_scale_is_clamped_to_a_sane_range`.
         {
             assert!(Theme::dark().with_text_scale(0.0).text_scale >= 0.5);
             assert!(Theme::dark().with_text_scale(100.0).text_scale <= 4.0);
         }
 
-        // Case `ui_scale_multiplies_spacing_radii_and_type_together`.
         {
             let base = Theme::dark();
             let bs = base.tokens.spacing.s3;
@@ -1151,13 +1519,11 @@ mod tests {
             assert!((scaled.radius_standard - f64::from(r.control) * 1.5).abs() < 1e-4);
         }
 
-        // Case `ui_scale_is_clamped_to_a_sane_range`.
         {
             assert!(Theme::dark().with_ui_scale(0.0).ui_scale >= 0.5);
             assert!(Theme::dark().with_ui_scale(100.0).ui_scale <= 3.0);
         }
 
-        // Case `ui_scale_and_text_scale_compose_on_type`.
         {
             let base = Theme::dark();
             let base_type = base.text(crate::tokens::TextRole::Body).size;
@@ -1170,7 +1536,6 @@ mod tests {
             assert!((composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3);
         }
 
-        // Case `responsive_scale_is_ui_scale_times_text_growth_and_never_shrinks`.
         {
             assert_eq!(Theme::dark().responsive_scale(), 1.0);
             assert_eq!(Theme::dark().with_text_scale(2.0).responsive_scale(), 2.0);
@@ -1182,13 +1547,11 @@ mod tests {
 
     #[test]
     fn a11y_preferences_fold_into_the_theme() {
-        // Case `reduce_motion_flag_threads_onto_the_theme`.
         {
             assert!(!Theme::dark().reduce_motion, "default is motion on");
             assert!(Theme::dark().with_reduce_motion(true).reduce_motion);
         }
 
-        // Case `configured_theme_honours_the_host_reduce_motion_input`.
         {
             assert!(Theme::configured_from_text("", true).reduce_motion);
             assert!(!Theme::configured_from_text("", false).reduce_motion);
@@ -1243,7 +1606,6 @@ mod tests {
 
     #[test]
     fn a_document_sets_every_role_it_names() {
-        // Case `settings_json_materializes_a_custom_theme`.
         {
             let doc = quiet_ocean(1.25);
             let json = serde_json::json!({
@@ -1263,7 +1625,6 @@ mod tests {
             assert!(crate::tokens::contrast::audit(&theme.tokens.colors).is_empty());
         }
 
-        // Case `density_rescales_the_whole_scale_and_clamps`.
         {
             let theme = Theme::from_document(&quiet_ocean(1.25)).unwrap();
             let s = theme.tokens.spacing;
@@ -1276,7 +1637,6 @@ mod tests {
             assert!(Theme::from_document(&quiet_ocean(0.1)).is_none());
         }
 
-        // Case `shape_type_motion_and_material_reach_their_tokens`.
         {
             let mut doc = quiet_ocean(1.0);
             doc.shape.window_radius = 28.0;
@@ -1312,7 +1672,6 @@ mod tests {
             assert!((fill.h - 150.0).abs() < 6.0 && fill.c > 0.08);
         }
 
-        // Case `a_document_of_another_schema_or_a_missing_id_applies_nothing`.
         {
             let mut old = quiet_ocean(1.0);
             old.schema_version = 4;
@@ -1357,7 +1716,6 @@ mod configured_theme {
 
     #[test]
     fn startup_theme_follows_the_settings_file_or_its_absence() {
-        // Case `a_high_contrast_preference_on_disk_is_the_theme_that_starts`.
         {
             let dir = tempfile::tempdir().expect("temp config dir");
             let settings = dir.path().join("settings.json");
@@ -1373,7 +1731,6 @@ mod configured_theme {
                 "a settings file asking for high contrast must produce it",
             );
 
-            // The accessibility switch, whatever theme is chosen beside it.
             std::fs::write(
                 &settings,
                 r#"{"appearance":{"mode":"light","high_contrast":true}}"#,

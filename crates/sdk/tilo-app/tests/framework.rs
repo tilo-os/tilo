@@ -180,7 +180,6 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
         let inspection = app.harness().inspection_json().unwrap();
         assert!(inspection.contains("2 open"), "{inspection}");
 
-        // The row's checkbox is bound to set-done for its own item.
         let checkbox = app
             .harness()
             .targets()
@@ -194,13 +193,15 @@ fn actions_update_the_record_and_view_as_undoable_attributed_versions() {
             1
         );
 
-        // A destructive action asks for confirmation: the unconfirmed click is
-        // refused and changes nothing; the confirmed invocation applies.
+        // A destructive action of the record is undoable: the click applies
+        // it at once, nobody is asked, and Undo takes it back.
         app.harness().click_named("clear-done").unwrap();
+        app.settle();
+        assert_eq!(app.asking(), None);
+        assert_eq!(app.state().items.len(), 1);
+        assert!(app.undo());
         assert_eq!(app.state().items.len(), 2);
-        assert!(app.invoke(Checklist::CLEAR_DONE.invoke()).is_err());
-        app.invoke_confirmed(Checklist::CLEAR_DONE.invoke())
-            .unwrap();
+        app.invoke(Checklist::CLEAR_DONE.invoke()).unwrap();
         assert_eq!(app.state().items.len(), 1);
     }
     // phase: typing_in_a_bound_field_is_an_action
@@ -288,22 +289,18 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
             .flat_map(|resource| &resource.actions)
             .find(|spec| spec.id == tilo_app::tilo_resource::APPLY)
             .expect("apply is published for agents and scripts");
-        assert!(apply.is_programmatic(), "never a palette row");
+        assert!(!apply.reaches_people(), "never a palette row");
         assert!(apply.contract.confirmation_depends_on_arguments());
         let named = resources
             .iter()
             .flat_map(|resource| &resource.actions)
             .find(|spec| spec.id == "rename")
             .unwrap();
-        assert!(
-            !named.is_programmatic(),
-            "named actions stay in the palette"
-        );
+        assert!(named.reaches_people(), "named actions stay in the palette");
     }
-    // phase: a_destructive_typed_value_is_confirmed_like_its_named_action
+    // phase: a_destructive_typed_value_is_treated_like_its_named_action
     {
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
-        // An ordinary typed edit applies directly.
         app.invoke(typed(ChecklistAction::Rename(checklist::Rename {
             title: "Weekly".into(),
         })))
@@ -318,18 +315,9 @@ fn actions_are_gated_by_role_and_confirmed_for_every_surface() {
         })))
         .unwrap();
 
-        // `clear_done` is `#[action(destructive)]`: reached through `apply` it
-        // needs the same confirmation its named declaration does.
-        assert!(matches!(
-            app.invoke(typed(ChecklistAction::ClearDone(checklist::ClearDone {}))),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
-        ));
-        assert_eq!(
-            app.state().items.len(),
-            1,
-            "the refused edit changed nothing"
-        );
-        app.invoke_confirmed(typed(ChecklistAction::ClearDone(checklist::ClearDone {})))
+        // `clear_done` is `#[action(destructive)]` and undoable: reached
+        // through `apply` it applies at once, as its named declaration does.
+        app.invoke(typed(ChecklistAction::ClearDone(checklist::ClearDone {})))
             .unwrap();
         assert!(app.state().items.is_empty());
     }

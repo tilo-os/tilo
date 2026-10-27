@@ -57,15 +57,20 @@ fn forms(host: &ShellOverlayHost) -> (Form, Form) {
 
 #[test]
 fn super_tap_opens_the_surface_and_it_stays_until_closed() {
-    let (mut host, _chrome, _) = desk();
+    let (mut host, chrome, _) = desk();
     let doc = AutoCommit::new();
     let now = Instant::now();
     host.super_gesture(SuperGesture::Tap, &doc, &automerge::ROOT);
     assert_eq!(host.super_surface(), Some(SuperSurface::Pinned));
     assert!(host.palette_visible, "search is the surface's field");
     assert!(
-        host.palette.shows_field_only(),
-        "empty, nothing listed under it"
+        !host.palette.shows_field_only(),
+        "global search with the launcher under the field"
+    );
+    assert_eq!(
+        chrome.borrow().search_scope,
+        crate::shell::chrome_state::SearchScope::Workspace,
+        "scoped to the workspace in front"
     );
     host.update_desk(now);
     assert_eq!(
@@ -80,7 +85,7 @@ fn super_tap_opens_the_surface_and_it_stays_until_closed() {
         "no timer closes it"
     );
 
-    // Typing searches as it always has: the field grows into results.
+    // Typing searches as it always has.
     host.palette.set_query("spo");
     assert!(!host.palette.shows_field_only());
 
@@ -312,7 +317,7 @@ fn the_team_widget_waits_clear_of_the_strip_switcher() {
     host.update_desk(Instant::now());
     let zone = host.strip_switcher_zone();
     assert!(zone.area() > 0.0, "the demo desk offers the strip switcher");
-    let labels = host.strip_switcher.extent_beside(&host.strip_ribbon());
+    let labels = host.strip_navigator.labels_extent(&host.strip_frame());
     assert!(
         labels.y1 > zone.y1,
         "the labels reach under the ribbon: {labels:?} {zone:?}"
@@ -376,7 +381,12 @@ fn a_lone_strips_ribbon_rests_hidden_and_shows_when_reached_for() {
         zone.area() > 0.0,
         "the switcher is still offered by its mark"
     );
-    host.strip_ribbon_hover = Some(0);
+    let mark = host
+        .strip_ribbon()
+        .segment_rect(0)
+        .expect("the lone strip's mark")
+        .center();
+    host.strip_switcher_pointer_moved(mark);
     let reached = host.strip_indicator_alpha_at(ms(t0, 60_000), true);
     assert!(reached > 0.0, "reaching for the mark shows it: {reached}");
 }
@@ -550,6 +560,39 @@ fn widgets_stay_away_under_other_surfaces_and_beside_a_live_call() {
     assert_eq!(host.desk_form(WidgetId::Music), Form::Glance);
 }
 
+#[test]
+fn widgets_come_back_as_the_surface_over_them_went() {
+    let shown = |host: &ShellOverlayHost, at| {
+        host.desk
+            .shown
+            .get(&WidgetId::Music)
+            .map_or(0.0, |presence| presence.progress(at))
+    };
+    for (source, landed) in [
+        (ui::tokens::MotionSource::Keyboard, true),
+        (ui::tokens::MotionSource::Pointer, false),
+    ] {
+        let (mut host, chrome, _) = desk();
+        let t0 = Instant::now();
+        host.update_desk(t0);
+        chrome.borrow_mut().overlays.quick_settings = true;
+        host.update_desk(ms(t0, 1_000));
+        assert_eq!(host.desk_form(WidgetId::Music), Form::Away);
+        // Closed by a key, the music lands at once; by a click, it fades in.
+        host.input_source = source;
+        chrome.borrow_mut().overlays.quick_settings = false;
+        host.update_desk(ms(t0, 2_000));
+        assert_eq!(host.desk_form(WidgetId::Music), Form::Glance);
+        let at = ms(t0, 2_016);
+        assert_eq!(
+            shown(&host, at) >= 1.0,
+            landed,
+            "{source:?}: shown {}",
+            shown(&host, at)
+        );
+    }
+}
+
 /// Counts the system monitor's subscriptions, so a test sees when it is sent
 /// readings at all.
 struct CountingMonitor {
@@ -628,17 +671,26 @@ fn the_calendar_and_system_monitor_are_desk_widgets_that_read_only_while_shown()
 
 /// A face shown faintly reads as a ghost. The Team widget rests hidden with
 /// nobody else here; with people here it rests as a whole, legible face
-/// stack, and comes with the Appear motion, whole within its first moments,
-/// never resting translucent in between.
+/// stack, and comes at `fast` as if asked for, never on the slow unasked
+/// fade, never resting translucent in between. Its motion is its fade, so
+/// it asks for no frame after it is whole.
 #[test]
 fn the_team_widget_is_whole_or_hidden_never_a_ghost() {
-    let motion = ui::tokens::EffectiveMotion::new(Default::default(), false);
-    assert!(shown_opacity(WidgetId::Team, 0.0, motion) <= f32::EPSILON);
-    assert!(
-        (shown_opacity(WidgetId::Team, 0.6, motion) - 1.0).abs() < 1e-6,
-        "whole before its motion ends"
+    assert_eq!(
+        shown_spec(WidgetId::Team, false),
+        ui::motion::Ambient::ASKED,
+        "faces arrive at fast even unasked"
     );
-    assert!((shown_opacity(WidgetId::Team, 1.0, motion) - 1.0).abs() < 1e-6);
+    assert_eq!(
+        shown_spec(WidgetId::Music, false),
+        ui::motion::Ambient::UNASKED
+    );
+    assert!(shown_opacity(0.0) <= f32::EPSILON);
+    assert!(
+        shown_opacity(0.6) < 1.0,
+        "still arriving: its motion is not over"
+    );
+    assert!((shown_opacity(1.0) - 1.0).abs() < 1e-6, "whole as it rests");
 
     // Nobody else here: nothing to show, so it stays hidden at rest.
     let mut tree = WorkspaceTree::bootstrap_demo();
@@ -647,13 +699,14 @@ fn the_team_widget_is_whole_or_hidden_never_a_ghost() {
         workspace.collaborators.clear();
     }
     let chrome = ChromeState::new(tree);
-    let mut alone = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
-        .with_chrome(chrome.clone());
-    alone.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
     let t0 = Instant::now();
+    let mut alone =
+        ShellOverlayHost::with_fixture_content(Box::new(Container::new())).with_chrome(chrome);
+    alone.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
     alone.update_desk(t0);
     alone.update_desk(t0 + GLANCE_AFTER_PAUSE);
     assert_eq!(alone.desk_form(WidgetId::Team), Form::Away);
+    drop(alone);
 
     // Someone here: it rests in its glance form.
     let (mut host, _chrome, _) = desk();

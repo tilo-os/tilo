@@ -46,8 +46,205 @@ impl Painter<'_> {
     }
 }
 
+/// A rounded rectangle at `radius` in the previewed theme's units.
 fn rounded(rect: Rect, radius: f32) -> RoundedRect {
     RoundedRect::from_rect(rect, f64::from(radius))
+}
+
+/// Paint a list surface in `theme`: a window of rows, one selected, with
+/// names, a quieter second line and presence.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one composition, read top to bottom like the list it draws"
+)]
+pub fn miniature_list(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let colors = &theme.tokens.colors;
+    let radii = &theme.tokens.radii;
+    let space = &theme.tokens.spacing;
+    let mut paint = Painter {
+        scene,
+        text,
+        transform,
+        theme,
+    };
+    let (width, height) = CANVAS;
+    let gutter = f64::from(space.s4);
+    let inset = f64::from(space.s2);
+
+    paint.fill(&Rect::new(0.0, 0.0, width, height), colors.surfaces.base);
+    let tile = Rect::new(gutter, gutter, width - gutter, height - gutter);
+    paint.fill(&rounded(tile, radii.tile), colors.surfaces.content);
+    paint.outline(&rounded(tile, radii.tile), 1.0, theme.window_edge());
+
+    paint.label(
+        "Inbox",
+        TextRole::Title,
+        colors.text_primary,
+        Point::new(tile.x0 + f64::from(space.s6), tile.y0 + gutter),
+    );
+    paint.label(
+        "12 conversations",
+        TextRole::Caption,
+        colors.text_dim,
+        Point::new(tile.x0 + f64::from(space.s6), tile.y0 + gutter + 32.0),
+    );
+
+    let row_height = 44.0;
+    let list_top = tile.y0 + gutter + 62.0;
+    for (index, (name, subject, unread)) in [
+        ("Ada Lovelace", "The quarterly review", true),
+        ("Bo Chen", "Re: Budget notes", true),
+        ("Design team", "Friday's critique", false),
+        ("Grace Hopper", "A compiler for everyone", false),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        #[allow(clippy::cast_precision_loss, reason = "four rows")]
+        let top = list_top + index as f64 * (row_height + 4.0);
+        let row = Rect::new(tile.x0 + inset, top, tile.x1 - inset, top + row_height);
+        if index == 0 {
+            paint.fill(
+                &rounded(row, radii.item),
+                colors.lift_on(colors.surfaces.content, 1.0),
+            );
+        }
+        paint.fill(
+            &Circle::new((row.x0 + 20.0, row.center().y), 12.0),
+            colors.presence.hue(PresenceHue::Orange),
+        );
+        paint.label(
+            name,
+            TextRole::Label,
+            colors.text_primary,
+            Point::new(row.x0 + 42.0, row.y0 + 6.0),
+        );
+        paint.label(
+            subject,
+            TextRole::Caption,
+            colors.text_dim,
+            Point::new(row.x0 + 42.0, row.y0 + 24.0),
+        );
+        if unread {
+            paint.fill(
+                &Circle::new((row.x1 - 18.0, row.center().y), 5.0),
+                colors.intent.accent,
+            );
+        }
+    }
+}
+
+/// Paint a dialog over a window in `theme`: the scrim, a floating panel, its
+/// title and body, and its primary and secondary actions.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one composition, read top to bottom like the dialog it draws"
+)]
+pub fn miniature_dialog(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let colors = &theme.tokens.colors;
+    let radii = &theme.tokens.radii;
+    let space = &theme.tokens.spacing;
+    let mut paint = Painter {
+        scene,
+        text,
+        transform,
+        theme,
+    };
+    let (width, height) = CANVAS;
+    let gutter = f64::from(space.s4);
+    let inset = f64::from(space.s2);
+
+    paint.fill(&Rect::new(0.0, 0.0, width, height), colors.surfaces.base);
+    let behind = Rect::new(gutter, gutter, width - gutter, height - gutter);
+    paint.fill(&rounded(behind, radii.tile), colors.surfaces.content);
+    paint.outline(&rounded(behind, radii.tile), 1.0, theme.window_edge());
+
+    let dialog = Rect::new(
+        behind.x0 + 70.0,
+        behind.y0 + 42.0,
+        behind.x1 - 70.0,
+        behind.y1 - 42.0,
+    );
+    ui::surface::shadow(
+        paint.scene,
+        transform,
+        dialog,
+        f64::from(radii.panel),
+        &theme.tokens.elevation.floating,
+    );
+    paint.fill(&rounded(dialog, radii.panel), colors.surfaces.overlay);
+    paint.outline(
+        &rounded(dialog, radii.panel),
+        1.0,
+        ui::chrome::panel_border(theme),
+    );
+    paint.label(
+        "Move to trash?",
+        TextRole::Title,
+        colors.text_primary,
+        Point::new(
+            dialog.x0 + f64::from(space.s6),
+            dialog.y0 + f64::from(space.s6),
+        ),
+    );
+    paint.label(
+        "The file stays recoverable for 30 days.",
+        TextRole::Body,
+        colors.text_dim,
+        Point::new(
+            dialog.x0 + f64::from(space.s6),
+            dialog.y0 + f64::from(space.s6) + 32.0,
+        ),
+    );
+    let row = Rect::new(
+        dialog.x0 + f64::from(space.s6),
+        dialog.y0 + f64::from(space.s6) + 66.0,
+        dialog.x0 + 42.0 + f64::from(space.s6),
+        dialog.y0 + f64::from(space.s6) + 94.0,
+    );
+    paint.fill(&rounded(row, radii.control), colors.surfaces.raised);
+    paint.label(
+        "Keep the copy",
+        TextRole::Caption,
+        colors.text_primary,
+        Point::new(row.x0 + inset, row.y0 + 6.0),
+    );
+    let cancel = Rect::new(
+        dialog.x1 - 170.0,
+        dialog.y1 - 46.0,
+        dialog.x1 - 92.0,
+        dialog.y1 - 16.0,
+    );
+    paint.fill(&rounded(cancel, radii.control), colors.surfaces.raised);
+    paint.label(
+        "Cancel",
+        TextRole::Label,
+        colors.text_primary,
+        Point::new(cancel.x0 + 20.0, cancel.y0 + 7.0),
+    );
+    let primary = Rect::new(
+        cancel.x1 + inset,
+        cancel.y0,
+        dialog.x1 - f64::from(space.s6),
+        cancel.y1,
+    );
+    paint.fill(&rounded(primary, radii.control), colors.intent.accent);
+    paint.label(
+        "Move",
+        TextRole::Label,
+        colors.intent.on_accent,
+        Point::new(primary.x0 + 24.0, primary.y0 + 7.0),
+    );
 }
 
 /// Paint the miniature of `theme` at the origin of `transform`, in
@@ -178,7 +375,7 @@ pub fn miniature(scene: &mut Scene, transform: Affine, text: &mut TextRenderer, 
     );
     paint.fill(
         &RoundedRect::from_rect(track, track.height() / 2.0),
-        colors.intent.neutral_fill,
+        colors.intent.value_fill,
     );
     paint.fill(
         &Circle::new((track.x1 - 9.0, track.center().y), 7.0),

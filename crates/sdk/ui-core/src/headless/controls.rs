@@ -475,11 +475,7 @@ impl FrameHarness {
     /// Select everything in the focused field with the platform's
     /// select-all shortcut.
     fn select_all_text(&mut self) {
-        let command = match self.platform_conventions().platform() {
-            crate::platform::Platform::MacOs => "logo",
-            _ => "ctrl",
-        };
-        self.set_modifiers(&[command.to_owned()]);
+        self.set_modifiers(&["command".to_owned()]);
         self.key("a");
         self.set_modifiers(&[]);
     }
@@ -1061,8 +1057,6 @@ mod locus_tests {
             first[0].marker, arrived[0].marker,
             "published bounds follow the animated paint, not the target"
         );
-        // Complete empty certified rosters remove their participants through
-        // this same PresenceCtx retirement path.
         presence.unregister_peer(&event.actor.id);
         let retired = crate::action_locus::draw_action_presence(
             &mut crate::paint::PaintCtx::new(

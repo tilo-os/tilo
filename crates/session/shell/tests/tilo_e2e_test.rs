@@ -72,7 +72,6 @@ fn chrome_state_is_shared_defaults_sensibly_and_mutates_through_chrome() {
         let tree = WorkspaceTree::bootstrap_default();
         let chrome = ChromeState::new(tree);
 
-        // Two clones stand for two chrome widgets holding the same state.
         let a = chrome.clone();
         let b = chrome;
 
@@ -213,6 +212,51 @@ fn workspace_rename_commits_for_the_owner_but_not_a_guest() {
         let st = chrome.borrow();
         assert_eq!(st.editing_workspace_name, None);
         assert_eq!(st.tree().desktop.active_workspace().unwrap().name, original);
+    }
+}
+
+/// The bar and the workspace menu offer renaming the workspace and a new
+/// desk to whom the desktop's one policy (the browser's too) lets do them:
+/// its owner and moderators, never a member who only writes in it.
+#[test]
+fn rename_and_new_desk_are_for_the_owner_and_moderators_not_members() {
+    use shell::shell::state::local_user_id_for_room;
+    use tilo_action_policy::Role;
+    for (role, offered) in [
+        (Role::Owner, true),
+        (Role::Moderator, true),
+        (Role::Editor, false),
+    ] {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        if role == Role::Owner {
+            tree.adopt_ownerless_workspaces_with(local_user_id_for_room);
+        } else {
+            tree.adopt_ownerless_workspaces(&"room-owner".into());
+            let workspace = tree.desktop.active_workspace_mut().unwrap();
+            let me = local_user_id_for_room(&workspace.room());
+            workspace.admit(me, role);
+        }
+        let chrome = ChromeState::new(tree);
+        let strips = chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .strips
+            .len();
+        {
+            let st = chrome.borrow();
+            assert_eq!(st.may_rename_active_workspace(), offered, "{role:?}");
+            assert_eq!(st.can_add_strip(), offered, "{role:?}");
+        }
+        assert_eq!(chrome.borrow_mut().add_named_strip("Corner"), offered);
+        let st = chrome.borrow();
+        let workspace = st.tree().desktop.active_workspace().unwrap().clone();
+        assert_eq!(workspace.strips.len(), strips + usize::from(offered));
+        if offered {
+            assert_eq!(workspace.strips.last().unwrap().name, "Corner");
+        }
     }
 }
 
@@ -851,7 +895,6 @@ fn topbar_with_workspace_pill_hit() -> (
         .expect("compute_layout");
     bar.apply_layout(&taffy, node, Point::ORIGIN);
 
-    // Draw once to place the workspace pill.
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
@@ -870,7 +913,6 @@ fn topbar_with_workspace_pill_hit() -> (
 /// One cursor-move + left-press at `hit`, mirroring how a real click event
 /// pair reaches the widget tree. Split out of
 /// [`full_root_click_toggles_the_workspace_menu`] to keep it under
-
 /// the line limit.
 fn click_full_root(
     root: &mut Box<dyn Widget>,

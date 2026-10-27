@@ -2582,12 +2582,10 @@ dependencies = [
 name = "tilo-security-fuzz"
 version = "0.0.0"
 dependencies = [
- "collab-types",
  "landlock",
  "launcher",
  "libfuzzer-sys",
  "postcard",
- "serde_json",
  "tilo-app-package",
  "tilo-user-identity",
 ]

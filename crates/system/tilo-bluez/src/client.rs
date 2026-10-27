@@ -8,9 +8,11 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use futures_util::StreamExt as _;
+use tokio::sync::watch;
 use tracing::{debug, warn};
-use zbus::Connection;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
+use zbus::{Connection, MatchRule, MessageStream};
 
 use crate::agent::DeviceNames;
 use crate::model::{
@@ -22,6 +24,25 @@ const ADAPTER_IFACE: &str = "org.bluez.Adapter1";
 const DEVICE_IFACE: &str = "org.bluez.Device1";
 const PROPS_IFACE: &str = "org.freedesktop.DBus.Properties";
 const OBJECT_MANAGER_IFACE: &str = "org.freedesktop.DBus.ObjectManager";
+const BATTERY_IFACE: &str = "org.bluez.Battery1";
+/// A device's properties a person sees change: its name and kind, whether
+/// it is paired, trusted, blocked or connected. Its signal strength, which
+/// moves all through discovery, is not among them.
+const SHOWN_DEVICE: &[&str] = &[
+    "Alias",
+    "Name",
+    "Icon",
+    "Paired",
+    "Bonded",
+    "Trusted",
+    "Blocked",
+    "Connected",
+];
+/// An adapter's properties a person sees change.
+const SHOWN_ADAPTER: &[&str] = &["Powered", "Discovering", "Alias"];
+/// Signals buffered per stream before the oldest is dropped. Every signal
+/// only moves a count a reader re-reads on, so a dropped one loses nothing.
+const SIGNAL_QUEUE: usize = 64;
 
 /// The `a{oa{sa{sv}}}` shape `GetManagedObjects` returns.
 type ManagedObjects = HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>>;
@@ -68,12 +89,63 @@ impl BluezClient {
         reply.body().deserialize()
     }
 
-    /// Every adapter `BlueZ` knows about, in path order.
+    /// Follow what a Bluetooth page shows: a device or an adapter changing
+    /// a property a person sees ([`SHOWN_DEVICE`], [`SHOWN_ADAPTER`], a
+    /// battery's level), a device appearing or going, and `BlueZ` leaving or
+    /// joining the bus. The returned watch counts them; a reader reads the
+    /// adapter again when the count moves. Nothing polls.
+    ///
+    /// Must be called inside a tokio runtime; the follower runs there until
+    /// every clone of the watch is dropped.
     ///
     /// # Errors
     ///
-    /// Returns an error if the `GetManagedObjects` D-Bus call fails (for
-    /// example, `bluetoothd` is not running).
+    /// Returns an error if the signal subscriptions cannot be made.
+    pub async fn watch_changes(&self) -> zbus::Result<BluezChanges> {
+        let properties = MessageStream::for_match_rule(
+            MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender(DEST)?
+                .interface(PROPS_IFACE)?
+                .member("PropertiesChanged")?
+                .build(),
+            &self.connection,
+            Some(SIGNAL_QUEUE),
+        )
+        .await?;
+        let objects = MessageStream::for_match_rule(
+            MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender(DEST)?
+                .interface(OBJECT_MANAGER_IFACE)?
+                .build(),
+            &self.connection,
+            Some(SIGNAL_QUEUE),
+        )
+        .await?;
+        let owners = MessageStream::for_match_rule(
+            MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender("org.freedesktop.DBus")?
+                .path("/org/freedesktop/DBus")?
+                .interface("org.freedesktop.DBus")?
+                .member("NameOwnerChanged")?
+                .arg(0, DEST)?
+                .build(),
+            &self.connection,
+            Some(SIGNAL_QUEUE),
+        )
+        .await?;
+        let (sender, receiver) = watch::channel(0);
+        tokio::spawn(follow_changes(
+            properties,
+            futures_util::stream::select(objects, owners),
+            sender,
+        ));
+        Ok(BluezChanges { receiver })
+    }
+
+    /// Every adapter `BlueZ` knows about, in path order.
     pub async fn adapters(&self) -> zbus::Result<Vec<AdapterInfo>> {
         let objects = self.managed_objects().await?;
         let mut out: Vec<AdapterInfo> = objects
@@ -97,10 +169,6 @@ impl BluezClient {
     /// Every device on every adapter, sorted for display, with the name cache refreshed as a
     /// side effect so the pairing agent can title its prompts without calling back into a
     /// waiting daemon.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the `GetManagedObjects` D-Bus call fails.
     pub async fn devices(&self) -> zbus::Result<Vec<DeviceInfo>> {
         let objects = self.managed_objects().await?;
         let mut out: Vec<DeviceInfo> = objects
@@ -149,41 +217,22 @@ impl BluezClient {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `adapter` is not a valid object path or `BlueZ`
-    /// rejects the `Powered` property write.
     pub async fn set_powered(&self, adapter: &str, on: bool) -> zbus::Result<()> {
         self.set_adapter_prop(adapter, "Powered", on).await
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `adapter` is not a valid object path or reading
-    /// the `Powered` property fails.
     pub async fn is_powered(&self, adapter: &str) -> zbus::Result<bool> {
         self.adapter_prop(adapter, "Powered").await
     }
 
     /// Make this machine visible to others. Off by default and never left on — a permanently
     /// discoverable adapter is a standing invitation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `adapter` is not a valid object path or `BlueZ`
-    /// rejects the `Discoverable` property write.
     pub async fn set_discoverable(&self, adapter: &str, on: bool) -> zbus::Result<()> {
         self.set_adapter_prop(adapter, "Discoverable", on).await
     }
 
     /// Begin scanning. The scan runs until [`Self::stop_discovery`] or until this client's
     /// connection closes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if powering on the adapter fails, or if
-    /// `StartDiscovery` fails for a reason other than a scan already being
-    /// in progress.
     pub async fn start_discovery(&self, adapter: &str) -> zbus::Result<()> {
         // Powering on first: StartDiscovery on a powered-off adapter fails with
         // `org.bluez.Error.NotReady`, which reads as "scanning is broken" rather than "Bluetooth is off".
@@ -204,10 +253,6 @@ impl BluezClient {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `StopDiscovery` fails for a reason other than
-    /// there being no scan to stop, or someone else's session owning it.
     pub async fn stop_discovery(&self, adapter: &str) -> zbus::Result<()> {
         let proxy =
             zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
@@ -226,10 +271,6 @@ impl BluezClient {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `adapter` is not a valid object path or reading
-    /// the `Discovering` property fails.
     pub async fn is_discovering(&self, adapter: &str) -> zbus::Result<bool> {
         self.adapter_prop(adapter, "Discovering").await
     }
@@ -242,11 +283,6 @@ impl BluezClient {
     /// `org.bluez.Agent1` object one or more times before returning, and pairing only completes
     /// if those calls are answered. The reply can take as long as the user takes to compare a
     /// passkey, so this deliberately imposes no short timeout of its own.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if pairing fails for a reason other than the device
-    /// already being paired.
     pub async fn pair(&self, device: &str) -> zbus::Result<()> {
         let proxy = self.device_proxy(device).await?;
         match proxy.call_method("Pair", &()).await {
@@ -262,11 +298,6 @@ impl BluezClient {
     }
 
     /// Abort an in-flight pairing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `CancelPairing` fails for a reason other than
-    /// there being no pairing in progress.
     pub async fn cancel_pairing(&self, device: &str) -> zbus::Result<()> {
         let proxy = self.device_proxy(device).await?;
         match proxy.call_method("CancelPairing", &()).await {
@@ -280,20 +311,12 @@ impl BluezClient {
         }
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `device` is not a valid object path or the
-    /// `Connect` call fails.
     pub async fn connect_device(&self, device: &str) -> zbus::Result<()> {
         let proxy = self.device_proxy(device).await?;
         proxy.call_method("Connect", &()).await?;
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if `device` is not a valid object path or the
-    /// `Disconnect` call fails.
     pub async fn disconnect_device(&self, device: &str) -> zbus::Result<()> {
         let proxy = self.device_proxy(device).await?;
         proxy.call_method("Disconnect", &()).await?;
@@ -304,11 +327,6 @@ impl BluezClient {
     /// re-authorising every profile (`BlueZ` answers `AuthorizeService` itself for trusted
     /// devices) — a real grant, so it's set explicitly after a successful pairing rather than
     /// implied by it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `device` is not a valid object path or `BlueZ`
-    /// rejects the `Trusted` property write.
     pub async fn set_trusted(&self, device: &str, trusted: bool) -> zbus::Result<()> {
         let proxy =
             zbus::Proxy::new(&self.connection, DEST, device.to_string(), PROPS_IFACE).await?;
@@ -328,11 +346,6 @@ impl BluezClient {
     /// Set the user-visible Device1 Alias. This is the BlueZ-owned rename,
     /// not a second Settings-side nickname database, so every Bluetooth UI
     /// and application sees the same name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `alias` is empty after trimming, `device` is not
-    /// a valid object path, or `BlueZ` rejects the `Alias` property write.
     pub async fn set_alias(&self, device: &str, alias: &str) -> zbus::Result<()> {
         let alias = alias.trim();
         if alias.is_empty() {
@@ -353,12 +366,6 @@ impl BluezClient {
     }
 
     /// Forget a device: drops the bond, the keys and the trust. The device must pair again from scratch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `device` is not a valid object path, or
-    /// `RemoveDevice` fails for a reason other than the device already
-    /// being gone.
     pub async fn remove_device(&self, adapter: &str, device: &str) -> zbus::Result<()> {
         let proxy =
             zbus::Proxy::new(&self.connection, DEST, adapter.to_string(), ADAPTER_IFACE).await?;
@@ -418,6 +425,80 @@ pub enum PairOutcome {
     },
 }
 
+/// The changes [`BluezClient::watch_changes`] follows, counted. Cloning
+/// shares the same follower.
+#[derive(Clone, Debug)]
+pub struct BluezChanges {
+    receiver: watch::Receiver<u64>,
+}
+
+impl BluezChanges {
+    /// How many changes there were so far.
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        *self.receiver.borrow()
+    }
+
+    /// Wait for the next change, and return how many there were so far.
+    /// `None` once the follower has stopped (its bus connection closed).
+    pub async fn changed(&mut self) -> Option<u64> {
+        self.receiver.changed().await.ok()?;
+        Some(*self.receiver.borrow_and_update())
+    }
+}
+
+/// Count the property changes a person sees and every other signal, until
+/// the streams end or nobody watches.
+async fn follow_changes(
+    mut properties: MessageStream,
+    mut others: futures_util::stream::Select<MessageStream, MessageStream>,
+    sender: watch::Sender<u64>,
+) {
+    loop {
+        let counts = tokio::select! {
+            () = sender.closed() => return,
+            signal = properties.next() => match signal {
+                Some(Ok(signal)) => shows(&signal),
+                Some(Err(_)) => false,
+                None => return,
+            },
+            signal = others.next() => {
+                if signal.is_none() {
+                    return;
+                }
+                true
+            }
+        };
+        if counts {
+            sender.send_modify(|count| *count = count.wrapping_add(1));
+        }
+    }
+}
+
+/// Whether a `PropertiesChanged` changed what a Bluetooth page shows.
+fn shows(signal: &zbus::Message) -> bool {
+    let Ok((interface, changed, invalidated)) =
+        signal
+            .body()
+            .deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>()
+    else {
+        return false;
+    };
+    shown_change(&interface, changed.keys().chain(&invalidated))
+}
+
+/// Whether properties `names` of `interface` are among what a Bluetooth
+/// page shows.
+fn shown_change<'a>(interface: &str, mut names: impl Iterator<Item = &'a String>) -> bool {
+    let shown = match interface {
+        DEVICE_IFACE => SHOWN_DEVICE,
+        ADAPTER_IFACE => SHOWN_ADAPTER,
+        BATTERY_IFACE => return true,
+        _ => return false,
+    };
+    names.any(|name| shown.contains(&name.as_str()))
+}
+
 /// Turn a `BlueZ` D-Bus error into something worth putting in front of a person. `BlueZ`'s own
 /// messages are terse but accurate, so we keep them and only translate the ones whose wire
 /// name says more than the text.
@@ -460,7 +541,6 @@ mod tests {
 
     #[test]
     fn pairing_errors_read_as_english_or_the_daemons_own_message() {
-        // Phase `pairing_failures_read_as_english_not_dbus_names`.
         {
             assert_eq!(
                 bluez_error_text("org.bluez.Error.AuthenticationFailed", None),
@@ -487,12 +567,109 @@ mod tests {
                 "br-connection-profile-unavailable"
             );
         }
-        // Phase `unmapped_errors_without_detail_still_name_something`.
         {
             assert_eq!(
                 bluez_error_text("org.bluez.Error.Failed", None),
                 "Bluetooth error: Failed"
             );
         }
+    }
+
+    /// A device the fake serves: whether it is connected, and its transmit
+    /// power, which a page does not show.
+    struct FakeDevice {
+        connected: bool,
+        tx_power: i16,
+    }
+
+    #[zbus::interface(name = "org.bluez.Device1")]
+    impl FakeDevice {
+        #[zbus(property)]
+        fn connected(&self) -> bool {
+            self.connected
+        }
+
+        #[zbus(property)]
+        fn tx_power(&self) -> i16 {
+            self.tx_power
+        }
+    }
+
+    const DEVICE: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01";
+
+    #[test]
+    fn only_what_a_page_shows_counts_as_a_change() {
+        let names = |names: &[&str]| -> Vec<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        assert!(shown_change(DEVICE_IFACE, names(&["Connected"]).iter()));
+        assert!(shown_change(DEVICE_IFACE, names(&["RSSI", "Alias"]).iter()));
+        assert!(!shown_change(
+            DEVICE_IFACE,
+            names(&["RSSI", "ManufacturerData"]).iter()
+        ));
+        assert!(shown_change(ADAPTER_IFACE, names(&["Powered"]).iter()));
+        assert!(!shown_change(ADAPTER_IFACE, names(&["Class"]).iter()));
+        assert!(shown_change(BATTERY_IFACE, names(&["Percentage"]).iter()));
+        assert!(!shown_change(
+            "org.bluez.MediaPlayer1",
+            names(&["Position"]).iter()
+        ));
+    }
+
+    /// Against a fake `BlueZ` over a socket pair: a device connecting by
+    /// itself is counted, its transmit power moving is not, and the watch
+    /// ends with the connection.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_change_watch_counts_a_device_connecting_by_itself() {
+        let bound = Duration::from_secs(60);
+        let (server, client) = tokio::net::UnixStream::pair().unwrap();
+        let server = zbus::connection::Builder::unix_stream(server)
+            .server(zbus::Guid::generate())
+            .unwrap()
+            .p2p()
+            .serve_at(
+                DEVICE,
+                FakeDevice {
+                    connected: false,
+                    tx_power: 0,
+                },
+            )
+            .unwrap()
+            .build();
+        let client = zbus::connection::Builder::unix_stream(client).p2p().build();
+        let (server, client) = tokio::join!(server, client);
+        let (server, client) = (server.unwrap(), client.unwrap());
+        let mut changes = BluezClient::with_connection(client, DeviceNames::new())
+            .watch_changes()
+            .await
+            .unwrap();
+        assert_eq!(changes.count(), 0);
+
+        let device = server
+            .object_server()
+            .interface::<_, FakeDevice>(DEVICE)
+            .await
+            .unwrap();
+        let emitter = device.signal_emitter();
+        device.get_mut().await.tx_power = 4;
+        device.get().await.tx_power_changed(emitter).await.unwrap();
+        device.get_mut().await.connected = true;
+        device.get().await.connected_changed(emitter).await.unwrap();
+        let counted = tokio::time::timeout(bound, changes.changed())
+            .await
+            .expect("connecting reaches the watch")
+            .expect("the follower is still running");
+        assert_eq!(counted, 1);
+        // The transmit power came first on the wire: had it counted, it
+        // would be by now.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(changes.count(), 1, "transmit power is not a change");
+
+        // The interface holds the server's connection too.
+        drop((device, server));
+        tokio::time::timeout(bound, async { while changes.changed().await.is_some() {} })
+            .await
+            .expect("the watch ends with the connection");
     }
 }

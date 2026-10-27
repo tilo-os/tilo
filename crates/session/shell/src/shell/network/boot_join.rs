@@ -73,7 +73,7 @@ impl ShellNetwork {
             let now = tilo_clock::try_unix_now()
                 .ok_or_else(|| "the system clock is before the Unix epoch".to_owned())?;
             if tree.read().desktop.workspaces.iter().any(|workspace| {
-                workspace.room == target
+                workspace.room() == target
                     && workspace.may_govern_at(
                         &person,
                         tilo_action_policy::roles::governance::GRANT,
@@ -89,8 +89,9 @@ impl ShellNetwork {
         }
     }
 
-    /// Redeem the invitation in `path` into the active workspace unless a
-    /// workspace already holds its room; a restart keeps its membership.
+    /// Join the room the invitation in `path` names, as the workspace on
+    /// screen, unless this device holds it already; a restart keeps its
+    /// membership.
     pub(crate) fn boot_join(&self, path: &Path) -> Result<BootJoin, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|error| format!("{}: {error}", path.display()))?
@@ -114,15 +115,7 @@ impl ShellNetwork {
             .map_err(|_| "native replica unavailable")?
             .tree
             .clone();
-        let (local, member) = {
-            let tree = tree.read();
-            let member = tree
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room == target);
-            (tree.desktop.active, member)
-        };
+        let member = tree.read().holds_room(target);
         if member {
             // Restoring the native owner reconnects every retained room.
             self.native_owner()?;
@@ -131,7 +124,20 @@ impl ShellNetwork {
         let deadline = Instant::now()
             .checked_add(JOIN_DEADLINE)
             .ok_or("boot join deadline overflows")?;
-        let mut response = self.accept_peer_invitation(local, &text)?;
+        let mut response = self.accept_peer_invitation(&text)?;
+        // The joined workspace, the room, is the one on screen.
+        {
+            let mut tree = tree.write();
+            if let Some(joined) = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room() == target)
+                .map(|workspace| workspace.id)
+            {
+                tree.desktop.active = joined;
+            }
+        }
         loop {
             match response {
                 PeerSyncResponse::EnrollmentJoined { room, .. }

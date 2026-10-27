@@ -18,6 +18,12 @@ pub struct FeedbackQuery {
     pub destination: FeedbackDestination,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submission: Option<serde_json::Value>,
+    /// A report's review prompt, for the owner's review model to look over
+    /// ([`FeedbackAnswer::reviewer`]): exactly the feedback review contract
+    /// over the report's model view, which shows personal values only as
+    /// placeholders. The owner refuses any other prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
 }
 
 /// Current policy returned by the authenticated owner for this exact caller.
@@ -31,7 +37,6 @@ pub struct FeedbackAdmission {
     pub owner_device: String,
     pub reporter_user: String,
     pub reporter_device: String,
-    /// The reporter's current standing in the room.
     pub standing: serde_json::Value,
     /// The room's current sandbox capabilities.
     pub sandbox: serde_json::Value,
@@ -44,6 +49,16 @@ pub struct FeedbackAnswer {
     pub admission: FeedbackAdmission,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt: Option<serde_json::Value>,
+    /// The model the owner looks over its reporters' reviews with, as a
+    /// review names it ("Anthropic claude-haiku-5-5"); `None` when it has
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<String>,
+    /// The review model's answer to [`FeedbackQuery::review`], holding only
+    /// quotes from the texts asked about; `None` when nothing was asked or
+    /// the model gave no usable answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
 }
 
 #[cfg(test)]
@@ -61,6 +76,7 @@ mod tests {
                     channel: "existing-channel".into(),
                 },
                 submission: None,
+                review: None,
             },
         };
         assert!(message.is_request());

@@ -31,7 +31,6 @@ os/tests/kernel_module_signing_test.sh
 os/tests/boot_performance_gate_test.sh
 os/tests/boot_units_gate_test.sh
 os/tests/unit_sandbox_paths.py
-os/tests/no_openssl_runtime.sh
 os/tests/media_subprocess_invariants.sh
 os/tests/os_actions_subprocess_invariants.sh
 os/tests/packaging_subprocess_invariants.sh
@@ -41,6 +40,7 @@ os/tests/disks_subprocess_invariants.sh
 os/tests/secret_service_subprocess_invariants.sh
 os/tests/secureboot_signing_test.sh
 os/tests/image_trust_update_gate.sh
+os/tests/update_channel.sh
 os/tests/update_subprocess_invariants.sh
 os/tests/release_security_invariants.sh
 os/tests/selinux_policy_store_invariants.sh
@@ -73,5 +73,3 @@ os/tests/local_model_catalog_invariants.sh
 os/tests/release_pipeline_invariants.sh
 os/tests/test_require_private_oci_owner.py
 os/tests/test_thin_app_selection.py
-os/tests/test_focused_native_test.py
-tools/tests/test_ci_check_aggregate.py

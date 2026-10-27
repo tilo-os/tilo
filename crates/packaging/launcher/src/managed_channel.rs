@@ -571,7 +571,7 @@ mod received_rights_tests {
     fn socket_pair(passcred: bool) -> (UnixStream, UnixStream) {
         let (receiver, sender) = UnixStream::pair().unwrap();
         receiver
-            .set_read_timeout(Some(Duration::from_secs(2)))
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();
         set_socket_passcred(&receiver, passcred).unwrap();
         (receiver, sender)
@@ -669,6 +669,8 @@ mod received_rights_tests {
     #[test]
     fn cancelling_one_descriptor_wakes_its_challenge_without_affecting_another() {
         let (receiver, mut sender) = socket_pair(true);
+        // No read timeout: only the cancellation can end the receive.
+        receiver.set_read_timeout(None).unwrap();
         let cancellation = ManagedConnectionCancellation(receiver.try_clone().unwrap());
         let (ready, waiting) = std::sync::mpsc::channel();
         let (finished, result) = std::sync::mpsc::channel();
@@ -676,13 +678,10 @@ mod received_rights_tests {
             ready.send(()).unwrap();
             finished.send(receive_credentials(&receiver)).unwrap();
         });
-        waiting.recv_timeout(Duration::from_secs(1)).unwrap();
+        tilo_test_env::recv("the challenge to start", &waiting);
         cancellation.cancel().unwrap();
         assert!(
-            result
-                .recv_timeout(Duration::from_secs(1))
-                .unwrap()
-                .is_err(),
+            tilo_test_env::recv("the cancelled challenge", &result).is_err(),
             "cancellation must wake and refuse the real credential receive"
         );
         worker.join().unwrap();

@@ -163,7 +163,7 @@ fn focused_seat_symbols_keep_queued_group_and_modifier_identity() {
         )
         .unwrap();
     let mut child = WireChild::spawn(&socket, runtime.path());
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = tilo_test_env::hang_deadline();
     let mut transcript = Vec::new();
     let mut focused = false;
     let mut sent = false;

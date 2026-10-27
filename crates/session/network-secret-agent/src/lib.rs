@@ -138,7 +138,6 @@ impl Message {
         }
     }
 
-    /// `self` with `$name` set to `value`.
     #[must_use]
     pub fn with(mut self, name: &'static str, value: impl Into<Line>) -> Self {
         self.args.push((name, value.into()));
@@ -231,6 +230,19 @@ enum ResponseShape {
     VpnSecrets,
 }
 
+/// What a request asks for, as far as the sheet asking it cares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RequestKind {
+    /// Secrets of the connection, in the fields the request names.
+    #[default]
+    Secrets,
+    /// The PIN of the SIM a mobile connection uses (the `gsm` setting's
+    /// `pin`). The SIM keeps it, not this agent: the sheet asks it as a
+    /// SIM PIN, offers no "Remember", and when the SIM is locked harder
+    /// (its PUK) the host unlocks it with `ModemManager` itself.
+    SimPin,
+}
+
 /// One `GetSecrets` call, understood: what to ask and how to answer.
 #[derive(Clone, Debug)]
 pub struct SecretRequest {
@@ -240,6 +252,7 @@ pub struct SecretRequest {
     pub connection_id: String,
     pub setting_name: String,
     pub flags: u32,
+    pub kind: RequestKind,
     pub title: Message,
     /// What the sheet says, one line each.
     pub detail: Vec<Line>,
@@ -374,6 +387,7 @@ struct Ask {
     remember_default: bool,
     roaming_wifi: Option<(String, os_actions::WifiSecurity)>,
     shape: ResponseShape,
+    kind: RequestKind,
 }
 
 impl Ask {
@@ -383,6 +397,7 @@ impl Ask {
             lead,
             fields,
             notes: Vec::new(),
+            kind: RequestKind::Secrets,
             remember_default: true,
             roaming_wifi: None,
             shape: ResponseShape::Flat,
@@ -565,6 +580,24 @@ fn ask_vpn(subject: &Subject<'_>, hinted: &[&str]) -> Ask {
     ask
 }
 
+/// The SIM's PIN: the SIM checks it and counts the wrong ones, so it is
+/// never remembered here.
+fn ask_sim_pin(subject: &Subject<'_>) -> Ask {
+    let mut ask = Ask::new(
+        "portal-network-sim-pin-title",
+        Message::new("portal-network-sim-pin-lead").with("network", subject.named()),
+        vec![masked(
+            "pin",
+            Message::new("portal-network-sim-pin"),
+            true,
+            SecretFieldRule::Any,
+        )],
+    );
+    ask.kind = RequestKind::SimPin;
+    ask.remember_default = false;
+    ask
+}
+
 fn ask_password(title: &'static str, subject: &Subject<'_>) -> Ask {
     Ask::new(
         title,
@@ -616,16 +649,7 @@ impl SecretRequest {
             "802-11-wireless-security" => ask_wifi(&subject)?,
             "802-1x" => ask_8021x(&subject),
             "vpn" => ask_vpn(&subject, &hinted),
-            "gsm" if hinted.contains(&"pin") => Ask::new(
-                "portal-network-sim-pin-title",
-                Message::new("portal-network-sim-pin-lead").with("network", subject.named()),
-                vec![masked(
-                    "pin",
-                    Message::new("portal-network-sim-pin"),
-                    true,
-                    SecretFieldRule::Any,
-                )],
-            ),
+            "gsm" if hinted.contains(&"pin") => ask_sim_pin(&subject),
             "gsm" | "cdma" => ask_password("portal-network-mobile-title", &subject),
             "pppoe" => ask_password("portal-network-dsl-title", &subject),
             other => {
@@ -656,6 +680,7 @@ impl SecretRequest {
             connection_id: id,
             setting_name: setting_name.to_string(),
             flags,
+            kind: ask.kind,
             title: ask.title,
             detail: lines,
             fields: ask.fields,
@@ -879,7 +904,6 @@ pub fn agent_owned_secrets(connection: &ConnectionDict) -> BTreeMap<String, Sett
     found
 }
 
-/// The connection's uuid, if it has one.
 pub fn connection_uuid(connection: &ConnectionDict) -> Option<String> {
     prop_str(connection, "connection", "uuid").filter(|uuid| !uuid.is_empty())
 }

@@ -229,7 +229,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await;
         let relay_addr = relay.relay.node_addr();
 
-        // Peer A dials the relay.
         let ep_a = client_endpoint().await;
         let a_client = RelayClient::connect(
             ep_a,
@@ -242,7 +241,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         .await
         .expect("A connect");
 
-        // Peer B dials the relay.
         let ep_b = client_endpoint().await;
         let b_client = RelayClient::connect(
             ep_b,
@@ -277,7 +275,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
             }
         }
 
-        // A publishes a delta. `delta` bytes are opaque to the relay.
         let payload = b"the-crdt-delta".to_vec();
         let delta_env = Envelope::Delta {
             workspace_id: 42,
@@ -288,7 +285,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         };
         a_client.send(delta_env.clone()).unwrap();
 
-        // B receives it.
         let received = tilo_test_env::within("delta timeout", b_client.recv())
             .await
             .expect("delta channel closed");
@@ -309,7 +305,6 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let ghost = tokio::time::timeout(Duration::from_millis(200), a_client.recv()).await;
         assert!(ghost.is_err(), "A should not receive its own delta");
 
-        // Metrics reflect activity.
         let snap = relay.relay.handle().metrics.snapshot();
         assert!(snap.conns_authed >= 2, "at least both peers authed");
     }

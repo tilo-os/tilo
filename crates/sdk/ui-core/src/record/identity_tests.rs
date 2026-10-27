@@ -1,6 +1,3 @@
-//! File identity and migration from former identities, over real files and
-//! real stores.
-
 use super::*;
 use crate::state::State;
 
@@ -19,8 +16,6 @@ fn text(doc: &AutoCommit, key: &str) -> Option<String> {
 fn write(path: &Path, bytes: &[u8]) {
     std::fs::write(path, bytes).expect("write test file");
 }
-
-// ---- file identity ---------------------------------------------------
 
 #[test]
 fn file_identity_follows_the_file_not_its_path_or_bytes() {
@@ -134,8 +129,6 @@ fn file_identity_follows_the_file_not_its_path_or_bytes() {
     }
 }
 
-// ---- migration from former identities --------------------------------
-
 fn markup_checkouts(path: &str, file: &RecordId) -> (RecordCheckout, RecordCheckout) {
     let by_path = RecordId::for_file(path);
     let old = RecordCheckout::new(
@@ -203,7 +196,6 @@ fn former_records_are_validated_and_adopted_exactly_once() {
             store
                 .with(&old.id, |doc| {
                     put_text(doc, "note", "check the proof");
-                    // What the path-era reader declared about its file.
                     add_reference(doc, &RecordRef::new(RecordId::for_file(path), "marks-up"));
                 })
                 .unwrap();
@@ -335,4 +327,15 @@ fn former_records_are_validated_and_adopted_exactly_once() {
             })
             .unwrap();
     }
+}
+
+#[test]
+fn a_record_has_one_route_and_the_custody_key_is_none() {
+    let primary = RecordId::package_primary();
+    assert_eq!(primary.route(), "");
+    assert_eq!(RecordId::from_route(""), Some(primary.clone()));
+    assert_eq!(RecordId::from_route(primary.as_str()), None);
+    let window = RecordId::room_default();
+    assert_eq!(window.route(), window.as_str());
+    assert_eq!(RecordId::from_route(window.route()), Some(window));
 }

@@ -59,6 +59,10 @@ fn operation(name: &str, args: &ActionArgs) -> Result<PickerOperation, ActionErr
         "replace" => PickerOperation::Replace,
         "keep-existing" => PickerOperation::KeepExisting,
         "next-filter" => PickerOperation::NextFilter,
+        "search" => PickerOperation::Search {
+            query: args.text("query").unwrap_or_default().to_owned(),
+        },
+        "recent" => PickerOperation::Recent,
         _ => return Err(ActionError::Explained(t("file-picker-expired"))),
     })
 }
@@ -86,6 +90,13 @@ fn parameters(name: &str) -> Vec<ActionParam> {
             t("file-picker-entry-param"),
         ));
     }
+    if name == "search" {
+        params.push(ActionParam::required_owned(
+            "query",
+            ParamType::Text,
+            t("file-picker-query-param"),
+        ));
+    }
     if name == "filename" {
         params.push(ActionParam::required_owned(
             "filename",
@@ -102,6 +113,32 @@ fn parameters(name: &str) -> Vec<ActionParam> {
         ));
     }
     params
+}
+
+/// What a picker operation promises: one that grants access to a file asks
+/// first and cannot be taken back; every one answers with the picker's state.
+fn contract(grants: bool) -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        kind: tilo_actions::ActionKind::Outside,
+        risk: if grants {
+            tilo_actions::RiskLevel::Destructive
+        } else {
+            tilo_actions::RiskLevel::None
+        },
+        confirmation: if grants {
+            tilo_actions::ConfirmationPolicy::Confirm
+        } else {
+            tilo_actions::ConfirmationPolicy::None
+        },
+        retry: tilo_actions::RetryPolicy::AtMostOnce,
+        execution: tilo_actions::ExecutionMode::Background { cancellable: false },
+        result: tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({"type":"object", "required":["request_id", "application", "state", "completed", "entries"],
+                "properties": {"request_id":{"type":"string"}, "application":{"type":"string"},
+                    "state":{"type":"string"}, "completed":{"type":"boolean"}, "entries":{"type":"array"}}}),
+        },
+        ..Default::default()
+    }
 }
 
 impl SearchProvider for FilePickerProvider {
@@ -139,6 +176,8 @@ impl SearchProvider for FilePickerProvider {
             "replace",
             "keep-existing",
             "next-filter",
+            "search",
+            "recent",
         ]
         .into_iter()
         .map(|name| {
@@ -163,27 +202,7 @@ impl SearchProvider for FilePickerProvider {
                 badge: Some(self.display_name()),
                 score: 0,
                 params,
-                contract: Some(tilo_actions::ActionContract {
-                    kind: tilo_actions::ActionKind::Outside,
-                    risk: if grants {
-                        tilo_actions::RiskLevel::Destructive
-                    } else {
-                        tilo_actions::RiskLevel::None
-                    },
-                    confirmation: if grants {
-                        tilo_actions::ConfirmationPolicy::Confirm
-                    } else {
-                        tilo_actions::ConfirmationPolicy::None
-                    },
-                    retry: tilo_actions::RetryPolicy::AtMostOnce,
-                    execution: tilo_actions::ExecutionMode::Background { cancellable: false },
-                    result: tilo_actions::ResultSpec::Json {
-                        schema: serde_json::json!({"type":"object", "required":["request_id", "application", "state", "completed", "entries"],
-                            "properties": {"request_id":{"type":"string"}, "application":{"type":"string"},
-                                "state":{"type":"string"}, "completed":{"type":"boolean"}, "entries":{"type":"array"}}}),
-                    },
-                    ..Default::default()
-                }),
+                contract: Some(contract(grants)),
                 on_open: Rc::new(|_, _, _, _| {
                     Err(ActionError::Explained(t("file-picker-declared-operation")))
                 }),

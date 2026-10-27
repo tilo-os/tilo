@@ -23,6 +23,8 @@ tilo_automerge_isolate::test_worker!();
 #[path = "support/mod.rs"]
 mod support;
 
+#[path = "activation_token_wire.rs"]
+mod activation_token_wire;
 #[path = "active_group_wireup_test.rs"]
 mod active_group_wireup_test;
 #[path = "advertised_globals.rs"]
@@ -85,6 +87,8 @@ mod dmabuf_feedback_protocol;
 mod dmabuf_scanout_feedback;
 #[path = "document_open_e2e.rs"]
 mod document_open_e2e;
+#[path = "downloaded_apps.rs"]
+mod downloaded_apps;
 #[path = "e2e_shell_flows.rs"]
 mod e2e_shell_flows;
 #[path = "emoji_picker_commit.rs"]
@@ -107,6 +111,8 @@ mod foreign_surface_compositing;
 mod fractional_scale_protocol;
 #[path = "freeze_bench.rs"]
 mod freeze_bench;
+#[path = "gpu_loss.rs"]
+mod gpu_loss;
 #[path = "hardware_encode.rs"]
 mod hardware_encode;
 #[path = "hdr_capability_probe.rs"]
@@ -155,8 +161,12 @@ mod lock_screen_visual;
 mod main_loop_watchdog;
 #[path = "maximize_persist_wireup_test.rs"]
 mod maximize_persist_wireup_test;
+#[path = "maximized_stays_maximized.rs"]
+mod maximized_stays_maximized;
 #[path = "multi_output.rs"]
 mod multi_output;
+#[path = "non_latin_chord_wire.rs"]
+mod non_latin_chord_wire;
 #[path = "notification_center.rs"]
 mod notification_center;
 #[path = "onboarding_visual.rs"]
@@ -213,6 +223,8 @@ mod sandbox_check;
 mod saved_layout_keymap;
 #[path = "scale_precedes_configure.rs"]
 mod scale_precedes_configure;
+#[path = "scroll_reaches_windows.rs"]
+mod scroll_reaches_windows;
 #[path = "server_side_decorations.rs"]
 mod server_side_decorations;
 #[path = "session_lock_e2e.rs"]

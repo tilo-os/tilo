@@ -172,7 +172,6 @@ pub fn group_id(art: &Artwork) -> String {
         .unwrap_or_else(|| fresh_id(art, "group", &[]))
 }
 
-/// Put `ids` in one new group.
 pub fn group(art: &Artwork, ids: &[String]) -> Option<Invoke<Artwork>> {
     (ids.len() >= 2).then(|| {
         Artwork::EDIT_MARKS.with(EditMarks {

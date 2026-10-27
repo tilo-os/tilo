@@ -1,8 +1,9 @@
-const roles={Window:'group',Group:'group',Generic:'group',Toolbar:'toolbar',TabBar:'tablist',Tab:'tab',TabPanel:'tabpanel',List:'list',ListItem:'listitem',Table:'table',Row:'row',Cell:'cell',Tree:'tree',TreeItem:'treeitem',Menu:'menu',MenuItem:'menuitem',Button:'button',ToggleButton:'button',Checkbox:'checkbox',RadioButton:'radio',Switch:'switch',Slider:'slider',SpinButton:'spinbutton',ComboBox:'combobox',TextInput:'textbox',MultilineTextInput:'textbox',Link:'link',ProgressBar:'progressbar',Spinner:'status',Tooltip:'tooltip',Image:'img',Document:'document',Paragraph:'paragraph',Dialog:'dialog'};
-const keyboardActivatable=new Set(['Tab','TreeItem','MenuItem','ToggleButton','Checkbox','RadioButton','Switch','Link','ListItem']);
+const roles={Window:'group',Group:'group',Generic:'group',Toolbar:'toolbar',TabBar:'tablist',Tab:'tab',TabPanel:'tabpanel',List:'list',ListItem:'listitem',Table:'table',Row:'row',Cell:'cell',Tree:'tree',TreeItem:'treeitem',Menu:'menu',MenuItem:'menuitem',ListBox:'listbox',ListBoxOption:'option',Button:'button',ToggleButton:'button',Checkbox:'checkbox',RadioButton:'radio',Switch:'switch',Slider:'slider',SpinButton:'spinbutton',ComboBox:'combobox',TextInput:'textbox',MultilineTextInput:'textbox',Link:'link',ProgressBar:'progressbar',Spinner:'status',Tooltip:'tooltip',Image:'img',Document:'document',Paragraph:'paragraph',Dialog:'dialog'};
+const keyboardActivatable=new Set(['Tab','TreeItem','MenuItem','ToggleButton','Checkbox','RadioButton','Switch','Link','ListItem','ListBoxOption']);
 const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'});
 const utf8=new TextEncoder();
 let bridgeSequence=0;
+const MIRROR_STYLE='position:absolute;box-sizing:border-box;margin:0;padding:0;border:0;pointer-events:none;';
 const graphemeIndex=(value,offset)=>[...segments.segment(value.slice(0,offset))].length;
 function graphemeIndexFromByteOffset(value,offset){
   const target=Math.max(0,Number(offset)||0);
@@ -23,6 +24,48 @@ function domOffset(value,index){
   }
   return value.length;
 }
+/**
+ * The tree a status's `semanticsPatch` makes of `tree`, the one this page
+ * holds as number `sequence` (`ui::headless::write_inspection_patch` says
+ * what the operations mean). Undefined when the patch was made for another
+ * tree: the page then asks for the whole one. Only the nodes the patch
+ * touches and their ancestors are new objects; every other node is the one
+ * `tree` had, so the mirror can tell it is unchanged by identity alone.
+ */
+export function applySemanticsPatch(tree,sequence,patch){
+  if(!tree||sequence===undefined||sequence!==patch?.base)return undefined;
+  const fresh=new Set();
+  const copy=value=>{
+    if(value===null||typeof value!=='object'||fresh.has(value))return value;
+    const next=Array.isArray(value)?[...value]:{...value};fresh.add(next);return next;
+  };
+  const next=copy(tree);
+  next.viewport=patch.viewport;next.keyboard_focus_owner=patch.keyboard_focus_owner;
+  for(const op of patch.ops??[]){
+    const path=op.p;
+    // The slot holding the node: `holder[slot]`, every holder on the way a copy.
+    let holder=next,slot=path[0];
+    for(const step of path.slice(1)){
+      const node=copy(holder[slot]);holder[slot]=node;
+      if(step==='s'){holder=node;slot='semantics';}
+      else{node.children=copy(node.children);holder=node.children;slot=step;}
+    }
+    if('full' in op){holder[slot]=op.full;continue;}
+    const node=copy(holder[slot]);holder[slot]=node;
+    if('own' in op){
+      // A retained widget's semantics, like every node's children, are
+      // patched apart from its own fields.
+      const children=node.children,semantics=node.semantics,widget=!path.includes('s');
+      for(const key of Object.keys(node))delete node[key];
+      Object.assign(node,op.own,{children});
+      if(widget)node.semantics=semantics;
+    }else if('splice' in op){
+      const [at,removed,added]=op.splice;
+      node.children=copy(node.children);node.children.splice(at,removed,...added);
+    }
+  }
+  return next;
+}
 export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
   const elements=new Map();
   const recoverySurfaces=new Set();
@@ -30,9 +73,14 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
   const bridgeId=++bridgeSequence;
   let elementSequence=0;
   let activeDescendantHost;
+  // The focused control whose own aria-activedescendant names the item the
+  // keyboard is on inside it (an open combobox's highlighted option).
+  let ownedActiveHost;
   let previousActiveDescendant;
   let previousOwns;
   let pendingFocus;
+  // CSS pixels per layout pixel of the frame the canvas shows, on each axis.
+  let scale=[1,1];
   function clearActiveDescendant(){
     if(!activeDescendantHost)return;
     if(previousActiveDescendant===null)activeDescendantHost.removeAttribute('aria-activedescendant');else activeDescendantHost.setAttribute('aria-activedescendant',previousActiveDescendant);
@@ -64,10 +112,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     const next=createElement(true,state.key,element.tiloRole);
     for(const name of element.getAttributeNames())if(name!=='id')next.setAttribute(name,element.getAttribute(name));
     next.style.cssText=element.style.cssText;next.tabIndex=element.tabIndex;next.disabled=element.disabled;next.readOnly=element.readOnly;
-    next.route=element.route;next.tiloRole=element.tiloRole;next.tiloAncestors=element.tiloAncestors;next.tiloOwnerPath=element.tiloOwnerPath;
+    next.tiloRect=element.tiloRect;next.route=element.route;next.tiloRole=element.tiloRole;next.tiloAncestors=element.tiloAncestors;next.tiloOwnerPath=element.tiloOwnerPath;
     Object.assign(next.tiloState,state,{composing:false,compositionScope:null,compositionBase:null,canceledComposition:false,suppressInput:null});
     state.active=false;element.route=undefined;elements.set(state.key,next);restoreCanonical(next);
-    const focused=document.activeElement===element;element.replaceWith(next);
+    const focused=document.activeElement===element;element.replaceWith(next);if(next.tiloRect)place(next);
     if(focused&&authorized(next)){next.tiloState.reconcilingFocus=true;try{next.focus({preventScroll:true});}finally{next.tiloState.reconcilingFocus=false;}}
   }
   function revokeInput(){
@@ -188,6 +236,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     element.id=`tilo-semantic-${bridgeId}-${++elementSequence}`;
     element.dataset.tiloSemantic=key;
     element.tiloEditable=editable;
+    // Laid out over the drawn control so magnifiers, touch exploration and
+    // element geometry find it there; never painted and never hit by the
+    // pointer, which belongs to the canvas underneath.
+    element.style.cssText=MIRROR_STYLE;
     element.tiloState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false};
     element.addEventListener('focus',()=>{
       if(!element.tiloState.reconcilingFocus&&act(element,'focus')){inputScope?.capture();pendingFocus={key,remainingSnapshots:1};}
@@ -252,12 +304,33 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     }
     return element;
   }
+  // Each mirrored element sits at its node's drawn rect: layout coordinates
+  // scaled to the canvas's CSS box, offset from the mirrored parent it is
+  // nested in (every one is absolutely positioned, so that parent is its
+  // containing block) or from the mirror's root, which covers the canvas.
+  function place(element){
+    const rect=element.tiloRect,parent=element.parentNode?.tiloRect;
+    const x=rect[0]*scale[0],y=rect[1]*scale[1],px=parent?parent[0]*scale[0]:0,py=parent?parent[1]*scale[1]:0;
+    const left=x-px,top=y-py,width=Math.max(0,rect[2]*scale[0]),height=Math.max(0,rect[3]*scale[1]);
+    const placed=element.tiloPlaced;
+    if(placed&&placed[0]===left&&placed[1]===top&&placed[2]===width&&placed[3]===height)return;
+    element.tiloPlaced=[left,top,width,height];
+    const style=element.style;
+    style.left=`${left}px`;style.top=`${top}px`;
+    style.width=`${width}px`;style.height=`${height}px`;
+  }
+  function layout(cssSize,frameSize){
+    const next=[0,1].map(axis=>cssSize?.[axis]>0&&frameSize?.[axis]>0?cssSize[axis]/frameSize[axis]:1);
+    if(next[0]===scale[0]&&next[1]===scale[1])return;
+    scale=next;for(const element of elements.values())place(element);
+  }
   function update(snapshot){
     const live=new Set();
     const ownedBeforeUpdate=new Set(elements.values());
     const activeBeforeUpdate=document.activeElement;
     let canonicalFocus;
     const focusedCandidates=[];
+    const activeCandidates=[];
     // A test ID is a convenient alias only when it names one current widget.
     // Keep DOM identity separate from the route, which changes with layout paths.
     const testIds=new Map(),semanticOwners=new Map();
@@ -268,7 +341,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       for(const child of node.children??[])countOwners(child);
     }
     countOwners(snapshot.root);
-    function semantic(node,owner,parent,index,identity,ancestry,ownerPath){
+    function semantic(node,owner,parent,index,identity,ancestry,ownerPath,enclosing){
+      // A hidden node (a closed dialog) is not there for assistive
+      // technology, and neither is anything inside it.
+      if(node.state?.hidden)return;
       const key=JSON.stringify([identity,node.semantic_key??node.action_target??index]);live.add(key);
       let element=elements.get(key);
       if(element?.tiloEditable&&!currentComposition(element))element=elements.get(key);
@@ -288,7 +364,16 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       element.tiloState.disabled=disabled;
       element.tiloState.readOnly=readOnly;
       if(node.state?.focused&&!disabled)focusedCandidates.push(element);
+      if(node.state?.active_descendant&&!disabled)activeCandidates.push(element);
       if(element.parentNode!==parent)parent.append(element);
+      // A node without bounds of its own stands for the area it is drawn in.
+      const bounds=node.bounds;
+      element.tiloRect=bounds?[bounds.x0,bounds.y0,bounds.x1-bounds.x0,bounds.y1-bounds.y0]:enclosing??[0,0,0,0];
+      place(element);
+      // A node a patch left alone is the very object the element last
+      // showed (applySemanticsPatch keeps it), so it says nothing new.
+      const changed=element.tiloNode!==node;element.tiloNode=node;
+      if(changed){
       const role=node.role&&typeof node.role==='object'?(node.role.Heading?'heading':undefined):roles[node.role];
       if(role)element.setAttribute('role',role);else element.removeAttribute('role');
       const level=node.role?.Heading?.level;
@@ -303,6 +388,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       element.disabled=Boolean(node.state?.disabled);
       element.readOnly=Boolean(node.state?.read_only);
       if(node.live)element.setAttribute('aria-live',node.live.toLowerCase());else element.removeAttribute('aria-live');
+      }
       const value=node.state?.protected?'':node.value??'';
       if(editable){
         const state=element.tiloState;
@@ -321,15 +407,16 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
           [element.scrollLeft,element.scrollTop]=scroll;
         }
       }
-      else if(!node.children?.length)element.textContent=value||node.name||'';
-      (node.children??[]).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`,identity,[...ancestry,key],ownerPath));
+      else if(changed&&!node.children?.length)element.textContent=value||node.name||'';
+      (node.children??[]).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`,identity,[...ancestry,key],ownerPath,element.tiloRect));
     }
     function walk(node,parent,ancestry=[]){
+      if(node.semantics?.state?.hidden)return;
       if(node.semantics){
         const uniqueTestId=node.test_id&&testIds.get(node.test_id)===1;
         const semanticKey=node.semantics.semantic_key;
         const identity=semanticKey&&semanticOwners.get(semanticKey)===1?['semantic',semanticKey]:uniqueTestId?['test',node.test_id]:['path',node.path];
-        semantic(node.semantics,node.path,parent,node.path,identity,ancestry,node.path);
+        semantic(node.semantics,node.path,parent,node.path,identity,ancestry,node.path,node.rect);
         ancestry=[...ancestry,JSON.stringify([identity,node.semantics.semantic_key??node.semantics.action_target??node.path])];
       }
       for(const child of node.children??[])walk(child,parent,ancestry);
@@ -364,11 +451,17 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       else pendingFocus=undefined;
     }
     for(const element of elements.values())element.dataset.tiloFocused=String(element===canonicalFocus);
+    // Focus stays on the control; the item the keyboard is on inside it is
+    // its active descendant, announced without moving focus.
+    const activeItem=canonicalFocus&&activeCandidates.find(candidate=>candidate.tiloAncestors.includes(canonicalFocus.tiloState.key));
+    if(ownedActiveHost&&(ownedActiveHost!==canonicalFocus||!activeItem))ownedActiveHost.removeAttribute('aria-activedescendant');
+    ownedActiveHost=undefined;
+    if(activeItem){canonicalFocus.setAttribute('aria-activedescendant',activeItem.id);ownedActiveHost=canonicalFocus;}
     const focusWasManaged=ownedBeforeUpdate.has(activeBeforeUpdate);
     const focusInMount=Boolean(root.parentNode?.contains?.(active));
     const focusInRecovery=[...recoverySurfaces].some(surface=>surface.contains?.(active));
     if(canonicalFocus&&active!==canonicalFocus&&focusInMount&&!focusWasManaged&&!focusInRecovery){
-      setActiveDescendant(active,canonicalFocus);
+      setActiveDescendant(active,activeItem??canonicalFocus);
     }else if(canonicalFocus&&active!==canonicalFocus&&(!active||active===document.body||focusWasManaged)){
       clearActiveDescendant();
       canonicalFocus.tiloState.reconcilingFocus=true;
@@ -379,5 +472,5 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     }
     root.dataset.nodeCount=String(elements.size);
   }
-  return {update,revokeInput,close(){pendingFocus=undefined;clearActiveDescendant();for(const element of elements.values()){shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
+  return {update,layout,revokeInput,close(){pendingFocus=undefined;clearActiveDescendant();ownedActiveHost?.removeAttribute('aria-activedescendant');ownedActiveHost=undefined;for(const element of elements.values()){shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;}for(const surface of recoverySurfaces)surface.remove();recoverySurfaces.clear();recoveries.clear();root.replaceChildren();elements.clear();}};
 }

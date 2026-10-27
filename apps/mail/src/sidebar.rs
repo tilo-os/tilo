@@ -16,7 +16,6 @@ use crate::state::{Command, MailState, Shared};
 /// The id of the per-account settings action on each section header.
 const ACCOUNT_SETTINGS: &str = "account-settings";
 
-/// The row id of `folder` in account `account`.
 pub(crate) fn folder_row_id(account: usize, folder: Folder) -> String {
     format!("{account}/{}", folder.as_key())
 }
@@ -120,7 +119,7 @@ fn account_sections(state: &MailState) -> Vec<NavSection> {
                 .trailing_action(NavAction::new(
                     ACCOUNT_SETTINGS,
                     Icon::Settings,
-                    "Account settings",
+                    "Account in Settings",
                 ))
         })
         .collect()
@@ -153,12 +152,10 @@ pub fn sidebar(shared: &Shared) -> NavList {
             }
         })
         .on_section_action(move |section, action| {
-            if action == ACCOUNT_SETTINGS
-                && let Some(account) = parse_section(section)
-            {
+            if action == ACCOUNT_SETTINGS && parse_section(section).is_some() {
                 on_section
                     .borrow_mut()
-                    .push_command(Command::AccountSettings(Some(account)));
+                    .push_command(Command::AccountSettings);
             }
         })
         .follow(move || {

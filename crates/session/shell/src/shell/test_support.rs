@@ -20,6 +20,88 @@ pub(crate) fn canonical_manifest(package: &str, tail: &str) -> String {
     )
 }
 
+/// Install `files` as the signed GUI package `id` at `version` in the user
+/// store at `root`, as an install leaves it, replacing any copy of `id` it
+/// held: its payload root and manifest path.
+#[cfg(test)]
+pub(crate) fn install_signed_package(
+    root: &std::path::Path,
+    id: &str,
+    version: &str,
+    files: &[(&str, &[u8])],
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    install_signed_package_with(root, id, version, files, "")
+}
+
+/// [`install_signed_package`] with `manifest_tail` after the manifest's
+/// entrypoint: the services it speaks, say.
+#[cfg(test)]
+pub(crate) fn install_signed_package_with(
+    root: &std::path::Path,
+    id: &str,
+    version: &str,
+    files: &[(&str, &[u8])],
+    manifest_tail: &str,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    use ed25519_dalek::Signer as _;
+    use std::fmt::Write as _;
+    use tilo_app_package::{BlobHash, Collection, SignedRoot};
+    let manifest = canonical_manifest(
+        &format!("id = \"{id}\"\nversion = \"{version}\"\nkind = \"app\""),
+        &format!("[entrypoint]\nbin = \"probe\"\ntype = \"gui\"\n{manifest_tail}"),
+    );
+    let collection = Collection::from_entries(
+        files
+            .iter()
+            .map(|(path, bytes)| ((*path).to_string(), BlobHash::of(bytes))),
+    );
+    let collection_bytes = collection.encode();
+    let key = ed25519_dalek::SigningKey::from_bytes(&[7_u8; 32]);
+    let mut signed = SignedRoot::unsigned(
+        BlobHash::of(manifest.as_bytes()),
+        BlobHash::of(&collection_bytes),
+        key.verifying_key().to_bytes(),
+    );
+    // The has-signature bit is part of the signed preimage.
+    signed.signature = Some([0; 64]);
+    signed.signature = Some(key.sign(&signed.signing_bytes()).to_bytes());
+    let signed_bytes = signed.encode().to_vec();
+    let id_hex = BlobHash::of(&signed_bytes).to_hex();
+    let payload = root.join("pkgs").join(&id_hex);
+    std::fs::create_dir_all(&payload).unwrap();
+    for (path, bytes) in files {
+        std::fs::write(payload.join(path), bytes).unwrap();
+    }
+    let meta = root.join("pkgs").join(format!("{id_hex}.pkg"));
+    std::fs::create_dir_all(&meta).unwrap();
+    std::fs::write(meta.join("signed-root"), &signed_bytes).unwrap();
+    std::fs::write(meta.join("manifest.toml"), &manifest).unwrap();
+    std::fs::write(meta.join("collection.qcl"), &collection_bytes).unwrap();
+    let registry = package_store::Layout::new(root).registry();
+    let held = std::fs::read_to_string(&registry).unwrap_or_default();
+    // Each row is one `[[entry]]` table; the copy of `id` held is replaced.
+    let mut rows = String::new();
+    for row in held
+        .split("[[entry]]\n")
+        .filter(|row| !row.is_empty() && !row.starts_with(&format!("id = {id:?}\n")))
+    {
+        rows.push_str("[[entry]]\n");
+        rows.push_str(row);
+    }
+    write!(
+        rows,
+        "[[entry]]\nid = {id:?}\nversion = {version:?}\npackage_id_hex = {id_hex:?}\n\
+         payload_root = {:?}\nmanifest_path = {:?}\npublisher_key_hex = {:?}\n\n",
+        payload.display().to_string(),
+        meta.join("manifest.toml").display().to_string(),
+        hex::encode(key.verifying_key().to_bytes()),
+    )
+    .unwrap();
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(&registry, rows).unwrap();
+    (payload, meta.join("manifest.toml"))
+}
+
 #[cfg(test)]
 pub(crate) struct PopulatedShellFixture {
     pub(crate) frame: crate::shell::frame::FrameBuilder,

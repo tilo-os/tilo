@@ -75,8 +75,6 @@ const BROKER_MS_PER_EDIT_BUDGET: u128 = 100;
 fn process_ms_per_edit_budget(lines: usize) -> u128 {
     if lines <= 200 { 800 } else { 1100 }
 }
-/// How long half the edits may take to show, at either size.
-const LATENCY_P50_MS_BUDGET: u128 = 1000;
 
 /// What the first mounted app's committed readers were handed by the owner.
 #[derive(Default)]
@@ -439,6 +437,13 @@ pub(super) async fn run(device: &Device, target: &mut Mounted, lines: usize) {
         read.captures, 0,
         "an edit of a document the reader holds is read as its changes, never whole"
     );
+    // How long an edit takes to show is reported, not budgeted: on a loaded
+    // runner it measures the scheduler. A reader woken by the commit reads
+    // each edit once; one that polled or renewed would read more.
+    assert_eq!(
+        read.changes, edits,
+        "each edit is read once, when its commit wakes the reader"
+    );
     assert!(
         bytes_per_edit <= READER_BYTES_PER_EDIT_BUDGET,
         "each one-line edit handed the reader {bytes_per_edit} bytes (budget {READER_BYTES_PER_EDIT_BUDGET}); the document is {} characters",
@@ -453,11 +458,6 @@ pub(super) async fn run(device: &Device, target: &mut Mounted, lines: usize) {
     assert!(
         process_ms_per_edit <= budget,
         "each one-line edit cost the process {process_ms_per_edit} ms of CPU (budget {budget} ms); the document is {} characters",
-        body.len()
-    );
-    assert!(
-        latency_ms_p50 <= LATENCY_P50_MS_BUDGET,
-        "half the edits took over {latency_ms_p50} ms to show (budget {LATENCY_P50_MS_BUDGET} ms); the document is {} characters",
         body.len()
     );
 }

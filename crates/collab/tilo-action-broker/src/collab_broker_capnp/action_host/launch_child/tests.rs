@@ -13,6 +13,7 @@ struct Launcher {
 
 fn app() -> LaunchableApplication {
     LaunchableApplication {
+        capabilities: Vec::new(),
         package_id: "so.tilo.notes".into(),
         display_name: "Notes".into(),
         unconfined: false,
@@ -55,8 +56,11 @@ impl LauncherServices for Launcher {
 }
 
 fn destination(fixture: &Fixture) -> LaunchDestination {
-    let mut workspace = Workspace::new(WorkspaceId(9), "Launch child");
-    workspace.set_room(tilo_desktop_model::RoomId::parse(&fixture.room).unwrap());
+    let workspace = Workspace::in_room(
+        WorkspaceId(9),
+        tilo_desktop_model::RoomId::parse(&fixture.room).unwrap(),
+        "Launch child",
+    );
     LaunchDestination {
         workspace,
         app_id: app().package_id,
@@ -482,12 +486,12 @@ fn retired_worker_after_admission_never_launches_or_closes() {
                 certificate: admitted.certificate.clone().unwrap(),
             };
             admitted.worker_registration = Some(registration);
-            fixture
-                .state
-                .host_workers
-                .lock()
-                .unwrap()
-                .insert(7, *admitted.clone());
+            let worker_route = route.clone();
+            fixture.state.host_workers.lock().unwrap().insert(
+                7,
+                worker_route.clone(),
+                *admitted.clone(),
+            );
             fixture
                 .state
                 .check_launch_origin(&fixture.caller, Some(&fixture.origin), &fixture.room)
@@ -519,10 +523,11 @@ fn retired_worker_after_admission_never_launches_or_closes() {
             fixture.assert_signed(&request, false);
             {
                 let mut workers = fixture.state.host_workers.lock().unwrap();
-                let mut retired = workers.remove(&7).unwrap();
+                let mut retired = workers.only(7).unwrap().clone();
+                workers.remove(7);
                 if replacement {
                     retired.worker_registration.as_mut().unwrap().identity = uuid::Uuid::new_v4();
-                    workers.insert(7, retired);
+                    workers.insert(7, worker_route.clone(), retired);
                 }
             }
             let custody = (
@@ -689,13 +694,14 @@ fn keyless_continuation_retains_original_device_cap_without_forbidding_content_e
 }
 
 /// Revoke from another thread while a production invoke worker is stopped at
-/// a real boundary. Timeouts make a missing boundary fail rather than hang.
+/// a real boundary. The shared hang bound makes a missing boundary fail
+/// rather than hang.
 fn revocation_gate(fixture: &Fixture) -> (Box<dyn FnOnce() + Send>, std::thread::JoinHandle<()>) {
     let (entered, waiting) = std::sync::mpsc::sync_channel(0);
     let (release, resume) = std::sync::mpsc::sync_channel(0);
     let authority = fixture.authority.clone();
     let invoking_thread = std::thread::current().id();
-    let timeout = std::time::Duration::from_secs(3);
+    let timeout = tilo_test_env::hang_bound();
     let revoker = std::thread::spawn(move || {
         waiting
             .recv_timeout(timeout)
@@ -772,7 +778,7 @@ fn production_invoke_revoked_at_durable_admission_never_launches_or_closes() {
                     .unwrap()
             });
             revoker.join().unwrap();
-            assert!(result.is_err());
+            assert!(crate::collab_broker_capnp::answered(result).is_err());
             assert_eq!(launcher.calls.load(Ordering::SeqCst), 0);
             let record = fixture.assert_signed(&request, true);
             assert!(matches!(
@@ -895,4 +901,80 @@ fn child_identity_is_stable_and_framed() {
         child_id(parent, "room", "app"),
         child_id(InvocationId::new(), "room", "app")
     );
+}
+
+/// The durable launch barrier re-verifies the original certified caller and
+/// then re-derives its owner. A delegation the admission can no longer back
+/// is refused there: it is never downgraded to the person themselves.
+#[test]
+fn check_launch_origin_refuses_a_delegation_the_admission_cannot_back() {
+    let fixture = Fixture::new_certified(HostServices::default());
+    fixture
+        .state
+        .check_launch_origin(&fixture.caller, Some(&fixture.origin), &fixture.room)
+        .expect("the undelegated origin crosses the barrier");
+    let InvocationCaller::Certified {
+        caller,
+        foreign_restriction,
+    } = &fixture.origin
+    else {
+        panic!("certified fixture");
+    };
+    assert_eq!(
+        caller.owner().unwrap(),
+        InvocationOwner::Certified {
+            root: caller.admitted.verified.user_public_key,
+            device: caller.admitted.verified.device_public_key,
+        },
+        "the person's own caller is owned by them"
+    );
+    // The person's device handed this session to an agent: the barrier admits
+    // that caller and keeps its delegation.
+    let delegated = caller.clone().delegated_to("mcp-7");
+    assert!(matches!(
+        delegated.owner().unwrap(),
+        InvocationOwner::AuthenticatedLocal { agent: Some(ref agent), .. }
+            if agent == "mcp-7"
+    ));
+    let delegated_origin = InvocationCaller::Certified {
+        caller: Box::new(delegated.clone()),
+        foreign_restriction: *foreign_restriction,
+    };
+    // The connection the barrier serves is the agent's own, which is the
+    // delegation the admission carries.
+    let agent_caller = fixture.caller.clone().delegated_to("mcp-7");
+    fixture
+        .state
+        .check_launch_origin(&agent_caller, Some(&delegated_origin), &fixture.room)
+        .expect("a backed delegation crosses the barrier");
+    // The same delegated caller whose admission cannot name its agent is
+    // refused, never re-owned as the person.
+    let mut keyless = delegated;
+    keyless.admitted.certificate = None;
+    fixture
+        .state
+        .check_launch_origin(
+            &agent_caller,
+            Some(&InvocationCaller::Certified {
+                caller: Box::new(keyless),
+                foreign_restriction: *foreign_restriction,
+            }),
+            &fixture.room,
+        )
+        .expect_err("a delegation the admission cannot back is refused");
+    // So is a caller whose admission carries another agent's delegation than
+    // the one it claims.
+    let mut elsewheres = caller.clone().delegated_to("mcp-7");
+    elsewheres.admitted = elsewheres.admitted.clone().delegated_to(Some("mcp-8"));
+    fixture
+        .state
+        .check_launch_origin(
+            &agent_caller,
+            Some(&InvocationCaller::Certified {
+                caller: Box::new(elsewheres),
+                foreign_restriction: *foreign_restriction,
+            }),
+            &fixture.room,
+        )
+        .expect_err("a mismatched delegation is refused");
 }

@@ -4,6 +4,7 @@ mod durable_local_matrix {
         rpc_pair,
     };
     use super::*;
+    use crate::test_support::KindSet;
     struct Environment {
         root: tempfile::TempDir,
         cert: tilo_user_identity::DeviceCert,
@@ -62,11 +63,11 @@ mod durable_local_matrix {
             let start = cert.issued_at_ns + 1_000_000_000;
             let (clock, control) = crate::peer_actions::OwnerPolicyClock::for_test(start);
             let origin = clock.new_origin();
-            let mut workspace = crate::test_support::Workspace::new(
+            let mut workspace = crate::test_support::Workspace::in_room(
                 crate::test_support::WorkspaceId(84),
+                tilo_desktop_model::RoomId::parse(owner.peer().room()).unwrap(),
                 "Durable actual RPC",
             );
-            workspace.set_room(tilo_desktop_model::RoomId::parse(owner.peer().room()).unwrap());
             // Someone the room grants everything until 50 seconds after the
             // start, and nothing after.
             let principal = principal_id_for_root(cert.user_public_key);
@@ -84,7 +85,7 @@ mod durable_local_matrix {
             workspace.grant(changes);
             let route = CrdtRoute::record(
                 "so.tilo.word-processor",
-                workspace.room.to_string(),
+                workspace.room().to_string(),
                 "document-1",
             );
             let mut tree = WorkspaceTree::default();
@@ -197,6 +198,41 @@ mod durable_local_matrix {
                 bridge_task,
             }
         }
+        /// A connection for `app_id`, which publishes the actions it reaches
+        /// through its own door: the application a person launched.
+        async fn app_caller(
+            &self,
+            env: &Environment,
+            peer: u64,
+            app_id: &str,
+            agent: Option<&str>,
+        ) -> Connection {
+            let (server, socket) = std::os::unix::net::UnixStream::pair().unwrap();
+            let (rpc, server, client) = rpc_pair(
+                self.state.clone(),
+                peer,
+                server,
+                socket,
+                None,
+                self.directories.clone(),
+            );
+            let route = CrdtRoute::app(app_id, env.route.cluster_id.clone());
+            let handle = rpc
+                .join_channel_as_kind(
+                    &route.channel_key(),
+                    &presentation(&route.cluster_id, &env.cert, &env.key),
+                    agent.unwrap_or(""),
+                    if agent.is_some() { "agent" } else { "person" },
+                    "",
+                )
+                .await
+                .unwrap();
+            Connection {
+                handle,
+                server,
+                client,
+            }
+        }
         async fn caller(&self, env: &Environment, peer: u64, agent: Option<&str>) -> Connection {
             let (server, socket) = std::os::unix::net::UnixStream::pair().unwrap();
             let (rpc, server, client) = rpc_pair(
@@ -229,7 +265,6 @@ mod durable_local_matrix {
             let _ = (&mut self.bridge_task).await;
             self.worker.server.abort();
             self.worker.client.abort();
-            // Abort completion releases the real server's state/journal references.
             let _ = (&mut self.worker.server).await;
             let _ = (&mut self.worker.client).await;
             self.state.stop();
@@ -296,15 +331,9 @@ mod durable_local_matrix {
     fn id(value: u128) -> tilo_actions::InvocationId {
         tilo_actions::InvocationId(uuid::Uuid::from_u128(value))
     }
-    async fn no_delivery(rig: &Rig) {
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(20),
-                rig.stream.as_ref().unwrap().read()
-            )
-            .await
-            .is_err()
-        );
+    /// Nothing was dispatched to the rig's app (peer 903) that it has not read.
+    fn no_delivery(_rig: &Rig) {
+        assert_eq!(crate::collab_broker_capnp::unread_invocations(903), 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -344,7 +373,7 @@ mod durable_local_matrix {
             }
             assert_eq!(std::fs::read_to_string(env.root.path().join("effect-count")).unwrap(),"1");
             assert_eq!(rig.state.journal.lock().unwrap().as_ref().unwrap().as_ref().unwrap().next_wire_id(),accepted.id+1);
-            assert!(tokio::time::timeout(Duration::from_millis(25),stream.read()).await.is_err(),"concurrent duplicate causes one delivery");
+            assert_eq!(crate::collab_broker_capnp::unread_invocations(903),0,"concurrent duplicate causes one delivery");
             env.control.set_wall_ns(10_000_000_000);env.control.advance_monotonic(Duration::from_secs(80));
             assert!(handle.published_invocation_observation(&binding.host,invocation.0.as_bytes()).await.is_err(),"terminal observation still requires current original caller permission");
             env.origin.invalidate();rig.stop().await;
@@ -365,7 +394,7 @@ mod durable_local_matrix {
                 let update=tilo_actions::InvocationUpdate::Succeeded{invocation,output:tilo_actions::ActionOutput::default()};
                 let result=rig.worker.handle.update_invocation(wire,&serde_json::to_string(&update).unwrap()).await;
                 assert_eq!(result.is_ok(),barrier.is_none());
-            }else{assert!(admission.is_err());no_delivery(&rig).await;assert!(!env.root.path().join("effect-count").exists());}
+            }else{assert!(admission.is_err());no_delivery(&rig);assert!(!env.root.path().join("effect-count").exists());}
             rig.stop().await;
             let restarted=Rig::new(&env).await;
             let found=restarted.worker.handle.published_invocation_observation(&original.host,invocation.0.as_bytes()).await.unwrap();
@@ -379,7 +408,7 @@ mod durable_local_matrix {
                 // Confirmation is one-use new-admission evidence, not new intent.
                 assert_eq!(found,restarted.worker.handle.invoke_resolved_published_action_durable(invocation.0.as_bytes(),&original,"original-r1","workspace:atlas","open",None,r#"{"confirm":true,"confirmation_phrase":"changed retry evidence"}"#).await.unwrap());
             }
-            no_delivery(&restarted).await;
+            no_delivery(&restarted);
             assert_eq!(std::fs::read_to_string(env.root.path().join("effect-count")).ok(),if barrier.is_none()||barrier==Some(BarrierFailure::Terminal){Some("1".into())}else{None});
             restarted.stop().await;
         }
@@ -401,7 +430,9 @@ mod durable_local_matrix {
                     KindSet::ALL,
                 );
                 let person = rig.caller(&env, 904, None).await;
-                let agent = rig.caller(&env, 905, Some("scribe")).await;
+                let agent = rig
+                    .app_caller(&env, 905, "so.tilo.files", Some("scribe"))
+                    .await;
                 let invocation = id(0xb001);
                 let admitted = invoke(&agent.handle, &rig.binding, invocation)
                     .await
@@ -484,8 +515,68 @@ mod durable_local_matrix {
                         .is_err()
                 );
                 assert!(!admitted.result.unwrap().uncertain);
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 drop(person);
+                drop(agent);
+                rig.stop().await;
+            })
+            .await;
+    }
+
+    /// The durable local door names its target itself, so the connection may
+    /// only reach what is its own: another application's binding is refused
+    /// before admission, while an agent channel — its own principal — still
+    /// reaches the same target through the same door.
+    #[tokio::test(flavor = "current_thread")]
+    async fn durable_local_rpc_reaches_only_the_callers_own_application() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let env = Environment::new();
+                let rig = Rig::new(&env).await;
+                let agent_grant =
+                    env.membership.write().workspaces[0].admit_agent("scribe", KindSet::ALL);
+                env.membership.write().workspaces[0].allow_app(
+                    tilo_action_policy::Subject::agent("scribe"),
+                    &env.route.app_id,
+                    KindSet::ALL,
+                );
+                let application = rig.app_caller(&env, 904, "so.tilo.files", None).await;
+                let invocation = id(0xb101);
+                assert!(
+                    invoke(&application.handle, &rig.binding, invocation)
+                        .await
+                        .unwrap_err()
+                        .contains("not allowed"),
+                    "an application connection cannot reach another application's binding"
+                );
+                no_delivery(&rig);
+                assert!(
+                    application
+                        .handle
+                        .published_invocation_observation(
+                            &rig.binding.host,
+                            invocation.0.as_bytes()
+                        )
+                        .await
+                        .unwrap()
+                        .result
+                        .is_none()
+                );
+                // Only the agent's own admission can reach the target, so a
+                // delivered invocation is the agent's.
+                let agent = rig
+                    .app_caller(&env, 905, "so.tilo.files", Some("scribe"))
+                    .await;
+                let admitted = invoke(&agent.handle, &rig.binding, invocation)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    rig.delivered_effect(&env, invocation).await,
+                    admitted.result.as_ref().unwrap().id
+                );
+                env.membership.write().workspaces[0].revoke_grant(&agent_grant);
+                rig.directories.remove(903);
+                drop(application);
                 drop(agent);
                 rig.stop().await;
             })
@@ -500,9 +591,7 @@ mod durable_local_matrix {
     async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                use tilo_actions::remote::{
-                    InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
-                };
+                use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
                 let env = Environment::new();
                 let rig = Rig::new(&env).await;
                 let room = env.route.cluster_id.clone();
@@ -521,7 +610,9 @@ mod durable_local_matrix {
                         KindSet::ALL,
                     );
                 }
-                let agent = rig.caller(&env, 905, Some("scribe")).await;
+                let agent = rig
+                    .app_caller(&env, 905, "so.tilo.files", Some("scribe"))
+                    .await;
                 let invocation = id(0xc001);
                 invoke(&agent.handle, &rig.binding, invocation)
                     .await
@@ -529,7 +620,6 @@ mod durable_local_matrix {
                 let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
                 assert_eq!(delivered.actor, "agent:scribe");
 
-                // The running invocation keeps its certified caller.
                 let continued = rig
                     .state
                     .continuing_caller(903, invocation)
@@ -582,15 +672,15 @@ mod durable_local_matrix {
                 assert!(matches!(
                     rig.state
                         .action_invoke(&continued, Some(903), None, &edit("edit"))
-                        .poll_ready(),
-                    PendingPoll::Ready(Ok(_))
+                        .await,
+                    Some(Ok(_))
                 ));
                 assert_eq!(app.try_recv().unwrap().actor, "agent:scribe");
                 assert!(!matches!(
                     rig.state
                         .action_invoke(&continued, Some(903), None, &edit("erase"))
-                        .poll_ready(),
-                    PendingPoll::Ready(Ok(_))
+                        .await,
+                    Some(Ok(_))
                 ));
                 assert!(app.try_recv().is_err(), "the denied edit reaches no app");
 
@@ -756,7 +846,7 @@ mod durable_local_matrix {
                     std::fs::read_to_string(env.root.path().join("effect-count")).unwrap(),
                     "1"
                 );
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 drop(recovered);
                 rig.stop().await;
             })
@@ -792,7 +882,7 @@ mod durable_local_matrix {
                         .next_wire_id(),
                     1
                 );
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 rig.stop().await;
             })
             .await;
@@ -1069,7 +1159,7 @@ mod durable_local_matrix {
                         .is_some(),
                     "host and policy grant remain live; only original temporary device expired"
                 );
-                no_delivery(&rig).await;
+                no_delivery(&rig);
                 drop(second);
                 rig.stop().await;
             })
@@ -1096,7 +1186,7 @@ mod durable_local_matrix {
                     .host_workers
                     .lock()
                     .unwrap()
-                    .get(&903)
+                    .only(903)
                     .unwrap()
                     .clone();
                 let caller = admitted.caller(&env.route.cluster_id).in_new_execution();
@@ -1168,8 +1258,10 @@ mod durable_local_matrix {
     include!("certified_lifecycle_tests.rs");
     include!("dispatcher_receipt_tests.rs");
     include!("local_document_action_rpc_tests.rs");
+    include!("packaged_app_worker_tests.rs");
     include!("certified_launch_tests.rs");
     include!("observed_launch_tests.rs");
+    include!("app_open_door_tests.rs");
     include!("keyboard_map_read_authority_tests.rs");
     include!("store_directory_publication_tests.rs");
 }

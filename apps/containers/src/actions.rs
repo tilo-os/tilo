@@ -97,13 +97,14 @@ mod tests {
         })
         .unwrap();
         // The hosted resource owns its canonical record; the frame harness's
-        // outer document is not the container draft.
+        // outer document is not the container draft. That record is the
+        // workspace's own, which carries no minted identity of its own.
         let mut doc = host.peer_document();
         assert_eq!(doc.get_heads(), heads, "nothing was written");
         let keys: Vec<String> = doc.keys(ROOT).collect();
         assert_eq!(
             keys,
-            ["draft", "tilo:record", "tilo:schema_version"],
+            ["draft", "tilo:schema_version"],
             "the canonical record contains only the app draft and framework metadata"
         );
         assert_eq!(Containers::read(&doc).unwrap(), Containers::default());

@@ -48,6 +48,12 @@ use crate::tokens::TextRole;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::{ActionEmitter, ControlBindingMetadata, ControlSize, TaffyTreeExt, Widget};
 
+#[path = "toggle_group_fold.rs"]
+mod fold;
+#[path = "toggle_group_layout.rs"]
+mod layout;
+use layout::{flow, packed, partition, partition_sized, stack, tab_fit};
+
 /// No segment chosen: what [`ToggleGroup::selected`] and
 /// [`SegmentedFace::new`] use for "none" ([`ToggleGroup::selection`] says
 /// it as `None`).
@@ -317,9 +323,7 @@ enum ChangeCallback {
 pub struct ToggleGroup {
     id: Option<String>,
     segments: Vec<Segment>,
-    /// The chosen segment, or [`NONE_CHOSEN`].
     selected: usize,
-    /// The chosen segments of a multi-select strip.
     chosen: Option<Vec<bool>>,
     /// The segment the keyboard is on in a multi-select strip.
     cursor: usize,
@@ -408,6 +412,12 @@ pub struct ToggleGroup {
     /// Where the cached scene drew a sliding thumb (`None`: in place), so
     /// each step of the slide, and its landing, repaints it.
     last_thumb: Option<Rect>,
+    /// The labels do not fit whole: the strip is a picker ([`fold`]).
+    folded: bool,
+    /// The folded strip's menu of segments.
+    menu: crate::widget::ContextMenu,
+    /// The host viewport from the latest paint, for the menu to stay in.
+    viewport: Option<Rect>,
 }
 
 impl ToggleGroup {
@@ -473,6 +483,9 @@ impl ToggleGroup {
             thumb: crate::motion::MotionValue::new(Rect::ZERO),
             thumb_for: NONE_CHOSEN,
             last_thumb: None,
+            folded: false,
+            menu: Self::fold_menu(),
+            viewport: None,
         }
     }
 
@@ -651,11 +664,17 @@ impl ToggleGroup {
     /// Panics only if the framework-generated integer action contract cannot
     /// encode its own generated payload.
     #[must_use]
+    pub fn on_view<F: FnMut(usize) + 'static>(self, id: &str, f: F) -> Self {
+        self.on_view_boxed(id, Box::new(f))
+    }
+
+    /// [`Self::on_view`] once the handler is boxed: the toolkit compiles
+    /// publishing the choice once, rather than every app once per closure.
     #[expect(
         clippy::expect_used,
         reason = "the generated integer schema and action are internally consistent"
     )]
-    pub fn on_view<F: FnMut(usize) + 'static>(mut self, id: &str, f: F) -> Self {
+    fn on_view_boxed(mut self, id: &str, f: Box<dyn FnMut(usize)>) -> Self {
         use crate::tilo_actions::{
             ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
             Resource,
@@ -694,7 +713,7 @@ impl ToggleGroup {
         .expect("segment index matches the generated integer parameter");
         self.action = Some(ActionEmitter::new(binding));
         self.native_resource = Some(resource);
-        self.on_change = Some(ChangeCallback::One(Box::new(f)));
+        self.on_change = Some(ChangeCallback::One(f));
         self
     }
 
@@ -804,6 +823,13 @@ impl ToggleGroup {
         self.place(rect);
     }
 
+    /// Where the segment at `index` stands since the last layout, for a
+    /// host that names or hit-tests the segments it placed by hand.
+    #[must_use]
+    pub fn segment_rect(&self, index: usize) -> Option<Rect> {
+        self.segment_rects.get(index).copied()
+    }
+
     /// Lay the widget out in `outer`: the caption on top, the strip below.
     fn place(&mut self, outer: Rect) {
         self.outer = outer;
@@ -831,12 +857,10 @@ impl ToggleGroup {
             self.rows = rows;
             (rects, vec![false; self.segments.len()])
         } else if self.style == SegmentedStyle::Tabs && measured {
-            let content: f64 = self.naturals.iter().map(|(full, _)| full).sum();
+            let (widths, use_short) = tab_fit(rect.width(), &self.naturals);
+            let content: f64 = widths.iter().map(|(width, _)| width).sum();
             self.scroll_x = self.scroll_x.clamp(0.0, (content - rect.width()).max(0.0));
-            (
-                packed(rect, &self.naturals, self.scroll_x),
-                vec![false; self.segments.len()],
-            )
+            (packed(rect, &widths, self.scroll_x), use_short)
         } else if measured {
             partition_sized(rect, &self.naturals)
         } else {
@@ -850,6 +874,7 @@ impl ToggleGroup {
         }
         self.segment_rects = rects;
         self.use_short = use_short;
+        self.refold(measured);
         #[allow(
             clippy::float_cmp,
             reason = "exact equality is intentional: both rects come from the same taffy \
@@ -868,8 +893,9 @@ impl ToggleGroup {
         if self.style != SegmentedStyle::Tabs || self.naturals.len() != self.segments.len() {
             return;
         }
-        let start: f64 = self.naturals.iter().take(index).map(|(full, _)| full).sum();
-        let Some((width, _)) = self.naturals.get(index) else {
+        let (widths, _) = tab_fit(self.rect.width(), &self.naturals);
+        let start: f64 = widths.iter().take(index).map(|(width, _)| width).sum();
+        let Some(&(width, _)) = widths.get(index) else {
             return;
         };
         let room = self.rect.width();
@@ -889,7 +915,12 @@ impl ToggleGroup {
     /// Whether the tab strip is longer than its room.
     fn overflows(&self) -> bool {
         self.style == SegmentedStyle::Tabs
-            && self.naturals.iter().map(|(full, _)| full).sum::<f64>() > self.rect.width() + 0.5
+            && tab_fit(self.rect.width(), &self.naturals)
+                .0
+                .iter()
+                .map(|(width, _)| width)
+                .sum::<f64>()
+                > self.rect.width() + 0.5
     }
 
     /// The number of separators the strip draws at rest: one between each
@@ -917,7 +948,7 @@ impl ToggleGroup {
     /// Focus a person needs to be shown: keyboard focus, not the focus a
     /// press on a segment gave it.
     fn focus_visible(&self) -> bool {
-        self.is_focused && !self.pressed_into_focus
+        self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
     }
 
     fn strip_height(&self) -> f64 {
@@ -928,133 +959,6 @@ impl ToggleGroup {
             self.metrics.height
         }
     }
-}
-
-/// `rect` stacked into `n` square segments as wide as it is, the gaps
-/// between them sharing the height left over.
-fn stack(rect: Rect, n: usize) -> Vec<Rect> {
-    let side = rect.width();
-    let gaps = f64_of_usize(n.saturating_sub(1)).max(1.0);
-    let gap = ((rect.height() - side * f64_of_usize(n)) / gaps).max(0.0);
-    (0..n)
-        .map(|i| {
-            let y = rect.y0 + f64_of_usize(i) * (side + gap);
-            Rect::new(rect.x0, y, rect.x1, y + side)
-        })
-        .collect()
-}
-
-/// `rect` split into `n` equal segments, the last one anchored to the right
-/// edge so accumulated rounding leaves no hairline gap.
-fn partition(rect: Rect, n: usize) -> Vec<Rect> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let seg_w = rect.width() / f64_of_usize(n);
-    let last = n.saturating_sub(1);
-    (0..n)
-        .map(|i| {
-            let x0 = rect.x0 + f64_of_usize(i) * seg_w;
-            let x1 = if i == last {
-                rect.x1
-            } else {
-                rect.x0 + f64_of_usize(i.saturating_add(1)) * seg_w
-            };
-            Rect::new(x0, rect.y0, x1, rect.y1)
-        })
-        .collect()
-}
-
-/// Tabs packed from the leading edge, each as wide as its label needs,
-/// shifted left by `scroll`.
-fn packed(rect: Rect, naturals: &[(f64, f64)], scroll: f64) -> Vec<Rect> {
-    let mut x = rect.x0 - scroll;
-    naturals
-        .iter()
-        .map(|(full, _)| {
-            let seg = Rect::new(x, rect.y0, x + full, rect.y1);
-            x += full;
-            seg
-        })
-        .collect()
-}
-
-/// Segments of a multi-select strip, each its natural width, `gap` apart,
-/// wrapping onto rows `height` tall. Returns the rects and the row count.
-fn flow(rect: Rect, naturals: &[(f64, f64)], height: f64, gap: f64) -> (Vec<Rect>, usize) {
-    let mut rows = 1usize;
-    let mut x = rect.x0;
-    let mut y = rect.y0;
-    let rects = naturals
-        .iter()
-        .map(|(full, _)| {
-            if x > rect.x0 && x + full > rect.x1 + 0.5 {
-                x = rect.x0;
-                y += height + gap;
-                rows = rows.saturating_add(1);
-            }
-            let seg = Rect::new(x, y, x + full, y + height);
-            x += full + gap;
-            seg
-        })
-        .collect();
-    (rects, rows)
-}
-
-/// `rect` split among segments of natural widths `naturals` (full label,
-/// short label): equal segments while every full label fits an equal share;
-/// otherwise each segment as wide as its label needs with the room left
-/// shared equally; only when the full labels cannot all fit, the short forms
-/// where a segment has one; and only past that, shares in proportion (the
-/// labels then elide). Returns the rects and, per segment, whether it shows
-/// its short form.
-fn partition_sized(rect: Rect, naturals: &[(f64, f64)]) -> (Vec<Rect>, Vec<bool>) {
-    let n = naturals.len();
-    if n == 0 {
-        return (Vec::new(), Vec::new());
-    }
-    let avail = rect.width().max(0.0);
-    let count = f64_of_usize(n);
-    let full: Vec<f64> = naturals.iter().map(|(full, _)| *full).collect();
-    let widest = full.iter().copied().fold(0.0, f64::max);
-    if widest * count <= avail + 1e-6 {
-        return (partition(rect, n), vec![false; n]);
-    }
-    let fitted = |widths: &[f64]| -> Option<Vec<f64>> {
-        let sum: f64 = widths.iter().sum();
-        (sum <= avail + 1e-6).then(|| {
-            let extra = (avail - sum) / count;
-            widths.iter().map(|w| w + extra).collect()
-        })
-    };
-    let (widths, use_short) = if let Some(widths) = fitted(&full) {
-        (widths, vec![false; n])
-    } else {
-        let short: Vec<f64> = naturals
-            .iter()
-            .map(|(full, short)| full.min(*short))
-            .collect();
-        let use_short: Vec<bool> = naturals.iter().map(|(full, short)| short < full).collect();
-        if let Some(widths) = fitted(&short) {
-            (widths, use_short)
-        } else {
-            let sum: f64 = short.iter().sum::<f64>().max(1.0);
-            (short.iter().map(|w| w * avail / sum).collect(), use_short)
-        }
-    };
-    let last = n.saturating_sub(1);
-    let mut x = rect.x0;
-    let rects = widths
-        .iter()
-        .enumerate()
-        .map(|(i, w)| {
-            let x1 = if i == last { rect.x1 } else { x + w };
-            let seg = Rect::new(x, rect.y0, x1, rect.y1);
-            x = x1;
-            seg
-        })
-        .collect();
-    (rects, use_short)
 }
 
 /// The indices `i` whose right edge carries a separator: between two
@@ -1175,7 +1079,11 @@ impl StripMetrics {
             .map(|segment| {
                 if style == SegmentedStyle::Tabs && segment.icon.is_none() {
                     let full = self.tab_natural(&segment.label, text);
-                    return (full, full);
+                    let short = segment
+                        .short
+                        .as_deref()
+                        .map_or(full, |short| self.tab_natural(short, text));
+                    return (full, short);
                 }
                 let icon = segment.icon.is_some();
                 let full = self.natural(&segment.label, icon, text);
@@ -1302,6 +1210,41 @@ pub struct SegmentedFace<'a> {
     control_size: ControlSize,
     /// Where the chosen segment's thumb is drawn while it slides to it.
     thumb: Option<Rect>,
+    /// Icon segments show their label too, under the icon
+    /// ([`Self::stacked`]).
+    stacked: bool,
+    /// Painted folded, as a picker ([`Self::folded`]).
+    fold: Option<super::window_toolbar_row::LocationLift>,
+}
+
+/// The geometry of a stacked strip ([`SegmentedFace::stacked`]): each
+/// segment an icon with its label under it.
+struct StackedMetrics {
+    /// Above the icon and below the label.
+    pad_y: f64,
+    gap: f64,
+    icon: f64,
+    label: TextStyle,
+}
+
+impl StackedMetrics {
+    fn of(size: ControlSize, theme: &Theme) -> Self {
+        let strip = StripMetrics::of(size, theme);
+        Self {
+            pad_y: f64::from(theme.tokens.spacing.s2),
+            gap: f64::from(theme.tokens.spacing.s1),
+            icon: strip.icon,
+            label: theme.text(TextRole::Caption),
+        }
+    }
+
+    fn line(&self) -> f64 {
+        f64::from(self.label.line_height_px()).ceil()
+    }
+
+    fn height(&self) -> f64 {
+        (2.0 * self.pad_y + self.icon + self.gap + self.line()).ceil()
+    }
 }
 
 impl<'a> SegmentedFace<'a> {
@@ -1326,7 +1269,44 @@ impl<'a> SegmentedFace<'a> {
             style: SegmentedStyle::Segmented,
             control_size: ControlSize::Regular,
             thumb: None,
+            stacked: false,
+            fold: None,
         }
+    }
+
+    /// Show each icon segment's label under its icon, in caption type: a
+    /// choice whose symbol alone could be misread (a capture's output and
+    /// target). Size the strip with [`Self::stacked_height`] and
+    /// [`Self::stacked_segment_width`].
+    #[must_use]
+    pub fn stacked(mut self, stacked: bool) -> Self {
+        self.stacked = stacked;
+        self
+    }
+
+    pub fn stacked_height(size: ControlSize, theme: &Theme) -> f64 {
+        StackedMetrics::of(size, theme).height()
+    }
+
+    /// The width every segment of a stacked strip takes so that the widest
+    /// label (set as chosen) fits under its icon: equal segments, as a
+    /// segmented control's are.
+    pub fn stacked_segment_width(
+        labels: &[&str],
+        size: ControlSize,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        let strip = StripMetrics::of(size, theme);
+        let stacked = StackedMetrics::of(size, theme);
+        let strong = stacked.label.clone().strong();
+        let widest = labels
+            .iter()
+            .map(|label| f64::from(text.measure_style(label, None, &strong).0))
+            .fold(stacked.icon, f64::max);
+        (widest + 2.0 * strip.pad_x)
+            .max(stacked.height() - 2.0 * strip.inset)
+            .ceil()
     }
 
     /// Draw the chosen segment's thumb at `rect` instead of on the segment:
@@ -1397,7 +1377,6 @@ impl<'a> SegmentedFace<'a> {
         self.control_size = size;
         self
     }
-    /// The height of a strip of `size` in `theme`.
     pub fn height(size: ControlSize, theme: &Theme) -> f64 {
         StripMetrics::of(size, theme).height
     }
@@ -1410,6 +1389,22 @@ impl<'a> SegmentedFace<'a> {
     ) -> f64 {
         let segments: Vec<Segment> = labels.iter().map(|label| Segment::new(*label)).collect();
         StripMetrics::of(size, theme).intrinsic_width(&segments, SegmentedStyle::Segmented, text)
+    }
+
+    /// Each view tab's width ([`crate::widget::ViewTabs`] and the window
+    /// bar's views): as wide as its label, packed with no track.
+    pub(crate) fn tab_widths(
+        labels: &[&str],
+        size: ControlSize,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Vec<f64> {
+        let segments: Vec<Segment> = labels.iter().map(|label| Segment::new(*label)).collect();
+        StripMetrics::of(size, theme)
+            .naturals(&segments, SegmentedStyle::Tabs, text)
+            .into_iter()
+            .map(|(full, _)| full)
+            .collect()
     }
     /// The segment rects of a strip in `rect`: equal while every label fits
     /// an equal share, otherwise each as wide as its label needs with the
@@ -1540,6 +1535,9 @@ impl ToggleGroup {
         theme: &Theme,
         face: &SegmentedFace<'_>,
     ) {
+        if face.paint_folded(scene, transform, (text_renderer, theme)) {
+            return;
+        }
         let segs = face.segments;
         let (Some(first), Some(last)) = (segs.first(), segs.last()) else {
             return;
@@ -1567,11 +1565,15 @@ impl ToggleGroup {
         };
         Self::paint_ground(scene, transform, theme, face, &metrics, outer);
 
-        // The thumb (and the hover lift) of every style: a selector set
-        // concentrically inside the segment.
+        // The thumb of every style: a selector set concentrically inside the
+        // segment. Only a multi-select strip lifts the segment under the
+        // pointer too; in a single choice a lift reads as a second chosen
+        // segment (and, while a choice is on its way to the store, as the
+        // choice made), so there the pointer shows on nothing but itself.
+        let lifts_hover = face.chosen.is_some();
         for (i, seg) in segs.iter().enumerate() {
             let selected = is_on(i);
-            let hovered = hovered == Some(i) && !selected;
+            let hovered = lifts_hover && hovered == Some(i) && !selected;
             if !(selected || hovered) {
                 continue;
             }
@@ -1610,6 +1612,50 @@ impl ToggleGroup {
             } else {
                 ink
             };
+            if face.stacked
+                && let Some(icon) = item.icon
+            {
+                let stacked = StackedMetrics::of(face.control_size, theme);
+                let label_style = if selected {
+                    stacked.label.clone().strong()
+                } else {
+                    stacked.label.clone()
+                };
+                let content = stacked.icon + stacked.gap + stacked.line();
+                let top = seg.center().y - content / 2.0;
+                crate::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(
+                        seg.center().x - stacked.icon / 2.0,
+                        top,
+                        seg.center().x + stacked.icon / 2.0,
+                        top + stacked.icon,
+                    ),
+                    icon,
+                    ink,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+                let room = (seg.width() - 2.0 * metrics.pad_x.min(seg.width() / 4.0)).max(1.0);
+                let shown = text_renderer.elide_to_width_style(
+                    item.label,
+                    f32_of_f64(room + 0.5),
+                    &label_style,
+                );
+                let (tw, _) = text_renderer.measure_style(&shown, None, &label_style);
+                #[allow(
+                    clippy::arithmetic_side_effects,
+                    reason = "Affine composition is float matrix multiplication; it cannot \
+                              overflow or panic"
+                )]
+                let label_transform = transform
+                    * Affine::translate((
+                        seg.center().x - f64::from(tw) / 2.0,
+                        top + stacked.icon + stacked.gap,
+                    ));
+                text_renderer.draw_style(scene, &shown, ink, label_transform, None, &label_style);
+                continue;
+            }
             if let Some(icon) = item.icon {
                 let edge = metrics.icon.min(seg.height());
                 crate::icons::draw_icon(
@@ -1727,6 +1773,18 @@ impl ToggleGroup {
         }
         // The keys are in use: show where they act.
         self.pressed_into_focus = false;
+        // A folded strip opens its menu as a picker does; the arrows still
+        // step through the segments.
+        if self.folded
+            && matches!(
+                key.logical_key,
+                Key::Named(NamedKey::Enter | NamedKey::Space)
+            )
+        {
+            self.open_fold_menu();
+            *handled = true;
+            return;
+        }
         let len = self.segments.len();
         let current = if self.chosen.is_some() {
             self.cursor
@@ -1810,6 +1868,13 @@ impl ToggleGroup {
         if !self.rect.contains(pos) {
             return;
         }
+        if self.folded {
+            *handled = true;
+            self.pressed_into_focus |= !self.is_focused;
+            *focus_target = Some(node_id);
+            self.open_fold_menu();
+            return;
+        }
         if let Some(index) = self
             .segment_rects
             .iter()
@@ -1860,6 +1925,22 @@ impl ToggleGroup {
     ) {
         if !self.is_enabled() {
             self.touch.cancel();
+            return;
+        }
+        if self.folded {
+            // A folded strip is one button: a tap opens its menu.
+            let at = Point::new(
+                touch.location.x / scale_factor,
+                touch.location.y / scale_factor,
+            );
+            if self.rect.contains(at) {
+                *handled = true;
+                if touch.phase == winit::event::TouchPhase::Ended {
+                    self.pressed_into_focus |= !self.is_focused;
+                    *focus_target = Some(node_id);
+                    self.open_fold_menu();
+                }
+            }
             return;
         }
         let group = SegmentedTouchGroup::new(0, &self.segment_rects, self.selected);
@@ -2015,7 +2096,8 @@ impl ToggleGroup {
 impl Widget for ToggleGroup {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::widget::ResourceOperations
     );
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
@@ -2286,6 +2368,9 @@ impl Widget for ToggleGroup {
         if let Some(chosen) = &self.chosen {
             face = face.chosen(chosen);
         }
+        if self.folded {
+            face = face.folded(self.hovered.is_some(), self.menu.is_open());
+        }
         Self::paint(
             &mut self.cached,
             Affine::IDENTITY,
@@ -2314,12 +2399,14 @@ impl Widget for ToggleGroup {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.thumb.is_moving(crate::motion::frame_now())
+        self.thumb.is_moving(crate::motion::frame_now()) || self.menu.needs_animation_frame()
     }
 
     fn needs_redraw(&self) -> bool {
         self.cache_dirty
             || self.thumb.is_moving(crate::motion::frame_now())
+            // Drawn on its way: the frame after it settles paints it at rest.
+            || self.last_thumb.is_some()
             || self.selected != self.last_selected
             || self.focus_visible() != self.last_focused
             || self.hovered != self.last_hovered
@@ -2336,17 +2423,25 @@ impl Widget for ToggleGroup {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor.set(ctx.logical(position));
+        }
+        if self.fold_menu_event(event, ctx) {
+            return;
+        }
         match event {
             WindowEvent::KeyboardInput { event, .. } => self.handle_key_event(event, ctx.handled),
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = ctx.logical(position);
-                self.last_cursor.set(logical_pos);
-                self.hovered = if self.is_enabled() && self.rect.contains(logical_pos) {
+                self.hovered = if !self.is_enabled() || !self.rect.contains(logical_pos) {
+                    None
+                } else if self.folded {
+                    // The folded strip lifts as one picker.
+                    Some(self.selected)
+                } else {
                     self.segment_rects
                         .iter()
                         .position(|segment| segment.contains(logical_pos))
-                } else {
-                    None
                 };
             }
             WindowEvent::CursorLeft { .. } => self.hovered = None,
@@ -2379,7 +2474,18 @@ impl Widget for ToggleGroup {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.touch.is_active()
+        self.touch.is_active() || self.menu.is_open()
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+    ) {
+        self.draw_fold_menu(scene, transform, (text_renderer, theme, presence));
     }
 
     fn claims_raw_touch(&self, point: Point) -> bool {
@@ -2420,31 +2526,6 @@ impl Widget for ToggleGroup {
 
     fn test_id(&self) -> Option<&str> {
         self.id.as_deref()
-    }
-
-    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        self.native_resource
-            .as_ref()
-            .map(|_| std::iter::once("tilo.ui.segmented.select".to_owned()).collect())
-            .unwrap_or_default()
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &super::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &ObjId,
-    ) -> Result<Option<super::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .select_segment_operation(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                super::ResourceOperationStart::Completed(
-                    crate::tilo_actions::ActionOutput::default(),
-                )
-            }))
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -2490,16 +2571,18 @@ impl Widget for ToggleGroup {
             .as_ref()
             .map(|name| crate::i18n!(name))
             .or_else(|| self.caption.clone());
+        let mut state = AccessState::new()
+            .focusable(self.is_focusable())
+            .focused(self.is_focused())
+            .disabled(!self.is_enabled());
+        // Folded, the strip is a picker whose menu opens and closes; its
+        // segments stay its children, each one chosen as before.
+        state.expanded = self.folded.then(|| self.menu.is_open());
         Some(
             AccessNode::new(Role::Group)
                 .with_optional_name(name)
                 .with_optional_value(value)
-                .with_state(
-                    AccessState::new()
-                        .focusable(self.is_focusable())
-                        .focused(self.is_focused())
-                        .disabled(!self.is_enabled()),
-                )
+                .with_state(state)
                 .with_children(seg_children),
         )
     }
@@ -2530,6 +2613,33 @@ impl Widget for ToggleGroup {
         }
         self.request_selection(index);
         true
+    }
+}
+
+impl crate::widget::ResourceOperations for ToggleGroup {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.native_resource
+            .as_ref()
+            .map(|_| std::iter::once("tilo.ui.segmented.select".to_owned()).collect())
+            .unwrap_or_default()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &ObjId,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .select_segment_operation(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                super::ResourceOperationStart::Completed(
+                    crate::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 }
 
@@ -2688,6 +2798,7 @@ mod tests {
     fn group_at(segments: Vec<Segment>, selected: usize, rect: Rect) -> ToggleGroup {
         let mut g = ToggleGroup::new(segments, selected);
         g.rect = rect;
+        g.outer = rect;
         // Populate segment_rects manually (mirrors apply_layout).
         let n = g.segments.len();
         if n > 0 {
@@ -2764,7 +2875,6 @@ mod tests {
             "the gaps share the rest"
         );
 
-        // A press chooses the segment and stores its value.
         dispatch(&mut rail, &cursor_moved(20.0, rects[2].center().y));
         dispatch(&mut rail, &mouse_press());
         assert_eq!(state.with(|value| *value), 'c');
@@ -2775,7 +2885,6 @@ mod tests {
         Widget::sync(&mut rail, &doc, &automerge::ROOT);
         assert_eq!(rail.selected(), 0);
 
-        // An icon segment's label and shortcut are its tooltip.
         let (_, tip) = rail
             .tooltip_target_at(rects[0].center())
             .expect("an icon segment has a tooltip");
@@ -2806,7 +2915,6 @@ mod tests {
     fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `retained_labels_apply_resolved_text_scale_exactly_once`.
         {
             for scale in [1.0, 2.0] {
                 let theme = Theme::dark().with_text_scale(scale);
@@ -2839,7 +2947,6 @@ mod tests {
             }
         }
 
-        // Case `retained_group_fits_its_labels_at_its_control_height`.
         {
             let harness = crate::headless::FrameHarness::new(
                 crate::State::new(),
@@ -2890,21 +2997,16 @@ mod tests {
             assert_eq!(harness.inspection().root.children[0].rect[2], 600.0);
         }
 
-        // Case `toggle_group_paints_separator_lines_between_segments`.
         {
             let mut g = ToggleGroup::new(
                 vec![Segment::new("a"), Segment::new("b"), Segment::new("c")],
                 0,
             );
-            // Run a layout pass so `segment_rects` is populated.
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-            let root = taffy.parent_node(Style::default(), &[node]);
-            taffy
-                .compute_layout(root, taffy::Size::MAX_CONTENT)
-                .unwrap();
-            g.apply_layout(&taffy, node, Point::ZERO);
+            // Lay it out with room for its labels, so it shows as a strip.
+            g.adopt_theme(&Theme::dark());
+            g.measure_naturals(&mut TextRenderer::new());
+            g.apply_layout_external(Rect::new(0.0, 0.0, 240.0, g.strip_height()));
+            assert!(!g.is_folded(), "three short labels fit in 240 px");
 
             assert_eq!(
                 g.separator_count(),
@@ -2933,7 +3035,6 @@ mod tests {
             );
         }
 
-        // Case `segmented_paint_emits_fills_over_caller_rects`.
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
@@ -2966,7 +3067,6 @@ mod tests {
             }
         }
 
-        // Case `a_label_that_does_not_fit_falls_back_to_its_short_form`.
         {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
@@ -3067,13 +3167,11 @@ mod tests {
     fn toggle_group_selection_follows_pointer_touch_and_keyboard() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `toggle_group_initial_selection_zero`.
         {
             let g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
             assert_eq!(g.selected(), 0);
         }
 
-        // Case `toggle_group_click_segment_two_selects_index_two`.
         {
             let captured: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
             let captured_clone = captured.clone();
@@ -3097,7 +3195,6 @@ mod tests {
             );
         }
 
-        // Case `focused_toggle_group_supports_keyboard_navigation_and_activation`.
         {
             let changes = Rc::new(RefCell::new(Vec::new()));
             let captured = Rc::clone(&changes);
@@ -3130,7 +3227,6 @@ mod tests {
             );
         }
 
-        // Case `touch_commits_on_release_and_keyboard_arrows_wrap`.
         {
             let mut group = group_at(
                 vec![
@@ -3159,7 +3255,6 @@ mod tests {
             assert_eq!(group.selected(), 2);
         }
 
-        // Case `unavailable_toggle_group_rejects_pointer_touch_and_keyboard_input`.
         {
             let mut group = group_at(
                 vec![Segment::new("Light"), Segment::new("Dark")],
@@ -3182,6 +3277,161 @@ mod tests {
             ));
             assert!(!dispatch(&mut group, &named_key(NamedKey::ArrowRight),));
             assert_eq!(group.selected(), 0);
+        }
+    }
+
+    // `TILO_SEGMENT_FRAMES=<dir>` writes each frame of the slide as a PNG strip to
+    // look at.
+    #[test]
+    fn a_click_slides_the_chosen_pill_from_the_old_segment_to_the_new_one() {
+        use crate::time::testing::with_monotonic_time;
+        let strip = std::env::var_os("TILO_SEGMENT_FRAMES").map(std::path::PathBuf::from);
+        for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+            let sizes = ["Small", "Default", "Large", "Larger"];
+            let chosen = crate::LocalState::new("Default".to_owned());
+            let t0 = crate::time::now();
+            let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+            let mut frame = with_monotonic_time(t0, || {
+                crate::headless::FrameHarness::for_root(
+                    crate::State::new(),
+                    ToggleGroup::from_state(
+                        sizes
+                            .iter()
+                            .map(|size| ((*size).to_owned(), Segment::new(*size)))
+                            .collect(),
+                        &chosen,
+                    ),
+                    (520, 72),
+                    theme.clone(),
+                )
+            });
+            let (from, to) = {
+                let group = frame.root::<ToggleGroup>();
+                (group.segment_rects[1], group.segment_rects[2])
+            };
+            assert!(to.x0 > from.x0, "{name}: Large sits right of Default");
+            // Rasterised on the CPU, so the strip needs no GPU.
+            let write = |frame: &crate::headless::FrameHarness, ms: u64| {
+                let Some(dir) = &strip else {
+                    return;
+                };
+                let (width, height) = (520_u32, 72_u32);
+                let mut pixels = vec![0u8; (width * height * 4) as usize];
+                let mut target =
+                    tilo_cpu_raster::Target::new(&mut pixels, width, height, width as usize * 4)
+                        .expect("a raster target");
+                tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+                    frame.scene().encoding(),
+                    &mut target,
+                    None,
+                    theme.tokens.colors.surfaces.content,
+                );
+                std::fs::create_dir_all(dir).expect("the strip's directory");
+                crate::png::write_rgba8(
+                    dir.join(format!("{name}-{ms:04}ms.png")),
+                    width,
+                    height,
+                    &pixels,
+                )
+                .expect("a frame of the strip");
+            };
+            write(&frame, 0);
+            with_monotonic_time(at(16), || frame.click_at(to.center().x, to.center().y));
+            assert_eq!(chosen.get(), "Large", "{name}: the click chooses Large");
+            write(&frame, 16);
+            let mut between = 0;
+            let mut last_x = from.x0;
+            for ms in (32..=1_000).step_by(16) {
+                with_monotonic_time(at(ms), || {
+                    let _ = frame.poll_frame();
+                });
+                write(&frame, ms);
+                let group = frame.root::<ToggleGroup>();
+                assert_eq!(group.selected(), 2, "{name}: Large stays chosen");
+                let Some(pill) = group.last_thumb else {
+                    continue;
+                };
+                // On its way: strictly between the segments, moving one way.
+                assert!(
+                    pill.x0 > from.x0 && pill.x0 < to.x0,
+                    "{name} at {ms} ms: the pill {pill:?} is between {from:?} and {to:?}"
+                );
+                let (narrow, wide) = (from.width().min(to.width()), from.width().max(to.width()));
+                assert!(
+                    pill.width() >= narrow - 0.5 && pill.width() <= wide + 0.5,
+                    "{name} at {ms} ms: the pill's width {} is between the segments' {narrow}..{wide}",
+                    pill.width()
+                );
+                if (wide - narrow).abs() > 1.0 {
+                    assert!(
+                        pill.width() > narrow && pill.width() < wide,
+                        "{name} at {ms} ms: the width moves too"
+                    );
+                }
+                assert!(
+                    pill.x0 >= last_x,
+                    "{name} at {ms} ms: the pill never turns back"
+                );
+                last_x = pill.x0;
+                between += 1;
+            }
+            assert!(
+                between >= 3,
+                "{name}: the pill slides over several frames, not a jump ({between} between)"
+            );
+            let group = frame.root::<ToggleGroup>();
+            assert!(
+                !with_monotonic_time(at(1_000), || group.needs_animation_frame()),
+                "{name}: the slide settles"
+            );
+            assert_eq!(
+                group.last_thumb, None,
+                "{name}: the pill rests on its segment"
+            );
+            assert_eq!(
+                group.thumb.get(at(1_000)),
+                group.segment_rects[2],
+                "{name}: at rest the pill is exactly Large"
+            );
+        }
+    }
+
+    #[test]
+    fn hovering_a_segment_of_a_single_choice_draws_no_second_pill() {
+        let segments = [
+            Rect::new(0.0, 0.0, 100.0, 32.0),
+            Rect::new(100.0, 0.0, 200.0, 32.0),
+            Rect::new(200.0, 0.0, 300.0, 32.0),
+        ];
+        let items = [
+            Segment::new("Small"),
+            Segment::new("Default"),
+            Segment::new("Large"),
+        ];
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let mut text = TextRenderer::new();
+            let mut drawn = |hovered: Option<usize>, chosen: Option<&[bool]>| {
+                let mut face = SegmentedFace::of_segments(&segments, &items, 1).hovered(hovered);
+                if let Some(chosen) = chosen {
+                    face = face.chosen(chosen);
+                }
+                let mut scene = Scene::new();
+                ToggleGroup::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
+                scene.encoding().draw_data.clone()
+            };
+            assert_eq!(
+                drawn(Some(2), None),
+                drawn(None, None),
+                "{}: the pointer over Large draws nothing beside the chosen Default",
+                theme.name
+            );
+            let chosen = [false, true, false];
+            assert_ne!(
+                drawn(Some(2), Some(&chosen)),
+                drawn(None, Some(&chosen)),
+                "{}: a multi-select strip lifts the segment under the pointer",
+                theme.name
+            );
         }
     }
 
@@ -3267,20 +3517,17 @@ mod tests {
     }
 
     /// A focus change swaps the outer border colour, so the encoded stream
-    /// differs between focused and unfocused renders.
+    /// differs between focused and unfocused renders. The strip has room for
+    /// both labels, so it shows as a strip.
     fn group_draw_data(focused: bool, theme: &Theme) -> Vec<u32> {
         let mut g = ToggleGroup::new(vec![Segment::new("a"), Segment::new("b")], 0);
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = g.build_layout(&mut taffy, theme, &mut node_map);
-        let root = taffy.parent_node(Style::default(), &[node]);
-        taffy
-            .compute_layout(root, taffy::Size::MAX_CONTENT)
-            .unwrap();
-        g.apply_layout(&taffy, node, Point::ZERO);
+        let mut tr = TextRenderer::new();
+        g.adopt_theme(theme);
+        g.measure_naturals(&mut tr);
+        g.apply_layout_external(Rect::new(0.0, 0.0, 240.0, g.strip_height()));
+        assert!(!g.is_folded(), "two short labels fit in 240 px");
         g.set_focus(focused);
 
-        let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
         g.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
@@ -3367,7 +3614,6 @@ mod tests {
     fn accessibility_and_actions_expose_and_drive_the_selected_segment() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
-        // Case `accessibility_reports_group_role_and_selected_segment_label`.
         {
             use crate::a11y::Role;
             let g = ToggleGroup::new(
@@ -3390,7 +3636,6 @@ mod tests {
             assert!(!node.state.disabled);
         }
 
-        // Case `accessibility_value_tracks_selection_changes`.
         {
             // Nothing reads `captured` back in this test (only the accessibility
             // value is asserted), so the closure can just own it — no need for
@@ -3424,7 +3669,6 @@ mod tests {
             );
         }
 
-        // Case `synthetic_segment_activation_selects_and_fires_on_change`.
         {
             let changed = Rc::new(RefCell::new(Vec::new()));
             let captured = Rc::clone(&changed);
@@ -3442,7 +3686,6 @@ mod tests {
             assert_eq!(&*changed.borrow(), &[1]);
         }
 
-        // Case `on_view_publishes_and_executes_one_typed_resource_action`.
         {
             let changed = Rc::new(RefCell::new(Vec::new()));
             let captured = Rc::clone(&changed);
@@ -3480,7 +3723,7 @@ mod tests {
             assert_eq!(invocation.arguments["index"], 1);
             let encoded = spec.build_json(&invocation.arguments).unwrap();
             assert_eq!(encoded.type_id, "tilo.ui.segmented.select");
-            let output = Widget::start_operation(
+            let output = crate::widget::start_operation(
                 &mut group,
                 &crate::widget::ResourceOperation::local(
                     crate::tilo_actions::InvocationId::new(),
@@ -3607,7 +3850,7 @@ mod tests {
             );
 
             let mut g = ToggleGroup::new(labels, 4).with_style(SegmentedStyle::Tabs);
-            g.metrics = metrics;
+            g.metrics = metrics.clone();
             g.measure_naturals(&mut text);
             g.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 32.0));
             assert!(g.overflows());
@@ -3617,6 +3860,33 @@ mod tests {
                 last.x1 <= 200.0 + 1e-6 && last.x0 >= 0.0,
                 "the chosen tab scrolls into view: {last:?}"
             );
+
+            // Tabs with short labels take them before they scroll.
+            let named = |short: bool| -> Vec<Segment> {
+                [("Privacy & Security", "Privacy"), ("Apps & Files", "Apps")]
+                    .iter()
+                    .map(|(full, brief)| {
+                        let tab = Segment::new(*full);
+                        if short { tab.short(*brief) } else { tab }
+                    })
+                    .collect()
+            };
+            let mut g = ToggleGroup::new(named(true), 0).with_style(SegmentedStyle::Tabs);
+            g.metrics = metrics.clone();
+            g.measure_naturals(&mut text);
+            g.apply_layout_external(Rect::new(0.0, 0.0, 600.0, 32.0));
+            assert_eq!(g.shown_labels(), ["Privacy & Security", "Apps & Files"]);
+            let full_width = g.segment_rects[1].x1;
+            let room = full_width - 1.0;
+            g.apply_layout_external(Rect::new(0.0, 0.0, room, 32.0));
+            assert_eq!(g.shown_labels(), ["Privacy", "Apps"]);
+            assert!(!g.overflows(), "the short labels fit");
+            assert!(g.segment_rects[1].x1 <= room + 1e-6);
+            let mut plain = ToggleGroup::new(named(false), 0).with_style(SegmentedStyle::Tabs);
+            plain.metrics = metrics;
+            plain.measure_naturals(&mut text);
+            plain.apply_layout_external(Rect::new(0.0, 0.0, room, 32.0));
+            assert!(plain.overflows(), "without short labels the strip scrolls");
         }
 
         fn a_caption_names_the_strip_and_sits_above_it() {

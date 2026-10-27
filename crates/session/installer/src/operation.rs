@@ -101,6 +101,18 @@ pub enum Operation {
     SetDiskPassphrase {
         passphrase: String,
         confirmation: String,
+        /// Empty keeps the interactive policy: a short TPM PIN only when the
+        /// reviewed target proves the measured-boot boundary, otherwise a
+        /// strong passphrase. `tpm2` requires that boundary; `passphrase`
+        /// forces the independent strong passphrase even on a TPM2 machine.
+        #[serde(default)]
+        mode: String,
+    },
+    /// Set an account password that is already a SHA-512 crypt hash, without
+    /// keeping or transmitting the plaintext. Only the unattended recipe path
+    /// publishes this action.
+    SetPasswordHash {
+        hash: String,
     },
     SetFilesystem {
         filesystem: String,
@@ -163,6 +175,7 @@ impl Operation {
             Self::SetIdentity { .. } => "set-identity",
             Self::SetPassphrase { .. } => "set-passphrase",
             Self::SetDiskPassphrase { .. } => "set-disk-passphrase",
+            Self::SetPasswordHash { .. } => "set-password-hash",
             Self::SetFilesystem { .. } => "set-filesystem",
             Self::SetSecurityKey { .. } => "set-security-key",
             Self::SetMediaCodecs { .. } => "set-media-codecs",
@@ -206,7 +219,6 @@ mod tests {
 
     #[test]
     fn operations_round_trip_and_refusals_never_echo_secrets() {
-        // Phase `operations_round_trip_and_unknown_fields_are_refused`.
         {
             for operation in [
                 Operation::Next,
@@ -231,7 +243,6 @@ mod tests {
             );
             assert!(Operation::decode(br#"{"op":"format_everything"}"#).is_err());
         }
-        // Phase `a_refused_payload_never_echoes_its_secret`.
         {
             let error = Operation::decode(
                 br#"{"op":"set_passphrase","passphrase":"hunter2-correct-horse","confirmation":5}"#,

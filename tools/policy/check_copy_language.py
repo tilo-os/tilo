@@ -151,7 +151,7 @@ def routine_save(lang: str, line: str) -> bool:
 
 # Upper-case tokens that are names, not shouting.
 ACRONYMS = frozenset("""
-    AC AI API AV BIOS CA CPU CSV DAV DNS DPI EFI ESC EU FAQ GB GIF GPS GPU GTK
+    AC AI API AV BIOS CA CPU CSV DAV DNS DPI EFI ESC EU FAQ GB GGUF GIF GPS GPU GTK
     HD HDMI HDR HEIC HTML HTTP HTTPS ICS ID IDE IMAP IP IPP ISO JPEG JPG JSON KB
     LAN LED LTE MAC MB MFA MIME MMS MP MTU NAS NFC NTP OCR OK OS OTP PC PDF PIN
     PNG PPP PPPOE PUK QR RAM RAW RSS RTF SD SDK SIM SMB SMS SMTP SSD SSH SSID SSO
@@ -163,7 +163,7 @@ ACRONYMS = frozenset("""
     WLAN HEVC OPML RAID ANSI ISO QWERTY QWERTZ AZERTY STARTTLS IANA GET POST PUT
     PATCH DELETE HEAD OPTIONS HOME PATH XDG_STATE_HOME FCAST RAW AVIF FLAC OGG
     WEBM MKV MOV AVI MPEG WAV OPUS H264 VP9 AV1 VAAPI NVENC IPV4 IPV6 DHCP IMAPS
-    POP3 CALDAV CARDDAV WEBDAV OAUTH JMAP EWS ASCII UTF CJK RTL LTR FOMO
+    POP3 CALDAV CARDDAV WEBDAV OAUTH JMAP EWS ASCII UTF CJK RTL LTR FOMO GGUF
 """.split())
 
 ALL_CAPS_WORD = re.compile(r"(?<![\w$-])[A-ZÄÖÜ][A-ZÄÖÜ0-9_]+(?![\w-])")
@@ -436,16 +436,21 @@ def load_baseline(directory: Path) -> dict[str, set[tuple[str, str, str]]]:
     return shards
 
 
-def scan(root: Path, glossary: list[Term]) -> dict[str, list[tuple[str, Message, str, str]]]:
-    """Per unit, every (locale, message, rule, detail) violation."""
-    found: dict[str, list[tuple[str, Message, str, str]]] = {}
+def scan(root: Path, glossary: list[Term]) -> dict[str, list[tuple[str, Message, str, str, Path]]]:
+    """Per unit, every (locale, message, rule, detail, catalogue) violation."""
+    found: dict[str, list[tuple[str, Message, str, str, Path]]] = {}
     for catalogue in catalogues(root):
         locale = catalogue.stem
         unit = unit_of(root, catalogue)
         for message in messages(catalogue.read_text()):
             for rule, detail in violations(locale, message, glossary):
-                found.setdefault(unit, []).append((locale, message, rule, detail))
+                found.setdefault(unit, []).append((locale, message, rule, detail, catalogue))
     return found
+
+
+def named(root: Path, path: Path) -> str:
+    """How a finding names `path`: from the top of the tree when it is in it."""
+    return path.relative_to(root).as_posix() if path.is_relative_to(root) else path.name
 
 
 def check(root: Path, glossary_path: Path, baseline_dir: Path,
@@ -459,7 +464,7 @@ def check(root: Path, glossary_path: Path, baseline_dir: Path,
     for unit in sorted(set(found) | set(baseline)):
         allowed = baseline.get(unit, set())
         seen = set()
-        for locale, message, rule, detail in found.get(unit, []):
+        for locale, message, rule, detail, catalogue in found.get(unit, []):
             entry = (locale, message.key.split(".")[0], rule)
             if entry in allowed:
                 seen.add(entry)
@@ -469,9 +474,9 @@ def check(root: Path, glossary_path: Path, baseline_dir: Path,
                 if exception in exceptions:
                     used.add(exception)
                     continue
-            errors.append(f"{unit} {locale}.ftl:{message.line}: {message.key} {detail} [{rule}]")
+            errors.append(f"{named(root, catalogue)}:{message.line}: {message.key} {detail} [{rule}]")
         for locale, key, rule in sorted(allowed - seen):
-            errors.append(f"{baseline_dir.name}/{unit}.txt: {locale} {key} {rule} "
+            errors.append(f"{named(root, baseline_dir)}/{unit}.txt: {locale} {key} {rule} "
                           "no longer applies; delete the line")
     for file, line, text in routine_save_literals(root):
         exception = SaveException(None, None, file, text)
@@ -480,7 +485,7 @@ def check(root: Path, glossary_path: Path, baseline_dir: Path,
             continue
         errors.append(f"{file}:{line}: \"{text}\" announces routine saving; saving says "
                       "nothing unless it stalls or fails (ui::SaveStatusSurface) [save-status]")
-    name = save_exceptions_path.name if save_exceptions_path else "save exceptions"
+    name = named(root, save_exceptions_path) if save_exceptions_path else "save exceptions"
     for exception in sorted(exceptions - used, key=repr):
         errors.append(f"{name}: {exception} no longer matches anything; delete it")
     return errors
@@ -490,14 +495,14 @@ def main(argv: list[str]) -> int:
     if argv[1:] == ["--print-baseline"]:
         glossary = load_glossary(GLOSSARY)
         for unit, entries in sorted(scan(ROOT, glossary).items()):
-            for locale, message, rule, _ in entries:
+            for locale, message, rule, _, _ in entries:
                 print(unit, locale, message.key.split(".")[0], rule)
         return 0
     errors = check(ROOT, GLOSSARY, BASELINE, SAVE_EXCEPTIONS)
     if errors:
         print("\n".join(errors))
         return 1
-    print("copy language OK (state, outcome or next step, in the glossary's words)")
+    print("copy language OK (state, outcome or next step, in the glossary's words)", file=sys.stderr)
     return 0
 
 

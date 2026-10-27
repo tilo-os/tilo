@@ -62,6 +62,7 @@ use ui::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::model::PageId;
 use crate::note_header::NoteHeader;
 use crate::num;
+use crate::status_bar::count_words;
 
 /// The empty notebook's title and its one action, in this locale.
 struct EmptyLabels {
@@ -77,10 +78,11 @@ impl EmptyLabels {
         }
     }
 
-    fn content(&self) -> EmptyStateContent<'_> {
+    /// The empty state, offering New note only to someone who may make one.
+    fn content(&self, adds: bool) -> EmptyStateContent<'_> {
         EmptyStateContent {
             icon: Some(Icon::FileText),
-            action_label: Some(&self.action),
+            action_label: adds.then_some(self.action.as_str()),
             ..EmptyStateContent::new(&self.title)
         }
     }
@@ -176,6 +178,19 @@ fn pin_under_gutter(
             ..existing
         },
     );
+}
+
+/// The reactions to the note the header shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteReactions {
+    pub page: PageId,
+    /// A pill per emoji, the emoji reacted with first first, each reactor
+    /// named.
+    pub groups: Vec<ui::tilo_resource::ReactionGroup>,
+    /// Who the person is: their own reactions are the chosen pills.
+    pub me: String,
+    /// The person may react here, and the add button shows.
+    pub can_react: bool,
 }
 
 /// Presentation data for a durable tag. Keeping its id beside the label means
@@ -408,9 +423,21 @@ pub struct MainPanel {
     /// The widest the text column grows: about seventy characters of body
     /// text, measured in the theme the tree was built with.
     reading_width: f64,
+    /// How much larger the note's text draws than the window's theme, for
+    /// the panel's width ([`Theme::document_zoom`]): a note maximised on a
+    /// large display grows its type instead of floating a laptop-sized strip
+    /// in empty space.
+    zoom: f32,
+    /// The page (reading column and its gutters) at the window theme's size,
+    /// the width the zoom is judged against.
+    page_width: f64,
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: NotesEditor,
+    /// Counting revision of the editor's blocks: bumped wherever this panel
+    /// changes what the editor shows without the editor itself editing — it
+    /// presents content, binds another page or clears.
+    content_generation: u64,
     /// The notebook's dispatcher, once the app is hosted: page bodies are
     /// edited through it.
     notebook: Option<Dispatcher<crate::resource::Notebook>>,
@@ -419,7 +446,6 @@ pub struct MainPanel {
     /// whether the editor's current state still matches the loaded
     /// document — if so we skip the `to_markdown` serialisation.
     body: String,
-    /// Panel rect, populated by `apply_layout`.
     rect: Rect,
     /// Cached taffy node id for the editor child, used by
     /// `apply_layout` + `handle_event`.
@@ -441,6 +467,21 @@ pub struct MainPanel {
     /// as boxed Elements — wrapping in Scrollable would require
     /// significant ownership churn for what amounts to "clip + shift".
     scroll_y: f64,
+    /// Where each note was left off. Switching notes puts the one opened
+    /// back at the place it was read, clamped to its own extent on the next
+    /// layout; a note not seen before opens at its top.
+    scroll_by_page: HashMap<PageId, f64>,
+    /// The glide a lifted touchpad or touchscreen gesture leaves the body
+    /// in, as every Tilo scroll surface has; a wheel's notches move it at
+    /// once and never glide.
+    glide: ui::ScrollMomentum,
+    /// The motion toward a match the window's search made current: it
+    /// glides there, or fades in when far ([`ui::motion::ScrollTo`]).
+    scroll_to: ui::motion::ScrollTo,
+    /// Device pixels per logical pixel where the panel last handled input,
+    /// and the theme's motion where it was last laid out.
+    device_scale: f64,
+    motion: ui::tokens::EffectiveMotion,
     /// When the block drag last scrolled the page, for its speed.
     drag_scroll_tick: Option<ui::time::Instant>,
     scroll_content_height: f64,
@@ -473,6 +514,8 @@ pub struct MainPanel {
     /// Rising edge set when the first-note action is pressed; the app drains
     /// it onto the same create action path as every other new-page affordance.
     empty_action_requested: bool,
+    /// The empty state offers New note: its person may make one.
+    empty_adds: bool,
     /// Focus belongs to the actionable empty state while there is no page to
     /// edit. It makes the CTA available to Tab, keyboard-only use and AT.
     empty_action_focused: bool,
@@ -509,8 +552,11 @@ impl MainPanel {
             tag_layout_dirty: false,
             column_side: 0.0,
             reading_width: f64::INFINITY,
+            zoom: 1.0,
+            page_width: f64::INFINITY,
             pending_backlink_open: None,
             editor: notes_editor(None, None),
+            content_generation: 0,
             notebook: None,
             image_store: None,
             body: String::new(),
@@ -522,6 +568,11 @@ impl MainPanel {
             title_overhang: None,
             drawn_title_overhang: None,
             scroll_y: 0.0,
+            scroll_by_page: HashMap::new(),
+            glide: ui::ScrollMomentum::new(),
+            scroll_to: ui::motion::ScrollTo::new(),
+            device_scale: 1.0,
+            motion: ui::tokens::EffectiveMotion::default(),
             drag_scroll_tick: None,
             scroll_content_height: 0.0,
             bottom_inset: 0.0,
@@ -537,6 +588,7 @@ impl MainPanel {
             local_author: None,
             empty_action_rect: Rect::ZERO,
             empty_action_requested: false,
+            empty_adds: true,
             empty_action_focused: false,
             metrics: Metrics::default(),
             layout_theme: Theme::dark(),
@@ -589,6 +641,10 @@ impl MainPanel {
     /// grammar that `BlockEditor::from_markdown` does not handle.
     pub fn load_page(&mut self, id: PageId, title: &str, body: impl AsRef<str>) {
         let body = body.as_ref();
+        if let Some(old) = self.page_id {
+            self.scroll_by_page.insert(old, self.scroll_y);
+        }
+        self.content_generation = self.content_generation.wrapping_add(1);
         self.page_id = Some(id);
         self.dates = self.date_index.get(id);
         self.refresh_captions();
@@ -611,9 +667,10 @@ impl MainPanel {
             .editor_mut()
             .focus_block(0, ui::widget::CursorPlacement::Start);
         self.take_body_snapshot();
-        // Brand-new page → reset scroll to top (the previous page's
-        // scroll position is meaningless for the new content).
-        self.scroll_y = 0.0;
+        // A note opens where it was left off, or at its top the first time.
+        self.scroll_y = self.scroll_by_page.get(&id).copied().unwrap_or(0.0);
+        self.scroll_layout_dirty = self.scroll_y.abs() > f64::EPSILON;
+        self.glide.stop();
         self.dirty = true;
     }
 
@@ -630,6 +687,11 @@ impl MainPanel {
         title: &str,
     ) -> Result<(), String> {
         let body = crate::notebook::body_object(doc, page).ok_or("the page has no body")?;
+        if let Some(old) = self.page_id
+            && old != page
+        {
+            self.scroll_by_page.insert(old, self.scroll_y);
+        }
         // Binding the page already open again (its record re-read, a reveal)
         // keeps the caret where the person left it: a rebind that put it back
         // at the start would make the next keystroke land before the last.
@@ -663,19 +725,23 @@ impl MainPanel {
             .unwrap_or((0, ui::widget::CursorPlacement::Start));
         editor.editor_mut().focus_block(index, placement);
         self.editor = editor;
+        self.content_generation = self.content_generation.wrapping_add(1);
         self.page_id = Some(page);
         self.dates = self.date_index.get(page);
         self.refresh_captions();
         self.empty_action_focused = false;
         self.set_title_value(title);
         self.body.clear();
-        // Another page starts at its top; the same page, bound again after an
-        // edit (a paste, an import), stays where the person is reading, and
-        // layout clamps the offset to the new extent.
+        // The same page, bound again after an edit (a paste, an import),
+        // stays where the person is reading. Another page returns to where
+        // it was left, or its top the first time; layout clamps either to
+        // the new extent.
         if same_page {
             self.scroll_layout_dirty = true;
         } else {
-            self.scroll_y = 0.0;
+            self.scroll_y = self.scroll_by_page.get(&page).copied().unwrap_or(0.0);
+            self.scroll_layout_dirty = self.scroll_y.abs() > f64::EPSILON;
+            self.glide.stop();
         }
         self.dirty = true;
         Ok(())
@@ -694,6 +760,9 @@ impl MainPanel {
         panel.date_index.clone_from(&self.date_index);
         if let Some(actions) = self.header.actions() {
             panel.header.attach(actions);
+        }
+        if let Some(notebook) = self.notebook.clone() {
+            panel.header.set_notebook(notebook);
         }
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
@@ -753,36 +822,21 @@ impl MainPanel {
         self.dirty = true;
     }
 
-    /// Route the window-level Find command into the shared structured editor,
-    /// even when the note title or another sibling currently owns focus.
-    pub fn open_find(&mut self, focus_target: &mut Option<NodeId>) -> bool {
-        if self.page_id.is_none() {
-            return false;
-        }
-        if self.title_label.is_editing() {
-            self.title_label.commit();
-            if let EditOutcome::Committed(title) = self.title_label.take_outcome() {
-                self.pending_rename = Some(title);
-            }
-        }
-        self.editor.editor_mut().open_find();
-        *focus_target = self.editor_node;
-        self.dirty = true;
-        true
-    }
-
     /// Clear the panel back to the empty state.
     pub fn clear(&mut self) {
         self.page_id = None;
         self.parent_path.clear();
         self.set_title_value("");
         self.header.set_tags(Vec::new());
+        self.header.set_reactions(None);
         self.header.set_backlinks(Vec::new());
         self.header.set_captions(Vec::new());
         self.metadata_height = 0.0;
         self.editor = self.fresh_editor(None);
+        self.content_generation = self.content_generation.wrapping_add(1);
         self.body = String::new();
         self.scroll_y = 0.0;
+        self.glide.stop();
         self.empty_action_rect = Rect::ZERO;
         self.empty_action_requested = false;
         self.empty_action_focused = false;
@@ -791,7 +845,18 @@ impl MainPanel {
 
     /// Drain a press of the first-note action in the empty state.
     pub fn take_empty_action(&mut self) -> bool {
-        std::mem::take(&mut self.empty_action_requested)
+        std::mem::take(&mut self.empty_action_requested) && self.empty_adds
+    }
+
+    /// Whether this person may make a note in the notebook, as the room
+    /// decides it.
+    fn adds_notes(&self) -> bool {
+        self.notebook.as_ref().is_none_or(|notebook| {
+            !notebook.is_past()
+                && notebook.may(&ui::tilo_actions::ActionNeed::of(
+                    ui::tilo_actions::ActionKind::Undoable,
+                ))
+        })
     }
 
     /// Update only the title (used by the sidebar's inline rename). Ignored
@@ -812,6 +877,13 @@ impl MainPanel {
     /// an otherwise idle collaboration sync.
     pub fn set_tags(&mut self, tags: Vec<TagChip>) {
         if self.header.set_tags(tags) {
+            self.header_changed();
+        }
+    }
+
+    /// Show the reactions to the note (`None`: none, and no add button).
+    pub fn set_reactions(&mut self, reactions: Option<NoteReactions>) {
+        if self.header.set_reactions(reactions) {
             self.header_changed();
         }
     }
@@ -899,8 +971,9 @@ impl MainPanel {
         actions: ui::framework::Actions<crate::resource::Notebook>,
     ) {
         self.editor.source_mut().attach(&notebook);
-        self.notebook = Some(notebook);
         self.header.attach(actions);
+        self.header.set_notebook(notebook.clone());
+        self.notebook = Some(notebook);
     }
 
     fn fresh_editor(&self, page: Option<(PageId, ObjId)>) -> NotesEditor {
@@ -917,6 +990,10 @@ impl MainPanel {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.editor.editor_mut().take_external_link_open()
+    }
+
+    pub fn take_resource_link_open(&mut self) -> Option<String> {
+        self.editor.editor_mut().take_resource_link_open()
     }
 
     /// The slash command the person chose that Notes carries out, once.
@@ -1179,6 +1256,39 @@ impl MainPanel {
         self.editor.editor().block_drag_active()
     }
 
+    /// Whether a lifted touchpad or touchscreen gesture still glides the
+    /// body: the window keeps asking for frames until it comes to rest.
+    pub fn gliding(&self) -> bool {
+        self.glide.is_active()
+            || self.scroll_to.target().is_some()
+            || self.scroll_to.is_moving(ui::motion::frame_now())
+    }
+
+    /// Carry a glide on to `now`. It moves only the body, which the frame
+    /// lays out and draws (a copy of what stays on screen, in whole device
+    /// pixels): no change of the model, so nothing is reported. It stops at
+    /// either end of the note.
+    pub fn advance_glide(&mut self) {
+        let now = ui::motion::frame_now();
+        if let Some(at) = self
+            .scroll_to
+            .offset_in_device_pixels(now, self.device_scale)
+        {
+            self.set_scroll_offset(at.y);
+            let _ = self.scroll_to.arrived(now);
+            return;
+        }
+        if !self.glide.is_active() {
+            return;
+        }
+        let dy = self.glide.advance(ui::time::now());
+        let before = self.scroll_y;
+        self.set_scroll_offset(before + dy);
+        if dy != 0.0 && self.scroll_y.to_bits() == before.to_bits() {
+            self.glide.stop();
+        }
+    }
+
     /// Scroll the page while a dragged block's pointer rests near the edge
     /// of what is visible, so a target below the fold can be reached.
     /// Returns whether the page moved.
@@ -1289,6 +1399,38 @@ impl MainPanel {
     /// etc.).
     pub fn editor(&self) -> &BlockEditor {
         self.editor.editor()
+    }
+
+    /// A number that moves whenever the blocks the editor shows change: a
+    /// keystroke, an applied action, an undo, and every presentation, bind or
+    /// clear made on top of them. A caller that read something off the blocks
+    /// can reuse what it read until this moves.
+    #[must_use]
+    pub fn content_revision(&self) -> u64 {
+        ui::widget::find_bar::Findable::content_revision(self.editor.editor())
+            .wrapping_add(self.content_generation)
+    }
+
+    /// How many words the note's blocks hold, in the words a reader counts:
+    /// runs of non-whitespace in each block's plain text, plus the bullet or
+    /// check mark of one that carries no text of its own. The markdown chrome
+    /// around a word (`- `, `**`, a fence) is not counted as one.
+    ///
+    /// Walking every block, so a caller on a hot path counts once and reuses
+    /// the total until [`Self::content_revision`] moves.
+    #[must_use]
+    pub fn word_count(&self) -> usize {
+        let blocks = self.editor.editor().blocks();
+        blocks
+            .iter()
+            .map(|block| count_words(block.text()))
+            .sum::<usize>()
+            + blocks
+                .iter()
+                // A bullet or a checkbox is a word of its own when it holds
+                // nothing else.
+                .filter(|block| block.text().trim().is_empty() && block.kind.supports_indent())
+                .count()
     }
 
     pub(crate) fn editor_route_available(&self) -> bool {
@@ -1432,6 +1574,12 @@ impl MainPanel {
         out
     }
 
+    /// Test hook: the reactions the header shows for the open note.
+    #[doc(hidden)]
+    pub fn reactions_for_test(&self) -> Option<&NoteReactions> {
+        self.header.reactions()
+    }
+
     /// Test hook: where the document starts under the title and header.
     #[doc(hidden)]
     pub fn body_top_for_test(&self) -> f64 {
@@ -1504,6 +1652,16 @@ impl Widget for MainPanel {
         children
     }
 
+    /// The title, header and editor keep their nodes with no page open.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.title_label);
+        if let Some(header) = self.header.built() {
+            visitor(header);
+        }
+        visitor(&self.editor);
+        true
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         ui::tilo_resource::profiling::measure("note_dates", || self.date_index.sync(state));
@@ -1531,6 +1689,15 @@ impl Widget for MainPanel {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
+        // The page the zoom is judged against is the one the window theme
+        // sets, so a grown page never grows itself further.
+        let window_metrics = Metrics::of(theme);
+        self.page_width = reading_width(theme)
+            + 2.0 * window_metrics.gutter
+            + self.editor.editor().handle_gutter(theme);
+        let zoomed = theme.with_document_zoom(self.zoom);
+        let theme = &zoomed;
         self.metrics = Metrics::of(theme);
         // A note is a block document: its drag handles hang in the editor's
         // handle gutter, outside the text column and inside the page gutter.
@@ -1661,6 +1828,11 @@ impl Widget for MainPanel {
             self.dirty = true;
         }
         self.rect = new_rect;
+        let adds = self.adds_notes();
+        if adds != self.empty_adds {
+            self.empty_adds = adds;
+            self.dirty = true;
+        }
         // Input can arrive before the first paint, including after a resize.
         self.empty_action_rect = if self.page_id.is_none() {
             ui::text_render::with_layout_renderer(self.layout_theme.text_scale, |text| {
@@ -1668,7 +1840,7 @@ impl Widget for MainPanel {
                     text,
                     &self.layout_theme,
                     self.rect,
-                    &self.empty_labels.content(),
+                    &self.empty_labels.content(self.empty_adds),
                 )
                 .action
                 .unwrap_or(Rect::ZERO)
@@ -1681,6 +1853,14 @@ impl Widget for MainPanel {
         // is responsive type, not cancellation of the text scale.
         // The editor and header were built at the last width's column; a
         // new width that moves the column builds them again at once.
+        // A width that grows or shrinks the note's type builds it again at
+        // the new size, as a moved column does.
+        let zoom = Theme::document_zoom(self.rect.width(), self.page_width);
+        if (zoom - self.zoom).abs() > f32::EPSILON {
+            self.zoom = zoom;
+            self.tag_layout_dirty = true;
+            self.dirty = true;
+        }
         let side = self.column_side_for(self.rect.width());
         if (side - self.column_side).abs() > 0.5 {
             self.column_side = side;
@@ -1797,13 +1977,36 @@ impl Widget for MainPanel {
                     let margin = self
                         .body_bottom_inset()
                         .min((viewport_h - caret.height()).max(0.0));
+                    let mut target = self.scroll_y;
                     if at_document_start {
-                        self.scroll_y = 0.0;
+                        target = 0.0;
                     } else if caret.y0 - self.scroll_y < viewport_top {
-                        self.scroll_y = caret.y0 - viewport_top;
+                        target = caret.y0 - viewport_top;
                     } else if caret.y1 + margin - self.scroll_y > viewport_bottom {
-                        self.scroll_y = caret.y1 + margin - viewport_bottom;
+                        target = caret.y1 + margin - viewport_bottom;
                     }
+                    let target = target.clamp(0.0, max_scroll);
+                    // A match the search made current glides into view, or
+                    // lands and fades in when far; the caret lands.
+                    let jump = if found.is_some() && target.to_bits() != self.scroll_y.to_bits() {
+                        self.glide.stop();
+                        self.scroll_to.go(
+                            Vec2::new(0.0, self.scroll_y),
+                            Vec2::new(0.0, target),
+                            Vec2::new(self.rect.width(), viewport_h),
+                            self.motion,
+                            ui::motion::frame_now(),
+                        )
+                    } else {
+                        ui::motion::ScrollJump::Land
+                    };
+                    self.scroll_y = match jump {
+                        ui::motion::ScrollJump::Glide => self
+                            .scroll_to
+                            .offset_in_device_pixels(ui::motion::frame_now(), self.device_scale)
+                            .map_or(target, |at| at.y),
+                        ui::motion::ScrollJump::FadeIn | ui::motion::ScrollJump::Land => target,
+                    };
                     self.follow_caret = false;
                 }
                 let clamped = self.scroll_y.clamp(0.0, max_scroll);
@@ -1855,6 +2058,17 @@ impl Widget for MainPanel {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // The note draws at the size it was laid out at; text set by the
+        // renderer's scale follows it, and the window's comes back after.
+        let zoomed;
+        let theme = if (self.zoom - 1.0).abs() > f32::EPSILON {
+            zoomed = theme.with_document_zoom(self.zoom);
+            &zoomed
+        } else {
+            theme
+        };
+        let window_text_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(theme.text_scale);
         let incoming = std::mem::take(scene);
         // No ground: the window paints `surfaces.content` under the panel.
         if let Some(page_id) = self.page_id {
@@ -1874,7 +2088,14 @@ impl Widget for MainPanel {
                 self.rect.y0 + self.scroll_top_inset(),
             );
             if self.scroll_y > f64::EPSILON {
-                ui::widget::toolbar::paint_band(scene, transform, theme, pinned);
+                ui::widget::paint_rule(
+                    scene,
+                    transform,
+                    theme,
+                    pinned,
+                    ui::widget::RuleEdge::Bottom,
+                    Some(theme.tokens.colors.surfaces.content),
+                );
             }
 
             // Everything below the sticky title is one scrolling document:
@@ -2011,12 +2232,15 @@ impl Widget for MainPanel {
             // No note open: a composed zero-state rather than a bare line —
             // this is what a fresh, unseeded workspace shows, so it should
             // invite the first note rather than look broken.
-            EmptyState::paint(
+            // What is drawn is what takes the click and what the tree
+            // describes, whatever the layout pass measured before it.
+            self.empty_action_rect = EmptyState::paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 self.rect,
-                &self.empty_labels.content(),
+                &self.empty_labels.content(self.empty_adds),
                 self.last_pointer,
-            );
+            )
+            .unwrap_or(Rect::ZERO);
             if self.empty_action_focused && self.empty_action_rect.width() > 0.0 {
                 ui::widget::paint_focus_ring(
                     scene,
@@ -2029,6 +2253,7 @@ impl Widget for MainPanel {
         }
         let own = std::mem::replace(scene, incoming);
         scene.append(&own, None);
+        text_renderer.set_text_scale(window_text_scale);
     }
 
     #[allow(
@@ -2040,6 +2265,22 @@ impl Widget for MainPanel {
         // classified as landing in the title band.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_pointer = ctx.logical(position);
+        }
+        // A press, a key or a finger put down catches a glide in progress.
+        // Only a finger's arrival: its lift reaches here after the scroll's
+        // end it turned into, which is what starts a touchscreen's glide.
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Touch(winit::event::Touch {
+                    phase: winit::event::TouchPhase::Started,
+                    ..
+                })
+        ) {
+            self.glide.stop();
         }
         if self.page_id.is_none() {
             let pressed = matches!(
@@ -2151,22 +2392,46 @@ impl Widget for MainPanel {
             }
         }
 
-        // Mouse wheel: scroll the panel's body. Matches ui::Scrollable's
-        // wheel-to-px conversion (~120 px / notch). Consumes the event
-        // so the underlying TextInput doesn't try to interpret a wheel
-        // delta as a cursor move.
-        if let WindowEvent::MouseWheel { delta, .. } = event {
+        // Mouse wheel: scroll the panel's body, 40 px a notch. Consumes the
+        // event so the underlying TextInput doesn't try to interpret a wheel
+        // delta as a cursor move. Fingers (a touchpad, a touchscreen) move
+        // the body 1:1 and, lifted while moving, leave it gliding to a stop
+        // (the shared `ScrollMomentum`).
+        self.device_scale = ctx.scale_factor;
+        if let WindowEvent::MouseWheel { delta, phase, .. } = event {
             self.follow_caret = false;
+            // The hand takes over a match's glide from where it is drawn.
+            self.scroll_to.take_over(ui::motion::frame_now());
+            let pixel = matches!(delta, winit::event::MouseScrollDelta::PixelDelta(_));
             let dy = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 40.0,
-                winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
+                winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                    self.glide.stop();
+                    -f64::from(*y) * 40.0
+                }
+                winit::event::MouseScrollDelta::PixelDelta(_) => {
+                    self.glide.set_device_scale(ctx.scale_factor);
+                    match self
+                        .glide
+                        .wheel(delta, *phase, self.layout_theme.reduce_motion)
+                    {
+                        ui::WheelStep::Scroll(dy) => dy,
+                        // The body glides on in the frames it asks for.
+                        ui::WheelStep::Fling => {
+                            *ctx.handled = true;
+                            return;
+                        }
+                        ui::WheelStep::Ignored => 0.0,
+                    }
+                }
             };
             if dy.abs() > f64::EPSILON {
                 let prev = self.scroll_y;
                 self.set_scroll_offset(self.scroll_y + dy);
-                // Clamp against max_scroll happens in apply_layout
-                // since that's where we know the content extent.
-                if (self.scroll_y - prev).abs() > f64::EPSILON {
+                let moved = (self.scroll_y - prev).abs() > f64::EPSILON;
+                if pixel {
+                    self.glide.wheel_applied(dy, self.scroll_y - prev);
+                }
+                if moved {
                     *ctx.handled = true;
                     // This event belongs to the viewport. Lending it to the
                     // rich-text editor snapshots and compares every block as
@@ -2271,6 +2536,12 @@ impl Widget for MainPanel {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
+        if self.page_id.is_none() && !self.empty_adds {
+            // Nothing to press: the empty notebook says only that it is.
+            return Some(
+                AccessNode::new(Role::StaticText).with_name(ui::i18n!("notes-empty-title")),
+            );
+        }
         if self.page_id.is_none() {
             let button = AccessNode::new(Role::Button)
                 .with_name(ui::i18n!("notes-empty-action"))
@@ -2526,296 +2797,5 @@ impl MainPanel {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use automerge::ObjId;
-    use ui::widget::BlockKind;
-    use uuid::Uuid;
-
-    include!("local_capture_tests.rs");
-
-    fn fresh_page_id() -> PageId {
-        Uuid::new_v4()
-    }
-
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn page_titles_and_empty_state_are_accessible_rename_boundaries() {
-        eprintln!("phase set_title_marks_dirty_when_changed");
-        {
-            let mut p = MainPanel::new();
-            p.mark_drawn();
-            assert!(!p.needs_redraw());
-            p.set_title(Some("Hello".into()));
-            assert!(p.needs_redraw());
-            p.mark_drawn();
-            p.set_title(Some("Hello".into()));
-            assert!(!p.needs_redraw());
-        }
-
-        eprintln!("phase accessible_page_title_queues_the_same_rename_boundary");
-        {
-            let mut panel = MainPanel::new();
-            let id = fresh_page_id();
-            panel.load_page(id, "Launch", "");
-            let node = panel
-                .accessibility()
-                .expect("open pages expose their title");
-            assert_eq!(node.role, ui::a11y::Role::Group);
-            let title = node
-                .children
-                .first()
-                .expect("header exposes the page title");
-            assert_eq!(title.role, ui::a11y::Role::TextInput);
-            assert_eq!(title.action_target.as_deref(), Some("notes.page-title"));
-            let target = title.action_target.as_deref().unwrap();
-            let mut doc = AutoCommit::new();
-            assert!(panel.perform_semantic_action(
-                target,
-                &ui::a11y::Action::SetValue("Launch plan".into()),
-                &mut Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ));
-            assert!(
-                panel.take_title_rename().is_none(),
-                "typing remains an uncommitted inline rename"
-            );
-            panel.title_label.commit();
-            assert_eq!(panel.take_title_rename().as_deref(), Some("Launch plan"));
-        }
-
-        eprintln!("phase empty_state_primary_action_is_a_focused_accessible_button");
-        {
-            let mut p = MainPanel::new();
-            p.set_focus(true);
-            let node = p.accessibility().expect("empty state is exposed");
-            assert_eq!(node.role, ui::a11y::Role::Button);
-            assert_eq!(node.name.as_deref(), Some("New note"));
-            assert!(node.state.focusable);
-            assert!(node.state.focused);
-
-            let mut doc = AutoCommit::new();
-            assert!(p.perform_action(
-                &ui::a11y::Action::Activate,
-                &[],
-                &mut Edits::lend(&mut doc),
-                &ObjId::Root
-            ));
-            assert!(p.take_empty_action());
-        }
-
-        eprintln!("phase surface_hints_follow_hit_targets_and_reveal_exact_compact_dates");
-        {
-            use ui::headless::Framed;
-            use ui::tilo_actions::Action;
-            crate::metadata::register_messages();
-            let page = fresh_page_id();
-            let tag = fresh_page_id();
-            let backlink = fresh_page_id();
-            let mut doc = AutoCommit::new();
-            crate::actions::create_page_action(page, None, "Launch")
-                .apply(&mut doc)
-                .unwrap();
-            doc.commit_with(
-                automerge::transaction::CommitOptions::default().with_time(1_700_000_000),
-            );
-            crate::actions::edit_body_action(
-                page,
-                tilo_document::RichTextAction::AppendParagraph {
-                    text: "Body".into(),
-                },
-            )
-            .apply(&mut doc)
-            .unwrap();
-            doc.commit_with(
-                automerge::transaction::CommitOptions::default().with_time(1_700_003_600),
-            );
-            let mut panel = MainPanel::new();
-            panel.load_page(page, "Launch", "Body");
-            panel.set_tags(vec![TagChip {
-                id: tag,
-                name: "Research".into(),
-            }]);
-            panel.set_backlinks(vec![BacklinkChip {
-                page: backlink,
-                title: "A long source note title".into(),
-                references: 1,
-            }]);
-            let mut panel = Framed::new(ui::State::from_doc(doc), panel, (300, 600), Theme::dark());
-            let targets = Framed::harness(&panel).targets();
-            let tag_rect = targets[&format!("notes.tag-chip:{tag}")];
-            let backlink_rect = targets[&format!("notes.backlink-chip:{backlink}")];
-            let date_rect = targets["notes.caption:0"];
-            for rect in [panel.title_rect, tag_rect, backlink_rect, date_rect] {
-                assert!(
-                    !rect.is_zero_area(),
-                    "the retained target is laid out: {rect:?}"
-                );
-                assert!(
-                    panel.rect.contains(rect.origin())
-                        && panel
-                            .rect
-                            .contains(Point::new(rect.x1 - 0.1, rect.y1 - 0.1)),
-                    "header target fits the panel: {rect:?}"
-                );
-            }
-            assert_eq!(
-                panel.cursor_shape(panel.title_rect.center()),
-                Some(winit::window::CursorIcon::Text)
-            );
-            assert!(
-                panel.tooltip_target_at(panel.title_rect.center()).is_none(),
-                "the title is a text field: its caret says it is editable"
-            );
-            assert!(
-                panel
-                    .tooltip_target_at(tag_rect.center())
-                    .unwrap()
-                    .1
-                    .contains("Research")
-            );
-            assert!(
-                panel
-                    .tooltip_target_at(backlink_rect.center())
-                    .unwrap()
-                    .1
-                    .contains("A long source note title")
-            );
-            let (target, label) = panel.tooltip_target_at(date_rect.center()).unwrap();
-            assert_eq!(target, date_rect);
-            assert_eq!(label, panel.dates.display_labels(false).join("\n"));
-            assert_eq!(
-                label.lines().count(),
-                2,
-                "both persisted dates are revealed"
-            );
-            assert!(
-                label.lines().all(|line| line.contains(':')),
-                "compact metadata exposes each exact time"
-            );
-            assert!(panel.tooltip_target_at(Point::new(400.0, 400.0)).is_none());
-            assert!(panel.tooltip_target_at(Point::new(100.0, 500.0)).is_none());
-            panel.suppress_tooltips(true);
-            for rect in [panel.title_rect, tag_rect, backlink_rect, date_rect] {
-                assert!(panel.tooltip_target_at(rect.center()).is_none());
-            }
-            panel.suppress_tooltips(false);
-            for rect in [tag_rect, backlink_rect, date_rect] {
-                assert!(panel.tooltip_target_at(rect.center()).is_some());
-            }
-        }
-    }
-
-    #[test]
-    fn main_panel_loads_snapshots_and_clears_page_bodies() {
-        eprintln!("phase load_page_seeds_editor_from_markdown");
-        {
-            let mut p = MainPanel::new();
-            let id = fresh_page_id();
-            p.load_page(id, "Hello", "# H\n\nbody\n");
-            assert_eq!(p.page_id(), Some(id));
-            assert_eq!(p.editor().blocks().len(), 2);
-            assert!(matches!(p.editor().blocks()[0].kind, BlockKind::Heading(1)));
-        }
-
-        eprintln!("phase load_page_preserves_external_link_presentation");
-        {
-            let mut panel = MainPanel::new();
-            panel.load_page(
-                fresh_page_id(),
-                "Links",
-                "Read [the guide](https://example.test/guide).\n",
-            );
-            assert!(matches!(
-                &panel.editor().blocks()[0].line.marks()[0].mark,
-                ui::widget::Mark::ExternalLink(url) if url == "https://example.test/guide"
-            ));
-        }
-
-        eprintln!("phase take_body_snapshot_round_trips");
-        {
-            let mut p = MainPanel::new();
-            p.load_page(fresh_page_id(), "T", "# H\n\nbody\n");
-            let snap = p.take_body_snapshot();
-            assert_eq!(snap, "# H\n\nbody\n");
-        }
-
-        eprintln!("phase clear_resets_state");
-        {
-            let mut p = MainPanel::new();
-            p.load_page(fresh_page_id(), "T", "# H\n");
-            p.clear();
-            assert!(p.page_id().is_none());
-            assert!(p.title().is_none());
-        }
-    }
-
-    #[test]
-    fn metadata_bands_tags_and_backlinks_clear_the_editor_and_keep_identity() {
-        use ui::headless::Framed;
-        fn mounted(
-            width: u32,
-            theme: Theme,
-        ) -> (Framed<MainPanel>, Vec<crate::model::TagId>, PageId) {
-            let mut panel = MainPanel::new();
-            panel.load_page(fresh_page_id(), "Launch", "First body paragraph");
-            let tags = ["Release planning", "Customer research", "Accessibility"]
-                .into_iter()
-                .map(|name| TagChip {
-                    id: fresh_page_id(),
-                    name: name.into(),
-                })
-                .collect::<Vec<_>>();
-            let ids = tags.iter().map(|t| t.id).collect::<Vec<_>>();
-            panel.set_tags(tags);
-            panel.set_parent_path("Projects / Launch".into());
-            let source = fresh_page_id();
-            panel.set_backlinks(vec![BacklinkChip {
-                page: source,
-                title: "Long-running launch notes".into(),
-                references: 2,
-            }]);
-            (
-                Framed::new(ui::State::new(), panel, (width, 700), theme),
-                ids,
-                source,
-            )
-        }
-        for (width, scale) in [(800, 1.0), (300, 2.0)] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let (panel, tags, source) = mounted(width, theme.clone());
-            let targets = Framed::harness(&panel).targets();
-            let chips = tags
-                .iter()
-                .map(|tag| targets[&format!("notes.tag-chip:{tag}")])
-                .collect::<Vec<_>>();
-            assert_eq!(chips.len(), 3);
-            assert!(
-                chips
-                    .iter()
-                    .all(|r| r.y0 >= panel.title_rect.y1 + f64::from(theme.tokens.spacing.s1)),
-                "title and tags have separate bands"
-            );
-            assert!(
-                chips.iter().all(|r| r.y0 >= panel.scroll_viewport().y0),
-                "metadata starts inside the scrolling viewport"
-            );
-            assert!(
-                chips
-                    .iter()
-                    .all(|r| r.x0 >= 0.0 && r.x1 <= f64::from(width)),
-                "tags remain inside the panel"
-            );
-            if width == 300 {
-                assert!(chips[1].y0 > chips[0].y0, "long tags wrap");
-            }
-            let backlink = targets[&format!("notes.backlink-chip:{source}")];
-            let editor_top = panel.rect.y0 + panel.editor_top_inset();
-            assert!(chips.iter().all(|r| r.y1 <= editor_top));
-            assert!(
-                backlink.y1 <= editor_top,
-                "incoming-link metadata clears the first block"
-            );
-        }
-    }
-}
+#[path = "main_panel_tests.rs"]
+mod tests;

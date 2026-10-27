@@ -5,9 +5,13 @@
 //! the app behind each surface, the rooms presence follows) and must know
 //! when to derive again without walking the tree on every wakeup to find out.
 //! Every write goes through [`WorkspaceTreeHandle::write`], whose guard bumps
-//! the generation as it is released, so a writer cannot forget to announce a
-//! change: a reader that saw generation `n` and later sees `n` again knows
-//! nothing was written in between.
+//! the generation as it is released once it handed out mutable access, so a
+//! writer cannot forget to announce a change: a reader that saw generation
+//! `n` and later sees `n` again knows nothing was written in between. A guard
+//! that was only read through announces nothing: the loop takes write guards
+//! on every wakeup to look for work, and announcing each one sent every
+//! generation-gated reader back over the whole tree on wakeups that changed
+//! nothing.
 
 use super::WorkspaceTree;
 use std::panic::Location;
@@ -74,9 +78,9 @@ pub struct WeakWorkspaceTreeHandle(Weak<TreeCell>);
 #[derive(Default)]
 struct TreeCell {
     lock: parking_lot::RwLock<WorkspaceTree>,
-    /// Write guards released so far. Bumped while the write lock is still
-    /// held, so a reader that loads `n` and then takes the read lock sees
-    /// every write up to `n`.
+    /// Write guards released after handing out mutable access. Bumped while
+    /// the write lock is still held, so a reader that loads `n` and then
+    /// takes the read lock sees every write up to `n`.
     generation: AtomicU64,
     /// What authorization last read from the tree; a released write that
     /// changes it announces a policy change.
@@ -115,7 +119,6 @@ struct WorkspacePolicy {
     collaborators: Vec<tilo_desktop_model::Collaborator>,
     policy: tilo_action_policy::RoomPolicy,
     sandbox: Vec<collab_types::caps::CapOverride>,
-    tasks: Vec<tilo_desktop_model::WorkspaceTask>,
     pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
 }
 
@@ -128,12 +131,11 @@ impl PolicySnapshot {
                 .iter()
                 .map(|workspace| WorkspacePolicy {
                     id: workspace.id,
-                    room: workspace.room,
+                    room: workspace.room(),
                     owner: workspace.owner().cloned(),
                     collaborators: workspace.collaborators.clone(),
                     policy: workspace.policy.clone(),
                     sandbox: workspace.sandbox.clone(),
-                    tasks: workspace.tasks.clone(),
                     pending_ownership_transfer: workspace.pending_ownership_transfer.clone(),
                 })
                 .collect(),
@@ -155,12 +157,11 @@ impl PolicySnapshot {
                 .zip(&tree.desktop.workspaces)
                 .all(|(seen, workspace)| {
                     seen.id == workspace.id
-                        && seen.room == workspace.room
+                        && seen.room == workspace.room()
                         && seen.owner.as_ref() == workspace.owner()
                         && seen.collaborators == workspace.collaborators
                         && seen.policy == workspace.policy
                         && seen.sandbox == workspace.sandbox
-                        && seen.tasks == workspace.tasks
                         && seen.pending_ownership_transfer == workspace.pending_ownership_transfer
                 })
             && self.room_authority == tree.room_authority
@@ -171,11 +172,15 @@ impl PolicySnapshot {
     }
 }
 
-/// Exclusive access to the tree; releasing it advances the generation.
+/// Exclusive access to the tree; releasing it advances the generation once
+/// it handed out `&mut WorkspaceTree`.
 #[must_use = "the tree is unlocked as soon as the guard is dropped"]
 #[clippy::has_significant_drop]
 pub struct WorkspaceTreeWriteGuard<'a> {
     guard: parking_lot::RwLockWriteGuard<'a, WorkspaceTree>,
+    /// Whether the tree was lent mutably. Nothing in the tree changes behind
+    /// a shared reference, so a guard that never lent it wrote nothing.
+    written: bool,
     generation: &'a AtomicU64,
     policy: &'a parking_lot::Mutex<PolicySnapshot>,
     holder: &'a parking_lot::Mutex<Option<Holder>>,
@@ -200,29 +205,41 @@ impl WorkspaceTreeHandle {
         }))
     }
 
-    /// Shared read access. A wait of [`SLOW_TREE_WAIT`] or more is reported
+    /// Shared read access. A wait of `SLOW_TREE_WAIT` or more is reported
     /// with the writer that held the tree.
+    ///
+    /// Reads are recursive: a thread already reading the tree reads it again
+    /// even while a writer on another thread waits for it. The compositor
+    /// holds the tree across helpers that read it themselves, and the peer
+    /// sync worker writes it from its own thread; a plain read queues behind
+    /// that waiting writer, which waits for the first read to end, and the
+    /// compositor freezes. A writer still gets the tree as soon as no read
+    /// is held.
     #[track_caller]
     pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, WorkspaceTree> {
-        if let Some(guard) = self.0.lock.try_read() {
+        if let Some(guard) = self.0.lock.try_read_recursive() {
             return guard;
         }
         let waiter = Location::caller();
         let holder = self.holder_now();
         let started = Instant::now();
-        let guard = self.0.lock.read();
+        let guard = self.0.lock.read_recursive();
         Self::report_wait("read", waiter, started.elapsed(), holder);
         guard
     }
 
-    /// Shared read access, if no writer holds the tree.
+    /// Shared read access, if no writer holds the tree; recursive like
+    /// [`Self::read`].
     pub fn try_read(&self) -> Option<parking_lot::RwLockReadGuard<'_, WorkspaceTree>> {
-        self.0.lock.try_read()
+        self.0.lock.try_read_recursive()
     }
 
-    /// Exclusive access. The generation advances when the guard is dropped,
-    /// whether or not anything was changed: a spurious bump costs a reader
-    /// one re-derivation, a missed one would leave it stale.
+    /// Exclusive access. The generation advances when the guard is dropped
+    /// if it lent the tree mutably, whether or not that changed anything: a
+    /// spurious bump costs a reader one re-derivation, a missed one would
+    /// leave it stale. Look through the guard (or a read guard) first when
+    /// the write is usually unnecessary, so a wakeup with nothing to do
+    /// announces nothing.
     #[track_caller]
     pub fn write(&self) -> WorkspaceTreeWriteGuard<'_> {
         let waiter = Location::caller();
@@ -256,6 +273,7 @@ impl WorkspaceTreeHandle {
             thread: std::thread::current().id(),
         });
         WorkspaceTreeWriteGuard {
+            written: false,
             active_on_entry: guard.desktop.active,
             taken_at: at,
             guard,
@@ -282,8 +300,9 @@ impl WorkspaceTreeHandle {
         self.holder_now().map(|holder| holder.at)
     }
 
-    /// How many write guards have been released. Equal values read at two
-    /// moments mean the tree was not written in between.
+    /// How many write guards that lent the tree mutably have been released.
+    /// Equal values read at two moments mean the tree was not written in
+    /// between.
     pub fn generation(&self) -> u64 {
         self.0.generation.load(Ordering::Acquire)
     }
@@ -322,7 +341,6 @@ impl WorkspaceTreeHandle {
         fresh
     }
 
-    /// A weak handle to the same tree.
     pub fn downgrade(&self) -> WeakWorkspaceTreeHandle {
         WeakWorkspaceTreeHandle(Arc::downgrade(&self.0))
     }
@@ -380,6 +398,7 @@ impl std::ops::Deref for WorkspaceTreeWriteGuard<'_> {
 
 impl std::ops::DerefMut for WorkspaceTreeWriteGuard<'_> {
     fn deref_mut(&mut self) -> &mut WorkspaceTree {
+        self.written = true;
         &mut self.guard
     }
 }
@@ -387,6 +406,13 @@ impl std::ops::DerefMut for WorkspaceTreeWriteGuard<'_> {
 impl Drop for WorkspaceTreeWriteGuard<'_> {
     fn drop(&mut self) {
         // Runs before `guard` releases the lock.
+        let reserved = self.reserved_revision.swap(0, Ordering::AcqRel);
+        if !self.written && reserved == 0 {
+            // Only read through: the tree is as it was taken, so there is
+            // nothing to announce and no policy to compare.
+            *self.holder.lock() = None;
+            return;
+        }
         if self.guard.desktop.active != self.active_on_entry {
             tracing::info!(
                 target: "tilo::workspace",
@@ -413,7 +439,6 @@ impl Drop for WorkspaceTreeWriteGuard<'_> {
             }
             changed
         };
-        let reserved = self.reserved_revision.swap(0, Ordering::AcqRel);
         if changed || reserved != 0 {
             // A later state than any published or captured before it. Taken
             // while the write lock is held, so a reader sees this value with
@@ -475,6 +500,36 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_reading_the_tree_reads_it_again_while_a_writer_waits() {
+        let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
+        let (done, finished) = std::sync::mpsc::channel();
+        let reader = handle.clone();
+        std::thread::spawn(move || {
+            let held = reader.read();
+            let writer = {
+                let handle = reader.clone();
+                std::thread::spawn(move || handle.write().desktop.external_revision = 3)
+            };
+            let started = Instant::now();
+            while !reader.0.lock.is_locked_exclusive() {
+                assert!(
+                    started.elapsed() < Duration::from_secs(5),
+                    "the writer never queued"
+                );
+                std::thread::yield_now();
+            }
+            drop(reader.read());
+            drop(held);
+            writer.join().unwrap();
+            done.send(()).unwrap();
+        });
+        finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("a second read on the reading thread waited for the queued writer");
+        assert_eq!(handle.read().desktop.external_revision, 3);
+    }
+
+    #[test]
     fn only_a_released_write_advances_the_generation() {
         let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
         let start = handle.generation();
@@ -491,7 +546,23 @@ mod tests {
             "a write through any clone advances the shared generation"
         );
 
-        drop(handle.try_write().expect("nobody holds the tree"));
+        // A guard only looked through wrote nothing: the loop takes one on
+        // every wakeup to look for work, and each must not send every
+        // generation-gated reader back over the tree.
+        let guard = handle.try_write().expect("nobody holds the tree");
+        assert_eq!(guard.desktop.external_revision, 7);
+        drop(guard);
+        drop(handle.write());
+        assert_eq!(
+            handle.generation(),
+            start.wrapping_add(1),
+            "a write guard that never lent the tree mutably announces nothing"
+        );
+
+        // Lending it mutably is a write, changed or not.
+        let mut guard = handle.try_write().expect("nobody holds the tree");
+        let _: &mut WorkspaceTree = &mut guard;
+        drop(guard);
         assert_eq!(handle.generation(), start.wrapping_add(2));
     }
 
@@ -527,7 +598,6 @@ mod tests {
     /// nothing, do not wake it.
     #[test]
     fn a_write_announces_a_policy_change_only_when_it_changed_policy() {
-        use std::time::Duration;
         let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
         let workspace = handle.write().append_empty_workspace("Shared");
         let (woke, wakes) = std::sync::mpsc::channel();
@@ -538,13 +608,13 @@ mod tests {
 
         // A layout-only write: the watch stays armed and unwoken, unless
         // another test of this process announced meanwhile. An announcement
-        // counts the epoch up before it wakes, so whether one came is read
-        // after the wait: read before it, one landing during the wait woke
-        // the watch and failed the test in a parallel run.
+        // counts the epoch up before it wakes, and wakes on the announcing
+        // thread, so once the write is released either the wake is already
+        // queued or none came; whether another test announced is read after.
         let before = watch.arm();
         handle.write().desktop.external_revision = 9;
         drop(handle.try_write().expect("nobody holds the tree"));
-        let woke = wakes.recv_timeout(Duration::from_millis(200)).is_ok();
+        let woke = wakes.try_recv().is_ok();
         assert!(
             !woke || tilo_identity_host::policy_change::epoch() != before,
             "a write that changed no policy woke the watch"
@@ -561,18 +631,14 @@ mod tests {
             .find(|candidate| candidate.id == workspace)
             .unwrap()
             .set_owner("someone");
-        wakes
-            .recv_timeout(Duration::from_secs(5))
-            .expect("the new owner woke the armed watch");
+        tilo_test_env::recv("the new owner to wake the armed watch", &wakes);
         assert_ne!(tilo_identity_host::policy_change::epoch(), before);
 
         // A room this device now stewards: announced.
         let _ = watch.arm();
         let room = handle.read().room_of(workspace).unwrap();
         handle.write().stewarded_rooms.insert(room);
-        wakes
-            .recv_timeout(Duration::from_secs(5))
-            .expect("stewarding a room woke the armed watch");
+        tilo_test_env::recv("stewarding a room to wake the armed watch", &wakes);
     }
 
     /// A launch started while its own thread holds the tree for writing (a
@@ -593,9 +659,11 @@ mod tests {
             drop(guard);
             let _ = done.send((promised, again));
         });
-        let (promised, again) = finished
-            .recv_timeout(Duration::from_secs(10))
-            .expect("asking for the policy revision while writing must not wait on the write");
+        // Were the writer to wait on its own write, this would never arrive.
+        let (promised, again) = tilo_test_env::recv(
+            "the writer's own policy revision while it holds the write",
+            &finished,
+        );
         assert_eq!(promised, again, "one write promises one revision");
         assert!(
             promised > before,
@@ -622,9 +690,26 @@ mod tests {
         let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
         let mut guard = handle.write();
         let reader = handle.clone();
-        let asked = std::thread::spawn(move || reader.policy_revision());
+        let (tid_tx, tid_rx) = std::sync::mpsc::channel();
+        let asked = std::thread::spawn(move || {
+            tid_tx
+                .send(tilo_test_env::idle::current_thread_id().expect("a thread id"))
+                .unwrap();
+            reader.policy_revision()
+        });
         let _ = guard.append_empty_workspace("Granted");
-        std::thread::sleep(Duration::from_millis(50));
+        let tid = tilo_test_env::recv("the reader's thread id", &tid_rx);
+        // Release only once the reader has blocked on the held write.
+        tilo_test_env::wait_until("the reader to block on the held write", || {
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/stat"))
+                .ok()
+                .and_then(|stat| Some(stat.rsplit_once(')')?.1.trim_start().starts_with('S')))
+                .unwrap_or(false)
+        });
+        assert!(
+            !asked.is_finished(),
+            "the reader answered while the write was held"
+        );
         drop(guard);
         let seen = asked.join().unwrap();
         assert_eq!(
@@ -641,7 +726,7 @@ mod tests {
         assert_eq!(weak.strong_count(), 1);
         let upgraded = weak.upgrade().expect("the tree is alive");
         assert!(upgraded.ptr_eq(&handle));
-        drop(upgraded.write());
+        upgraded.write().desktop.external_revision = 1;
         assert_eq!(handle.generation(), 1);
         assert!(weak.ptr_eq(&handle.downgrade()));
         drop(upgraded);

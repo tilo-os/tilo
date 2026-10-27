@@ -530,30 +530,38 @@ async fn opening_files_never_writes_the_kept_history() {
         }
         folder.close().await;
     }
-    // Phase `a_burst_of_opens_is_one_write`.
+    // Phase `a_burst_of_opens_is_one_write`. The keeper's delay is an hour
+    // here, so the burst is whole when it is written, however slowly it
+    // runs; the write is the one the keeper makes once the delay passes.
     {
-        const DELAY: Duration = Duration::from_secs(2);
         let root = tempfile::tempdir().unwrap();
         let folder = RemoteFolder::with_files(&report_and_chart(), None)
             .await
-            .keep_history(root.path(), DELAY);
-        let started = Instant::now();
+            .keep_history(root.path(), NEVER);
         for open in 0..BURST {
             folder.fs.predict_after_open(folder.files[open % 2].0);
         }
-        assert!(
-            started.elapsed() < DELAY,
-            "the burst outlasted the flush delay"
-        );
         assert_eq!(folder.kept().writes(), 0);
-        tilo_test_env::within("the keeper writes after the burst", async {
+        assert!(folder.kept().flush().unwrap(), "the burst is written");
+        assert!(!folder.kept().flush().unwrap(), "and only once");
+        assert_eq!(folder.kept().writes(), 1, "one burst, one write");
+        assert!(folder.kept().path().exists());
+        folder.close().await;
+    }
+    // Phase `the_keeper_writes_once_its_delay_has_passed`.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let folder = RemoteFolder::with_files(&report_and_chart(), None)
+            .await
+            .keep_history(root.path(), Duration::from_millis(1));
+        folder.fs.predict_after_open(folder.files[0].0);
+        folder.fs.predict_after_open(folder.files[1].0);
+        tilo_test_env::within("the keeper writes after the opens", async {
             while folder.kept().writes() == 0 {
-                tokio::time::sleep(Duration::from_millis(20)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await;
-        tokio::time::sleep(DELAY * 2).await;
-        assert_eq!(folder.kept().writes(), 1, "one burst, one write");
         assert!(folder.kept().path().exists());
         folder.close().await;
     }

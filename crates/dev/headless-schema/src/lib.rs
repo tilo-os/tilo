@@ -84,7 +84,6 @@ pub struct Invocation {
     pub action: String,
     /// Typed arguments, bound strictly against the action's parameters.
     pub args: serde_json::Map<String, serde_json::Value>,
-    /// Explicit confirmation for an action whose contract asks for one.
     pub confirm: bool,
     /// The exact phrase for an action whose contract asks for a typed one.
     pub confirmation_phrase: Option<String>,
@@ -264,14 +263,19 @@ pub struct Spec {
     /// address and parameters, once the actions ran: what a scenario can
     /// `invoke`.
     pub resources: Option<String>,
+    /// Draw the desktop's window bar over the app, as a Tilo session does:
+    /// the app's slots, search and History are hosted in it, the app's
+    /// frame stands under it and every capture shows the whole window.
+    /// Coordinates (`click_at`, `tap_at`, `swipe_at`, `targets`) are then
+    /// the window's, as a capture shows it; the bar itself takes no presses.
+    pub window_bar: bool,
+    /// Mount the app as `--shots --scenario <name>` does: built from that
+    /// scenario's fixtures instead of the device's sources, with the
+    /// scenario staged before the actions run.
+    pub scenario: Option<String>,
 }
 
 /// Parse and strictly validate one complete headless-driver payload.
-///
-/// # Errors
-///
-/// Returns a concise path-specific error for malformed JSON or any unknown,
-/// missing, or ill-typed field.
 pub fn parse_spec(raw: &str) -> Result<Spec, String> {
     let value: serde_json::Value =
         serde_json::from_str(raw).map_err(|error| format!("invalid JSON: {error}"))?;
@@ -291,9 +295,11 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
                 | "results"
                 | "capture"
                 | "resources"
+                | "window_bar"
+                | "scenario"
         ) {
             return Err(format!(
-                "unknown field {key:?}; expected viewport, actions, capture, audit, audit_report, dump, targets, inspect, results, or resources"
+                "unknown field {key:?}; expected viewport, actions, capture, audit, audit_report, dump, targets, inspect, results, resources, window_bar, or scenario"
             ));
         }
     }
@@ -326,15 +332,16 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
         inspect: optional_string(object, "inspect")?,
         results: optional_string(object, "results")?,
         resources: optional_string(object, "resources")?,
+        window_bar: object
+            .get("window_bar")
+            .map(|value| value.as_bool().ok_or("window_bar must be true or false"))
+            .transpose()?
+            .unwrap_or(false),
+        scenario: optional_string(object, "scenario")?,
     })
 }
 
 /// Parse the standalone action-array format written under `tests/scenarios/`.
-///
-/// # Errors
-///
-/// Returns a concise action-specific error for malformed JSON or an operation
-/// that does not match the runtime driver's grammar.
 pub fn parse_actions(raw: &str) -> Result<Vec<Action>, String> {
     let value: serde_json::Value =
         serde_json::from_str(raw).map_err(|error| format!("invalid JSON: {error}"))?;
@@ -969,6 +976,20 @@ const BASIC_PERFORM_FIELDS: &[&str] = &["target", "semantic_target", "action"];
 mod tests {
     use super::*;
 
+    /// A drive names its scenario by a string, and none by default.
+    #[test]
+    fn a_drive_names_its_scenario() {
+        assert_eq!(parse_spec("{}").unwrap().scenario, None);
+        assert_eq!(
+            parse_spec(r#"{"scenario":"detail"}"#)
+                .unwrap()
+                .scenario
+                .as_deref(),
+            Some("detail")
+        );
+        assert!(parse_spec(r#"{"scenario":true}"#).is_err());
+    }
+
     /// Complete payloads and standalone actions share one grammar, bound
     /// answers fill later resources and arguments, and captures name a path.
     #[test]
@@ -987,6 +1008,12 @@ mod tests {
             assert_eq!(complete.results.as_deref(), Some("results.json"));
             assert!(parse_spec(r#"{"results":3}"#).is_err());
             assert_eq!(complete.audit_report.as_deref(), Some("audit.json"));
+        }
+        // Phase: the window bar is asked for by name, and only as a flag.
+        {
+            assert!(!parse_spec("{}").unwrap().window_bar);
+            assert!(parse_spec(r#"{"window_bar":true}"#).unwrap().window_bar);
+            assert!(parse_spec(r#"{"window_bar":"yes"}"#).is_err());
         }
 
         // Phase: bound_answers_fill_later_resources_and_arguments.
@@ -1065,8 +1092,6 @@ mod tests {
         }
     }
 
-    /// Invocations address actions and parse strictly, and malformed or
-    /// unknown operations are rejected strictly.
     #[test]
     fn invocations_and_malformed_operations_parse_strictly() {
         // Phase: invocations_address_actions_and_parse_strictly.

@@ -185,12 +185,26 @@ impl Session {
             .recv::<ServiceMessage>()
             .map_err(|error| format!("render service: {error}"))?;
         let ServiceMessage::Welcome {
-            limits, font_roots, ..
+            limits,
+            font_roots,
+            renderer,
+            ..
         } = welcome.message
         else {
             return Err("the render service did not welcome this app".to_owned());
         };
         tilo_startup_metrics::mark("remote-render-connect-done");
+        // The window's adapter line, as a window drawing on its own device
+        // logs it (`gpu::report_adapter`): GPU health and the startup gate
+        // read which device drew this window, here the service's.
+        crate::diag!(
+            "{} window adapter {:?} type={} backend={} driver={:?} via=render-service",
+            crate::gpu::ADAPTER_LINE_PREFIX,
+            renderer.name,
+            renderer.device_type,
+            renderer.backend,
+            renderer.driver
+        );
         Ok(Self {
             channel: Arc::new(channel),
             ring,
@@ -450,6 +464,10 @@ pub(crate) fn spawn(
         frame_complete,
         retry: super::retry::RenderRetryState::default(),
         full_repaint,
+        // The render service opens its device as this process would.
+        texture_limit: Arc::new(std::sync::atomic::AtomicU32::new(
+            crate::gpu::requested_texture_limit(),
+        )),
         join: Some(join),
     })
 }
@@ -793,6 +811,12 @@ impl Worker {
             }
             Refusal::Invalid(reason) | Refusal::OverLimit(reason) => {
                 tracing::error!(%reason, "the render service refused a frame");
+                // The refused frame's damage never reached the service's
+                // buffer, so a later frame that repaints only its own damage
+                // would leave this one's regions stale on screen. The next
+                // frame is whole. It is not woken for: the same scene would
+                // be refused again.
+                self.full_repaint.store(true, Ordering::SeqCst);
                 FrameOutcome::Skipped
             }
         }

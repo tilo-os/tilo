@@ -8,8 +8,6 @@
 // tool, the search query) stays local because it is per-peer.
 
 impl PdfApp {
-    // ---- small view-state helpers -----------------------------------
-
     /// Re-flow the chrome regions after a layout-affecting toggle and keep
     /// the zoom + scroll consistent with the new canvas size.
     fn reflow(&mut self) {
@@ -35,6 +33,16 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    /// Arm `colour` for the next mark. A selected mark takes it too, as an
+    /// edit of the record.
+    fn set_marker_colour(&mut self, colour: Swatch) {
+        self.swatch = colour;
+        if let Some(id) = self.selected_anno.as_deref() {
+            self.submit(crate::actions::set_annotation_color_action(id, colour));
+        }
+        self.dirty = true;
+    }
+
     fn toggle_sidebar(&mut self) {
         self.show_sidebar = !self.show_sidebar;
         // On a narrow window the panels are mutually-exclusive overlays.
@@ -52,33 +60,10 @@ impl PdfApp {
         self.reflow();
     }
 
-    fn open_search(&mut self) {
-        if !self.search_active {
-            self.search_active = true;
-            self.reflow();
-        }
-        ui::widget::Widget::set_focus(&mut self.find_bar, true);
-        self.find_bar.focus_query();
-        if !self.query().is_empty() {
-            self.recompute_matches();
-        }
-        self.dirty = true;
-    }
-
-    /// Close the find band. The query is kept, so opening find again offers
-    /// it, selected.
-    fn close_search(&mut self) {
-        if self.search_active {
-            self.search_active = false;
-            let query = self.query().to_owned();
-            self.find_bar = ui::widget::FindBar::new();
-            if !query.is_empty() {
-                self.find_bar.set_query(&query);
-            }
-            self.matches.clear();
-            self.raster_matches.clear();
-            self.reflow();
-        }
+    /// Open the window bar's search on the document: it finds in the pages
+    /// through [`ui::widget::Findable`].
+    fn open_search() {
+        ui::window_toolbar::open_search(ui::window_toolbar::SearchOpening::Find);
     }
 
     fn fit_page(&mut self) {
@@ -119,225 +104,62 @@ impl PdfApp {
         )
     }
 
-    // ---- pointer hit-testing ----------------------------------------
-
-    fn toolbar_hit(&self, p: Point) -> Option<ToolbarHit> {
-        if !self.toolbar_rect.contains(p) {
-            return None;
-        }
-        let lay = self.toolbar_layout();
-        let has_doc = self.has_document;
-        if lay.open.contains(p) {
-            // A pending open owns the document slot; starting a second picker
-            // would only create a competing request.  Consume the press while
-            // the chrome is visibly disabled.
-            if !self.opening() {
-                return Some(ToolbarHit::Open);
-            }
-            return Some(ToolbarHit::Inert);
-        }
-        // Everything else acts on an open document; without one the
-        // controls are disabled and a press on them does nothing.
-        if !has_doc {
-            return Some(ToolbarHit::Inert);
-        }
-        if lay.save.contains(p) {
-            return Some(ToolbarHit::Save);
-        }
-        for (t, r) in &lay.tools {
-            if r.contains(p) {
-                return Some(ToolbarHit::Tool(*t));
-            }
-        }
-        if lay.colour.is_some_and(|r| r.contains(p)) {
-            return Some(ToolbarHit::MarkerColour);
-        }
-        if lay.zoom_out.contains(p) {
-            return Some(ToolbarHit::ZoomOut);
-        }
-        if lay.zoom_in.contains(p) {
-            return Some(ToolbarHit::ZoomIn);
-        }
-        if lay.zoom.contains(p) {
-            return Some(ToolbarHit::ZoomValue);
-        }
-        if lay.fit.contains(p) {
-            return Some(ToolbarHit::Fit);
-        }
-        if lay.search.contains(p) {
-            return Some(ToolbarHit::Search);
-        }
-        if lay.toggle_rail.contains(p) {
-            return Some(ToolbarHit::ToggleRail);
-        }
-        if lay.toggle_sidebar.contains(p) {
-            return Some(ToolbarHit::ToggleSidebar);
-        }
-        // A click anywhere else on the toolbar is still "consumed" so it
-        // doesn't fall through to the canvas behind it.
-        Some(ToolbarHit::Inert)
-    }
-
-    fn apply_toolbar(&mut self, hit: &ToolbarHit) {
-        match hit {
-            ToolbarHit::Tool(t) => self.set_tool(*t),
-            ToolbarHit::MarkerColour => self.open_marker_colours(),
-            ToolbarHit::ZoomIn => self.zoom_by(1.15),
-            ToolbarHit::ZoomOut => self.zoom_by(1.0 / 1.15),
-            ToolbarHit::Fit => {
-                // Fit page → fit width; fit width or a custom zoom → fit page.
-                match self.fit {
-                    FitMode::Page => self.fit_width(),
-                    _ => self.fit_page(),
-                }
-            }
-            ToolbarHit::Search => {
-                if self.search_active {
-                    self.close_search();
-                } else {
-                    self.open_search();
-                }
-            }
-            ToolbarHit::ToggleRail => self.toggle_rail(),
-            ToolbarHit::ToggleSidebar => self.toggle_sidebar(),
-            ToolbarHit::Open => self.request_open_via_portal(),
-            ToolbarHit::Save => self.request_save_via_portal(),
-            // The stepper's value is edited in place by the stepper itself.
-            ToolbarHit::ZoomValue | ToolbarHit::Inert => {}
-        }
-    }
-
-    /// Open the marker-colour popover under its well: the five marker
-    /// colours, the armed one chosen.
-    fn open_marker_colours(&mut self) {
-        // From the well in the row, or from the More menu's end of the row
-        // when the well waits there.
-        let band = self.toolbar_band;
-        let well = self
-            .toolbar_layout()
-            .colour
-            .unwrap_or_else(|| Rect::new(band.x1 - band.height(), band.y0, band.x1, band.y1));
-        let swatches = Swatch::ALL
-            .iter()
-            .map(|s| ColorSwatch::named(render::swatch_color(*s), swatch_label(*s)));
-        let mut picker = ColorSwatchPicker::new(swatches, Swatch::ALL.len());
-        if let Some(i) = Swatch::ALL.iter().position(|s| *s == self.swatch) {
-            picker = picker.with_selected(i);
-        }
-        self.marker_colours = Some(
-            ui::widget::Popover::with_content(picker)
-                .anchored(well)
-                .side(ui::widget::PopoverSide::Below)
-                .with_viewport(self.rect)
-                .open(true),
-        );
-        self.dirty = true;
-    }
-
-    /// Run `f` with an event context for a control the reader positions
-    /// itself (the find bar, the zoom stepper, an inline field). A throwaway
-    /// leaf satisfies the context's layout node; local controls never write
-    /// the passed document.
-    fn with_local_ctx<R>(
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut ui::widget::Edits<'_>,
-        f: impl FnOnce(&mut ui::widget::EventCtx<'_>) -> R,
-    ) -> Option<R> {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).ok()?;
-        let mut handled = false;
-        let mut focus_target = None;
-        Some(f(&mut ui::widget::EventCtx {
-            scale_factor: scale,
-            modifiers: &modifiers,
-            state: state.reborrow(),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &taffy,
-        }))
-    }
-
-    /// Feed one event to the find bar, then carry what it asked for (a new
-    /// query, an option, a step, closing) to the document.
-    fn route_find_bar(
+    /// A drag on the docked review panel's leading edge, or a key on its
+    /// focused divider, resizes it through the shared inspector; dragged
+    /// under its minimum it closes. Returns whether the divider took the
+    /// event.
+    pub(crate) fn route_review_resize(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut ui::widget::Edits<'_>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        let bar = &mut self.find_bar;
-        let took = Self::with_local_ctx(scale, modifiers, state, |ctx| bar.route(event, ctx))
-            .unwrap_or(false);
-        self.drive_find_bar();
-        took
-    }
-
-    /// Carry the find bar's pending requests to the document; close the band
-    /// when the bar asked to close.
-    fn drive_find_bar(&mut self) {
-        let mut bar = std::mem::take(&mut self.find_bar);
-        bar.drive(self);
-        let close = bar.close_requested();
-        self.find_bar = bar;
-        if close {
-            self.close_search();
+        if self.overlay_mode && !self.review.is_resizing() {
+            return false;
         }
-        self.dirty = true;
+        let was_resizing = self.review.is_resizing();
+        let taken = self.review.handle_event(event, ctx);
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) && !self.review.is_resizing()
+        {
+            // A press anywhere else hands the keys back to the pages.
+            self.review.set_resize_focused(false);
+        }
+        if self.review.take_resize_redraw() {
+            self.dirty = true;
+        }
+        if taken || was_resizing || self.review.is_resizing() {
+            self.show_sidebar = self.review.is_open();
+            self.reflow();
+        }
+        taken
     }
 
-    /// Feed one event to the command toolbar, then run the command it
-    /// activated (by pointer, keyboard or its More menu).
-    fn route_toolbar(
+    /// Resize the review panel from its divider's semantic node.
+    pub(crate) fn perform_review_resize(
         &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut ui::widget::Edits<'_>,
+        target: &str,
+        action: &ui::a11y::Action,
     ) -> bool {
-        let bar = &mut self.toolbar;
-        let took = Self::with_local_ctx(scale, modifiers, state, |ctx| {
-            ui::widget::Widget::handle_event(bar, event, ctx);
-            *ctx.handled
-        })
-        .unwrap_or(false);
-        self.drain_toolbar();
-        took
-    }
-
-    /// Run the command the toolbar activated last, if any.
-    fn drain_toolbar(&mut self) {
-        if let Some(hit) = self.toolbar.take_activated().and_then(toolbar_command) {
-            self.apply_toolbar(&hit);
+        if self.overlay_mode || !self.review.perform_resize_action(target, action) {
+            return false;
         }
-        self.dirty = true;
+        self.show_sidebar = self.review.is_open();
+        self.reflow();
+        true
     }
 
-    /// Feed one event to the zoom stepper and apply a value the person
-    /// committed (typed and confirmed, or stepped).
-    fn route_zoom_input(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut ui::widget::Edits<'_>,
-    ) {
-        let input = &mut self.zoom_input;
-        let _ = Self::with_local_ctx(scale, modifiers, state, |ctx| {
-            input.handle_event(event, ctx);
-        });
-        if let Some(percent) = self.zoom_input.take_changed() {
-            self.set_custom_zoom(percent / 100.0);
+    /// The resize cursor over the docked review panel's divider.
+    pub(crate) fn review_resize_cursor(&self, p: Point) -> Option<winit::window::CursorIcon> {
+        if self.overlay_mode {
+            None
+        } else {
+            self.review.resize_cursor(p)
         }
-        self.dirty = true;
-    }
-
-    /// Whether `p` is over the toolbar's zoom stepper.
-    fn zoom_rect_contains(&self, p: Point) -> bool {
-        self.has_document && self.toolbar_layout().zoom.contains(p)
     }
 
     /// Whether `p` is over the page rail's resize grip: its trailing edge.
@@ -407,7 +229,7 @@ impl PdfApp {
                 self.begin_edit(EditTarget::Reply(id), "");
             }
             SidebarHit::EditSigner => {
-                let cur = self.signer_name.clone();
+                let cur = self.signer();
                 self.begin_edit(EditTarget::Signer, &cur);
             }
             SidebarHit::Resolve(id) => {
@@ -459,24 +281,6 @@ impl PdfApp {
         true
     }
 
-    /// A click on the floating page bubble: its chevrons step pages. Hit-tests
-    /// the rects the bubble captured this frame, so a click only lands when the
-    /// bubble is actually visible.
-    fn apply_page_bubble(&mut self, p: Point) -> bool {
-        if self.bubble_rect == Rect::ZERO || !self.bubble_rect.contains(p) {
-            return false;
-        }
-        if self.bubble_prev.contains(p) {
-            self.prev_page();
-        } else if self.bubble_next.contains(p) {
-            self.next_page();
-        }
-        // Keep the indicator up right after a nav click.
-        self.page_bubble.poke(ui::time::now());
-        self.dirty = true;
-        true
-    }
-
     /// Pointer-down inside the page canvas: dispatch by the active tool.
     fn apply_canvas_press(&mut self, p: Point, state: &mut ui::widget::Edits<'_>) -> bool {
         if !self.canvas_rect.contains(p) {
@@ -489,6 +293,10 @@ impl PdfApp {
             }
             return true;
         }
+        // A new press ends any gesture still waiting for page text, and
+        // catches a glide.
+        self.pending_press = None;
+        self.glide.stop();
         if let Some((page, pt)) = self.hit_page(p) {
             match self.tool {
                 // Select arms one of three gestures. Over real text on a raster
@@ -504,25 +312,39 @@ impl PdfApp {
                         self.clear_selection();
                         self.selected_anno = Some(id.clone());
                         self.marker_drag = Some(ui::MarkerDrag::begin(id, pt, (nx, ny)));
+                    } else if self.shift_down && self.raster_active() && self.extend_selection_to(p)
+                    {
+                        // Shift extends the live selection to the press.
                     } else if self.shift_down && self.raster_active() {
-                        // Shift + Select drags a rubber-band image-region marquee
-                        // to copy; it never pans or selects text.
+                        // With nothing selected, Shift + Select drags a
+                        // rubber-band image-region marquee to copy; it never
+                        // pans or selects text.
                         self.clear_selection();
                         self.region = Some(RegionSelect {
                             page,
                             start: pt,
                             cur: pt,
                         });
-                    } else if self.raster_active() && self.begin_selection(page, pt, p) {
-                        // Text selection armed; motion extends it, release ends it.
+                    } else if self.raster_active() {
+                        match self.begin_selection(page, pt, p) {
+                            // Motion extends it, release ends it.
+                            SelectionStart::Armed => {}
+                            SelectionStart::Waiting => {
+                                // The page's text is on its way: the press
+                                // becomes a selection or a pan when it lands.
+                                self.clear_selection();
+                                self.pending_press = Some(PendingPress {
+                                    page,
+                                    pt,
+                                    press: p,
+                                    scroll: (self.scroll_x(), self.scroll_y()),
+                                    released: None,
+                                });
+                            }
+                            SelectionStart::NoText => self.begin_pan(p),
+                        }
                     } else {
-                        self.clear_selection();
-                        self.pan = Some(PanState {
-                            start: p,
-                            scroll_x0: self.scroll_x(),
-                            scroll_y0: self.scroll_y(),
-                            moved: false,
-                        });
+                        self.begin_pan(p);
                     }
                     self.dirty = true;
                 }
@@ -577,7 +399,19 @@ impl PdfApp {
         true
     }
 
-    /// Resolve a right-click into a context menu over a deletable item.
+    /// Clear the selection and start panning from a press at `p`.
+    fn begin_pan(&mut self, p: Point) {
+        self.clear_selection();
+        self.pan = Some(PanState {
+            start: p,
+            scroll_x0: self.scroll_x(),
+            scroll_y0: self.scroll_y(),
+            moved: false,
+        });
+    }
+
+    /// Resolve a right-click (or a held finger) into a context menu: over
+    /// a deletable item its Delete menu, over page text Copy and Select all.
     fn open_context_menu(&mut self, p: Point) -> bool {
         if let Some((page, pt)) = self.hit_page(p)
             && let Some(target) = self.delete_target_at(page, pt)
@@ -587,6 +421,9 @@ impl PdfApp {
             self.dirty = true;
             return true;
         }
+        if self.tool == Tool::Select && self.select_for_menu(p) {
+            return true;
+        }
         // A right-click elsewhere just dismisses any open menu.
         if self.context_menu.take().is_some() {
             self.dirty = true;
@@ -594,7 +431,26 @@ impl PdfApp {
         false
     }
 
-    // ---- top-level dispatch -----------------------------------------
+    /// A file dragged in from outside opens when no document is, and
+    /// imports as pages into an open one with its page rail shown: the rail
+    /// shows it will land while the file hovers the window.
+    fn take_file(&mut self, file: ui::widget::FileOpenEvent) {
+        let imports = self.has_document && self.show_rail;
+        match file {
+            ui::widget::FileOpenEvent::HoverChanged => self
+                .page_sidebar
+                .set_drop_target_armed(imports && self.file_open.is_hovering()),
+            ui::widget::FileOpenEvent::Open(path) => {
+                self.page_sidebar.set_drop_target_armed(false);
+                if imports {
+                    self.import_file(&path);
+                } else if !self.has_document {
+                    self.open_chosen(&path);
+                }
+            }
+        }
+        self.dirty = true;
+    }
 
     fn on_event(
         &mut self,
@@ -605,32 +461,16 @@ impl PdfApp {
         handled: &mut bool,
     ) {
         self.shift_down = modifiers.state().shift_key();
+        self.glide.set_device_scale(scale_factor);
+        if let Some(file) = self.file_open.handle_event(event) {
+            self.take_file(file);
+            *handled = true;
+            return;
+        }
         match event {
-            // A file dragged in from outside imports as pages: the page rail
-            // shows it will land while the file hovers the window.
-            WindowEvent::HoveredFile(_) if self.has_document && self.show_rail => {
-                self.page_sidebar.set_drop_target_armed(true);
-                self.dirty = true;
-            }
-            WindowEvent::HoveredFileCancelled => {
-                self.page_sidebar.set_drop_target_armed(false);
-                self.dirty = true;
-            }
-            WindowEvent::DroppedFile(path) if self.page_sidebar.is_drop_target_armed() => {
-                self.page_sidebar.set_drop_target_armed(false);
-                self.import_file(path);
-                *handled = true;
-            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.on_cursor_moved(event, p, scale_factor, modifiers, state);
-                self.route_toolbar(event, scale_factor, modifiers, state);
-                if self.search_active {
-                    self.route_find_bar(event, scale_factor, modifiers, state);
-                }
-                if self.has_document {
-                    self.route_zoom_input(event, scale_factor, modifiers, state);
-                }
             }
 
             WindowEvent::MouseInput {
@@ -645,22 +485,7 @@ impl PdfApp {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } if ui::widget::Widget::wants_pointer_capture(&self.toolbar) => {
-                self.route_toolbar(event, scale_factor, modifiers, state);
-                *handled = true;
-            }
-
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
             } => {
-                if self.search_active {
-                    self.route_find_bar(event, scale_factor, modifiers, state);
-                }
-                if self.zoom_input.is_editing() {
-                    self.route_zoom_input(event, scale_factor, modifiers, state);
-                }
                 self.on_left_release(event, scale_factor, modifiers, state, handled);
             }
 
@@ -672,8 +497,8 @@ impl PdfApp {
                 self.on_right_press(state, handled);
             }
 
-            WindowEvent::MouseWheel { delta, .. } => {
-                self.on_mouse_wheel(delta, scale_factor, modifiers, handled);
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                self.on_mouse_wheel(delta, *phase, scale_factor, modifiers, handled);
             }
 
             // Touchpad pinch: zoom toward the cursor. Upstream winit emits
@@ -698,13 +523,12 @@ impl PdfApp {
                 self.on_key(event, key_event, modifiers, scale_factor, state, handled);
             }
 
-            WindowEvent::Ime(_) if self.zoom_input.is_editing() => {
-                self.route_zoom_input(event, scale_factor, modifiers, state);
-                *handled = true;
-            }
-
-            WindowEvent::Ime(_) if self.search_active => {
-                self.route_find_bar(event, scale_factor, modifiers, state);
+            // A browser page delivers typed text as IME commits from its
+            // hidden text editor, not as key presses: the open comment or
+            // reply field takes them, or typing there lands nowhere.
+            WindowEvent::Ime(_) if self.editing.is_some() => {
+                self.drive_editor(event, scale_factor, modifiers, state);
+                self.dirty = true;
                 *handled = true;
             }
 
@@ -724,11 +548,16 @@ impl PdfApp {
         modifiers: winit::event::Modifiers,
         state: &mut ui::widget::Edits<'_>,
     ) {
+        let from = self.last_mouse;
         self.last_mouse = p;
+        self.hover_text(p);
         if self.on_cursor_moved_chrome_drags(event, p, scale_factor, modifiers, state) {
             return;
         }
         self.on_cursor_moved_page_drags(p);
+        if !self.pointer_move_is_quiet(from, p) {
+            self.dirty = true;
+        }
     }
 
     /// The signature pad, the inline editor, a sticky-note marker drag, and
@@ -820,14 +649,18 @@ impl PdfApp {
             return;
         }
 
-        // Text selection drag (Select tool over real text). Map the
-        // pointer onto the selection's page even past the card edge so
+        // A press waiting for its page's text: it resolves as soon as the
+        // text is here.
+        if self.pending_press.is_some() {
+            self.resolve_pending_press(p);
+            return;
+        }
+
+        // Text selection drag (Select tool over real text): onto whichever
+        // page the pointer is over, or nearest, even past the card edge so
         // the drag can reach the end of a line.
-        if let Some(sel) = self.selection
-            && sel.dragging
-        {
-            let pt = self.page_point(sel.page, p);
-            self.update_selection(sel.page, pt);
+        if self.selection.is_some_and(|sel| sel.dragging) {
+            self.update_selection_at(p);
             return;
         }
 
@@ -861,8 +694,8 @@ impl PdfApp {
                     }
                 }
             }
+            self.dirty = true;
         }
-        self.dirty = true;
     }
 
     /// `WindowEvent::MouseInput` (left, pressed): the inline editor / open
@@ -883,8 +716,8 @@ impl PdfApp {
         self.on_left_press_rail_and_canvas(p, state, handled);
     }
 
-    /// The inline editor, an open context menu, the toolbar, the find bar,
-    /// the page bubble and the sidebar — each intercepts a left press before
+    /// The inline editor, an open context menu, the page bubble and the
+    /// sidebar — each intercepts a left press before
     /// it reaches the rail or the canvas. Returns whether one of them already
     /// consumed the click.
     fn on_left_press_editor_and_menus(
@@ -909,46 +742,6 @@ impl PdfApp {
                 return true;
             }
             self.commit_edit(state);
-        }
-        // A press anywhere else ends typing a zoom value (committing it).
-        let on_zoom = self.zoom_rect_contains(p);
-        if self.zoom_input.is_editing() && !on_zoom {
-            let input = &mut self.zoom_input;
-            let _ = Self::with_local_ctx(scale_factor, modifiers, state, |_| {
-                ui::widget::Widget::set_focus(input, false);
-            });
-            if let Some(percent) = self.zoom_input.take_changed() {
-                self.set_custom_zoom(percent / 100.0);
-            }
-        }
-        // The commands between the row's ends are the shared toolbar's: it
-        // presses, activates on release and opens its More menu.
-        if self.toolbar_band.contains(p) {
-            self.route_toolbar(event, scale_factor, modifiers, state);
-            *handled = true;
-            return true;
-        }
-        if let Some(hit) = self.toolbar_hit(p) {
-            if matches!(hit, ToolbarHit::ZoomValue) {
-                ui::widget::Widget::set_focus(&mut self.zoom_input, true);
-                self.route_zoom_input(event, scale_factor, modifiers, state);
-            }
-            self.apply_toolbar(&hit);
-            *handled = true;
-            return true;
-        }
-        if self.search_active {
-            let inside = self.search_rect.contains(p);
-            ui::widget::Widget::set_focus(&mut self.find_bar, inside);
-            if inside {
-                self.route_find_bar(event, scale_factor, modifiers, state);
-                *handled = true;
-                return true;
-            }
-        }
-        if self.apply_page_bubble(p) {
-            *handled = true;
-            return true;
         }
         if self.apply_sidebar(p, state) {
             *handled = true;
@@ -996,6 +789,13 @@ impl PdfApp {
             self.show_rail = false;
             self.show_sidebar = false;
             self.reflow();
+            *handled = true;
+            return;
+        }
+        // A selection grip (on a touchscreen) takes its end first.
+        if self.tool == Tool::Select && self.canvas_rect.contains(p) && self.take_selection_grip(p)
+        {
+            self.pending_press = None;
             *handled = true;
             return;
         }
@@ -1091,8 +891,7 @@ impl PdfApp {
         }
         // End an image-region marquee: crop + copy the region.
         if self.region.is_some() {
-            self.copy_region();
-            self.region = None;
+            self.release_region();
             *handled = true;
             return;
         }
@@ -1105,7 +904,18 @@ impl PdfApp {
             *handled = true;
             return;
         }
-        if self.selection.is_some_and(|s| s.dragging) {
+        if self
+            .pending_press
+            .is_some_and(|pending| pending.released.is_none())
+        {
+            // A press released before its page's text came: a click now,
+            // or a drag carried out when the text comes.
+            if let Some(pending) = self.release_pending_press(self.last_mouse) {
+                self.click_page(state, pending.page, pending.pt);
+            }
+            self.dirty = true;
+            *handled = true;
+        } else if self.selection.is_some_and(|s| s.dragging) {
             // End a text-selection drag. A bare click (no drag) selects
             // nothing textual, so also let it pick markup underneath.
             let was_active = self.selection.is_some_and(|s| s.is_active());
@@ -1152,78 +962,6 @@ impl PdfApp {
             self.open_context_menu(p);
             *handled = true;
         }
-    }
-
-    /// `WindowEvent::MouseWheel`: the page rail / sidebar scroll it under the
-    /// pointer, Ctrl+wheel zooms, otherwise it pans the canvas.
-    fn on_mouse_wheel(
-        &mut self,
-        delta: &MouseScrollDelta,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) {
-        let p = self.last_mouse;
-        let (raw_x, raw_y) = match delta {
-            MouseScrollDelta::LineDelta(x, y) => (f64::from(*x) * 56.0, f64::from(*y) * 56.0),
-            MouseScrollDelta::PixelDelta(pos) => (pos.x / scale_factor, pos.y / scale_factor),
-        };
-        let mods = modifiers.state();
-        let ctrl = mods.control_key() || mods.super_key();
-        tracing::debug!(
-            kind = match delta {
-                MouseScrollDelta::LineDelta(..) => "line",
-                MouseScrollDelta::PixelDelta(..) => "pixel",
-            },
-            raw_x,
-            raw_y,
-            ctrl,
-            shift = mods.shift_key(),
-            "pdf MouseWheel"
-        );
-
-        // Wheel over the page rail scrolls its thumbnail list.
-        if self.show_rail && self.rail_rect.contains(p) {
-            if self.page_sidebar.on_wheel(-raw_y) {
-                self.dirty = true;
-            }
-            *handled = true;
-            return;
-        }
-
-        // Wheel over the sidebar scrolls its list.
-        if self.show_sidebar && self.sidebar_rect.contains(p) {
-            // (sidebar_max_scroll needs the text renderer, so just
-            // nudge and let the next draw clamp it.)
-            self.sidebar_scroll = (self.sidebar_scroll - raw_y).max(0.0);
-            self.dirty = true;
-            *handled = true;
-            return;
-        }
-
-        if ctrl {
-            // Ctrl+wheel zooms, centred on the cursor.
-            let factor = if raw_y > 0.0 {
-                1.0 + raw_y / 240.0
-            } else {
-                1.0 / (1.0 - raw_y / 240.0)
-            };
-            self.zoom_at(factor, p);
-            *handled = true;
-            return;
-        }
-
-        // Shift+wheel (or a horizontal wheel) pans horizontally;
-        // otherwise vertical. Either axis only moves if it can. The
-        // clamp lives in the shared kernel's `pan_by`.
-        if mods.shift_key() && self.is_overflowing_x() {
-            self.viewport.pan_by(-raw_y, 0.0);
-        } else {
-            self.viewport.pan_by(-raw_x, -raw_y);
-        }
-        self.current_page = self.nearest_page();
-        self.dirty = true;
-        *handled = true;
     }
 
     /// Feed one raw event into a hand-positioned, local [`TextInput`]. A
@@ -1291,10 +1029,6 @@ impl PdfApp {
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
-        if self.toolbar.shown_menu().is_some() {
-            *handled = self.route_toolbar(event, scale, modifiers, state);
-            return;
-        }
         if self.on_key_editing(event, key_event, modifiers, scale, state, handled) {
             return;
         }
@@ -1302,9 +1036,6 @@ impl PdfApp {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
 
-        if self.on_key_search(event, modifiers, ctrl, scale, state, handled) {
-            return;
-        }
         if self.on_key_ctrl_shortcuts(key_event, ctrl, handled) {
             return;
         }
@@ -1363,47 +1094,6 @@ impl PdfApp {
         true
     }
 
-    fn on_key_search(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-        ctrl: bool,
-        scale: f64,
-        state: &mut ui::widget::Edits<'_>,
-        handled: &mut bool,
-    ) -> bool {
-        if self.zoom_input.is_editing() {
-            self.route_zoom_input(event, scale, modifiers, state);
-            *handled = true;
-            return true;
-        }
-        if !self.search_active {
-            return false;
-        }
-        let WindowEvent::KeyboardInput {
-            event: key_event, ..
-        } = event
-        else {
-            return false;
-        };
-        if ctrl
-            && let Key::Character(c) = &key_event.logical_key
-            && c.as_str().eq_ignore_ascii_case("f")
-        {
-            ui::widget::Widget::set_focus(&mut self.find_bar, true);
-            self.find_bar.focus_query();
-            self.dirty = true;
-            *handled = true;
-            return true;
-        }
-        if !ui::widget::Widget::is_focused(&self.find_bar) {
-            return false;
-        }
-        self.route_find_bar(event, scale, modifiers, state);
-        *handled = true;
-        true
-    }
-
     /// Ctrl/Cmd shortcuts: open, find, zoom (+ / − / 0), copy, save. Handled
     /// up front so the bare-key fallbacks below can keep their own meanings.
     /// Returns whether one of them consumed this key.
@@ -1426,7 +1116,7 @@ impl PdfApp {
                 true
             }
             "f" | "F" => {
-                self.open_search();
+                Self::open_search();
                 *handled = true;
                 true
             }
@@ -1454,6 +1144,10 @@ impl PdfApp {
                 } else {
                     false
                 }
+            }
+            "a" | "A" if self.select_all() => {
+                *handled = true;
+                true
             }
             "s" | "S" => {
                 self.request_save_via_portal();
@@ -1544,7 +1238,7 @@ impl PdfApp {
                 self.context_menu = None;
                 self.page_sidebar.on_escape();
                 self.clear_selection();
-                self.status_note = None;
+                self.status_note.dismiss();
                 self.dirty = true;
                 *handled = true;
             }
@@ -1593,1267 +1287,5 @@ impl PdfApp {
 }
 
 #[cfg(test)]
-mod event_tests {
-    use super::*;
-    use serial_test::serial;
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{Modifiers, TouchPhase};
-
-    fn sample_app() -> (PdfApp, ui::State) {
-        let mut app = crate::scenarios::sample_reader();
-        let mut st = crate::scenarios::sample_state();
-        app.sync_settled(&mut st.doc, &st.root);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.measure_toolbar(
-            &mut ui::text_render::TextRenderer::new(),
-            &ui::theme::Theme::dark(),
-        );
-        app.recompute_regions();
-        app.sync_viewport_frame();
-        (app, st)
-    }
-
-    /// A ctrl-held `Modifiers`, mirroring the workspace convention (see
-    /// `ui::widget::command_palette`'s `ctrl_a_selects_query`).
-    fn ctrl_mods() -> Modifiers {
-        let mut s = winit::keyboard::ModifiersState::empty();
-        s.set(winit::keyboard::ModifiersState::CONTROL, true);
-        Modifiers::from(s)
-    }
-
-    /// the same trick the terminal + `modal_dialog` tests use.
-    fn key_event(key: Key) -> WindowEvent {
-        // Real winit reports the committed text alongside a printable key; the
-        // shared TextInput inserts from that `text` field, so mirror it (named
-        // keys other than Space carry no text).
-        let text = match &key {
-            Key::Character(s) => Some(s.clone()),
-            Key::Named(NamedKey::Space) => Some(winit::keyboard::SmolStr::new(" ")),
-            _ => None,
-        };
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
-            key,
-            text,
-            ElementState::Pressed,
-        ))
-    }
-
-    fn character(ch: &str) -> Key {
-        Key::Character(ch.into())
-    }
-
-    fn centre(r: Rect) -> Point {
-        Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
-    }
-
-    /// The reader plus the taffy node it is driven through: every event goes
-    /// through `PdfApp::handle_event`, the same entry point the live widget
-    /// tree drives.
-    struct Rig {
-        app: PdfApp,
-        st: ui::State,
-    }
-
-    impl Rig {
-        fn new() -> Self {
-            let (app, st) = sample_app();
-            Self::with(app, st)
-        }
-
-        fn with(app: PdfApp, st: ui::State) -> Self {
-            Self { app, st }
-        }
-
-        /// Feed one real event; returns whether it was handled.
-        fn feed(&mut self, mods: Modifiers, ev: &WindowEvent) -> bool {
-            ui::testing::Dispatch::new()
-                .modifiers(mods)
-                .doc(&mut self.st.doc)
-                .path(&self.st.root)
-                .send(&mut self.app, ev)
-                .handled
-        }
-
-        fn move_to(&mut self, p: (f64, f64)) {
-            self.feed(
-                Modifiers::default(),
-                &ui::synthetic_input::cursor_moved(p.0, p.1),
-            );
-        }
-
-        fn button(&mut self, state: ElementState, button: MouseButton) {
-            self.feed(
-                Modifiers::default(),
-                &ui::synthetic_input::mouse_input(state, button),
-            );
-        }
-
-        fn press(&mut self) {
-            self.button(ElementState::Pressed, MouseButton::Left);
-        }
-
-        fn release(&mut self) {
-            self.button(ElementState::Released, MouseButton::Left);
-        }
-
-        fn key(&mut self, mods: Modifiers, key: Key) -> bool {
-            self.feed(mods, &key_event(key))
-        }
-
-        fn wheel(&mut self, mods: Modifiers, delta: MouseScrollDelta) {
-            self.feed(
-                mods,
-                &WindowEvent::MouseWheel {
-                    device_id: winit::event::DeviceId::dummy(),
-                    delta,
-                    phase: TouchPhase::Moved,
-                },
-            );
-        }
-
-        /// Arm `tool` by clicking its real toolbar button, and assert the
-        /// click landed.
-        fn arm_via_toolbar(&mut self, tool: Tool, why: &str) {
-            let lay = self.app.toolbar_layout();
-            let (_, rect) = lay.tools.iter().find(|(t, _)| *t == tool).unwrap();
-            let btn = centre(*rect);
-            self.move_to((btn.x, btn.y));
-            self.press();
-            self.release();
-            assert_eq!(self.app.tool, tool, "{why}");
-        }
-
-        /// Right-click the seeded sticky note, asserting the context menu
-        /// opens targeting it. Returns its id.
-        fn right_click_seeded_note(&mut self) -> String {
-            let sticky = self
-                .app
-                .annotations
-                .iter()
-                .find(|a| matches!(a.kind, AnnoKind::Note { .. }))
-                .unwrap()
-                .clone();
-            let AnnoKind::Note { x: nx, y: ny } = sticky.kind else {
-                unreachable!()
-            };
-            let origin = self.app.page_origins()[0];
-            let zoom = self.app.zoom();
-            self.move_to((origin.x + nx * zoom, origin.y + ny * zoom));
-            self.button(ElementState::Pressed, MouseButton::Right);
-            assert!(
-                self.app.context_menu.is_some(),
-                "right-click over the note opens its delete menu"
-            );
-            // The menu opens beside what it acts on, never over it.
-            let target = self
-                .app
-                .delete_target_screen_rect(&DeleteTarget::Annotation(sticky.id.clone()))
-                .expect("the note is on a laid-out page");
-            let menu = self
-                .app
-                .context_menu
-                .as_ref()
-                .map(|m| Widget::get_rect(&m.widget))
-                .unwrap();
-            assert!(
-                menu.y0 >= target.y1 - 1e-6 || menu.y1 <= target.y0 + 1e-6,
-                "menu {menu:?} clears the note {target:?}"
-            );
-            sticky.id
-        }
-
-        fn draw_sidebar(
-            &mut self,
-            tr: &mut ui::text_render::TextRenderer,
-        ) -> Vec<(SidebarHit, Rect)> {
-            let mut scene = vello::Scene::new();
-            let mut er = Rect::ZERO;
-            let theme = self.app.layout_theme.clone();
-            self.app
-                .draw_sidebar(&mut scene, Affine::IDENTITY, tr, &theme, &mut er)
-        }
-    }
-
-    /// Every toolbar control as `(name, rect)`, hidden (zero) pieces skipped.
-    fn toolbar_controls(lay: &ToolbarLayout) -> Vec<(String, Rect)> {
-        let mut out = vec![
-            ("open".to_string(), lay.open),
-            ("save".to_string(), lay.save),
-            ("zoom".to_string(), lay.zoom),
-            ("fit".to_string(), lay.fit),
-            ("search".to_string(), lay.search),
-            ("toggle_rail".to_string(), lay.toggle_rail),
-            ("toggle_sidebar".to_string(), lay.toggle_sidebar),
-        ];
-        for (t, r) in &lay.tools {
-            out.push((format!("{t:?}"), *r));
-        }
-        if let Some(r) = lay.colour {
-            out.push(("marker colour".to_string(), r));
-        }
-        out.retain(|(_, r)| r.width() > 0.0 && r.height() > 0.0);
-        out
-    }
-
-    #[test]
-    fn signature_pad_controls_and_ink_follow_the_scaled_pointer() {
-        for scale in [1.0_f32, 1.5, 2.0] {
-            let mut rig = Rig::new();
-            rig.app.layout_theme = Theme::dark().with_ui_scale(scale);
-            rig.app.rect = Rect::new(0.0, 0.0, 1920.0, 1080.0);
-            rig.app.reconcile_overlay();
-            rig.app.reflow();
-            rig.app.sidebar_tab = SidebarTab::Signatures;
-            rig.app.sig_mode = SigMode::Draw;
-            let mut text = TextRenderer::new();
-            rig.app.sidebar_hits = rig.draw_sidebar(&mut text);
-            let ink = rig.app.signature_ink_rect();
-            let point = Point::new(ink.x0 + ink.width() * 0.3, ink.y0 + ink.height() * 0.7);
-            rig.move_to((point.x, point.y));
-            rig.press();
-            let start = rig.app.sig_stroke.as_ref().unwrap()[0];
-            assert!((start.0 - 0.3).abs() < 1e-6, "ink follows x at {scale}×");
-            assert!((start.1 - 0.7).abs() < 1e-6, "ink follows y at {scale}×");
-            rig.move_to((point.x + ink.width() * 0.2, point.y));
-            rig.release();
-            assert!(!rig.app.sig_strokes.is_empty());
-            rig.app.sidebar_hits = rig.draw_sidebar(&mut text);
-            let clear = rig
-                .app
-                .sidebar_hits
-                .iter()
-                .find(|(hit, _)| matches!(hit, SidebarHit::SigClear))
-                .unwrap()
-                .1
-                .center();
-            rig.move_to((clear.x, clear.y));
-            rig.press();
-            rig.release();
-            assert!(
-                rig.app.sig_strokes.is_empty(),
-                "Clear removes ink at {scale}×"
-            );
-            assert!(
-                rig.app.sig_stroke.is_none(),
-                "Clear does not begin a stroke"
-            );
-
-            rig.app.sig_mode = SigMode::Type;
-            rig.app.set_tool(Tool::Sign);
-            rig.app.sidebar_hits = rig.draw_sidebar(&mut text);
-            let geo = rig.app.signature_geometry(rig.app.sidebar_body());
-            let (_, hint_h) = text.measure_style(
-                SIGNATURE_PLACE_HINT,
-                Some(geo.place.width() as f32),
-                &rig.app.layout_theme.text(TextRole::Caption),
-            );
-            assert!(
-                geo.hint_y + f64::from(hint_h) <= geo.place.y0,
-                "wrapped placement hint clears Cancel at {scale}×"
-            );
-            let cancel = geo.place.center();
-            rig.move_to((cancel.x, cancel.y));
-            rig.press();
-            rig.release();
-            assert_eq!(
-                rig.app.tool,
-                Tool::Select,
-                "Cancel disarms signing at {scale}×"
-            );
-        }
-    }
-
-    #[test]
-    fn toolbar_arms_tools_recolours_and_lays_out_symmetric_wrapping_rows() {
-        let (mut app, _st) = sample_app();
-        let lay = app.toolbar_layout();
-        for (tool, r) in lay.tools {
-            let hit = app.toolbar_hit(centre(r)).expect("a toolbar hit");
-            app.apply_toolbar(&hit);
-            assert_eq!(app.tool, tool, "clicking {tool:?} should arm it");
-        }
-
-        // A swatch recolours the selected (seeded) highlight.
-        let (mut app, mut st) = sample_app();
-        let hl = app
-            .annotations
-            .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Markup { .. }))
-            .unwrap()
-            .clone();
-        app.selected_anno = Some(hl.id.clone());
-        app.tool = Tool::Highlight;
-        assert!(
-            Widget::perform_semantic_action(
-                &mut app,
-                &format!("pdf.swatch:{}", Swatch::Green.key()),
-                &ui::a11y::Action::Activate,
-                &mut Edits::lend(&mut st.doc),
-                &automerge::ROOT,
-            ),
-            "the published marker-colour action recolours the selection"
-        );
-        assert_eq!(app.swatch, Swatch::Green);
-        let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
-        assert_eq!(after.color, Swatch::Green);
-        assert!(
-            crate::markup::PdfMarkup::of(&st.doc)
-                .list_annotations()
-                .iter()
-                .any(|a| a.id == hl.id && a.color == Swatch::Green),
-            "the recolour landed in the shared document"
-        );
-
-        // The first and last toolbar controls sit the same distance from their
-        // window edges (the right cluster used to be inset 16 against 12).
-        let (app, _st) = sample_app();
-        let lay = app.toolbar_layout();
-        let left = lay.toggle_rail.x0 - app.toolbar_rect.x0;
-        let right = app.toolbar_rect.x1 - lay.toggle_sidebar.x1;
-        assert!(
-            (left - right).abs() < 0.01,
-            "left inset {left} != right inset {right}"
-        );
-
-        // The bar is one row at every width: at 1280px every command stands
-        // in it; at 480px the commands that do not fit go to the More menu
-        // instead of wrapping. The canvas starts under the row, no two
-        // controls overlap and every control stays inside the bar.
-        let (mut app, _st) = sample_app();
-        app.tool = Tool::Highlight;
-        let header = f64::from(app.layout_theme.tokens.metrics.header_height);
-        for (width, overflows) in [(1280.0, false), (480.0, true)] {
-            app.rect = Rect::new(0.0, 0.0, width, 900.0);
-            app.recompute_regions();
-            let lay = app.toolbar_layout();
-            let tb = app.toolbar_rect;
-            assert!((tb.height() - header).abs() < 1e-9, "one row at {width}px");
-            assert!(
-                (app.canvas_rect.y0 - tb.y1).abs() < 1e-9,
-                "the canvas starts under the bar at {width}px"
-            );
-            assert_eq!(
-                app.toolbar.has_overflow(),
-                overflows,
-                "More menu at {width}px"
-            );
-            let controls = toolbar_controls(&lay);
-            for (name, r) in &controls {
-                assert!(
-                    r.x0 >= tb.x0 && r.x1 <= tb.x1 && r.y0 >= tb.y0 && r.y1 <= tb.y1,
-                    "{name} {r:?} lies inside the toolbar {tb:?} at {width}px"
-                );
-            }
-            for (i, (a_name, a)) in controls.iter().enumerate() {
-                for (b_name, b) in controls.iter().skip(i + 1) {
-                    let o = a.intersect(*b);
-                    assert!(
-                        o.width() <= 0.0 || o.height() <= 0.0,
-                        "{a_name} {a:?} overlaps {b_name} {b:?} at {width}px"
-                    );
-                }
-            }
-            if !overflows {
-                assert_eq!(
-                    controls.len(),
-                    Tool::ALL.len() + 8,
-                    "every control stands in the row at {width}px"
-                );
-            }
-        }
-
-        // A freshly synced viewer with the pointer at its default (0,0) — which
-        // sits inside the toolbar rect but over no button — must not ask for
-        // animation frames, or the loop would spin at ~60Hz while idle.
-        let (mut app, _st) = sample_app();
-        // resolve_tooltip runs inside the draw; drive it directly.
-        app.resolve_tooltip();
-        assert!(
-            !app.needs_animation_frame(),
-            "idle app must settle to zero animation frames"
-        );
-    }
-
-    #[test]
-    fn narrow_toolbar_keeps_the_tools_and_moves_file_commands_into_more() {
-        // The colour well stands beside the tools and opens the colour
-        // popover.
-        let (mut app, _st) = sample_app();
-        let well = app.toolbar_layout().colour.expect("the colour well");
-        let hit = app.toolbar_hit(centre(well)).expect("a toolbar hit");
-        app.apply_toolbar(&hit);
-        assert!(app.marker_colours.is_some(), "the well opens the popover");
-
-        // An 800px window keeps every tool and the colour in the row; Open
-        // and Save, which have shortcuts, are the first into the More menu,
-        // and every command stays reachable from it.
-        let (mut app, mut st) = sample_app();
-        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-        app.recompute_regions();
-        let lay = app.toolbar_layout();
-        assert!(lay.tools.iter().all(|(_, r)| r.width() > 0.0));
-        assert!(lay.colour.is_some());
-        assert!(lay.open.width() <= 0.0, "Open folds first");
-        assert!(app.toolbar.has_overflow());
-        app.toolbar.open_overflow();
-        assert!(app.toolbar.shown_menu().is_some());
-        // The open menu owns input; Escape closes it.
-        let handled = ui::testing::Dispatch::new()
-            .doc(&mut st.doc)
-            .send(&mut app, &key_event(Key::Named(NamedKey::Escape)))
-            .handled;
-        assert!(handled, "the menu took the key");
-        assert!(app.toolbar.shown_menu().is_none(), "Escape closes it");
-    }
-
-    /// Scrolling and zooming through the real `handle_event` dispatch, not the
-    /// `zoom_at` helper.
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn wheel_pinch_pixel_scroll_and_arrows_zoom_or_scroll_through_the_event_path() {
-        // Pushing far enough crosses into a later page, which the reader tracks.
-        let (mut app, _st) = sample_app();
-        let p0 = app.current_page;
-        let (sx, m) = (app.scroll_x(), app.viewport.max_scroll_y());
-        app.viewport.set_scroll(sx, m);
-        app.current_page = app.nearest_page();
-        assert!(app.current_page >= p0);
-        assert_eq!(app.current_page, app.doc.page_count());
-
-        // Ctrl + scroll wheel (the Wayland touchpad pinch surfaces as this): a
-        // wheel-up with Ctrl held enlarges the page, a wheel-down shrinks it, and
-        // a bare wheel (no Ctrl) scrolls instead of zooming.
-        let mut rig = Rig::new();
-        // Pointer parked in the canvas so the wheel isn't captured by a panel.
-        rig.app.last_mouse = rig.app.canvas_rect.center();
-        let z0 = rig.app.zoom();
-        rig.wheel(ctrl_mods(), MouseScrollDelta::LineDelta(0.0, 1.0));
-        let z_in = rig.app.zoom();
-        assert!(
-            z_in > z0 + 1e-3,
-            "Ctrl+wheel-up zooms in through the event path ({z0} -> {z_in})"
-        );
-        rig.wheel(ctrl_mods(), MouseScrollDelta::LineDelta(0.0, -1.0));
-        let z_out = rig.app.zoom();
-        assert!(
-            z_out < z_in - 1e-3,
-            "Ctrl+wheel-down zooms back out ({z_in} -> {z_out})"
-        );
-        let z_before_scroll = rig.app.zoom();
-        let sy0 = rig.app.scroll_y();
-        rig.wheel(Modifiers::default(), MouseScrollDelta::LineDelta(0.0, -1.0));
-        assert!(
-            (rig.app.zoom() - z_before_scroll).abs() < 1e-6,
-            "a bare wheel must not change zoom"
-        );
-        assert!(
-            rig.app.scroll_y() > sy0,
-            "a bare wheel scrolls the document instead"
-        );
-
-        // A touchpad pinch (`WindowEvent::PinchGesture`) zooms — positive delta
-        // enlarges, negative delta shrinks — centred on the cursor.
-        let mut rig = Rig::new();
-        rig.app.last_mouse = rig.app.canvas_rect.center();
-        let pinch = |rig: &mut Rig, delta: f64| {
-            rig.feed(
-                Modifiers::default(),
-                &WindowEvent::PinchGesture {
-                    device_id: winit::event::DeviceId::dummy(),
-                    delta,
-                    phase: TouchPhase::Moved,
-                },
-            );
-        };
-        let z0 = rig.app.zoom();
-        pinch(&mut rig, 0.25);
-        let z_in = rig.app.zoom();
-        assert!(z_in > z0 + 1e-3, "pinch-open zooms in ({z0} -> {z_in})");
-        pinch(&mut rig, -0.25);
-        assert!(
-            rig.app.zoom() < z_in - 1e-3,
-            "pinch-close zooms out ({z_in} -> {})",
-            rig.app.zoom()
-        );
-
-        // The gesture the user actually gets on Wayland/GNOME: winit's Wayland
-        // backend never emits `PinchGesture` (that is macOS/iOS only) and
-        // delivers a touchpad two-finger scroll as `MouseWheel` with a
-        // **`PixelDelta`** — so Ctrl + two-finger scroll is *the* touchpad zoom.
-        // It zooms cursor-centred (the document point under the cursor stays
-        // fixed), and the same scroll without Ctrl pans instead of zooming.
-        let mut rig = Rig::new();
-        // Park the cursor over the page canvas via a real CursorMoved, so the
-        // wheel handler's focal point (`self.last_mouse`) is set the live way.
-        // Use the canvas horizontal centre: at fit-page the page is narrower
-        // than the viewport and stays centred, so only the scrollable (vertical)
-        // axis can track the cursor — at the centre both axes hold, giving a
-        // clean full cursor-centred check.
-        let cursor = Point::new(
-            rig.app.canvas_rect.center().x,
-            rig.app.canvas_rect.y0 + 220.0,
-        );
-        rig.move_to((cursor.x, cursor.y));
-        let doc_under_cursor_0 = rig.app.viewport.screen_to_content(cursor);
-        let z0 = rig.app.zoom();
-        rig.wheel(
-            ctrl_mods(),
-            MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 30.0)),
-        );
-        let z_in = rig.app.zoom();
-        assert!(
-            z_in > z0 + 1e-3,
-            "Ctrl + PixelDelta scroll zooms in ({z0} -> {z_in})"
-        );
-        let drift = (rig.app.viewport.screen_to_content(cursor) - doc_under_cursor_0).hypot();
-        assert!(
-            drift < 0.5,
-            "zoom stays centred on the cursor (doc-point drift {drift:.3}pt)"
-        );
-        let z_before = rig.app.zoom();
-        let sy0 = rig.app.scroll_y();
-        rig.wheel(
-            Modifiers::default(),
-            MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -40.0)),
-        );
-        assert!(
-            (rig.app.zoom() - z_before).abs() < 1e-6,
-            "a bare two-finger scroll must not zoom"
-        );
-        assert!(
-            rig.app.scroll_y() > sy0,
-            "a bare two-finger scroll pans the document"
-        );
-
-        // Arrow keys scroll the document by a small nudge through the real key
-        // path — not a whole-page jump — and `PageDown` scrolls much further.
-        let mut rig = Rig::new();
-        rig.app.tool = Tool::Select;
-        rig.app.go_to_page(1);
-        let none = Modifiers::default();
-        let sy0 = rig.app.scroll_y();
-        rig.key(none, Key::Named(NamedKey::ArrowDown));
-        let after_down = rig.app.scroll_y();
-        assert!(
-            after_down > sy0,
-            "ArrowDown scrolls down ({sy0} -> {after_down})"
-        );
-        assert!(
-            (after_down - sy0) <= KEY_SCROLL_STEP + 0.5,
-            "ArrowDown is a small nudge (~{KEY_SCROLL_STEP}px), not a page jump: moved {}",
-            after_down - sy0
-        );
-        rig.key(none, Key::Named(NamedKey::ArrowUp));
-        assert!(
-            (rig.app.scroll_y() - sy0).abs() < 0.5,
-            "ArrowUp returns to the start"
-        );
-        rig.key(none, Key::Named(NamedKey::PageDown));
-        assert!(
-            rig.app.scroll_y() > sy0 + KEY_SCROLL_STEP,
-            "PageDown scrolls a viewport-ful"
-        );
-    }
-
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn sidebar_hits_toggle_delete_clip_to_the_body_and_draw_every_tab() {
-        let mut tr = ui::text_render::TextRenderer::new();
-
-        // A resolve chip beats its card (smallest rect wins).
-        let mut rig = Rig::new();
-        rig.app.sidebar_tab = SidebarTab::Comments;
-        rig.app.sidebar_hits = rig.draw_sidebar(&mut tr);
-        let chip = rig.app.sidebar_hits.iter().find_map(|(h, r)| match h {
-            SidebarHit::Resolve(id) => Some((id.clone(), *r)),
-            _ => None,
-        });
-        if let Some((id, r)) = chip {
-            let before = rig
-                .app
-                .comments
-                .iter()
-                .find(|c| c.id == id)
-                .unwrap()
-                .resolved;
-            assert!(
-                rig.app
-                    .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
-            );
-            let after = rig
-                .app
-                .comments
-                .iter()
-                .find(|c| c.id == id)
-                .unwrap()
-                .resolved;
-            assert_ne!(
-                before, after,
-                "resolve chip should toggle, not open the card"
-            );
-        }
-
-        // Hit rect == painted rect: the sidebar body is painted inside a clip,
-        // so a card (and its delete / resolve chips) scrolled under the tab
-        // strip must not keep an invisible, clickable rect there.
-        // `apply_sidebar` picks the smallest containing rect, which is exactly
-        // how a hidden 24px delete button used to beat the "Contents" tab.
-        let mut rig = Rig::new();
-        // A short window so the seeded thread list overflows its body.
-        rig.app.rect = Rect::new(0.0, 0.0, 1280.0, 420.0);
-        rig.app.recompute_regions();
-        rig.app.sync_viewport_frame();
-        rig.app.show_sidebar = true;
-        rig.app.sidebar_tab = SidebarTab::Comments;
-        // Scroll far enough that the first card sits under the tab strip.
-        rig.app.sidebar_scroll = 180.0;
-        let hits = rig.draw_sidebar(&mut tr);
-        let body = rig.app.sidebar_body();
-        let tabs = rig.app.sidebar_tab_rects();
-        let body_hits: Vec<&(SidebarHit, Rect)> = hits
-            .iter()
-            .filter(|(h, _)| !matches!(h, SidebarHit::Tab(_)))
-            .collect();
-        assert!(
-            !body_hits.is_empty(),
-            "the scrolled list still exposes the cards that remain visible"
-        );
-        for (i, (_, r)) in body_hits.iter().enumerate() {
-            assert!(
-                r.x0 >= body.x0 - 0.01
-                    && r.x1 <= body.x1 + 0.01
-                    && r.y0 >= body.y0 - 0.01
-                    && r.y1 <= body.y1 + 0.01,
-                "body hit #{i} {r:?} escapes the painted body {body:?}"
-            );
-            assert!(
-                r.width() > 0.0 && r.height() > 0.0,
-                "body hit #{i} {r:?} is empty and should have been dropped"
-            );
-            for (tab, t) in &tabs {
-                let overlap = r.intersect(*t);
-                assert!(
-                    overlap.width() <= 0.0 || overlap.height() <= 0.0,
-                    "body hit #{i} {r:?} reaches into the {tab:?} tab {t:?}"
-                );
-            }
-        }
-
-        // Sidebar delete (×) buttons remove comments, then signatures.
-        let mut rig = Rig::new();
-        rig.app.sidebar_tab = SidebarTab::Comments;
-        rig.app.sidebar_hits = rig.draw_sidebar(&mut tr);
-        let del = rig.app.sidebar_hits.iter().find_map(|(h, r)| match h {
-            SidebarHit::DeleteComment(id) => Some((id.clone(), *r)),
-            _ => None,
-        });
-        if let Some((id, r)) = del {
-            let n = rig.app.comments.len();
-            assert!(
-                rig.app
-                    .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
-            );
-            assert_eq!(rig.app.comments.len(), n - 1);
-            assert!(!rig.app.comments.iter().any(|c| c.id == id));
-        }
-        rig.app.sidebar_tab = SidebarTab::Signatures;
-        rig.app.sidebar_hits = rig.draw_sidebar(&mut tr);
-        let dels = rig.app.sidebar_hits.iter().find_map(|(h, r)| match h {
-            SidebarHit::DeleteSignature(id) => Some((id.clone(), *r)),
-            _ => None,
-        });
-        if let Some((id, r)) = dels {
-            let n = rig.app.signatures.len();
-            assert!(
-                rig.app
-                    .apply_sidebar(centre(r), &mut Edits::lend(&mut rig.st.doc))
-            );
-            assert_eq!(rig.app.signatures.len(), n - 1);
-            assert!(!rig.app.signatures.iter().any(|s| s.id == id));
-        }
-
-        // Every sidebar tab and the find bar draw without panicking, and the
-        // bar exposes both option toggles.
-        let (mut app, _st) = sample_app();
-        let theme = ui::theme::Theme::dark();
-        app.open_search();
-        app.find_bar.set_query("the");
-        app.drive_find_bar();
-        app.recompute_regions();
-        for tab in [
-            SidebarTab::Comments,
-            SidebarTab::Outline,
-            SidebarTab::Signatures,
-        ] {
-            app.sidebar_tab = tab;
-            let mut scene = vello::Scene::new();
-            app.prepare_sidebar_scroll(&mut tr);
-            let mut er = Rect::ZERO;
-            let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
-            app.draw_find_bar(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            let node = ui::widget::Widget::accessibility(&app.find_bar).unwrap();
-            let names: Vec<String> = node
-                .children
-                .iter()
-                .filter_map(|child| child.name.clone())
-                .collect();
-            assert!(
-                names.iter().any(|n| n == "Whole word") && names.iter().any(|n| n == "Match case"),
-                "the find bar exposes both option toggles ({tab:?}): {names:?}"
-            );
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn find_strip_focus_selection_cut_and_ime_go_through_the_shared_input() {
-        let none = Modifiers::default();
-        let mut rig = Rig::new();
-        rig.key(ctrl_mods(), character("f"));
-        assert!(rig.app.search_active, "Ctrl+F opens the find bar");
-        assert!(
-            ui::widget::Widget::is_focused(&rig.app.find_bar),
-            "the query takes focus"
-        );
-        rig.key(none, Key::Named(NamedKey::Escape));
-        assert!(!rig.app.search_active, "Escape closes the find bar");
-        assert!(
-            !ui::widget::Widget::is_focused(&rig.app.find_bar),
-            "closing releases focus"
-        );
-
-        let mut rig = Rig::new();
-        rig.app.open_search();
-        for ch in ["s", "a", "n", "d"] {
-            rig.key(none, character(ch));
-        }
-        assert_eq!(rig.app.query(), "sand");
-        rig.key(ctrl_mods(), character("a"));
-        rig.key(ctrl_mods(), character("x"));
-        assert_eq!(rig.app.query(), "", "Ctrl+X cuts the selected query");
-        assert_eq!(
-            rig.app.match_count(),
-            0,
-            "derived matches refresh after cut"
-        );
-
-        let mut rig = Rig::new();
-        rig.app.open_search();
-        rig.feed(
-            none,
-            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
-        );
-        assert_eq!(rig.app.query(), "東京");
-    }
-
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn canvas_tools_highlight_note_pan_select_and_dismiss_through_the_event_path() {
-        // A highlight drag across page one, with the tool armed by its real
-        // toolbar button, adds an annotation to the shared document.
-        let mut rig = Rig::new();
-        rig.arm_via_toolbar(Tool::Highlight, "clicking the toolbar arms the tool");
-        let origin = rig.app.page_origins()[0];
-        let zoom = rig.app.zoom();
-        let before = rig.app.annotations.len();
-        rig.move_to((origin.x + 80.0 * zoom, origin.y + 200.0 * zoom));
-        rig.press();
-        rig.move_to((origin.x + 320.0 * zoom, origin.y + 214.0 * zoom));
-        rig.release();
-        assert!(
-            rig.app.annotations.len() > before,
-            "a highlight drag through handle_event adds an annotation"
-        );
-        assert!(
-            crate::markup::PdfMarkup::of(&rig.st.doc)
-                .list_annotations()
-                .len()
-                > before,
-            "and it landed in the shared document"
-        );
-
-        // The Note tool drops a note whose body is typed and committed through
-        // the real keyboard path.
-        let mut rig = Rig::new();
-        rig.arm_via_toolbar(Tool::Note, "clicking the toolbar arms the note tool");
-        let origin = rig.app.page_origins()[0];
-        let zoom = rig.app.zoom();
-        let comments_before = rig.app.comments.len();
-        rig.move_to((origin.x + 200.0 * zoom, origin.y + 260.0 * zoom));
-        rig.press();
-        assert_eq!(
-            rig.app.comments.len(),
-            comments_before + 1,
-            "placing a note opens a new thread"
-        );
-        assert!(
-            matches!(&rig.app.editing, Some(e) if matches!(e.target, EditTarget::CommentBody(_))),
-            "the note's body is focused for typing"
-        );
-        for ch in "Relay path".chars() {
-            let key = if ch == ' ' {
-                Key::Named(NamedKey::Space)
-            } else {
-                Key::Character(ch.to_string().into())
-            };
-            rig.key(Modifiers::default(), key);
-        }
-        rig.key(Modifiers::default(), Key::Named(NamedKey::Enter));
-        assert!(
-            rig.app.editing.is_none(),
-            "Enter commits and closes the editor"
-        );
-        let saved = crate::markup::PdfMarkup::of(&rig.st.doc).list_comments();
-        assert!(
-            saved.iter().any(|c| c.body == "Relay path"),
-            "the typed comment body landed in the shared document: {:?}",
-            saved.iter().map(|c| c.body.clone()).collect::<Vec<_>>()
-        );
-
-        // A Select-tool press-move-release past `PAN_SLOP` pans the canvas and
-        // selects nothing. The sample seeds a pre-selected note; clear it so we
-        // can prove a pan never triggers a click-selection of its own.
-        let mut rig = Rig::new();
-        rig.app.tool = Tool::Select;
-        rig.app.go_to_page(1);
-        rig.app.selected_anno = None;
-        let a = (
-            rig.app.canvas_rect.x0 + 200.0,
-            rig.app.canvas_rect.y0 + 300.0,
-        );
-        let sy0 = rig.app.scroll_y();
-        rig.move_to(a);
-        rig.press();
-        rig.move_to((a.0, a.1 - 200.0)); // drag up -> content scrolls down
-        rig.release();
-        assert!(
-            rig.app.scroll_y() > sy0 + 1.0,
-            "a Select drag pans the canvas ({sy0} -> {})",
-            rig.app.scroll_y()
-        );
-        assert!(
-            rig.app.selected_anno.is_none(),
-            "a pan does not select an annotation"
-        );
-
-        // A Select-tool press + release without moving, over an annotation,
-        // selects it.
-        let mut rig = Rig::new();
-        rig.app.tool = Tool::Select;
-        rig.app.go_to_page(1);
-        let hl = rig
-            .app
-            .annotations
-            .iter()
-            .find(|a| matches!(a.kind, AnnoKind::Markup { .. }))
-            .unwrap()
-            .clone();
-        let AnnoKind::Markup { quads, .. } = hl.kind else {
-            unreachable!()
-        };
-        let origin = rig.app.page_origins()[0];
-        let (cx, cy) = quads[0].center();
-        let zoom = rig.app.zoom();
-        rig.move_to((origin.x + cx * zoom, origin.y + cy * zoom));
-        rig.press();
-        rig.release();
-        assert_eq!(
-            rig.app.selected_anno.as_deref(),
-            Some(hl.id.as_str()),
-            "a Select click selects the annotation under it"
-        );
-
-        // On a narrow (overlay) window, clicking the canvas scrim beside an
-        // open panel dismisses the panels.
-        let mut app = crate::scenarios::sample_reader();
-        let mut st = crate::scenarios::sample_state();
-        app.sync_settled(&mut st.doc, &st.root);
-        // Narrow window -> overlay mode; panels auto-close on the transition.
-        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.reconcile_overlay();
-        app.recompute_regions();
-        app.sync_viewport_frame();
-        assert!(app.overlay_mode, "narrow window is in overlay mode");
-        // User opens the sidebar as a floating overlay over the canvas.
-        app.toggle_sidebar();
-        assert!(app.show_sidebar, "sidebar opened as an overlay");
-        let mut rig = Rig::with(app, st);
-        // Click the scrim: a canvas point on the far left, clear of the panel.
-        rig.move_to((rig.app.canvas_rect.x0 + 8.0, rig.app.canvas_rect.y0 + 40.0));
-        rig.press();
-        assert!(
-            !rig.app.show_sidebar && !rig.app.show_rail,
-            "clicking the scrim closes the overlay panels"
-        );
-    }
-
-    /// The inline editor: empty notes are discarded, the focused field's rect
-    /// is captured on draw, replies append, and Ctrl+C / Ctrl+X / Ctrl+V are
-    /// real clipboard chords, not typed characters.
-    ///
-    /// `#[serial]` because it *writes* and reads the shared system clipboard,
-    /// a shared, process-external resource.
-    #[test]
-    #[serial]
-    fn inline_editor_commits_replies_discards_empty_notes_and_handles_clipboard_chords() {
-        // Placing a note then committing without typing must not litter an
-        // empty marker + thread.
-        let (mut app, mut st) = sample_app();
-        let a0 = app.annotations.len();
-        let c0 = app.comments.len();
-        app.create_note(&mut Edits::lend(&mut st.doc), 1, (120.0, 200.0));
-        assert_eq!(app.comments.len(), c0 + 1);
-        assert!(app.editing.is_some());
-        app.commit_edit(&mut Edits::lend(&mut st.doc)); // committed empty
-        assert_eq!(app.comments.len(), c0, "empty note thread removed");
-        assert_eq!(app.annotations.len(), a0, "and its page marker removed");
-
-        let (mut app, _st) = sample_app();
-        app.sidebar_tab = SidebarTab::Comments;
-        let body = app.comments[0].body.clone();
-        let cid = app.comments[0].id.clone();
-        app.begin_edit(EditTarget::CommentBody(cid), &body);
-        let theme = ui::theme::Theme::dark();
-        let mut tr = ui::text_render::TextRenderer::new();
-        app.prepare_sidebar_scroll(&mut tr);
-        let mut scene = vello::Scene::new();
-        let mut er = Rect::ZERO;
-        let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
-        assert!(
-            er.area() > 1.0,
-            "the focused comment field's rect is captured"
-        );
-        // A click inside that rect must keep the edit alive; outside commits.
-        assert!(
-            app.edit_rect.area() < 1.0,
-            "edit_rect is only set by draw_all, not draw_sidebar"
-        );
-
-        // A reply composed into a seeded comment lands in its thread.
-        let (mut app, mut st) = sample_app();
-        let cid = app.comments[0].id.clone();
-        let replies_before = app.comments[0].replies.len();
-        app.begin_edit(EditTarget::Reply(cid.clone()), "");
-        app.editing.as_mut().unwrap().set_text("Looks good");
-        app.commit_edit(&mut Edits::lend(&mut st.doc));
-        let after = app.comments.iter().find(|c| c.id == cid).unwrap();
-        assert_eq!(
-            after.replies.len(),
-            replies_before + 1,
-            "reply landed in the thread"
-        );
-        assert_eq!(after.replies.last().unwrap().body, "Looks good");
-
-        // Select the whole field first (Ctrl+A) so copy/cut act on the text —
-        // the shared TextInput has a real selection model. The cut's
-        // field-clear is deterministic regardless of platform-clipboard
-        // availability.
-        let mut rig = Rig::new();
-        let cid = rig.app.comments[0].id.clone();
-        rig.app.begin_edit(EditTarget::CommentBody(cid), "hello");
-        rig.key(ctrl_mods(), character("a"));
-        // Ctrl+C is a clipboard chord, not a keystroke: the field stays "hello".
-        assert!(
-            rig.key(ctrl_mods(), character("c")),
-            "the editor consumes the chord"
-        );
-        assert_eq!(
-            rig.app.editing.as_ref().unwrap().text(),
-            "hello",
-            "Ctrl+C does not type a literal 'c'"
-        );
-        // Ctrl+X cuts the selection: the whole field clears.
-        rig.key(ctrl_mods(), character("x"));
-        assert_eq!(
-            rig.app.editing.as_ref().unwrap().text(),
-            "",
-            "Ctrl+X clears the selected field"
-        );
-
-        // Paste inserts the system clipboard's text at the caret via the real
-        // editor path. The expectation is derived from the clipboard's *actual*
-        // content at paste time (read back with no concurrent writer under
-        // `#[serial]`), not from the value we tried to copy, so the assertion
-        // is exact whether or not the platform clipboard is available: where it
-        // round-trips our write, the buffer becomes "AB" + that text at the
-        // caret; where it is unavailable (headless CI), paste is a safe no-op
-        // leaving "AB".
-        let mut rig = Rig::new();
-        let cid = rig.app.comments[0].id.clone();
-        rig.app.begin_edit(EditTarget::CommentBody(cid), "AB"); // caret at end
-        ui::clipboard_copy("XY");
-        rig.key(ctrl_mods(), character("v"));
-        let after = rig.app.editing.as_ref().unwrap().text();
-        let clip: String = ui::clipboard_paste()
-            .unwrap_or_default()
-            .chars()
-            .filter(|c| !c.is_control())
-            .collect();
-        if clip.is_empty() {
-            assert_eq!(after, "AB", "paste with no clipboard is a safe no-op");
-        } else {
-            assert_eq!(
-                after,
-                format!("AB{clip}"),
-                "Ctrl+V inserts the clipboard text at the caret"
-            );
-            // Where a working clipboard round-trips our own write, it is "XY".
-            if ui::clipboard_paste().as_deref() == Some("XY") {
-                assert_eq!(after, "ABXY", "the pasted text is exactly what was copied");
-            }
-        }
-    }
-
-    /// The Open affordance goes to the **host portal**, never an in-app
-    /// picker, under a recording host so no real dialog is spawned. A chosen
-    /// file loads through the per-frame drain in `sync`; a cancel is a no-op.
-    #[test]
-    #[serial(pdfium)]
-    fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
-        let (mut app, _) = sample_app();
-        let open = app.toolbar_layout().open;
-        assert!(
-            matches!(app.toolbar_hit(centre(open)), Some(ToolbarHit::Open)),
-            "the folder button hit-tests to the Open action"
-        );
-        let (services, recorder) = ui::host::HostServices::recording();
-        ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open);
-        });
-        assert!(
-            app.portal_rx.is_some(),
-            "Open routes to the host portal request path (not an in-app dialog)"
-        );
-        let requests = recorder.pick_requests();
-        assert_eq!(requests.len(), 1, "exactly one host chooser request");
-        assert_eq!(requests[0].title(), "Open a PDF");
-
-        // A portal-chosen file loads through the per-frame drain.
-        let mut app = PdfApp::empty();
-        let mut st = crate::scenarios::record_state();
-        app.sync_settled(&mut st.doc, &st.root);
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.recompute_regions();
-        app.sync_viewport_frame();
-        assert!(!app.has_document, "empty app starts with no document");
-        let path = std::path::PathBuf::from(concat!(env!("OUT_DIR"), "/sample.pdf"));
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
-        ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open);
-        });
-        app.sync_settled(&mut st.doc, &st.root);
-        assert!(
-            app.pending_open.is_some(),
-            "the frame drain hands the portal-chosen PDF to the worker"
-        );
-        super::tests::settle_until(&mut app, &mut st, |app| app.pending_open.is_none());
-        assert!(
-            app.has_document,
-            "a portal-chosen PDF loads through the frame drain"
-        );
-        assert_eq!(app.doc_name, "sample.pdf");
-        assert!(
-            app.portal_rx.is_none(),
-            "the portal channel clears after delivering"
-        );
-        assert!(app.doc.page_count() >= 1, "the loaded document has pages");
-
-        // A cancelled portal interaction leaves the current view intact.
-        let (mut app, mut st) = sample_app(); // sample document already loaded
-        let before = app.has_document;
-        let name_before = app.doc_name.clone();
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
-        ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open);
-        });
-        assert!(
-            app.portal_rx.is_some(),
-            "Open issued a host chooser request"
-        );
-        app.sync_settled(&mut st.doc, &st.root);
-        assert_eq!(
-            app.has_document, before,
-            "cancel does not change the open state"
-        );
-        assert_eq!(
-            app.doc_name, name_before,
-            "cancel keeps the current document"
-        );
-        assert!(
-            app.portal_rx.is_none(),
-            "the portal channel clears after a cancel"
-        );
-    }
-
-    /// A file dragged over the window rings the page rail as a drop target;
-    /// leaving the window without dropping clears it.
-    #[test]
-    fn a_file_dragged_in_arms_the_page_rail() {
-        let mut rig = Rig::new();
-        rig.app.has_document = true;
-        rig.app.show_rail = true;
-        let path = std::path::PathBuf::from("/tmp/pages.pdf");
-        rig.feed(Modifiers::default(), &WindowEvent::HoveredFile(path));
-        assert!(rig.app.page_sidebar.is_drop_target_armed());
-        rig.feed(Modifiers::default(), &WindowEvent::HoveredFileCancelled);
-        assert!(!rig.app.page_sidebar.is_drop_target_armed());
-    }
-
-    /// The sidebar / context-menu Delete on an annotation dispatches the
-    /// byte-identical `EncodedAction` the Ctrl+K palette's own delete spec
-    /// carries — one source of truth, proven on the real affordance path —
-    /// and the shared context menu deletes by pointer and by keyboard.
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
-        fn find<'a>(
-            resource: &'a tilo_actions::Resource,
-            id: &str,
-        ) -> Option<&'a tilo_actions::Resource> {
-            if resource.id.as_str() == id {
-                return Some(resource);
-            }
-            resource.children.iter().find_map(|child| find(child, id))
-        }
-        let (mut app, mut st) = sample_app();
-        let anno = app
-            .annotations
-            .first()
-            .expect("sample seeds annotations")
-            .clone();
-        let published = ui::tilo_resource::publish::<crate::PdfMarkup>(
-            "pdf.document",
-            "PDF",
-            &<crate::PdfMarkup as ui::tilo_resource::Resource>::read(&st.doc).unwrap(),
-        );
-        let want_id = ui::tilo_resource::items::item_resource_id::<crate::PdfMarkup>(
-            "annotations",
-            &ui::tilo_resource::Id::from_raw(anno.id.clone()),
-        );
-        let res = find(&published, &want_id).expect("the annotation is published as a resource");
-        assert!(
-            res.actions.iter().any(|a| a.id == "delete-annotation"),
-            "{:?}",
-            res.actions
-                .iter()
-                .map(|a| a.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        // The palette's delete, applied to a replica of the same document…
-        let mut palette = st.doc.fork();
-        crate::PdfMarkup::apply_to(
-            &mut palette,
-            crate::actions::delete_annotation_action(&anno.id),
-        );
-        // …and the real affordance path (Delete key / rail button / context menu).
-        app.delete_target(
-            &DeleteTarget::Annotation(anno.id.clone()),
-            &mut Edits::lend(&mut st.doc),
-        );
-        let ids = |annotations: Vec<Annotation>| -> Vec<String> {
-            annotations.into_iter().map(|a| a.id).collect()
-        };
-        let comment_ids = |comments: Vec<Comment>| -> Vec<String> {
-            comments.into_iter().map(|c| c.id).collect()
-        };
-        assert_eq!(
-            ids(crate::markup::PdfMarkup::of(&st.doc).list_annotations()),
-            ids(crate::markup::PdfMarkup::of(&palette).list_annotations()),
-            "one source of truth"
-        );
-        assert_eq!(
-            comment_ids(crate::markup::PdfMarkup::of(&st.doc).list_comments()),
-            comment_ids(crate::markup::PdfMarkup::of(&palette).list_comments())
-        );
-        assert!(
-            app.annotations.iter().all(|a| a.id != anno.id),
-            "the annotation was deleted via the dispatched action"
-        );
-
-        // The context menu's Delete row geometry comes from the shared widget.
-        let (mut app, _st) = sample_app();
-        app.context_menu = Some(ContextMenu::delete(
-            DeleteTarget::Annotation("anno".into()),
-            Rect::new(400.0, 400.0, 400.0, 400.0),
-            app.rect,
-        ));
-        let menu = app.context_menu.as_ref().unwrap();
-        assert!(
-            menu.widget
-                .item_rect(0)
-                .is_some_and(|rect| rect.area() > 1.0),
-            "the shared Delete row reports exact hit geometry"
-        );
-
-        // Right-click a placed annotation, then click the menu's Delete item.
-        let mut rig = Rig::new();
-        rig.app.go_to_page(1);
-        let note_id = rig.right_click_seeded_note();
-        let semantics = Widget::accessibility(&rig.app).expect("PDF semantic root");
-        let menu = semantics
-            .children
-            .iter()
-            .find(|node| node.role == ui::a11y::Role::Menu)
-            .expect("open shared menu is exposed");
-        assert_eq!(menu.children[0].name.as_deref(), Some("Delete"));
-        assert!(
-            !menu.children[0].state.focused,
-            "destructive-only menus require an explicit choice"
-        );
-        assert!(Widget::traps_focus(&rig.app));
-        assert!(Widget::modal_capture(&rig.app).is_some());
-        let item = rig
-            .app
-            .context_menu
-            .as_ref()
-            .and_then(|menu| menu.widget.item_rect(0))
-            .unwrap();
-        assert!(item.area() > 1.0, "the shared Delete row has hit bounds");
-        let before = rig.app.annotations.len();
-        let ic = centre(item);
-        rig.move_to((ic.x, ic.y));
-        rig.press();
-        assert!(
-            rig.app.context_menu.is_none(),
-            "the menu closes after the delete"
-        );
-        assert_eq!(
-            rig.app.annotations.len(),
-            before - 1,
-            "the targeted annotation is removed"
-        );
-        assert!(
-            !rig.app.annotations.iter().any(|a| a.id == note_id),
-            "specifically the right-clicked note"
-        );
-        assert!(
-            !crate::markup::PdfMarkup::of(&rig.st.doc)
-                .list_annotations()
-                .iter()
-                .any(|a| a.id == note_id),
-            "and it is gone from the shared document"
-        );
-
-        // ArrowDown + Enter deletes through the shared keyboard route.
-        let mut rig = Rig::new();
-        rig.app.go_to_page(1);
-        let note_id = rig.right_click_seeded_note();
-        rig.key(Modifiers::default(), Key::Named(NamedKey::ArrowDown));
-        rig.key(Modifiers::default(), Key::Named(NamedKey::Enter));
-        assert!(rig.app.context_menu.is_none());
-        assert!(
-            !rig.app
-                .annotations
-                .iter()
-                .any(|annotation| annotation.id == note_id)
-        );
-        assert!(
-            !crate::markup::PdfMarkup::of(&rig.st.doc)
-                .list_annotations()
-                .iter()
-                .any(|annotation| annotation.id == note_id)
-        );
-    }
-}
+#[path = "app_events_tests.rs"]
+mod event_tests;

@@ -1,7 +1,3 @@
-//! The agent over a peer-to-peer D-Bus link to a stand-in `NetworkManager`,
-//! answered by scripted sheets. The shell's tests drive the same agent into
-//! the sheet the compositor draws, in the shell's words.
-
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,8 +8,8 @@ use zeroize::Zeroizing;
 use super::service::{AGENT_IDENTIFIER, CAPABILITY_VPN_HINTS, SheetReply, Sheets};
 use super::store::{RoamingWifi, RoamingWifiSlot, SecretStore, StoreKey, VaultStore};
 use super::testing::{
-    HANG_BOUND, MemoryStore, WIFI_PATH, capture_logs, eap_connection, gsm_connection, link,
-    request_for, string_of, vpn_connection, wifi_psk_connection,
+    MemoryStore, WIFI_PATH, capture_logs, eap_connection, gsm_connection, link, request_for,
+    string_of, vpn_connection, wifi_psk_connection,
 };
 use super::*;
 use tilo_lock::MutexRecover as _;
@@ -47,9 +43,7 @@ impl ScriptedSheets {
 
     /// The first `count` sheets asked for, once they have been.
     async fn sheets_up(&self, count: usize) -> Vec<(String, SecretRequest)> {
-        let deadline = std::time::Instant::now()
-            .checked_add(HANG_BOUND)
-            .expect("the hang bound fits in an Instant");
+        let deadline = tilo_test_env::hang_deadline();
         while std::time::Instant::now() < deadline {
             let asked = self.asked();
             if asked.len() >= count {
@@ -539,6 +533,16 @@ fn a_sim_pin_is_asked_as_a_pin() {
     assert_eq!(request.title, Message::new("portal-network-sim-pin-title"));
     assert_eq!(request.fields[0].key, "pin");
     assert!(request.fields[0].masked);
+    assert_eq!(request.kind, RequestKind::SimPin);
+    // The SIM counts wrong PINs; a remembered one is never offered.
+    assert!(!request.remember_default);
+}
+
+#[test]
+fn a_mobile_password_is_asked_as_connection_secrets() {
+    let request = request_for(gsm_connection(), "gsm", &["password"]);
+    assert_eq!(request.kind, RequestKind::Secrets);
+    assert_eq!(request.title, Message::new("portal-network-mobile-title"));
 }
 
 /// The shell's catalogue is checked against [`MESSAGE_KEYS`]; a key the
@@ -669,7 +673,7 @@ async fn serving_from_the_session_runtime_never_blocks_a_runtime_thread() {
         "unix:path=/nonexistent/system-bus",
     );
     let served = tokio::time::timeout(
-        HANG_BOUND,
+        tilo_test_env::hang_bound(),
         service::serve(
             Arc::new(ScriptedSheets::default()),
             RoamingWifiSlot::default(),

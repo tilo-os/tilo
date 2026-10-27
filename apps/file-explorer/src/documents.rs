@@ -59,7 +59,23 @@ fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
             ui::format::memory(MAX_FILE_BYTES)
         ));
     }
-    std::fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))
+    std::fs::read(path).map_err(|error| read_failure(path, &error))
+}
+
+/// Why the file at `path` could not be read. A file whose bytes no device
+/// delivered failed because the device that keeps it is offline, not
+/// because anything is wrong with it, and is named unavailable rather than
+/// with the bare `EIO` its read ended in.
+fn read_failure(path: &Path, error: &std::io::Error) -> String {
+    if crate::model::read_availability(path).is_some_and(|availability| availability.unavailable())
+    {
+        format!(
+            "{} is unavailable until a device that keeps it is online",
+            path.display()
+        )
+    } else {
+        format!("cannot read {}: {error}", path.display())
+    }
 }
 
 /// The text of the PDF `bytes`, page by page.
@@ -145,6 +161,50 @@ pub fn bytes_for(name: &str, text: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_no_device_delivered_reads_as_unavailable_not_as_an_io_error() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("Report.pdf");
+        std::fs::write(&path, b"").unwrap();
+        let eio = std::io::Error::from_raw_os_error(5);
+        assert!(
+            read_failure(&path, &eio).starts_with("cannot read"),
+            "a file with no availability record keeps its error"
+        );
+        let availability = |last_error: Option<&str>| {
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
+                "current_version": "a0d4e23f-c7cb-4ded-a427-b32cf9da9342",
+                "residency": {"state": "not_resident"},
+                "transfer": {"phase": "idle", "progress": null, "last_error": last_error,
+                    "last_error_at_ms": last_error.map(|_| 12), "error_truncated": false},
+                "policy": "automatic",
+                "replicas": {"state": "unknown"},
+                "freshness": {"metadata_observed_at_ms": 10,
+                    "local_verified_at_ms": null, "replicas_observed_at_ms": null}
+            }))
+            .unwrap()
+        };
+        host_fs::attributes::set(&path, fs_protocol::AVAILABILITY_XATTR, &availability(None))
+            .unwrap();
+        assert!(read_failure(&path, &eio).starts_with("cannot read"));
+
+        host_fs::attributes::set(
+            &path,
+            fs_protocol::AVAILABILITY_XATTR,
+            &availability(Some(fs_protocol::NO_PEER_DELIVERED_ERROR)),
+        )
+        .unwrap();
+        let failure = read_failure(&path, &eio);
+        assert!(
+            failure.ends_with("is unavailable until a device that keeps it is online"),
+            "{failure}"
+        );
+        assert!(!failure.contains("os error"), "{failure}");
+    }
 
     #[test]
     fn text_is_written_as_given_and_reads_back() {

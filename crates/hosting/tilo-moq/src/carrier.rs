@@ -72,6 +72,9 @@ pub const STATUS_REVOKED: u8 = 2;
 pub const CLOSE_PREFACE: u32 = 0x7400;
 /// WebTransport close code for a refused grant.
 pub const CLOSE_DENIED: u32 = 0x7401;
+/// How long a refused session stays open for its client to read the
+/// refusal and close it.
+const DENIED_GRACE: Duration = Duration::from_secs(1);
 /// WebTransport close code for a session whose authority lapsed.
 pub const CLOSE_REVOKED: u32 = 0x7402;
 
@@ -147,17 +150,14 @@ pub async fn read_preface(
     .map_err(|_| PrefaceError::Timeout)?
 }
 
-/// Close a session whose preface was missing, malformed or late.
-pub fn refuse(session: &web_transport_quinn::Session) {
-    session.close(CLOSE_PREFACE, b"admission preface required");
+/// Close a session whose preface was missing, malformed or late, telling the
+/// client which in the close reason.
+pub fn refuse(session: &web_transport_quinn::Session, error: PrefaceError) {
+    session.close(CLOSE_PREFACE, error.to_string().as_bytes());
 }
 
 impl Admission {
     /// Tell the client it is admitted. Call only after origins are attached.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stream is gone.
     pub async fn admit(&mut self) -> Result<(), PrefaceError> {
         self.send
             .write_all(&[STATUS_ADMITTED])
@@ -172,6 +172,11 @@ impl Admission {
             let _ = self.send.finish();
         })
         .await;
+        // Some browsers (Firefox) drop a stream's unread bytes when the
+        // session closes under it, and report no close code either: the
+        // client closes the session once it read the refusal, or the host
+        // after a moment.
+        let _ = tokio::time::timeout(DENIED_GRACE, session.closed()).await;
         session.close(CLOSE_DENIED, b"admission denied");
     }
 
@@ -301,11 +306,6 @@ impl Drop for Connected {
 /// `publish` is announced and served to the host; broadcasts the host
 /// announces land in `subscribe`. The session's driver runs on the current
 /// Tokio runtime until the session closes; a revocation closes it.
-///
-/// # Errors
-///
-/// Returns [`AdmissionError`] when the grant is refused or the session fails
-/// before `moq-lite` is running.
 pub async fn start(
     transport: web_transport_quinn::Session,
     grant: &[u8],
@@ -427,13 +427,13 @@ where
     Fut: std::future::Future<Output = Option<(moq_net::Server, T)>>,
 {
     if transport.protocol() != Some(PROTOCOL) {
-        refuse(&transport);
+        refuse(&transport, PrefaceError::Malformed);
         return Err(PrefaceError::Malformed);
     }
     let (grant, mut admission) = match read_preface(&transport).await {
         Ok(preface) => preface,
         Err(error) => {
-            refuse(&transport);
+            refuse(&transport, error);
             return Err(error);
         }
     };
@@ -510,7 +510,6 @@ pub fn loopback() -> Result<Loopback, String> {
 pub struct DevIdentity {
     /// The self-signed certificate.
     pub chain: Vec<CertificateDer<'static>>,
-    /// Its private key.
     pub key: rustls::pki_types::PrivateKeyDer<'static>,
     /// SHA-256 of the certificate (lowercase hex).
     pub fingerprint: String,

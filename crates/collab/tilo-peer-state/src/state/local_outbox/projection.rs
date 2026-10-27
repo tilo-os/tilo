@@ -53,7 +53,6 @@ impl RecoveryHistory {
             .get_or_init(|| super::history::merged(self.keys.as_deref(), &self.parts));
         merged.as_deref().map_err(Clone::clone)
     }
-    /// Whether the merged history holds the change `hash`.
     fn contains(&self, hash: &automerge::ChangeHash) -> bool {
         self.parts
             .iter()
@@ -426,11 +425,6 @@ impl StatePeer {
 }
 impl PeerOutbox<'_> {
     /// Reserve capacity for recovering `originals` as the selected device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the originals are not authentic retained custody or exceed the
-    /// recovery budget.
     pub fn reserve_local_recovery(
         self,
         originals: &[NeighbourMsg],
@@ -443,10 +437,6 @@ impl PeerOutbox<'_> {
         self.peer.recovery_reservation(&obligations, selected)
     }
     /// Check that `projection` exactly recovers `originals`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the projection adds, drops or alters a recovered publication.
     pub fn validate_local_recovery_projection(
         self,
         originals: &[NeighbourMsg],
@@ -462,11 +452,6 @@ impl PeerOutbox<'_> {
             .validate_projection_history(&obligations, projection, selected)
     }
     /// Check that the selected device may publish `projection` at `now`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the projection is invalid or its author is not currently
-    /// authorized.
     pub fn authorize_local_recovery_projection(
         self,
         originals: &[NeighbourMsg],

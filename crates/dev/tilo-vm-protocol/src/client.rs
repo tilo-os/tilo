@@ -78,9 +78,6 @@ impl<R: BufRead, W: Write> Client<R, W> {
     }
 
     /// Send one request and wait for its response.
-    ///
-    /// # Errors
-    /// Transport failures, malformed responses and daemon-reported errors.
     pub fn call<C: Call>(&mut self, params: C) -> Result<C::Output, ClientError> {
         if !self.usable {
             return Err(ClientError::Closed);

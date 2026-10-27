@@ -221,29 +221,33 @@ mod tests {
         let _ = child.wait();
     }
 
+    /// Block on `watch` on its own thread, and fail as hung if nothing wakes
+    /// it within the shared hang bound.
+    fn woken(watch: ExitWatch, what: &str) {
+        let (woke, woken) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            watch.wait(None);
+            let _ = woke.send(());
+        });
+        tilo_test_env::recv(what, &woken);
+    }
+
     #[test]
     fn an_exit_or_a_ring_wakes_the_watch_at_once() {
-        let mut child = sleeper("5");
+        // The child outlives the test, so only the ring can wake the watch.
+        let mut child = sleeper("3600");
         let (watch, bell) = ExitWatch::new(&child);
         if !watch.watches_the_process() {
             let _ = child.kill();
             let _ = child.wait();
             return;
         }
-        let ringer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            bell.ring();
-        });
-        let began = Instant::now();
-        watch.wait(None);
-        assert!(began.elapsed() < Duration::from_secs(4), "the ring woke it");
-        ringer.join().unwrap();
+        bell.ring();
+        woken(watch, "the ring to wake the watch");
 
-        let mut quick = sleeper("0.2");
+        let mut quick = sleeper("0");
         let (watch, _bell) = ExitWatch::new(&quick);
-        let began = Instant::now();
-        watch.wait(None);
-        assert!(began.elapsed() < Duration::from_secs(4), "the exit woke it");
+        woken(watch, "the exit to wake the watch");
         // The watch did not reap it.
         assert!(quick.wait().unwrap().success());
         let _ = child.kill();

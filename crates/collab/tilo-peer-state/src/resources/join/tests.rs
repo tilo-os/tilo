@@ -32,6 +32,7 @@ fn responses() -> Vec<JoinTransportResponse> {
             protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
             cert: Box::new(peer.authority().clone()),
             revocations: vec![revocation],
+            successions: Vec::new(),
         },
         now,
     )
@@ -113,6 +114,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         revocations: peer.revocations(),
         records: peer.rows(),
         governance_messages: peer
+            .publication_mut()
             .bootstrap_messages(&governor, now)
             .unwrap()
             .iter()

@@ -23,12 +23,26 @@ continuity-other-device = your other device
 tab-closed-toast = Closed { $title }
 tab-closed-group-toast = Closed { $count } tabs
 tab-closed-undo = Undo
+workspace-first-reached = This is the first workspace
+workspace-last-reached = This is the last workspace
+strip-first-reached = This is the first strip
+strip-last-reached = This is the last strip
 workspace-deleted-toast = Deleted { $name }
 workspace-deleted-undo = Undo
+workspace-left-toast = Left { $name }
+# The name of a workspace joined before its host told its name.
+workspace-joined-name = Shared workspace
+# A workspace whose host no longer lets this person in.
+workspace-needs-join-again = Join again to take part
+# A workspace that was being joined when Tilo last closed.
+workspace-not-joined-yet = Not joined yet
+workspace-join-again-needs-invitation = Ask for a new invitation to join this workspace
+# A workspace kept for what was opened in it before it was joined to its room.
+workspace-kept-before-joining = { $name } before joining
 
 # Display layout sheet (Super+P)
 display-sheet-title = Display
-display-sheet-subtitle = Choose where your desktop appears. Super+P moves to the next choice.
+display-sheet-subtitle = Choose where your desktop appears.
 display-sheet-a11y-description = Up and Down move between choices, Enter applies the highlighted one, Super+P moves to the next layout, Escape closes.
 display-mode-extend = Extend
 display-mode-extend-detail = One desktop across every display
@@ -38,10 +52,9 @@ display-mode-builtin-only = Only this screen
 display-mode-builtin-only-detail = External displays turn off
 display-mode-external-only = Only external
 display-mode-external-only-detail = The built-in screen turns off
+display-sheet-one-display = No other display connected
+display-sheet-one-display-detail = Connect one with a cable, or choose a wireless display.
 display-mode-current = Current
-display-mode-unavailable-single = Connect another display to use this
-display-mode-unavailable-builtin = This device has no built-in screen
-display-mode-unavailable-mirror = These displays share no resolution
 display-confirm-title = Keep these display settings?
 display-confirm-countdown = Reverting in { $seconds } s
 display-confirm-applying = Applying…
@@ -70,9 +83,21 @@ wireless-credential-placeholder = PIN or receiver password
 wireless-credential-hint = Leave blank unless the receiver asks. Enter connects.
 wireless-scanning = Looking for displays…
 wireless-scanning-detail = Keep the receiver awake and on the same network.
-wireless-scan-failed = Couldn't scan
 wireless-none = No displays found
-wireless-none-detail = Try Refresh, or check Wi-Fi and the receiver's casting mode.
+wireless-none-detail = Check that Wi-Fi is on and the display is ready to cast.
+wireless-search-again = Search again
+wireless-try-again = Try again
+wireless-device-detail = { $protocol }, { $detail }
+wireless-unavailable = Wireless displays aren't available right now
+wireless-unavailable-detail = Try again in a moment.
+wireless-search-failed = Couldn't look for wireless displays
+wireless-search-failed-detail = Check that Wi-Fi is on, then try again.
+wireless-connect-failed = Couldn't connect
+wireless-connect-failed-detail = Check that the display is on and nearby, then try again.
+wireless-lost = The display disconnected
+wireless-lost-detail = Connect again when it's back.
+wireless-stop-failed = Couldn't stop sharing
+wireless-stop-failed-detail = Try again.
 wireless-connected = Connected
 wireless-connecting = Connecting…
 wireless-connect = Connect
@@ -89,7 +114,6 @@ overview-windows-title = Windows in this workspace
 overview-windows-description = Each strip of this workspace, top to bottom, with its windows in order. The arrow keys move between them and Enter goes to one. F2 renames the strip a window is on, and Alt with Up or Down moves that strip. Click or tap a window to go there, middle-click one to close it, or drag it onto another workspace to move it there.
 overview-window-move-failed = Can't move this window
 overview-strips-title = Strips in this workspace
-overview-strip-empty = No windows
 overview-strip-rename = Rename
 overview-strip-move-up = Move up
 overview-strip-move-down = Move down
@@ -178,6 +202,7 @@ shortcut-name-power-menu = Power menu
 shortcut-name-next-input-source = Next keyboard layout
 shortcut-name-emoji-picker = Emoji
 shortcut-name-say-something = Say something here
+shortcut-name-report-problem = Report a problem
 shortcut-name-ask-agent = Ask agent about selection
 
 # The groups desktop shortcuts are listed in
@@ -204,6 +229,7 @@ keyboard-shortcut-invalid = That shortcut is not supported.
 # Shortcut guide (F1)
 guide-title = Keyboard shortcuts
 guide-reopen-hint = Select a navigation shortcut to change it
+guide-chord-row = Change this shortcut, bound to { $chord }
 guide-done = Done
 guide-press-new-shortcut = Press a new shortcut for “{ $action }” · Esc cancels
 guide-message-esc-cancels = { $message } · Esc cancels
@@ -283,7 +309,7 @@ qs-wired-network = Wired network
 qs-cable-unplugged = Cable unplugged
 qs-bluetooth = Bluetooth
 qs-vpn = VPN
-qs-night-light = Night Light
+qs-night-light = Night light
 qs-airplane-mode = Airplane mode
 qs-mobile-data = Mobile data
 qs-do-not-disturb = Do Not Disturb
@@ -292,7 +318,6 @@ qs-rotation-lock = Rotation lock
 qs-rotation-locked = Locked
 qs-rotation-unlocked = Rotates with device
 qs-devices = Devices
-qs-devices-audio-and-media = Audio and media
 qs-devices-count = { $count ->
     [one] 1 device
    *[other] { $count } devices
@@ -341,6 +366,7 @@ qs-wifi-problem-hardware-switch = Off with the hardware switch
 qs-wifi-problem-stayed-off = Couldn't turn on
 qs-wifi-problem-failed = Couldn't change Wi-Fi
 qs-power-mode = Power mode
+qs-power-mode-unavailable = This computer offers no power modes
 qs-power = Power mode
 qs-lock-description = Lock the screen; apps keep running
 qs-notifications = Notifications
@@ -361,8 +387,8 @@ qs-battery-time-to-full = { $hours ->
 }
 qs-battery-settings = Battery settings
 qs-power-settings = Power settings
-qs-awake-app = { $app } keeps the screen on
-qs-awake-apps = { $count } apps keep the screen on
+qs-awake-app = { $app } is keeping the screen on
+qs-awake-apps = { $count } apps are keeping the screen on
 qs-wifi-settings = Wi-Fi settings
 qs-wifi-known = Known
 qs-wifi-password-for = Enter the network's password to join
@@ -374,6 +400,7 @@ qs-bluetooth-use-elsewhere = Use on another device
 qs-vpn-settings = VPN settings
 qs-vpn-details = VPN profiles
 qs-sound-output = Sound output
+qs-volume-mute = Mute
 qs-sound-settings = Sound settings
 qs-devices-settings = Devices & sync settings
 qs-clipboard-clear-history = Clear history
@@ -388,6 +415,8 @@ qs-bluetooth-device-paired-a11y = Paired; activate to connect
 
 # Quick Settings: VPN
 qs-vpn-empty = No VPN profiles. Add one in Settings.
+qs-device-vpn-through = Through { $device }
+qs-device-vpn-unnamed = your other device
 
 # Quick Settings failures, as notifications
 qs-action-failed-refreshing = { $error }. The current device state is being refreshed.
@@ -414,6 +443,7 @@ portal-shortcut-duplicate = Already assigned in this request. Choose another sho
 portal-shortcut-taken = Already used by { $app }. Choose another shortcut.
 portal-shortcut-another-app = another application
 portal-auth-heading = Administrator access
+portal-auth-as = As { $user }
 portal-auth-ended = Authentication ended unexpectedly.
 portal-auth-rejected = That password was not accepted.
 portal-grant-title = { $app } wants to use { $target }
@@ -425,8 +455,12 @@ portal-grant-once = Allow once
 portal-grant-session = Allow for this session
 portal-grant-always = Always allow in this workspace
 portal-grant-deny = Deny
+consent-notice-title = { $who } asks before: { $action }
+consent-notice-answer = Answer
 portal-confirm-title = { $who } wants to act for you
 portal-confirm-detail = { $risk }. Only this once; nothing is remembered.
+portal-confirm-scope = Allow for “{ $scope }”
+portal-confirm-scope-detail = { $risk }. Allow once lets only this through; allowing it for “{ $scope }” lets it happen there again without asking, until you revoke it in workspace settings.
 portal-moderation-report = Send this report once with your signing identity
 portal-moderation-appeal = Send this appeal once with your signing identity
 portal-moderation-destination = Destination
@@ -464,6 +498,7 @@ portal-chooser-no-file = There is no file to open.
 portal-chooser-session-closing = The session is closing.
 portal-chooser-other-workspace = The app's workspace is not the one on screen.
 portal-chooser-open-uri-undeclared = This app has not declared that it opens links.
+portal-chooser-save-disabled = Saving to disk is turned off on this device.
 portal-launcher-icon-compass = Tilo web compass
 portal-background-title = Allow background activity?
 portal-background-resource = The app may keep working after its window is closed.
@@ -490,6 +525,13 @@ portal-a11y-name = Name
 portal-a11y-answer = Answer
 portal-secret-required = Fill in every required field.
 portal-secret-wifi-length = A Wi-Fi password is 8 to 63 characters, or 64 hexadecimal digits.
+portal-sim-unlock = Unlock
+portal-sim-unlocking = Unlocking the SIM…
+portal-sim-unlock-failed = The SIM could not be unlocked. Try again.
+portal-sim-pin-wrong = That PIN is wrong.
+portal-sim-puk-title = SIM locked
+portal-sim-puk-lead = Too many wrong PINs locked the SIM for “{ $network }”. Enter the PUK from the SIM’s card holder and choose a new PIN.
+portal-sim-puk-wrong = That PUK is wrong.
 portal-network-heading = Network
 portal-network-this-network = this network
 portal-network-password = Password
@@ -523,6 +565,24 @@ topbar-clocks-notification-body = Time is up
 
 # Workspace activity: what a collaborator is doing right now
 host-activity-working-on = Working on { $target }
+host-activity-workspace-not-shown = Switch to this workspace to change its history.
+host-activity-action-feed = Read history
+host-activity-action-summary = Read what's new
+host-activity-action-replay = Replay layout
+host-activity-action-detail = Read changes
+host-activity-action-focus = Read what to show
+host-activity-action-mark-viewed = Mark as viewed
+host-activity-action-focused = Say what was shown
+host-activity-action-name = Name changes
+host-activity-action-split = Split work group
+host-activity-action-merge = Merge work groups
+host-activity-action-move-boundary = Move work session boundary
+host-activity-action-undo = Undo changes
+host-activity-action-restore = Restore to before
+host-activity-action-undo-run = Undo agent task
+host-activity-action-open = Open
+host-activity-action-choose-source = Choose morning source
+host-activity-action-source = Use morning source
 host-activity-working-in = Working in { $app }
 host-activity-editing = Editing shared content
 host-activity-organizing = Organizing shared content
@@ -535,13 +595,11 @@ host-activity-maintaining-history = Maintaining workspace history
 host-activity-reviewing-sensitive = Reviewing sensitive history
 
 # Screen sharing, as the People popover describes it
-host-exposure-kind-unidentified = unidentified session
-host-exposure-kind-agent = agent
-host-exposure-kind-person = person
+host-exposure-unidentified = { $handle }, an unidentified session,
 host-exposure-surface = a window
 host-exposure-window-in-workspace = { $window } in { $workspace }
-host-exposure-controls = { $name } ({ $kind }) controls { $target }
-host-exposure-views = { $name } ({ $kind }) views { $target }
+host-exposure-controls = { $name } controls { $target }
+host-exposure-views = { $name } views { $target }
 
 # Invitations
 host-invite-unavailable-title = Invite unavailable
@@ -556,6 +614,11 @@ host-source-app-actions = Application actions
 # App launches and session actions
 host-app-did-not-open-title = Application did not open
 host-app-did-not-open-body = The app started but did not create a window. Check the session log and try again.
+# A live view of a resource shared into a conversation, when it cannot show.
+live-view-not-installed = Its app isn't on this computer
+live-view-gone = It is no longer there
+live-view-did-not-open = It didn't open here
+live-view-closed = Its app closed
 host-session-action-failed = Session action failed
 host-session-lock-failed = Couldn’t lock the session. Check the session log and try again.
 host-session-logout-failed = Couldn’t log out. Check the session log and try again.
@@ -571,12 +634,16 @@ host-action-cannot-run = Can't run “{ $title }”
 host-action-failed-status = Couldn't run
 host-action-check-values = Check the values and try again.
 host-action-try-again = Something went wrong. Try again.
+host-action-confirm = This makes it less safe. Press Enter to confirm the change.
 uri-open-invalid = This link can't be opened.
 uri-open-no-settings = Settings isn't installed on this device.
 uri-open-no-handler = No installed app opens this kind of link.
+search-open-with-file-failed = { $app } couldn't open { $file }. { $reason }
+search-open-with-link-other-app = { $app } doesn't open links like { $link }.
 uri-open-no-workspace = Open a workspace, then try again.
 launchpad-action-unanswered = The app never answered
 host-search-placeholder = Search…
+host-app-chooser-placeholder = Choose an app to { $purpose }…
 host-search-in = Search in { $scope }…
 host-search-in-resource-fallback = resource
 host-search-scope-app = { $title } app
@@ -637,10 +704,6 @@ host-fabric-asked-tethering = Asked { $device } to share its connection
 host-fabric-asked-controller = Asked { $device } to allow this controller once for the focused app
 host-fabric-media-preparing = Preparing media for { $device }; this device stays active until it opens
 host-fabric-bluetooth-moving = Moving { $accessory } to { $device }; it stays here until that device confirms its pairing
-host-fabric-place-left = { $device } will sit left of this display after it confirms
-host-fabric-place-right = { $device } will sit right of this display after it confirms
-host-fabric-place-above = { $device } will sit above this display after it confirms
-host-fabric-place-below = { $device } will sit below this display after it confirms
 host-fabric-control-granted = { $device } may control this device for 15 minutes
 
 # Accessibility tree: workspace overlays
@@ -690,8 +753,6 @@ a11y-speaker-membership-description = This device plays in this speaker group; a
 a11y-remote-audio-play-here = Play { $media } here
 a11y-remote-audio-allow = Allow this remote audio once
 a11y-remote-audio-decline = Decline this remote audio
-a11y-remote-capture-allow = Allow this remote input once
-a11y-remote-capture-decline = Decline this remote input
 a11y-remote-capture-session = Remote { $input }
 a11y-remote-capture-provisioning = Preparing a private local endpoint
 a11y-remote-capture-unavailable = Remote { $input } unavailable
@@ -706,8 +767,6 @@ a11y-controller-use = Use { $controller }
 a11y-controller-allow = Allow this controller once
 a11y-controller-decline = Decline this controller
 a11y-media-handoff = { $media } on { $target }
-a11y-input-lower = Lower input level
-a11y-input-raise = Raise input level
 a11y-tethering-allow = Allow tethering once
 a11y-tethering-decline = Decline tethering
 a11y-control-revoke = Revoke control of this device
@@ -726,6 +785,22 @@ capability-system-info = See how busy this device is
 capability-processes = See the programs running on this device and end your own
 capability-process-commands = See the command lines of running programs
 capability-io-uring = Use the kernel's fast asynchronous input and output (io_uring)
+capability-desktop-control = Control your desktop beyond its workspace
+desktop-control-ask-terminal = Let this terminal control your desktop? It asks to: { $action }
+desktop-control-ask = Let { $app } control your desktop? It asks to: { $action }
+desktop-control-confirm-terminal = Let this terminal do this? { $action }
+desktop-control-confirm = Let { $app } do this? { $action }
+desktop-control-this-tab = This tab
+desktop-control-always = Always here
+desktop-control-allow = Allow
+desktop-control-deny = Don’t allow
+desktop-control-allows = { $app } can use your desktop beyond this workspace
+desktop-control-until-tab-closes = Until the tab that asked closes
+desktop-control-always-here = Always in this workspace
+desktop-control-stop = Stop
+desktop-control-locked = The desktop is locked.
+desktop-control-refused = You didn’t allow this.
+desktop-control-only-actions = From a terminal, the desktop only lists and does its actions.
 capability-network-hosts = Network access to { $hosts }
 capability-network = Network access
 
@@ -764,18 +839,14 @@ overview-join-workspace = Join a workspace…
 overview-leave-workspace = Leave
 # A site's workspace in the switcher: the community this computer follows, or
 # the site it came from.
-overview-site-community = Community · { $site }
+overview-site-community = { $site } community
 overview-site-web = On the web
+overview-two-facts = { $first }, { $second }
 overview-site-here = { $count ->
     [one] 1 person here
    *[other] { $count } people here
 }
 a11y-leave-workspace = Leave { $name }
-
-# Following someone's view
-follow-label = Following { $person }
-follow-stopped = Stopped following
-follow-stop = Stop
 
 # Search filter chips
 search-filter-all = All
@@ -855,8 +926,6 @@ qs-devices-audio-streaming = Streaming to { $peer }
 qs-devices-audio-interrupted = Interrupted on { $peer }
 qs-devices-audio-syncing = Syncing with { $peer }…
 qs-devices-audio-clock-failed = Can't keep time with { $peer }: { $reason }
-qs-devices-capture-share = Share this device's { $input }
-qs-devices-capture-requested = { $source } asked for this for { $app }
 qs-devices-capture-use-remote = Use remote { $input }
 qs-devices-capture-source-note = Choose a device below. It asks for approval there.
 qs-devices-capture-waiting-on = Waiting for approval on { $peer }
@@ -888,9 +957,6 @@ qs-devices-media-opened = Opened on destination
 qs-devices-media-failed = Couldn't move it: { $reason }
 qs-devices-media-playing = Playing
 qs-devices-media-paused = Paused
-qs-devices-output-default = In use
-qs-devices-output-route = Not in use
-qs-devices-output-bluetooth = Bluetooth { $codec }
 qs-devices-tether-requesting = Waiting for phone approval
 qs-devices-tether-consent = Allow once or decline
 qs-devices-tether-preparing = Starting this phone's hotspot
@@ -915,10 +981,6 @@ qs-devices-use-controller = Use the controller here
 qs-devices-use-input = Use this device's { $input }
 qs-devices-play-audio-here = Play the audio here
 qs-devices-no-audio = This device has no audio output
-qs-devices-place-this-left = Place this display to the left
-qs-devices-place-this-right = Place this display to the right
-qs-devices-place-this-above = Place this display above
-qs-devices-place-this-below = Place this display below
 
 # Quick Settings: clipboard history
 qs-clipboard-search-matches = { $count ->
@@ -948,6 +1010,7 @@ osd-pause = Pause
 osd-next-track = Next track
 osd-previous-track = Previous track
 osd-stop = Stop
+osd-feedback-pointing = Click what your feedback is about, or press Escape to cancel
 osd-percent = { $percent }%
 osd-off = Off
 osd-muted = Muted
@@ -988,6 +1051,7 @@ status-summary-empty = System status
 status-other-displays-a11y = Other displays
 
 # Notification toasts
+notification-sender-claims = App says: { $name }
 notification-source-caption = { $app } · From { $device }
 notification-app-host-apps = Host Apps
 notification-app-power = Power
@@ -1032,12 +1096,13 @@ collaborator-update-self-body = Your changes stay here until then.
 capture-live-alt = Live capture: { $title }
 capture-pinned-alt = Pinned screenshot: { $title }
 capture-pinned-preview-alt = Pinned screenshot preview: { $title }
-capture-live-selection = Live selection
-capture-live-app = Live app
+capture-live-window = Live window
 capture-live-screen = Live screen
-capture-live-areas = { $count ->
-    [one] { $count } live area
-   *[other] { $count } live areas
+capture-live-strip = Live strip
+capture-live-screen-region = Live screen region
+capture-live-screen-regions = { $count ->
+    [one] { $count } live screen region
+   *[other] { $count } live screen regions
 }
 capture-pinned-title = Screenshot ({ $width } × { $height })
 
@@ -1082,6 +1147,8 @@ launch-failed-window-lost = Its window stopped without being closed. Open it aga
 launch-window-lost-title = { $app } closed unexpectedly
 launch-failed-crashed = The app crashed before opening. Open Applications and try again.
 launch-unnamed-app = application
+app-open-unavailable-title = No app to open
+app-open-unavailable-body = { $app } asked to open an app that isn't on this computer or offered in the Store.
 launch-failure-title = Couldn't open { $app }
 
 # An app, or a process it started, that the system ended because memory ran out
@@ -1096,16 +1163,38 @@ memory-app-reopen = Reopen
 # Tab and window actions that could not be carried out
 window-duplicate-no-tab = There is no tab to duplicate.
 window-duplicate-foreign = Can't duplicate this window. Open another one from search.
+window-duplicate-single-window = This app has only one window.
 window-tab-action-no-tab = There is no tab to act on.
 window-tab-action-unknown-tab = That tab is no longer open.
 window-tab-action-only-tab = This is the window's only tab; there is nothing to split it from.
 window-tab-action-document-refused = Couldn't move the tab. Try again.
+window-tab-action-not-renamable = Only a window from outside Tilo running on this device can be renamed here.
 
 # Tab context menu, workspace toasts and placeholder tiles
 shell-workspace-renamed = Workspace renamed
 shell-tab-menu-close = Close tab
 shell-tab-menu-split-right = Split right
 shell-tab-menu-new-group = Move to new group
+shell-window-menu-reveal = Go to this window
+shell-window-menu-full-screen = Full screen
+shell-window-menu-exit-full-screen = Exit full screen
+shell-window-menu-maximize = Maximize
+shell-window-menu-restore = Restore
+shell-window-menu-width = Width
+shell-window-menu-width-half = Half width
+shell-window-menu-width-narrow = Narrow
+shell-window-menu-width-normal = Normal
+shell-window-menu-width-wide = Wide
+shell-window-menu-width-equal = Equalise all
+shell-window-menu-move-to-strip = Move to strip
+shell-window-menu-move-to-display = Move to display
+shell-window-menu-move-to-workspace = Move to workspace
+shell-window-menu-new-tab = New tab
+shell-window-menu-rename-tab = Rename tab
+shell-tab-rename-field = Tab name
+shell-window-menu-close-window = Close window
+shell-window-menu-unnamed-strip = Strip { $number }
+shell-window-menu-tell-agent = Tell an agent…
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Application unavailable
 shell-activity-title = Activity
@@ -1136,7 +1225,6 @@ lock-screen-locked-at-date = Session locked, { $clock }, { $date }
 lock-screen-password = Password
 lock-screen-help = Type your password and press Enter
 lock-screen-verifying-password = Verifying password
-lock-screen-prompt-elsewhere = Password prompt is on the primary display
 lock-screen-enter-password = Enter password
 lock-screen-verifying = Verifying…
 lock-screen-press-enter = Press Enter to unlock
@@ -1188,7 +1276,7 @@ portal-notification-open = Open
 portal-inhibit-unnamed-app = An app
 portal-capture-default-microphone = Default microphone
 portal-capture-default-camera = Default camera
-portal-capture-primary-display = Primary display
+portal-capture-primary-display = Main display
 portal-capture-system-audio = System audio
 
 # A speaker's role in a speaker group, as the $role of a sentence ("Join Living room as the right speaker")
@@ -1212,6 +1300,9 @@ speaker-group-summary-waiting = { $total ->
 remote-input-camera = camera
 remote-input-microphone = microphone
 remote-input-scanner = scanner
+remote-capture-consent-title = Share this device's { $input }?
+remote-capture-consent-detail = { $source } asks to use it for { $app }.
+remote-capture-consent-allow = Share
 
 
 # Why moving media to another device failed, as the $reason of a sentence
@@ -1234,8 +1325,8 @@ bluetooth-handoff-failure-rollback = source rollback failed
 
 # Search result kinds, as the filter chips and group headers name them
 search-kind-actions = Actions
-search-kind-applications = Applications
-search-kind-host-apps = Host Apps
+search-kind-applications = Apps
+search-group-in-the-store = In the Store
 search-kind-notes = Notes
 search-kind-records = Records
 search-kind-files = Files
@@ -1247,14 +1338,41 @@ search-kind-tabs = Tabs
 search-kind-window-groups = Window groups
 search-kind-answers = Answers
 search-kind-people = People
-search-group-recent = Recent
+
+# Search before anything is typed: the launcher
+search-launcher-happening-now = Happening now
+search-launcher-waiting-on-you = Waiting on you
+search-launcher-continue = Continue
+search-launcher-apps = Apps
+search-launcher-all-apps = All apps
+search-launcher-app-downloaded = Downloaded
+search-launcher-opened = Opened { $when }
+search-launcher-here-one = { $name } is here
+search-launcher-here-two = { $name } and { $other } are here
+search-launcher-here-many = { $count ->
+    [one] { $name } and 1 other are here
+   *[other] { $name } and { $count } others are here
+}
+search-launcher-with-one = With { $name }
+search-launcher-with-two = With { $name } and { $other }
+search-launcher-with-many = { $count ->
+    [one] With { $name } and 1 other
+   *[other] With { $name } and { $count } others
+}
+search-launcher-call = Call
+search-launcher-call-in = Call in { $channel }
+search-launcher-calling-now = Calling now
+search-launcher-waiting-unavailable = Open the app it came from to answer it.
+search-launcher-widen = Search every workspace
+search-launcher-outcome-open = Open
+search-launcher-outcome-join = Join
+search-launcher-outcome-answer = Answer
 
 # Search scopes
 search-scope-this-app = This app
 search-scope-workspace = Workspace
 search-scope-everywhere = Everywhere
 
-palette-show-all = Show all { $count }
 palette-value-on = On
 palette-value-off = Off
 palette-value-not-whole-number = Enter a whole number
@@ -1263,6 +1381,7 @@ palette-value-not-on-off = Enter on or off
 palette-value-not-understood = Enter a value this setting takes
 palette-open-tab-here = As a tab here
 palette-open-beside = Beside
+palette-open-new-window = New window
 palette-more-actions = More
 palette-open-containing-folder = Open containing folder
 palette-copy-path = Copy path
@@ -1302,6 +1421,8 @@ search-answer-bad-address = That address can’t be opened.
 search-people-invited = Invited
 search-action-emoji-picker = Choose an emoji
 search-action-emoji-picker-subtitle = Insert it where you’re typing
+search-action-next-input-source-subtitle = Type with the next layout in your list
+input-source-next-none = Add another keyboard layout in Settings to switch between them
 search-provider-host-apps = Host apps
 search-provider-app-actions = Application resources and actions
 
@@ -1324,7 +1445,6 @@ search-record-in-another-workspace = In another workspace
 search-files-no-app = No app on this desktop opens .{ $ext } documents.
 search-files-folder-failed = Files couldn’t open this folder.
 search-files-home = Home
-search-files-location = { $folder } · { $age }
 
 # Search: host apps
 
@@ -1342,8 +1462,7 @@ search-app-job-streaming = streaming
 search-app-job-succeeded = succeeded
 search-app-job-failed = failed
 search-app-job-cancelled = cancelled
-search-app-resource-contains = { $app } · contains resources
-search-app-action-launches = { $resource } · { $app } · launches application
+search-app-content-contains = contains resources
 
 # Search: session actions
 search-session-logout = Log out of Tilo
@@ -1372,6 +1491,8 @@ search-action-desktop-tour-open-subtitle = Revisit the three-minute introduction
 search-provider-device-local = Private windows
 search-action-feedback-open = Give feedback
 search-action-feedback-open-subtitle = Report a problem or an idea about the window in front; you review what is sent
+search-action-feedback-point = Give feedback on one part
+search-action-feedback-point-subtitle = Click the control the report is about; you review what is sent
 feedback-action-unavailable = Feedback is not available on this desktop
 search-action-overview-toggle = Show workspace overview
 search-action-overview-toggle-subtitle = Show all workspaces and their windows
@@ -1444,6 +1565,7 @@ search-action-bot-add-subtitle = Its host runs a bot from the directory here
 search-action-bot-remove = Remove a bot from this workspace…
 search-action-bot-remove-subtitle = Its host stops the bot and removes it
 bots-add-failed = The bot wasn't added
+workspace-settings-agent-model-option = { $model } from { $provider }
 bots-remove-failed = The bot wasn't removed
 search-action-pair-device = Pair a new device
 search-action-pair-device-subtitle = Make your phone, a browser or another computer one of your devices
@@ -1455,6 +1577,8 @@ search-action-tab-duplicate = Duplicate this tab
 search-action-tab-duplicate-subtitle = Open a second instance of the focused app beside it
 search-action-tab-close = Close this tab
 search-action-tab-close-subtitle = Close the focused tab; its window closes with it if it was the last
+search-action-tab-rename = Rename this tab
+search-action-tab-rename-subtitle = Give the focused window a name of your own; an empty name gives back its own title
 search-action-tab-reopen = Reopen closed tab
 search-action-tab-reopen-subtitle = Bring back the tab closed most recently in this workspace, where it was
 search-action-tab-open-beside = Open an app in a new tab
@@ -1463,6 +1587,9 @@ search-action-tab-split-right = Split this tab to the right
 search-action-tab-split-right-subtitle = Move the focused tab into a new window group beside its current one
 search-action-tab-move-to-new-group = Move this tab to a new group
 search-action-tab-move-to-new-group-subtitle = Move the focused tab into a new window group at the end of its strip
+search-action-tab-move-to-workspace = Move this tab to another workspace
+search-action-tab-move-to-workspace-subtitle = Take the focused tab to another of your workspaces
+search-action-tab-move-to-workspace-missing = There is no such workspace.
 search-action-window-focus-previous = Focus the previous window
 search-action-window-focus-previous-subtitle = Move focus to the window on the left along the strip
 search-action-window-focus-next = Focus the next window
@@ -1491,12 +1618,24 @@ search-action-group-move-to-strip-previous = Move window group to the strip abov
 search-action-group-move-to-strip-previous-subtitle = Carry the focused window group into the strip above
 search-action-group-move-to-strip-next = Move window group to the strip below
 search-action-group-move-to-strip-next-subtitle = Carry the focused window group into the strip below
+search-action-group-move-to-strip = Move window group to a strip…
+search-action-group-move-to-strip-subtitle = Carry the focused window group into the strip you choose
+search-action-group-close = Close this window
+search-action-group-close-subtitle = Close the focused window and all its tabs
+search-action-window-none = There is no window to act on.
+search-action-window-unchanged = Nothing changed. The window is already there.
+search-action-window-unchanged-edge = Nothing changed. The window can't move any further that way.
+search-action-window-unchanged-maximized = Nothing changed. The window is already maximized.
+search-action-window-unchanged-restored = Nothing changed. The window isn't maximized.
+search-action-window-unchanged-narrowest = Nothing changed. The window is already as narrow as it goes.
+search-action-window-unchanged-widest = Nothing changed. The window is already as wide as it goes.
+search-action-tab-unchanged-edge = Nothing changed. There is no window on that side to move the tab into.
 search-action-group-move-to-display-previous = Move window group to the previous display
 search-action-group-move-to-display-previous-subtitle = Move the focused window group onto the display to the left
 search-action-group-move-to-display-next = Move window group to the next display
 search-action-group-move-to-display-next-subtitle = Move the focused window group onto the display to the right
-search-action-group-maximize = Maximize or restore the window group
-search-action-group-maximize-subtitle = Make the focused window group fill its display, or restore it
+search-action-group-maximize = Maximize the window group
+search-action-group-maximize-subtitle = Make the focused window group fill its display
 search-action-group-restore = Restore the window group
 search-action-group-restore-subtitle = Return the focused maximized window group to its place in the strip
 search-action-group-fullscreen = Full screen or restore
@@ -1511,18 +1650,25 @@ search-action-tab-move-to-group-next = Move this tab into the group on the right
 search-action-tab-move-to-group-next-subtitle = Move the focused tab into the neighbouring window group on the right
 search-action-notifications-dnd-toggle = Do Not Disturb
 search-action-notifications-dnd-toggle-subtitle = Hold notification banners until you’re back
+search-action-notifications-open = Show notifications
+search-action-notifications-open-subtitle = Read, answer or clear the notifications you missed
+search-action-notifications-clear = Clear all notifications
+search-action-notifications-clear-subtitle = Empty the notification list; you can bring them back for eight seconds
+search-action-notifications-clear-undo = Bring back cleared notifications
+search-action-notifications-clear-undo-subtitle = Restore the notifications you just cleared, in their order
 search-action-appearance-theme-dark = Dark theme
 search-action-appearance-theme-dark-subtitle = Dark chrome and apps
 search-action-appearance-theme-light = Light theme
 search-action-appearance-theme-light-subtitle = Light chrome and apps
-search-action-appearance-high-contrast = High contrast
-search-action-appearance-high-contrast-subtitle = More contrast in the current theme
 search-action-appearance-language = Change language
 search-action-appearance-language-subtitle = The desktop’s language, in Settings
 search-action-identity-connect = Add an existing identity
 search-action-identity-connect-subtitle = Import identity credentials and use them in this workspace
 search-action-identity-select = Use identity in this workspace
 search-action-identity-select-subtitle = Select one of the identities already connected to this device
+search-action-identity-unnamed = Unnamed identity
+search-action-identity-none = No identity is connected to this device yet
+search-action-identity-setup = Set up your identity
 search-action-identity-device-pair-resource = Nearby device pairing
 search-action-identity-device-pair-discover = Find a nearby device to pair
 search-action-identity-device-pair-discover-subtitle = Look on this network for a new device or home server waiting to join
@@ -1530,6 +1676,10 @@ search-action-identity-device-pair-approve = Approve a nearby device
 search-action-identity-device-pair-approve-subtitle = Let the device found nearby join once both screens show the same code
 search-action-identity-device-pair-reject = Reject a nearby device
 search-action-identity-device-pair-reject-subtitle = Forget a device found nearby and stop approving it
+search-action-identity-device-pair-asking = Devices asking to be you
+search-action-identity-device-pair-asking-subtitle = The new devices your other devices found, waiting for you to approve them here
+search-action-identity-device-pair-answer = Answer a device asking to be you
+search-action-identity-device-pair-answer-subtitle = Approve or decline a device another of your devices found, as its notification does
 search-action-identity-device-revoke = Revoke an identity device
 search-action-identity-device-revoke-subtitle = Permanently stop trusting a lost, retired, or compromised device
 search-action-identity-resource = Your identities
@@ -1596,8 +1746,11 @@ search-action-quick-settings-airplane-mode-set-enabled-subtitle = Turn every wir
 search-action-search-provider-set = Enable or disable a search source
 search-action-search-provider-set-subtitle = Customize which providers appear in search and agent results
 search-action-workspace-switch-subtitle = Go to this workspace and its windows
+search-action-archived-restore = Restore { $workspace }
+search-action-archived-restore-subtitle = Bring this archived workspace back to your workspaces
+search-action-archived-delete = Delete archived { $workspace }
+search-action-archived-delete-subtitle = Delete this archived workspace from this computer
 search-action-activity-catch-up-subtitle = What others changed since you last looked
-search-action-activity-tasks-subtitle = Work assigned to people and agents here
 search-action-activity-explore-subtitle = Every change here, by person, app and time
 search-action-activity-replay-subtitle = Step through how this workspace changed
 search-action-quick-settings-unavailable = Quick Settings service is unavailable
@@ -1627,6 +1780,7 @@ search-action-permission-roles-subtitle = Manage reusable least-privilege worksp
 
 # Search: what a shell action did
 search-action-tab-close-failed = Can't close this tab
+search-action-tab-rename-failed = Can't rename this tab
 search-action-tab-split-failed = Can't split this tab
 search-action-device-list-copied = Device list copied
 search-action-enrollment-copied = Device setup code copied. It expires in { $minutes } min.
@@ -1645,7 +1799,8 @@ search-catalogue-installed-provider = App actions
 search-catalogue-source-tilo = Tilo app
 search-catalogue-source-flathub = Flathub
 search-catalogue-document-subtitle = New in { $app }
-search-catalogue-show-in-store = Show in App Store
+search-catalogue-install-and-open = Install and open
+search-catalogue-not-for-this-device = Not available for this device
 search-catalogue-store-failed = Couldn't open the App Store for { $app }
 search-catalogue-installing = Installing { $app }
 search-catalogue-installing-body = It opens when it's installed.
@@ -1653,6 +1808,8 @@ search-catalogue-actions-unavailable = Actions aren't available yet. Try again i
 
 # Search: continuity actions across your certified devices
 search-continuity-certified-device = certified device
+search-continuity-window-to = Show this window on { $device }
+search-continuity-window-to-subtitle = Brings it to the front there; it stays open here
 search-continuity-play-on = Play { $source } on { $target }
 search-continuity-wake-device = Wake a device
 search-continuity-wake-device-subtitle = Sends a wake-up signal from a device on its network
@@ -1719,6 +1876,13 @@ search-continuity-unlock-deny = Keep { $device } locked (code { $code })
 search-continuity-unlock-subtitle = It restarted and is asking to open its encrypted disk
 search-continuity-device-remove = Remove { $device } from your devices
 search-continuity-device-remove-subtitle = It can no longer act for you or unlock its disk through your devices
+search-continuity-vpn-through = Send this device's traffic through { $device }
+search-continuity-vpn-stop = Stop sending traffic through { $device }
+search-continuity-vpn-subtitle = Your devices as a VPN
+search-continuity-vpn-exit-stop = Stop { $device } using this device's connection
+search-continuity-vpn-exit-subtitle = Sharing this device's connection with your other devices
+search-continuity-vpn-share = Share this device's connection with your other devices
+search-continuity-vpn-unshare = Stop sharing this device's connection
 device-unlock-error-not-pending = That unlock request is no longer waiting
 device-unlock-error-cannot-remove = This device cannot remove that device
 device-unlock-error-no-identity = This device does not hold your identity
@@ -1765,11 +1929,11 @@ onboarding-host-intro-body = You are already signed in to this computer. Before 
 
 # First-login identity setup: no recovery service
 onboarding-no-recovery-title = If you lose this device without a backup, this identity is gone
-onboarding-no-recovery-point-no-service = There is no recovery service. No backup code and no recovery phrase can recreate this identity.
-onboarding-no-recovery-point-backup = The encrypted backup offered next is the only recovery path. Keep its file and passphrase separately. Without it, a lost or wiped device needs a new identity; workspace data remains, but the old identity is no longer yours.
+onboarding-no-recovery-point-no-service = There is no recovery service. Nobody, including Tilo, can reset or recreate this identity for you.
+onboarding-no-recovery-point-backup = Next, write down a recovery key or save an encrypted backup. Either one brings this identity back. Without one, a lost or wiped device needs a new identity; workspace data remains, but the old identity is no longer yours.
 onboarding-acknowledgement = I understand that losing this device without a backup means losing this identity.
 onboarding-protect-title = Protect your Tilo identity
-onboarding-protect-message = There is no reset button. Create an encrypted portable backup after this step.
+onboarding-protect-message = There is no reset button. Write down a recovery key or save an encrypted backup after this step.
 onboarding-create-failed = Your identity was not created
 onboarding-create-failed-title = Your identity could not be created
 onboarding-create-failed-message = Nothing was written and the desktop is still protected. Go back and try again after checking storage and permissions.
@@ -1805,6 +1969,41 @@ onboarding-existing-body = Choose how to bring the identity you already use to t
 onboarding-choice-nearby = Connect a nearby device
 onboarding-choice-nearby-detail = Approve this computer from a device that already has your identity
 onboarding-choice-restore = Restore from a backup
+onboarding-choice-recovery-key = Enter your recovery key
+onboarding-choice-recovery-key-detail = Type the 24 words you wrote down
+onboarding-recovery-title = Bring your identity back to this computer
+onboarding-recovery-eyebrow = Identity recovery
+onboarding-recovery-body = Tilo couldn't open this computer's copy of your identity and changed nothing. Your workspaces and other devices are fine. If your keyring is locked, unlock it, then choose Try again.
+onboarding-recovery-body-keyring = Tilo couldn't reach the keyring that holds your identity's key and changed nothing. Unlock the keyring, then choose Try again.
+onboarding-recovery-body-missing = This computer's copy of your identity is missing. Tilo changed nothing, and your workspaces and other devices are fine.
+onboarding-recovery-body-invalid = Tilo couldn't verify this computer's copy of your identity and changed nothing. If the date or time is wrong, fix it, then choose Try again.
+onboarding-recovery-identity = This computer's identity: { $fingerprint }
+onboarding-backup-recovery-key = Write down a recovery key
+onboarding-backup-recovery-key-detail = 24 words on paper bring this identity back. No file or passphrase needed.
+onboarding-recovery-key-copy-title = Write down your recovery key
+onboarding-recovery-key-copy-body = Write them on paper, in order. Anyone with these words can become you, so don't photograph them.
+onboarding-recovery-key-confirm = To check your copy, type words { $first }, { $second } and { $third }.
+onboarding-recovery-key-word = Word { $position }
+onboarding-recovery-key-confirm-button = I wrote it down
+onboarding-recovery-key-written = Recovery key written down
+onboarding-recovery-key-written-detail = With those 24 words you can bring this identity back on any computer.
+onboarding-recovery-key-title = Enter your recovery key
+onboarding-recovery-key-body = Type or paste the 24 words in order. Capital letters, line breaks and numbering don't matter.
+onboarding-recovery-key-field = Recovery key
+onboarding-recovery-key-placeholder = word1 word2 word3 …
+onboarding-recovery-key-progress = { $count } of { $total } words
+onboarding-recovery-key-count = A recovery key has 24 words; this has { $found }.
+onboarding-recovery-key-unknown-word = Word { $position } isn't a recovery-key word. Check its spelling.
+onboarding-recovery-key-typo = Word { $position }, “{ $word }”, isn't a recovery-key word. Check its spelling.
+onboarding-recovery-key-suggestion = Word { $position }, “{ $word }”, isn't a recovery-key word. Did you mean “{ $suggestion }”?
+onboarding-recovery-key-checksum = These words don't form a recovery key. One is probably mistyped or out of order.
+onboarding-recovery-key-ready = Recovery key for identity { $fingerprint }
+onboarding-recovery-key-ready-detail = Choose Restore identity to use it on this computer.
+onboarding-recovery-key-matches = It matches this computer's identity. Choose Restore identity to bring it back.
+onboarding-recovery-key-different = These words belong to a different identity
+onboarding-recovery-key-different-detail = They restore { $found }, but this computer belongs to { $expected }, so check that you're using this computer's recovery key.
+onboarding-recovery-key-restoring = Restoring your identity…
+onboarding-recovery-key-failed = Couldn't restore from this recovery key
 onboarding-choice-restore-detail = Open an encrypted identity backup file
 onboarding-restore-title = Restore from a backup
 onboarding-restore-body = Choose the encrypted backup you saved from Tilo and enter its passphrase.
@@ -1814,7 +2013,7 @@ onboarding-restore-file-label = Backup file
 onboarding-connect-recovery-title = Your existing identity needs recovery
 onboarding-connect-recovery-message = Your existing identity couldn't be verified. Unlock the desktop keyring and try again, or restore an encrypted backup. Your identity stays as it is until then.
 onboarding-connect-failed = That identity could not be connected
-onboarding-connect-retry-keyring = Retry keyring
+onboarding-connect-retry-keyring = Try again
 onboarding-connect-browse = Browse
 onboarding-connect-file = Identity backup file
 onboarding-connect-file-placeholder = Choose an encrypted backup or legacy identity JSON
@@ -1860,7 +2059,7 @@ onboarding-nearby-connected = Connected. Your workspaces will appear automatical
 # First-login identity setup: encrypted backup
 onboarding-backup-title = Back up your Tilo identity
 onboarding-backup-identity-created = Your local identity was created
-onboarding-backup-explanation = Save an encrypted copy somewhere else. Keep its file and passphrase separately; together they restore this identity.
+onboarding-backup-explanation = Or save an encrypted backup file and keep it apart from its passphrase.
 onboarding-backup-passphrase = New backup passphrase
 onboarding-backup-passphrase-placeholder = At least 12 characters, long and unique
 onboarding-backup-confirmation = Confirm new backup passphrase
@@ -1868,7 +2067,7 @@ onboarding-backup-confirmation-placeholder = Confirm passphrase
 onboarding-backup-save = Choose location and save backup…
 onboarding-backup-save-another = Save another copy
 onboarding-backup-save-action = Save an encrypted backup
-onboarding-backup-skip-acknowledgement = I understand that without an encrypted backup, losing this device means losing this identity.
+onboarding-backup-skip-acknowledgement = I understand that without a recovery key or backup, losing this device means losing this identity.
 onboarding-backup-continue-without = Continue without backup
 onboarding-backup-failed = The backup was not saved
 onboarding-backup-verified = Encrypted backup verified
@@ -1939,7 +2138,7 @@ onboarding-tour-search-title = Search
 onboarding-tour-search-title-mac = Search
 onboarding-tour-search-keys = Super+Space
 onboarding-tour-search-keys-mac = Command+K or Option+Space
-onboarding-tour-search-body = Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.
+onboarding-tour-search-body = Open it without typing to see your tabs, apps and actions; type to find any app, file, setting, or action.
 onboarding-tour-overview-title = Overview
 onboarding-tour-overview-keys = Super+Tab or pinch
 onboarding-tour-overview-body = See every workspace and window group, then use Up, Down, and Enter to choose one.
@@ -1976,36 +2175,46 @@ onboarding-tour-check-title = Check work and recover mistakes
 onboarding-tour-check-body = Open Activity to catch up, compare versions, or undo only the change that went wrong.
 
 # Workspace invite card: inviting someone, joining with an invite, pending invites
-peer-sync-title-review = Review invitation
 peer-sync-title-invite = Invite someone
+peer-sync-title-invite-to = Invite to { $workspace }
+peer-sync-who-label = Who
+peer-sync-who-placeholder = Name, or paste their Tilo identity
+peer-sync-create-invite = Create invite
+peer-sync-identity-row = Their Tilo identity
+peer-sync-identity-remove = Remove
+peer-sync-link-note-anyone = Anyone who opens the link can join. It stops working after an hour.
+peer-sync-copy-invite = Copy invite
+peer-sync-revoke = Revoke
+peer-sync-done = Done
+peer-sync-code-hint = They see this code when they open the invite
+peer-sync-code-check = Check that the person who invited you sees the same code
+peer-sync-paste-link = Paste link
+peer-sync-join-field-label = Link or site
+peer-sync-who-heading = Who
+peer-sync-who-person = A person
+peer-sync-who-link = Anyone with the link
+peer-sync-connecting = This computer is still connecting. You can invite people in a moment.
+peer-sync-offline = Invites need the network to be on. Check that this computer is online and you're signed in, then try again.
 peer-sync-title-join = Join a workspace
 peer-sync-title-workspace-invite = Workspace invite
 peer-sync-paste-token = Type a site, or paste a workspace or invitation link
 peer-sync-identity-copied = Copied
-peer-sync-invite-failed = Invite failed: { $error }
-peer-sync-identity-unavailable = Identity unavailable: { $error }
+peer-sync-invite-failed = The invite couldn't be created. Try again in a moment.
+peer-sync-identity-unavailable = Your Tilo identity couldn't be copied. Try again in a moment.
 peer-sync-joined-room = Joined room { $room }
-peer-sync-join-refused = Refused: { $error }
-peer-sync-pending-unavailable = Pending invites unavailable: { $error }
-peer-sync-resend-failed = Could not resend: { $error }
-peer-sync-invite-canceled = Invite canceled
-peer-sync-cancel-failed = Could not cancel: { $error }
+peer-sync-join-refused = This link couldn't be joined. Check that it's complete and hasn't expired, or ask for a new one.
+peer-sync-resend-failed = The invite couldn't be copied again. Try again in a moment.
+peer-sync-invite-canceled = Invite revoked
+peer-sync-cancel-failed = The invite couldn't be revoked. Try again in a moment.
 peer-sync-unexpected-response = Unexpected collaboration response
 peer-sync-working = Working…
-peer-sync-using-verified-identity = Using verified identity: { $verification }
-peer-sync-ask-for-identity = Ask them to send their Tilo identity, then paste it here.
 peer-sync-name-required = Say who this invite is for
-peer-sync-identity-required = Paste their Tilo identity key so the invite cannot be stolen
-peer-sync-recipient-required = Choose a verified person or paste their Tilo identity so the invite cannot be stolen
+peer-sync-identity-required = Paste the Tilo identity they sent you, so only they can use the invite.
 peer-sync-copied = Copied
 peer-sync-copy-failed = Could not copy to the clipboard
 peer-sync-joining = Joining…
-peer-sync-pasted = Pasted
 peer-sync-clipboard-empty = Nothing on the clipboard to paste
-peer-sync-identity-bound = Identity bound: { $fingerprint }
-peer-sync-identity-invalid = That is not a Tilo identity key (expected 64 hexadecimal characters)
 peer-sync-pending-heading = Pending invites
-peer-sync-pending-heading-paged = Pending invites ({ $first }–{ $last } of { $total })
 peer-sync-role-expires = { $role }, { $unit ->
     [now] expires in moments
     [seconds] expires in { $count ->
@@ -2049,32 +2258,10 @@ peer-sync-role-commenter = Commenter
 peer-sync-role-editor = Editor
 peer-sync-copy = Copy
 peer-sync-cancel = Cancel
-peer-sync-back = Back
 peer-sync-join = Join
-peer-sync-paste = Paste
-peer-sync-create-invite = Create invite
-peer-sync-review-invite = Review invite
-peer-sync-paste-identity = Paste new identity
 peer-sync-copy-identity = Copy my identity
-peer-sync-recipient-heading = Who are you inviting?
-peer-sync-recipient-new = Someone new
 peer-sync-role-heading = Access
-peer-sync-review-workspace = Workspace: { $workspace }
-peer-sync-review-workspace-this = Workspace: this workspace
-peer-sync-review-inviter = Invited by: { $inviter }
-peer-sync-review-inviter-you = Invited by: You
-peer-sync-review-recipient = Recipient: { $name }
-peer-sync-review-recipient-unnamed = Recipient: Someone
-peer-sync-review-role = Access: { $role }
-peer-sync-review-identity = Bound identity: { $fingerprint }
-peer-sync-review-identity-missing = Bound identity: missing
-peer-sync-review-note = Only this identity can redeem the signed one-hour invite.
-peer-sync-selected-person = Selected person
-peer-sync-name-new-person = Name the new person
-peer-sync-name-placeholder = Their name
-peer-sync-recipient-hint = Choose a verified person or paste their Tilo identity.
-peer-sync-identity-remembered = Verified remembered identity: { $fingerprint }
-peer-sync-identity-new = New identity bound: { $fingerprint }
+peer-sync-recipient-hint = Choose someone you know, or paste the Tilo identity they sent you.
 peer-sync-invite-anyone = Anyone with this invite
 peer-sync-invite-received = Invite received
 peer-sync-paste-invite-hint = Like tilo.coffee, or a link someone sent you.
@@ -2090,11 +2277,25 @@ peer-sync-token-incomplete = Not a site or link yet
 # Leftover shell notices: document opens, host app provenance, quiet status, collaboration
 doc-open-failed = Couldn't open { $name }
 doc-open-unnamed-file = File
-host-app-source-flatpak = Flatpak
-host-app-source-system = System
+app-kind-flatpak = Flatpak
+app-kind-appimage = AppImage
+app-kind-program = Program
+app-kind-system = System
+downloaded-app-missing = Can't find this app
+downloaded-app-locate = Locate
+downloaded-app-locate-path = Enter the full path of the app's file, starting with /
+downloaded-app-add-title = Add { $name } to apps?
+downloaded-app-add-action = Add to apps
+downloaded-app-add-decline = Don't add
+downloaded-app-move = Move to Applications
+downloaded-app-move-detail = Keeps it in the Applications folder in your files
+downloaded-app-add-row = Add { $name } to apps
+search-provider-downloaded-programs = Downloaded programs
 new-document-unavailable = New document unavailable: { $error }
 collab-unavailable-title = Collaboration unavailable
 collab-unavailable-body = Apps in this session cannot share edits. { $reason }
+identity-clock-wrong-title = This device's clock is wrong
+identity-clock-wrong-body = Your identity is safe. Your workspaces connect when the date and time are right.
 quiet-status-dnd = Do Not Disturb
 quiet-status-dnd-presenting = Do Not Disturb while presenting
 quiet-status-dnd-sharing = Do Not Disturb while sharing
@@ -2121,16 +2322,6 @@ overview-items-shared = { $count ->
 }
 
 # Windows and documents the shell hosts
-shell-window-restoring = Restoring this window…
-shell-window-opening = Opening…
-shell-window-opening-slow = Opening { $app }… taking longer than usual
-shell-window-installing-slow = Installing { $app }… taking longer than usual
-shell-window-installing-of = Installing { $app }… { $received } of { $total }
-shell-window-installing-received = Installing { $app }… { $received }
-shell-window-updating = Updating { $app }…
-shell-window-updating-slow = Updating { $app }… taking longer than usual
-shell-window-updating-of = Updating { $app }… { $received } of { $total }
-shell-window-updating-received = Updating { $app }… { $received }
 peer-window-not-installed = Not installed on this device.
 peer-window-install = Install { $app }
 peer-window-installing = Installing { $app }…
@@ -2225,6 +2416,20 @@ search-action-workspace-create = Create a workspace
 search-action-workspace-create-subtitle = Create and switch to a new empty workspace
 search-action-workspace-create-default-name = Untitled
 search-action-workspace-create-invalid-name = Enter a workspace name of 1 to 120 characters without control characters.
+search-action-workspace-rename = Rename this workspace
+search-action-workspace-rename-subtitle = Give the workspace on screen a new name
+search-action-workspace-rename-refused = Only the people who run this workspace can rename it.
+search-action-workspace-delete = Delete this workspace
+search-action-workspace-delete-subtitle = Delete the workspace on screen here and on your other devices
+search-action-workspace-delete-confirm = Delete workspace
+search-action-workspace-delete-last = This is your only workspace. Create another one before deleting it.
+search-action-workspace-delete-failed = Couldn't delete this workspace. Try again.
+search-action-workspace-move-earlier = Move this workspace up
+search-action-workspace-move-earlier-subtitle = Move the workspace on screen one place earlier in your list
+search-action-workspace-move-later = Move this workspace down
+search-action-workspace-move-later-subtitle = Move the workspace on screen one place later in your list
+search-action-workspace-move-first = This workspace is already first in your list.
+search-action-workspace-move-last = This workspace is already last in your list.
 search-action-strip-create = Create a strip
 search-action-strip-create-subtitle = Add a named strip to this workspace and go to it
 search-action-strip-create-default-name = New strip
@@ -2234,6 +2439,10 @@ search-action-strip-invalid-name = Enter a strip name of 1 to 48 characters with
 search-action-strip-rename-missing = There is no such strip in this workspace.
 search-action-strip-move = Move a strip
 search-action-strip-move-subtitle = Put a strip of this workspace higher or lower in its stack
+search-action-strip-remove = Remove a strip
+search-action-strip-remove-subtitle = Remove an empty strip from this workspace
+search-action-strip-remove-not-empty = This strip still has windows. Move or close them first
+search-action-strip-remove-last = A workspace keeps at least one strip
 
 # Shortcut steps that ask before they run, and keyboard capture
 shortcut-step-confirm-detail = “{ $shortcut }” wants to { $action } on { $resource }.
@@ -2265,7 +2474,6 @@ pad-map-dial-brightness = Brightness
 
 # Peer views, opening documents, identity backup and invitations
 peer-view-surface-title = Peer surface #{ $id }
-peer-view-awaiting = Awaiting peer surface…
 doc-open-no-handler = no app on this desktop opens .{ $ext } files ({ $name })
 doc-open-no-file-type = { $name } has no file type to open it by
 doc-open-no-workspace = there is no active workspace to open it in
@@ -2302,6 +2510,11 @@ capture-recording-audio-lost = Recording continues without audio
 capture-recording-audio-lost-body = { $path } · { $reason }
 capture-recent-audio-lost = Recent capture continues without audio
 capture-failed = Capture failed
+capture-failed-body = Try again, or capture the screen instead.
+capture-uncapturable-window = This window can't be captured. Try capturing the screen.
+capture-uncapturable-selection = This selection can't be captured. Try capturing the screen.
+capture-uncapturable-strip = The strip can't be captured. Try capturing the screen.
+capture-uncapturable-screen = The screen can't be captured right now. Try again.
 settings-not-saved-title = Setting not saved
 settings-not-saved-body = A change to your settings couldn't be saved, so it went back to what it was. Check that the disk has free space, then try again.
 idle-inhibit-unnamed-app = An app
@@ -2388,10 +2601,6 @@ speaker-calibration-failed = Could not measure { $speaker }: { $reason }
 speaker-calibration-cancelled = Calibration was cancelled
 
 # Wireless display projection
-projection-service-unavailable-detail = Projection service is unavailable ({ $error }). Check the Tilo projector service.
-projection-mode-unsupported = { $device } does not support { $mode } mode
-projection-service-unavailable = Projection service is unavailable
-projection-service-stopped = Projection service stopped
 
 # Why an action on your devices failed, as its notification says
 device-fabric-error-nearby-busy = Nearby Send staging is busy; retry when another transfer finishes
@@ -2646,19 +2855,6 @@ device-fabric-error-layout-changed = Display layout changed or unavailable. Refr
 search-action-activity-acknowledge = Mark activity as seen
 search-action-activity-acknowledge-subtitle = What you’ve looked at stops counting as new
 search-action-activity-acknowledge-keywords = catch up read seen review acknowledgment
-search-action-activity-tasks = Review workspace goals and agent work
-search-action-catch-up-tasks-subtitle = Inspect waiting tasks, results and action history
-search-action-activity-tasks-keywords = activity catch up goals attention decision waiting agent tasks
-host-history-task-refused-title = Task could not be changed
-host-history-task-refused-body = The workspace did not accept this change. Any draft is kept; check your identity and workspace permissions before retrying.
-
-task-review-inspect = Inspect task evidence
-task-review-steer = Change task instructions
-task-review-cancel = Cancel task run
-task-review-retry = Retry task
-task-review-status = Inspect task review availability
-task-review-provider = Task review
-
 dictation-vocabulary-changed = Dictation stopped because your personal dictionary changed. Start a new session to use the updated words.
 dictation-vocabulary-draft-retained = Your personal dictionary changed. Dictation has stopped. You can copy the latest draft; it may be incomplete.
 
@@ -2666,15 +2862,11 @@ shell-launch-registry-unavailable = The app process registry is unavailable.
 shell-launch-writer-still-closing = The previous app is still closing. Try opening it again after it finishes.
 
 shell-window-restore-interrupted = This saved window did not finish reopening.
+shell-window-open-failed = This window didn’t open
 shell-window-retry = Reopen
 shell-window-app-missing = { $app } isn't on this computer
 shell-window-get-app = Get { $app }
 shell-window-close = Close
-task-review-approve = Approve task run
-
-# Shared activity label used by native task-review rendering.
-activity-task-approve-run = Approve run
-
 device-fabric-error-input-operation-unavailable = Input control is busy. Try again.
 device-fabric-error-input-decline-unavailable = Your declined input devices could not be read.
 device-fabric-error-input-decline-save-failed = Input control was revoked, but the decline could not be saved. Automatic input remains disabled.
@@ -2683,39 +2875,23 @@ device-fabric-error-input-sequence-exhausted = Input sequencing is exhausted. Re
 
 device-fabric-error-input-cleanup-pending = Previous input is still being released. Try again.
 
-search-provider-system-settings = System settings
 setting-never = Never
 setting-minutes = { $minutes ->
         [one] 1 minute
        *[other] { $minutes } minutes
     }
-setting-on = On
-setting-off = Off
 setting-mode-dark = Dark
 setting-mode-light = Light
 setting-mode-automatic = Automatic
 setting-mode-unset = Follows the theme
 setting-get = { $name }: { $value }
 setting-get-detail = Read the current value and the values that are allowed
-setting-power-lock-after = Lock screen after
-setting-power-lock-after-words = lock screen automatically sperren sperrzeit
-setting-power-blank-after = Turn screen off after
-setting-power-blank-after-words = screen off blank display dark bildschirm ausschalten abschalten dunkel
-setting-power-suspend-after = Suspend after
-setting-power-suspend-after-words = sleep standby energy saving bereitschaft ruhezustand energiesparen
-setting-power-auto-suspend = Suspend when idle
-setting-power-auto-suspend-words = automatic sleep standby inactivity automatisch inaktiv
-setting-display-scale = Display scale
-setting-display-scale-words = scaling zoom size bildschirm skalierung groesse
-setting-display-refresh-rate = Display refresh rate
-setting-display-refresh-rate-words = hertz frequency frames bildwiederholrate bildfrequenz
-setting-keyboard-layout = Keyboard layout
-setting-keyboard-layout-words = language input source keymap tastatur sprache belegung
-setting-appearance-mode = Appearance mode
-setting-appearance-mode-words = dark light night theme design dunkel hell nacht
+setting-confirm-weaker = Make it less safe
+setting-suspend-plugged-in = While plugged in
+setting-suspend-on-battery = On battery
 display-remote-heading = Your other screens
 display-remote-title = Display { $number }: { $name } on { $device }
-display-remote-row = { $status } · { $title }
+display-remote-row = { $title }, { $status }
 display-remote-row-description = Include this screen in your shared display layout
 display-remote-offline = Offline
 display-remote-offline-excluded = Offline, not in the layout
@@ -2760,10 +2936,13 @@ onboarding-prepared-title = Welcome home
 onboarding-prepared-body = Enter the password you chose while preparing Tilo to bring your identity and accounts here.
 
 onboarding-prepared-password = Your password
+onboarding-prepared-peer-waiting = Waiting for your other computer to offer the transfer.
+onboarding-prepared-peer-code = Your other computer shows { $code }. Check that both screens show the same code, then approve this computer there.
 
 onboarding-prepared-working = Bringing your setup here…
 
 onboarding-prepared-failed = We couldn’t bring your prepared setup here. Try again.
+onboarding-prepared-other-person = This computer already has another person’s identity, so the prepared setup was left untouched. Restore that person’s own backup or connect their account instead.
 
 onboarding-migration-title = Bring your things into Tilo
 
@@ -2839,7 +3018,7 @@ onboarding-backup-unavailable = A personal identity backup can’t be created on
 
 onboarding-ready-welcome = Welcome to Tilo
 
-onboarding-ready-next = Make yourself at home, or take a quick tour first.
+onboarding-ready-next = The desktop is ready. Start with anything: open an app, search for what you need, or invite someone to a workspace.
 
 onboarding-migration-cleanup-pending = Your things are ready in Tilo. Some temporary files still need to be removed.
 
@@ -2879,6 +3058,9 @@ file-picker-filename = Set the save filename
 file-picker-replace = Replace the existing file
 file-picker-keep-existing = Keep the existing file
 file-picker-next-filter = Change the file filter
+file-picker-search = Search for files to choose
+file-picker-recent = Show recently chosen files
+file-picker-query-param = What to search for: a name or words in the file. An empty query goes back to the folder.
 file-picker-page-param = Catalogue page, starting at zero.
 file-picker-state-param = Exact state token returned by the current chooser inspection.
 file-picker-entry-param = Exact entry identity returned by the current chooser inspection.
@@ -2897,6 +3079,10 @@ portal-chooser-file-grant-unavailable = The selected file is no longer available
 
 ## The agent composer: one field to ask an agent or tell it what to do
 agent-quick-title = { $agent }
+agent-quick-agent = Agent
+agent-quick-model = Model
+agent-quick-model-own = The agent's own model
+agent-quick-model-of = { $model } ({ $provider })
 agent-quick-about-selection = About your selection in { $app }: “{ $selection }”
 agent-quick-about-window = About { $app }; nothing is selected
 agent-quick-accessible-name = Agent composer
@@ -2923,10 +3109,6 @@ agent-quick-steer-saved = Sent. { $agent } will take it into account.
 agent-quick-steer-applied = { $agent } is following your note.
 agent-quick-run-starting = Starting: { $task }
 agent-quick-run-working = Working on it: { $task }
-agent-quick-run-waiting = Waiting for your confirmation
-agent-quick-draft-confirm = Allow
-agent-quick-draft-edit = Edit
-agent-quick-draft-decline = Decline
 agent-quick-run-done = { $agent } is done.
 agent-quick-run-attention = { $agent } stopped and needs you.
 agent-quick-run-stopped = Stopped.
@@ -2995,6 +3177,7 @@ search-kw-tab-open-beside = open app, new tab, launch, start app
 search-kw-tab-menu = tab menu, context menu, right click
 search-kw-tab-drag-cancel = cancel drag, abort drag
 search-kw-tab-close = close, close tab, close window, quit, exit, kill
+search-kw-tab-rename = rename, name tab, tab name, title, label
 search-kw-tab-reopen = reopen, undo close, restore tab, closed tab, bring back
 search-kw-tab-split-right = split, side by side, tile, split view, split screen
 search-kw-window-focus-previous = previous window, switch window, alt tab, back
@@ -3025,9 +3208,11 @@ search-kw-strip-focus-nth = strip number, go to strip, jump to strip, switch str
 search-kw-group-restore = restore, unmaximize, un-maximize, normal size, shrink window
 search-kw-tab-move-to-new-group = new group, detach, pop out, separate tab
 search-kw-notifications-dnd-toggle = do not disturb, dnd, silence, mute notifications, focus mode, quiet, notifications off
+search-kw-notifications-open = notifications, notification centre, notification center, missed notifications, alerts, messages i missed
+search-kw-notifications-clear = clear notifications, dismiss all, remove notifications, delete notifications, empty notifications
+search-kw-notifications-clear-undo = undo clear, restore notifications, undo clear all, get notifications back
 search-kw-appearance-theme-dark = dark mode, dark theme, night mode, dark, black theme, night
 search-kw-appearance-theme-light = light mode, light theme, day mode, bright, light, white theme
-search-kw-appearance-high-contrast = high contrast, contrast, accessibility, visibility
 search-kw-appearance-language = language, locale, translate, german, english, deutsch, switch language
 search-kw-record-bring = add item, import, bring, add document, attach
 search-kw-shortcut-help-toggle = help, shortcuts, keyboard shortcuts, cheat sheet, hotkeys, keys, guide
@@ -3055,6 +3240,21 @@ storage-low-body = { $free } left for { $volume }. Delete large downloads or ope
 storage-full-title = Storage is full
 storage-full-body = Only { $free } left for { $volume }. New files and changes may not be saved until you free space. Everything else keeps working.
 
+graphics-app-name = Graphics
+graphics-stopped-title = Graphics stopped responding
+graphics-stopped-body = Everything keeps working, but may be slower until you restart the computer.
+crash-notice-app-name = Desktop
+crash-notice-title = The desktop restarted
+crash-notice-froze-body = It stopped responding at { $time }. A record of what happened stays on this computer.
+crash-notice-crashed-body = It stopped unexpectedly at { $time }. A record of what happened stays on this computer.
+crash-notice-stopped-title = The computer restarted
+crash-notice-stopped-body = It stopped unexpectedly before this start. A record of what happened stays on this computer.
+host-crash-records-resource = Problems
+host-crash-records-list = List problems
+host-crash-records-list-detail = When the desktop or the computer stopped, newest first, without the details.
+host-crash-records-read = Read a problem's details
+host-crash-records-read-detail = Everything the record of one problem holds. It stays on this computer.
+
 ## Desk widgets
 
 desk-team-title = In this workspace
@@ -3072,12 +3272,12 @@ drives-unnamed-external = External drive
 drives-consent-title = Open { $drive }?
 drives-consent-title-unnamed-internal = Open this drive in your computer?
 drives-consent-title-unnamed-external = Open this external drive?
-drives-consent-internal = Inside this computer · { $size }
-drives-consent-external = External drive · { $size }
-drives-consent-detail = Choose how to open this drive.
-drives-consent-detail-known = You opened this drive safely before. Choose how to open it this time.
-drives-consent-open-safely = Open safely: for drives you don't know. A bit slower.
-drives-consent-open = Open: fastest. For your own drives.
+drives-consent-internal = Inside this computer, { $size }
+drives-consent-external = External drive, { $size }
+drives-consent-detail = Open it safely unless it's your own drive. Safely is a little slower.
+drives-consent-detail-known = You opened this drive safely before.
+drives-consent-open-safely = Open safely
+drives-consent-open = Open at full speed
 drives-consent-remember = Remember this drive and don't ask again
 drives-consent-remember-safely = Remember this drive and suggest opening it safely
 drives-consent-confirm = Open
@@ -3094,16 +3294,10 @@ workspace-menu-new = New workspace
 workspace-menu-join = Join a workspace…
 workspace-menu-report = Report workspace…
 workspace-menu-leave = Leave workspace
+workspace-menu-join-again = Join again
 profile-action-identities = Your identities
 profile-action-backup = Back up your identity…
 profile-action-pair-device = Pair a device…
-# Strip switcher: the strip ribbon grown into a list of strips and workspaces.
-strip-switcher-a11y = Strips
-strip-switcher-unnamed = Strip { $number }
-strip-switcher-new-strip = New strip
-strip-switcher-rename-named = Rename { $name }
-strip-switcher-name-placeholder = Strip name
-strip-switcher-refused = Couldn't change the strip
 
 
 
@@ -3111,6 +3305,7 @@ strip-switcher-refused = Couldn't change the strip
 pairing-title = Pair a new device
 pairing-making = Making a link…
 pairing-waiting = Waiting for your new device…
+pairing-failed = The pairing link couldn't be made. Check that this computer is online, then try again.
 pairing-copy-link = Copy link
 pairing-done-button = Done
 pairing-copied = Copied
@@ -3126,6 +3321,7 @@ pairing-done = { $device } is now one of your devices.
 pairing-asks-title = A device asks to be you
 pairing-asks-body = { $device }{ $from }, { $when }. Approving lets it act as you. Only approve if it shows { $code }.
 pairing-asks-from = {" "}({ $country })
+pairing-asks-via = {" "}(found by your { $device })
 pairing-approve = Approve { $code }
 pairing-decline = Decline
 pairing-answer-failed = The device was not answered: { $error }
@@ -3185,25 +3381,61 @@ directory-reported = Workspace reported
 directory-reported-body = The people who run it have been told.
 directory-report-failed = The report didn't go through
 directory-moved = { $name } moved to your host, so anyone can find and join it.
-arrival-others = { $count ->
-    [one] and 1 other
-   *[other] and { $count } others
-}
 
 # Cursor chat: a short message beside your pointer, shown to everyone in that window.
 cursor-chat-placeholder = Say something
 cursor-chat-you = You
 
-# The line under the top bar when you arrive where people are, or someone waves.
-presence-arrival-intro-where = People here see your name, your colour and where you are in this workspace
-presence-arrival-intro-here = People here see your name and your colour, never where you are
-presence-arrival-intro-nothing = People here don't see you, and you don't see their pointers
-presence-arrival-change = Change
+# The top bar's status when you arrive in a public workspace the first time:
+# what its people see of you, in a few words.
+presence-arrival-seen-where = They see where you are
+presence-arrival-seen-here = They see you're here
+presence-arrival-seen-nothing = They don't see you
 profile-name-not-saved = Your name wasn’t saved
 profile-action-say-something = Say something here
 cursor-chat-no-window = Point at a shared window to say something
 cursor-chat-no-window-body = What you say shows beside your pointer to the people in that window
 people-join-call-failed = Couldn’t join the call
 people-join-call-not-taken = Join it from Chat
-presence-wave-notice = { $person } waves
 presence-someone = Someone
+
+# The person's apps: uninstalling, and taking a part of the system off them
+app-list-app-name = Apps
+app-list-gone-title = App not found
+app-list-gone-body = It's no longer in your apps.
+app-list-no-home = Your home folder can't be found.
+app-list-no-app-tool = Tilo apps can't be uninstalled on this computer.
+app-list-invalid-flatpak = That isn't a Flatpak this computer can uninstall.
+app-list-invalid-entry = That entry can't be taken off your apps.
+app-list-uninstalled = Uninstalled { $name }
+app-list-uninstalled-data = Its data is in the Trash.
+app-list-uninstalled-file = Its file is in the Trash.
+app-list-uninstalled-files = All its copies are in the Trash.
+app-list-removed = Removed { $name } from your apps
+app-list-uninstall-failed = Couldn't uninstall { $name }
+app-list-remove-failed = Couldn't remove { $name } from your apps
+app-uninstall-title = Uninstall { $name }?
+app-uninstall-action = Uninstall
+app-uninstall-cancel = Cancel
+app-uninstall-remove-data = Remove its data
+app-uninstall-remove-data-detail = Your settings and saved files go to the Trash, where you can restore them.
+app-uninstall-device-body = It's removed for everyone on this computer.
+app-uninstall-file-body = { $count ->
+    [one] Its file goes to the Trash, where you can restore it.
+   *[other] All { $count } copies go to the Trash, where you can restore them.
+}
+app-uninstall-home-folder = Home
+app-uninstall-tilo-body = Your documents stay in your workspaces.
+app-uninstall-remove-title = Remove { $name } from apps?
+app-uninstall-remove-action = Remove from apps
+app-uninstall-remove-body = It's part of the system, so it stays on this computer and no longer shows in your apps.
+search-action-app-uninstall = Uninstall an app…
+search-action-app-uninstall-subtitle = You confirm first
+search-action-app-remove-from-apps = Remove an app from your apps…
+search-action-app-remove-from-apps-subtitle = It stays on this computer
+search-apps-uninstall = Uninstall
+search-apps-remove-from-apps = Remove from apps
+
+# The pinned people overlay's message box
+people-overlay-messages-unavailable = Direct messages are not available right now
+people-overlay-message-failed = The message to { $name } did not go

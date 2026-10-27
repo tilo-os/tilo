@@ -242,6 +242,27 @@ mod tests {
         View2d { cx, cy, scale }
     }
 
+    /// The frame clock the animations read, moved one 60 Hz frame per call
+    /// rather than by however long the machine took.
+    struct FrameClock(Instant);
+
+    impl FrameClock {
+        fn new() -> Self {
+            Self(ui::time::now())
+        }
+
+        /// Run `tick` at the current frame.
+        fn now<T>(&self, tick: impl FnOnce() -> T) -> T {
+            ui::time::testing::with_monotonic_time(self.0, tick)
+        }
+
+        /// Run `tick` one frame later.
+        fn next<T>(&mut self, tick: impl FnOnce() -> T) -> T {
+            self.0 += std::time::Duration::from_micros(16_667);
+            self.now(tick)
+        }
+    }
+
     /// 2D zoom animation: the scale eases monotonically to the target over several
     /// frames without overshoot, the world point under the cursor stays pinned every
     /// frame, and reduced motion snaps immediately. Fresh animator per phase.
@@ -258,15 +279,15 @@ mod tests {
             z.begin(Point::ZERO, center, center);
 
             // First tick establishes the clock (dt == 0): no jump.
-            assert!(z.tick(target, false));
+            let mut clock = FrameClock::new();
+            assert!(clock.now(|| z.tick(target, false)));
             assert_eq!(z.display().scale, 64.0, "first frame must not teleport");
 
             // Successive frames strictly approach the target, never overshooting.
             let mut prev = z.display().scale;
             let mut frames = 0;
             for _ in 0..600 {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-                let animating = z.tick(target, false);
+                let animating = clock.next(|| z.tick(target, false));
                 let s = z.display().scale;
                 assert!(
                     s >= prev - 1e-9,
@@ -302,7 +323,6 @@ mod tests {
             let cursor = Point::new(560.0, 220.0);
             let start = v(64.0, 0.0, 0.0);
 
-            // World point under the cursor at the start view.
             let to_world = |p: Point, view: &View2d| {
                 Point::new(
                     view.cx + (p.x - canvas_center.x) / view.scale,
@@ -321,9 +341,9 @@ mod tests {
 
             let mut z = ZoomAnim2d::new(start);
             z.begin(anchor, cursor, canvas_center);
+            let mut clock = FrameClock::new();
             for _ in 0..600 {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-                let animating = z.tick(target, false);
+                let animating = clock.next(|| z.tick(target, false));
                 // Anchor-based easing pins the world point under the cursor EXACTLY,
                 // every frame — not merely at the endpoints.
                 let w = to_world(cursor, &z.display());
@@ -403,12 +423,12 @@ mod tests {
             let mut z = ZoomAnim3d::new(1.0);
             z.mark_sampled(1.0);
             z.begin();
-            assert!(z.tick(2.0, false));
+            let mut clock = FrameClock::new();
+            assert!(clock.now(|| z.tick(2.0, false)));
             assert_eq!(z.display(), 1.0, "first frame establishes the clock");
             let mut frames = 0;
             for _ in 0..600 {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-                let animating = z.tick(2.0, false);
+                let animating = clock.next(|| z.tick(2.0, false));
                 frames += 1;
                 // scale_factor is display/sampled; sampled stays 1.0 → tracks display.
                 assert!((z.scale_factor() - z.display() / 1.0).abs() < 1e-9);

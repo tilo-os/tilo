@@ -1,5 +1,3 @@
-//! Storage versions, migrations, unreadable documents and the public
-//! surface.
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 
 use automerge::ReadDoc;
@@ -99,7 +97,6 @@ fn an_old_document_migrates_once_and_reads_as_the_new_model() {
     assert_eq!(replica.state().unwrap().given, "Grace");
 }
 
-// USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
 /// A migration is one change on top of the document's history, so the
 /// document as it was before it is the snapshot a rollback reads: the
 /// previous build finds its own version there, whole.
@@ -209,6 +206,27 @@ fn the_surface_lists_verbs_kinds_and_fields() {
         serde_json::from_str::<tilo_resource::Surface>(&json).unwrap(),
         surface
     );
+}
+
+/// A group is undoable only when every member is: one that sends something
+/// away makes a deleting group ask, through any door, as that member alone
+/// does.
+#[test]
+fn a_group_holding_a_change_undo_cannot_take_back_asks_first() {
+    let mut contact = Replica::<Contact>::new();
+    let group = || {
+        tilo_resource::Invoke::group([
+            Contact::RENAME.with(("Ada".to_owned(), "King".to_owned())),
+            Contact::INVITE.invoke(),
+        ])
+    };
+    assert!(matches!(
+        contact.apply(group()),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert_eq!(contact.state().unwrap().outbox.len(), 0);
+    contact.apply_confirmed(group()).unwrap();
+    assert_eq!(contact.state().unwrap().outbox.len(), 1);
 }
 
 #[test]

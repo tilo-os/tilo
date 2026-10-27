@@ -24,6 +24,7 @@ fn route_snapshot_aliases_are_frozen_before_typed_execution_and_suspend_restores
         owner: None,
         queue: queue.clone(),
         revision: "published-before-input".into(),
+        revision_pending: false,
         aliases,
         pin: Some(pin),
     }]);

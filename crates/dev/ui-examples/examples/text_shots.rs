@@ -91,7 +91,6 @@ pub fn run(_args: &[String]) {
     let mut tr = TextRenderer::new();
     let mut doc = AutoCommit::new();
 
-    // --- TextInput with a live selection ---------------------------------
     let mut ti = TextInput::local().with_initial_value("Hello Gallery!");
     ti.apply_layout_external(Rect::new(40.0, 40.0, 340.0, 80.0));
     ti.set_focus(true);
@@ -117,11 +116,9 @@ pub fn run(_args: &[String]) {
         &cursor_moved(ni_rect.x1 - 16.0, ni_rect.y0 + 16.0),
     );
 
-    // --- ColorPicker (embeddable inspector control) ----------------------
     let mut cp = ColorPicker::new(Color::from_rgba8(99, 102, 241, 255));
     layout_one(&mut cp, Point::new(40.0, 150.0));
 
-    // --- Compose one frame -----------------------------------------------
     let mut scene = Scene::new();
     ti.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     ni.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);

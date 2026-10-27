@@ -32,6 +32,8 @@ pub struct SlidesShell;
 impl ResourceApp for SlidesShell {
     type Resource = Deck;
     const ID: &'static str = "so.tilo.slides";
+    // Each window shows the document it opened, never another window's.
+    const WINDOW_RESOURCE: bool = true;
     const TITLE: &'static str = "Slides";
     const ICON: Option<&'static str> = Some("slides");
     const OPENS: &'static [&'static str] = &[ODP_MEDIA_TYPE, PPTX_MEDIA_TYPE];
@@ -93,6 +95,8 @@ impl ResourceApp for SlidesShell {
 
     fn scenarios() -> &'static [&'static str] {
         &[
+            // The sample deck in the editor, as it opens.
+            "editor",
             "overview",
             "present",
             "present_notes",
@@ -100,10 +104,8 @@ impl ResourceApp for SlidesShell {
             "present_white",
             "empty",
             "help",
-            "rename",
             "notes_edit",
             "slide_props",
-            "toolbar_menu",
             "many",
             "many_rail",
             "overview_end",
@@ -118,16 +120,19 @@ impl ResourceApp for SlidesShell {
             "slide_menu",
             "reorder",
             "edit_text",
+            "words_menu",
+            "words_menu_edge",
             "delete_zone",
             "inspector_widgets",
+            "dark_deck",
         ]
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
             Some(
-                "narrow" | "narrow_closed" | "inspector" | "many_rail" | "toolbar_menu"
-                | "inspector_widgets",
+                "narrow" | "narrow_closed" | "inspector" | "many_rail" | "inspector_widgets"
+                | "words_menu_edge",
             ) => NARROW_VIEWPORT,
             _ => ui::launch::DEFAULT_VIEWPORT,
         }
@@ -150,6 +155,11 @@ impl ResourceApp for SlidesShell {
                 Some(src) => crate::sample::picture_deck("Site photo", &src),
                 None => seed_deck(),
             },
+            // The sample deck in its dark look.
+            Some("dark_deck") => crate::model::Deck {
+                look: crate::model::DeckLook::Dark,
+                ..seed_deck()
+            },
             Some("image_loading") => {
                 crate::sample::picture_deck("Importing photo", crate::sample::MISSING_SRC)
             }
@@ -163,6 +173,7 @@ fn replace_deck(deck: &crate::model::Deck) -> Invoke<Deck> {
     Deck::REPLACE_DECK.with(crate::deck::deck::ReplaceDeck {
         title: deck.title.clone(),
         palette: deck.palette,
+        look: Some(deck.look),
         slides: deck.slides.iter().map(crate::deck::SlideData::of).collect(),
     })
 }
@@ -317,6 +328,8 @@ mod tests {
             "present-largest-external",
             "present-primary-external",
             "end-presentation",
+            "show-slide-list",
+            "show-properties",
             "open-presentation",
             "save-as",
             "read-deck",
@@ -342,7 +355,6 @@ mod tests {
         }
     }
 
-    /// The deck publishes its verbs and edits, and its slides as items.
     #[test]
     fn the_deck_publishes_its_verbs_and_slides() {
         let mut app = TestApp::<SlidesShell>::new().unwrap();
@@ -381,5 +393,28 @@ mod tests {
             shown,
             "each element is an item of its slide"
         );
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::SlidesShell::scenarios() {
+            let mut app = TestApp::<super::SlidesShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
     }
 }

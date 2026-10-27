@@ -70,22 +70,21 @@ impl HeldRecords {
     /// is held with that record, in its replica, so the app's actions reach
     /// it through the chain as in a window; one whose app's record is not
     /// held yet is held with it once it is.
-    ///
-    /// # Errors
-    /// The record's app is not on this host, its id is not a record id, or
-    /// the replica refused the document.
     pub fn hold(&mut self, route: &DocumentRoute, saved: Vec<u8>) -> Result<(), String> {
         if let Some(replica) = self.replicas.get(route) {
             return replica
                 .apply(&DocumentMutation::Snapshot(saved))
                 .map_err(|error| error.to_string());
         }
-        let record = if route.record.is_empty() {
-            ui::record::RecordId::package_primary()
-        } else {
-            ui::record::RecordId::parse(&route.record)
-                .ok_or_else(|| format!("{} is not a record id", route.record))?
-        };
+        // A record every app of the workspace opens beside its own (the
+        // workspace's emoji) is kept under its owner's routes but is no
+        // record of the owner's kind: a bot acts on the app's own records,
+        // and reads what such a record says through the app's actions.
+        if collab_types::workspace_record(&route.app_id, &route.record).is_some() {
+            return Ok(());
+        }
+        let record = ui::record::RecordId::from_route(&route.record)
+            .ok_or_else(|| format!("{} is not a record route", route.record))?;
         if record.chain_part().is_some() {
             return self.hold_beside(route, &record, saved);
         }
@@ -253,7 +252,7 @@ impl DoorParticipant for HeldRecords {
             let part = DocumentRoute {
                 app_id: route.app_id.clone(),
                 cluster_id: route.cluster_id.clone(),
-                record: record.as_str().to_owned(),
+                record: record.route().to_owned(),
             };
             self.beside.insert(part.clone(), route.clone());
             self.changed.push((part, mutation));
@@ -296,5 +295,35 @@ impl DoorParticipant for HeldRecords {
         self.replicas.get(route).map_or_else(Vec::new, |replica| {
             replica.read_history(|doc| outbox_entries(doc, &doc.get_heads(), field))
         })
+    }
+
+    fn queued_in_history(
+        &self,
+        route: &DocumentRoute,
+        step: &RunStep,
+        actor: &str,
+        field: &str,
+    ) -> Vec<String> {
+        self.replicas.get(route).map_or_else(Vec::new, |replica| {
+            replica.read_history(|doc| super::door::queued_by_step(doc, step, actor, field))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_workspace_record_under_a_watched_apps_routes_is_left_alone() {
+        let mut held =
+            HeldRecords::new(AppCatalogue::native(), "room-1".into(), ReplicaActor::Owner);
+        let emoji = DocumentRoute {
+            app_id: "so.tilo.chat".into(),
+            cluster_id: "room-1".into(),
+            record: collab_types::workspace_record_id("tilo.workspace.emoji"),
+        };
+        assert_eq!(held.hold(&emoji, b"not chat's record".to_vec()), Ok(()));
+        assert!(held.offered().is_empty(), "nothing is held for it");
     }
 }

@@ -11,6 +11,7 @@ mod files_session;
 pub mod preview;
 pub mod restore;
 pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource};
+use tilo_sort::CompactSort as _;
 pub(crate) mod owner;
 pub mod registration;
 pub use owner::HistoryOwner;
@@ -181,6 +182,8 @@ pub struct HistoryController {
     entries: Vec<HistoryEntry>,
     /// The named runs of changes the document carries, as the timeline bands them.
     named: Vec<NamedRange>,
+    /// What members' devices wrote that changes did, by change.
+    descriptions: HashMap<HistoryEntryId, String>,
     projected_heads: Option<Vec<ChangeHash>>,
     observed_live_heads: Vec<ChangeHash>,
     selected: Option<SelectedPreview>,
@@ -258,6 +261,7 @@ impl HistoryController {
             source: source.with_max_entries(HISTORY_PAGE),
             entries: Vec::new(),
             named: Vec::new(),
+            descriptions: HashMap::new(),
             projected_heads: None,
             observed_live_heads: sorted_heads(live_heads),
             selected: None,
@@ -301,6 +305,10 @@ impl HistoryController {
         &self.named
     }
 
+    pub fn descriptions(&self) -> &HashMap<HistoryEntryId, String> {
+        &self.descriptions
+    }
+
     /// Committed activity at `live`'s frontier, in causal order, leaving
     /// this controller's projection and selection where they are.
     #[cfg(any(feature = "native", test))]
@@ -314,19 +322,13 @@ impl HistoryController {
 
     /// Reproject factual activity from committed graph state. An existing
     /// preview stays pinned to its exact bytes and heads.
-    ///
-    /// # Errors
-    ///
-    /// Name authors as the room's roster in `presence` names its
-    /// participants. Returns whether a name changed, so the next refresh
-    /// projects the history again with them.
     pub(crate) fn follow_roster(&mut self, presence: &crate::presence::PresenceCtx) -> bool {
         let mut roster: Vec<(String, String)> = presence
             .names
             .iter()
             .map(|(crate::permissions::UserId(id), name)| (id.clone(), name.clone()))
             .collect();
-        roster.sort();
+        roster.compact_sort();
         if roster == self.roster {
             return false;
         }
@@ -366,6 +368,7 @@ impl HistoryController {
         }
         let entries = self.source.entries(&mut projection);
         let named = read_named_ranges(&projection, self.source.authors());
+        self.descriptions = crate::history_source::descriptions::read_descriptions(&projection);
 
         self.has_earlier = projection.get_changes_meta(&[]).len() > self.window;
         self.projected_heads = Some(live_heads);
@@ -497,12 +500,6 @@ impl HistoryController {
 
     /// Validate a review token without changing the document. The host owns
     /// the separate authority check and the eventual canonical restore write.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`HistoryError`] when live work is uncommitted, the resource
-    /// or selection changed, the live frontier is stale, or the selection is
-    /// an external effect receipt rather than restorable content.
     pub fn validate_restore(
         &self,
         review: &RestoreReview,
@@ -574,7 +571,7 @@ fn committed_clone(live: &AutoCommit) -> AutoCommit {
 }
 
 pub(crate) fn sorted_heads(mut heads: Vec<ChangeHash>) -> Vec<ChangeHash> {
-    heads.sort_unstable();
+    heads.compact_sort();
     heads
 }
 

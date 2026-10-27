@@ -1,5 +1,5 @@
 //! Shared, render-free mail state, owned by the app and borrowed by each of the
-//! three [`crate::pane::Pane`]s through an `Rc<RefCell<_>>`.
+//! three panes through an `Rc<RefCell<_>>`.
 //!
 //! The panes are siblings inside a [`ui::widget::NavShell`], so they can't call
 //! each other directly. Instead they mutate this shared state and raise
@@ -121,6 +121,22 @@ impl CtxAction {
     }
 }
 
+/// What the reader's menu offers on the open message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReaderChoice {
+    /// Open the link under the pointer in the Browser.
+    OpenLink(String),
+    /// Put the link's address on the clipboard.
+    CopyLink(String),
+    Copy,
+    /// Select the whole HTML body.
+    SelectAll,
+    /// Read an HTML message as its plain text.
+    ShowPlainText,
+    /// Read it as it was formatted again.
+    ShowFormatted,
+}
+
 /// A cross-pane effect a pane wants the app to perform after event routing.
 #[derive(Clone, Debug)]
 pub enum Intent {
@@ -148,6 +164,10 @@ pub enum Intent {
     OpenAttachment(MessageId, usize),
     /// Ask the app to post a request to the engine worker.
     Engine(EngineRequest),
+    /// Open a link of a message in the Browser: a web or mail address the
+    /// person followed.
+    OpenLink(String),
+    ReaderMenu(MessageId, Point, Vec<ReaderChoice>),
     /// Ask the app-owned modal layer to confirm an all-Trash bulk purge. The
     /// selection remains local; no purge action is authored until confirmed.
     ConfirmBulkPurge,
@@ -159,16 +179,19 @@ pub enum Intent {
 pub enum Command {
     /// Browse explicit shared address-book recipient and sender choices.
     ContactRecipients,
-    /// Show `folder` of account `index`.
     OpenFolder(usize, Folder),
     /// Show every account's inbox in one list.
     OpenAllInboxes,
-    /// Open the account sheet for an account (`None` adds one).
-    AccountSettings(Option<usize>),
+    /// Take the person to Settings' External Accounts, where accounts are
+    /// added, changed and removed; Mail keeps no account editor of its own.
+    AccountSettings,
     /// Start a new message.
     Compose,
-    /// Open the platform search, narrowed to the open folder.
-    OpenSearch,
+    /// Close the message being written; one with anything written in it
+    /// stays in Drafts.
+    CloseCompose,
+    /// Throw the message being written away, its draft with it.
+    DiscardCompose,
     /// Enter or leave selecting several messages.
     ToggleBulk,
     /// Select every message the list shows.
@@ -177,12 +200,10 @@ pub enum Command {
     Bulk(BulkAction),
     /// Apply an action to the open message.
     Message(CtxAction),
-    /// Offer every action on the open message in a menu.
-    MessageMenu,
 }
 
 /// The whole app's mutable state, minus the transient overlays (composer,
-/// context menu, setup sheet) which the app owns directly.
+/// context menu) which the app owns directly.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "the bools split across unrelated concerns (shell-derived layout flags the app writes, focus/seed bookkeeping, and the repaint flag); grouping them would need a real design pass, left for a follow-up rather than forced here"
@@ -219,12 +240,24 @@ pub struct MailState {
     /// wanted from the server.
     pub wants_older: std::cell::Cell<bool>,
     /// The open account's mail has not arrived yet: nothing is kept on this
-    /// device and its first fetch is running. The list shows the rows that
-    /// are coming, not an empty mailbox.
-    pub fetching_first: bool,
+    /// device and its first fetch is running, timed from when it began and
+    /// from the server it comes from. The list shows the rows that are
+    /// coming, not an empty mailbox.
+    pub first_fetch: Option<ui::arriving::ArrivalClock>,
     /// The senders (lower-case addresses) whose remote images the person
     /// allowed. Part of the person's Mail preferences, so it follows them.
     pub remote_senders: std::collections::BTreeSet<String>,
+    /// The messages whose remote images the person loaded while this window
+    /// is open: one message's, not its sender's.
+    pub remote_messages: std::collections::HashSet<MessageId>,
+    /// The HTML messages the person reads as their plain text.
+    pub plain_text: std::collections::HashSet<MessageId>,
+    /// Where fetched mail is kept: the inline images of a message kept on
+    /// this device are read from it.
+    pub(crate) kept: crate::store::Store,
+    /// What the reader's menu asked of the open HTML body (copy, select
+    /// all), for the reader to carry out.
+    pub reader_requests: Vec<ReaderChoice>,
 
     /// The pictures beside senders: Contacts' and the person's own, never
     /// fetched from a picture service.
@@ -257,6 +290,73 @@ pub struct MailState {
 impl MailState {
     pub fn shared(state: MailState) -> Shared {
         Rc::new(RefCell::new(state))
+    }
+
+    /// Whether remote images show in `message`: the person loaded them for
+    /// it, or allowed them for its sender.
+    pub fn remote_allowed(&self, message: &crate::model::Message) -> bool {
+        self.remote_messages.contains(&message.id)
+            || self
+                .remote_senders
+                .contains(&message.from.email.to_ascii_lowercase())
+    }
+
+    /// Load the remote images of message `id`, and only its.
+    pub fn load_remote(&mut self, id: MessageId) {
+        self.remote_messages.insert(id);
+        self.dirty = true;
+    }
+
+    /// Load remote images in every message from the sender of `id`.
+    pub fn always_load_remote(&mut self, id: MessageId) {
+        if let Some(sender) = self
+            .mailbox
+            .get(id)
+            .map(|message| message.from.email.to_ascii_lowercase())
+        {
+            self.remote_senders.insert(sender);
+            self.dirty = true;
+        }
+    }
+
+    /// Stop loading remote images from the sender of `id`, this message's
+    /// included.
+    pub fn stop_remote(&mut self, id: MessageId) {
+        if let Some(sender) = self
+            .mailbox
+            .get(id)
+            .map(|message| message.from.email.to_ascii_lowercase())
+        {
+            self.remote_senders.remove(&sender);
+        }
+        self.remote_messages.remove(&id);
+        self.dirty = true;
+    }
+
+    /// The images `message`'s HTML shows in place, from memory or as kept
+    /// on this device.
+    pub fn inline_parts(
+        &self,
+        message: &crate::model::Message,
+    ) -> Vec<crate::html_mail::InlinePart> {
+        message
+            .attachments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, attachment)| {
+                let id = attachment.inline_id.clone()?;
+                let bytes = if attachment.content.is_empty() && attachment.kept {
+                    self.kept.attachment(&message.account, message.id, index)?
+                } else {
+                    attachment.content.clone()
+                };
+                Some(crate::html_mail::InlinePart {
+                    id,
+                    mime: attachment.mime.clone(),
+                    bytes,
+                })
+            })
+            .collect()
     }
 
     /// The bundled sample mailbox and accounts, editing the document it is
@@ -313,13 +413,17 @@ impl MailState {
             bulk_selection: Vec::new(),
             bulk_selecting: false,
             remote_senders: std::collections::BTreeSet::new(),
+            remote_messages: std::collections::HashSet::new(),
+            plain_text: std::collections::HashSet::new(),
+            kept: crate::store::Store::default(),
+            reader_requests: Vec::new(),
             inspection: None,
             status: None,
             status_undo: false,
             all_inboxes: false,
             sync_error: None,
             wants_older: std::cell::Cell::new(false),
-            fetching_first: false,
+            first_fetch: None,
             avatars,
             narrow: false,
             detail_pushed: false,
@@ -447,8 +551,6 @@ impl MailState {
             .item(&ui::tilo_resource::Id::from_raw(id.to_string()))
     }
 
-    // ---- intents ----
-
     pub fn push_intent(&mut self, i: Intent) {
         self.intents.push(i);
         self.dirty = true;
@@ -466,8 +568,6 @@ impl MailState {
     pub fn take_commands(&mut self) -> Vec<Command> {
         std::mem::take(&mut self.commands)
     }
-
-    // ---- derived views ----
 
     pub fn current_threads(&self) -> Vec<Thread> {
         self.mailbox.threads_in(self.folder)
@@ -1070,7 +1170,6 @@ mod tests {
 
     #[test]
     fn reader_selection_is_read_neutral_and_reply_all_is_distinct() {
-        // Phase `initial_reader_selection_is_read_state_neutral`.
         {
             let st = state();
             let selected = st
@@ -1084,7 +1183,6 @@ mod tests {
             );
         }
 
-        // Phase `arrow_browsing_previews_an_unread_message_without_a_read_action`.
         {
             let mut st = state();
             let rows = st.list_rows();
@@ -1107,7 +1205,6 @@ mod tests {
             assert_eq!(doc.get_heads(), heads_before);
         }
 
-        // Phase `reply_all_action_raises_distinct_reply_all_intent`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1228,7 +1325,6 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn bulk_actions_are_bounded_canonical_and_never_partial() {
-        // Phase `bulk_archive_is_one_bounded_canonical_move_action_and_keeps_selection_local`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1272,7 +1368,6 @@ mod tests {
             );
         }
 
-        // Phase `bulk_marking_read_retains_the_local_selection_for_follow_up_triage`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1296,7 +1391,6 @@ mod tests {
             assert_eq!(st.selected_bulk_ids(), ids);
         }
 
-        // Phase `bulk_move_to_trash_never_purges_trash_rows_from_a_mixed_virtual_view`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();
@@ -1340,7 +1434,6 @@ mod tests {
             );
         }
 
-        // Phase `bulk_purge_refuses_mixed_or_stale_rows_without_a_partial_mutation`.
         {
             let mut st = state();
             let mut doc = crate::resource::TestMail::doc();

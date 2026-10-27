@@ -44,14 +44,10 @@ fn sealed_metadata_storage_lends_actual_verified_roster_and_revocation_union() {
 fn sealed_metadata_storage_lends_real_v5_exact_facts_without_decoded_map_escape() {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
     peer.select_admission_v5().unwrap();
+    let current_document = peer.document("test.app", "tab:1").unwrap();
     let NeighbourMsg::AppDocument { envelope, .. } = peer
-        .publish_document(
-            "test.app",
-            "tab:1",
-            peer.document("test.app", "tab:1").unwrap(),
-            &key,
-            now,
-        )
+        .publication_mut()
+        .publish_document("test.app", "tab:1", current_document, &key, now)
         .unwrap()
     else {
         panic!("real signed publication");

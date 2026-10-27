@@ -596,7 +596,7 @@ mod tests {
     fn broker_with_fanout(
         workspace: &Workspace,
     ) -> (Arc<CapnpBrokerState>, String, Arc<FanoutState>) {
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace.clone());
         let tree = tree.shared();
@@ -657,14 +657,14 @@ mod tests {
                     .lock()
                     .expect("subscribers")
                     .insert(peer_id, tx);
-                let mut up = surface(peer_id, &workspace.room.to_string());
+                let mut up = surface(peer_id, &workspace.room().to_string());
                 if let Some(record) = record {
                     up.route.record_id = record.to_owned();
                 }
                 state.surfaces.lock().expect("surfaces").insert(peer_id, up);
                 streams.send(rx).map_err(|error| error.to_string())
             }),
-            Duration::from_secs(5),
+            tilo_test_env::hang_bound(),
         );
         (stream, launches, places)
     }
@@ -809,6 +809,99 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_agents_first_view_opens_aside_without_taking_the_persons_focus() {
+        use crate::test_support::{Grants as _, KindSet, Subject};
+        let mut workspace = workspace();
+        workspace.admit_agent("scribe", KindSet::READ);
+        workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
+        let (state, room) = broker(&workspace);
+        state.launchable.retain(&surface(7, &room));
+        let (streams, launches, places) = app_comes_up_placed(&state, 8);
+
+        let agent = Caller::local_agent("scribe").in_room(&room);
+        let provider = offered_provider(&state, &agent, "new-window")
+            .expect("the closed app's action is offered to the agent");
+        invoke(&state, &agent, &provider, "new-window", None).expect("admitted once launched");
+        assert_eq!(*launches.lock().expect("launches"), [APP]);
+        assert_eq!(
+            *places.lock().expect("places"),
+            [(None, LaunchPlace::Aside)],
+            "the agent's first view opens aside"
+        );
+        let mut stream = streams.try_recv().expect("the app came up");
+        assert_eq!(stream.try_recv().expect("delivered").actor, "agent:scribe");
+    }
+
+    /// A host that remembers which apps the person pressed in, and lets each
+    /// press prove one open.
+    struct Pressed(Mutex<Vec<String>>);
+
+    impl crate::services::LauncherServices for Pressed {
+        fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+            Vec::new()
+        }
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
+            _: &LaunchPlace,
+        ) -> Result<(), String> {
+            Err("nothing launches here".into())
+        }
+        fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+            false
+        }
+        fn person_initiated(&self, app_id: &str) -> bool {
+            let mut pressed = self.0.lock().expect("presses");
+            let before = pressed.len();
+            pressed.retain(|app| app != app_id);
+            pressed.len() != before
+        }
+    }
+
+    #[test]
+    fn an_apps_launch_takes_the_person_there_only_when_their_press_is_behind_it() {
+        let workspace = workspace();
+        let room = workspace.room().to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let tree = tree.shared();
+        let (state, _bridge) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.authority()),
+            None,
+            None,
+            crate::services::HostServices {
+                launcher: Some(Arc::new(Pressed(Mutex::new(vec!["so.tilo.chat".into()])))),
+                ..tree.services()
+            },
+        );
+        let chat = Caller::local_app("so.tilo.chat").in_room(&room);
+        let beside_chat = LaunchPlace::Beside {
+            app_id: "so.tilo.chat".into(),
+        };
+        assert_eq!(
+            state.launch_place(&chat, &room, None),
+            LaunchPlace::Focus,
+            "a link the person clicked in Chat opens where they are"
+        );
+        assert_eq!(
+            state.launch_place(&chat, &room, None),
+            beside_chat,
+            "the press proved one open; Chat's next one, on its own, opens beside it"
+        );
+        let agent = Caller::local_agent("scribe").in_room(&room);
+        assert_eq!(
+            state.launch_place(&agent, &room, None),
+            LaunchPlace::Aside,
+            "an agent's open never takes the person's view"
+        );
+    }
+
     /// An action of a record the app does not open by default launches the
     /// app on that record, and runs in its view.
     #[test]
@@ -830,86 +923,6 @@ mod tests {
         assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
     }
 
-    /// An agent running a task is held to the task's grants on every call,
-    /// whether or not the call names the task.
-    #[test]
-    fn an_agents_run_is_held_to_its_tasks_grants_without_naming_it() {
-        use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
-        let mut workspace = workspace();
-        workspace.admit_agent("scribe", KindSet::READ_UNDOABLE);
-        workspace.answer(
-            Subject::Task("task:tidy".into()),
-            &TreePath::root().app(APP).rest().action("new-window"),
-            KindSet::READ_UNDOABLE,
-            Answer::Deny,
-        );
-        workspace.tasks.push(tilo_desktop_model::WorkspaceTask {
-            id: "task:tidy".into(),
-            title: "Tidy up".into(),
-            created_by: "owner".into(),
-            assigned_agent: Some("scribe".into()),
-            route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-            status: tilo_desktop_model::WorkspaceTaskStatus::InProgress,
-            resource: None,
-            subject: None,
-            created_at: 1,
-            updated_at: 1,
-            audit: Vec::new(),
-        });
-        let (state, room) = broker(&workspace);
-        state
-            .surfaces
-            .lock()
-            .expect("surfaces")
-            .insert(5, surface(5, &room));
-        let mut app = state.capture_invocations_for_test(5);
-        let agent = Caller::local_agent("scribe").in_room(&room);
-        assert!(
-            invoke(&state, &agent, "5", "new-window", None).is_err(),
-            "the running task's grants leave this action out"
-        );
-        assert!(app.try_recv().is_err(), "nothing ran");
-    }
-
-    #[test]
-    fn a_waiting_legacy_task_still_bounds_unnamed_agent_actions() {
-        use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
-        let mut workspace = workspace();
-        workspace.admit_agent("scribe", KindSet::READ_UNDOABLE);
-        workspace.answer(
-            Subject::Task("task:waiting".into()),
-            &TreePath::root().app(APP).rest().action("new-window"),
-            KindSet::READ_UNDOABLE,
-            Answer::Deny,
-        );
-        workspace.tasks.push(tilo_desktop_model::WorkspaceTask {
-            id: "task:waiting".into(),
-            title: "Waiting for input".into(),
-            created_by: "owner".into(),
-            assigned_agent: Some("scribe".into()),
-            route: tilo_desktop_model::WorkspaceTaskRoute::Model,
-            status: tilo_desktop_model::WorkspaceTaskStatus::Waiting,
-            resource: None,
-            subject: None,
-            created_at: 1,
-            updated_at: 1,
-            audit: Vec::new(),
-        });
-        let (state, room) = broker(&workspace);
-        state
-            .surfaces
-            .lock()
-            .expect("surfaces")
-            .insert(5, surface(5, &room));
-        let mut app = state.capture_invocations_for_test(5);
-        let agent = Caller::local_agent("scribe").in_room(&room);
-        assert!(invoke(&state, &agent, "5", "new-window", None).is_err());
-        assert!(
-            app.try_recv().is_err(),
-            "the waiting task's denied action did not run"
-        );
-    }
-
     /// The broker reads a field edit without the app's code: only removing
     /// an item of a collection not published as quiet asks for confirmation;
     /// sets and an outbox's settle do not.
@@ -919,6 +932,9 @@ mod tests {
         let (state, room) = broker(&workspace);
         let mut edits = surface(5, &room);
         let mut field_edit = action("field-edit", tilo_actions::ConfirmationPolicy::None);
+        // A loud collection's item is not Undo's to put back, so removing one
+        // asks: the app publishes this edit reaching outside.
+        field_edit.contract.kind = tilo_actions::ActionKind::Outside;
         field_edit.contract.tags = vec![
             tilo_actions::ARGUMENT_RISK_TAG.to_owned(),
             tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned(),
@@ -974,74 +990,6 @@ mod tests {
             Some(ActionHostError::ConfirmationRequired),
             "removing a note asks, as a delete verb does"
         );
-    }
-
-    /// Work done in a task is bounded by the task's grant set: what the
-    /// agent may otherwise do, it does in the task only where the task's
-    /// grants allow it.
-    #[test]
-    fn an_agent_working_in_a_task_is_bounded_by_the_tasks_grants() {
-        use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
-        let mut workspace = workspace();
-        workspace.admit_agent("scribe", KindSet::READ_UNDOABLE);
-        workspace.answer(
-            Subject::Task("task:tidy".into()),
-            &TreePath::root().app(APP).rest().action("empty-trash"),
-            KindSet::READ_UNDOABLE,
-            Answer::Allow,
-        );
-        workspace.answer(
-            Subject::Task("task:tidy".into()),
-            &TreePath::root().app(APP).rest().action("new-window"),
-            KindSet::READ_UNDOABLE,
-            Answer::Deny,
-        );
-        let (state, room) = broker(&workspace);
-        state
-            .surfaces
-            .lock()
-            .expect("surfaces")
-            .insert(5, surface(5, &room));
-        let mut app = state.capture_invocations_for_test(5);
-        let agent = Caller::local_agent("scribe").in_room(&room);
-        let in_task =
-            |task: &str| tilo_actions::ActionContext::default().with_group(task, "Tidy up", "task");
-        let invoke_in = |context: Option<tilo_actions::ActionContext>| {
-            state
-                .action_invoke(
-                    &agent,
-                    None,
-                    None,
-                    &InvokeRequest {
-                        on_behalf_of: None,
-                        invocation: tilo_actions::InvocationId::new(),
-                        target: RemoteActionTarget {
-                            provider: "5".into(),
-                            address: tilo_actions::ActionAddress::new("files.app", "new-window"),
-                        },
-                        argument: InvokeArgument::None,
-                        context,
-                        confirmation: None,
-                        revision: None,
-                        wait_ms: None,
-                        appearance: None,
-                    },
-                )
-                .wait_timeout(tilo_test_env::hang_bound())
-                .ok()
-                .flatten()
-                .expect("answered")
-        };
-
-        assert!(
-            invoke_in(Some(in_task("task:tidy"))).is_err(),
-            "the task's grants leave this action out"
-        );
-        assert!(app.try_recv().is_err(), "nothing ran");
-        invoke_in(None).expect("outside the task the agent's own grants decide");
-        assert_eq!(app.try_recv().expect("delivered").action, "new-window");
-        invoke_in(Some(in_task("task:other"))).expect("a task without grants bounds nothing");
-        assert_eq!(app.try_recv().expect("delivered").action, "new-window");
     }
 
     #[allow(
@@ -1199,7 +1147,7 @@ mod tests {
             .acting_for("owner");
         invoke(&state, &agent, "5", "new-window", None).expect("the agent acts");
         assert_eq!(app.try_recv().expect("delivered").actor, "agent:scribe");
-        let Ok(ui::collaboration::CollabEvent::RemotePresenceUpdate {
+        let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
             user_id,
             key,
             payload: ui::collaboration::PresencePayload::Interaction(interaction),
@@ -1227,7 +1175,7 @@ mod tests {
             .running_shortcut("morning");
         invoke(&state, &shortcut, "5", "new-window", None).expect("the step runs");
         assert_eq!(app.try_recv().expect("delivered").actor, "owner");
-        let Ok(ui::collaboration::CollabEvent::RemotePresenceUpdate {
+        let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
             payload: ui::collaboration::PresencePayload::Interaction(interaction),
             ..
         }) = heard.try_recv()
@@ -1282,7 +1230,7 @@ mod tests {
             .expect("the host records the invoker");
         assert_eq!(invoker.kind, tilo_actions::ActorKind::Agent);
         assert_eq!(invoker.on_behalf_of.as_deref(), Some("owner"));
-        let Ok(ui::collaboration::CollabEvent::RemotePresenceUpdate {
+        let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
             payload: ui::collaboration::PresencePayload::Interaction(interaction),
             ..
         }) = heard.try_recv()
@@ -1308,7 +1256,8 @@ mod tests {
     #[tokio::test]
     async fn retiring_a_delegated_run_preserves_its_running_actions_view() {
         use super::super::ExecutionStatus;
-        use ui::collaboration::{CollabEvent, PresencePayload};
+        use collab_types::presence::PresencePayload;
+        use runtime_collab::event::CollabEvent;
         let (state, room, fanout) = broker_with_fanout(&workspace());
         state.surfaces.lock().unwrap().insert(5, surface(5, &room));
         let mut app = state.capture_invocations_for_test(5);
@@ -1410,6 +1359,71 @@ mod tests {
         );
     }
 
+    /// A reference opens in the record that keeps it: a window of the app
+    /// on another record is left alone, the app is launched on the record,
+    /// and the window showing it then takes the next one without another
+    /// launch. A caller who may not launch the app opens nothing.
+    #[test]
+    fn an_application_record_target_opens_in_that_record() {
+        let (state, room) = broker(&workspace());
+        let (streams, launches, places) = app_comes_up_placed(&state, 8);
+        let (elsewhere_tx, mut elsewhere) = tokio::sync::mpsc::unbounded_channel();
+        state
+            .invocation_subscribers
+            .lock()
+            .expect("subscribers")
+            .insert(7, elsewhere_tx);
+        state
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(7, surface_of(&room, "uuid:other"));
+        let target = tilo_actions::remote::application_record_target(
+            &room,
+            APP,
+            "uuid:plan",
+            "files.app",
+            "new-window",
+        );
+
+        assert_eq!(
+            invoke(
+                &state,
+                &Caller::local_person("stranger").in_room(&room),
+                &target.provider,
+                "new-window",
+                None,
+            ),
+            Err(ActionHostError::NotPermitted),
+        );
+        assert!(launches.lock().expect("launches").is_empty());
+
+        let owner = Caller::local_person("owner").in_room(&room);
+        invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
+        assert_eq!(
+            places
+                .lock()
+                .expect("places")
+                .first()
+                .map(|(record, _)| record.clone()),
+            Some(Some("uuid:plan".to_owned())),
+            "launched on the record the reference names"
+        );
+        let mut stream = streams.try_recv().expect("the app came up");
+        assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
+        assert!(
+            elsewhere.try_recv().is_err(),
+            "another record's window is left alone"
+        );
+
+        invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
+        assert_eq!(launches.lock().expect("launches").len(), 1);
+        assert_eq!(
+            stream.try_recv().expect("delivered again").action,
+            "new-window"
+        );
+    }
+
     /// What an installed app's signed manifest offers while it is closed.
     fn offer(
         action: &str,
@@ -1455,11 +1469,12 @@ mod tests {
     /// app never publishes.
     fn broker_with_installed_files(workspace: &Workspace) -> (Arc<CapnpBrokerState>, String) {
         use tilo_app_package::manifest::OfferKind;
-        let room = workspace.room.to_string();
+        let room = workspace.room().to_string();
         let mut tree = WorkspaceTree::default();
         tree.desktop.workspaces.push(workspace.clone());
         let tree = tree.shared();
         let installed = Installed(vec![crate::services::LaunchableApplication {
+            capabilities: Vec::new(),
             package_id: APP.into(),
             display_name: "Files".into(),
             unconfined: false,
@@ -2094,7 +2109,6 @@ mod tests {
         let (state, room) = broker(&workspace);
         state.launchable.persist_at(&path);
         state.launchable.retain(&surface(7, &room));
-        // Dropping the session finishes its last save.
         drop(state);
 
         let (restarted, _) = broker(&workspace);

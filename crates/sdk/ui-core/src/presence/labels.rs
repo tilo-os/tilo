@@ -17,6 +17,7 @@
 //! told apart by its kind label.
 
 use std::collections::{BTreeMap, HashMap};
+use tilo_sort::CompactSort as _;
 
 /// The numbers a room's participants are told apart by, resolved once from
 /// its roster and read for each label shown. Cheap to rebuild whenever the
@@ -57,7 +58,7 @@ impl ParticipantLabels {
             .iter()
             .map(|(id, (key, joined))| (*id, key, *joined))
             .collect();
-        ordered.sort_by_key(|(id, _, joined)| (joined.is_none(), *joined, *id));
+        ordered.compact_sort_by_key(|(id, _, joined)| (joined.is_none(), *joined, *id));
         let mut sharing: HashMap<&str, Vec<&str>> = HashMap::new();
         // In their shared order, so each name's list is too.
         for (id, key, _) in ordered {

@@ -153,6 +153,7 @@ async fn a_watching_page_opens_a_public_rooms_records_and_writes_nothing() {
             role: RoomRole::Viewer,
             expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
             inviter_name: None,
+            wait_list_entry: None,
         },
     )
     .await

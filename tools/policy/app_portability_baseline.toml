@@ -13,11 +13,10 @@ D1 = 1
 D2 = 2
 
 [apps.browser]
-D1 = 1
-D2 = 4
+D2 = 3
 
 [apps.calendar]
-D2 = 6
+D2 = 5
 
 [apps.camera]
 D1 = 1
@@ -29,7 +28,7 @@ D2 = 2
 
 [apps.chat]
 D1 = 1
-D2 = 8
+D2 = 6
 
 [apps.code-editor]
 D1 = 1
@@ -43,12 +42,12 @@ D1 = 2
 D2 = 3
 
 [apps.disks]
-D1 = 2
-D2 = 3
+D1 = 1
+D2 = 2
 
 [apps.ebook]
 D1 = 1
-D2 = 6
+D2 = 5
 
 [apps.file-explorer]
 D1 = 2
@@ -66,8 +65,8 @@ D2 = 3
 [apps.imager]
 D1 = 6
 D2 = 9
-R1 = 292
-R2 = 144
+R1 = 273
+R2 = 138
 R3 = 37
 R4 = 1
 
@@ -77,14 +76,14 @@ D2 = 2
 
 [apps.mail]
 D1 = 1
-D2 = 9
+D2 = 8
 
 [apps.music]
 D2 = 3
 
 [apps.notes]
 D1 = 1
-D2 = 6
+D2 = 5
 
 [apps.osk]
 D1 = 3
@@ -97,7 +96,7 @@ D2 = 2
 
 [apps.pdf-viewer]
 D1 = 1
-D2 = 5
+D2 = 4
 
 [apps.photos]
 D1 = 1
@@ -114,8 +113,8 @@ D1 = 1
 D2 = 3
 
 [apps.settings]
-D1 = 4
-D2 = 18
+D1 = 3
+D2 = 13
 
 [apps.sheets]
 D2 = 3
@@ -125,7 +124,7 @@ D2 = 2
 
 [apps.slides]
 D1 = 1
-D2 = 7
+D2 = 6
 
 [apps.store]
 D2 = 4
@@ -133,8 +132,8 @@ D2 = 4
 [apps.terminal]
 D1 = 4
 D2 = 3
-R1 = 41
-R2 = 16
+R1 = 39
+R2 = 14
 R3 = 3
 
 [apps.thumbnails]
@@ -150,10 +149,6 @@ D2 = 2
 [apps.video-editor]
 D2 = 3
 
-[apps.vpn]
-D1 = 1
-D2 = 2
-
 [apps.weather]
 D2 = 1
 
@@ -163,7 +158,7 @@ D2 = 4
 
 [apps.word-processor]
 D1 = 1
-D2 = 10
+D2 = 9
 
 [sdk.settings-store]
 W3 = 11
@@ -182,7 +177,6 @@ R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 250
+R1 = 249
 W1 = 13
-W2 = 2
-W3 = 57
+W3 = 56

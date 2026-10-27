@@ -69,12 +69,10 @@ pub const CONTAINER_TMP: &str = "tmp";
 /// each app its own shader cache.
 pub const DARWIN_DIR_SUFFIX_ENV: &str = "DIRHELPER_USER_DIR_SUFFIX";
 
-/// The Tilo data home for `home`.
 pub fn data_home(home: &Path) -> PathBuf {
     home.join(TILO_SUPPORT_DIR)
 }
 
-/// The container of `package_id` in the room of `workspace_id`.
 pub fn container_dir(data_home: &Path, workspace_id: Option<&str>, package_id: &str) -> PathBuf {
     appdir::host_app_dir(data_home, &appdir::room_slug(workspace_id), package_id)
 }

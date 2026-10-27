@@ -11,7 +11,7 @@
 //! that answered "no" but acted anyway still fails.
 //!
 //! The suite is the `tenant_isolation::` module of the relay's `it` target;
-//! `.forgejo/workflows/security-isolation.yml` runs it nightly and on
+//! t.toml's `security-isolation` check runs it nightly and on
 //! demand alongside the room-access and agent-confinement suites.
 
 #![allow(
@@ -286,7 +286,6 @@ fn retained_delta(marker: &[u8]) -> Vec<u8> {
     .unwrap()
 }
 
-/// Whether any file under `root` contains `marker`.
 fn persisted(root: &Path, marker: &[u8]) -> bool {
     let Ok(entries) = std::fs::read_dir(root) else {
         return false;
@@ -312,7 +311,6 @@ async fn received_until_quiet(client: &RelayClient) -> Vec<Envelope> {
     received
 }
 
-/// Whether `bytes` contains `marker`.
 fn carries(bytes: &[u8], marker: &[u8]) -> bool {
     bytes.windows(marker.len()).any(|window| window == marker)
 }

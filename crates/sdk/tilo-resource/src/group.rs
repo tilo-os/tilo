@@ -67,9 +67,6 @@ thread_local! {
 /// end: a group valid as a whole may pass through a state that is not (two
 /// dangling references cleared one after the other). `key` names what is
 /// checked, so it runs once however many members touched it.
-///
-/// # Errors
-/// The check's refusal, when it runs now.
 #[doc(hidden)]
 pub fn check_or_defer(
     key: String,
@@ -198,6 +195,11 @@ where
             .iter()
             .any(tilo_actions::Action::incoming_message)
     }
+
+    /// Undo cannot take a gesture back when it cannot take back a member.
+    fn irreversible(&self) -> bool {
+        self.actions.iter().any(tilo_actions::Action::irreversible)
+    }
 }
 
 /// Apply `members`, a group encoded as `payload`, in order as one.
@@ -246,7 +248,6 @@ fn describe_members(
     })
 }
 
-/// The change kind of a group of `members`.
 fn group_change_kind(members: &[&dyn tilo_actions::Action]) -> tilo_actions::ChangeKind {
     use tilo_actions::ChangeKind;
     let mut kinds = members.iter().map(|member| member.change_kind());
@@ -295,9 +296,6 @@ pub fn register<R: Resource>(registry: &mut ActionRegistry) {
 
 /// Build the group [`GROUP`] invocations describe: each member is built from
 /// its own declaration exactly as if it were invoked alone.
-///
-/// # Errors
-/// Returns why a member is unknown, does not bind or is itself a group.
 pub fn build_group<R: Resource>(
     arguments: &serde_json::Map<String, serde_json::Value>,
     now_ms: i64,
@@ -313,7 +311,6 @@ pub fn build_group<R: Resource>(
     Ok(ActionGroup { actions })
 }
 
-/// [`build_group`]'s members, of the resource `vocabulary`.
 pub(crate) fn build_members(
     vocabulary: &Vocabulary,
     arguments: &serde_json::Map<String, serde_json::Value>,

@@ -162,12 +162,6 @@ pub trait RoomRecordsLink: Send + Sync {
     /// Read an exact existing source using already-owned host keys. The host
     /// must check current certified Read under its room lock before key access
     /// and again before returning. Missing keys never cause enrollment.
-    ///
-    /// # Errors
-    ///
-    /// Refuses missing/currently unauthorized sources, unavailable existing keys,
-    /// invalid signatures, incomplete replay, failed retained-file durability
-    /// barriers or exceeded read budgets. A disposable peer cache is not a source.
     fn view_document(
         &self,
         _workspace: u64,
@@ -211,6 +205,33 @@ pub trait RoomRecordsLink: Send + Sync {
     fn content_blob(&self, _workspace: u64, _hash: &str) -> Option<Vec<u8>> {
         None
     }
+    /// The model the host looks over its reporters' reviews with, when it
+    /// lends one ([`FeedbackReviewer`]). Absence leaves reviews to the
+    /// reporters' own devices.
+    fn feedback_reviewer(&self) -> Option<Arc<dyn FeedbackReviewer>> {
+        None
+    }
+}
+
+/// A model the host lends its admitted reporters to look over a report's
+/// review: it is asked only the feedback review contract
+/// (`ui::feedback::model_review`) over the report's model view, which shows
+/// personal values only as placeholders, and only quotes from the texts
+/// asked about go back.
+pub trait FeedbackReviewer: Send + Sync {
+    /// What a review calls the model: the provider and model.
+    fn name(&self) -> String;
+    /// Ask the model `prompt` for `caller`, its answer held to the JSON
+    /// `schema` where the provider can, then call `done` with its
+    /// answer, from any thread. A host may refuse a caller who asks too
+    /// often.
+    fn review(
+        &self,
+        caller: &Caller,
+        prompt: String,
+        schema: serde_json::Value,
+        done: Box<dyn FnOnce(Result<String, String>) + Send>,
+    );
 }
 
 struct Entry {
@@ -275,10 +296,25 @@ enum Job {
     },
 }
 
+impl Job {
+    const fn kind(&self) -> &'static str {
+        match self {
+            Self::Feedback { .. } => "feedback",
+            Self::Catalogue { .. } => "catalogue",
+            Self::Invoke { .. } => "invoke",
+        }
+    }
+}
+
+/// A request that waited for the worker, or ran, at least this long is
+/// logged: every request of every page of every room waits behind the one
+/// before it.
+const SLOW_JOB: Duration = Duration::from_secs(2);
+
 struct Shared {
     ledger: Mutex<Ledger>,
     link: OnceLock<Arc<dyn RoomRecordsLink>>,
-    jobs: Mutex<Option<mpsc::Sender<Job>>>,
+    jobs: Mutex<Option<mpsc::Sender<(Instant, Job)>>>,
 }
 
 /// The host's page actions over every record of its rooms.
@@ -305,10 +341,6 @@ impl RoomActions {
 
     /// Start serving `link`'s rooms on the service's own thread. A second
     /// call is ignored.
-    ///
-    /// # Errors
-    ///
-    /// Returns why the thread did not start.
     pub fn attach(&self, link: Arc<dyn RoomRecordsLink>) -> Result<(), String> {
         if self.shared.link.set(Arc::clone(&link)).is_err() {
             return Ok(());
@@ -368,7 +400,9 @@ impl RoomActions {
     fn submit(&self, job: Job) -> Result<(), Job> {
         let jobs = self.shared.jobs.lock_recover();
         match jobs.as_ref() {
-            Some(sender) => sender.send(job).map_err(|error| error.0),
+            Some(sender) => sender
+                .send((Instant::now(), job))
+                .map_err(|error| error.0.1),
             None => Err(job),
         }
     }
@@ -640,7 +674,6 @@ enum Needs<'a> {
 /// What a room's earlier waits for keys gave up on.
 #[derive(Default)]
 struct GaveUp {
-    /// The room's one listing wait is behind it.
     listed: bool,
     /// Records a listing by name waited for in vain.
     records: HashSet<DocumentRoute>,
@@ -920,6 +953,9 @@ impl Room {
             }
             self.pump(workspace_id);
             if settled(self) {
+                // The session queues a change's events before the status
+                // that reports it: take what arrived since the pump above.
+                self.pump(workspace_id);
                 return;
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
@@ -993,7 +1029,7 @@ fn take_all(
                 let route = DocumentRoute {
                     app_id: holder.app_id.clone(),
                     cluster_id: holder.cluster_id.clone(),
-                    record: record.as_str().to_owned(),
+                    record: record.route().to_owned(),
                 };
                 (Some(route), mutation)
             }),
@@ -1015,33 +1051,44 @@ impl Worker {
         }
     }
 
-    fn run(mut self, jobs: &mpsc::Receiver<Job>) {
-        while let Ok(job) = jobs.recv() {
+    fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
+        while let Ok((queued, job)) = jobs.recv() {
+            let started = Instant::now();
+            let kind = job.kind();
+            self.take(job);
+            let (waited, ran) = (started.duration_since(queued), started.elapsed());
+            if waited.max(ran) >= SLOW_JOB {
+                tracing::warn!(
+                    kind,
+                    waited_ms = waited.as_millis(),
+                    ran_ms = ran.as_millis(),
+                    "room actions: a request waited or ran long"
+                );
+            }
+        }
+    }
+
+    fn take(&mut self, job: Job) {
+        {
             match job {
                 Job::Feedback {
                     workspace_id,
                     query,
                     caller,
                     done,
-                } => {
-                    let result = self
-                        .shared
-                        .link
-                        .get()
-                        .ok_or_else(|| ActionHostError::Unavailable {
-                            reason: "feedback host unavailable".into(),
-                        })
-                        .and_then(|link| {
-                            feedback::answer(
-                                link,
-                                self.catalogue.clone(),
-                                workspace_id,
-                                caller,
-                                *query,
-                            )
-                        });
-                    done.complete(result);
-                }
+                } => match self.shared.link.get() {
+                    Some(link) => feedback::answer_and_review(
+                        link,
+                        self.catalogue.clone(),
+                        workspace_id,
+                        caller,
+                        *query,
+                        done,
+                    ),
+                    None => done.complete(Err(ActionHostError::Unavailable {
+                        reason: "feedback host unavailable".into(),
+                    })),
+                },
                 Job::Catalogue {
                     workspace_id,
                     query,
@@ -2072,10 +2119,15 @@ impl Worker {
             invite: false,
             args: arguments,
         };
-        let locator = page
+        let mut locator = page
             .locator
             .ok_or_else(|| failed("This workspace's host serves no web page".into()))?;
-        let url = ui::framework::host_link(&request, &route.app_id, &route.record, &locator)
+        // A part of a chain opens with the record it is held beside: the
+        // link's page mounts that record, whose window holds the part and
+        // offers its items at the address asked for here.
+        let opened = self.holder_of(route);
+        locator.provider = record_provider(&opened);
+        let url = ui::framework::host_link(&request, &opened.app_id, &opened.record, &locator)
             .map_err(failed)?;
         Ok(ActionOutput {
             value: Some(serde_json::json!({ "url": url })),
@@ -2097,7 +2149,6 @@ fn invoke_arguments(argument: &InvokeArgument) -> serde_json::Map<String, serde_
     }
 }
 
-/// Whether `given` is the confirmation `policy` asks for.
 fn confirms(policy: &ConfirmationPolicy, given: Option<&Confirmation>) -> bool {
     match (policy, given) {
         (ConfirmationPolicy::Phrase { phrase }, Some(Confirmation::Phrase(given))) => {

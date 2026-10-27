@@ -129,6 +129,45 @@ fn retain(store: &WorkspaceStore, frames: Vec<Vec<u8>>, seq: &mut u64) {
     }
 }
 
+/// [`retain`] for the long histories compaction's thresholds need: each
+/// delta whose author's lineage has a generation is written into it at the
+/// next ordinal, as a commit leaves it, without the commit's two barriers.
+/// Compaction reads those files whether or not they were synced; hundreds
+/// of barriers made these tests wait minutes on a busy CI disk. An author's
+/// first frame is retained through the store, which provisions its lineage.
+fn append(store: &WorkspaceStore, frames: Vec<Vec<u8>>, seq: &mut u64) {
+    for frame in frames {
+        let Some((author, CoeditPayload::RetainedDelta { .. })) =
+            crate::store::retained::payload(&frame, WORKSPACE)
+        else {
+            panic!("only a delta appends");
+        };
+        let lineage = store
+            .root()
+            .join(crate::store::RETAINED_DIR)
+            .join("v2")
+            .join(format!(
+                "{}-{}",
+                hex::encode(author),
+                hex::encode(channel())
+            ));
+        let Some(active) = crate::store::retained::current(&lineage).unwrap() else {
+            retain(store, vec![frame], seq);
+            continue;
+        };
+        *seq = seq.saturating_add(1);
+        let next = std::fs::read_dir(&active)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.unwrap().file_name();
+                u64::from_str_radix(name.to_str()?.strip_suffix(".delta")?, 16).ok()
+            })
+            .max()
+            .map_or(0, |last| last.saturating_add(1));
+        std::fs::write(active.join(format!("{next:016x}.delta")), frame).unwrap();
+    }
+}
+
 /// Each entry checked as a round with nothing remembered checks it.
 fn checked(entries: &[ChannelEntry]) -> Vec<Checked<'_>> {
     let mut signatures = Signatures::default();
@@ -139,11 +178,11 @@ fn checked(entries: &[ChannelEntry]) -> Vec<Checked<'_>> {
 }
 
 fn due(entries: &[ChannelEntry], min_tail: usize) -> bool {
-    compaction_due(entries, &units(checked(entries)), min_tail)
+    compaction_due(entries, &units(checked(entries)), min_tail, false)
 }
 
 fn fold_all(entries: &[ChannelEntry]) -> Option<Folded> {
-    fold(entries, &units(checked(entries)))
+    fold(entries, &units(checked(entries)), 2)
 }
 
 /// Merge everything the channel retains the way a late joiner does.
@@ -217,7 +256,7 @@ fn the_host_folds_a_long_tail_and_a_late_joiner_converges_from_its_snapshot() {
             .unwrap();
         doc.commit();
         let author = if edit % 3 == 0 { 2 } else { 1 };
-        retain(
+        append(
             &store,
             device_frames(
                 author,
@@ -351,7 +390,7 @@ fn a_sealed_tail_is_never_folded_and_asks_for_a_member() {
         let before = doc.get_heads();
         doc.put(ROOT, "k", i64::try_from(edit).unwrap()).unwrap();
         doc.commit();
-        retain(
+        append(
             &store,
             device_frames(
                 1,
@@ -608,13 +647,24 @@ fn history(store: &WorkspaceStore, edits: u64, seq: &mut u64) -> (AutoCommit, Au
 }
 
 fn extend(store: &WorkspaceStore, doc: &mut AutoCommit, edits: u64, seq: &mut u64) {
+    extend_with(store, doc, edits, seq, retain);
+}
+
+/// [`extend`], writing each edit's frames with `write`.
+fn extend_with(
+    store: &WorkspaceStore,
+    doc: &mut AutoCommit,
+    edits: u64,
+    seq: &mut u64,
+    write: fn(&WorkspaceStore, Vec<Vec<u8>>, &mut u64),
+) {
     for _ in 0..edits {
         let before = doc.get_heads();
         doc.put(ROOT, format!("k{}", *seq), i64::try_from(*seq).unwrap())
             .unwrap();
         doc.commit();
         let at = seq.saturating_add(10);
-        retain(
+        write(
             store,
             device_frames(
                 1,
@@ -848,14 +898,15 @@ fn opaque_payloads_are_never_folded_or_gc_selected() {
     let tmp = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
     let mut seq = 0;
-    history(&store, 300, &mut seq);
+    let (_, mut doc) = history(&store, 0, &mut seq);
+    extend_with(&store, &mut doc, 300, &mut seq, append);
     let mut sealed = AutoCommit::new();
     for edit in 0..COMPACT_TAIL_ENTRIES {
         let before = sealed.get_heads();
         sealed.put(ROOT, "k", i64::try_from(edit).unwrap()).unwrap();
         sealed.commit();
         let at = seq.saturating_add(10);
-        retain(
+        append(
             &store,
             device_frames(
                 2,
@@ -1286,4 +1337,224 @@ async fn a_sealed_compaction_statement_without_the_members_own_snapshot_removes_
     assert!(ask.answer(MEMBER, MEMBER, &answer).await.is_err());
     assert_eq!(ask.retained().await, before);
     drop(ask);
+}
+
+/// Two devices' writes of the record retained in the clear, as `(actor,
+/// seq)` of every change they hold.
+fn written_in_the_clear(store: &WorkspaceStore) -> HashSet<(automerge::ActorId, u64)> {
+    let mut seq = 0;
+    let (mut first, mut second) = (AutoCommit::new(), AutoCommit::new());
+    first.put(ROOT, "title", "before the channel").unwrap();
+    first.commit();
+    retain(
+        store,
+        device_frames(1, &DocumentMutation::Snapshot(first.save()), false, 1),
+        &mut seq,
+    );
+    second.merge_incoming(&mut first).unwrap();
+    for edit in 0..3_u64 {
+        for (seed, doc) in [(1, &mut first), (2, &mut second)] {
+            let before = doc.get_heads();
+            doc.put(ROOT, format!("by {seed}"), i64::try_from(edit).unwrap())
+                .unwrap();
+            doc.commit();
+            retain(
+                store,
+                device_frames(
+                    seed,
+                    &DocumentMutation::Incremental(doc.save_after(&before)),
+                    false,
+                    edit.saturating_add(10),
+                ),
+                &mut seq,
+            );
+        }
+    }
+    first.merge_incoming(&mut second).unwrap();
+    first
+        .get_changes(&[])
+        .iter()
+        .map(|change| (change.actor_id().clone(), change.seq()))
+        .collect()
+}
+
+/// A key holder's opener for `keys`, as [`Compactor::fold_as_steward`] reads.
+fn steward_opener(
+    keys: &channel_crypto::ChannelContentKeys,
+) -> impl Fn(&collab_types::SignedOp) -> Option<Vec<u8>> + '_ {
+    |op| {
+        let metadata = op.encryption?;
+        let ciphertext = collab_types::sealed_ciphertext(op).ok()?;
+        keys.open_content(op.artifact, &metadata, &ciphertext)
+            .ok()
+            .map(|plaintext| plaintext.to_vec())
+    }
+}
+
+fn steward_keys() -> channel_crypto::ChannelContentKeys {
+    let route = route();
+    channel_crypto::ChannelGroup::create(
+        collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id),
+        channel_crypto::MemberKey::generate("steward").unwrap(),
+    )
+    .unwrap()
+    .content_keys()
+    .unwrap()
+}
+
+/// One steward round over the channel, as [`Compactor::fold_as_steward`]
+/// runs it; `removes` false stops it where a crash between writing the
+/// sealed snapshot and removing what it holds would.
+fn steward_round(
+    store: &WorkspaceStore,
+    keys: &channel_crypto::ChannelContentKeys,
+    removes: bool,
+) -> Option<Replaced> {
+    let open = steward_opener(keys);
+    let entries = store.channel_entries(&channel()).unwrap();
+    let (_, folded) = plan_opening(
+        &entries,
+        &mut Signatures::default(),
+        &HashSet::new(),
+        COMPACT_TAIL_ENTRIES,
+        (Some(&open), true),
+        |route, snapshot| {
+            sealed_document_frames(
+                &crate::payloads::NeighbourPayloads,
+                (&key(99), keys),
+                WORKSPACE,
+                route,
+                snapshot,
+            )
+            .ok()
+        },
+    );
+    let (folded, frames) = folded?;
+    let remove: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
+    Some(
+        store
+            .replace_channel(
+                &channel(),
+                Some(SnapshotWrite {
+                    author: key(99).verifying_key().to_bytes(),
+                    frames,
+                }),
+                &|bytes| removes && remove.contains(&file_digest(bytes)),
+            )
+            .unwrap(),
+    )
+}
+
+/// Every change the channel's sealed snapshots hold, as `(actor, seq)`,
+/// when it retains nothing in the clear.
+fn sealed_changes(
+    store: &WorkspaceStore,
+    keys: &channel_crypto::ChannelContentKeys,
+) -> Option<HashSet<(automerge::ActorId, u64)>> {
+    let open = steward_opener(keys);
+    let retained = store.channel_entries(&channel()).unwrap();
+    let mut signatures = Signatures::default();
+    let checked: Vec<Checked<'_>> = retained
+        .iter()
+        .map(|entry| signatures.check_opening(entry, Some(&open)))
+        .collect();
+    if checked.iter().any(Checked::is_cleartext) {
+        return None;
+    }
+    let mut read = HashSet::new();
+    for unit in units(checked).units {
+        let Some(DocumentMutation::Snapshot(snapshot)) = unit.mutation else {
+            panic!("a sealed snapshot opens with the channel's keys")
+        };
+        for change in AutoCommit::load(&snapshot).unwrap().get_changes(&[]) {
+            read.insert((change.actor_id().clone(), change.seq()));
+        }
+    }
+    Some(read)
+}
+
+/// What a record retained in the clear before its channel was opened,
+/// sealed by its steward: the channel keeps one sealed snapshot, and a
+/// member with the channel's keys reads every change of that history from
+/// it with its author and sequence.
+#[test]
+fn the_steward_seals_the_history_written_in_the_clear_with_every_change_and_author() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let written = written_in_the_clear(&store);
+    assert_eq!(written.len(), 7);
+    let entries = store.channel_entries(&channel()).unwrap().len();
+    let keys = steward_keys();
+    let outcome = steward_round(&store, &keys, true).expect("a short history is sealed");
+    assert_eq!((outcome.removed, outcome.kept), (entries, 1));
+    assert_eq!(sealed_changes(&store, &keys), Some(written));
+    assert!(
+        steward_round(&store, &keys, true).is_none(),
+        "a sealed channel is not sealed again"
+    );
+}
+
+/// The steward stops after its sealed snapshot is durable and before it
+/// removed anything: the history in the clear is all still there, and the
+/// next round seals it without losing a change.
+#[test]
+fn a_seal_stopped_before_its_removal_loses_nothing_and_completes_on_the_next_round() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let written = written_in_the_clear(&store);
+    let entries = store.channel_entries(&channel()).unwrap().len();
+    let keys = steward_keys();
+    let stopped = steward_round(&store, &keys, false).unwrap();
+    assert_eq!((stopped.removed, stopped.kept), (0, entries + 1));
+    assert_eq!(sealed_changes(&store, &keys), None);
+    let outcome = steward_round(&store, &keys, true).unwrap();
+    assert_eq!(outcome.kept, 1);
+    assert_eq!(sealed_changes(&store, &keys), Some(written));
+}
+
+/// One write in the clear is not due for the host's own fold, and its
+/// steward seals it all the same, once the host's operator decided that it
+/// does.
+#[test]
+fn a_lone_write_in_the_clear_is_folded_only_by_its_steward() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), WORKSPACE, false).unwrap();
+    let mut seq = 0;
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "base").unwrap();
+    doc.commit();
+    retain(
+        &store,
+        device_frames(1, &DocumentMutation::Snapshot(doc.save()), false, 1),
+        &mut seq,
+    );
+    let entries = store.channel_entries(&channel()).unwrap();
+    let (_, folded) = plan(
+        &entries,
+        &mut Signatures::default(),
+        &HashSet::new(),
+        COMPACT_TAIL_ENTRIES,
+        |_, _| Some(Vec::new()),
+    );
+    assert!(folded.is_none());
+    let steward = |reseal| {
+        plan_opening(
+            &entries,
+            &mut Signatures::default(),
+            &HashSet::new(),
+            COMPACT_TAIL_ENTRIES,
+            (Some(&|_: &collab_types::SignedOp| None), reseal),
+            |_, _| Some(Vec::new()),
+        )
+        .1
+    };
+    assert!(steward(false).is_none(), "kept until its operator decides");
+    assert_eq!(
+        steward(true)
+            .expect("sealed by its steward")
+            .0
+            .removed
+            .len(),
+        1
+    );
 }

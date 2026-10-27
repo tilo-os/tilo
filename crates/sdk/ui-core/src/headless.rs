@@ -22,8 +22,10 @@
 mod controls;
 mod document_history;
 pub mod host_media;
+mod keys;
 
 pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput};
+use tilo_sort::CompactSort as _;
 
 use std::collections::{HashMap, HashSet};
 
@@ -226,7 +228,7 @@ use crate::history_mode::frame::FrameworkInputFrame;
 /// Both screenshot rendering and [`FrameHarness`] input scenarios use this type, so
 /// they cannot drift into subtly different sync/layout/draw implementations.
 /// Live [`crate::App`] additionally owns the window and event loop, but follows
-/// the same pass ordering documented by [`Self::relayout`].
+/// the same pass ordering documented by [`FrameHarness::relayout`].
 /// Borrowed renderer input plus semantic output from the same real widget frame.
 /// Cheap wake demand; deliberately excludes accessibility and inspection trees.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -272,10 +274,44 @@ pub struct FrameOutput<'a> {
 }
 
 mod caller_palette;
+mod capture;
+mod inspection_patch;
+pub use inspection_patch::{InspectionPatchStats, write_inspection_patch};
+mod drive;
 mod invocation_results;
+mod nav_gesture;
+#[cfg(test)]
+mod palette_window_tests;
+mod retained_layout;
+mod root_wake;
 mod search_open;
+mod slot_row;
+pub use slot_row::WINDOW_SLOTS;
+mod cursor;
 pub mod system_search;
 pub mod test_support;
+mod tooltip_layer;
+mod window_bar;
+pub use window_bar::{WindowBarNotice, WindowBarNoticeButton};
+
+/// What answers another provider's action in a harness, in place of the
+/// workspace broker.
+pub type ServedProvider = Box<
+    dyn FnMut(
+        &ProvidedInvocation<'_>,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError>,
+>;
+
+/// One invocation of another provider's action ([`FrameHarness::serve_provider`]).
+pub struct ProvidedInvocation<'a> {
+    /// The action as the provider publishes it.
+    pub address: &'a tilo_actions::ActionAddress,
+    pub argument: &'a tilo_actions::remote::InvokeArgument,
+    /// Who invoked it.
+    pub actor: &'a str,
+    /// The person confirmed it, where its value asks first.
+    pub confirmed: bool,
+}
 
 pub struct FrameHarness {
     control_domain: crate::ControlDomain,
@@ -285,37 +321,80 @@ pub struct FrameHarness {
     caller_palette: caller_palette::CallerPalette,
     system_search: system_search::SystemSearch,
     component_wake: Option<ComponentRunnerWakeState>,
+    root_wake: root_wake::RootWake,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
     owner_service_layout_retired: bool,
     /// A replaced composition seen by a focus capture before the next
     /// layout took it up: the next [`Self::take_composition_dirty`] still
     /// reports it.
     composition_replaced: bool,
+    /// The root's widgets reported a change they carry out in place
+    /// ([`crate::widget::StructureChange::Children`]): the next layout
+    /// remounts their children in the retained tree, unless it rebuilds.
+    remount: bool,
     layout_requested: bool,
     state: State,
     root: Box<dyn Widget>,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
     action_palette: Option<Box<crate::action_palette::ActionPalette>>,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
+    /// The window the open palette was asked for from, when the root lays
+    /// several out (the desktop's strip of app tiles): the palette stands
+    /// over it, as an app's own palette stands over its window.
+    palette_window: Option<Rect>,
+    /// Where the pointer is, and where the last press landed until a key
+    /// is pressed, in logical pixels: a confirmation a press asked for
+    /// stands over the window pressed in.
+    pointer_at: Option<Point>,
+    pressed_at: Option<Point>,
     /// The open search palette has provider pages left to read.
     search_pending: bool,
     root_lifetime: uuid::Uuid,
     framework_input: std::rc::Rc<std::cell::Cell<bool>>,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
+    /// Which `node_map` pointers were taken from the live tree
+    /// ([`retained_layout`]).
+    layout_maps: crate::retained_widgets::Adopted,
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     root_node: NodeId,
+    /// A frame was laid out: what arrives after it moves in
+    /// (`motion::window_has_shown`).
+    shown_a_frame: bool,
     child_node: NodeId,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
     history_chrome_enabled: bool,
+    /// The harness stands in for the desktop's window bar: the app's slots,
+    /// search and History are hosted there and every capture paints it over
+    /// the app's frame ([`Self::present_in_window_bar`]).
+    window_bar: bool,
+    /// The window bar's search over the app's widgets, painted in the bar
+    /// ([`Self::search_in_window`]).
+    window_search: crate::widget::WindowSearch,
+    /// The app's window-bar slots in a row of the frame's own, as a window
+    /// of its own hosts them ([`Self::host_window_slots`]).
+    slot_row: Option<Box<slot_row::HostedSlots>>,
+    /// The app a concrete root stands for ([`Self::for_app`]): its kind and
+    /// title, which its window's bar wears as a desktop window's tab does.
+    window_app: Option<(crate::widget::AppKind, String)>,
     /// What each frame's control refresh discovered, as the live App keeps
     /// it: a component publishing a shared forest is filtered and surveyed
     /// only where its forest changed.
     bound_resources: crate::bound_dispatch::BoundResourceCache,
-    /// Advanced by every frame that publishes, so nothing local is taken
-    /// from an earlier frame. A quiet frame publishes nothing.
+    /// Advanced whenever something a component's declarations may follow
+    /// moved since the last publication ([`Self::bound_resource_key`]), so
+    /// nothing local is taken from an earlier frame, yet a frame that only
+    /// repeats the last one's reading (an arrival animating, a second
+    /// publication in the same frame) finds what that one discovered.
     bound_resource_frames: u64,
+    /// What the last publication read: [`Self::bound_resource_frames`]
+    /// stays while it reads the same.
+    bound_resource_key: Option<BoundResourceKey>,
+    /// Frames whose widgets noticed a change of their own (`update`, a
+    /// wake, a served deadline): local state no document or entry point
+    /// shows.
+    local_changes: u64,
     /// Advanced by every entry point that can reach a widget, the document
     /// or what a frame presents ([`Self::invalidate_local`]). Only
     /// [`Self::poll_frame`] and a wheel coalesced into it leave it alone.
@@ -338,6 +417,11 @@ pub struct FrameHarness {
     replayed_draws: bool,
     /// Windows shown by replaying their drawing, since construction.
     replayed_window_draws: u64,
+    /// Frames whose layout failed, skipped ([`Self::skip_frame`]).
+    skipped_frames: crate::widget::SkippedFrames,
+    /// The report of a frame this harness skipped on its own, until a host
+    /// takes it ([`Self::take_skip_report`]).
+    skip_report: Option<String>,
     /// The frame being run draws every window ([`Self::settle_replayed_draws`]).
     suppress_pan_replay: bool,
     /// The host lets pan frames replay windows ([`Self::set_pan_replay`]).
@@ -356,6 +440,10 @@ pub struct FrameHarness {
     /// Scratch scene for the draw pass. Never rasterised — see
     /// [`FrameHarness::relayout`] for why it is drawn at all.
     scene: Scene,
+    /// Whether the draw pass records the scene's damage parts
+    /// ([`Self::track_scene_parts`]), and the parts the last one drew.
+    track_scene_parts: bool,
+    scene_parts: Option<crate::scene_parts::SectionParts>,
     /// Protection of the prepared scene; unknown/failed paints stay protected.
     scene_capture_protected: bool,
     /// The backdrops the scene's floating surfaces were drawn over, which
@@ -366,6 +454,18 @@ pub struct FrameHarness {
     /// redraws (the collaborator overlays read presence at draw time) without
     /// an extra synchronous relayout.
     presence_redraw: bool,
+    /// Other people's pointers its host placed over this surface
+    /// ([`Self::set_placed_pointers`]), drawn above everything else.
+    placed_pointers: Vec<crate::presence::PeerCursor>,
+    /// Hover tooltips, driven by host input ([`Self::send_host_event`]).
+    tooltips: tooltip_layer::TooltipLayer,
+    /// The last frame drew a motion (the tooltip's arrival, a popover's)
+    /// before its end. A motion asks for frames only until it ends, and a
+    /// host whose frames come slower than the motion lasts (a busy or
+    /// software-rendered GPU) would see it end between two frames and keep
+    /// its last pose, mid-way, on screen: this owes the frame that draws it
+    /// at rest.
+    settle_frame_owed: bool,
     permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
     interaction: crate::interaction::InteractionEnvironment,
@@ -411,8 +511,14 @@ pub struct FrameHarness {
     /// Tests register document action types explicitly, just as `main` does.
     action_registry: tilo_actions::ActionRegistry,
     action_transport: Box<dyn tilo_actions::ActionTransport>,
+    /// The session this window's host serves it: where opening another app
+    /// goes ([`crate::session_door`]). `None` until the host installs one.
+    session_door: Option<crate::session_door::ClientDoor>,
     pending_control_invocations: HashSet<tilo_actions::InvocationId>,
     control_failures: Vec<String>,
+    /// What stands in for the providers whose actions the app's controls
+    /// are bound to ([`Self::serve_provider`]), by provider.
+    providers: HashMap<String, ServedProvider>,
     bound_invocations:
         HashMap<tilo_actions::InvocationId, crate::bound_dispatch::BoundActionTarget>,
     /// What each job started with [`FrameHarness::start_bound_job`] reported
@@ -433,14 +539,14 @@ pub struct FrameHarness {
     /// dispatched: the frame is the one the press or release runs, as the
     /// live App dispatches both before its next frame.
     replaying_pointer: bool,
-    /// Opt-in: a wheel event's frame is left to the host's next frame
-    /// ([`Self::set_coalesce_wheel_frames`]).
-    coalesce_wheel_frames: bool,
+    /// Opt-in: the frame an input event asks for is left to the host's next
+    /// frame ([`Self::set_coalesce_input_frames`]).
+    coalesce_input_frames: bool,
     /// The pointer buttons held, one bit each: motion with one held is a
     /// drag, never inert ([`Self::is_inert_input`]).
     pointer_buttons: u32,
-    /// A coalesced wheel event was dispatched since the last frame.
-    wheel_frame_pending: bool,
+    /// A coalesced input event was dispatched since the last frame.
+    input_frame_pending: bool,
     /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
     pointer_redraw_diagnostics: bool,
     pointer_redraw_sources: Vec<String>,
@@ -456,6 +562,9 @@ pub struct FrameHarness {
     last_relayout: RelayoutStats,
     /// Completed relayout frames since construction.
     relayout_frames: u64,
+    /// Layout nodes built since construction: every node of each rebuilt
+    /// tree, and those a change carried out in place mounted.
+    layout_nodes_built: u64,
     /// Retained (non-rebuilt) frames completed since construction, used by
     /// the opt-in geometry check.
     retained_frames: u64,
@@ -515,6 +624,18 @@ impl FrameWitness {
     }
 }
 
+/// What a publication of the bound components' controls read
+/// ([`FrameHarness::publish_undo_status`]): while it reads the same, what
+/// the last one discovered of each component still holds.
+#[derive(PartialEq, Eq)]
+struct BoundResourceKey {
+    local_epoch: u64,
+    local_changes: u64,
+    document: (Vec<automerge::ChangeHash>, usize),
+    presentation: u64,
+    focused: Option<NodeId>,
+}
+
 /// What one completed [`FrameHarness::relayout`] did with its layout tree.
 ///
 /// A rebuilt frame discarded and recomposed the taffy tree, node map and
@@ -524,6 +645,9 @@ impl FrameWitness {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RelayoutStats {
     pub rebuilt: bool,
+    /// Widgets changed the retained tree in place
+    /// ([`crate::widget::StructureChange::Children`]); it was not rebuilt.
+    pub remounted: bool,
     pub measured: bool,
     pub marked_dirty: usize,
     pub marked_leaves: usize,
@@ -689,8 +813,6 @@ impl FrameHarness {
 
     /// Observe the ordinary mounted component through a transparent root decorator.
     /// The decorator participates in the same custody, layout, dispatch and draw loop.
-    /// # Errors
-    /// Preserves the ordinary component mounting and history validation errors.
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_component_with_decorator(
         component: crate::application::AppComponent,
@@ -873,8 +995,6 @@ impl FrameHarness {
     ///
     /// Capture scenarios use this at an explicit save boundary instead of
     /// depending on a wall-clock debounce or mutating a status widget.
-    /// # Errors
-    /// Returns the record writer's durable storage failure.
     pub fn flush_component_records(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let result = self
@@ -930,6 +1050,16 @@ impl FrameHarness {
             completed,
             result,
         }
+    }
+
+    /// Park as an idle live window does, until one of its components is
+    /// woken from another thread (a worker's answer, a store's write
+    /// landing) or `deadline` passes. Whether one was woken; `false` at once
+    /// for a harness whose components queue no wakes.
+    pub fn park_until(&self, deadline: crate::time::Instant) -> bool {
+        self.owner_wake_queue
+            .as_ref()
+            .is_some_and(|queue| queue.wait_pending_until(deadline))
     }
 
     /// Queue presence is scheduling metadata, never a service/authority proof.
@@ -991,11 +1121,10 @@ impl FrameHarness {
     fn pump_component_wakes_checked(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         self.readmit_owner_service_layout()?;
         self.drain_component_wakes();
-        if self
-            .component_wake
-            .as_ref()
-            .is_some_and(|wake| wake.dirty.replace(false))
-        {
+        // A host on its own frame clock takes a wake in its next frame, as
+        // the live window's redraw request does; input arriving before it
+        // is dispatched against the last frame, as there.
+        if !self.coalesce_input_frames && self.take_wake() {
             self.relayout();
         }
         self.readmit_owner_service_layout()
@@ -1026,19 +1155,87 @@ impl FrameHarness {
     fn discard_layout_tree(&mut self) {
         self.bindings.clear();
         self.node_map.clear();
+        self.layout_maps.clear();
         self.layout_built = false;
     }
 
     /// The app root's structure flag, and framework History's: it is laid
     /// out as a separate root, so its replaced controls are not the app's.
+    ///
+    /// A change the root's widgets carry out in place leaves every admitted
+    /// pointer valid: it is left to the next layout, not reported.
     fn take_composition_dirty(&mut self) -> bool {
-        let root = self.root.take_structure_dirty();
+        let root = self.root.take_structure_change();
+        if root == crate::widget::StructureChange::Children {
+            self.remount = true;
+        }
         let history = self
             .history
             .as_mut()
             .is_some_and(|history| history.take_structure_dirty());
         let seen = std::mem::take(&mut self.composition_replaced);
-        root || history || seen
+        // A widget that replaced children without saying so is found here.
+        let stale = self.layout_maps_stale();
+        root > crate::widget::StructureChange::Children || history || seen || stale
+    }
+
+    /// Carry out the change the root's widgets make in place
+    /// ([`crate::widget::StructureChange::Children`]) in the retained tree,
+    /// admitting what they mounted, and sync them. Returns `false` when it
+    /// could not be carried out in place, and the frame rebuilds the tree.
+    fn remount_in_place(&mut self) -> bool {
+        self.remount = false;
+        // History lays out its own chrome around the app; while it is live,
+        // the app's widgets change only what is theirs.
+        if !self.layout_built
+            || self.history.as_ref().is_some_and(|history| {
+                !history.live_interactive() || history.returning_live() || history.review_is_open()
+            })
+        {
+            return false;
+        }
+        // Components a widget replaced report their close here, as before a
+        // rebuild.
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
+        );
+        let mapped = self.node_map.len();
+        let mut remount =
+            crate::widget::Remount::new(&mut self.taffy, &self.theme, &mut self.node_map);
+        let applied = self.root.remount_children(&mut remount);
+        let (mounted, unmounted) = remount.finish();
+        let built = (self.node_map.len() + unmounted.len()).saturating_sub(mapped);
+        self.layout_nodes_built = self
+            .layout_nodes_built
+            .saturating_add(u64::try_from(built).unwrap_or(u64::MAX));
+        // The rows it mounted are checked against the live tree at once, as
+        // a build's are, so the next structure check finds the maps live.
+        self.admit_layout_maps();
+        let after = self.root.take_structure_change();
+        // A change no widget carried out, or a rebuild beside it, needs the
+        // whole tree. One the remount itself set off in place (an app that
+        // arrived hears what its window presents) is carried out by the
+        // next pass, in place again.
+        if !applied || after > crate::widget::StructureChange::Children {
+            return false;
+        }
+        self.remount |= after == crate::widget::StructureChange::Children;
+        self.bindings.forget(&unmounted);
+        for (parent, child) in mounted {
+            // SAFETY: the runner exclusively owns this tree, its maps and
+            // widgets; the remount above admitted `child` into both.
+            if !unsafe {
+                self.bindings
+                    .admit_mounted(parent, child, &self.taffy, &self.node_map)
+            } {
+                return false;
+            }
+        }
+        // The mounted widgets are synced before they are measured, as a
+        // rebuild syncs its fresh ones; a sync that replaces delegates needs
+        // the whole tree after all.
+        self.root.sync(&self.state.doc, &self.state.root);
+        !self.take_composition_dirty()
     }
 
     /// Whether a widget replaced children since the maps were admitted. The
@@ -1091,6 +1288,33 @@ impl FrameHarness {
     /// dirtiness.
     fn invalidate_layout_tree(&mut self) {
         self.layout_built = false;
+    }
+
+    /// The style of the node the root is laid out in, across a window `w`
+    /// by `h`: the host's, its top below the row of window slots the frame
+    /// hosts ([`Self::host_window_slots`]).
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "viewport sizes and the row's height are small logical pixel lengths"
+    )]
+    fn host_root_style(&self, w: u32, h: u32) -> Style {
+        let mut style = Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: if self.host.content_height {
+                    Dimension::auto()
+                } else {
+                    Dimension::length(h as f32)
+                },
+            },
+            ..self.host.style.clone()
+        };
+        let inset = self.slot_row_inset();
+        if inset > 0.0 {
+            style.padding.top = taffy::LengthPercentage::length(inset as f32);
+        }
+        style
     }
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
         self.drain_component_wakes();
@@ -1343,8 +1567,8 @@ impl FrameHarness {
     }
 
     /// Continue after the caller explicitly confirmed this exact current item.
-    /// The action the host's confirmation is asking about, and the text
-    /// that confirms it, while it asks: a destructive verb or a removal a
+    /// The action the host's confirmation is asking about, and the
+    /// question it asks, while it asks: a destructive verb or a removal a
     /// control, a menu or an immediate application submitted.
     #[must_use]
     pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
@@ -1354,14 +1578,29 @@ impl FrameHarness {
             .map(|(address, expected)| (address.clone(), expected.to_owned()))
     }
 
-    /// Confirm what the host is asking, as the person does: type the
-    /// confirming text into its dialog and press Enter. Answers the action
-    /// confirmed; `None`, changing nothing, when nothing is asked.
+    /// Why the host asks, when the room's grants ask rather than the action
+    /// itself, as the person reads it in the confirmation.
+    #[must_use]
+    pub fn asking_why(&self) -> Option<&str> {
+        self.action_palette
+            .as_deref()
+            .and_then(crate::action_palette::ActionPalette::asking_why)
+    }
+
+    /// Confirm what the host is asking, as the person does: activate the
+    /// dialog's own button named for the verb (a destructive question starts
+    /// on Cancel, so Enter would not go ahead). Answers the action
+    /// confirmed; `None`, changing nothing, when nothing is asked or the
+    /// dialog refused the activation.
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.invalidate_local();
-        let (address, expected) = self.asking()?;
-        self.type_text(&expected);
-        self.key("Enter");
+        let (address, _question) = self.asking()?;
+        let target = self
+            .action_palette
+            .as_deref()
+            .and_then(crate::action_palette::ActionPalette::confirming_target)?;
+        self.perform_palette_action(&target, &crate::a11y::Action::Activate)
+            .ok()?;
         Some(address)
     }
 
@@ -1507,28 +1746,41 @@ impl FrameHarness {
             caller_palette: Default::default(),
             system_search: Default::default(),
             component_wake,
+            root_wake: root_wake::RootWake::new(),
             owner_wake_queue: None,
             owner_service_layout_retired: false,
             composition_replaced: false,
+            remount: false,
             layout_requested: false,
             state,
             root,
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
+            layout_maps: crate::retained_widgets::Adopted::default(),
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             history: None,
             action_palette: None,
             ordinary_palette_return_focus: None,
+            palette_window: None,
+            pointer_at: None,
+            pressed_at: None,
             search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
             component_close_reports: vec![],
             root_node: NodeId::from(0usize),
+            shown_a_frame: false,
             child_node: NodeId::from(0usize),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
+            window_bar: false,
+            window_search: crate::widget::WindowSearch::new(),
+            slot_row: None,
+            window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
             bound_resource_frames: 0,
+            bound_resource_key: None,
+            local_changes: 0,
             local_epoch: 0,
             frame_witness: None,
             quiet_frames: 0,
@@ -1536,6 +1788,8 @@ impl FrameHarness {
             settled_history_frames: 0,
             replayed_draws: false,
             replayed_window_draws: 0,
+            skipped_frames: crate::widget::SkippedFrames::default(),
+            skip_report: None,
             suppress_pan_replay: false,
             pan_replay_allowed: true,
             pan_frames: 0,
@@ -1546,6 +1800,8 @@ impl FrameHarness {
             text,
             theme,
             scene: Scene::new(),
+            track_scene_parts: false,
+            scene_parts: None,
             scene_capture_protected: true,
             backdrop: std::sync::Arc::default(),
             records: None,
@@ -1553,6 +1809,9 @@ impl FrameHarness {
             room_index: None,
             presence: PresenceCtx::empty(),
             presence_redraw: false,
+            placed_pointers: Vec::new(),
+            tooltips: tooltip_layer::TooltipLayer::default(),
+            settle_frame_owed: false,
             permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -1574,8 +1833,10 @@ impl FrameHarness {
             author: author(),
             action_registry: tilo_actions::ActionRegistry::new(),
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
+            session_door: None,
             pending_control_invocations: HashSet::new(),
             control_failures: Vec::new(),
+            providers: HashMap::new(),
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
             acting_for: HashMap::new(),
@@ -1583,15 +1844,16 @@ impl FrameHarness {
             profiler: None,
             last_send_skipped_relayout: false,
             replaying_pointer: false,
-            coalesce_wheel_frames: false,
+            coalesce_input_frames: false,
             pointer_buttons: 0,
-            wheel_frame_pending: false,
+            input_frame_pending: false,
             pointer_redraw_diagnostics: false,
             pointer_redraw_sources: Vec::new(),
             layout_built: false,
             full_relayout_override: None,
             last_relayout: RelayoutStats::default(),
             relayout_frames: 0,
+            layout_nodes_built: 0,
             retained_frames: 0,
             retained_geometry_check_every: 0,
             verifying_geometry: false,
@@ -1624,6 +1886,21 @@ impl FrameHarness {
                 ..FrameOptions::default()
             },
         )
+    }
+
+    /// [`Self::for_root`] for an app: its window's bar
+    /// ([`Self::present_in_window_bar`]) wears the app's icon and title, as
+    /// a desktop window's tab does.
+    pub fn for_app<W: crate::widget::AppWidget + 'static>(
+        state: State,
+        root: W,
+        viewport: (u32, u32),
+        theme: Theme,
+    ) -> Self {
+        let app = (root.app_kind(), root.app_title().to_owned());
+        let mut harness = Self::for_root(state, root, viewport, theme);
+        harness.window_app = Some(app);
+        harness
     }
 
     /// [`Self::for_root`] with every construction option spelled out.
@@ -1779,6 +2056,7 @@ impl FrameHarness {
         modifiers: &winit::event::Modifiers,
     ) -> RootDispatch {
         self.invalidate_local();
+        let _wake = self.enter_wake();
         crate::motion::note_input(event);
         self.settle_replayed_draws();
         if let Err(error) = self.readmit_owner_service_layout() {
@@ -1829,6 +2107,13 @@ impl FrameHarness {
         self.relayout();
     }
 
+    /// What the widget tree asked of the transport since the last call, as
+    /// a live window's host takes it: the other half of
+    /// [`Self::handle_collaboration_event`].
+    pub fn take_collaboration_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+        crate::widget::take_collab_requests(self.root.as_mut())
+    }
+
     /// The live document, read-only.
     #[must_use]
     pub fn state(&self) -> &State {
@@ -1872,6 +2157,14 @@ impl FrameHarness {
         }
         self.action_transport = transport;
         Ok(())
+    }
+
+    /// Serve this window the session `client` stands for, in `workspace`:
+    /// where opening another app goes. A host that serves its windows in
+    /// process, such as a page, installs its own session here.
+    pub fn set_session_door(&mut self, client: crate::RemoteActions, workspace: Option<String>) {
+        self.invalidate_local();
+        self.session_door = Some(crate::session_door::ClientDoor::new(client, workspace));
     }
 
     pub fn action_registry_mut(&mut self) -> &mut tilo_actions::ActionRegistry {
@@ -2088,7 +2381,7 @@ impl FrameHarness {
         self.local_epoch = self.local_epoch.wrapping_add(1);
     }
 
-    /// Frames that found nothing new to sync or publish ([`FrameWitness`])
+    /// Frames that found nothing new to sync or publish (`FrameWitness`)
     /// since construction.
     #[must_use]
     pub fn quiet_frames(&self) -> u64 {
@@ -2133,11 +2426,36 @@ impl FrameHarness {
         let settled = self.try_relayout();
         self.suppress_pan_replay = false;
         if let Err(error) = settled {
-            tracing::error!(
-                ?error,
-                "headless: widget layout did not settle; replayed windows not drawn again"
-            );
+            self.skip_own_frame(&error);
         }
+    }
+
+    /// [`Self::skip_frame`] for a frame the harness runs itself (input's,
+    /// an idle pass's): its report goes to the log and waits for a host
+    /// that logs elsewhere ([`Self::take_skip_report`]).
+    fn skip_own_frame(&mut self, error: &crate::widget::WidgetLayoutError) {
+        if let Some(line) = self.skip_frame(error) {
+            tracing::error!("headless: {line}");
+            self.skip_report = Some(line);
+        }
+    }
+
+    /// The report of the last frame the harness skipped on its own since
+    /// this was last asked, when one was due: a host whose log is not
+    /// `tracing`'s (the browser's console) prints it.
+    pub fn take_skip_report(&mut self) -> Option<String> {
+        self.skip_report.take()
+    }
+
+    /// Skip a frame whose layout failed with `error`, as every host does:
+    /// the next frame lays the tree out again, and what was presented last
+    /// stays on screen until then, so input keeps landing. The scene this
+    /// frame left may be partial; a host presents its last frame again
+    /// instead of drawing it. Returns the line to log when one is due
+    /// ([`crate::widget::SkippedFrames`]).
+    pub fn skip_frame(&mut self, error: &crate::widget::WidgetLayoutError) -> Option<String> {
+        self.invalidate_local();
+        self.skipped_frames.skip(error, crate::time::now())
     }
 
     /// Let the frames that follow replay windows at rest when they only
@@ -2151,7 +2469,7 @@ impl FrameHarness {
     /// A wheel coalesced into the next frame that only pans: it reaches no
     /// widget that drew, so it needs no window drawn again.
     fn pans_without_drawing(&self, event: &WindowEvent) -> bool {
-        self.coalesce_wheel_frames
+        self.coalesce_input_frames
             && matches!(event, WindowEvent::MouseWheel { .. })
             && self.is_view_only_scroll(event)
     }
@@ -2292,18 +2610,26 @@ impl FrameHarness {
             && !self.has_pending_owner_models()
     }
 
+    /// The update pass, with the room's presence lent as the frame's
+    /// ([`crate::presence::frame`]) under the window's authority, as the
+    /// live App lends it.
+    fn update_root(&mut self) -> bool {
+        let (root, state) = (&mut self.root, &self.state);
+        let permissions = self.permissions.clone();
+        self.presence.with_permissions(permissions, || {
+            crate::presence::frame::lend(&self.presence, || root.update(&state.doc, &state.root))
+        })
+    }
+
     /// The frame's sync: what the widgets took up is written, the document
     /// read, and what that sync took up written and shown in the same frame.
     fn sync_frame(&mut self) {
         let _phase = tilo_resource::profiling::Phase::start("ui.frame_sync");
-        // The sync runs in the component's wake scope, as the live window's
-        // runs in the App's: work it starts on another thread (an area
+        // The sync runs in the root's wake scope, as the live window's runs
+        // in the App's: work it starts on another thread (an area
         // Settings reads off the UI thread) wakes the frame that takes in
         // its result instead of no one.
-        let _wake = self
-            .component_wake
-            .as_ref()
-            .and_then(|wake| wake.binding.lifetime.enter_if_open().ok());
+        let _wake = self.enter_wake();
         // What the widgets took up since the last frame (an edit a child
         // made on its own) is written before the document is read again.
         self.root.settle(
@@ -2322,7 +2648,7 @@ impl FrameHarness {
         let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
         if settled || submitted {
             self.idle_control_tick();
-            self.root.update(&self.state.doc, &self.state.root);
+            self.update_root();
             self.root.sync(&self.state.doc, &self.state.root);
         }
     }
@@ -2378,11 +2704,7 @@ impl FrameHarness {
         // next frame answers for. Only a difference nothing announced is a
         // skipped sync.
         self.drain_component_wakes();
-        if self
-            .component_wake
-            .as_ref()
-            .is_some_and(|wake| wake.dirty.get())
-        {
+        if self.wake_pending() {
             self.request_layout();
             return;
         }
@@ -2438,7 +2760,18 @@ impl FrameHarness {
         {
             return;
         }
-        self.bound_resource_frames = self.bound_resource_frames.wrapping_add(1);
+        let key = BoundResourceKey {
+            local_epoch: self.local_epoch,
+            local_changes: self.local_changes,
+            document: crate::doc::settle_mark(&self.state.doc),
+            presentation: crate::widget::resource_presentation_epoch(),
+            focused: self.focused,
+        };
+        // An uncommitted document can move without its heads moving.
+        if key.document.1 != 0 || self.bound_resource_key.as_ref() != Some(&key) {
+            self.bound_resource_frames = self.bound_resource_frames.wrapping_add(1);
+            self.bound_resource_key = Some(key);
+        }
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root.as_ref(),
             &self.state.doc,
@@ -2483,15 +2816,34 @@ impl FrameHarness {
             crate::undo::UndoStatus,
         )> = Vec::new();
         let mut visited = HashSet::new();
+        // Only an undo control takes the status: the others are asked
+        // whether they are one within one sweep, not each in its own scope.
+        let mut controls = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
         for (&node, pointer) in &self.node_map {
             // SAFETY: node_map pointers are valid until the next `relayout`.
             if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
-            let binding = self.bindings.binding_for(node);
+            let binding = self.bindings.binding_ref(node);
+            // SAFETY: as in `drain_undo_requests`; the check reads the widget only.
+            let control =
+                unsafe { controls.layout(node, |widget| crate::undo::takes_undo_status(widget)) }
+                    .unwrap_or(false);
+            // A bound node that is no control, of a component whose status
+            // this sweep already read, has nothing to read or be told.
+            if !control
+                && binding.is_some_and(|binding| {
+                    bound_statuses
+                        .iter()
+                        .any(|(seen, _)| seen.same_component(binding))
+                })
+            {
+                continue;
+            }
+            // What follows enters each owner's scope itself.
+            controls.leave();
             // Preserve bound history label warming across pending edits.
             let bound_status = binding
-                .as_ref()
                 .map(|binding| {
                     if let Some((_, status)) = bound_statuses
                         .iter()
@@ -2517,6 +2869,9 @@ impl FrameHarness {
                         .clone()
                 })
             };
+            if !control {
+                continue;
+            }
             // SAFETY: as in `drain_undo_requests`.
             let _ = unsafe {
                 crate::bound_dispatch::mutate_bound_node(
@@ -2584,26 +2939,71 @@ impl FrameHarness {
         self.last_layout_viewport = None;
     }
 
+    /// What makes [`FrameSchedule::queued_work`] true, by name: what an idle
+    /// window would wake for. Diagnostics for a test that holds a window
+    /// idle; not part of scheduling.
+    pub fn queued_work_sources(&self) -> Vec<&'static str> {
+        self.drain_component_wakes();
+        [
+            ("layout requested", self.layout_requested),
+            ("input frame pending", self.input_frame_pending),
+            (
+                "owner service layout retired",
+                self.owner_service_layout_retired,
+            ),
+            (
+                "owner wake queued",
+                self.owner_wake_queue
+                    .as_ref()
+                    .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending),
+            ),
+            ("presence redraw", self.presence_redraw),
+            ("tooltip", self.tooltips.schedule().0),
+            ("search pending", self.search_pending),
+            ("bound invocations", !self.bound_invocations.is_empty()),
+            (
+                "control invocations",
+                !self.pending_control_invocations.is_empty(),
+            ),
+            (
+                "component wake",
+                self.component_wake
+                    .as_ref()
+                    .is_some_and(|wake| wake.dirty.get()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(name, queued)| queued.then_some(name))
+        .collect()
+    }
+
     /// Read wake demand without materializing document text or semantic nodes.
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
         let queued_work = self.layout_requested
-            || self.wheel_frame_pending
+            || self.input_frame_pending
             || self.owner_service_layout_retired
             || self
                 .owner_wake_queue
                 .as_ref()
                 .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending)
             || self.presence_redraw
+            || self.tooltips.schedule().0
             || self.search_pending
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
             || self
-                .component_wake
+                .session_door
                 .as_ref()
-                .is_some_and(|wake| wake.dirty.get());
+                .is_some_and(crate::session_door::ClientDoor::is_busy)
+            || self.wake_pending();
+        let (slots_declared, slots_moving) = self.slot_row_wants_frame();
+        let queued_work = queued_work || slots_declared;
         self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
+                || slots_moving
+                || self.settle_frame_owed
+                || self.tooltips.schedule().2
                 || crate::motion::frames_wanted(crate::time::now())
                 || self
                     .presence
@@ -2615,6 +3015,7 @@ impl FrameHarness {
                     self.presence
                         .interaction_next_wake_deadline(crate::time::now()),
                 )
+                .chain(self.tooltips.schedule().1)
                 .min(),
             needs_redraw: roots.iter().any(|root| root.needs_redraw()) || queued_work,
             queued_work,
@@ -2722,20 +3123,21 @@ impl FrameHarness {
         self.text.take_browser_font_demands()
     }
 
-    /// Install one verified optional font, invalidate text caches, then
-    /// rebuild layout before the browser is allowed to request a redraw.
+    /// Install one verified optional font and invalidate text caches; the
+    /// next frame rebuilds the layout, once for every font installed before
+    /// it, where rebuilding after each held a page loading several fonts.
     /// # Errors
     /// Propagates canonical font integrity and face-validation failures.
     pub fn install_browser_font(
         &mut self,
         name: &str,
         bytes: Vec<u8>,
+        sha256: &str,
     ) -> Result<bool, crate::font_catalog::FontCatalogError> {
         self.invalidate_local();
-        let changed = self.text.install_browser_font(name, bytes)?;
+        let changed = self.text.install_browser_font(name, bytes, sha256)?;
         if changed {
-            self.invalidate_layout_tree();
-            self.relayout();
+            self.request_layout();
         }
         Ok(changed)
     }
@@ -2783,6 +3185,19 @@ impl FrameHarness {
             }
         }
         result
+    }
+
+    /// Record the damage parts of every scene the draw pass produces from
+    /// now on ([`crate::scene_parts`]), for a host that compares each frame
+    /// with the one it presented before ([`Self::scene_parts`]).
+    pub fn track_scene_parts(&mut self, track: bool) {
+        self.track_scene_parts = track;
+    }
+
+    /// The damage parts of the last scene drawn, when they were recorded
+    /// ([`Self::track_scene_parts`]) and well nested.
+    pub fn scene_parts(&self) -> Option<&crate::scene_parts::SectionParts> {
+        self.scene_parts.as_ref()
     }
 
     /// Borrow the completed scene. Use `frame_output` when semantics are needed.
@@ -2867,84 +3282,6 @@ impl FrameHarness {
         self.scene_capture_protected
     }
 
-    /// Rasterise the most recently laid-out frame to a PNG over the window
-    /// ground (`surfaces.content`), exactly as a live window clears before
-    /// drawing. `--shots` writes this.
-    ///
-    /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
-    /// this never runs a separate screenshot-only widget pipeline. A browser
-    /// page cannot read a frame back synchronously: there nothing is written.
-    pub fn render_png(&self, out: &std::path::Path) {
-        self.render_png_on(out, self.theme.tokens.colors.surfaces.content);
-    }
-
-    /// Rasterise the most recently laid-out frame over the window ground, as
-    /// tightly packed RGBA8 rows `viewport.0` pixels wide. Empty in a browser
-    /// page, which cannot read a frame back synchronously.
-    pub fn render_rgba(&self) -> Vec<u8> {
-        self.render_rgba_on(self.theme.tokens.colors.surfaces.content)
-    }
-
-    /// [`FrameHarness::render_rgba`] over a transparent background.
-    pub fn render_rgba_transparent(&self) -> Vec<u8> {
-        self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn render_rgba_on(&self, _background: vello::peniko::Color) -> Vec<u8> {
-        tracing::warn!("a browser page has no offscreen renderer; the frame is empty");
-        Vec::new()
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn render_png_on(&self, out: &std::path::Path, _background: vello::peniko::Color) {
-        tracing::warn!(path = %out.display(), "a browser page has no offscreen renderer; no PNG written");
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn render_png_on(&self, out: &std::path::Path, background: vello::peniko::Color) {
-        self.drain_component_wakes();
-        if let Some(parent) = out.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let (w, h) = self.device_size();
-        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
-        renderer.set_backdrop(Some(self.backdrop.clone()));
-        renderer.render_png(&self.scene, background, out);
-    }
-
-    /// The transform frames are drawn with: the identity, or the capture's
-    /// device scale ([`crate::offscreen::set_capture_device_scale`]).
-    pub(crate) fn capture_draw_transform(&self) -> Affine {
-        crate::scale::composite_transform(f64::from(crate::offscreen::capture_device_scale()))
-    }
-
-    /// The frame's size in device pixels: the viewport at the capture's
-    /// device scale.
-    ///
-    /// # Panics
-    ///
-    /// Panics when a capture's device scale makes the frame larger than
-    /// Vello renders in one pass (256 bins of 256 x 256 px): it would drop
-    /// the bins past that and write a frame with holes.
-    fn device_size(&self) -> (u32, u32) {
-        let scale = crate::offscreen::capture_device_scale();
-        let size = (
-            self.viewport.0.saturating_mul(scale),
-            self.viewport.1.saturating_mul(scale),
-        );
-        assert!(
-            scale == 1 || size.0.div_ceil(256).saturating_mul(size.1.div_ceil(256)) <= 256,
-            "a {}x{} capture at device scale {scale} is {}x{} pixels, more than Vello renders \
-             in one pass (256 bins of 256 x 256); pass a smaller --viewport (1280x768 fits at 4x)",
-            self.viewport.0,
-            self.viewport.1,
-            size.0,
-            size.1
-        );
-        size
-    }
-
     /// Drive a record-aware app: the live document is a record's, and the
     /// widget names which one. Mirrors [`crate::App::with_records`].
     #[must_use]
@@ -2989,9 +3326,6 @@ impl FrameHarness {
     }
 
     /// Deliver a trusted shell operation through the mounted app adapter.
-    ///
-    /// # Errors
-    /// Returns the app's refusal, or an unavailable error without a mounted app.
     pub fn device_shell_operation(
         &mut self,
         operation: &crate::floating_surface::DeviceShellOperation,
@@ -3100,11 +3434,8 @@ impl FrameHarness {
     /// [`Self::relayout`], which a caller asks for after changing anything.
     fn run_frame(&mut self) {
         self.poll_touch_hold(crate::time::now());
-        if let Err(error) = self.try_relayout() {
-            tracing::error!(
-                ?error,
-                "headless: widget layout did not settle; skipping frame"
-            );
+        if let Err(error) = self.try_relayout_following_search() {
+            self.skip_own_frame(&error);
         }
     }
 
@@ -3146,7 +3477,12 @@ impl FrameHarness {
     /// the activation completes there. Bounded as composition is
     /// ([`crate::widget::layout::settle_widget_composition`]).
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        // The whole frame runs in the root's wake scope, as the live window's
+        // redraw runs in the App's: a read its layout starts wakes it.
+        let _wake = self.enter_wake();
         self.activation_recomposed = false;
+        // The row's height is part of the app's frame: before it lays out.
+        self.refresh_slot_row();
         let mut result = self.try_relayout_once();
         for _ in 1..8 {
             if !matches!(
@@ -3158,7 +3494,57 @@ impl FrameHarness {
             }
             result = self.try_relayout_once();
         }
+        // The app declared other slots in this frame's sync (a press it
+        // took, a call it joined): the row shows them in the frame drawn.
+        if result.is_ok() && self.refresh_slot_row() {
+            result = self.try_relayout_once();
+        }
+        if result.is_ok() {
+            self.activate_requested_app();
+        }
         result
+    }
+
+    /// A window the person brought forward on the desktop this frame laid
+    /// out ([`Widget::take_app_activation`]) takes the keyboard, as a raised
+    /// native window does: a control of that app the press itself focused
+    /// keeps focus; otherwise the app's remembered control, else its default
+    /// one, else the first that takes typing (a field, an editor, a
+    /// terminal), is focused. Never a button merely for being first: Enter
+    /// would press it. An app with none keeps no stale focus elsewhere, and
+    /// still sees what is typed into its window.
+    /// Waits while a dialog or command holds the keyboard.
+    fn activate_requested_app(&mut self) {
+        if self.pending_app_activation.is_some() || self.check_app_activation().is_err() {
+            return;
+        }
+        let Some(instance) = self.root.take_app_activation() else {
+            return;
+        };
+        let owner = |frame: &Self, node: NodeId| {
+            frame
+                .bindings
+                .binding_ref(node)
+                .is_some_and(|binding| binding.instance_id == instance)
+        };
+        if self.focused.is_some_and(|node| owner(self, node)) {
+            return;
+        }
+        let order: Vec<_> = self
+            .focus_order()
+            .into_iter()
+            .filter(|&node| owner(self, node) && self.app_focus_eligible(node))
+            .collect();
+        let saved = self.saved_instance_focus.remove(&instance);
+        // SAFETY: restore resolves the captured stable identity in this live map.
+        let target = saved
+            .as_ref()
+            .and_then(|saved| unsafe {
+                saved.restore(&self.node_map, &self.bindings, Some(&order))
+            })
+            .or_else(|| self.keyboard_entry(&order));
+        self.set_focused(target);
+        self.relayout();
     }
 
     fn try_relayout_once(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
@@ -3182,6 +3568,7 @@ impl FrameHarness {
                     if finalizing_activation {
                         self.presence.pop_viewport(previous_viewport);
                         self.scene.reset();
+                        self.scene_parts = None;
                         self.owner_service_layout_retired = true;
                         self.layout_requested = true;
                     }
@@ -3192,7 +3579,7 @@ impl FrameHarness {
             self.try_relayout_content()
         };
         if result.is_ok() {
-            self.wheel_frame_pending = false;
+            self.input_frame_pending = false;
             self.pending_app_activation = None;
             self.owner_service_layout_retired = false;
             // This exclusive &mut frame completed the entire original
@@ -3202,6 +3589,7 @@ impl FrameHarness {
             if finalizing_activation {
                 self.presence.pop_viewport(previous_viewport);
                 self.scene.reset();
+                self.scene_parts = None;
                 self.owner_service_layout_retired = true;
                 self.layout_requested = true;
             }
@@ -3239,7 +3627,7 @@ impl FrameHarness {
             self.owner_service_layout_retired
                 .then(|| CompositionFocus::capture_live(self.root.as_ref()))
                 .flatten()
-        } else if structure_changed {
+        } else if structure_changed || self.remount {
             CompositionFocus::capture_live(self.root.as_ref())
         } else {
             // SAFETY: no structural mutation since these maps were admitted.
@@ -3257,10 +3645,7 @@ impl FrameHarness {
         let focused_at_start = self.focused;
         let epoch_at_start = self.local_epoch;
         self.drain_component_wakes();
-        let woken = self
-            .component_wake
-            .as_ref()
-            .is_some_and(|wake| wake.dirty.replace(false));
+        let woken = self.take_wake();
         // The frame before asked the History surfaces what this one would,
         // of the same composition and documents, and nothing that reads has
         // moved since.
@@ -3299,8 +3684,11 @@ impl FrameHarness {
         // Select the current record before update, then observe a first
         // asynchronous open before sync can accidentally edit the room index.
         self.tick_records();
-        let updated = self.root.update(&self.state.doc, &self.state.root);
+        let updated = self.update_root();
         self.tick_records();
+        if updated || woken {
+            self.local_changes = self.local_changes.wrapping_add(1);
+        }
         // As the live App syncs only when something set `needs_sync`: a
         // frame whose widgets noticed nothing of their own, after nothing
         // the witness follows moved, has nothing new to sync or publish.
@@ -3316,6 +3704,9 @@ impl FrameHarness {
             && self.root.next_wake_deadline().is_some_and(|due| due <= now)
             && self.root.serve_deadline(now);
         let quiet = quiet && !deadline_served;
+        if deadline_served {
+            self.local_changes = self.local_changes.wrapping_add(1);
+        }
         if quiet {
             self.quiet_frames = self.quiet_frames.saturating_add(1);
         } else {
@@ -3362,6 +3753,7 @@ impl FrameHarness {
             history_invalidated = true;
             if let Some(history) = &mut self.history {
                 history.set_width(f64::from(self.viewport.0));
+                history.present_entries_of(self.root.as_ref());
                 history.refresh(&self.state.doc);
             }
         }
@@ -3386,6 +3778,7 @@ impl FrameHarness {
             if let Some(history) = &mut self.history {
                 history.finish_return_to_live();
                 history.flush_pending_toolbar();
+                let _ = history.deliver_opened_entry(self.root.as_mut());
             }
             self.discard_layout_tree();
             self.focused = None;
@@ -3431,15 +3824,37 @@ impl FrameHarness {
         let must_compute = structure
             || viewport_changed
             || standalone_history_changed
+            || self.remount
             || self.root.layout_needs_measure();
         let mut stats = RelayoutStats::default();
         // Captured lazily, immediately before a build replaces controls.
         let mut view = None;
+        // What arrives in the window's first frame shows at rest.
+        let _window = crate::motion::laying_out_window(self.shown_a_frame);
+        self.shown_a_frame = true;
+        // Whether the last pass asked for another only to remount in place.
+        let mut remount_next = false;
         settle_widget_composition(recompose_for_viewport, |rebuild| {
             let t_build = self.profiler.as_ref().map(|_| crate::time::now());
             let layout_phase = tilo_resource::profiling::Phase::start("ui.layout");
             let mut rebuilt_this_pass = false;
-            if structure || rebuild {
+            let remount_only = rebuild && std::mem::take(&mut remount_next);
+            let in_place = self.remount && !structure && (!rebuild || remount_only);
+            let remounted = in_place && self.remount_in_place();
+            stats.remounted |= remounted;
+            // Focus inside widgets laid out again in place goes back to the
+            // control it was on, as after a rebuild.
+            if remounted
+                && let Some(focus) = &focus
+                && self
+                    .focused
+                    .is_none_or(|node| !self.node_map.contains_key(&node))
+            {
+                // SAFETY: the remount just admitted every mounted widget.
+                self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
+            }
+            if structure || (rebuild && !remount_only) || (in_place && !remounted) {
+                self.remount = false;
                 rebuilt_this_pass = true;
                 stats.rebuilt = true;
                 let view = view
@@ -3451,6 +3866,7 @@ impl FrameHarness {
                 );
                 self.bindings.clear();
                 self.node_map.clear();
+                self.layout_maps.clear();
                 if let Some(history) = &mut self.history {
                     history.flush_pending_toolbar();
                 }
@@ -3465,6 +3881,11 @@ impl FrameHarness {
                         .place_in_app_header(self.root.as_mut());
                     self.document_history.remove_fallback_bar();
                 }
+                // The header the rebuild builds hears whether the frame's row
+                // presents search, so it never shows a second search control.
+                if self.slot_row.is_some() {
+                    crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
+                }
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(
                         self.root.as_mut(),
@@ -3476,12 +3897,17 @@ impl FrameHarness {
                     self.root
                         .build_layout(&mut self.taffy, &self.theme, &mut self.node_map)
                 };
+                self.admit_layout_maps();
+                self.layout_nodes_built = self
+                    .layout_nodes_built
+                    .saturating_add(u64::try_from(self.node_map.len()).unwrap_or(u64::MAX));
                 // Newly composed controls need sync. If it replaces delegates,
                 // discard these raw maps without admitting or measuring them.
                 self.root.sync(&self.state.doc, &self.state.root);
                 let history_invalidated = self.invalidate_unsupported_history_owner();
                 if self.take_composition_dirty() || history_invalidated {
                     self.node_map.clear();
+                    self.layout_maps.clear();
                     return Ok((None, true));
                 }
                 let palette_node = self
@@ -3491,6 +3917,9 @@ impl FrameHarness {
                     .map(|palette| {
                         palette.build_layout(&mut self.taffy, &self.theme, &mut self.node_map)
                     });
+                if palette_node.is_some() {
+                    self.admit_layout_maps();
+                }
                 let presentation_node = if self.history_chrome_enabled {
                     self.build_history_frame(palette_node)
                 } else {
@@ -3536,20 +3965,9 @@ impl FrameHarness {
                     self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
                 }
                 let (w, h) = self.viewport;
-                self.root_node = self.taffy.parent_node(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(w as f32),
-                            height: if self.host.content_height {
-                                Dimension::auto()
-                            } else {
-                                Dimension::length(h as f32)
-                            },
-                        },
-                        ..self.host.style.clone()
-                    },
-                    &[presentation_node],
-                );
+                self.root_node = self
+                    .taffy
+                    .parent_node(self.host_root_style(w, h), &[presentation_node]);
                 self.layout_built = true;
             }
             // Sync and view restoration can revive an outgoing owner's local
@@ -3561,25 +3979,17 @@ impl FrameHarness {
             {
                 return Ok((None, true));
             }
-            if rebuilt_this_pass || must_compute || self.pending_app_activation.is_some() {
+            if rebuilt_this_pass
+                || must_compute
+                || remounted
+                || self.pending_app_activation.is_some()
+            {
                 if !rebuilt_this_pass && viewport_changed {
                     // The retained root still carries the old window size in
                     // its style; a resize moves it in place.
                     let (w, h) = self.viewport;
-                    self.taffy.set_style(
-                        self.root_node,
-                        Style {
-                            size: Size {
-                                width: Dimension::length(w as f32),
-                                height: if self.host.content_height {
-                                    Dimension::auto()
-                                } else {
-                                    Dimension::length(h as f32)
-                                },
-                            },
-                            ..self.host.style.clone()
-                        },
-                    )?;
+                    self.taffy
+                        .set_style(self.root_node, self.host_root_style(w, h))?;
                 }
                 if !rebuilt_this_pass {
                     // Taffy caches every node's measurement; a retained tree
@@ -3634,16 +4044,19 @@ impl FrameHarness {
             }
             let history_invalidated = self.invalidate_unsupported_history_owner();
             let dirty = self.take_composition_dirty() || history_invalidated;
+            // Rows a layout brought into view are remounted by another pass.
+            remount_next = !dirty && self.remount;
             let geometry = if viewport_changed {
                 composition_geometry(&self.taffy, self.root_node)?
             } else {
                 vec![]
             };
-            Ok((Some(geometry), dirty))
+            Ok((Some(geometry), dirty || remount_next))
         })?;
         self.last_layout_viewport = Some(self.viewport);
         self.last_relayout = stats;
         if stats.rebuilt
+            || stats.remounted
             || viewport_changed
             || resting_geometry.is_some_and(|before| {
                 before != crate::pointer_replay::widget_geometry(self.root.as_ref())
@@ -3721,7 +4134,7 @@ impl FrameHarness {
                         .is_some_and(|history| history.captures_input())
                     || self.active_input_instance.is_none_or(|instance| {
                         self.bindings
-                            .binding_for(node)
+                            .binding_ref(node)
                             .is_some_and(|binding| binding.instance_id == instance)
                             && self.app_focus_eligible(node)
                     }))
@@ -3787,6 +4200,8 @@ impl FrameHarness {
         }
 
         self.validate_app_activation_frame()?;
+        // Every motion this frame reads is read at this instant or later.
+        let motions_at = crate::motion::frame_now();
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         let draw_phase = tilo_resource::profiling::Phase::start("ui.draw");
         // Logical layout, rasterised at the capture's device scale, as the
@@ -3813,11 +4228,26 @@ impl FrameHarness {
             crate::retained_present::PanFrame::Replayed
         };
         crate::retained_present::take_replayed();
+        // A frame that draws every window paints every caret tag again; one
+        // that shows windows' last drawings keeps the tags they painted.
+        if !matches!(
+            pan_frame,
+            crate::retained_present::PanFrame::Replayed | crate::retained_present::PanFrame::Moved
+        ) {
+            self.presence.clear_caret_tags();
+        }
         self.pan_frames = self.pan_frames.wrapping_add(1);
         let replay_scope = crate::retained_present::PanReplay::begin(pan_frame, self.pan_frames);
         self.scene_capture_protected = true;
         let protected_paint = crate::secret_paint::SecretPaint::begin();
+        self.scene_parts = None;
+        let parts_recording = self
+            .track_scene_parts
+            .then(crate::scene_parts::Recording::begin);
         self.scene.reset();
+        if parts_recording.is_some() {
+            crate::scene_parts::track(&self.scene);
+        }
         // Floating chrome records what lies below it, so a capture blurs it
         // under the material exactly as the live window's renderer does.
         let backdrop_recording = crate::backdrop::BackdropRecording::begin();
@@ -3846,14 +4276,11 @@ impl FrameHarness {
             && self.history_layout.is_none_or(|layout| layout.app_visible)
         {
             crate::widget::native_view_frame_start(self.root.as_mut());
-            // The root draws in the component's wake scope, as the live
+            // The root draws in its wake scope, as the live
             // window draws in the App's: a wake raised while drawing (the
             // area read Settings starts once it has drawn) reaches the next
             // frame instead of no one.
-            let _wake = self
-                .component_wake
-                .as_ref()
-                .and_then(|wake| wake.binding.lifetime.enter_if_open().ok());
+            let _wake = self.enter_wake();
             self.presence
                 .with_permissions(self.permissions.clone(), || {
                     self.root.draw(
@@ -3937,22 +4364,27 @@ impl FrameHarness {
                 &self.presence,
             );
         }
+        // The window's row of slots over the app, as a window of its own
+        // paints it over everything the app draws.
+        self.draw_slot_row(transform);
         if let Some(palette) = self
             .action_palette
             .as_deref_mut()
             .filter(|p| p.is_presented())
         {
-            let width = f64::from(self.viewport.0);
-            let card = (width * 0.6).clamp(360.0, 640.0);
-            palette.layout_with_text(
-                &self.theme,
-                Point::new(
-                    ((width - card) / 2.0).max(0.0),
-                    (f64::from(self.viewport.1) * 0.12).max(24.0),
-                ),
-                card,
-                &mut self.text,
+            let surface = Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.viewport.0),
+                f64::from(self.viewport.1),
             );
+            let window = self
+                .palette_window
+                .map(|window| window.intersect(surface))
+                .filter(|window| window.width() > 0.0 && window.height() > 0.0)
+                .unwrap_or(surface);
+            let (origin, card) = palette.place_in(window, &self.theme);
+            palette.layout_with_text(&self.theme, origin, card, &mut self.text);
             palette.draw(
                 &mut self.scene,
                 transform,
@@ -3987,6 +4419,24 @@ impl FrameHarness {
                 interaction_now,
             );
         }
+        self.draw_tooltip(transform);
+        // Other people's pointers over everything: they point at whatever
+        // is under them, a popover or the bar as much as a window. A pointer
+        // whose tag would meet its person's caret tag leaves the name to it.
+        let pointers = self.pointers_beside_caret_tags(transform);
+        crate::presence::draw_peer_cursors(
+            &mut self.scene,
+            transform,
+            Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.viewport.0),
+                f64::from(self.viewport.1),
+            ),
+            &mut self.text,
+            &self.theme,
+            &pointers,
+        );
         self.presence.pop_viewport(previous_viewport);
         drop(replay_scope);
         let replayed = crate::retained_present::take_replayed();
@@ -3998,6 +4448,9 @@ impl FrameHarness {
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
+        crate::motion::frame_drawn(motions_at);
+        self.settle_frame_owed =
+            self.tooltips.schedule().2 || crate::motion::frames_wanted(crate::time::now());
 
         // Focus was already recovered for this tree before draw, with the
         // active-instance filter a second unfiltered pass would undo.
@@ -4005,6 +4458,9 @@ impl FrameHarness {
         self.draw_caller_palette();
         self.refresh_system_search();
         self.draw_system_search();
+        if let Some(recording) = parts_recording {
+            self.scene_parts = recording.finish().of(&self.scene);
+        }
         self.backdrop = std::sync::Arc::new(crate::backdrop::BackdropFrame::from_single_scene(
             backdrop_recording.finish(),
         ));
@@ -4202,10 +4658,6 @@ impl FrameHarness {
     }
 
     /// Run the normal frame pipeline until requested visual work completes.
-    ///
-    /// # Errors
-    /// Returns an error instead of capturing an unfinished placeholder when
-    /// the work does not complete within `timeout`.
     pub fn wait_for_visuals(&mut self, timeout: crate::time::Duration) -> Result<(), String> {
         self.invalidate_local();
         if self.wait_until(timeout, |driver| !driver.root.has_pending_visual_work()) {
@@ -4216,10 +4668,6 @@ impl FrameHarness {
     }
 
     /// Wait until a retained widget with `name` is present in the live layout.
-    ///
-    /// # Errors
-    ///
-    /// Returns a timeout error naming the missing target.
     pub fn wait_for_named(
         &mut self,
         name: &str,
@@ -4269,7 +4717,11 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        if self.history.is_some() || restrictions.has_surfaces() {
+        if crate::focus_navigation::walks_layout_map(
+            self.root.as_ref(),
+            self.history.is_some(),
+            &restrictions,
+        ) {
             let root = self
                 .history
                 .as_ref()
@@ -4281,6 +4733,33 @@ impl FrameHarness {
                 crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy).0;
         }
         order
+    }
+
+    /// Where Tab and directional focus travel: [`Self::focus_order`], kept
+    /// inside the keyboard scope (the focused desktop window's content,
+    /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap or the
+    /// action palette owns the keyboard.
+    fn keyboard_travel_order(&self) -> Vec<NodeId> {
+        let order = self.focus_order();
+        if self
+            .action_palette
+            .as_deref()
+            .is_some_and(|palette| palette.is_presented())
+            || self.focus_trap_active
+            || self.focus_trap_possible()
+        {
+            return order;
+        }
+        let scopes: Vec<NodeId> = self
+            .node_map
+            .keys()
+            .copied()
+            .filter(|&node| {
+                self.inspect_node(node, |widget| widget.scopes_keyboard_focus())
+                    .unwrap_or(false)
+            })
+            .collect();
+        crate::focus_navigation::within_keyboard_scope(order, &scopes, &self.taffy)
     }
 
     /// Whether embedded History and a History holding saved focus leave a
@@ -4306,25 +4785,27 @@ impl FrameHarness {
         root: NodeId,
         restrictions: &crate::history_mode::embedded::FocusRestrictions,
     ) -> (Vec<NodeId>, bool) {
-        // While History captures input only its own nodes take focus; walk
-        // them once for this recomputation, not once per node.
-        let owned = self
-            .history
-            .as_ref()
-            .filter(|history| history.captures_input())
-            .map(|history| history.owned_nodes(&self.taffy));
-        crate::focus_navigation::mapped_order(root, &self.taffy, |node| {
-            let allowed = restrictions.allows(node)
-                && owned.as_ref().is_none_or(|owned| owned.contains(&node));
-            self.inspect_node(node, |widget| {
-                (
-                    allowed && widget.is_focusable() && widget.is_enabled(),
-                    allowed && widget.traps_focus(),
-                    widget.accessibility_hidden(),
-                )
-            })
-            .unwrap_or((false, false, false))
-        })
+        // One sweep asks every mapped node, entering each component's scope
+        // once rather than once a node.
+        let sweep = std::cell::RefCell::new(crate::bound_dispatch::NodeSweep::new(
+            &self.bindings,
+            &self.node_map,
+        ));
+        crate::focus_navigation::layout_map_order(
+            root,
+            &self.taffy,
+            restrictions,
+            self.history.as_deref(),
+            |node| {
+                // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
+                unsafe {
+                    sweep
+                        .borrow_mut()
+                        .inspect(node, crate::focus_navigation::probe)
+                }
+                .ok()
+            },
+        )
     }
 
     /// Whether the walk in [`Self::update_focus_trap`] could find a trap: History
@@ -4340,13 +4821,16 @@ impl FrameHarness {
         {
             return true;
         }
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+            || crate::focus_navigation::hosts_components(self.root.as_ref())
         {
             // The mapped walk inspects composed nodes, some of which are not
             // Widget children of the root; every one it can inspect is mapped.
+            let mut sweep = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
             self.node_map.keys().any(|&node| {
-                self.inspect_node(node, |widget| widget.traps_focus())
-                    .unwrap_or(false)
+                // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
+                unsafe { sweep.inspect(node, |widget| widget.traps_focus()) }.unwrap_or(false)
             })
         } else {
             crate::focus_navigation::any_trap(self.root.as_ref())
@@ -4369,21 +4853,17 @@ impl FrameHarness {
             self.root.as_ref(),
             &self.taffy,
         );
-        let (mut order, trapped) = if self.history.is_some() || restrictions.has_surfaces() {
+        let (mut order, trapped) = if crate::focus_navigation::walks_layout_map(
+            self.root.as_ref(),
+            self.history.is_some(),
+            &restrictions,
+        ) {
             let root = self
                 .history
                 .as_ref()
                 .and_then(|history| history.review_layout_node())
                 .unwrap_or(self.child_node);
-            let (order, app_trap) = self.history_app_focus_order(root, &restrictions);
-            (
-                order,
-                app_trap
-                    || self
-                        .history
-                        .as_ref()
-                        .is_some_and(|history| history.review_is_open()),
-            )
+            self.history_app_focus_order(root, &restrictions)
         } else {
             crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy)
         };
@@ -4498,7 +4978,7 @@ impl FrameHarness {
             .copied()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_some_and(|binding| binding.instance_id != active)
             })
             .collect();
@@ -4528,7 +5008,7 @@ impl FrameHarness {
         if self.active_input_instance != Some(instance)
             || self.focused.is_some_and(|node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_none_or(|binding| binding.instance_id != instance)
             })
         {
@@ -4555,7 +5035,7 @@ impl FrameHarness {
             .copied()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_some_and(|binding| binding.instance_id != instance)
             })
             .collect();
@@ -4590,7 +5070,6 @@ impl FrameHarness {
             return;
         }
         self.remember_app_focus();
-        // Clear an unfinished preedit in its original bound owner, without commit.
         self.send(&WindowEvent::Ime(winit::event::Ime::Preedit(
             String::new(),
             None,
@@ -4614,7 +5093,7 @@ impl FrameHarness {
             .into_iter()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_some_and(|binding| binding.instance_id == instance)
                     && self.app_focus_eligible(node)
             })
@@ -4669,7 +5148,7 @@ impl FrameHarness {
             .copied()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_none_or(|binding| binding.instance_id == instance)
                     && self
                         .inspect_node(node, |widget| {
@@ -4875,7 +5354,7 @@ impl FrameHarness {
     pub fn tab(&mut self, back: bool) -> Option<NodeId> {
         self.invalidate_local();
         self.pump_component_wakes();
-        let order = self.focus_order();
+        let order = self.keyboard_travel_order();
         if order.is_empty() {
             return None;
         }
@@ -5203,7 +5682,13 @@ impl FrameHarness {
             self.set_focused(Some(taffy_id));
         }
         if !handled {
-            if semantic_target.is_some() && !matches!(action, crate::a11y::Action::Focus) {
+            // A painted empty state's action is pressed where it is drawn,
+            // below; any other target its widget did not handle is refused.
+            if semantic_target
+                .as_deref()
+                .is_some_and(|target| !crate::widget::empty_state::is_painted_target(target))
+                && !matches!(action, crate::a11y::Action::Focus)
+            {
                 return Err(format!(
                     "the current semantic target did not handle {action:?}"
                 ));
@@ -5337,11 +5822,6 @@ impl FrameHarness {
     /// with no target is reached by its accessible name through
     /// [`a11y_node_named`](Self::a11y_node_named) and
     /// [`perform_a11y_action`](Self::perform_a11y_action).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a missing target or an action that neither the
-    /// widget nor the app-level generic fallback supports.
     pub fn perform_named(
         &mut self,
         name: &str,
@@ -5356,10 +5836,6 @@ impl FrameHarness {
     /// Perform an action against a synthetic semantic child owned by a named
     /// retained widget. The child target is the stable opaque value exposed
     /// as `action_target` in inspection output.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a missing owner or unsupported child action.
     pub fn perform_semantic_named(
         &mut self,
         name: &str,
@@ -5377,6 +5853,9 @@ impl FrameHarness {
             let target = semantic_target
                 .ok_or_else(|| "palette action needs a published semantic target".to_owned())?;
             return self.perform_palette_action(target, action);
+        }
+        if name.starts_with("window-search-") {
+            return self.perform_window_search_semantic(name, action);
         }
 
         if self.global_search_query().is_some() {
@@ -5398,6 +5877,11 @@ impl FrameHarness {
             } else {
                 Err("palette owns input".into())
             };
+        }
+        // The window's row of slots, under no search or palette covering
+        // the window.
+        if name == WINDOW_SLOTS {
+            return self.perform_slot_row_semantic(semantic_target, action);
         }
         self.try_presentation(|_, _| ())?;
         if semantic_target.is_none() && !self.named_target_nodes().contains_key(name) {
@@ -5422,6 +5906,16 @@ impl FrameHarness {
                 return Err("semantic target is disabled or read-only".into());
             }
         }
+        // A widget may name its own node with a target (a field by its id,
+        // as the accessibility tree keys it). An action on that target is
+        // an action on the widget: one its synthetic children do not take
+        // goes to the widget itself, as an untargeted one does. Without
+        // this a value or selection set on a field through the page's
+        // accessibility tree never reached it.
+        let own_target = semantic_target.is_some_and(|target| {
+            self.access_node_named(name, None)
+                .is_ok_and(|access| access.action_target.as_deref() == Some(target))
+        });
         let targets = self.named_target_nodes();
         let node = targets
             .get(name)
@@ -5443,12 +5937,9 @@ impl FrameHarness {
             let handled = self
                 .dispatch_node(node, |widget, doc, root| {
                     if let Some(target) = semantic_target {
-                        widget.perform_semantic_action(
-                            target,
-                            action,
-                            &mut crate::widget::Edits::lend(doc),
-                            root,
-                        )
+                        let mut edits = crate::widget::Edits::lend(doc);
+                        widget.perform_semantic_action(target, action, &mut edits, root)
+                            || (own_target && widget.perform_action(action, &[], &mut edits, root))
                     } else {
                         widget.perform_action(
                             action,
@@ -5484,12 +5975,9 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(node, action, |widget, doc, root| {
                 if let Some(target) = semantic_target {
-                    widget.perform_semantic_action(
-                        target,
-                        action,
-                        &mut crate::widget::Edits::lend(doc),
-                        root,
-                    )
+                    let mut edits = crate::widget::Edits::lend(doc);
+                    widget.perform_semantic_action(target, action, &mut edits, root)
+                        || (own_target && widget.perform_action(action, &[], &mut edits, root))
                 } else {
                     widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
                 }
@@ -5818,7 +6306,7 @@ impl FrameHarness {
     pub fn inspection(&self) -> InspectionSnapshot {
         self.drain_component_wakes();
         let mut sibling_counts = HashMap::new();
-        let root = if let Some(search) = self.system_search_inspection() {
+        let mut root = if let Some(search) = self.system_search_inspection() {
             search
         } else if let Some(palette) = self.caller_palette_inspection() {
             palette
@@ -5841,6 +6329,12 @@ impl FrameHarness {
         } else {
             collect_inspection(self.root.as_ref(), "", &mut sibling_counts)
         };
+        // The window's row of slots, first in reading order, under nothing
+        // that covers the whole window.
+        if self.global_search_query().is_none() && self.caller_palette.palette.is_none() {
+            root.children.splice(0..0, self.slot_row_inspection());
+        }
+        root.children.extend(self.tooltip_inspection());
         fn owner_path(
             node: &InspectionNode,
             targets: &HashMap<String, NodeId>,
@@ -5891,10 +6385,6 @@ impl FrameHarness {
     }
 
     /// Pretty JSON form used by the standard `--headless-drive` inspector.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if serializing the pure-data snapshot fails.
     pub fn inspection_json(&self) -> Result<String, serde_json::Error> {
         self.drain_component_wakes();
         serde_json::to_string_pretty(&self.inspection())
@@ -6028,7 +6518,6 @@ impl FrameHarness {
             &resources,
         );
         resources.extend(semantics.action_resources());
-        // Search belongs to this window host, including semantic callers.
         resources.push(crate::search::search_resource());
         resources
     }
@@ -6084,11 +6573,15 @@ impl FrameHarness {
     /// Deliver platform input including host keyboard policy. Browser/native adapters
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
+        let _wake = self.enter_wake();
         crate::motion::note_input(event);
+        self.track_tooltip(event);
+        // Focus rings show for keyboard focus only: a click hides them.
+        crate::focus_visible::note(event);
         // A wheel whose frame the host takes is judged once dispatched
         // (`dispatch_with_host_navigation`): only one the root declares
         // view-only leaves the next frame quiet. Every other event counts.
-        if !(self.coalesce_wheel_frames && matches!(event, WindowEvent::MouseWheel { .. })) {
+        if !(self.coalesce_input_frames && matches!(event, WindowEvent::MouseWheel { .. })) {
             self.invalidate_local();
         }
         if self.pump_component_wakes_checked().is_err() {
@@ -6109,10 +6602,19 @@ impl FrameHarness {
             }
             self.modifiers = *modifiers;
         }
+        // Ctrl+C copies whichever source is typing: name the chord by its
+        // Latin key before any handler matches it.
+        let renamed = crate::latin_chord::renamed(event, self.modifiers.state());
+        let event = renamed.as_ref().unwrap_or(event);
         // An open search is modal above both live History chrome and the
         // document. Update modifiers first, then capture before History can
         // observe or claim the event.
         if self.system_search_event(event) {
+            return;
+        }
+        // The window's row of slots takes what is its before the app, as a
+        // window of its own routes it.
+        if self.slot_row_event(event) {
             return;
         }
         // Framework presentations own captured keyboard input before global
@@ -6200,6 +6702,7 @@ impl FrameHarness {
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
         crate::motion::note_input(event);
+        crate::focus_visible::note(event);
         // Whether the event can have changed what a frame reads is judged
         // once it is dispatched, as the live window judges it.
         if self.pump_component_wakes_checked().is_err() {
@@ -6209,12 +6712,46 @@ impl FrameHarness {
             return;
         };
         self.send_with_host_navigation(event, false);
+        if matches!(event, WindowEvent::Focused(true)) {
+            // As in the native window: the window took the keyboard.
+            self.hand_keyboard_to_app();
+            self.relayout();
+        }
+    }
+
+    /// Lay out for the input the person now uses, as the live window does
+    /// after detecting it.
+    fn switch_interaction(&mut self, environment: crate::interaction::InteractionEnvironment) {
+        if environment == self.interaction {
+            return;
+        }
+        self.interaction = environment;
+        self.root.set_interaction_environment(environment);
+        self.invalidate_layout_tree();
+        // The live window lays out again in its next frame; a host on
+        // its own frame clock does the same.
+        if self.coalesce_input_frames {
+            self.input_frame_pending = true;
+        } else {
+            self.relayout();
+        }
+    }
+
+    /// Switch to touch once every gesture begun has landed, as the live
+    /// window does: until then the touch is hit-tested against the layout
+    /// the person saw when it began, not the touch-sized one it brings.
+    fn settle_touch_modality(&mut self) {
+        if !self.dispatching_touch_pointer && self.touch_pointer.settled() {
+            self.switch_interaction(self.interaction.with_touch_modality());
+        }
     }
 
     fn send_with_host_navigation(&mut self, event: &WindowEvent, host_navigation_allowed: bool) {
         if !self.pans_without_drawing(event) {
             self.settle_replayed_draws();
         }
+        crate::widget::context_menu::note_input(event);
+        self.track_acting_place(event);
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows, as in the App.
         if let Some(moved) = self.pointer_replay.before(event) {
@@ -6225,6 +6762,9 @@ impl FrameHarness {
         self.dispatch_with_host_navigation(event, host_navigation_allowed);
         if crate::pointer_replay::PointerReplay::ends_press(event) {
             self.pointer_replay.end_press();
+        }
+        if matches!(event, WindowEvent::Touch(_)) {
+            self.settle_touch_modality();
         }
     }
 
@@ -6310,11 +6850,12 @@ impl FrameHarness {
                 crate::bound_dispatch::bound_owner_standing(self.root.as_ref(), &self.state.doc),
             )
         });
+        // A touch lands on what was on screen when it began: the switch to
+        // touch waits for its gesture to land (`Self::settle_touch_modality`).
         let detected = if self.dispatching_touch_pointer {
             None
         } else {
             match event {
-                WindowEvent::Touch(_) => Some(self.interaction.with_touch_modality()),
                 WindowEvent::CursorMoved { .. }
                 | WindowEvent::MouseInput { .. }
                 | WindowEvent::MouseWheel { .. } => Some(self.interaction.with_pointer_modality()),
@@ -6329,13 +6870,8 @@ impl FrameHarness {
                 _ => None,
             }
         };
-        if let Some(environment) = detected
-            && environment != self.interaction
-        {
-            self.interaction = environment;
-            self.root.set_interaction_environment(environment);
-            self.invalidate_layout_tree();
-            self.relayout();
+        if let Some(environment) = detected {
+            self.switch_interaction(environment);
         }
         if self.active_input_instance.is_some()
             && self.focused.is_none()
@@ -6352,8 +6888,8 @@ impl FrameHarness {
         if let WindowEvent::Touch(touch) = event {
             let scale = self.input_scale;
             let mut touch_pointer = std::mem::take(&mut self.touch_pointer);
-            let pointer_events = touch_pointer.events(touch, |position| {
-                self.claims_raw_touch_at(Point::new(position.x / scale, position.y / scale))
+            let pointer_events = touch_pointer.events_claimed(touch, |position| {
+                self.touch_claim_at(Point::new(position.x / scale, position.y / scale))
             });
             self.touch_pointer = touch_pointer;
             self.dispatch_touch_pointer(touch.device_id, pointer_events);
@@ -6428,7 +6964,7 @@ impl FrameHarness {
             && let Key::Named(named) = key.logical_key
             && let Some(direction) = crate::focus_navigation::Direction::from_key(named)
         {
-            let order = self.focus_order();
+            let order = self.keyboard_travel_order();
             let next = match self.focused {
                 Some(current) => self
                     .inspect_node(current, |widget| widget.get_rect())
@@ -6529,6 +7065,7 @@ impl FrameHarness {
                         &mut self.state,
                         std::ptr::from_mut(self.root.as_mut()),
                         &self.node_map,
+                        self.node_map.keys().copied(),
                         &self.bindings,
                         &author,
                         &self.permissions,
@@ -6552,14 +7089,23 @@ impl FrameHarness {
             self.pointer_redraw_sources = self.redraw_sources();
         }
         self.last_send_skipped_relayout = inert;
-        // A host on its own frame clock takes a wheel event's frame there:
-        // wheels arrive faster than frames, and each frame composed here
-        // would be replaced unseen by the next.
-        let coalesced = self.coalesce_wheel_frames
+        // A host on its own frame clock takes the frame of a wheel notch, a
+        // pinch, a key, a composed text or a pointer move there: they arrive faster
+        // than frames (a word typed, a drag), and each frame composed here
+        // would be replaced unseen by the next, before the host's own frame
+        // lays out and draws once more for the screen.
+        let coalesced = self.coalesce_input_frames
             && !history_input
-            && matches!(event, WindowEvent::MouseWheel { .. });
+            && matches!(
+                event,
+                WindowEvent::MouseWheel { .. }
+                    | WindowEvent::PinchGesture { .. }
+                    | WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::CursorMoved { .. }
+            );
         if coalesced {
-            self.wheel_frame_pending = true;
+            self.input_frame_pending |= !inert;
         } else if !inert && !self.replaying_pointer {
             self.run_frame();
         }
@@ -6573,16 +7119,18 @@ impl FrameHarness {
         }
     }
 
-    /// Leave the frame a wheel event asks for to the host's next
-    /// [`Self::poll_frame`] instead of composing, laying out and drawing it
-    /// inside [`Self::send_host_event`]. For a host that presents on its own
-    /// frame clock, as a browser page does on animation frames: a trackpad
-    /// sends wheel events faster than frames, so every frame but the last
-    /// would be replaced unseen. The event is still dispatched at once,
-    /// against the last frame's layout, as a native window dispatches it.
-    pub fn set_coalesce_wheel_frames(&mut self, coalesce: bool) {
+    /// Leave the frame a wheel, pinch, key, composed text or pointer move asks for
+    /// to the host's next [`Self::poll_frame`] instead of composing, laying
+    /// out and drawing it inside [`Self::send_host_event`]. For a host that
+    /// presents on its own frame clock, as a browser page does on animation
+    /// frames: a trackpad sends wheel events, a typist keys and a drag moves
+    /// faster than frames, so every frame but the last would be replaced
+    /// unseen, and the host's frame lays out once more anyway. The event is
+    /// still dispatched at once, against the last frame's layout, as a
+    /// native window dispatches it.
+    pub fn set_coalesce_input_frames(&mut self, coalesce: bool) {
         self.invalidate_local();
-        self.coalesce_wheel_frames = coalesce;
+        self.coalesce_input_frames = coalesce;
     }
 
     /// Whether `event` is a wheel the root declares view-only
@@ -6713,6 +7261,7 @@ impl FrameHarness {
                 &mut self.state,
                 std::ptr::from_mut(self.root.as_mut()),
                 &self.node_map,
+                self.node_map.keys().copied(),
                 &self.bindings,
                 &author,
                 &self.permissions,
@@ -6832,6 +7381,25 @@ impl FrameHarness {
         self.pump_component_wakes();
         self.invoke_bound_action_for(address, arguments, true, None, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
+    }
+
+    /// [`Self::invoke_bound_action_confirmed`] as the person at this device,
+    /// for an act the host saw them make themselves (a control they pressed
+    /// in its own chrome): what only a person's own invocation may do, such
+    /// as writing in their private conversations, it may.
+    ///
+    /// # Errors
+    /// As [`Self::invoke_bound_action`].
+    pub fn invoke_bound_action_by_person(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.invalidate_local();
+        let _person = crate::invocation_scope::InvokerScope::enter(
+            tilo_actions::ActionInvoker::actor(self.author.0.clone()),
+        );
+        self.invoke_bound_action_confirmed(address, arguments)
     }
 
     /// Invoke the action `action` that the hosted component publishes on its
@@ -7046,8 +7614,10 @@ impl FrameHarness {
         let started = match &delivered {
             Some(continuation) => {
                 self.acting_for.insert(invocation, continuation.clone());
-                let _invoker =
-                    crate::invocation_scope::InvokerScope::enter(continuation.invoker.clone());
+                let _invoker = crate::invocation_scope::InvokerScope::delivered(
+                    continuation.invoker.clone(),
+                    invocation,
+                );
                 self.invoke_bound_action_for(
                     address,
                     arguments,
@@ -7234,13 +7804,50 @@ impl FrameHarness {
             .filter(|s| instance.is_none_or(|id| s.binding.instance_id == id))
             .flat_map(|s| {
                 let binding = s.binding.clone();
-                s.into_resources().into_iter().map(move |r| {
-                    self.bound_publication
-                        .project(&binding, r)
-                        .map_err(crate::bound_dispatch::BoundActionError::into_door)
-                })
+                s.into_resources()
+                    .into_iter()
+                    .filter_map(crate::bound_dispatch::published_here)
+                    .map(move |r| {
+                        self.bound_publication
+                            .project(&binding, r)
+                            .map_err(crate::bound_dispatch::BoundActionError::into_door)
+                    })
             })
             .collect()
+    }
+
+    /// Answer `provider`'s actions with `serve`, as the workspace broker
+    /// would deliver them to it: what the app's controls bound to another
+    /// provider's actions ([`tilo_actions::ActionSpec::run_by`]) invoke.
+    pub fn serve_provider(&mut self, provider: impl Into<String>, serve: ServedProvider) {
+        self.invalidate_local();
+        self.providers.insert(provider.into(), serve);
+    }
+
+    /// Carry out at its provider an invocation the door resolved as another
+    /// provider's ([`crate::bound_dispatch::BoundActionError::Hosted`]).
+    fn run_hosted(
+        &mut self,
+        started: Result<
+            crate::widget::ResourceOperationStart,
+            crate::bound_dispatch::BoundActionError,
+        >,
+    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
+    {
+        let Err(crate::bound_dispatch::BoundActionError::Hosted(hosted)) = started else {
+            return started;
+        };
+        let Some(serve) = self.providers.get_mut(&hosted.provider) else {
+            return Err(crate::bound_dispatch::BoundActionError::Hosted(hosted));
+        };
+        let output = serve(&ProvidedInvocation {
+            address: &hosted.address,
+            argument: &hosted.argument,
+            actor: &hosted.actor,
+            confirmed: hosted.confirmed,
+        })?;
+        self.invalidate_local();
+        Ok(crate::widget::ResourceOperationStart::Completed(output))
     }
 
     /// Invoke `address` as `delivered` says: under its invocation, for its
@@ -7287,6 +7894,7 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
+            session_door(&mut self.session_door),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(arguments),
@@ -7299,17 +7907,76 @@ impl FrameHarness {
                 scope: None,
                 route: None,
             },
-        )?;
+        );
+        let started = self.run_hosted(started)?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.bound_invocations.insert(invocation, target);
         }
         Ok(started)
     }
 
+    /// Follow where the person acts, as the App does: the pointer's place,
+    /// and where the last press landed until a key is pressed.
+    fn track_acting_place(&mut self, event: &WindowEvent) {
+        let scale = self.input_scale;
+        let logical = |x: f64, y: f64| Point::new(x / scale, y / scale);
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.pointer_at = Some(logical(position.x, position.y));
+            }
+            WindowEvent::CursorLeft { .. } => self.pointer_at = None,
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                ..
+            } => self.pressed_at = self.pointer_at,
+            WindowEvent::Touch(touch) if touch.phase == winit::event::TouchPhase::Started => {
+                let at = logical(touch.location.x, touch.location.y);
+                self.pointer_at = Some(at);
+                self.pressed_at = Some(at);
+            }
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == winit::event::ElementState::Pressed =>
+            {
+                self.pressed_at = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// The window a palette is asked for from, when the root lays several
+    /// out (the desktop's strip of app tiles): the tile under the pointer
+    /// that pressed, else the one holding keyboard focus. `None` for a lone
+    /// app, whose window is the whole surface.
+    fn invoking_window_rect(&self) -> Option<Rect> {
+        crate::action_palette::invoking_window(
+            &self.taffy,
+            self.layout_built.then_some(self.root_node),
+            self.pressed_at,
+            self.focused,
+            |node| {
+                self.inspect_node(node, crate::action_palette::tile_rect)
+                    .ok()
+                    .flatten()
+            },
+        )
+    }
+
     fn open_ordinary_confirmation(
         &mut self,
         target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
         intent: &tilo_actions::ControlInvocation,
+    ) {
+        self.ask_person(target, intent, false);
+    }
+
+    /// Ask the person before `intent` goes ahead: as the door asked
+    /// ([`Self::open_ordinary_confirmation`]), or, `confirming`, as the app
+    /// asked for a pick of theirs, as the window's host does.
+    fn ask_person(
+        &mut self,
+        target: crate::bound_dispatch::legacy_document::LocalResourceTarget,
+        intent: &tilo_actions::ControlInvocation,
+        confirming: bool,
     ) {
         let request = crate::bound_dispatch::OrdinaryConfirmation::prepare(
             self.root.as_ref(),
@@ -7319,21 +7986,55 @@ impl FrameHarness {
             intent.address.clone(),
             crate::bound_dispatch::ControlContinuationArguments::Json(intent.arguments.clone()),
         );
-        let Ok(request) = request else {
-            return;
+        let request = match request {
+            Ok(request) if confirming => request.confirming(),
+            Ok(request) => request.asking_first(),
+            Err(error) => {
+                self.refuse_visibly(&error);
+                return;
+            }
         };
         if self.action_palette.is_none() {
             self.ordinary_palette_return_focus = self.capture_focus_identity().or_else(|| {
                 crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref())
             });
         }
+        // Read before the tree it is found in is discarded.
+        self.palette_window = self.invoking_window_rect();
         self.discard_layout_tree();
         self.focused = None;
         let mut palette = Box::new(crate::action_palette::ActionPalette::with_host_text(
             self.text.font_system.locale().to_owned(),
         ));
         palette.activate_ordinary(request);
+        let went_ahead = palette.went_ahead();
         self.action_palette = Some(palette);
+        if went_ahead {
+            self.finish_action_palette_input();
+        }
+    }
+
+    /// Keep why an invocation the person made did not run, and say it over
+    /// the window, as the host's palette does: a click is never dropped
+    /// unseen.
+    fn refuse_visibly(&mut self, error: &tilo_actions::DoorError) {
+        self.control_failures.push(error.to_string());
+        self.discard_layout_tree();
+        self.focused = None;
+        let palette = self.action_palette.get_or_insert_with(|| {
+            Box::new(crate::action_palette::ActionPalette::with_host_text(
+                self.text.font_system.locale().to_owned(),
+            ))
+        });
+        palette.show_refusal("", &crate::bound_dispatch::refusal_reason(error));
+    }
+
+    /// The refusal the window is saying over itself, if any: an invocation
+    /// the person made that did not run, and why.
+    pub fn refusal_shown(&self) -> Option<&str> {
+        self.action_palette
+            .as_deref()
+            .and_then(crate::action_palette::ActionPalette::refusal)
     }
     fn finish_action_palette_input(&mut self) {
         let pending = self
@@ -7387,7 +8088,36 @@ impl FrameHarness {
                     if let Some(palette) = self.action_palette.as_deref_mut() {
                         palette.retain_history_refusal(pending, error.to_string());
                     }
+                } else {
+                    self.refuse_visibly(&error);
                 }
+            }
+        }
+        // A content hit may have been picked: it opens in the app that
+        // provided it, as the window host opens it. Closing the palette
+        // drops what it still holds, so the hit is taken before then.
+        let navigation = self
+            .action_palette
+            .as_deref_mut()
+            .and_then(crate::action_palette::ActionPalette::take_scoped_navigation);
+        if let Some((action_id, binding)) = navigation {
+            if let Some(binding) = binding {
+                if let Err(error) = crate::bound_dispatch::activate_bound_search(
+                    self.root.as_mut(),
+                    &mut self.state.doc,
+                    &binding,
+                    &action_id,
+                ) {
+                    tracing::warn!(?error, "headless: search hit not opened");
+                }
+            } else {
+                let root = self.state.root.clone();
+                crate::search::capability::activate_search_result(
+                    self.root.as_mut(),
+                    &action_id,
+                    &mut crate::widget::Edits::lend(&mut self.state.doc),
+                    &root,
+                );
             }
         }
         if self.action_palette.as_deref().is_some_and(|p| !p.is_open()) {
@@ -7468,7 +8198,16 @@ impl FrameHarness {
         target: crate::bound_dispatch::BoundActionTarget,
         intent: &tilo_actions::ControlInvocation,
         on_behalf_of: Option<tilo_actions::InvocationId>,
+        origin: crate::bound_dispatch::Origin,
     ) {
+        if origin == crate::bound_dispatch::Origin::PersonConfirming && on_behalf_of.is_none() {
+            self.ask_person(
+                crate::bound_dispatch::legacy_document::LocalResourceTarget::Component(target),
+                intent,
+                true,
+            );
+            return;
+        }
         let invocation = tilo_actions::InvocationId::new();
         // An edit a job started for someone else submitted is theirs, as far
         // as they were admitted.
@@ -7486,6 +8225,7 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
+            session_door(&mut self.session_door),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(&intent.arguments),
@@ -7498,10 +8238,15 @@ impl FrameHarness {
                 scope: None,
                 route: None,
             },
-        )
-        .map_err(crate::bound_dispatch::BoundActionError::into_door);
+        );
+        let result = self
+            .run_hosted(result)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door);
         drop(answering);
         drop(scopes);
+        if origin.is_persons() {
+            crate::pick::note_invocation(&target.address, result.is_ok());
+        }
         self.note_continuation(on_behalf_of, &result);
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
             self.root.as_mut(),
@@ -7524,8 +8269,15 @@ impl FrameHarness {
                     intent,
                 );
             }
-            Err(error) => {
+            // Only what the person asked for is refused over the window; the
+            // app hears of its own invocation's refusal through the feedback
+            // above.
+            Err(error) if acting.is_none() && origin.is_persons() => {
                 tracing::warn!(code = error.code(), %error, "headless: bound control refused");
+                self.refuse_visibly(&error);
+            }
+            Err(error) => {
+                tracing::warn!(code = error.code(), %error, ?origin, "headless: bound control refused");
                 self.control_failures.push(error.to_string());
             }
         }
@@ -7598,15 +8350,25 @@ impl FrameHarness {
                 arguments.as_ref(),
                 None,
             )?;
-            let result = invoke_legacy_effect(
-                self.root.as_mut(),
-                target,
-                invocation,
-                spec.kind,
-                &encoded,
-                &mut self.state.doc,
-                None,
-            )?;
+            let result = if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
+                crate::session_door::start_application_launch(
+                    session_door(&mut self.session_door),
+                    None,
+                    &encoded.payload,
+                    invocation,
+                    false,
+                )?
+            } else {
+                invoke_legacy_effect(
+                    self.root.as_mut(),
+                    target,
+                    invocation,
+                    spec.kind,
+                    &encoded,
+                    &mut self.state.doc,
+                    None,
+                )?
+            };
             match &result {
                 crate::widget::ResourceOperationStart::Accepted
                     if spec.contract.execution == tilo_actions::ExecutionMode::Immediate =>
@@ -7644,7 +8406,7 @@ impl FrameHarness {
             ),
             Err(error) => {
                 tracing::warn!(%error, "headless legacy action refused");
-                self.control_failures.push(error.to_string());
+                self.refuse_visibly(&error);
             }
         }
     }
@@ -7838,6 +8600,7 @@ impl FrameHarness {
                     &mut self.state.doc,
                     &target,
                     self.action_transport.as_mut(),
+                    session_door(&mut self.session_door),
                     crate::bound_dispatch::ResourceActionRequest {
                         argument,
                         arguments: json,
@@ -7850,8 +8613,10 @@ impl FrameHarness {
                         scope: None,
                         route: None,
                     },
-                )
-                .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+                );
+                let result = self
+                    .run_hosted(result)
+                    .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
                 if matches!(result, crate::widget::ResourceOperationStart::Accepted) {
                     self.bound_invocations.insert(invocation_id, target);
                 }
@@ -7901,15 +8666,26 @@ impl FrameHarness {
                         arguments.as_ref(),
                         argument,
                     )?;
-                    let result = invoke_legacy_effect(
-                        self.root.as_mut(),
-                        &target,
-                        invocation_id,
-                        spec.kind,
-                        &encoded,
-                        &mut self.state.doc,
-                        None,
-                    )?;
+                    let result = if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE
+                    {
+                        crate::session_door::start_application_launch(
+                            session_door(&mut self.session_door),
+                            None,
+                            &encoded.payload,
+                            invocation_id,
+                            false,
+                        )?
+                    } else {
+                        invoke_legacy_effect(
+                            self.root.as_mut(),
+                            &target,
+                            invocation_id,
+                            spec.kind,
+                            &encoded,
+                            &mut self.state.doc,
+                            None,
+                        )?
+                    };
                     match &result {
                         crate::widget::ResourceOperationStart::Accepted
                             if spec.contract.execution
@@ -7956,15 +8732,13 @@ impl FrameHarness {
                     crate::bound_dispatch::resolve_resource_invocation(
                         &resources, address, argument, json, confirmed,
                     )?;
-                if !self.permissions.permits_invocation(
-                    &app_id,
-                    resource,
-                    spec,
+                crate::bound_dispatch::admit_local_action(
+                    &self.permissions,
+                    (&app_id, resource, spec),
                     arguments.as_ref(),
                     argument,
-                ) {
-                    return Err(crate::bound_dispatch::denied(spec));
-                }
+                    confirmed,
+                )?;
                 crate::invocation_scope::check_continuation(
                     spec,
                     spec.need_for(arguments.as_ref(), argument).kind,
@@ -7996,6 +8770,7 @@ impl FrameHarness {
                         source_invocation: None,
                         ambient: None,
                         scope: None,
+                        door: session_door(&mut self.session_door),
                     },
                 )?;
                 if let Some(before) = before {
@@ -8025,16 +8800,25 @@ impl FrameHarness {
                 "headless: control traversal incomplete; delivering already drained intents"
             );
         }
-        for (target, intent, on_behalf_of) in registered
+        for (target, intent, on_behalf_of, origin) in registered
             .components
             .into_iter()
-            .map(|(target, intent)| (target, intent, None))
+            .map(|(target, intent)| (target, intent, None, crate::bound_dispatch::Origin::Person))
             .chain(bound.pending)
         {
-            if on_behalf_of.is_none() && self.take_search_invocation(&intent) {
+            if on_behalf_of.is_none() && self.take_component_search_invocation(&target, &intent) {
                 continue;
             }
-            self.dispatch_bound_control(target, &intent, on_behalf_of);
+            // The window's own component's History control (the History
+            // button in a framework app's header row) opens this window's
+            // History, as the shortcut does; it is no app action.
+            if on_behalf_of.is_none()
+                && self.component_instance_id() == Some(target.binding.instance_id)
+                && self.take_history_invocation(&intent, None)
+            {
+                continue;
+            }
+            self.dispatch_bound_control(target, &intent, on_behalf_of, origin);
         }
 
         let batch =
@@ -8098,15 +8882,18 @@ impl FrameHarness {
                         Some(&intent.arguments),
                         false,
                     )?;
-                if !crate::bound_dispatch::permits_local_action(
+                match crate::bound_dispatch::admit_local_action(
                     &self.permissions,
-                    &crate::collaboration::local_app_id(),
-                    resource,
-                    spec,
+                    (&crate::collaboration::local_app_id(), resource, spec),
                     arguments.as_ref(),
                     None,
+                    false,
                 ) {
-                    return Err(tilo_actions::DoorError::Unknown(intent.address.clone()));
+                    Err(tilo_actions::DoorError::ConfirmationRequired) => {
+                        return Err(tilo_actions::DoorError::ConfirmationRequired);
+                    }
+                    Err(_) => return Err(tilo_actions::DoorError::Unknown(intent.address.clone())),
+                    Ok(()) => {}
                 }
                 crate::invocation_scope::check_continuation(
                     spec,
@@ -8139,6 +8926,7 @@ impl FrameHarness {
                         source_invocation: None,
                         ambient: acting.as_ref().and_then(|acting| acting.context.as_ref()),
                         scope: None,
+                        door: session_door(&mut self.session_door),
                     },
                 )?;
                 if let Some(before) = before {
@@ -8168,6 +8956,10 @@ impl FrameHarness {
                         crate::bound_dispatch::legacy_document::LocalResourceTarget::Outer,
                         &intent,
                     ),
+                Err(error) if acting.is_none() => {
+                    tracing::warn!(code = error.code(), %error, "headless: control action refused");
+                    self.refuse_visibly(&error);
+                }
                 Err(error) => {
                     tracing::warn!(code = error.code(), %error, "headless: control action refused");
                     self.control_failures.push(error.to_string());
@@ -8209,16 +9001,13 @@ impl FrameHarness {
             Some(supplied),
             confirmed,
         )?;
-        if !crate::bound_dispatch::permits_local_action(
+        crate::bound_dispatch::admit_local_action(
             &self.permissions,
-            &crate::collaboration::local_app_id(),
-            resource,
-            spec,
+            (&crate::collaboration::local_app_id(), resource, spec),
             arguments.as_ref(),
             None,
-        ) {
-            return Err(crate::bound_dispatch::denied(spec));
-        }
+            confirmed,
+        )?;
         let encoded = crate::bound_dispatch::encode_resource_action(
             &resources,
             address,
@@ -8246,6 +9035,7 @@ impl FrameHarness {
                 source_invocation: None,
                 ambient: None,
                 scope: None,
+                door: session_door(&mut self.session_door),
             },
         )?;
         if let Some(before) = before {
@@ -8263,6 +9053,19 @@ impl FrameHarness {
     }
 
     fn poll_control_invocations(&mut self) {
+        let finished = self
+            .session_door
+            .as_mut()
+            .map(crate::session_door::ClientDoor::take_finished)
+            .unwrap_or_default();
+        for (invocation, result) in finished {
+            self.pending_control_invocations.remove(&invocation);
+            self.bound_invocations.remove(&invocation);
+            if let Err(error) = result {
+                tracing::warn!(code = error.code(), %error, "headless: an app did not open");
+                self.refuse_visibly(&error);
+            }
+        }
         let bound = self
             .bound_invocations
             .iter()
@@ -8316,7 +9119,8 @@ impl FrameHarness {
             .copied()
             .collect::<Vec<_>>();
         for invocation in invocations {
-            if let Some(update) = self.root.poll_resource_operation(
+            if let Some(update) = crate::widget::poll_resource_operation(
+                &mut *self.root,
                 invocation,
                 false,
                 &self.state.doc,
@@ -8368,10 +9172,36 @@ impl FrameHarness {
         })
     }
 
+    /// What a contact beginning at `point` (logical coords) means: raw for a
+    /// widget that reads fingers itself, else what the widget under it
+    /// claims ([`crate::widget::Widget::touch_claim`]), else ordinary pointer
+    /// emulation.
+    fn touch_claim_at(&self, point: Point) -> crate::interaction::TouchClaim {
+        use crate::interaction::TouchClaim;
+        if self.claims_raw_touch_at(point) {
+            return TouchClaim::Raw;
+        }
+        self.node_map
+            .keys()
+            .find_map(|&node| {
+                self.inspect_node(node, |widget| {
+                    if widget.get_rect().contains(point) {
+                        widget.touch_claim(point)
+                    } else {
+                        TouchClaim::Pointer
+                    }
+                })
+                .ok()
+                .filter(|claim| *claim != TouchClaim::Pointer)
+            })
+            .unwrap_or(TouchClaim::Pointer)
+    }
+
     /// Fire a touch long-press whose hold deadline passed at `now`.
     fn poll_touch_hold(&mut self, now: crate::time::Instant) {
         if let Some((device_id, events)) = self.touch_pointer.poll(now) {
             self.dispatch_touch_pointer(device_id, events);
+            self.settle_touch_modality();
         }
     }
 
@@ -8387,6 +9217,20 @@ impl FrameHarness {
         }
         self.relayout();
         self.send_touch_phase(winit::event::TouchPhase::Ended, x, y);
+    }
+
+    /// Put one finger down at logical `(x, y)` and hold it still past the
+    /// long-press delay, leaving it down: what a hold does, before the lift
+    /// or drag that follows it ([`Self::touch`] with the id `0`). The hold
+    /// is resolved at its deadline instead of waiting for it in real time.
+    pub fn touch_down_and_hold_at(&mut self, x: f64, y: f64) {
+        self.invalidate_local();
+        self.pump_component_wakes();
+        self.send_touch_phase(winit::event::TouchPhase::Started, x, y);
+        if let Some(deadline) = self.touch_pointer.long_press_deadline() {
+            self.poll_touch_hold(deadline);
+        }
+        self.relayout();
     }
 
     /// Deliver one finger's contact update at logical `(x, y)`; `id`
@@ -8428,6 +9272,35 @@ impl FrameHarness {
             || {
                 self.click_at(x, y);
                 self.click_at(x, y);
+            },
+        );
+    }
+
+    /// Three left clicks at logical `(x, y)` that count as one triple-click
+    /// however slow the frames between them.
+    pub fn triple_click_at(&mut self, x: f64, y: f64) {
+        self.invalidate_local();
+        crate::gesture::with_capture_multi_click_interval(
+            crate::time::Duration::from_secs(3600),
+            || {
+                for _ in 0..3 {
+                    self.click_at(x, y);
+                }
+            },
+        );
+    }
+
+    /// Two finger taps at logical `(x, y)` that count as one double tap
+    /// however slow the frames between them.
+    pub fn double_tap_at(&mut self, x: f64, y: f64) {
+        self.invalidate_local();
+        crate::gesture::with_capture_multi_click_interval(
+            crate::time::Duration::from_secs(3600),
+            || {
+                for id in [u64::MAX - 1, u64::MAX] {
+                    self.touch(id, winit::event::TouchPhase::Started, x, y);
+                    self.touch(id, winit::event::TouchPhase::Ended, x, y);
+                }
             },
         );
     }
@@ -8489,11 +9362,6 @@ impl FrameHarness {
     }
 
     /// Touch the centre of a named widget.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `name` is absent or its widget has no tappable
-    /// layout rectangle.
     pub fn tap_named(&mut self, name: &str) -> Result<(), String> {
         self.invalidate_local();
         let center = self.named_center(name)?;
@@ -8521,10 +9389,6 @@ impl FrameHarness {
     /// Click the centre of the named widget. `Err` names the target when it
     /// is not in the tree, so a stale scenario fails loudly instead of
     /// quietly doing nothing.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the widget is not found or has a zero-sized rect.
     pub fn click_named(&mut self, name: &str) -> Result<(), String> {
         self.invalidate_local();
         let center = self.named_center(name)?;
@@ -8554,7 +9418,7 @@ impl FrameHarness {
         });
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
         self.pump_component_wakes();
-        let key = parse_key(spec);
+        let key = keys::parse_key(spec);
         for state in [ElementState::Pressed, ElementState::Released] {
             self.send_host_event(&key_input(&key, state));
         }
@@ -8639,6 +9503,73 @@ impl FrameHarness {
         changed
     }
 
+    /// Show other people's pointers where its host placed them, in the
+    /// surface's logical pixels: each with its arrow and a name tag laid
+    /// out to stay on screen, over windows, popovers and the bar alike.
+    /// Replaces the last set; the next scheduled frame draws it. A pointer
+    /// outside the surface is left out. Whether anything shown changed.
+    pub fn set_placed_pointers(&mut self, pointers: Vec<crate::presence::PeerCursor>) -> bool {
+        self.invalidate_local();
+        let (w, h) = (f64::from(self.viewport.0), f64::from(self.viewport.1));
+        let pointers: Vec<_> = pointers
+            .into_iter()
+            .filter(|p| (0.0..w).contains(&p.pos.0) && (0.0..h).contains(&p.pos.1))
+            .collect();
+        if pointers.is_empty() && self.placed_pointers.is_empty() {
+            return false;
+        }
+        self.placed_pointers = pointers;
+        self.presence_redraw = true;
+        true
+    }
+
+    /// The pointers [`Self::set_placed_pointers`] last kept.
+    pub fn placed_pointers(&self) -> &[crate::presence::PeerCursor] {
+        &self.placed_pointers
+    }
+
+    /// The placed pointers as the last frame drew them: without the name of
+    /// one whose tag would meet the caret tag of the same person.
+    pub fn drawn_placed_pointers(&mut self) -> Vec<crate::presence::PeerCursor> {
+        self.pointers_beside_caret_tags(self.capture_draw_transform())
+    }
+
+    /// [`Self::drawn_placed_pointers`]. Caret tags are noted in scene
+    /// coordinates; `transform` is the one the frame drew them with.
+    fn pointers_beside_caret_tags(
+        &mut self,
+        transform: Affine,
+    ) -> Vec<crate::presence::PeerCursor> {
+        let mut pointers = self.placed_pointers.clone();
+        if pointers.is_empty() {
+            return pointers;
+        }
+        let to_surface = transform.inverse();
+        let tags: Vec<_> = self
+            .presence
+            .caret_tags()
+            .into_iter()
+            .map(|tag| crate::presence::CaretTag {
+                rect: to_surface.transform_rect_bbox(tag.rect),
+                ..tag
+            })
+            .collect();
+        let viewport = Rect::new(
+            0.0,
+            0.0,
+            f64::from(self.viewport.0),
+            f64::from(self.viewport.1),
+        );
+        crate::presence::hide_names_beside_caret_tags(
+            &mut pointers,
+            &tags,
+            viewport,
+            &mut self.text,
+            &self.theme,
+        );
+        pointers
+    }
+
     /// Read-only view of the collaborator presence drawn by this harness.
     pub fn presence(&self) -> &PresenceCtx {
         &self.presence
@@ -8702,203 +9633,6 @@ impl FrameHarness {
         self.profiler = None;
     }
 
-    // -- Retained relayout diagnostics -------------------------------------
-
-    /// Whether this frame must rebuild the layout tree regardless of what the
-    /// widgets report: the test override first, then `TILO_UI_FULL_RELAYOUT`.
-    fn full_relayout_forced_now(&self) -> bool {
-        self.full_relayout_override
-            .unwrap_or_else(full_relayout_forced)
-    }
-
-    /// Force (`Some(true)`) or forbid (`Some(false)`) the full-rebuild path
-    /// for every following frame, overriding `TILO_UI_FULL_RELAYOUT`; `None`
-    /// returns to the environment's choice. Benchmarks use this to compare
-    /// both paths inside one process.
-    pub fn set_full_relayout(&mut self, forced: Option<bool>) {
-        self.invalidate_local();
-        self.full_relayout_override = forced;
-    }
-
-    /// Cumulative text measurement-cache hits and misses for this host's
-    /// renderer. Compare around input to distinguish retained scrolling from
-    /// remeasuring a whole page; a cold frame must first warm the counters.
-    pub fn text_cache_stats(&self) -> (u64, u64) {
-        self.text.cache_stats()
-    }
-
-    /// Drain this host renderer's actual shape-cache hits, misses and time
-    /// spent shaping. Like `TextRenderer::take_shape_stats`, this isolates
-    /// input work after a measured warmup without a wall-clock threshold.
-    pub fn take_text_shape_stats(&mut self) -> (u64, u64, u128) {
-        self.text.take_shape_stats()
-    }
-
-    /// What the most recent completed relayout did with its layout tree.
-    pub fn last_relayout(&self) -> RelayoutStats {
-        self.last_relayout
-    }
-
-    /// Completed relayout frames since construction; unchanged across a
-    /// skipped (inert pointer) `send`.
-    pub fn relayout_frames(&self) -> u64 {
-        self.relayout_frames
-    }
-
-    /// Completed frames that recomposed the layout tree. One input may
-    /// produce several frames (press and release, a commit tick), so callers
-    /// asserting on a structural change compare this across the input.
-    pub fn rebuilt_frames(&self) -> u64 {
-        self.relayout_frames.saturating_sub(self.retained_frames)
-    }
-
-    /// Every taffy node of the current composition, sorted. Equal across two
-    /// frames exactly when the tree was retained rather than rebuilt.
-    pub fn layout_node_ids(&self) -> Vec<u64> {
-        let mut ids: Vec<u64> = self.node_map.keys().map(|node| u64::from(*node)).collect();
-        ids.sort_unstable();
-        ids
-    }
-
-    /// Invalidate taffy's cached measurement for every node whose widget
-    /// reports it may have changed size (`is_layout_dirty`) or must be
-    /// re-solved (`layout_needs_measure`), so the following
-    /// `compute_widget_layout` re-measures exactly those and their ancestors.
-    /// A node that cannot be inspected is invalidated too: stale is worse than
-    /// a redundant measure. Returns `(marked nodes, marked childless nodes)`.
-    fn mark_layout_dirty_nodes(&mut self) -> (usize, usize) {
-        let dirty: Vec<NodeId> = self
-            .node_map
-            .keys()
-            .copied()
-            .filter(|&node| {
-                // Hidden layout subtrees are not measured by Taffy. Their
-                // widget flags can remain dirty until shown, so do not let
-                // them request work on every visible edit. Showing them
-                // recomposes the tree and performs the required measurement.
-                let mut ancestor = Some(node);
-                while let Some(current) = ancestor {
-                    if self
-                        .taffy
-                        .style(current)
-                        .is_ok_and(|style| style.display == taffy::Display::None)
-                    {
-                        return false;
-                    }
-                    ancestor = self.taffy.parent(current);
-                }
-                // SAFETY: these maps describe this exclusive runner's current
-                // admitted tree; the callback only reads widget flags.
-                unsafe {
-                    crate::bound_dispatch::inspect_bound_node(
-                        &self.bindings,
-                        &self.node_map,
-                        node,
-                        |widget| widget.is_layout_dirty() || widget.layout_needs_measure(),
-                    )
-                }
-                .unwrap_or(true)
-            })
-            .collect();
-        let mut leaves = 0usize;
-        for node in &dirty {
-            if self
-                .taffy
-                .children(*node)
-                .is_ok_and(|children| children.is_empty())
-            {
-                leaves = leaves.saturating_add(1);
-            }
-            let _ = self.taffy.mark_dirty(*node);
-        }
-        (dirty.len(), leaves)
-    }
-
-    /// Compare the retained composition's geometry against a fresh rebuild of
-    /// the same state. Runs one forced full relayout, so it is a test and
-    /// diagnostics hook, not something a live host calls per frame.
-    ///
-    /// # Errors
-    /// Describes the first node (in traversal order) whose child count,
-    /// location or size differs, or the layout error of the rebuild.
-    pub fn verify_retained_geometry(&mut self) -> Result<(), String> {
-        self.invalidate_local();
-        use crate::widget::layout::composition_geometry;
-        if !self.layout_built {
-            return Ok(());
-        }
-        let retained = composition_geometry(&self.taffy, self.root_node)
-            .map_err(|error| format!("retained geometry unavailable: {error}"))?;
-        // The verification frame is not one the caller asked for: keep the
-        // diagnostics describing the frame under test.
-        let (stats, frames, retained_frames) = (
-            self.last_relayout,
-            self.relayout_frames,
-            self.retained_frames,
-        );
-        let previous = self.full_relayout_override;
-        self.full_relayout_override = Some(true);
-        self.verifying_geometry = true;
-        let rebuilt = self.try_relayout();
-        self.verifying_geometry = false;
-        self.full_relayout_override = previous;
-        self.last_relayout = stats;
-        self.relayout_frames = frames;
-        self.retained_frames = retained_frames;
-        rebuilt.map_err(|error| format!("fresh rebuild did not settle: {error}"))?;
-        let fresh = composition_geometry(&self.taffy, self.root_node)
-            .map_err(|error| format!("fresh geometry unavailable: {error}"))?;
-        if retained.len() != fresh.len() {
-            return Err(format!(
-                "retained composition has {} nodes, a fresh rebuild {}",
-                retained.len(),
-                fresh.len()
-            ));
-        }
-        for (index, (kept, built)) in retained.iter().zip(&fresh).enumerate() {
-            if kept != built {
-                return Err(format!(
-                    "node {index} of {}: retained (children {}, at {:?}, size {:?}) but rebuilt (children {}, at {:?}, size {:?})",
-                    fresh.len(),
-                    kept.0,
-                    kept.1,
-                    kept.2,
-                    built.0,
-                    built.1,
-                    built.2
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// Debug builds only: after every `every`th retained frame, verify the
-    /// retained geometry against a fresh rebuild and panic on a mismatch.
-    /// `0` disables the check (the default).
-    pub fn set_retained_geometry_check(&mut self, every: u32) {
-        self.invalidate_local();
-        self.retained_geometry_check_every = if cfg!(debug_assertions) { every } else { 0 };
-    }
-
-    fn check_retained_geometry_if_due(&mut self) {
-        if self.retained_geometry_check_every == 0
-            || self.verifying_geometry
-            || self.last_relayout.rebuilt
-            || !self
-                .retained_frames
-                .is_multiple_of(u64::from(self.retained_geometry_check_every))
-        {
-            return;
-        }
-        if let Err(mismatch) = self.verify_retained_geometry() {
-            tracing::error!(%mismatch, "headless: retained layout diverged from a fresh rebuild");
-            debug_assert!(
-                false,
-                "retained layout diverged from a fresh rebuild: {mismatch}"
-            );
-        }
-    }
-
     /// Render one frame with no input and record it. A frame here is one
     /// `relayout`, which runs the sync → build → apply → draw passes.
     pub fn profile_frame(&mut self) {
@@ -8924,13 +9658,17 @@ impl FrameHarness {
             .unwrap_or_default()
     }
 
-    /// Set the held modifier set. Names: `ctrl`, `shift`, `alt`, `logo`.
+    /// Set the held modifier set. Names: `ctrl`, `shift`, `alt`, `logo`, and
+    /// `command`: the platform's command modifier, which a
+    /// [`crate::platform::Shortcut::command`] chord is pressed with (Cmd on
+    /// macOS, Ctrl elsewhere).
     pub fn set_modifiers(&mut self, names: &[String]) {
         self.invalidate_local();
         self.pump_component_wakes();
         let mut st = winit::keyboard::ModifiersState::empty();
         for n in names {
             match n.to_ascii_lowercase().as_str() {
+                "command" => st |= self.platform.command_modifier(),
                 "ctrl" | "control" => st |= winit::keyboard::ModifiersState::CONTROL,
                 "shift" => st |= winit::keyboard::ModifiersState::SHIFT,
                 "alt" => st |= winit::keyboard::ModifiersState::ALT,
@@ -8953,16 +9691,19 @@ impl FrameHarness {
         match action {
             Action::ClickNamed(name) => self.click_named(name),
             Action::ClickAt(x, y) => {
-                self.click_at(*x, *y);
+                let (x, y) = self.frame_point(*x, *y)?;
+                self.click_at(x, y);
                 Ok(())
             }
             Action::TapNamed(name) => self.tap_named(name),
             Action::TapAt(x, y) => {
-                self.tap_at(*x, *y);
+                let (x, y) = self.frame_point(*x, *y)?;
+                self.tap_at(x, y);
                 Ok(())
             }
             Action::SwipeAt(x0, y0, x1, y1) => {
-                self.swipe_at((*x0, *y0), (*x1, *y1));
+                let start = self.frame_point(*x0, *y0)?;
+                self.swipe_at(start, (*x1, self.frame_y(*y1)));
                 Ok(())
             }
             Action::Key(k) => {
@@ -9254,6 +9995,7 @@ impl FrameHarness {
             &mut self.state.doc,
             &target,
             self.action_transport.as_mut(),
+            session_door(&mut self.session_door),
             crate::bound_dispatch::ResourceActionRequest {
                 argument: None,
                 arguments: Some(arguments),
@@ -9266,8 +10008,10 @@ impl FrameHarness {
                 scope: None,
                 route: None,
             },
-        )
-        .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
+        );
+        let started = self
+            .run_hosted(started)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door)?;
         if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
             self.bound_invocations.insert(invocation, target);
         }
@@ -9378,6 +10122,8 @@ fn role_name(role: crate::a11y::Role) -> &'static str {
         Role::TreeItem => "tree_item",
         Role::Menu => "menu",
         Role::MenuItem => "menu_item",
+        Role::ListBox => "list_box",
+        Role::ListBoxOption => "list_box_option",
         Role::Button => "button",
         Role::ToggleButton => "toggle_button",
         Role::Checkbox => "checkbox",
@@ -9425,12 +10171,15 @@ fn collect_targets(
         out.entry(bare).or_insert_with(|| w.get_rect());
     }
     if let Some(id) = w.test_id() {
-        // A widget whose own node names narrower bounds (an empty state's
-        // button inside its panel) is operated where it says it is, as
-        // assistive technology would.
+        // A widget addressed by a control it holds (an empty state's button
+        // inside its panel), or whose own node names narrower bounds, is
+        // operated where that control is, as assistive technology would.
         let rect = w
             .accessibility()
-            .and_then(|node| node.bounds)
+            .and_then(|node| {
+                let node = crate::a11y::with_synthetic_bounds(node, w);
+                control_bounds(&node, id).or(node.bounds)
+            })
             .map(crate::a11y::AccessBounds::to_rect)
             .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0)
             .unwrap_or_else(|| w.get_rect());
@@ -9440,6 +10189,17 @@ fn collect_targets(
     for child in w.children() {
         collect_targets(child, &path, &mut child_counts, out);
     }
+}
+
+/// Where the control `id` names sits in `node`'s tree, if one of its nodes
+/// is that control.
+fn control_bounds(node: &crate::a11y::AccessNode, id: &str) -> Option<crate::a11y::AccessBounds> {
+    if node.action_target.as_deref() == Some(id) && node.bounds.is_some() {
+        return node.bounds;
+    }
+    node.children
+        .iter()
+        .find_map(|child| control_bounds(child, id))
 }
 
 struct RetainedNamedTarget {
@@ -9516,7 +10276,9 @@ fn collect_inspection(
             .child_clip_rect()
             .map(|r| [r.x0, r.y0, r.width(), r.height()]),
         layout: widget.layout_info(),
-        semantics: widget.accessibility(),
+        semantics: widget
+            .accessibility()
+            .map(|access| crate::a11y::with_synthetic_bounds(access, widget)),
         children,
     }
 }
@@ -9825,36 +10587,6 @@ fn next_widget_path(
     (name, path, current)
 }
 
-fn parse_key(spec: &str) -> Key {
-    match spec {
-        "Enter" | "Return" => Key::Named(NamedKey::Enter),
-        "Tab" => Key::Named(NamedKey::Tab),
-        "Escape" | "Esc" => Key::Named(NamedKey::Escape),
-        "Space" => Key::Named(NamedKey::Space),
-        "Backspace" => Key::Named(NamedKey::Backspace),
-        "Delete" => Key::Named(NamedKey::Delete),
-        "ArrowUp" | "Up" => Key::Named(NamedKey::ArrowUp),
-        "ArrowDown" | "Down" => Key::Named(NamedKey::ArrowDown),
-        "ArrowLeft" | "Left" => Key::Named(NamedKey::ArrowLeft),
-        "ArrowRight" | "Right" => Key::Named(NamedKey::ArrowRight),
-        "F1" => Key::Named(NamedKey::F1),
-        "F2" => Key::Named(NamedKey::F2),
-        "F3" => Key::Named(NamedKey::F3),
-        "F4" => Key::Named(NamedKey::F4),
-        "F5" => Key::Named(NamedKey::F5),
-        "F6" => Key::Named(NamedKey::F6),
-        "F7" => Key::Named(NamedKey::F7),
-        "F8" => Key::Named(NamedKey::F8),
-        "F9" => Key::Named(NamedKey::F9),
-        "F10" => Key::Named(NamedKey::F10),
-        "F11" => Key::Named(NamedKey::F11),
-        "F12" => Key::Named(NamedKey::F12),
-        "Home" => Key::Named(NamedKey::Home),
-        "End" => Key::Named(NamedKey::End),
-        other => Key::Character(other.into()),
-    }
-}
-
 /// Parse `--headless-drive '<json>'` (or `--headless-drive=<json>`) out of
 /// argv. `None` when the flag is absent, which is every normal launch.
 ///
@@ -9865,7 +10597,8 @@ fn parse_key(spec: &str) -> Key {
 /// `{"key": "Enter"}`, `{"type": "hello"}`, `{"modifiers": ["ctrl"]}`,
 /// `{"wait_for_named":{"target":"result","timeout_ms":1000}}`,
 /// `{"expect":{"target":"result","name_contains":"Done"}}`,
-/// `{"perform":{"target":"name","action":"activate"}}`),
+/// `{"perform":{"target":"name","action":"activate"}}`, which drives the
+/// window bar's search on a `window-search-*` target),
 /// `audit` (fail on semantic accessibility violations), `audit_report` (path
 /// for its versioned JSON result), `dump` (path for document JSON), `targets`
 /// (path for the addressable-widget list), and `inspect` (path for the combined
@@ -9876,6 +10609,8 @@ fn parse_key(spec: &str) -> Key {
 // there is nothing yet to unwind. Threading a `Result` through instead
 // would mean every one of the ~15 call sites across `apps/*` duplicates
 // this same exit, for no behavioural change.
+use drive::write_headless_output;
+pub use drive::{run_component, run_component_staged};
 pub use tilo_headless_schema::parse_spec;
 
 fn semantic_action_from_wire(action: tilo_headless_schema::SemanticAction) -> crate::a11y::Action {
@@ -9976,9 +10711,10 @@ fn write_spec_outputs(spec: &Spec, driver: &mut FrameHarness) -> Result<(), Stri
         let mut names: Vec<(String, [f64; 4])> = driver
             .targets()
             .into_iter()
+            .map(|(name, rect)| (name, driver.window_rect(rect)))
             .map(|(name, rect)| (name, [rect.x0, rect.y0, rect.width(), rect.height()]))
             .collect();
-        names.sort_by(|a, b| a.0.cmp(&b.0));
+        names.compact_sort_by(|a, b| a.0.cmp(&b.0));
         let json = serde_json::to_string_pretty(&names).unwrap_or_default();
         write_headless_output(path, json)
             .map_err(|error| format!("writing targets to {path}: {error}"))?;
@@ -10049,7 +10785,7 @@ fn write_capture(capture: &Capture, driver: &mut FrameHarness) -> Result<(), Str
     }
     if let Some(viewport) = capture.viewport {
         driver
-            .resize(viewport)
+            .resize(driver.content_viewport(viewport))
             .map_err(|error| format!("capture {}: layout failed: {error}", capture.path))?;
     }
     driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
@@ -10061,88 +10797,60 @@ fn write_capture(capture: &Capture, driver: &mut FrameHarness) -> Result<(), Str
         tilo_files::native::create_dir_all(parent)
             .map_err(|error| format!("capture {}: {error}", capture.path))?;
     }
-    driver.render_png(path);
+    if driver.presents_window_bar() {
+        driver.render_window_png(path);
+    } else {
+        driver.render_png(path);
+    }
     Ok(())
 }
 
-/// Drive the same prepared component with existing actions, audit, and output formats.
-/// Returns 0 for success, 1 for an action/output failure, and 3 for durability failure.
-pub fn run_component(
-    spec: &Spec,
-    component: crate::application::AppComponent,
-    inputs: crate::application::ComponentRunnerInputs,
-) -> i32 {
-    tilo_startup_metrics::mark("headless-setup-start");
-    let records = component.callback_binding().records;
-    let mut driver = match FrameHarness::from_component(
-        component,
-        spec.viewport.unwrap_or(DEFAULT_VIEWPORT),
-        inputs,
-    ) {
-        Ok(driver) => driver,
-        Err(error) => {
-            tilo_startup_metrics::mark("headless-setup-failed");
-            eprintln!("headless: component setup failed: {error}");
-            return 3;
-        }
-    };
-    tilo_startup_metrics::mark("headless-setup-ready");
-    let mut failure = drive_spec_actions(spec, &mut driver, |driver| {
-        driver.persist_tick();
-    });
-    driver.pump_component_wakes();
-    if let Err(error) =
-        audit_spec(spec, &driver, &mut failure).and_then(|()| write_spec_outputs(spec, &mut driver))
-    {
-        tilo_startup_metrics::mark("headless-output-failed");
-        failure = Some(error);
-    } else {
-        tilo_startup_metrics::mark("headless-output-done");
-    }
-    tilo_startup_metrics::mark("headless-durability-start");
-    driver.close_components();
-    let reports = driver.component_close_reports();
-    if reports.iter().any(|report| {
-        report.view_error.is_some()
-            || report.record_error.is_some()
-            || report.teardown_error.is_some()
-    }) {
-        tilo_startup_metrics::mark("headless-durability-failed");
-        eprintln!("headless: component close could not persist all state");
-        return 3;
-    }
-    if let Err(error) = records.try_flush() {
-        tilo_startup_metrics::mark("headless-durability-failed");
-        eprintln!("headless: state write failed: {error}");
-        return 3;
-    }
-    tilo_startup_metrics::mark("headless-durability-done");
-    match failure {
-        Some(error) => {
-            eprintln!("headless: {error}");
-            1
-        }
-        None => 0,
-    }
-}
-
-fn write_headless_output(
-    path: impl AsRef<std::path::Path>,
-    contents: impl AsRef<[u8]>,
-) -> std::io::Result<()> {
-    let path = path.as_ref();
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, contents)
+/// The session door a window's host installed, as the execution body takes it.
+fn session_door(
+    door: &mut Option<crate::session_door::ClientDoor>,
+) -> Option<&mut dyn crate::session_door::SessionDoor> {
+    door.as_mut()
+        .map(|door| door as &mut dyn crate::session_door::SessionDoor)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A theme change repaints everything on the next frame, retained caches
+    /// included: a window switched from dark to light renders exactly what a
+    /// window opened in light renders. Controls nested in columns kept their
+    /// dark paint when the columns replayed their cached subtree.
+    #[test]
+    fn switching_theme_repaints_retained_controls_as_a_fresh_window_would() {
+        fn controls() -> Box<dyn Widget> {
+            Box::new(
+                crate::widget::Column::new()
+                    .push(Box::new(
+                        crate::widget::Column::new()
+                            .push(Box::new(crate::widget::Checkbox::new("a", "a")))
+                            .push(Box::new(crate::widget::Checkbox::new("b", "b"))),
+                    ))
+                    .push(Box::new(crate::widget::ProgressBar::new(0.4))),
+            )
+        }
+        let mut switched = FrameHarness::new(State::new(), controls(), (240, 160));
+        switched.relayout();
+        switched.set_theme(Theme::light());
+        let fresh =
+            FrameHarness::new_with_theme(State::new(), controls(), (240, 160), Theme::light());
+        let (switched, fresh) = (switched.render_rgba(), fresh.render_rgba());
+        assert!(!fresh.is_empty());
+        let differing = switched
+            .chunks_exact(4)
+            .zip(fresh.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differing, 0,
+            "{differing} pixels still show the dark theme after switching to light"
+        );
+    }
 
     #[test]
     fn closing_focus_trap_enumerates_history_once() {
@@ -10264,6 +10972,28 @@ mod tests {
         }
     }
 
+    /// The browser and every other host deliver input through
+    /// `send_host_event`: it notes the modality, so a click hides focus rings
+    /// and a key brings them back, as it does for a native window.
+    #[test]
+    fn host_events_decide_whether_focus_rings_show() {
+        let mut harness = FrameHarness::new(
+            State::new(),
+            Box::new(DemandProbe::leaf("Root")),
+            (200, 100),
+        );
+        harness.send_host_event(&crate::synthetic_input::mouse_press());
+        assert!(!crate::focus_visible::shown(), "a click hides focus rings");
+        harness.send_host_event(&crate::synthetic_input::keyboard_input(
+            crate::synthetic_input::key_event(
+                winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+                None,
+                winit::event::ElementState::Pressed,
+            ),
+        ));
+        assert!(crate::focus_visible::shown(), "a key shows them again");
+    }
+
     #[test]
     fn frame_requesters_name_the_widgets_that_ask_for_frames() {
         let now = crate::time::now();
@@ -10279,7 +11009,7 @@ mod tests {
         root.children = vec![panel, clock, later];
         let harness = FrameHarness::new(State::new(), Box::new(root), (200, 100));
         let mut requesters = harness.frame_requesters();
-        requesters.sort_by(|a, b| a.0.cmp(&b.0));
+        requesters.compact_sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(
             requesters,
             vec![
@@ -10369,7 +11099,7 @@ mod tests {
             (200, 100),
         );
         draws.set(0);
-        assert!(harness.settle_for_capture(crate::time::Duration::from_millis(100)));
+        assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
         assert!(
             draws.get() > 3,
             "capture drew the completed final-frame job"
@@ -10431,6 +11161,40 @@ mod tests {
         until: std::rc::Rc<std::cell::Cell<Option<crate::time::Instant>>>,
     }
 
+    /// Animates until it has been drawn `frames` times, so the number of draws
+    /// the capture runs — not the wall clock — says whether it settled.
+    struct CountedFrames {
+        frames: usize,
+        drawn: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Widget for CountedFrames {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.widget_leaf(Style::default(), node_map, self)
+        }
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+            self.drawn.set(self.drawn.get() + 1);
+        }
+        fn needs_animation_frame(&self) -> bool {
+            self.drawn.get() < self.frames
+        }
+        fn name(&self) -> &str {
+            "CountedFrames"
+        }
+    }
+
     impl Entrance {
         fn new() -> (
             Self,
@@ -10485,7 +11249,7 @@ mod tests {
             harness
                 .perform_named("nav-shell-back", &crate::a11y::Action::Activate)
                 .unwrap();
-            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(1)));
+            assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
             let column = harness.root::<NavShell>().geometry().sidebar_column;
             assert_eq!(column.x0, 0.0, "the final sidebar starts at the viewport");
             assert_eq!(column.x1, f64::from(width));
@@ -10499,31 +11263,61 @@ mod tests {
         }
     }
 
+    /// A written capture is the window a person sees a moment after it
+    /// opened, so an entrance still running is waited out before the frame is
+    /// taken. Without this, `--shots` and `--responsive-matrix` write whatever
+    /// the first draw happened to show: a scroll thumb mid-fade, or a page
+    /// still drawn from the bitmap of the width it had a moment ago, which is
+    /// a difference about the capture and reads as a layout difference to
+    /// `tools/ci/capture_parity.py`.
+    #[cfg(feature = "native")]
+    #[test]
+    fn writing_a_shot_runs_the_animation_out_first() {
+        let drawn = std::rc::Rc::new(std::cell::Cell::new(0));
+        let widget = CountedFrames {
+            frames: 3,
+            drawn: std::rc::Rc::clone(&drawn),
+        };
+        let mut harness = FrameHarness::new(State::new(), Box::new(widget), (200, 100));
+        assert!(
+            harness.frame_schedule().needs_animation_frame,
+            "the animation is running before the capture"
+        );
+        let temp = tempfile::tempdir().expect("temporary output root");
+        harness.write_shot(&temp.path().join("shot.png"), false);
+        assert!(
+            drawn.get() >= 3,
+            "the capture ran the animation out ({} draw(s))",
+            drawn.get()
+        );
+        assert!(
+            !harness.frame_schedule().needs_animation_frame,
+            "the written frame is a settled one"
+        );
+    }
+
     #[test]
     fn a_capture_settles_animations_and_lands_on_the_window_ground() {
-        // Case `capture_waits_until_the_animation_schedule_is_idle`.
         {
             let (entrance, until) = Entrance::new();
             let mut harness = FrameHarness::new(State::new(), Box::new(entrance), (200, 100));
             assert!(harness.frame_schedule().needs_animation_frame);
-            assert!(harness.settle_for_capture(crate::HANG_BOUND));
+            assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
             assert!(!harness.frame_schedule().needs_animation_frame);
             let until = until.get().expect("the entrance started");
             assert!(crate::time::now() >= until, "it ran the animation out");
         }
 
-        // Case `a_virtual_executor_clock_does_not_cut_the_settle_short`.
         {
             let pumped = crate::background::Pumped::new();
             let _entered = pumped.background().enter();
             let (entrance, until) = Entrance::new();
             let mut harness = FrameHarness::new(State::new(), Box::new(entrance), (200, 100));
-            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(5)));
+            assert!(harness.settle_for_capture(tilo_test_env::hang_bound()));
             let until = until.get().expect("the entrance started");
             assert!(crate::time::now() >= until, "it ran the animation out");
         }
 
-        // Case `the_corner_pixel_is_the_content_ground`.
         {
             for theme in [Theme::dark(), Theme::light()] {
                 let harness = FrameHarness::new_with_theme(
@@ -10563,7 +11357,7 @@ mod tests {
         let root = crate::font_catalog::checkout_root();
         let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
         let fonts = catalog
-            .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
             .unwrap();
         let mut driver = FrameHarness::new_with_controlled_inputs(
             State::new(),
@@ -10585,9 +11379,14 @@ mod tests {
                 .install_browser_font(
                     "NotoSansArabic[wght].ttf",
                     std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
+                    &crate::font_catalog::test_sha256(
+                        &std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap()
+                    )
                 )
                 .unwrap()
         );
+        assert_eq!(driver.relayout_frames(), frames, "the next frame lays out");
+        driver.relayout();
         assert_eq!(driver.relayout_frames(), frames + 1);
         assert!(driver.last_relayout().rebuilt);
         assert_eq!(driver.state.doc.get_heads(), heads);
@@ -10742,6 +11541,53 @@ mod tests {
                 .inspection_json()
                 .unwrap()
                 .contains("action-palette-results")
+        );
+    }
+
+    #[test]
+    fn select_all_on_a_russian_source_selects_the_field() {
+        let input = crate::widget::TextInput::local()
+            .with_id("name")
+            .with_initial_value("hello");
+        let mut frame = FrameHarness::new_with_controlled_inputs(
+            State::new(),
+            Box::new(input),
+            (320, 180),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        frame.set_platform_conventions(crate::platform::PlatformConventions::new(
+            crate::platform::Platform::Linux,
+        ));
+        frame
+            .perform_named("name", &crate::a11y::Action::Focus)
+            .unwrap();
+        frame.send_host_event(&WindowEvent::ModifiersChanged(
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
+        ));
+        // Ctrl and the key a US keyboard labels A, with the Russian source
+        // active: the platform reports the letter that source puts there.
+        let mut select_all = crate::synthetic_input::key_event(
+            Key::Character("ф".into()),
+            Some("ф".into()),
+            ElementState::Pressed,
+        );
+        select_all.physical_key =
+            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyA);
+        frame.send_host_event(&crate::synthetic_input::keyboard_input(select_all));
+        frame.send_host_event(&WindowEvent::ModifiersChanged(
+            winit::event::Modifiers::default(),
+        ));
+        frame.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit("я".into())));
+        assert_eq!(
+            frame
+                .access_node_named("name", None)
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("я"),
+            "Ctrl+A selected the field, so the next letter replaced it"
         );
     }
 
@@ -11014,7 +11860,6 @@ mod tests {
 
     #[test]
     fn headless_focus_and_key_activation_route_to_the_right_target() {
-        // Case `anonymous_headless_focus_survives_rebuild_without_state_transfer`.
         {
             let mut driver = FrameHarness::new_with_controlled_inputs(
                 State::new(),
@@ -11050,7 +11895,6 @@ mod tests {
             let _ = old;
         }
 
-        // Case `anonymous_headless_unrelated_focused_siblings_have_no_input_target`.
         {
             let root = Column::new()
                 .push(Box::new(crate::widget::layout::AnonymousFocusProbe::new(
@@ -11072,7 +11916,6 @@ mod tests {
             assert!(driver.focused.is_none());
         }
 
-        // Case `function_keys_do_not_type_their_names_into_a_focused_field`.
         {
             let mut driver = FrameHarness::new(
                 State::new(),
@@ -11138,7 +11981,6 @@ mod tests {
             );
         }
 
-        // Case `enter_and_space_activate_a_focused_button_once_per_press`.
         {
             let activations: std::rc::Rc<std::cell::Cell<usize>> =
                 std::rc::Rc::new(std::cell::Cell::new(0));
@@ -11157,7 +11999,6 @@ mod tests {
             assert_eq!(activations.get(), 2, "Space activates only on key press");
         }
 
-        // Case `consumed_enter_does_not_run_the_focused_activation_fallback`.
         {
             let activations = std::rc::Rc::new(std::cell::Cell::new(0));
             let control = ConsumingActivationControl {
@@ -11981,7 +12822,6 @@ mod tests {
                 disabled.native_app_audit().issues
             );
 
-            // A password field's show/hide control is bound like the field.
             let secret = FrameHarness::new(
                 State::new(),
                 Box::new(
@@ -12006,7 +12846,6 @@ mod tests {
             );
         }
 
-        // Case `quick_button_handler_is_a_certified_searchable_action`.
         {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0));
             let invoked = calls.clone();
@@ -12026,7 +12865,6 @@ mod tests {
             assert_eq!(calls.get(), 1);
         }
 
-        // Case `accessibility_audit_checks_controls_and_synthetic_identity_contracts`.
         {
             let mut issues = Vec::new();
             let root = AccessNode::new(Role::Group).with_children(vec![
@@ -12084,7 +12922,6 @@ mod tests {
 
     #[test]
     fn headless_spec_parses_every_shape_and_rejects_malformed_input() {
-        // Case `spec_parses_every_action_shape`.
         {
             let spec = parse_spec(
             r#"{"viewport":[800,600],"audit":true,"audit_report":"/tmp/a.json","dump":"/tmp/d.json","targets":"/tmp/t.json",
@@ -12147,13 +12984,11 @@ mod tests {
             ));
         }
 
-        // Case `an_unknown_action_is_rejected_rather_than_ignored`.
         {
             let err = parse_spec(r#"{"actions":[{"teleport":"x"}]}"#).unwrap_err();
             assert!(err.contains("teleport"), "{err}");
         }
 
-        // Case `action_descriptions_locate_failures_without_echoing_entered_values`.
         {
             let typed = action_description(&Action::Type("private value".into()));
             assert_eq!(typed, "type 13 character(s)");
@@ -12173,7 +13008,6 @@ mod tests {
             assert_eq!(expected, "expect \"items\" / \"row:42\"");
         }
 
-        // Case `malformed_headless_viewports_and_actions_are_rejected`.
         {
             for raw in [
                 r#"{"viewport":[0,600]}"#,
@@ -12190,14 +13024,12 @@ mod tests {
             }
         }
 
-        // Case `unknown_headless_fields_fail_instead_of_doing_nothing`.
         {
             let error = parse_spec(r#"{"steps":[]}"#).unwrap_err();
             assert!(error.contains("unknown field \"steps\""), "{error}");
             assert!(error.contains("actions"), "{error}");
         }
 
-        // Case `headless_outputs_create_explicit_nested_parent_directories`.
         {
             let temp = tempfile::tempdir().expect("temporary output root");
             let output = temp.path().join("artifacts/audit/inspect.json");
@@ -12228,7 +13060,6 @@ mod tests {
             driver.click_named(&name).expect("click lands");
         }
 
-        // Case `touch_profile_enlarges_and_activates_the_same_button`.
         {
             use std::cell::Cell;
             use std::rc::Rc;
@@ -12260,7 +13091,6 @@ mod tests {
             );
         }
 
-        // Case `host_touch_routing_reaches_pointer_only_controls_and_cancels_swipes`.
         {
             use automerge::ReadDoc;
 
@@ -12312,7 +13142,6 @@ mod tests {
             assert_eq!(value.as_bool(), Some(true));
         }
 
-        // Case `pointer_and_touch_preserve_keyboard_family_and_discovered_devices`.
         {
             let mut driver = FrameHarness::new(
                 State::new(),
@@ -12335,13 +13164,18 @@ mod tests {
             assert_eq!(pointer.available, initial.available);
             assert_eq!(pointer.pointer_precision, crate::PointerPrecision::Fine);
             send_touch(&mut driver, winit::event::TouchPhase::Started, 10.0, 10.0);
+            assert_eq!(
+                driver.interaction_environment().pointer_precision,
+                crate::PointerPrecision::Fine,
+                "a touch is hit against the layout it began on"
+            );
+            send_touch(&mut driver, winit::event::TouchPhase::Ended, 10.0, 10.0);
             let touch = driver.interaction_environment();
             assert_eq!(touch.keyboard_family, initial.keyboard_family);
             assert_eq!(touch.available, initial.available);
             assert_eq!(touch.pointer_precision, crate::PointerPrecision::Coarse);
         }
 
-        // Case `clicking_a_missing_target_is_an_error`.
         {
             let mut driver =
                 FrameHarness::new(State::new(), Box::new(Button::new("b", "B")), (400, 200));
@@ -12349,7 +13183,6 @@ mod tests {
             assert!(err.contains("no_such_widget"), "{err}");
         }
 
-        // Case `wait_action_succeeds_for_a_named_widget_and_reports_bounded_timeout`.
         {
             let mut driver = FrameHarness::new(
                 State::new(),
@@ -12400,7 +13233,6 @@ mod tests {
                 crate::permissions::UserId("fixture-user".into()),
             );
             let rect = driver.targets()["field"];
-            // Inside "hello", clear of the field's padding.
             let (x, y) = (rect.x0 + 24.0, rect.center().y);
             for _ in 0..taps {
                 driver.tap_at(x, y);
@@ -12426,7 +13258,6 @@ mod tests {
 
     #[test]
     fn semantic_actions_use_the_widget_path_and_report_mismatches() {
-        // Case `semantic_set_value_and_focus_update_the_inspection_tree`.
         {
             let input = TextInput::local()
                 .with_id("name-input")
@@ -12460,7 +13291,6 @@ mod tests {
             assert!(semantics.state.focused);
         }
 
-        // Case `semantic_activate_uses_the_widget_action_path`.
         {
             use std::cell::Cell;
             use std::rc::Rc;
@@ -12485,7 +13315,6 @@ mod tests {
             assert_eq!(fired.get(), 1);
         }
 
-        // Case `unsupported_semantic_action_fails_loudly`.
         {
             let mut driver = FrameHarness::new(
                 State::new(),
@@ -12499,7 +13328,6 @@ mod tests {
             assert!(error.contains("save"), "{error}");
         }
 
-        // Case `semantic_expectation_reports_all_mismatches_and_addresses_model_rows`.
         {
             let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
             let tree = TreeView::new(root).with_expanded([1]).with_id("items-tree");
@@ -12549,7 +13377,6 @@ mod tests {
             assert!(timeout.contains("Still wrong"), "{timeout}");
         }
 
-        // Case `semantic_tree_row_actions_use_stable_model_ids`.
         {
             let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
             let tree = TreeView::new(root)
@@ -12601,7 +13428,6 @@ mod tests {
 
     #[test]
     fn inspection_and_dump_reflect_geometry_semantics_and_document() {
-        // Case `inspection_combines_widget_geometry_and_redacted_semantics`.
         {
             let root = Column::new()
                 .push(Box::new(
@@ -12635,7 +13461,6 @@ mod tests {
             assert!(!json.contains("swordfish"), "secret leaked: {json}");
         }
 
-        // Case `inspection_retains_virtualized_semantic_children`.
         {
             let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
             let tree = TreeView::new(root)
@@ -12661,7 +13486,6 @@ mod tests {
             );
         }
 
-        // Case `dump_json_reflects_the_document`.
         {
             use automerge::transaction::Transactable;
             let mut state = State::new();
@@ -12678,7 +13502,6 @@ mod tests {
 
     #[test]
     fn local_control_results_report_refusal_confirmation_and_success() {
-        // Case `local_control_result_does_not_broadcast_into_component_siblings`.
         {
             use crate::application_test_support::ProbeHost;
             use crate::widget::{Column, TileHost};
@@ -12712,7 +13535,6 @@ mod tests {
             }
         }
 
-        // Case `bound_local_control_result_reports_permission_refusal_and_success`.
         {
             use crate::application_test_support::{ProbeHost, runner_inputs};
             for accepted in [false, true] {
@@ -12756,7 +13578,6 @@ mod tests {
             }
         }
 
-        // Case `local_control_result_keeps_confirmation_as_refusal`.
         {
             let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
             probe.confirmation = true;
@@ -12777,7 +13598,6 @@ mod tests {
             );
         }
 
-        // Case `local_control_result_reports_completed_and_accepted`.
         {
             use crate::widget::control_result_probe::Probe;
             for accepted in [false, true] {
@@ -12811,7 +13631,6 @@ mod tests {
             }
         }
 
-        // Case `local_control_result_reports_fresh_permission_refusal_without_mutation`.
         {
             use crate::widget::control_result_probe::Probe;
             let (probe, observed) = Probe::new(false);
@@ -13316,7 +14135,6 @@ mod a11y_driver_tests {
 
     #[test]
     fn a11y_driver_names_focuses_and_activates_widgetless_elements() {
-        // Case `a_headless_test_can_name_an_element_that_has_no_widget`.
         {
             let (d, _a) = driver();
             for name in ["alpha", "beta", "gamma"] {
@@ -13328,7 +14146,6 @@ mod a11y_driver_tests {
             assert_eq!(d.a11y_node_named("delta"), None);
         }
 
-        // Case `a_headless_test_can_activate_one_element_inside_a_canvas`.
         {
             // The whole point: before, a canvas could be described in a headless
             // test but only clicked at coordinates, which activates whatever
@@ -13346,7 +14163,6 @@ mod a11y_driver_tests {
             );
         }
 
-        // Case `focusing_an_element_moves_the_exported_focus_onto_it`.
         {
             let (mut d, _a) = driver();
             let gamma = d.a11y_node_named("gamma").unwrap();
@@ -13360,7 +14176,6 @@ mod a11y_driver_tests {
 
     #[test]
     fn a11y_node_references_survive_relayout_or_report_gone() {
-        // Case `a_node_reference_survives_a_relayout`.
         {
             // The gap this closes: the host throws its TaffyTree away and rebuilds
             // it on every relayout, and ids used to be derived from taffy's
@@ -13376,7 +14191,6 @@ mod a11y_driver_tests {
                 .collect();
             assert!(before.len() >= 4, "the canvas and its items are exported");
 
-            // A layout pass, exactly as any frame does.
             d.relayout();
 
             let after: Vec<(String, accesskit::NodeId)> = d
@@ -13390,7 +14204,6 @@ mod a11y_driver_tests {
             );
         }
 
-        // Case `an_id_taken_before_a_relayout_still_operates_the_same_element`.
         {
             // Stability is only worth anything if the id still *works*: an AT holds
             // its reference across frames and then acts on it.
@@ -13408,7 +14221,6 @@ mod a11y_driver_tests {
             );
         }
 
-        // Case `a_held_reference_follows_its_element_when_an_earlier_one_is_removed`.
         {
             // Identity keys, observed. Removing an earlier element renumbers every
             // element after it. Keyed by ordinal, a reference an assistive
@@ -13437,7 +14249,6 @@ mod a11y_driver_tests {
             );
         }
 
-        // Case `an_id_that_names_nothing_is_reported_not_silently_retargeted`.
         {
             let (mut d, activated) = driver();
             let real = d.a11y_node_named("alpha").unwrap();
@@ -13651,7 +14462,6 @@ mod undo_driver_tests {
                 "the shortcut and the control land in the same place"
             );
 
-            // And redo, through the control.
             via_click
                 .click_named("redo_button")
                 .expect("redo became available");
@@ -13919,7 +14729,6 @@ mod dispatched_action_driver_tests {
 
     #[test]
     fn dispatched_actions_are_undoable_through_every_input_path() {
-        // Case `lazy_status_preserves_transaction_boundary_without_a_consumer`.
         {
             use automerge::transaction::Transactable;
             let author = crate::permissions::UserId("lazy-status-author".into());
@@ -13987,7 +14796,6 @@ mod dispatched_action_driver_tests {
             assert_eq!(body(&mut d), "a", "redo put the action back");
         }
 
-        // Case `committed_text_uses_the_real_ime_path_as_one_edit`.
         {
             let mut d = action_driver();
 
@@ -14357,7 +15165,6 @@ mod prepared_driver_tests {
     }
     #[test]
     fn prepared_driver_publishes_undo_status_and_guards_wakes() {
-        // Case `prepared_driver_selected_undo_status_preserves_outer_publication`.
         {
             let (host, mut driver, bound, checkout) = prepared();
             let outer = Observations::default();
@@ -14383,7 +15190,7 @@ mod prepared_driver_tests {
             let node = *driver
                 .node_map
                 .keys()
-                .find(|node| driver.bindings.binding_for(**node).is_some())
+                .find(|node| driver.bindings.binding_ref(**node).is_some())
                 .unwrap();
             driver.set_focused(Some(node));
             driver.type_text("first");
@@ -14407,7 +15214,6 @@ mod prepared_driver_tests {
             assert_eq!(driver.undo_status(), outer_baseline);
         }
 
-        // Case `prepared_driver_wakes_are_installed_before_callbacks_and_stale_wakes_are_rejected`.
         {
             let mut outer_scope = crate::WakeScope::new();
             let outer_wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -14541,17 +15347,14 @@ mod ordinary_confirmation_owner_tests {
             driver
                 .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
                 .unwrap();
-            let field = driver.a11y_node_named("Confirmation").unwrap();
-            driver
-                .perform_a11y_action(field, &crate::a11y::Action::SetValue("CONFIRM".into()))
-                .unwrap();
+            assert!(driver.asking().is_some(), "the host asks");
             let old = driver.control_domain.clone();
             if replacement {
                 driver.control_domain = crate::ControlDomain::new();
             } else {
                 old.close();
             }
-            let submit = driver.a11y_node_named("Confirm").unwrap();
+            let submit = driver.a11y_node_named("Run fixture").unwrap();
             driver
                 .perform_a11y_action(submit, &crate::a11y::Action::Activate)
                 .unwrap();
@@ -14596,7 +15399,8 @@ pub(crate) mod legacy_control_feedback_tests {
     impl Widget for ImportProbe {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources
+            dyn crate::resources::PublishesResources,
+            dyn crate::widget::ResourceOperations
         );
 
         crate::testing::delegate_widget_methods!(
@@ -14615,9 +15419,13 @@ pub(crate) mod legacy_control_feedback_tests {
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             vec![&mut self.descendants]
         }
+    }
+
+    impl crate::widget::ResourceOperations for ImportProbe {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["feedback.begin"]
         }
+
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
@@ -14640,6 +15448,7 @@ pub(crate) mod legacy_control_feedback_tests {
                 });
             Ok(Some(crate::widget::ResourceOperationStart::Accepted))
         }
+
         fn poll_resource_operation(
             &mut self,
             invocation: tilo_actions::InvocationId,
@@ -14831,231 +15640,15 @@ mod portable_host_tests;
 mod pen_tests;
 
 #[cfg(test)]
-mod framed_tests {
-    use super::*;
-
-    struct Probe {
-        width: f32,
-        rect: Rect,
-        syncs: usize,
-        presses: usize,
-        follows: std::cell::Cell<bool>,
-    }
-
-    impl Probe {
-        fn new(width: f32) -> Self {
-            Self {
-                width,
-                rect: Rect::ZERO,
-                follows: std::cell::Cell::new(false),
-                syncs: 0,
-                presses: 0,
-            }
-        }
-    }
-
-    impl Widget for Probe {
-        fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
-            self.syncs = self.syncs.saturating_add(1);
-        }
-
-        fn build_layout(
-            &mut self,
-            taffy: &mut TaffyTree<()>,
-            _theme: &Theme,
-            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let style = Style {
-                size: Size::from_lengths(self.width, 40.0),
-                ..Default::default()
-            };
-            taffy.widget_leaf(style, node_map, self)
-        }
-
-        crate::rect_geometry!();
-
-        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-            if matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    ..
-                }
-            ) {
-                self.presses = self.presses.saturating_add(1);
-                *ctx.handled = true;
-            }
-        }
-
-        fn name(&self) -> &'static str {
-            "Probe"
-        }
-
-        fn composition_follows_allocation(&self) -> bool {
-            self.follows.get()
-        }
-    }
-
-    use crate::synthetic_input::mouse_press;
-
-    #[test]
-    fn framed_root_runs_a_frame_on_mount_and_recomposes_after_mutable_access() {
-        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
-        assert!(probe.syncs > 0, "mount runs the production sync pass");
-        assert!((probe.rect.width() - 120.0).abs() < f64::EPSILON);
-
-        Framed::harness_mut(&mut probe).relayout();
-        assert!(
-            !Framed::harness(&probe).last_relayout().rebuilt,
-            "an untouched root keeps its retained tree"
-        );
-
-        probe.width = 200.0;
-        Framed::harness_mut(&mut probe).relayout();
-        assert!(Framed::harness(&probe).last_relayout().rebuilt);
-        assert!((probe.rect.width() - 200.0).abs() < f64::EPSILON);
-    }
-
-    /// A resize re-solves the retained tree against the new window size and
-    /// composes nothing again, unless a widget composes from its allocation.
-    #[test]
-    fn a_resize_recomposes_only_for_widgets_that_compose_from_their_allocation() {
-        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
-        let ids = Framed::harness(&probe).layout_node_ids();
-        let frames = Framed::harness(&probe).rebuilt_frames();
-        Framed::harness_mut(&mut probe).resize((360, 180)).unwrap();
-        let harness = Framed::harness(&probe);
-        assert!(
-            !harness.last_relayout().rebuilt,
-            "resize recomposed the tree"
-        );
-        assert!(harness.last_relayout().measured, "resize re-solved sizes");
-        assert_eq!(harness.layout_node_ids(), ids, "the taffy tree was kept");
-        assert_eq!(harness.rebuilt_frames(), frames);
-
-        probe.follows.set(true);
-        Framed::harness_mut(&mut probe).resize((320, 160)).unwrap();
-        assert!(
-            Framed::harness(&probe).last_relayout().rebuilt,
-            "a widget that composes from its allocation is composed again"
-        );
-    }
-
-    #[test]
-    fn recompose_rebuilds_an_unchanged_tree() {
-        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
-        Framed::harness_mut(&mut probe).recompose().unwrap();
-        assert!(Framed::harness(&probe).last_relayout().rebuilt);
-        assert!((probe.rect.width() - 120.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn dispatch_to_root_reaches_the_root_and_keeps_the_retained_tree() {
-        let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
-        let outcome = Framed::harness_mut(&mut probe)
-            .dispatch_to_root_outcome(&mouse_press(), &winit::event::Modifiers::default());
-        assert!(outcome.handled);
-        assert_eq!(outcome.focus_target, None);
-        assert_eq!(probe.presses, 1);
-
-        Framed::harness_mut(&mut probe).relayout();
-        assert!(!Framed::harness(&probe).last_relayout().rebuilt);
-    }
-
-    #[test]
-    fn host_style_positions_the_root_inside_the_viewport() {
-        let probe = Framed::with_options(
-            State::new(),
-            Probe::new(120.0),
-            (400, 200),
-            FrameOptions {
-                host_style: Some(Style {
-                    justify_content: Some(JustifyContent::Center),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        );
-        assert!((probe.rect.x0 - 140.0).abs() < f64::EPSILON);
-    }
-
-    /// A leaf 300 px tall that records the heights it was offered.
-    struct Tall {
-        rect: Rect,
-        offered: Vec<AvailableSpace>,
-    }
-
-    impl Widget for Tall {
-        fn build_layout(
-            &mut self,
-            taffy: &mut TaffyTree<()>,
-            _theme: &Theme,
-            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            taffy.widget_leaf(Style::default(), node_map, self)
-        }
-
-        fn measure(
-            &mut self,
-            _known: Size<Option<f32>>,
-            available: Size<AvailableSpace>,
-            _text_renderer: &mut TextRenderer,
-        ) -> Size<f32> {
-            self.offered.push(available.height);
-            Size {
-                width: 100.0,
-                height: 300.0,
-            }
-        }
-
-        crate::rect_geometry!();
-
-        fn name(&self) -> &'static str {
-            "Tall"
-        }
-    }
-
-    #[test]
-    fn content_height_lays_the_root_out_past_the_viewport() {
-        let tall = || Tall {
-            rect: Rect::ZERO,
-            offered: Vec::new(),
-        };
-        let bounded = Framed::new(State::new(), tall(), (400, 200), Theme::dark());
-        assert!((bounded.rect.height() - 200.0).abs() < f64::EPSILON);
-        assert!(!bounded.offered.contains(&AvailableSpace::MaxContent));
-
-        let unbounded = Framed::with_options(
-            State::new(),
-            tall(),
-            (400, 200),
-            FrameOptions {
-                content_height: true,
-                ..Default::default()
-            },
-        );
-        assert!((unbounded.rect.height() - 300.0).abs() < f64::EPSILON);
-        assert!(unbounded.offered.contains(&AvailableSpace::MaxContent));
-    }
-
-    #[test]
-    #[should_panic(expected = "the root was not mounted as this type")]
-    fn typed_root_access_rejects_another_type() {
-        let harness =
-            FrameHarness::for_root(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
-        let _ = harness.root::<crate::widget::Text>();
-    }
-
-    #[test]
-    fn viewport_truncates_and_clamps_float_sizes() {
-        assert_eq!(viewport((1200.9_f32, 760.0)), (1200, 760));
-        assert_eq!(viewport((-3.0_f64, f64::NAN)), (0, 0));
-    }
-}
+#[path = "headless/framed_tests.rs"]
+mod framed_tests;
 
 #[cfg(test)]
 #[path = "headless/owner_fifo_tests.rs"]
 mod owner_fifo_tests;
+#[cfg(test)]
+#[path = "headless/retained_damage_tests.rs"]
+mod retained_damage_tests;
 
 #[cfg(test)]
 #[path = "headless/owner_layout_custody_tests.rs"]
@@ -15065,6 +15658,9 @@ mod owner_layout_custody_tests;
 #[path = "headless/owner_layout_demand_tests.rs"]
 mod owner_layout_demand_tests;
 
+#[cfg(test)]
+#[path = "headless/coalesced_input_tests.rs"]
+mod coalesced_input_tests;
 #[cfg(test)]
 #[path = "headless/quiet_frame_tests.rs"]
 mod quiet_frame_tests;
@@ -15082,37 +15678,3 @@ mod owner_mount_service_custody;
 #[cfg(test)]
 #[path = "headless/activation_scene_consistency_tests.rs"]
 mod activation_scene_consistency_tests;
-
-// Native capture owns synchronous GPU readback. Both the convenience path
-// and reusable-renderer oracle share this existing platform boundary.
-#[cfg(not(target_arch = "wasm32"))]
-impl FrameHarness {
-    fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
-        let (w, h) = self.device_size();
-        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
-        self.render_rgba_with(&mut renderer, background)
-    }
-
-    /// Rasterise the recorded frame and its captured backdrop with a caller-owned
-    /// renderer. Pixel oracles can reuse a renderer with stable preprocessing
-    /// without changing process-wide settings or the widget draw pipeline.
-    ///
-    /// # Panics
-    /// Panics if the renderer dimensions differ from the capture's device size,
-    /// or the GPU cannot produce the bounded consecutive valid submissions.
-    #[must_use]
-    pub fn render_rgba_with(
-        &self,
-        renderer: &mut crate::offscreen::OffscreenRenderer,
-        background: vello::peniko::Color,
-    ) -> Vec<u8> {
-        self.drain_component_wakes();
-        assert_eq!(
-            (renderer.width, renderer.height),
-            self.device_size(),
-            "the renderer must match the actual capture dimensions"
-        );
-        renderer.set_backdrop(Some(self.backdrop.clone()));
-        renderer.render_resilient(&self.scene, background)
-    }
-}

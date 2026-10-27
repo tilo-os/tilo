@@ -41,6 +41,7 @@ fn protected_preflight(approve: bool) {
     let _source = source(&rig, &lifecycle, &socket);
     let mut apps = crate::shell::in_process::InProcessApps::native_for_profile(
         &rig.root.path().join("wa-apps"),
+        &rig.root.path().join("wa-apps").join("person"),
         &rig.owner.principal,
         socket,
     )
@@ -139,7 +140,7 @@ fn observe(
     assert!(
         mounted
             .harness
-            .wait_until(ui::time::Duration::from_secs(5), |_| {
+            .wait_until(tilo_test_env::hang_bound(), |_| {
                 apps.pump_messaging_records();
                 client.phase(account) == tilo_messaging::EnrollmentPhase::Interrupted
             })

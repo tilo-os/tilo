@@ -315,19 +315,15 @@ fn raw_write(doc: &mut Doc, rng: &mut Lcg) {
         return;
     };
     match rng.next(5) {
-        // A null where a boolean belongs.
         0 => {
             let value = value(doc, &id);
             doc.put(&value, "done", ScalarValue::Null).unwrap();
         }
-        // A field missing.
         1 => {
             let value = value(doc, &id);
             doc.delete(&value, "rank").unwrap();
         }
-        // A string scalar where text belongs.
         2 => doc.put(ROOT, "draft", "a plain string draft").unwrap(),
-        // An integer where a float belongs.
         3 => {
             let value = value(doc, &id);
             doc.put(&value, "rank", ScalarValue::Int(3)).unwrap();

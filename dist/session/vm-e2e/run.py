@@ -13,11 +13,13 @@ names are typed on the German layout it imported. After each app starts, the com
 must still be the same process for the whole dwell, with no crash record,
 core dump, unexpected session exit or panic.
 
+    run.py source --rpms DIR --producer CHECK   record DIR/source.json
     run.py test --rpms DIR --out DIR        the VM test; exit 0 only on pass
 
 DIR holds the fedora-44 RPMs (`dist/ci/run-package-job.sh fedora-44 ...`
 writes them to dist/ci-output/fedora-44-amd64) and, optionally, a
-source.json describing where they came from.
+source.json describing where they came from: `source` writes it, with each
+RPM's size and SHA-256, so the report names the exact package bytes it tested.
 
 The production session has no control socket, so the run drives it only
 through the VM's keyboard, SSH as root and screenshots (QMP screendump).
@@ -361,6 +363,30 @@ def compositor_health(st: dict, pid: str) -> list[str]:
     return problems
 
 
+def record_source(rpms_dir: Path, producer: str) -> dict:
+    """What the report says it tested: each RPM's name, size and SHA-256, the check that built
+    them and the commit and reference of this run (t's T_COMMIT and T_REF where it sets them).
+    These are the lane's unsigned, install-tested packages; nothing here claims a signature."""
+    rpms = sorted(rpms_dir.glob("*.rpm"))
+    if not rpms:
+        raise Fail(f"no RPMs in {rpms_dir}")
+    artifacts = {}
+    for path in rpms:
+        digest = hashlib.sha256()
+        with path.open("rb") as package:
+            while block := package.read(1024 * 1024):
+                digest.update(block)
+        artifacts[path.name] = {"byte_size": path.stat().st_size, "sha256": digest.hexdigest()}
+    source = {"check": "host-session-e2e", "producer": producer,
+              "commit": os.environ.get("T_COMMIT") or None, "ref": os.environ.get("T_REF") or None,
+              "rpms": [path.name for path in rpms], "artifacts": artifacts,
+              "artifact_purpose": "host-session-acceptance-only",
+              "release_signing_claim": "none",
+              "signature_verification": "not-performed-by-this-source-report"}
+    (rpms_dir / "source.json").write_text(json.dumps(source, indent=1) + "\n")
+    return source
+
+
 def run_test(args) -> int:
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -551,8 +577,14 @@ def main() -> int:
     test.add_argument("--cpus", type=int, default=4)
     test.add_argument("--settle", type=int, default=30)
     test.add_argument("--dwell", type=int, default=45)
+    source = sub.add_parser("source")
+    source.add_argument("--rpms", required=True)
+    source.add_argument("--producer", required=True, help="the check that built the RPMs")
     args = parser.parse_args()
     try:
+        if args.command == "source":
+            print(json.dumps(record_source(Path(args.rpms), args.producer), indent=1))
+            return 0
         return run_test(args)
     except Fail as error:
         print(f"host-session e2e: {error}", file=sys.stderr)

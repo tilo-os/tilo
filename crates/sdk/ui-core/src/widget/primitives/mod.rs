@@ -6,6 +6,8 @@
 //! | Primitive | Is |
 //! |---|---|
 //! | [`Surface`] / [`paint_surface`] | one of the five surface levels with its edge and shadow |
+//! | [`paint_document_sheet`] | a document that brings its own colours, on a sheet with an edge |
+//! | [`paint_see_through`] | the see-through material for chrome over pixels being chosen |
 //! | [`FloatingPanel`] / [`FloatingPanelFace`] | a floating surface with header, body and footer slots |
 //! | [`TextStack`] / [`TextStackFace`] | title, secondary and tertiary lines |
 //! | [`Facts`] / [`FactsFace`] | separate facts with space between, never a joined string |
@@ -41,5 +43,7 @@ pub use facts::{Fact, Facts, FactsFace};
 pub use floating_panel::{FloatingPanel, FloatingPanelFace, FloatingPanelLayout};
 pub use key_hint::{KeyHint, KeyHints, KeyHintsFace};
 pub use quick_tile::{QuickTileFace, paint_level_gauge};
-pub use surface::{DensityRegion, Surface, SurfaceLevel, paint_surface};
+pub use surface::{
+    DensityRegion, Surface, SurfaceLevel, paint_document_sheet, paint_see_through, paint_surface,
+};
 pub use text_stack::{StackSize, TextStack, TextStackFace};

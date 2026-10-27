@@ -7,6 +7,7 @@
 
 use crate::widget::ModelPath;
 use std::f64::consts::{FRAC_PI_2, TAU};
+use tilo_sort::CompactSort as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, Circle, ParamCurve, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -176,7 +177,7 @@ impl PolarAreaChart {
             placer.block(subtitle.map_or(title, |sub| title.union(sub)));
         }
         let mut order: Vec<&(String, f64, f64, f64)> = labels.iter().collect();
-        order.sort_by(|a, b| b.3.total_cmp(&a.3));
+        order.compact_sort_by(|a, b| b.3.total_cmp(&a.3));
         for (label, start, sweep, radius) in order {
             let angle = start + sweep / 2.0;
             let mid_r = inner.midpoint(*radius);

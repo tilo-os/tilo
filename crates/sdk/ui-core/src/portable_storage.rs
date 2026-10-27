@@ -5,6 +5,42 @@ thread_local! { static DOCUMENT_DECODES: std::cell::Cell<usize> = const { std::c
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A window showing "Saving…" over a browser cache hears when the host
+    /// acknowledges the current bytes, durable or refused, and not for an
+    /// older revision the cache has moved past.
+    #[test]
+    fn the_host_acknowledging_the_current_bytes_wakes_who_watches_them() {
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let key = StorageKey::Record {
+            package: "app".into(),
+            workspace: "room".into(),
+            record: "record".into(),
+        };
+        let woken = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let wake: durable_store::ReadyWake = {
+            let woken = std::sync::Arc::clone(&woken);
+            std::sync::Arc::new(move || {
+                woken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+        };
+        let count = || woken.load(std::sync::atomic::Ordering::Relaxed);
+        cache.watch_durability(&key, std::sync::Arc::clone(&wake));
+        cache.watch_durability(&key, std::sync::Arc::clone(&wake));
+        cache.put(key.clone(), b"first".to_vec(), None).unwrap();
+        let first = cache.pending_writes().remove(0);
+        cache.put(key.clone(), b"second".to_vec(), None).unwrap();
+        let second = cache.pending_writes().remove(0);
+        assert_eq!(count(), 0, "nothing acknowledged yet");
+        cache.acknowledge(&first, Ok(())).unwrap();
+        assert_eq!(count(), 0, "an older revision leaves the key saving");
+        cache.acknowledge(&second, Err("quota".into())).unwrap();
+        assert_eq!(count(), 1, "the refusal is heard, once per watcher");
+        cache.put(key.clone(), b"third".to_vec(), None).unwrap();
+        let third = cache.pending_writes().remove(0);
+        cache.acknowledge(&third, Ok(())).unwrap();
+        assert_eq!(count(), 2, "and so is the bytes becoming durable");
+        assert_eq!(cache.flush(&key), Ok(()));
+    }
     #[test]
     fn pending_write_accounting_includes_spare_byte_and_private_head_capacity() {
         use automerge::transaction::Transactable;
@@ -555,6 +591,9 @@ struct Cache {
     entries: BTreeMap<StorageKey, Entry>,
     revision: u64,
     owners: BTreeMap<(String, String), std::rc::Weak<RefCell<crate::record::RecordSet>>>,
+    /// Who hears each time a key's durability may have changed without
+    /// input ([`PortableStorage::watch_durability`]).
+    watchers: BTreeMap<StorageKey, Vec<durable_store::ReadyWake>>,
 }
 // One original Rc holds immutable binding and mutable entries. Namespace
 // buffers are moved here once; creating the binding adds no duplicate strings.
@@ -819,6 +858,34 @@ impl PortableStorage {
             })
             .collect()
     }
+    /// Call `wake` each time what [`Self::flush`] says of `key` may have
+    /// changed without input: when the host acknowledges its current bytes,
+    /// or new bytes are durable at once ([`Self::durability_changed`]). How a
+    /// window showing "Saving…" hears it saved; the same wake
+    /// ([`durable_store::waiting::same_wake`]) given again is kept once.
+    pub(crate) fn watch_durability(&self, key: &StorageKey, wake: durable_store::ReadyWake) {
+        let mut cache = self.cache.borrow_mut();
+        let watching = cache.watchers.entry(key.clone()).or_default();
+        if !watching
+            .iter()
+            .any(|known| durable_store::waiting::same_wake(known, &wake))
+        {
+            watching.push(wake);
+        }
+    }
+    /// Call everyone watching `key`'s durability.
+    pub(crate) fn durability_changed(&self, key: &StorageKey) {
+        let watching = self
+            .cache
+            .borrow()
+            .watchers
+            .get(key)
+            .cloned()
+            .unwrap_or_default();
+        for wake in watching {
+            wake();
+        }
+    }
     /// Acknowledging an old revision never makes newer bytes durable.
     pub fn acknowledge(
         &self,
@@ -828,6 +895,15 @@ impl PortableStorage {
         if write.namespace != self.cache.namespace || write.cache_id != self.cache.id {
             return Err("foreign persistence acknowledgement".into());
         }
+        let resolved = self.resolve(write, result)?;
+        if resolved {
+            self.durability_changed(&write.key);
+        }
+        Ok(())
+    }
+    /// [`Self::acknowledge`] in the cache: whether it resolved the key's
+    /// current bytes, durable or failed.
+    fn resolve(&self, write: &PendingWrite, result: Result<(), String>) -> Result<bool, String> {
         let mut cache = self.cache.borrow_mut();
         let entry = cache
             .entries
@@ -867,7 +943,7 @@ impl PortableStorage {
             };
         }
         if write.revision != entry.revision {
-            return Ok(());
+            return Ok(false);
         }
         if write.value.bytes != entry.current().bytes || write.value.actor != entry.current().actor
         {
@@ -883,7 +959,7 @@ impl PortableStorage {
                 entry.error = Some(error);
             }
         }
-        Ok(())
+        Ok(true)
     }
     pub fn status(&self, key: &StorageKey) -> Option<StorageStatus> {
         self.cache

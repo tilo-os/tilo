@@ -26,7 +26,8 @@
 use std::path::{Path, PathBuf};
 
 use collab_types::caps::{
-    Access, Actor, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_capability,
+    Access, Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope, Subject,
+    decide_capability,
 };
 use tilo_environment::{RUNTIME_APP_ID, is_grantable};
 
@@ -140,6 +141,39 @@ impl Policy {
         let resource = ResourceRef::FsPath(path.to_string_lossy().into_owned());
         decide_capability(&actor, &resource, verb, &self.capabilities, now) == CapDecision::Allow
     }
+
+    /// A policy that answers yes to every path, for the host's own login
+    /// shell: no environment record exists there, so there is no grant to
+    /// check and the person's own permissions are the only bound. It is never
+    /// built for a guest, whose record always says what it may reach.
+    #[must_use]
+    pub fn unbounded() -> Self {
+        let subject = Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string()));
+        Self {
+            capabilities: vec![CapOverride::new(
+                subject,
+                Scope::FsPath("/".to_string()),
+                Effect::Grant,
+                Access::Write,
+            )],
+        }
+    }
+
+    /// Whether `path` itself or the directory it would be written into is
+    /// granted for `verb`.
+    ///
+    /// A grant names a directory, and the files in it are created later, so a
+    /// question about a file that does not exist yet is a question about its
+    /// parent. Answering only the path would refuse every `mkdir ~/src/new`
+    /// and every file a command writes into a granted directory.
+    #[must_use]
+    pub fn permits_in(&self, path: &Path, verb: Access, now: Option<u64>) -> bool {
+        if self.permits(path, verb, now) {
+            return true;
+        }
+        path.parent()
+            .is_some_and(|dir| !dir.as_os_str().is_empty() && self.permits(dir, verb, now))
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +184,29 @@ mod tests {
 
     fn granted(path: &str, write: bool) -> Policy {
         Policy::new(vec![dir_grant(Path::new(path), write).unwrap()])
+    }
+
+    #[test]
+    fn a_file_a_grant_names_before_it_exists_is_its_directorys() {
+        let policy = granted("/var/home/you/src", true);
+        assert!(policy.permits_in(
+            Path::new("/var/home/you/src/new/file.rs"),
+            Access::Write,
+            Some(1_000)
+        ));
+        assert!(!policy.permits_in(
+            Path::new("/var/home/you/other/file.rs"),
+            Access::Write,
+            Some(1_000)
+        ));
+    }
+
+    #[test]
+    fn no_grants_refuse_everything_and_unbounded_is_the_hosts_own_shell() {
+        let guest = Policy::default();
+        assert!(!guest.permits_in(Path::new("/var/home/you/x"), Access::Write, None));
+        let host = Policy::unbounded();
+        assert!(host.permits_in(Path::new("/var/home/you/x"), Access::Write, None));
     }
 
     #[test]
@@ -221,7 +278,6 @@ mod tests {
         policy.capabilities[0].expiry = Expiry::AtUnix(500);
         assert_eq!(policy.net_hosts(Some(501)), [".crates.io"]);
 
-        // A host grant for another app grants this guest nothing.
         let mut other = tilo_environment::host_grant("example.com").unwrap();
         other.subject = Subject::Principal(Principal::App("so.tilo.other".into()));
         assert!(Policy::new(vec![other]).net_hosts(Some(1)).is_empty());
@@ -236,7 +292,6 @@ mod tests {
 
     #[test]
     fn a_grant_the_runtime_would_not_bind_binds_nothing() {
-        // Written by something other than `grant-dir`, which refuses it.
         let policy = Policy::new(vec![CapOverride::grant(
             Subject::Principal(Principal::App(RUNTIME_APP_ID.to_string())),
             Scope::FsPath("/usr".to_string()),

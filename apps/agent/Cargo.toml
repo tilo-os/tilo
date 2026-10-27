@@ -36,8 +36,11 @@ tilo-automation = { path = "../../crates/collab/automation" }
 agent-provider-config = { path = "../../crates/agent/provider-config" }
 # The descriptor client for the desktop-owned hosted model gateway. This has
 # no vault access and never exposes a bearer token to the agent process.
-tilo-model-gateway = { default-features = false, path = "../../crates/agent/model-gateway" }
+tilo-model-client = { default-features = false, path = "../../crates/agent/model-client" }
+# Pictures a read answers with are shown to a model that sees, base64-encoded.
+base64.workspace = true
 blake3.workspace = true
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -51,7 +54,7 @@ tilo-action-policy = { path = "../../crates/collab/action-policy" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
+runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
 ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

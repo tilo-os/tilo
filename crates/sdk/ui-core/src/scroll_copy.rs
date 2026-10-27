@@ -26,7 +26,7 @@
 //! repainted. The renderer copies first ([`encode_copies`], or
 //! [`copy_pixels`] on a CPU canvas), then rasterizes the damage.
 //!
-//! A relayout's moves are checked against the offers ([`moves_besides`]):
+//! A relayout's moves are checked against the offers (`moves_besides`):
 //! content that moved by its scroller's delta is the copy's; content that
 //! came, went or stayed put (a long list mounting rows, a pinned title, a
 //! sticky header) is damage; anything else that moved makes the host
@@ -38,6 +38,12 @@ use vello::kurbo::{Affine, Rect, Vec2};
 use vello::wgpu;
 
 use crate::widget::Widget;
+
+#[path = "scroll_copy_shown.rs"]
+mod shown;
+pub use shown::{
+    Around, Painted, PaintedFrames, Piece, Showing, Shown, ShownFrames, Since, piece_key,
+};
 
 /// How far outside its layout box a widget may paint: anti-aliasing, a
 /// shadow, a hover lift. The native window grows every widget's damage by
@@ -224,28 +230,11 @@ pub fn offer<T: ?Sized>(
     })
 }
 
-/// A widget of one tree walk by identity (its address and depth: a widget
-/// held at the start of its parent shares the parent's address), with its
-/// layout box.
+/// A widget of one tree walk by identity, with its layout box
+/// ([`crate::damage::widget_boxes`]).
 #[cfg(feature = "native")]
-pub(crate) type Placed = ((*const (), usize), Rect);
+pub(crate) type Placed = (crate::damage::WidgetIdentity, Rect);
 
-/// Every widget in tree order, by identity, with its layout box.
-#[cfg(feature = "native")]
-pub(crate) fn placed(root: &dyn Widget) -> Vec<Placed> {
-    fn walk(widget: &dyn Widget, depth: usize, out: &mut Vec<Placed>) {
-        out.push((
-            (std::ptr::from_ref(widget).cast::<()>(), depth),
-            widget.get_rect(),
-        ));
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
-    }
-    let mut out = Vec::new();
-    walk(root, 0, &mut out);
-    out
-}
-
-/// Whether `new` is `old` moved by `delta`.
 #[cfg(feature = "native")]
 fn moved_by(old: Rect, new: Rect, delta: Vec2) -> bool {
     (new.x0 - old.x0 - delta.x).abs() <= SAME_PLACE
@@ -324,7 +313,16 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
     for (&(widget, new), &standing) in after.iter().zip(&new_standings) {
         let Some(&(was, was_standing)) = old.get(&widget) else {
             match standing.content_of {
-                Some(_) if !standing.scroller => moves.carried.push(new),
+                // One the walk of the content near its view reached only now
+                // stood out of the view before (`for_each_child_in_clip`):
+                // where it is, the copy brought nothing, and what it exposed
+                // is repainted. One that stood in view is damage.
+                Some(offer) if !standing.scroller => {
+                    let stood = (new - offer.delta).intersect(offer.viewport);
+                    if !empty(stood) {
+                        moves.carried.push(new);
+                    }
+                }
                 _ => moves.besides.push(new),
             }
             continue;
@@ -379,7 +377,14 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
             continue;
         }
         match standing.content_of {
-            Some(_) if !standing.scroller => moves.carried.push(was),
+            // One the walk no longer reaches the copy took out of the view
+            // with the rest; one it left in view went from there.
+            Some(offer) if !standing.scroller => {
+                let landed = (was + offer.delta).intersect(offer.viewport);
+                if !empty(landed) {
+                    moves.carried.push(landed);
+                }
+            }
             _ => moves.besides.push(was),
         }
     }
@@ -548,27 +553,40 @@ pub struct CopyPlan {
 /// app out in its body): an ancestor in all but the walk.
 struct Node {
     widget: *const (),
+    /// The offering scrollers it stands for besides itself
+    /// ([`Widget::stands_for`]): a decorator stands in the tree for the
+    /// widget it wraps.
+    stands_for: Vec<*const ()>,
     depth: usize,
     rect: Rect,
     clip: Option<Rect>,
     encloses: bool,
 }
 
-fn nodes(roots: &[&dyn Widget]) -> Vec<Node> {
-    fn walk(widget: &dyn Widget, depth: usize, out: &mut Vec<Node>) {
+fn nodes(roots: &[&dyn Widget], owners: &[*const ()]) -> Vec<Node> {
+    fn walk(widget: &dyn Widget, depth: usize, owners: &[*const ()], out: &mut Vec<Node>) {
         out.push(Node {
             widget: std::ptr::from_ref(widget).cast::<()>(),
+            stands_for: owners
+                .iter()
+                .copied()
+                .filter(|owner| widget.stands_for(*owner))
+                .collect(),
             depth,
             rect: widget.get_rect(),
             clip: widget.child_clip_rect(),
             encloses: false,
         });
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
+        // What a scroll view keeps out of sight paints nothing a copy
+        // could take or reach: a long column visits only what is near.
+        widget.for_each_child_in_clip(&mut |child| {
+            walk(child, depth.saturating_add(1), owners, out);
+        });
     }
     let mut out = Vec::new();
     for (index, root) in roots.iter().enumerate() {
         let start = out.len();
-        walk(*root, 0, &mut out);
+        walk(*root, 0, owners, &mut out);
         if index > 0
             && let Some(node) = out.get_mut(start)
         {
@@ -656,7 +674,7 @@ fn plan_one(
     let Some(index) = tree
         .iter()
         .enumerate()
-        .filter(|(_, node)| node.widget == offer.owner)
+        .filter(|(_, node)| node.widget == offer.owner || node.stands_for.contains(&offer.owner))
         .max_by_key(|(_, node)| node.depth)
         .map(|(index, _)| index)
     else {
@@ -792,7 +810,8 @@ pub fn plan_scaled(
     if offers.is_empty() {
         return planned;
     }
-    let tree = nodes(roots);
+    let owners: Vec<*const ()> = offers.iter().map(|offer| offer.owner).collect();
+    let tree = nodes(roots, &owners);
     let window = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
     // Where accepted copies read and write: a later copy that overlaps them
     // would read pixels an earlier one moved.
@@ -884,7 +903,7 @@ const BAND: u32 = 128;
 /// A target's scratch space for copies within it, which a copy cannot do in
 /// place: WebGPU refuses a copy whose source and destination are the same
 /// texture's same subresource. Each copy moves through it in bands of at
-/// most [`BAND`] rows, so it holds a band, not a viewport.
+/// most `BAND` rows, so it holds a band, not a viewport.
 #[derive(Default)]
 pub struct CopyScratch {
     texture: Option<wgpu::Texture>,

@@ -69,6 +69,11 @@ pub struct Metrics {
     pub disk_write: f32,
     pub uptime_secs: u64,
     pub load_avg: [f32; 3],
+    /// When this reading was taken. `None` before the first sample.
+    pub sampled_at: Option<ui::time::SystemTime>,
+    /// The cadence the histories were collected at, in milliseconds; `0`
+    /// when the cadence is not known.
+    pub sample_interval_ms: u32,
 
     // Rolling histories (newest at the back).
     pub cpu_hist: RollingSeries,
@@ -83,6 +88,16 @@ impl Metrics {
     /// Whether these are a reading of the machine at all: one with no core
     /// and no memory is the empty value before (or without) a reading, and
     /// showing it would present "unavailable" as a measured zero.
+    /// The span the histories cover, in the person's words: `last 2 min`.
+    pub fn history_period(&self) -> String {
+        let secs = (HISTORY as u64).saturating_mul(u64::from(self.sample_interval_ms)) / 1000;
+        if secs < 60 {
+            format!("last {secs} s")
+        } else {
+            format!("last {} min", secs / 60)
+        }
+    }
+
     pub fn measured(&self) -> bool {
         !self.cores.is_empty() || self.mem_total > 0
     }
@@ -121,7 +136,6 @@ impl Metrics {
 pub enum ProcessDataStatus {
     /// The first live snapshot is still being collected.
     Loading,
-    /// The operating system returned one or more processes.
     Ready,
     /// The operating system successfully returned a genuinely empty list.
     Empty,
@@ -151,7 +165,6 @@ impl MonitorModel {
         reason = "net_rx_hist/net_tx_hist are the standard receive/transmit pair; renaming either would read worse"
     )]
     pub fn sample() -> Self {
-        // ---- per-core history: a few cores hot, most idle-ish -------
         let cores: Vec<f32> = SAMPLE_CORE_LOAD.to_vec();
 
         // Synthesise wavy histories so the charts read as "alive".
@@ -224,6 +237,8 @@ impl MonitorModel {
             disk_write: disk_write_hist.last(),
             uptime_secs: 5 * 3600 + 42 * 60 + 17,
             load_avg: [1.84, 1.42, 1.09],
+            sampled_at: Some(ui::time::wall()),
+            sample_interval_ms: 1_000,
             cpu_hist,
             mem_hist,
             net_rx_hist,
@@ -286,6 +301,8 @@ impl MonitorModel {
             disk_write: 0.0,
             uptime_secs: 0,
             load_avg: [0.0; 3],
+            sampled_at: None,
+            sample_interval_ms: 1_500,
             cpu_hist: z(),
             mem_hist: z(),
             net_rx_hist: z(),
@@ -327,7 +344,6 @@ type SampleRow = (
 /// names (e.g. two "Web Content") attach to the *first* matching parent,
 /// which is what a real renderer fan-out looks like.
 const SAMPLE_ROWS: &[SampleRow] = &[
-    // ---- the user session, rooted at the compositor ----------------
     ("shell", "", "ada", 14.6, 412, 24, "Running", false),
     ("browser", "shell", "ada", 12.3, 643, 14, "Running", false),
     (
@@ -388,7 +404,6 @@ const SAMPLE_ROWS: &[SampleRow] = &[
         false,
     ),
     ("Xwayland", "shell", "ada", 4.3, 176, 5, "Running", false),
-    // ---- the system service tree, rooted at systemd ----------------
     ("systemd", "", "root", 0.2, 18, 1, "Sleeping", false),
     ("tilo-fs", "systemd", "root", 8.9, 224, 14, "Running", false),
     (
@@ -667,7 +682,6 @@ mod tests {
     /// formatters.
     #[test]
     fn model_sample_and_formatters() {
-        // Phase `sample_is_fully_populated`.
         {
             let m = MonitorModel::sample();
             assert!(!m.processes.is_empty());
@@ -676,7 +690,6 @@ mod tests {
             assert!(m.metrics.mem_used > 0 && m.metrics.mem_used < m.metrics.mem_total);
         }
 
-        // Phase `fmt_helpers`.
         {
             assert_eq!(fmt_rate(0.0), "0 B/s");
             assert_eq!(fmt_rate(2_400_000.0), "2.4 MB/s");

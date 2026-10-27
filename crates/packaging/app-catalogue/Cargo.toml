@@ -21,7 +21,6 @@ tilo-paths.workspace = true
 flate2.workspace = true
 quick-xml.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

@@ -33,6 +33,11 @@ use crate::idle_wakeups::{Desktop, SETTLE, running, wait_until_gone};
 /// which a hardware driver does not hold), ~31 MiB the compositor's own
 /// Rust heap and ~4 MiB LLVM's. The budget is that plus a margin.
 ///
+/// By October 2026 it had grown to 145-147 MiB (glibc 116 MiB in use, of
+/// which the Rust heap 39 MiB): every text field built at startup warmed the
+/// English spelling dictionary, though none was typed in. Warmed when a field
+/// is first used instead, the idle compositor holds 136 MiB (108 MiB in use).
+///
 /// Fedora 44's glibc backs every thread's arena with transparent huge pages,
 /// which put it at 172-180 MiB (118 MiB of them 2 MiB arenas of the
 /// shader-compile threads); started the way the session starts it, with

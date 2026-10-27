@@ -14,15 +14,13 @@ use ui::search::system::{self, KindGroup, ResourceKind};
 pub enum Target {
     /// Open the application in a new window beside the focused one.
     Launch { app: String },
-    /// Focus the window showing this tab.
-    Window { tab: u64 },
+    /// Focus the window showing this tab, of the app `app` when it is one.
+    Window { tab: u64, app: Option<String> },
     /// Run an action an application publishes, resolved against the live
     /// resource tree when it runs.
     Action(Box<ActionTarget>),
     /// A host command, by id.
     Command { id: String },
-    /// An application this desktop cannot run; choosing it opens nothing.
-    Unavailable { app: String, reason: String },
 }
 
 /// An application action as the palette offers it.
@@ -32,6 +30,10 @@ pub struct ActionTarget {
     pub resource_kind: String,
     pub resource_label: String,
     pub spec: ActionSpec,
+    /// The argument the row already carries, as `(parameter, value)`: an
+    /// app's `open` invoked for one search hit carries the hit's anchor, so
+    /// choosing the row runs it without asking.
+    pub preset: Option<(String, String)>,
 }
 
 impl ActionTarget {
@@ -42,7 +44,7 @@ impl ActionTarget {
 
 impl PartialEq for ActionTarget {
     fn eq(&self, other: &Self) -> bool {
-        self.address() == other.address()
+        self.address() == other.address() && self.preset == other.preset
     }
 }
 
@@ -50,6 +52,7 @@ impl std::fmt::Debug for ActionTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ActionTarget")
             .field("address", &self.address())
+            .field("preset", &self.preset)
             .field("resource_label", &self.resource_label)
             .field("label", &self.spec.label)
             .finish_non_exhaustive()
@@ -66,6 +69,9 @@ pub struct Hit {
     pub id: String,
     pub title: String,
     pub subtitle: Option<String>,
+    /// The second line as separate facts (where a window is, who holds
+    /// it), laid out apart rather than joined; empty when `subtitle` says it.
+    pub facts: Vec<String>,
     pub score: i32,
     pub target: Target,
 }

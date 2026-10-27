@@ -456,8 +456,8 @@ class FrameworkFocus(unittest.TestCase):
 
     def test_every_nightly_size_has_a_budget(self):
         """The scheduled lane runs the focus mode at the sizes the budgets name."""
-        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
-        [sizes] = re.findall(r"framework-scaling ([0-9,]+) focus", workflow)
+        scheduled = (ROOT / "tools/ci/perf-scheduled.sh").read_text()
+        [sizes] = re.findall(r'"([0-9,]+) focus framework-focus"', scheduled)
         log = "\n".join(f"FRAMEWORK-FOCUS tasks={tasks} add_ms=1 recompute_ms=1 native_ms=1"
                         for tasks in sizes.split(","))
         budgets = compare.load_budgets(compare.BUDGETS)
@@ -514,9 +514,9 @@ class NotesLatency(unittest.TestCase):
         budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("render.notes_latency.")}
         produced = {item.kpi for item in adapters.notes_latency([notes_latency_log(1.0)], ENV)}
         self.assertEqual(budgeted, produced)
-        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
-        self.assertIn("--example notes-latency", workflow)
-        self.assertIn("adapters.py notes-latency", workflow)
+        scheduled = (ROOT / "tools/ci/perf-scheduled.sh").read_text()
+        self.assertIn("--example notes-latency", scheduled)
+        self.assertIn("adapters.py notes-latency", scheduled)
 
 
 LOAD_BENCH = ROOT / "crates/hosting/tilo-relay/examples/relay_load/main.rs"
@@ -617,8 +617,8 @@ class HostingLoad(unittest.TestCase):
         budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("hosting.")}
         produced = {item.kpi for item in adapters.hosting_load(load_report(), self.prices, ENV)}
         # ... and the room host job, at the guest count the nightly runs.
-        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
-        [guests] = re.findall(r"tilo-room-load bench --guests (\d+)", workflow)
+        scheduled = (ROOT / "tools/ci/perf-scheduled.sh").read_text()
+        [guests] = re.findall(r'tilo-room-load" bench --guests (\d+)', scheduled)
         config = {**room_report()["config"], "guests": int(guests)}
         produced |= {item.kpi for item in adapters.room_load([room_report(config=config, joined=int(guests))], ENV)}
         self.assertTrue(budgeted, "the hosting group has budgets")
@@ -750,13 +750,13 @@ class BrowserQualification(unittest.TestCase):
             adapters.browser_qualification(browser_report(demoSeconds=0), BROWSER_ENV)
 
     def test_every_kpi_the_scheduled_lane_reports_has_a_budget(self):
-        """The nightly job runs without the demo (perf-scheduled.yml: --demo-seconds 0)."""
+        """The nightly group runs without the demo (tools/ci/perf-scheduled.sh: --demo-seconds 0)."""
         budgets = compare.load_budgets(compare.BUDGETS)
         budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("browser.")}
         self.assertEqual(budgeted, {kpi for field, (kpi, _) in adapters.BROWSER_KPIS.items()
                                     if field not in adapters.BROWSER_DEMO_FIELDS})
-        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text()
-        self.assertIn("--demo-seconds 0", workflow)
+        scheduled = (ROOT / "tools/ci/perf-scheduled.sh").read_text()
+        self.assertIn("--demo-seconds 0", scheduled)
 
 
 STREAM_HARNESS = ROOT / "scripts/perf/native_stream_qualification.mjs"
@@ -813,6 +813,16 @@ class NativeStream(unittest.TestCase):
         self.assertEqual((latency.unit, latency.n, latency.p50, latency.meta["codec"]), ("ms", 3, 35.0, "vp9"))
         self.assertEqual(records["stream.vp9.frame.missed"].max, 0.67)
 
+    def test_a_safari_run_is_refused_without_the_https_stream_it_takes(self):
+        """Safari has no WebTransport: a record naming it must be the HTTPS stream's."""
+        report = stream_report(workload={**stream_report()["workload"], "carrier": "https", "platform": "safari"},
+                              browser={**stream_report()["browser"], "driver": "webdriver"})
+        records = {item.kpi: item for item in adapters.native_stream(report, BROWSER_ENV)}
+        self.assertEqual(records["stream.frame.latency"].meta["carrier"], "https")
+        for carrier, reason in (("webtransport", "not the HTTPS stream Safari takes"),):
+            with self.subTest(carrier=carrier), self.assertRaisesRegex(ValueError, reason):
+                adapters.native_stream({**report, "workload": {**report["workload"], "carrier": carrier}}, BROWSER_ENV)
+
     def test_a_session_that_streamed_another_codec_is_refused(self):
         """A session that fell back to H.264 must not fill VP9's series, nor the reverse."""
         fell_back, upgraded, garbled = codec_report("vp9"), stream_report(), codec_report("VP9.x")
@@ -849,9 +859,14 @@ class NativeStream(unittest.TestCase):
 
     def test_every_kpi_the_scheduled_lane_reports_has_a_budget(self):
         """Each codec the nightly streams (H.264 by default, then each `--codec`) has a budget for every KPI."""
-        workflow = (ROOT / ".forgejo/workflows/perf-scheduled.yml").read_text().replace("\\\n", " ")
-        runs = [line for line in workflow.splitlines() if line.lstrip().startswith("node scripts/perf/native_stream")]
-        codecs = {(re.findall(r"--codec (\w+)", run) or [adapters.STREAM_DEFAULT_CODEC])[0] for run in runs}
+        scheduled = (ROOT / "tools/ci/perf-scheduled.sh").read_text()
+        stream = scheduled.split("\n  stream)\n", 1)[1].split("\n    ;;\n", 1)[0]
+        self.assertIn("node scripts/perf/native_stream_qualification.mjs", stream)
+        [codecs] = re.findall(r"for codec in ([a-z0-9 ]+); do", stream)
+        codecs = set(codecs.split())
+        self.assertIn(adapters.STREAM_DEFAULT_CODEC, codecs)
+        for codec in codecs - {adapters.STREAM_DEFAULT_CODEC}:
+            self.assertIn(f"--codec {codec}", stream)
         self.assertEqual(codecs, {"h264", "vp9"})
         budgets = compare.load_budgets(compare.BUDGETS)
         budgeted = {kpi for kpi in budgets.kpis if kpi.startswith("stream.")}

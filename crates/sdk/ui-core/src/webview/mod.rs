@@ -20,6 +20,7 @@
 
 pub mod chromium;
 mod credentials;
+pub mod key_code;
 mod service_sessions;
 pub use credentials::{
     AddressFields, CredentialAccount, CredentialAction, CredentialForm, CredentialReply,
@@ -29,7 +30,10 @@ pub use service_sessions::{ServiceSessionReply, ServiceSessionRequest};
 pub mod page;
 pub mod paint;
 pub mod text_input;
-pub use page::{PageFailure, PageKey, PageReply, PageRequest};
+pub use page::{
+    FrameId, MAX_POINTER_STEPS, PageFailure, PageKey, PageNavigation, PageReply, PageRequest,
+    PointerButton, PointerPoint, PointerStep, PointerStepKind, ScrollTarget,
+};
 pub mod profile;
 pub mod test_engine;
 
@@ -51,6 +55,78 @@ pub struct Frame {
     pub rgba: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
+    /// Where it differs from the frames before it, for an engine that
+    /// knows; `None` makes every frame new throughout.
+    pub damage: Option<FrameDamage>,
+}
+
+/// A rect of a frame, in its pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PixelRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Where a frame differs from the ones its engine made before it: a view
+/// that drew one of those repaints, and uploads, only there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FrameDamage {
+    /// The frame's place in its engine's sequence. A frame whose `recent`
+    /// does not reach back to the one a view drew is new throughout to it.
+    pub generation: u64,
+    /// What each recent generation changed from the one before it, newest
+    /// first, down to some generation after the oldest still known.
+    pub recent: Arc<[(u64, Arc<[PixelRect]>)]>,
+}
+
+impl FrameDamage {
+    /// What changed since generation `drawn`: nothing when it is this
+    /// frame's, `None` when not known.
+    #[must_use]
+    pub fn since(&self, drawn: u64) -> Option<Vec<PixelRect>> {
+        changed_since(self.recent.iter(), self.generation, drawn)
+    }
+}
+
+/// What changed from generation `from` to `to`, given what each generation
+/// changed from the one before it (`recent`, newest first, from `to`).
+pub(crate) fn changed_since<'a>(
+    recent: impl IntoIterator<Item = &'a (u64, Arc<[PixelRect]>)>,
+    to: u64,
+    from: u64,
+) -> Option<Vec<PixelRect>> {
+    let mut rects = Vec::new();
+    let mut want = to;
+    let mut recent = recent.into_iter();
+    while want > from {
+        let (generation, changed) = recent.next()?;
+        if *generation != want {
+            return None;
+        }
+        rects.extend_from_slice(changed);
+        want -= 1;
+    }
+    (want == from).then_some(rects)
+}
+
+/// The page's focused editable field, as an engine reports it for the
+/// platform input method: what it takes, and where on the page it and the
+/// text being composed in it are, so the input method's candidates appear
+/// where the person types.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TextField {
+    pub purpose: crate::ime::InputPurpose,
+    /// Line breaks are text (a text area, an editable document).
+    pub multiline: bool,
+    /// The field's box, in physical pixels from the view's top-left corner;
+    /// `None` when the engine cannot place it (a field in a frame of
+    /// another site).
+    pub bounds: Option<vello::kurbo::Rect>,
+    /// The box of the text an input method is composing, in the same
+    /// pixels, while it composes.
+    pub composition: Option<vello::kurbo::Rect>,
 }
 
 /// Latest-frame mailbox between an engine and the widget. Engines
@@ -87,6 +163,73 @@ pub struct KeyModifiers {
     pub shift: bool,
     pub alt: bool,
     pub meta: bool,
+}
+
+impl KeyModifiers {
+    /// The platform's command modifier alone (Command on macOS, Control
+    /// elsewhere), for a host that sends a page its own shortcut: select
+    /// all, copy.
+    #[must_use]
+    pub fn command(conventions: crate::platform::PlatformConventions) -> Self {
+        let command = conventions.command_modifier();
+        Self {
+            ctrl: command.control_key(),
+            meta: command.super_key(),
+            ..Self::default()
+        }
+    }
+}
+
+/// A key one of extensions' commands holds (`commands` in a manifest), as
+/// Chrome names it ("Y", "9", "Comma", "Up"), with its modifiers: `meta` is
+/// Command on macOS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionShortcut {
+    pub key: String,
+    pub modifiers: KeyModifiers,
+}
+
+impl ExtensionShortcut {
+    /// The shortcut a key pressed makes, its key named as Chrome names it,
+    /// as the engine host reads the keys the Browser forwards
+    /// (`extension_commands.h`, `KeyShortcut`): with Shift a digit, a comma
+    /// or a period is the US layout's symbol on it.
+    #[must_use]
+    pub fn pressed(key: &KeyInput, modifiers: KeyModifiers) -> Option<Self> {
+        let key = match key {
+            KeyInput::Named(named) => match named {
+                NamedKey::ArrowUp => "Up",
+                NamedKey::ArrowDown => "Down",
+                NamedKey::ArrowLeft => "Left",
+                NamedKey::ArrowRight => "Right",
+                NamedKey::Home => "Home",
+                NamedKey::End => "End",
+                NamedKey::PageUp => "PageUp",
+                NamedKey::PageDown => "PageDown",
+                NamedKey::Delete => "Delete",
+                NamedKey::Tab => "Tab",
+                NamedKey::Enter | NamedKey::Backspace | NamedKey::Escape => return None,
+            }
+            .to_owned(),
+            KeyInput::Character(text) => {
+                let mut chars = text.chars();
+                let (Some(c), None) = (chars.next(), chars.next()) else {
+                    return None;
+                };
+                match c {
+                    c if c.is_ascii_alphanumeric() => c.to_ascii_uppercase().to_string(),
+                    ',' | '<' => "Comma".to_owned(),
+                    '.' | '>' => "Period".to_owned(),
+                    ' ' => "Space".to_owned(),
+                    c => {
+                        let digit = ")!@#$%^&*(".find(c)?;
+                        digit.to_string()
+                    }
+                }
+            }
+        };
+        Some(Self { key, modifiers })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +327,191 @@ pub struct SiteStatus {
     /// Chromium `base::Time` microseconds since 1601-01-01.
     pub expires: f64,
     pub permissions: Vec<(String, String)>,
+    /// The engine can put the site's permissions back to asking.
+    pub can_reset: bool,
+}
+
+/// A popup window a page opened, with the size it asked for (0 when it
+/// named none), in CSS pixels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Popup {
+    pub id: u32,
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// API permissions and site patterns, as `chrome.permissions` names a set
+/// of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionPermissionSet {
+    pub permissions: Vec<String>,
+    pub origins: Vec<String>,
+}
+
+impl ExtensionPermissionSet {
+    pub fn is_empty(&self) -> bool {
+        self.permissions.is_empty() && self.origins.is_empty()
+    }
+}
+/// What a page asks with a dialog of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageDialogKind {
+    /// `alert`: a message to acknowledge.
+    Alert,
+    /// `confirm`: OK or Cancel.
+    Confirm,
+    /// `prompt`: a line of text, or Cancel.
+    Prompt,
+    /// "Leave this page?" from a `beforeunload` handler, or "Reload this
+    /// page?" when the person reloads it.
+    Leave { reload: bool },
+}
+
+/// A question the page waits on until it is answered with
+/// [`WebViewCommand::AnswerPageDialog`], or the engine says it no longer
+/// waits ([`WebViewEvent::PageDialogClosed`]). Everything but `id` and
+/// `kind` is the page's own text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageDialog {
+    pub id: u32,
+    pub kind: PageDialogKind,
+    /// The asking page's http(s) origin; empty for any other page.
+    pub origin: String,
+    pub message: String,
+    /// What a prompt suggests as its answer.
+    pub default_text: String,
+}
+
+/// The longest answer to a page's prompt an engine takes, in bytes.
+pub const MAX_PAGE_DIALOG_ANSWER: usize = 64 * 1024;
+
+/// What an extension changed of its toolbar button (`chrome.action`). Each
+/// field is `None` when it did not change; `Some(None)` takes back what it
+/// set for one tab, so that tab shows what every tab shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionActionChange {
+    pub badge: Option<Option<String>>,
+    pub title: Option<Option<String>>,
+    /// The popup's address as Chromium resolved it; empty for none, when a
+    /// click goes to the extension instead.
+    pub popup: Option<Option<String>>,
+    pub enabled: Option<Option<bool>>,
+    pub icon: Option<Option<ExtensionActionIcon>>,
+}
+
+/// What an extension asks of its side panel beside a tab's page; each
+/// address is among the extension's own pages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionSidePanelChange {
+    /// Show this page (`sidePanel.open`, or the person opening it).
+    Open(String),
+    /// A click on its toolbar button, when it asked for its panel to open
+    /// on one (`openPanelOnActionClick`): show this page, or close the
+    /// panel where it shows.
+    Toggle(String),
+    /// Its options changed: where it shows, show this page now, or close
+    /// for `None` (turned off for the tab).
+    Options(Option<String>),
+    /// `sidePanel.close`.
+    Close,
+}
+
+/// An icon an extension gave its toolbar button.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionActionIcon {
+    /// A file among its own, from the extension's root (`/icons/on.png`).
+    Path(String),
+    /// Pixels it drew: RGBA rows, `width * height * 4` bytes.
+    Pixels {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+}
+
+/// A row of a page's context menu, as the engine offers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextMenuItem {
+    /// A command, chosen by `id` ([`WebViewCommand::ContextMenuAction`]).
+    /// `checked` is `Some` for a checkbox or radio item.
+    Command {
+        id: u32,
+        label: String,
+        checked: Option<bool>,
+        enabled: bool,
+    },
+    /// A row that opens a nested menu of `items`.
+    Submenu {
+        label: String,
+        enabled: bool,
+        items: Vec<ContextMenuItem>,
+    },
+    Separator,
+}
+
+/// A row of an extension's toolbar button menu (`chrome.contextMenus` items
+/// made for its button), chosen by `key`
+/// ([`WebViewCommand::ExtensionMenuChoice`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionMenuItem {
+    Command {
+        key: String,
+        label: String,
+        /// `Some` for a checkbox or radio item.
+        checked: Option<bool>,
+        enabled: bool,
+    },
+    Submenu {
+        label: String,
+        enabled: bool,
+        items: Vec<ExtensionMenuItem>,
+    },
+    Separator,
+}
+
+/// What an extension's notification (`chrome.notifications`) shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionNotice {
+    pub title: String,
+    pub message: String,
+    /// A line under the message (`contextMessage`), empty for none.
+    pub context: String,
+    /// A list notification's items: each a title and a message.
+    pub items: Vec<(String, String)>,
+    /// Its buttons' names, at most two.
+    pub buttons: Vec<String>,
+    /// How far along a progress notification is, from 0 to 100.
+    pub progress: Option<u8>,
+    /// Shown without a sound: the extension asked so, or this changes one
+    /// already shown (`notifications.update`, as a download's progress does).
+    pub silent: bool,
+}
+
+/// What the person did in the Browser's address after an extension's
+/// keyword (the manifest's `omnibox`), which the extension hears of as in
+/// Chrome (`chrome.omnibox`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OmniboxInput {
+    /// They typed the keyword and a space: what follows is the extension's.
+    Started,
+    /// What follows the keyword is now `text`; the extension's suggestions
+    /// for it answer `request`.
+    Changed { text: String, request: u32 },
+    /// They pressed Enter on `text`, or chose a suggestion whose content it
+    /// is: the extension acts, often sending the page somewhere.
+    Entered { text: String },
+    /// They left the keyword without Enter.
+    Cancelled,
+}
+
+/// One suggestion an extension made for what follows its keyword: what
+/// choosing it enters, and what it says, in Chrome's markup (`<match>`,
+/// `<dim>`, `<url>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OmniboxSuggestion {
+    pub content: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -249,12 +577,33 @@ pub enum WebViewCommand {
         id: u32,
         command: u32,
     },
+    /// Answer the page's question `id`: OK (or Leave) when `accept`, else
+    /// Cancel (or Stay), with a prompt's `text`.
+    AnswerPageDialog {
+        id: u32,
+        accept: bool,
+        text: Option<String>,
+    },
     SetZoomLevel(f64),
     /// Report the document's size and scroll as [`WebViewEvent::DocumentSize`]
     /// whenever they change, or stop. Off until asked: an embedder that sizes
     /// the view to its content asks (a mail reader scrolling as one page).
     /// An engine that cannot measure never reports.
     ReportDocumentSize(bool),
+    /// Read the page's selection as text, answered by one
+    /// [`WebViewEvent::SelectionText`] with the same id, for the embedder to
+    /// put on the system clipboard. An engine that cannot read it never
+    /// answers.
+    CopySelection {
+        request_id: u32,
+    },
+    /// The system clipboard's text, answering
+    /// [`WebViewEvent::ClipboardRead`] with the same id: `None` when it holds
+    /// no text or could not be read, which leaves the page the engine's own.
+    AnswerClipboardRead {
+        request_id: u32,
+        text: Option<String>,
+    },
     /// Viewport size in physical pixels plus the display scale factor.
     Resize {
         width: u32,
@@ -282,7 +631,28 @@ pub enum WebViewCommand {
         key: KeyInput,
         down: bool,
         modifiers: KeyModifiers,
+        /// The key's place on the keyboard, as a DOM `KeyboardEvent.code`
+        /// ("KeyZ", "Digit1"), whatever the layout prints on it. A page's
+        /// shortcuts keep working on a layout whose letters are not Latin
+        /// (Ctrl+С on a Russian layout copies), and its `code` is the key
+        /// pressed. `None` when the sender does not know it.
+        code: Option<&'static str>,
     },
+    /// The input method's text being composed at the page's caret, in place
+    /// of any composed before. `cursor` is the composition's own caret or
+    /// selection, as byte offsets into `text`.
+    ImeComposition {
+        text: String,
+        cursor: Option<(usize, usize)>,
+    },
+    /// Text the input method committed: it takes the composition's place,
+    /// or goes in at the caret when nothing is being composed.
+    ImeCommit(String),
+    /// The input method withdrew its composition: the composed text leaves
+    /// the page.
+    ImeCancel,
+    /// The composition ends as it stands: its text stays in the page.
+    ImeFinish,
     /// Keyboard focus entered / left the page surface.
     SetFocused(bool),
     /// Compiled `WebKit` content-blocker JSON (`None` clears the filter).
@@ -356,6 +726,121 @@ pub enum WebViewCommand {
         id: u32,
         allow: bool,
     },
+    /// The person set a permission question aside (Escape, a click
+    /// elsewhere) without answering: the site may ask again, as when a
+    /// prompt in Chrome is dismissed. An engine that cannot tell this from
+    /// no takes it as no.
+    PermissionDismissed {
+        id: u32,
+    },
+    /// What an installed extension may do with the Browser's tabs: its API
+    /// permissions and the sites it may read and script. The engine answers
+    /// the extension's tab APIs within them.
+    ExtensionAccess {
+        id: String,
+        permissions: Vec<String>,
+        /// Its host permissions: the sites the tab APIs let it read and
+        /// script.
+        hosts: Vec<String>,
+        /// Where its declared content scripts run, which, as in Chrome, gives
+        /// no access to the tab APIs.
+        scriptable: Vec<String>,
+        /// Where they run in a page's frames too (`all_frames`).
+        framed: Vec<String>,
+        /// What its service worker shows the engine to be known as its.
+        token: Option<String>,
+        /// Its keyboard shortcuts: the manifest's `commands` object, whose
+        /// suggested keys the engine gives and runs.
+        commands: Option<serde_json::Value>,
+    },
+    /// What an extension may ask for later (its manifest's
+    /// `optional_permissions` and `optional_host_permissions`), and what of
+    /// it the person granted: the engine answers `chrome.permissions` within
+    /// them, and its tab APIs within what was granted too.
+    ExtensionGrants {
+        id: String,
+        optional: ExtensionPermissionSet,
+        granted: ExtensionPermissionSet,
+    },
+    /// The person answered an extension's request for more access
+    /// ([`WebViewEvent::ExtensionPermissionRequest`]).
+    ExtensionPermissionDecision {
+        request: u32,
+        allow: bool,
+    },
+    /// An extension that left the profile: it is told nothing more.
+    ExtensionForget {
+        id: String,
+    },
+    /// The Browser's own extension, which tells the engine which tab a page
+    /// is among the ids extensions know tabs by.
+    ExtensionIdentity {
+        id: String,
+    },
+    /// This tab shows an extension's popup or settings page over the page
+    /// used last: to extensions it is no tab, and that page is its window.
+    /// `action` names the extension whose toolbar button opened it, which
+    /// may then script that page, as in Chrome.
+    ExtensionPanel {
+        action: Option<String>,
+    },
+    /// This tab shows the page of sign-in `flow` of extension `id`
+    /// ([`WebViewEvent::ExtensionSignIn`]), over the page used last or out
+    /// of sight: to extensions it is no tab, and its closing turns the
+    /// sign-in down.
+    ExtensionSignInPanel {
+        id: String,
+        flow: u32,
+    },
+    /// The person clicked an extension's toolbar button over this page: the
+    /// extension hears of it (`action.onClicked`) and may script the page,
+    /// or its side panel opens or closes when it asked for that.
+    ExtensionClick {
+        id: String,
+    },
+    /// The person chose the item `key` of extension `id`'s toolbar button
+    /// menu over this page: the extension hears of it
+    /// (`contextMenus.onClicked`).
+    ExtensionMenuChoice {
+        id: String,
+        key: String,
+    },
+    /// The person chose the notification `notification` of the extension
+    /// `id`: its body, or the button at `button`. The extension hears of it
+    /// and of the notification closing.
+    ExtensionNotificationChosen {
+        id: String,
+        notification: String,
+        button: Option<u8>,
+    },
+    /// The person typed after the extension's keyword in this page's
+    /// address: the extension hears of it (`chrome.omnibox`), and Enter lets
+    /// it act on the page as a click on its button would.
+    ExtensionOmnibox {
+        id: String,
+        input: OmniboxInput,
+    },
+    /// The person opened an extension's side panel beside this page: the
+    /// engine answers with [`WebViewEvent::ExtensionSidePanel`] once the
+    /// extension says which of its pages it shows here, if any.
+    ExtensionOpenSidePanel {
+        id: String,
+    },
+    /// This tab shows extension `id`'s side panel beside the page used
+    /// last: to extensions it is no tab and that page is its window, and
+    /// the extension hears of the panel opening and closing
+    /// (`sidePanel.onOpened`, `sidePanel.onClosed`).
+    ExtensionSidePanelPage {
+        id: String,
+    },
+    /// The person pressed one of extensions' keyboard shortcuts
+    /// ([`WebViewEvent::ExtensionShortcuts`]) while the Browser's own field
+    /// had the keyboard: the extension's command runs over this tab's page,
+    /// and the page sees nothing of the key.
+    ExtensionCommandKey {
+        key: KeyInput,
+        modifiers: KeyModifiers,
+    },
     DownloadDecision {
         id: u32,
         allow: bool,
@@ -398,6 +883,107 @@ pub enum WebViewEvent {
     },
     CredentialResult(CredentialReply),
     ServiceSessionResult(ServiceSessionReply),
+    /// An extension changed its toolbar button, for this tab alone or for
+    /// every tab (`global`).
+    ExtensionAction {
+        id: String,
+        global: bool,
+        change: ExtensionActionChange,
+    },
+    /// A new document in this tab: what extensions set for their buttons on
+    /// this tab alone is gone.
+    ExtensionActionReset,
+    /// An extension asked to open its popup (`action.openPopup`) over this
+    /// tab's page: `url` is among its own pages.
+    ExtensionOpenPopup {
+        id: String,
+        url: String,
+    },
+    /// The person pressed the keyboard shortcut of an extension's toolbar
+    /// button (`_execute_action`) over this tab's page: act as a click on
+    /// the button does.
+    ExtensionExecuteAction {
+        id: String,
+    },
+    /// The keys extensions' commands hold now, as Chrome names them: the
+    /// Browser runs them (`ExtensionCommandKey`) while its own field has the
+    /// keyboard, before the field sees them.
+    ExtensionShortcuts(Vec<ExtensionShortcut>),
+    /// What extension `id`'s toolbar button menu holds now; empty when it
+    /// holds nothing.
+    ExtensionMenu {
+        id: String,
+        items: Vec<ExtensionMenuItem>,
+    },
+    /// An extension showed or changed its notification `notification`
+    /// (`notice`), or took it away (`None`). A notification is no tab's:
+    /// it comes through the page the person used last.
+    ExtensionNotification {
+        id: String,
+        notification: String,
+        notice: Option<ExtensionNotice>,
+    },
+    /// An extension asks for more access (`chrome.permissions.request`),
+    /// all of it among what its manifest offers for later: ask the person,
+    /// and answer with [`WebViewCommand::ExtensionPermissionDecision`].
+    ExtensionPermissionRequest {
+        request: u32,
+        id: String,
+        asked: ExtensionPermissionSet,
+    },
+    /// What an extension holds of what it may ask for changed: it was
+    /// granted more, or gave some up. `granted` is all it holds now, which
+    /// the Browser keeps with the extension.
+    ExtensionPermissions {
+        id: String,
+        granted: ExtensionPermissionSet,
+    },
+    /// The page an extension asked for more access on closed before the
+    /// person answered: the extension was told no, and the question
+    /// ([`WebViewEvent::ExtensionPermissionRequest`]) goes unanswered.
+    ExtensionPermissionClosed {
+        request: u32,
+    },
+    /// An extension asked to open one of the engine's complete downloads
+    /// (`chrome.downloads.open`), or show it in its folder (`reveal`,
+    /// `chrome.downloads.show`), from this tab's window.
+    ExtensionDownloadOpen {
+        id: u32,
+        reveal: bool,
+    },
+    /// An extension asks the person to sign in on the web page `url`
+    /// (`identity.launchWebAuthFlow`), over this tab's page: show it where
+    /// its popup shows, or when it may not ask the person (`interactive`
+    /// false) load it out of sight, in a tab marked with
+    /// [`WebViewCommand::ExtensionSignInPanel`] for sign-in `flow`. The
+    /// engine ends the sign-in, and closes that tab, once the page goes to
+    /// the extension's own address.
+    ExtensionSignIn {
+        id: String,
+        url: String,
+        interactive: bool,
+        flow: u32,
+    },
+    /// What an extension suggests for what follows its keyword in this
+    /// page's address, answering `request` ([`OmniboxInput::Changed`]).
+    ExtensionOmniboxSuggestions {
+        id: String,
+        request: u32,
+        suggestions: Vec<OmniboxSuggestion>,
+    },
+    /// The suggestion an extension shows first while its keyword is typed
+    /// (`omnibox.setDefaultSuggestion`), in Chrome's markup with `%s` for
+    /// what is typed; `None` for none.
+    ExtensionOmniboxDefault {
+        id: String,
+        description: Option<String>,
+    },
+    /// What an extension asks of its side panel beside this tab's page
+    /// (`chrome.sidePanel`).
+    ExtensionSidePanel {
+        id: String,
+        change: ExtensionSidePanelChange,
+    },
     SiteStatus(SiteStatus),
     SiteResult {
         request_id: u32,
@@ -417,9 +1003,16 @@ pub enum WebViewEvent {
         x: f64,
         y: f64,
         link: String,
-        items: Vec<(u32, String)>,
+        items: Vec<ContextMenuItem>,
     },
     ContextMenuClosed {
+        id: u32,
+    },
+    /// The page asks a question of its own and waits for its answer.
+    PageDialog(PageDialog),
+    /// The page no longer waits on its question `id`: it was answered, or
+    /// the page navigated or asked another.
+    PageDialogClosed {
         id: u32,
     },
     FindResult {
@@ -523,6 +1116,42 @@ pub enum WebViewEvent {
         height: f64,
         scroll_y: f64,
     },
+    /// The page's selection as text, answering
+    /// [`WebViewCommand::CopySelection`]; empty when nothing is selected.
+    SelectionText {
+        request_id: u32,
+        text: String,
+    },
+    /// What the page copied, where the engine cannot reach the system
+    /// clipboard itself (Linux): a script's copy, a site's copy button, the
+    /// person's Ctrl+C, an extension's. The embedder puts it on the system
+    /// clipboard, `html` as its formatting, and as a secret when `secret` (it
+    /// came from a password field).
+    ClipboardWrite {
+        text: String,
+        html: Option<String>,
+        secret: bool,
+    },
+    /// The page pastes or reads the clipboard (the person's Ctrl+V, a read
+    /// the person allowed), where the engine cannot reach the system
+    /// clipboard itself: answer with [`WebViewCommand::AnswerClipboardRead`]
+    /// and the same id, soon, as the page waits for it.
+    ClipboardRead {
+        request_id: u32,
+    },
+    /// The address of the link under the pointer, or empty when it left
+    /// the link. Sent by an engine showing sealed documents.
+    LinkHovered(String),
+    /// Where the active match of find `id` is in the view, in logical
+    /// pixels from its top left, so a host that scrolls the page itself (a
+    /// mail sized to its whole document) can bring it into sight.
+    FindSelection {
+        id: u32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
     /// The raw layout snapshot (JSON), or `None` when the engine could not
     /// take one.
     PaintSnapshot {
@@ -620,6 +1249,57 @@ pub trait WebViewEngine: Send + Sync {
         Vec::new()
     }
 
+    /// Have the page's popup windows (`window.open` with a size: a sign-in,
+    /// a payment) opened as popups of this page, which can answer it,
+    /// rather than as tabs: [`Self::take_popups`] then lists them. An engine
+    /// that cannot goes on opening them as tabs.
+    fn accept_popups(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.accept_popups();
+        }
+    }
+
+    /// Have the page's own questions (`alert`, `confirm`, `prompt`, "leave
+    /// this page?") sent as [`WebViewEvent::PageDialog`] for the embedder to
+    /// show and answer. Until then, and in an engine that cannot, each is
+    /// declined at once and a page may always be left.
+    fn accept_page_dialogs(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.accept_page_dialogs();
+        }
+    }
+
+    /// Have what the page copies sent as [`WebViewEvent::ClipboardWrite`],
+    /// and its pastes and reads asked of the embedder
+    /// ([`WebViewEvent::ClipboardRead`]), where the engine cannot reach the
+    /// system clipboard itself. Until then, and in an engine that can or
+    /// cannot ask, the page's clipboard is the engine's own.
+    fn share_clipboard(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.share_clipboard();
+        }
+    }
+
+    /// The popups the page opened since the last call.
+    fn take_popups(&self) -> Vec<Popup> {
+        self.wrapped()
+            .map(|engine| engine.take_popups())
+            .unwrap_or_default()
+    }
+
+    /// The engine of a popup [`Self::take_popups`] listed, to show it.
+    /// Dropping it closes the popup.
+    ///
+    /// # Errors
+    /// Returns an error when the popup is no longer open or this engine has
+    /// none.
+    fn adopt_popup(&self, popup: u32) -> Result<SharedEngine, String> {
+        match self.wrapped() {
+            Some(engine) => engine.adopt_popup(popup),
+            None => Err("This engine opens no popups".into()),
+        }
+    }
+
     /// Whether this backend accepts source rules instead of `WebKit` JSON.
     fn supports_native_filtering(&self) -> bool {
         false
@@ -682,6 +1362,27 @@ pub trait WebViewEngine: Send + Sync {
         None
     }
 
+    /// Whether the engine takes an input method's composition
+    /// ([`WebViewCommand::ImeComposition`], [`WebViewCommand::ImeCommit`])
+    /// and reports the page's focused field ([`Self::text_field`]).
+    fn supports_composition(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.supports_composition())
+    }
+
+    /// The page's focused editable field, for the platform input method;
+    /// `None` while nothing editable in the page has the focus.
+    fn text_field(&self) -> Option<TextField> {
+        self.wrapped().and_then(|engine| engine.text_field())
+    }
+
+    /// The pointer shape the page last asked for where the pointer is (a
+    /// hand on a link, an I-beam on text); `None` for the default arrow, or
+    /// an engine that does not say.
+    fn cursor(&self) -> Option<winit::window::CursorIcon> {
+        self.wrapped().and_then(|engine| engine.cursor())
+    }
+
     /// The page as a display list. An engine that has one is drawn from it
     /// instead of [`frames`](Self::frames) (see [`paint`]).
     fn paint_frame(&self) -> Option<Arc<tilo_paint_stream::Frame>> {
@@ -704,3 +1405,21 @@ pub trait WebViewEngine: Send + Sync {
 
 /// Shared engine handle, as stored by the widget and the host app.
 pub type SharedEngine = Arc<dyn WebViewEngine>;
+
+#[cfg(test)]
+mod key_modifier_tests {
+    use super::KeyModifiers;
+    use crate::platform::{Platform, PlatformConventions};
+
+    /// A page's own shortcut goes with the platform's command modifier:
+    /// Command on macOS, Control everywhere else, never both.
+    #[test]
+    fn the_command_modifier_is_the_platforms() {
+        let mac = KeyModifiers::command(PlatformConventions::new(Platform::MacOs));
+        assert!(mac.meta && !mac.ctrl && !mac.shift && !mac.alt);
+        for platform in [Platform::Linux, Platform::Windows, Platform::Android] {
+            let other = KeyModifiers::command(PlatformConventions::new(platform));
+            assert!(other.ctrl && !other.meta && !other.shift && !other.alt);
+        }
+    }
+}

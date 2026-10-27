@@ -4,8 +4,8 @@
 //! users / messages / drafts), the per-peer view state (active channel,
 //! open thread, call state, composer caret), and one real
 //! [`ui::widget::VideoPlayer`] used as the host call tile. It does its own
-//! manual layout: the four regions (channel sidebar, channel header,
-//! message timeline, composer) plus floating layers
+//! manual layout: the conversation (timeline and composer) beside the
+//! shell's channel sidebar, plus floating layers
 //! (thread panel, emoji picker, edit-history popover, call huddle /
 //! expanded overlay) are computed from `self.rect` each frame, and every
 //! clickable area is recorded into `self.hits` for the next event.
@@ -14,9 +14,10 @@
 //! projection + an input router, in keeping with the toolkit's
 //! "state lives in the CRDT" contract.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, SyncSender};
 use ui::widget::TaffyTreeExt;
+use ui::widget::paint_damage::PaintParts;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -28,17 +29,11 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use ui::Widget;
-use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::tooltip::TooltipHost;
-use ui::widget::{
-    Collaborative, ContextMenu as SharedContextMenu, Continuable, FloatingSurfaceProvider,
-    MenuItem, SearchField, SidebarDrawer, TextInput, VideoPlayer,
-};
+use ui::widget::{Collaborative, Continuable, NavFeed, SidebarDrawer, VideoPlayer, WindowBarLink};
 
-use crate::agent_tasks::{AgentComposerIntent, AgentTaskClient, AgentTaskView};
 use crate::call::CallState;
 use crate::geometry::Chrome;
 use crate::identity::LocalIdentity;
@@ -64,193 +59,6 @@ pub(crate) const ROOM_SCOPE: &str = "room";
 pub(crate) enum Focus {
     Main,
     Thread,
-}
-
-/// A right-click context menu over a channel or category row, or the
-/// inline rename editor it can open.
-pub(crate) struct ContextMenu {
-    pub target: MenuTarget,
-    pub items: Vec<MenuAction>,
-    /// Toolkit-owned paint, clamping, pointer/keyboard routing, focus trap,
-    /// and accessibility. Chat only maps the selected row to its domain
-    /// action.
-    pub widget: SharedContextMenu,
-}
-
-impl ContextMenu {
-    /// A menu whose rows are named by `label`, so a row can say what it will
-    /// do to this target ("Collapse category", "Unpin message").
-    pub(crate) fn labelled(
-        target: MenuTarget,
-        anchor: Point,
-        items: Vec<MenuAction>,
-        viewport: Rect,
-        label: impl Fn(MenuAction) -> String,
-    ) -> Self {
-        let mut widget = SharedContextMenu::new();
-        for action in &items {
-            let name = label(*action);
-            let item = if action.is_destructive() {
-                MenuItem::destructive_selection(&name)
-            } else {
-                MenuItem::selection(&name)
-            };
-            let icon = match action {
-                MenuAction::Rename | MenuAction::EditMessage => Icon::Pencil,
-                MenuAction::EditChannel => Icon::Settings,
-                MenuAction::Delete | MenuAction::DeleteMessage => Icon::Trash,
-                MenuAction::BanAuthor => Icon::Ban,
-                MenuAction::MoveUp => Icon::ChevronUp,
-                MenuAction::MoveDown | MenuAction::ToggleCollapse => Icon::ChevronDown,
-                MenuAction::NewChannelHere
-                | MenuAction::NewVoiceChannelHere
-                | MenuAction::NewCategory => Icon::Plus,
-                MenuAction::Archive => Icon::Archive,
-                MenuAction::PinMessage => Icon::Pin,
-                MenuAction::ReportMessage | MenuAction::ReportAuthor => Icon::Flag,
-            };
-            widget.push(item.with_icon(icon));
-        }
-        if viewport.width() > 0.0 && viewport.height() > 0.0 {
-            widget.open_at_clamped([anchor.x as f32, anchor.y as f32], viewport);
-        } else {
-            widget.open_at([anchor.x as f32, anchor.y as f32]);
-        }
-        Self {
-            target,
-            items,
-            widget,
-        }
-    }
-}
-
-/// What a context menu / create flow acts on.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum MenuTarget {
-    Channel(Id),
-    Category(Id),
-    /// One of your own messages — the action menu offers Edit.
-    Message(Id),
-    /// The sidebar's background and its "+" — create affordances.
-    Room,
-}
-
-/// The structural actions reachable from a context menu. A left-swipe on a
-/// channel row resolves to the channel menu's `Delete`, so the gesture and the
-/// menu can never drift (swipe⇔menu parity).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MenuAction {
-    Rename,
-    /// Change a channel's name, category and topic in the channel sheet.
-    EditChannel,
-    Delete,
-    MoveUp,
-    MoveDown,
-    NewChannelHere,
-    NewVoiceChannelHere,
-    NewCategory,
-    ToggleCollapse,
-    /// Archive / unarchive a channel — hides it from the sidebar (reversible
-    /// from Ctrl+K): an edit of the channel's `archived` field.
-    Archive,
-    /// Load one of your own messages into the inline editor.
-    EditMessage,
-    /// Pin / unpin one of your own messages (shared truth every peer sees).
-    PinMessage,
-    /// Delete one of your own messages, or as a moderator someone else's.
-    DeleteMessage,
-    /// Report someone else's message to the room's moderators.
-    ReportMessage,
-    /// Report a message's author to the room's moderators.
-    ReportAuthor,
-    /// As a moderator, ban a message's author from the room.
-    BanAuthor,
-}
-
-impl MenuAction {
-    pub fn label(self) -> &'static str {
-        match self {
-            MenuAction::Rename => "Rename",
-            MenuAction::EditChannel => "Edit channel",
-            MenuAction::Delete => "Delete",
-            MenuAction::MoveUp => "Move up",
-            MenuAction::MoveDown => "Move down",
-            MenuAction::NewChannelHere => "New channel",
-            MenuAction::NewVoiceChannelHere => "New voice channel",
-            MenuAction::NewCategory => "New category",
-            MenuAction::ToggleCollapse => "Collapse category",
-            MenuAction::Archive => "Archive channel",
-            MenuAction::EditMessage => "Edit message",
-            MenuAction::PinMessage => "Pin message",
-            MenuAction::DeleteMessage => "Delete message",
-            MenuAction::ReportMessage => "Report message",
-            MenuAction::ReportAuthor => "Report sender",
-            MenuAction::BanAuthor => "Ban from the room",
-        }
-    }
-    pub fn is_destructive(self) -> bool {
-        matches!(
-            self,
-            MenuAction::Delete | MenuAction::DeleteMessage | MenuAction::BanAuthor
-        )
-    }
-    /// Menu items for a channel row, in order: the destructive one last.
-    pub fn for_channel() -> [MenuAction; 6] {
-        [
-            MenuAction::EditChannel,
-            MenuAction::Rename,
-            MenuAction::Archive,
-            MenuAction::MoveUp,
-            MenuAction::MoveDown,
-            MenuAction::Delete,
-        ]
-    }
-    /// Menu items for the room: the sidebar header's "+" and its
-    /// background.
-    pub fn for_room() -> [MenuAction; 2] {
-        [MenuAction::NewChannelHere, MenuAction::NewCategory]
-    }
-    /// Menu items for a category row.
-    pub fn for_category() -> [MenuAction; 5] {
-        [
-            MenuAction::NewChannelHere,
-            MenuAction::NewVoiceChannelHere,
-            MenuAction::Rename,
-            MenuAction::ToggleCollapse,
-            MenuAction::Delete,
-        ]
-    }
-    /// The action a swipe-left on a channel row resolves to: the channel
-    /// menu's destructive action.
-    pub fn channel_swipe_left() -> MenuAction {
-        MenuAction::Delete
-    }
-    /// Menu items for one of your own messages.
-    pub fn for_message() -> [MenuAction; 3] {
-        [
-            MenuAction::EditMessage,
-            MenuAction::PinMessage,
-            MenuAction::DeleteMessage,
-        ]
-    }
-    /// Menu items for someone else's message: reporting it or its sender,
-    /// and removing it, which only the room's moderators may.
-    pub fn for_others_message() -> [MenuAction; 3] {
-        [
-            MenuAction::ReportMessage,
-            MenuAction::ReportAuthor,
-            MenuAction::DeleteMessage,
-        ]
-    }
-}
-
-/// An in-progress swipe on a channel row (mirrors the context-menu primary
-/// action on release).
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RowSwipe {
-    pub channel_index: usize,
-    pub origin: Point,
-    pub current: Point,
 }
 
 /// The bounded worker's result. File I/O and header sniffing happen before
@@ -288,258 +96,14 @@ pub(crate) struct AttachmentImportPending {
 
 #[derive(Clone, Debug)]
 pub(crate) struct AgentConversationDrag {
-    pub(crate) agent: Id,
+    pub(crate) peer: String,
     pub(crate) channel: Id,
     pub(crate) origin: Point,
 }
 
-impl RowSwipe {
-    pub fn dx(&self) -> f64 {
-        (self.origin.x - self.current.x).max(0.0)
-    }
-}
-
-/// Everything the user can click. Recorded during `draw`, resolved on the
-/// next mouse-press.
-#[derive(Clone, Debug)]
-pub(crate) enum Hit {
-    HostModel(String),
-    Channel(Id),
-    Agent(Id),
-    DirectPerson(String),
-    AgentWindow,
-    AgentDragHandle,
-    AgentIntent(AgentComposerIntent),
-    AgentTask(Box<crate::agent_tasks::AgentTaskFrontier>),
-    AgentTaskMore,
-    AgentStart,
-    AgentStop,
-    /// A voice-channel member chip in the sidebar — clicking joins the call.
-    VoiceChannel(Id),
-    /// Toggle a category's collapsed state.
-    CategoryToggle(Id),
-    /// The "+" create-channel button on a category header.
-    AddChannel {
-        category: Id,
-    },
-    /// The "+" create-category button in the sidebar header.
-    AddCategory,
-    /// Focus/place the caret in the inline structural rename field.
-    FocusRename,
-    Reaction {
-        msg: Id,
-        emoji: String,
-    },
-    AddReaction {
-        msg: Id,
-        anchor: Point,
-    },
-    OpenThread(Id),
-    EditHistory {
-        msg: Id,
-        anchor: Point,
-    },
-    /// Right-click target over one of your own messages — opens the message
-    /// action menu (Edit). Left-click on it is a no-op.
-    MessageMenu {
-        msg: Id,
-    },
-    /// Commit the inline message editor to the CRDT.
-    EditSave,
-    /// Discard the inline message editor without writing.
-    EditCancel,
-    /// Focus/place the caret in the inline message editor.
-    FocusEdit,
-    EmojiChoice(String),
-    /// Show one Unicode emoji group (index into the catalogue) in the picker.
-    EmojiGroup(usize),
-    /// Focus/place the caret in the emoji picker's search field.
-    FocusEmojiSearch,
-    FocusMain,
-    FocusThread,
-    Send,
-    /// Return a scrolled conversation to its newest message without changing
-    /// any shared document state.
-    JumpToLatest,
-    ThreadScroll(bool),
-    AgentReasoning(String),
-    ComposerEmoji(Point),
-    /// Open the workspace file picker to share an attachment.
-    Attach,
-    /// Pick a specific file (by path) from the open attachment picker.
-    AttachPick(String),
-    /// Choose files on this device with the platform's file chooser.
-    AttachDevice,
-    StartCall,
-    StopSharingLiveContext,
-    CopyResourceLink(Id),
-    OpenResourceLink(Id),
-    /// Open the platform search over Chat.
-    Search,
-    CloseThread,
-    /// Grab the floating call overlay to drag it (records the press point).
-    CallDragHandle,
-    /// Toggle the participant list expand/collapse in the overlay.
-    CallParticipantsToggle,
-    CallMute,
-    /// Turn this person's camera on or off in the call.
-    CallCamera,
-    /// Share this person's screen in the call, or stop.
-    CallScreen,
-    CallExpand,
-    CallLeave,
-    /// Toggle the left flap (the channel sidebar).
-    ToggleLeftFlap,
-    /// Toggle the right flap (members / thread).
-    ToggleRightFlap,
-    /// Show or hide the open channel's pinned messages in the detail drawer.
-    TogglePins,
-    /// Show a message where it was written (a pinned message's row).
-    RevealMessage(Id),
-    Dismiss, // click on a scrim closes the top-most popover
-}
-
-impl Hit {
-    pub(crate) fn semantic_id(&self) -> String {
-        match self {
-            Self::Channel(id) => format!("chat.channel:{id}"),
-            Self::DirectPerson(key) => format!("chat.person:{key}"),
-            Self::Agent(id) => format!("chat.agent:{id}"),
-            Self::AgentWindow => "chat.agent-window".into(),
-            Self::AgentDragHandle => "chat.agent-drag".into(),
-            Self::AgentIntent(intent) => format!("chat.agent-intent:{intent:?}"),
-            Self::AgentTask(task) => format!(
-                "chat.agent-task:{}:{}:{}",
-                task.task_id,
-                task.run_epoch.unwrap_or_default(),
-                task.after_revision.unwrap_or_default()
-            ),
-            Self::AgentTaskMore => "chat.agent-task-more".into(),
-            Self::AgentStart => "chat.agent-start".into(),
-            Self::AgentStop => "chat.agent-stop".into(),
-            Self::VoiceChannel(id) => format!("chat.voice-channel:{id}"),
-            Self::CategoryToggle(id) => format!("chat.category-toggle:{id}"),
-            Self::AddChannel { category } => format!("chat.add-channel:{category}"),
-            Self::AddCategory => "chat.add-category".into(),
-            Self::TogglePins => "chat.pins".into(),
-            Self::RevealMessage(id) => format!("chat.reveal-message:{id}"),
-            Self::FocusMain => "chat.composer".into(),
-            Self::FocusThread => "chat.thread-composer".into(),
-            Self::FocusRename => "chat.rename".into(),
-            Self::FocusEdit => "chat.message-edit".into(),
-            Self::HostModel(command) => format!("chat.model.{command}"),
-            Self::Send => "chat.send".into(),
-            Self::JumpToLatest => "chat.jump-to-latest".into(),
-            Self::ThreadScroll(end) => format!("chat.thread-scroll-{end}"),
-            Self::AgentReasoning(id) => format!("chat.reasoning.{id}"),
-            Self::ComposerEmoji(_) => "chat.composer-emoji".into(),
-            Self::Attach => "chat.attach".into(),
-            Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
-            Self::AttachDevice => "chat.attach-device".into(),
-            Self::StartCall => "chat.start-call".into(),
-            Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
-            Self::CopyResourceLink(id) => format!("chat.copy-resource-link:{id}"),
-            Self::OpenResourceLink(id) => format!("chat.open-resource-link:{id}"),
-            Self::Search => "chat.search".into(),
-            Self::ToggleLeftFlap => "chat.toggle-navigation".into(),
-            Self::ToggleRightFlap => "chat.toggle-details".into(),
-            Self::OpenThread(id) => format!("chat.open-thread:{id}"),
-            Self::CloseThread => "chat.close-thread".into(),
-            Self::Reaction { msg, emoji } => format!("chat.reaction:{msg}:{emoji}"),
-            Self::AddReaction { msg, .. } => format!("chat.add-reaction:{msg}"),
-            Self::EmojiChoice(emoji) => format!("chat.emoji-choice:{emoji}"),
-            Self::EmojiGroup(group) => format!("chat.emoji-group:{group}"),
-            Self::FocusEmojiSearch => "chat.emoji-search".into(),
-            Self::EditHistory { msg, .. } => format!("chat.edit-history:{msg}"),
-            Self::EditSave => "chat.edit-save".into(),
-            Self::EditCancel => "chat.edit-cancel".into(),
-            Self::CallMute => "chat.call-mute".into(),
-            Self::CallCamera => "chat.call-camera".into(),
-            Self::CallScreen => "chat.call-screen".into(),
-            Self::CallParticipantsToggle => "chat.call-participants".into(),
-            Self::CallExpand => "chat.call-expand".into(),
-            Self::CallLeave => "chat.call-leave".into(),
-            other => format!("chat.control:{other:?}"),
-        }
-    }
-}
-
-/// One sampled motion value owns the call huddle's participant reveal. The
-/// panel silhouette, controls, hit regions, compositor presentation and native
-/// window allocation all read this same value, so a content-driven resize can
-/// never leave those layers a frame apart.
-#[derive(Debug)]
-pub(crate) struct CallChromeMotion {
-    /// The participants disclosing (`ui::motion::Disclose`).
-    transition: ui::motion::Presence,
-    target_open: bool,
-    initialized: bool,
-    pub(crate) sampled: f32,
-    pub(crate) animating: bool,
-    /// Deterministic visual-review hook; production leaves this `None`.
-    pinned: Option<f32>,
-}
-
-impl Default for CallChromeMotion {
-    fn default() -> Self {
-        Self {
-            transition: ui::motion::Presence::opened(),
-            target_open: true,
-            initialized: false,
-            sampled: 1.0,
-            animating: false,
-            pinned: None,
-        }
-    }
-}
-
-impl CallChromeMotion {
-    pub(crate) fn reconcile(&mut self, open: bool, theme: &Theme) {
-        if let Some(value) = self.pinned {
-            self.sampled = value;
-            self.animating = false;
-            return;
-        }
-        if !self.initialized {
-            self.transition = if open {
-                ui::motion::Presence::opened()
-            } else {
-                ui::motion::Presence::closed()
-            };
-            self.target_open = open;
-            self.initialized = true;
-        } else if open != self.target_open {
-            self.transition.show(
-                open,
-                ui::motion::Disclose::SPEC,
-                theme.motion(),
-                ui::tokens::MotionSource::Pointer,
-                ui::time::now(),
-            );
-            self.target_open = open;
-        }
-        let now = ui::time::now();
-        self.sampled = ui::motion::unit_opacity(self.transition.progress(now));
-        self.animating = self.transition.is_moving(now);
-    }
-
-    pub(crate) fn reset(&mut self) {
-        if self.pinned.is_none() {
-            self.initialized = false;
-            self.animating = false;
-        }
-    }
-
-    pub(crate) fn pin_for_visual_review(&mut self, value: f32) {
-        self.pinned = Some(value.clamp(0.0, 1.0));
-        self.sampled = self.pinned.unwrap_or(0.0);
-        self.animating = false;
-    }
-}
-
 /// How many of `messages`' last `unread` top-level messages mention one of
 /// `me` and were written by someone else.
-fn unread_mentions(messages: &[Message], unread: usize, me: &[&str]) -> u32 {
+pub(super) fn unread_mentions(messages: &[Message], unread: usize, me: &[&str]) -> u32 {
     let top: Vec<&Message> = messages
         .iter()
         .filter(|message| message.is_top_level())
@@ -556,32 +120,6 @@ fn unread_mentions(messages: &[Message], unread: usize, me: &[&str]) -> u32 {
         })
         .count();
     u32::try_from(count).unwrap_or(u32::MAX)
-}
-
-#[cfg(test)]
-mod call_chrome_motion_tests {
-    use super::CallChromeMotion;
-
-    #[test]
-    fn call_chrome_motion_lands_without_animating_when_reduced_or_pinned() {
-        // Phase: reduced_motion_snaps_the_same_geometry_driver_to_its_target.
-        {
-            let mut motion = CallChromeMotion::default();
-            motion.reconcile(true, &ui::theme::Theme::dark());
-            motion.reconcile(false, &ui::theme::Theme::dark().with_reduce_motion(true));
-            assert_eq!(motion.sampled, 0.0);
-            assert!(!motion.animating);
-        }
-
-        // Phase: visual_review_can_pin_a_true_mid_morph_geometry.
-        {
-            let mut motion = CallChromeMotion::default();
-            motion.pin_for_visual_review(0.5);
-            motion.reconcile(false, &ui::theme::Theme::dark());
-            assert_eq!(motion.sampled, 0.5);
-            assert!(!motion.animating);
-        }
-    }
 }
 
 /// The whole app's mutable state.
@@ -624,6 +162,23 @@ pub struct ChatApp {
     /// Why the last message was not sent, while its text waits in the
     /// composer to be sent again.
     pub(crate) not_sent: Option<String>,
+    /// A message of the person's own they just deleted, while their Undo
+    /// can take it back: the part of the chat it was in, and the channel
+    /// it was deleted from.
+    /// Any later step of theirs in the chat takes the offer down: Undo
+    /// would take back that step instead.
+    pub(crate) deleted: std::cell::RefCell<Option<(u64, Id)>>,
+    /// A message of the person's own whose deletion they were asked to
+    /// confirm, with the part it is in and its channel: once it is gone,
+    /// their Undo is offered as for one deleted at once.
+    pub(crate) asked_delete: Option<(ui::tilo_resource::Id, Option<u64>, Id)>,
+    /// The message the pointer is over, which shows its action bar.
+    pub(crate) hovered_message: Option<Id>,
+    /// Where each message row was painted this frame, whole: what the
+    /// pointer is over when it is over a message.
+    pub(crate) message_rows: Vec<(Rect, Id)>,
+    /// The action bar's arrival: which message it is over, and its fade.
+    pub(crate) message_bar: crate::app::message_bar::BarMotion,
     /// The last message posted from the main composer, by channel: put back
     /// in the composer if the room refuses it after it was applied here.
     pub(crate) last_post: Option<(Id, String)>,
@@ -632,6 +187,10 @@ pub struct ChatApp {
     pub(crate) channel_sheet: Option<crate::channel_sheet::ChannelSheet>,
     /// The detail drawer shows the open channel's pinned messages.
     pub(crate) pins_open: bool,
+    /// The top of the main composer as last drawn, `None` when none was. A
+    /// detail drawer floating over the conversation ends above it, so the
+    /// composer stays whole and usable while pins or people are open.
+    pub(crate) composer_top: Option<f64>,
     pub(crate) composer_thread: crate::composer::DraftComposer,
 
     // Per-peer view state.
@@ -674,20 +233,14 @@ pub struct ChatApp {
     pub(crate) revealed_person: Option<Id>,
     pub(crate) emoji_open: bool,
     pub(crate) emoji_target: Option<Id>,
-    pub(crate) emoji_anchor: Point,
-    /// The picker's query; empty shows the selected group.
-    pub(crate) emoji_search: SearchField,
-    pub(crate) emoji_group: usize,
-    /// How far the channel tree is scrolled from its top, the rect it
-    /// scrolls in, and its whole height as last painted.
-    pub(crate) nav_scroll: f64,
-    pub(crate) nav_viewport: Rect,
-    pub(crate) nav_content_h: f64,
-    /// How far the picker grid is scrolled, and the rect it scrolls in.
-    pub(crate) emoji_scroll: f64,
-    pub(crate) emoji_grid: Rect,
-    /// This user's recently picked emoji, most recent first.
-    pub(crate) emoji_recents: emoji::Recents,
+    pub(crate) emoji_anchor: Rect,
+    /// The toolkit's shared picker, placed at `emoji_anchor` while
+    /// `emoji_open`.
+    pub(crate) emoji_picker: ui::widget::EmojiPicker,
+    /// Each message's reaction pills, in the timeline (`false`) and the
+    /// thread (`true`), with their arrival and count motion.
+    pub(crate) reaction_strips:
+        std::cell::RefCell<HashMap<(bool, Id), ui::widget::reaction_strip::ReactionStrip>>,
     pub(crate) history_open: Option<Id>,
     pub(crate) history_anchor: Point,
     /// Your own message currently being edited. The shared multiline input
@@ -714,6 +267,10 @@ pub struct ChatApp {
     pub(crate) attachment_result_rx: Receiver<AttachmentImportResult>,
     /// A settled import outcome for the picker/status UI and accessibility.
     pub(crate) attachment_status: Option<String>,
+    /// The attachment the person opened over the conversation, and the copy
+    /// they asked to save.
+    pub(crate) attachment_view: Option<crate::attachment_view::AttachmentView>,
+    pub(crate) attachment_save: Option<crate::attachment_view::AttachmentSave>,
     pub(crate) attachment_picker_pending: Option<u64>,
     pub(crate) attachment_picker_generation: u64,
     pub(crate) attachment_picker_result_tx: SyncSender<AttachmentPickerResult>,
@@ -721,16 +278,16 @@ pub struct ChatApp {
 
     // Structure editing.
     pub(crate) menu: Option<ContextMenu>,
-    /// Channel/category currently being renamed. The shared single-line input
-    /// owns the transient working name; structural CRDT policy stays here.
-    pub(crate) rename: Option<MenuTarget>,
-    pub(crate) rename_input: TextInput,
-    pub(crate) swipe: Option<RowSwipe>,
+    /// The channel or category whose name a menu asked to change, until
+    /// the event that asked hands the sidebar the keyboard.
+    pub(crate) sidebar_rename: Option<String>,
 
     // Call state.
     pub(crate) call: CallState,
     pub(crate) native_voice: crate::local_voice::LocalVoice,
     pub(crate) resource_navigation: crate::shared_resources::Navigation,
+    /// Windows shared live into the room ([`crate::live_share`]).
+    pub(crate) live_shares: crate::live_share::LiveShares,
     pub(crate) moderation: crate::moderation::Moderation,
     /// Measured control/header sizes of the expanded call overlay, refreshed
     /// by the paint pass and read by the renderer-less layout functions.
@@ -753,8 +310,13 @@ pub struct ChatApp {
     /// Opens the platform search when the header's search button is used.
     pub(crate) search_opener: ui::search::SearchOpener,
 
-    // Responsive flaps.
-    pub(crate) left_flap: SidebarDrawer,
+    /// The shell's sidebar: the channels this window shows in it and what
+    /// the person does there ([`crate::sidebar`]).
+    pub(crate) places: NavFeed,
+    /// The shell's own controls in the window bar, and its sidebar's
+    /// state; `None` outside a shell (a floated conversation, a test).
+    pub(crate) bar: Option<WindowBarLink>,
+    /// The detail drawer: people, pins, or the open thread.
     pub(crate) right_flap: SidebarDrawer,
     /// The chrome metrics of the last painted theme.
     pub(crate) chrome: Chrome,
@@ -772,6 +334,10 @@ pub struct ChatApp {
     // presence (see `adopt_room`). A peer never writes its own name into
     // this map — only what the room says about a participant lands here.
     pub(crate) room_names: HashMap<Id, String>,
+    /// The person each of the room's devices belongs to, where presence
+    /// says: a call's roster names people, presence names their devices,
+    /// and `room_names` carries both so either reads as the same name.
+    pub(crate) room_persons: HashMap<Id, Id>,
     /// Who the room's presence places in each voice channel.
     pub(crate) room_voice: HashMap<Id, Vec<Id>>,
     /// The numbers people who share a name are told apart by, as the room
@@ -782,22 +348,21 @@ pub struct ChatApp {
     pub(crate) room_colors: HashMap<Id, (u8, u8, u8)>,
     /// Exact bare Agent ids from the authenticated room roster.
     pub(crate) room_agents: Vec<Id>,
-    /// The direct conversation the record holds with each agent, by the
-    /// agent: under whatever id it was made with, which never changes.
-    pub(crate) agent_channels: HashMap<Id, Id>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
-    /// Agent navigation entry; the task client pins the conversation's exact run.
-    pub(crate) direct_agent: Option<Id>,
     pub(crate) direct_person: Option<String>,
     pub(crate) person_subscription: Option<uuid::Uuid>,
     pub(crate) person_contacts: Vec<ui::person_chat::Contact>,
     pub(crate) person_messages: Vec<ui::person_chat::Message>,
     pub(crate) person_error: Option<String>,
+    /// The conversation being opened, until the room answers.
+    pub(crate) person_opening: Option<crate::person_conversation::Opening>,
+    /// Opens another one replaced: each lane they open is released.
+    pub(crate) person_abandoned: Vec<crate::person_conversation::Opening>,
+    /// The message the composer is sending, until the room accepts it.
+    pub(crate) person_sending: Option<crate::person_conversation::Sending>,
     pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
-    pub(crate) agent_intents: ui::LocalState<HashMap<(Id, Id), AgentComposerIntent>>,
-    pub(crate) agent_tasks: AgentTaskClient,
-    /// Retained direct-Agent conversations currently owned by the shared
+    /// Retained direct conversations currently owned by the shared
     /// floating-surface host, keyed by their deterministic conversation id.
     /// The person's reduced-motion setting, applied to every floating
     /// placement this app owns (`Widget::set_motion_reduced`).
@@ -814,6 +379,9 @@ pub struct ChatApp {
     // Agent display names of agent-authored messages (`agent_authors` in the
     // document): what every member renders as "<name> (agent)".
     pub(crate) agent_authors: HashMap<Id, String>,
+    /// What the room's host keeps of the files members post, as it says:
+    /// a file it would not take is refused here, in plain words.
+    pub(crate) room_files: crate::record::RoomFiles,
     /// Each shown message body, read-only in the SDK editor, by body size
     /// and message id, with the mention colours it was painted with.
     pub(crate) body_views:
@@ -847,6 +415,12 @@ pub struct ChatApp {
     // window's person, recorded in history and replicated. See
     // [`crate::record`].
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
+    /// The read receipt last sent on its own and not answered yet, by
+    /// channel, and the one the door refused: a receipt the door does not
+    /// offer this person (a viewer) is not sent again until they read
+    /// further.
+    pub(crate) read_asked: Option<(String, crate::parts::ReadMark)>,
+    pub(crate) read_refused: Option<(String, crate::parts::ReadMark)>,
     /// The chat's messages, kept in parts beside the record
     /// ([`crate::parts`]): what the window reads them from and posts, edits
     /// and reacts through. `None` where the window has none (a past
@@ -854,6 +428,18 @@ pub struct ChatApp {
     pub(crate) chain: Option<ui::framework::Chain<crate::parts::ChatPart>>,
     /// The chain's revision the window last read its messages at.
     pub(crate) chain_seen: Option<u64>,
+    /// The messages the chat record kept in itself, read once for the
+    /// object holding them ([`crate::record::kept_messages`]).
+    pub(crate) kept_messages: Option<(
+        automerge::ObjId,
+        std::rc::Rc<ui::tilo_resource::Collection<crate::record::Message>>,
+    )>,
+    /// What the chat record kept as the names of the people in it
+    /// ([`crate::record::kept_names`]), read with the kept messages.
+    pub(crate) kept_names: std::collections::BTreeMap<String, String>,
+    /// The first part a screenshot scenario starts with, until written:
+    /// messages by several people under the ids the scenario names.
+    pub(crate) staged_start: Option<crate::parts::ChatPart>,
     /// A screenshot scenario's messages still to stage, each with who
     /// wrote it: staged once the room's records take a write (a frame's
     /// read of the record holds them).
@@ -894,21 +480,28 @@ pub struct ChatApp {
     /// Where attachment bytes live. Messages carry only content hashes; the
     /// import worker and the image fetcher each hold a clone.
     pub(crate) content: ContentStore,
+    /// The attachments' bytes as reads ([`ui::arriving`]): here, on their
+    /// way from the room, or with no device that has them.
+    pub(crate) content_reads: ui::collaboration::record_content::ContentReads,
+    /// When the next attachment on its way steps its placeholder on, as the
+    /// last frame painted them.
+    pub(crate) arriving_wake: std::cell::Cell<Option<ui::time::Instant>>,
 
     // Layout + render caches.
     pub(crate) rect: Rect,
     root_node: Option<NodeId>,
     video_node: Option<NodeId>,
     pub(crate) video: VideoPlayer,
+    /// What the call tile's layout node was last placed from: whether the
+    /// call fills the window, and where the tile stands. Chat's only laid-out
+    /// node is that tile; everything else it places itself as it paints, so
+    /// a scroll or a keystroke re-solves no layout.
+    laid_video: Option<(bool, Rect)>,
     pub(crate) hits: Vec<(Rect, Hit)>,
     /// Ordinal in `keyboard_targets()`. Derived from the current hit inventory
     /// so Tab and assistive focus traverse the same controls a pointer can use.
     pub(crate) keyboard_target: Option<usize>,
     pub(crate) last_mouse: Point,
-    /// One shared tooltip controller for Chat's immediate-mode controls. This
-    /// gives icon-only buttons and elided header text the same dwell behaviour
-    /// as toolkit widgets without allocating a tooltip per hit region.
-    pub(crate) tooltips: TooltipHost,
     /// The live call control beneath the pointer. Kept as render-only state so
     /// attached and shell-owned copies share the same hover treatment without
     /// duplicating a second native-window control implementation.
@@ -920,9 +513,9 @@ pub struct ChatApp {
     /// This window's person still has to be announced into the shared
     /// roster under the name this device knows them by.
     announce: Option<crate::identity::LocalIdentity>,
-    /// A live window tells its person about mentions of them that arrive
-    /// while they look elsewhere.
-    mention_alerts: Option<crate::mention_alerts::MentionAlerts>,
+    /// The person's own drafts record, so the sidebar can say where the
+    /// unsent words are.
+    pub(crate) drafts_record: Option<ui::framework::PersonRecord<crate::drafts::ChatDrafts>>,
 
     /// Latest decoded camera picture per person, shown in their call tile
     /// (this person's own among them, in the host tile). Only ever holds a
@@ -942,6 +535,14 @@ pub struct ChatApp {
     /// their size in device pixels. What the call is asked to deliver, each
     /// at the layer that fits its tile.
     pub(crate) picture_tiles: std::cell::RefCell<Vec<PictureTile>>,
+    /// Where each message shown last frame drew its own texts, by message
+    /// id: what its accessible row's children are read and picked by.
+    pub(crate) painted_messages: HashMap<Id, PaintedMessage>,
+    /// The conversation's rows, measured and painted, kept between frames.
+    pub(crate) timeline: std::cell::RefCell<crate::timeline::Timeline>,
+    /// Counts each load of [`Self::messages`], so what is kept of them knows
+    /// when to look again.
+    pub(crate) messages_revision: u64,
     /// A video call was started: the camera turns on once the call is live.
     pub(crate) camera_on_live: bool,
 
@@ -949,6 +550,9 @@ pub struct ChatApp {
     /// control, a native voice issue, or no connected media transport).
     pub(crate) media_error: Option<String>,
     pub(crate) canonical_dirty: bool,
+    /// The regions the last draws painted, compared to say which changed:
+    /// a typed character repaints the composer, not the window.
+    paint_damage: ui::widget::paint_damage::PaintDamage,
     /// Document heads and pending-operation count at the last reload,
     /// so an unchanged document is not reloaded and repainted every frame.
     synced: Option<(Vec<automerge::ChangeHash>, usize)>,
@@ -991,7 +595,6 @@ impl ChatApp {
     /// sync, under the name this device knows them by.
     pub(crate) fn announcing(mut self) -> Self {
         self.announce = Some(self.me.clone());
-        self.mention_alerts = Some(crate::mention_alerts::MentionAlerts::default());
         self
     }
 
@@ -1037,6 +640,9 @@ impl ChatApp {
         reason = "the complete app state is deliberately initialized together so bounded channels and their lifecycles cannot drift"
     )]
     fn bare(content: ContentStore) -> Self {
+        // The shared picker and reaction strip name and search emoji through
+        // Chat's catalogue.
+        crate::i18n::offer_emoji_catalogue();
         // The host call tile is a real VideoPlayer with no frame until a live
         // capture feeds one; there is no synthesised stand-in. Its honest
         // "camera off" state is painted over the empty surface.
@@ -1058,9 +664,15 @@ impl ChatApp {
             draft_thread: String::new(),
             composer_main: crate::composer::DraftComposer::shared(),
             not_sent: None,
+            deleted: std::cell::RefCell::default(),
+            asked_delete: None,
+            hovered_message: None,
+            message_rows: Vec::new(),
+            message_bar: crate::app::message_bar::BarMotion::default(),
             last_post: None,
             channel_sheet: None,
             pins_open: false,
+            composer_top: None,
             composer_thread: crate::composer::DraftComposer::shared(),
             active_channel: "c_crit".into(),
             focus: Focus::Main,
@@ -1081,15 +693,9 @@ impl ChatApp {
             revealed_person: None,
             emoji_open: false,
             emoji_target: None,
-            emoji_anchor: Point::ZERO,
-            emoji_search: SearchField::new().with_placeholder(&crate::i18n::t("chat-emoji-search")),
-            emoji_group: 0,
-            nav_scroll: 0.0,
-            nav_viewport: Rect::ZERO,
-            nav_content_h: 0.0,
-            emoji_scroll: 0.0,
-            emoji_grid: Rect::ZERO,
-            emoji_recents: emoji::Recents::default(),
+            emoji_anchor: Rect::ZERO,
+            emoji_picker: ui::widget::EmojiPicker::framed(),
+            reaction_strips: std::cell::RefCell::default(),
             history_open: None,
             history_anchor: Point::ZERO,
             editing: None,
@@ -1103,17 +709,18 @@ impl ChatApp {
             attachment_result_tx,
             attachment_result_rx,
             attachment_status: None,
+            attachment_view: None,
+            attachment_save: None,
             attachment_picker_pending: None,
             attachment_picker_generation: 0,
             attachment_picker_result_tx,
             attachment_picker_result_rx,
             menu: None,
-            rename: None,
-            rename_input: Self::new_rename_input(),
-            swipe: None,
+            sidebar_rename: None,
             call: CallState::default(),
             native_voice: crate::local_voice::LocalVoice::default(),
             resource_navigation: crate::shared_resources::Navigation::default(),
+            live_shares: crate::live_share::LiveShares::default(),
             moderation: crate::moderation::Moderation::default(),
             call_overlay_metrics: crate::render_call::CallOverlayMetrics::default(),
             call_overlay_metrics_key: None,
@@ -1124,28 +731,29 @@ impl ChatApp {
             pending_floating: None,
             floating_surface_bounds: Rect::ZERO,
             search_opener: ui::search::SearchOpener::new(),
-            left_flap: Self::navigation_drawer(),
+            places: NavFeed::new(),
+            bar: None,
             right_flap: Self::detail_drawer(),
             chrome: Chrome::default(),
             layout_text_scale: 1.0,
             me: LocalIdentity::demo(),
             room_names: HashMap::new(),
+            room_persons: HashMap::new(),
             room_voice: HashMap::new(),
             room_labels: ui::presence::ParticipantLabels::default(),
             own_label: None,
             room_colors: HashMap::new(),
             room_agents: Vec::new(),
-            agent_channels: HashMap::new(),
             capture_agent_presence: None,
-            direct_agent: None,
             direct_person: None,
             person_subscription: None,
             person_contacts: Vec::new(),
             person_messages: Vec::new(),
             person_error: None,
+            person_opening: None,
+            person_abandoned: Vec::new(),
+            person_sending: None,
             person_body_views: HashMap::new(),
-            agent_intents: ui::LocalState::new(HashMap::new()),
-            agent_tasks: AgentTaskClient::new(),
             motion_reduced: false,
             agent_surfaces: HashMap::new(),
             agent_surface_requests: VecDeque::new(),
@@ -1155,6 +763,7 @@ impl ChatApp {
             conversation_return_requested: false,
             agent_conversation_drag: None,
             agent_authors: HashMap::new(),
+            room_files: crate::record::RoomFiles::default(),
             body_views: std::cell::RefCell::new(HashMap::new()),
             body_text_inset: std::cell::Cell::new(0.0),
             mention_paint_cache: std::cell::RefCell::new(None),
@@ -1167,8 +776,13 @@ impl ChatApp {
             host_model: crate::host_model::HostModel::default(),
             expanded_reasoning: std::collections::HashSet::new(),
             dispatch: None,
+            read_asked: None,
+            read_refused: None,
             chain: None,
             chain_seen: None,
+            kept_messages: None,
+            kept_names: std::collections::BTreeMap::new(),
+            staged_start: None,
             staged_parts: std::collections::VecDeque::new(),
             staged_scenario: None,
             #[cfg(test)]
@@ -1184,27 +798,33 @@ impl ChatApp {
             #[cfg(test)]
             dispatched_parts: std::cell::RefCell::default(),
             images: ui::ImageStore::new(&crate::images::fetcher(content.clone())),
+            content_reads: ui::collaboration::record_content::ContentReads::new(content.clone()),
+            arriving_wake: std::cell::Cell::new(None),
             content,
             rect: Rect::ZERO,
             root_node: None,
             video_node: None,
             video,
+            laid_video: None,
             hits: Vec::new(),
             keyboard_target: None,
             last_mouse: Point::ZERO,
             call_hovered: None,
-            tooltips: TooltipHost::new(),
             relayout: false,
             flap_animating: false,
             announce: None,
-            mention_alerts: None,
+            drafts_record: None,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
             call_pictures: ui::call_pictures::CallPictures::new(),
             picture_tiles: std::cell::RefCell::new(Vec::new()),
+            painted_messages: HashMap::new(),
+            timeline: std::cell::RefCell::default(),
+            messages_revision: 0,
             camera_on_live: false,
             media_error: None,
             canonical_dirty: true,
+            paint_damage: ui::widget::paint_damage::PaintDamage::default(),
             synced: None,
             host_focused: true,
             external_services: true,
@@ -1235,6 +855,22 @@ impl ChatApp {
         self.perms.can_participate()
     }
 
+    /// Whether the local peer keeps the room's layout: makes, renames,
+    /// moves, archives and deletes its channels and categories. A member
+    /// who may not is not offered it.
+    pub(crate) fn keeps_layout(&self) -> bool {
+        self.perms.can_moderate()
+    }
+
+    /// `items` as the local peer may use them: a member still collapses a
+    /// category, and the rest of the layout is kept by those who keep it.
+    pub(crate) fn layout_menu(&self, mut items: Vec<MenuAction>) -> Vec<MenuAction> {
+        if !self.keeps_layout() {
+            items.retain(|action| *action == MenuAction::ToggleCollapse);
+        }
+        items
+    }
+
     /// Whether the local peer may hydrate + render an attachment blob. An
     /// ungranted embed shows a locked card and never requests shared bytes.
     pub(crate) fn embed_allowed(&self, blob: &str) -> bool {
@@ -1247,108 +883,10 @@ impl ChatApp {
         crate::images::poster_key(blob).and_then(|key| self.images.get(&key))
     }
 
-    // --- action dispatch ----------------------------------------------------
-
-    /// Apply a verb or a field edit through the resource's dispatcher now:
-    /// the single document-mutation path of every on-screen affordance, the
-    /// same door the palette and agents use. The projection is reconciled
-    /// from the document on the next sync.
-    pub(crate) fn apply_now(
-        &self,
-        doc: &mut ui::widget::Edits<'_>,
-        submit: impl ui::framework::Submit<crate::resource::Chat>,
-    ) {
-        let Some(invoke) = self.dispatched(submit) else {
-            return;
-        };
-        if let Some(dispatch) = &self.dispatch {
-            // A refusal changes nothing; the dispatcher reports it.
-            let _ = dispatch.submit_now(doc, invoke);
-        }
-    }
-
-    /// applied after this pass: from a pass that only reads the document (a
-    /// frame's sync, a worker's answer). A refusal is reported by the
-    /// dispatcher.
-    pub(crate) fn submit(&self, submit: impl ui::framework::Submit<crate::resource::Chat>) {
-        let Some(invoke) = self.dispatched(submit) else {
-            return;
-        };
-        if let Some(dispatch) = &self.dispatch {
-            dispatch.submit(invoke);
-        }
-    }
-
-    /// `submit` as the invocation it is, noted for tests.
-    #[cfg_attr(
-        not(test),
-        allow(clippy::unused_self, reason = "a test also keeps what was submitted")
-    )]
-    fn dispatched(
-        &self,
-        submit: impl ui::framework::Submit<crate::resource::Chat>,
-    ) -> Option<ui::tilo_resource::Invoke<crate::resource::Chat>> {
-        let invoke = submit.into_invoke().ok()?;
-        #[cfg(test)]
-        if let Ok(action) = invoke.build(0) {
-            self.dispatched.borrow_mut().push(action.operation);
-        }
-        Some(invoke)
-    }
-
-    /// The last action an on-screen affordance applied.
-    #[cfg(test)]
-    pub(crate) fn last_dispatched(&self) -> Option<crate::record::ChatAction> {
-        self.dispatched.borrow().last().cloned()
-    }
-
-    /// Test-only: apply what this window submitted to `doc`, as the host
-    /// applies it after a pass.
-    #[cfg(test)]
-    pub(crate) fn land(&self, doc: &mut AutoCommit) {
-        if let Some(dispatch) = &self.dispatch {
-            ui::framework::testing::resolve(dispatch, doc).expect("submitted edits apply");
-        }
-        // What was submitted on the messages applies to their parts.
-        if let Some(chain) = &self.chain {
-            ui::framework::testing::resolve(&chain.dispatcher(), doc)
-                .expect("submitted edits apply");
-        }
-    }
-
-    /// Test-only: apply what this window asked the person to confirm (a
-    /// destructive verb), as the door does once they agree, and read the
-    /// record again.
-    #[cfg(test)]
-    pub(crate) fn confirm_asked(&mut self, doc: &mut AutoCommit) {
-        let Some(dispatch) = &self.dispatch else {
-            return;
-        };
-        let mut chat = ui::tilo_resource::Replica::<crate::resource::Chat>::from_doc(doc.clone())
-            .as_invoker(&self.me.id);
-        for action in dispatch.take_asked().expect("what was asked builds") {
-            chat.apply_action(&action)
-                .expect("a confirmed change applies");
-        }
-        *doc = chat.doc().clone();
-        if let Some(chain) = &self.chain {
-            chain
-                .confirm_asked()
-                .expect("a confirmed change of a message applies");
-        }
-        self.reload(doc);
-    }
-
-    /// Read and write the chat's messages through `chain` from now on.
-    pub(crate) fn attach_chain(&mut self, chain: ui::framework::Chain<crate::parts::ChatPart>) {
-        self.chain = Some(chain);
-        self.chain_seen = None;
-        self.reselect();
-    }
-
     /// Stage the messages a screenshot of `scenario` shows in the chat's
-    /// parts, each written by its author, once: a chain that holds messages
-    /// already is left as it is.
+    /// parts, once: the first part as the scenario starts it, then what is
+    /// done with its messages, each by its author. A chain that holds
+    /// messages already is left as it is.
     pub(crate) fn stage_parts(&mut self, scenario: Option<&str>) {
         let Some(chain) = &self.chain else {
             return;
@@ -1356,7 +894,9 @@ impl ChatApp {
         if chain.head().is_some() {
             return;
         }
-        self.staged_parts = crate::resource::part_scenario(scenario).into();
+        let (start, steps) = crate::resource::part_scenario(scenario);
+        self.staged_start = start;
+        self.staged_parts = steps.into();
         self.staged_scenario = scenario.map(str::to_owned);
         self.flush_staged_parts();
     }
@@ -1368,6 +908,13 @@ impl ChatApp {
             return;
         };
         let mut staged = false;
+        if chain.takes_changes()
+            && let Some(start) = self.staged_start.take()
+        {
+            // Missing messages show in the picture's comparison.
+            let _ = chain.write_start(0, &start);
+            staged = true;
+        }
         while chain.takes_changes()
             && let Some((author, invoke)) = self.staged_parts.pop_front()
         {
@@ -1395,6 +942,30 @@ impl ChatApp {
             .as_ref()
             .map(|chain| crate::messages::Messages::new(chain.parts()))
             .unwrap_or_default()
+            .with_kept(
+                self.kept_messages
+                    .as_ref()
+                    .map(|(_, kept)| kept.clone())
+                    .unwrap_or_default(),
+            )
+    }
+
+    /// Read the messages the chat record `doc` kept in itself, unless they
+    /// were read from the same object already.
+    fn read_kept_messages(&mut self, doc: &AutoCommit) {
+        let holding = ui::tilo_resource::evolution::map_at(doc, &automerge::ROOT, "messages")
+            .ok()
+            .flatten();
+        if self.kept_messages.as_ref().map(|(id, _)| id) == holding.as_ref() {
+            return;
+        }
+        self.kept_names = if holding.is_some() {
+            crate::record::kept_names(doc)
+        } else {
+            std::collections::BTreeMap::new()
+        };
+        self.kept_messages =
+            holding.map(|id| (id, std::rc::Rc::new(crate::record::kept_messages(doc))));
     }
 
     /// Apply a verb on the chat's messages now, through the chain's door:
@@ -1427,6 +998,7 @@ impl ChatApp {
         if let Ok(action) = invoke.build(0) {
             self.dispatched_parts.borrow_mut().push(action.operation);
         }
+        self.deleted.take();
         chain
             .dispatcher()
             .submit_now(doc, invoke)
@@ -1446,6 +1018,7 @@ impl ChatApp {
         if let Ok(action) = invoke.build(0) {
             self.dispatched_parts.borrow_mut().push(action.operation);
         }
+        self.deleted.take();
         chain.dispatcher().submit(invoke);
     }
 
@@ -1466,7 +1039,10 @@ impl ChatApp {
     ) -> Self {
         if let Some(record) = record {
             self.composer_main.attach_drafts(record.clone());
-            self.composer_thread.attach_drafts(record);
+            self.composer_thread.attach_drafts(record.clone());
+            // The sidebar shows where the unsent words are, so it holds the
+            // record too.
+            self.drafts_record = Some(record);
         }
         self
     }
@@ -1504,692 +1080,74 @@ impl ChatApp {
         self.canonical_dirty = true;
     }
 
-    /// Build the reaction action a click on `msg`/`emoji` should dispatch,
-    /// deciding add-vs-remove from the currently-loaded state at authoring time.
-    /// A toggle is a presentation decision; the resulting action is a pure,
-    /// idempotent add or remove — the single source of truth both the reaction
-    /// chip and the emoji picker resolve to.
+    /// React to `msg` with `emoji`, or take the reaction back: on a filed
+    /// report's message the edit is the report's own reactions field in the
+    /// chat record, which is where its message is read from; on any other
+    /// message it is [`Self::reaction_toggle_action`] on the message's part.
+    pub(crate) fn toggle_reaction(&self, doc: &mut ui::widget::Edits<'_>, msg: &str, emoji: &str) {
+        let report = crate::feedback::report_of_message(msg)
+            .filter(|report| self.reports.iter().any(|(id, _)| id.as_str() == *report));
+        let Some(report) = report else {
+            self.apply_part(doc, self.reaction_toggle_action(msg, emoji));
+            return;
+        };
+        let reacting = self.message(msg).is_some_and(|m| {
+            m.reactions
+                .iter()
+                .any(|r| r.emoji == emoji && r.includes(&self.me.id))
+        });
+        let reactions = crate::resource::Chat::paths()
+            .feedback
+            .item(&ui::tilo_resource::Id::from_raw(report))
+            .reactions;
+        self.apply_now(
+            doc,
+            if reacting {
+                reactions.unreact(emoji)
+            } else {
+                reactions.react(emoji)
+            },
+        );
+    }
+
+    /// Build the reaction a click on `msg`/`emoji` should dispatch, deciding
+    /// add-vs-remove from the currently-loaded state at authoring time. A
+    /// toggle is a presentation decision; the result is the framework's
+    /// idempotent `react` or `unreact` field edit of the message — the single
+    /// source of truth both the reaction pill and the emoji picker resolve to.
     pub(crate) fn reaction_toggle_action(
         &self,
         msg: &str,
         emoji: &str,
-    ) -> ui::tilo_resource::Invoke<crate::parts::ChatPart> {
-        use crate::messages::chat_part;
+    ) -> ui::tilo_resource::Edit<crate::parts::ChatPart> {
         use crate::parts::ChatPart;
         let reacting = self.message(msg).is_some_and(|m| {
             m.reactions
                 .iter()
-                .any(|r| r.emoji == emoji && r.reacted_by(&self.me.id))
+                .any(|r| r.emoji == emoji && r.includes(&self.me.id))
         });
-        let message = ui::tilo_resource::Id::from_raw(msg);
-        let emoji = emoji.to_owned();
-        if reacting {
-            ChatPart::UNREACT.with(chat_part::Unreact { message, emoji })
-        } else {
-            ChatPart::REACT.with(chat_part::React { message, emoji })
-        }
-    }
-
-    /// Stage the view state of screenshot `scenario` over the record its
-    /// actions wrote, once the frame is laid out. The demo scenarios read the
-    /// design-crit conversation; the default is an ordinary reading frame, and
-    /// collaboration states are explicit so a capture does not teach a
-    /// floating call as Chat's resting state.
-    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
-        if scenario != "starter" {
-            self.active_channel = "c_crit".into();
-            // The demo conversation is read by its own person: what they
-            // wrote is the reader's.
-            if !self.is_me(crate::model::ME) {
-                self.former_ids.push(crate::model::ME.into());
-            }
-        }
-        self.sharing_context = scenario == "live-context";
-        self.stage_view(scenario);
-        self.reselect();
-        self.request_relayout();
-        self.stage_floating_call(scenario);
-    }
-
-    /// The panels, menus and call state of `scenario`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the screenshot scenario dispatcher keeps each named visual contract explicit and adjacent"
-    )]
-    pub(crate) fn stage_view(&mut self, scenario: &str) {
-        match scenario {
-            "narrow" => {
-                // Overlay-collapsed conversation: both flaps closed, no thread,
-                // no floating call — the clean single-column reading state.
-                self.left_flap.snap(false);
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call = CallState::default();
-            }
-            "history" => {
-                // A reader deliberately looking above the newest message. This
-                // is the visual-review state for the local live-edge return
-                // affordance; no synthetic message or read receipt is made.
-                self.thread_open = None;
-                self.right_flap.snap(false);
-                self.call = CallState::default();
-                self.scroll = 220.0;
-                self.timeline_at_end = false;
-            }
-            "compact" => {
-                // Medium window: docked channel list, conversation reflowed,
-                // members/thread summoned on demand (not forced open), no call.
-                self.thread_open = None;
-                self.right_flap.snap(false);
-                self.call = CallState::default();
-            }
-            "people" => {
-                self.thread_open = None;
-                self.right_flap.snap(true);
-                self.call = CallState::default();
-            }
-            "namesakes" => {
-                // Two people in the room go by one name: everyone sees them
-                // numbered alike, in the timeline and the people list.
-                let mut presence = PresenceCtx::empty();
-                presence.set_self_participant(
-                    ui::permissions::UserId(self.me.id.clone()),
-                    self.me.name.clone(),
-                );
-                for (id, name) in [
-                    ("u_aria", "Aria Chen"),
-                    ("u_sora", "aria chen"),
-                    ("u_milo", "Milo Park"),
-                    ("u_devon", "Devon Reyes"),
-                    ("u_iris", "Iris Wolfe"),
-                ] {
-                    presence.set_display_name(ui::permissions::UserId(id.into()), name);
-                }
-                self.capture_agent_presence = Some(presence);
-                self.thread_open = None;
-                self.right_flap.snap(true);
-                self.call = CallState::default();
-            }
-            "agent-task"
-            | "agent-task-compact"
-            | "agent-task-queued"
-            | "agent-task-queued-compact" => {
-                let mut presence = PresenceCtx::empty();
-                let agent = ui::permissions::UserId("agent:scribe".into());
-                presence.set_display_name(agent.clone(), "Scribe");
-                presence.set_participant_kind(agent, ui::presence::ParticipantKind::Agent);
-                self.capture_agent_presence = Some(presence);
-                self.room_agents = vec!["scribe".into()];
-                self.room_names.insert("scribe".into(), "Scribe".into());
-                if scenario.starts_with("agent-task-queued") {
-                    self.agent_tasks
-                        .stage_queued_capture(crate::app::ROOM_SCOPE, "scribe");
-                } else {
-                    self.agent_tasks
-                        .stage_capture(crate::app::ROOM_SCOPE, "scribe");
-                }
-                self.open_agent_conversation("scribe");
-                self.set_direct_agent_intent(AgentComposerIntent::Steer);
-                self.left_flap.snap(false);
-                self.right_flap.snap(false);
-                self.call = CallState::default();
-            }
-            "agent-streaming" | "agent-failed" | "agent-reasoning" | "agent-long-thread" => {
-                if matches!(scenario, "agent-reasoning" | "agent-long-thread") {
-                    self.expanded_reasoning.insert("shot_agent_stream".into());
-                }
-                self.thread_open =
-                    (scenario == "agent-long-thread").then(|| "shot_agent_stream".into());
-                self.right_flap.snap(scenario == "agent-long-thread");
-                self.call = CallState::default();
-            }
-            "agent-work" => {
-                self.thread_open = Some("m_agent_request".into());
-                self.right_flap.snap(true);
-                self.call = CallState::default();
-            }
-            "thread-narrow" => {
-                self.thread_open = Some("m_concept".into());
-                self.right_flap.snap(true);
-                self.call = CallState::default();
-            }
-            "collaboration" => {
-                self.thread_open = Some("m_concept".into());
-                self.right_flap.open();
-                self.call.join("c_huddle");
-                self.stage_connected_call();
-                // Two people in the room's call beside this one, so the
-                // sidebar shows them under the voice channel.
-                self.native_voice.snapshot.rosters = vec![ui::native_media::Roster {
-                    channel_id: "c_huddle".into(),
-                    people: vec!["u_aria".to_owned(), "u_milo".to_owned()],
-                    ..Default::default()
-                }];
-                self.refresh_native_streams();
-            }
-            "lounge" | "lounge-call" | "lounge-video" | "lounge-share" => {
-                // A shared room with people in its voice channels: this
-                // person in the Design Huddle with their microphone on, three
-                // others beside them and two in the standup, as the room's
-                // call rosters report them before anyone opens a call.
-                self.thread_open = None;
-                self.call.join("c_huddle");
-                self.call.muted = false;
-                self.call.expanded = scenario != "lounge";
-                self.right_flap.snap(false);
-                self.stage_connected_call();
-                let me = self.me.id.clone();
-                let mut huddle = vec![
-                    me,
-                    "u_aria".to_owned(),
-                    "u_milo".to_owned(),
-                    "u_sora".to_owned(),
-                ];
-                if scenario != "lounge" {
-                    huddle.push("u_devon".to_owned());
-                }
-                // Cameras on, and Sora sharing her screen, as the room says.
-                let video = scenario != "lounge" && scenario != "lounge-call";
-                let cameras: Vec<String> = if video {
-                    vec![
-                        "u_aria".to_owned(),
-                        "u_devon".to_owned(),
-                        "u_milo".to_owned(),
-                    ]
-                } else {
-                    Vec::new()
-                };
-                let screens: Vec<String> = if scenario == "lounge-share" {
-                    vec!["u_sora".to_owned()]
-                } else {
-                    Vec::new()
-                };
-                self.native_voice.snapshot.rosters = vec![
-                    ui::native_media::Roster {
-                        channel_id: "c_huddle".into(),
-                        people: huddle,
-                        cameras: cameras.clone(),
-                        screens: screens.clone(),
-                    },
-                    ui::native_media::Roster {
-                        channel_id: "c_standup".into(),
-                        people: if scenario == "lounge" {
-                            vec!["u_devon".to_owned(), "u_iris".to_owned()]
-                        } else {
-                            Vec::new()
-                        },
-                        ..Default::default()
-                    },
-                ];
-                // Aria is talking: her face rings wherever it shows.
-                self.native_voice.snapshot.speaking = vec!["u_aria".to_owned()];
-                self.refresh_native_streams();
-                // Their pictures: a moving test picture each, coded and
-                // decoded exactly as a call's pictures are, so the tiles show
-                // real decoded frames.
-                for (variant, person) in (0_u8..).zip(&cameras) {
-                    self.call_pictures.feed_test_pattern(
-                        person,
-                        ui::native_media::PictureSource::Camera,
-                        (640, 360),
-                        variant,
-                    );
-                }
-                for person in &screens {
-                    self.call_pictures.feed_test_pattern(
-                        person,
-                        ui::native_media::PictureSource::Screen,
-                        (1280, 720),
-                        3,
-                    );
-                }
-                self.refresh_native_streams();
-            }
-            "starter" => {
-                // The real first-run room: `#chat` and `#voice`, no demo content.
-                self.thread_open = None;
-                self.call = CallState::default();
-            }
-            "context" => {
-                self.menu = Some(self.context_menu(
-                    MenuTarget::Channel("c_frontend".into()),
-                    Point::new(240.0, 230.0),
-                    MenuAction::for_channel().to_vec(),
-                ));
-            }
-            "call" => {
-                // The expanded full-window call overlay against the demo
-                // huddle (host + three remotes), so the tile grid and the
-                // wrapped controls bar can be captured headless at any width.
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call.join("c_huddle");
-                self.call.expanded = true;
-                self.stage_connected_call();
-            }
-            "floating-call-attached"
-            | "floating-call"
-            | "floating-call-hover"
-            | "floating-call-returning"
-            | "floating-call-returned" => {
-                // The after-layout shot hook stages the production ownership
-                // edge once app-local coordinates are authoritative. All
-                // three frames use the real live huddle renderer.
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call.join("c_huddle");
-                self.call.expanded = false;
-                self.stage_connected_call();
-            }
-            "share" => {
-                // The expanded call while screen-sharing: the featured screen
-                // tile fills the stage above the participant filmstrip, and the
-                // controls bar shows the active "Stop share". Local share is
-                // staged directly (the same `call.sharing` flag the real toggle
-                // sets on a portal grant) so the presentation layout renders
-                // headless without a portal or capture device.
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call.join("c_huddle");
-                self.call.expanded = true;
-                self.call.sharing = true;
-                self.stage_connected_call();
-            }
-            "attach" => {
-                // Show the workspace file picker with real, decodable
-                // thumbnails (the demo scheme drives the same decode path as
-                // a stored image). Ephemeral shot only.
-                self.thread_open = None;
-                self.right_flap.snap(false);
-                self.call = CallState::default();
-                self.attach_entries = vec![
-                    crate::picker::PickEntry {
-                        path: crate::images::DEMO_CALL_GRID.into(),
-                        name: "call-overlay-v3.png".into(),
-                        size: 84_992,
-                        is_video: false,
-                    },
-                    crate::picker::PickEntry {
-                        path: crate::images::DEMO_SHARED_SHOT.into(),
-                        name: "design-handoff.png".into(),
-                        size: 132_480,
-                        is_video: false,
-                    },
-                ];
-                self.attach_open = true;
-            }
-            "attach-loading" => {
-                self.stage_view("attach");
-                // This mirrors the actual asynchronous picker state rather
-                // than a hand-painted status string: no entries are usable
-                // until the worker's generation-checked reply settles.
-                self.attach_entries.clear();
-                self.attachment_picker_pending = Some(0);
-                self.attachment_status = Some("Loading attachments…".into());
-            }
-            "attach-upload" => {
-                // A browser page, where the files to share are the person's
-                // own: the chooser has answered and the upload is under way.
-                self.thread_open = None;
-                self.right_flap.snap(false);
-                self.call = CallState::default();
-                self.external_services = false;
-                self.attachment_status = Some("Uploading quarterly-plan.pdf…".into());
-            }
-            "attach-error" => {
-                self.stage_view("attach");
-                self.attachment_status =
-                    Some("Not shared: the file is no longer there; choose it again".into());
-            }
-            "edit" => {
-                // The inline message editor open on your own last message,
-                // with an earlier message still carrying the static "(edited)"
-                // marker — the whole edit story in one frame. Ephemeral shot
-                // only: at seed time the messages aren't loaded yet, so the
-                // working text is staged directly in the same shared input the
-                // live Edit action uses.
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call = CallState::default();
-                let text = "That's the one. Starting a huddle to walk through the grid — jump in. Moving it to 3pm so the west-coast folks can make it.";
-                self.edit_input.set_text(text);
-                self.editing = Some("m_me2".into());
-                self.focus = Focus::Main;
-                self.set_composer_focus();
-            }
-            "channels" => {
-                // The sidebar at rest: unread channels, a mention waiting in
-                // another one, and people talking in a voice channel.
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call = CallState::default();
-                // Three people in the stand-up's call, as their presence
-                // says.
-                let mut presence = PresenceCtx::empty();
-                let standup = Self::voice_presence_key("c_standup");
-                for person in ["u_aria", "u_milo", "u_sora"] {
-                    presence.set_caret(&standup, ui::permissions::UserId(person.into()), 0);
-                }
-                self.capture_agent_presence = Some(presence);
-            }
-            "mention" => {
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call = CallState::default();
-                self.focus = Focus::Main;
-                self.set_composer_focus();
-            }
-            "new-channel" => {
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call = CallState::default();
-                let mut sheet = crate::channel_sheet::ChannelSheet::new_channel(
-                    "cat_acme_main",
-                    model::ChannelKind::Text,
-                );
-                sheet.fill("Release Notes", "Changelogs and launch dates");
-                self.open_channel_sheet(sheet);
-            }
-            "composer" => {
-                // The composer mid-compose: a multi-line draft with the caret,
-                // so the shared TextInput's text + caret + focus ring can be
-                // graded. Thread/call closed to keep the composer prominent.
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call = CallState::default();
-                self.focus = Focus::Main;
-                // The draft itself is the scenario's (`ChatShell::scenario`).
-            }
-            "emoji" => {
-                // The reaction picker over your own last message.
-                self.thread_open = None;
-                self.right_flap.snap(false);
-                self.call = CallState::default();
-                self.emoji_open = true;
-                self.emoji_target = Some("m_me2".into());
-                self.emoji_anchor = Point::new(560.0, 300.0);
-            }
-            "edit-history" => {
-                // Every version of an edited message.
-                self.thread_open = None;
-                self.right_flap.snap(false);
-                self.call = CallState::default();
-                self.history_open = Some("m_sora".into());
-                self.history_anchor = Point::new(424.0, 420.0);
-            }
-            "msgmenu" => {
-                // The right-click action menu over one of your own messages,
-                // offering Edit — the discoverable entry point to editing.
-                self.right_flap.snap(false);
-                self.thread_open = None;
-                self.call = CallState::default();
-                self.menu = Some(self.context_menu(
-                    MenuTarget::Message("m_me2".into()),
-                    Point::new(360.0, 300.0),
-                    MenuAction::for_message().to_vec(),
-                ));
-            }
-            _ => {
-                self.thread_open = None;
-                self.right_flap.snap(false);
-                self.call = CallState::default();
-            }
-        }
-    }
-
-    /// Show the call as the voice service reports a joined call: connected,
-    /// with nobody else's audio arriving yet.
-    fn stage_connected_call(&mut self) {
-        self.native_voice.channel = Some(self.call.channel.clone());
-        self.native_voice.snapshot.state = ui::native_media::State::Live;
-        self.native_voice.snapshot.issue = None;
-        self.native_voice.snapshot.muted = self.call.muted;
-    }
-
-    #[doc(hidden)]
-    pub(crate) fn stage_floating_call(&mut self, scenario: &str) {
-        if !scenario.starts_with("floating-call") {
-            return;
-        }
-
-        if scenario == "floating-call-attached" {
-            self.call.placement.pin_handoff_for_visual_review(1_000);
-            return;
-        }
-
-        // A live drag seeds `preferred_size` from the current call tile before
-        // crossing the app edge. Derive this staged desktop rect the same way;
-        // hard-coding a different size would manufacture a return-time resize
-        // that the production pointer path never performs.
-        let detached_size = self.call_video_rect().size();
-        self.call.placement.set_preferred_size(detached_size);
-        // Out over the desktop at the window's trailing side, whole at any
-        // window size.
-        let r = self.rect;
-        let detached = Rect::from_origin_size(
-            Point::new(
-                (r.x0 + r.width() * 0.6).min(r.x1 - detached_size.width - self.chrome.gutter),
-                r.y0 + r.height() * 0.375,
-            ),
-            detached_size,
-        );
-        self.call.placement.detach_to_desktop(detached);
-        self.call.placement.set_desktop_transfer_covered(true);
-        self.call.placement.confirm_desktop_adoption();
-
-        if scenario == "floating-call-hover" {
-            self.call_hovered = Some(Hit::CallLeave);
-        }
-
-        if let Some(permille) = scenario
-            .strip_prefix("floating-call-collapse-")
-            .and_then(|value| value.parse::<u16>().ok())
-        {
-            self.call.participants_expanded = false;
-            self.call_chrome_motion
-                .pin_for_visual_review(1.0 - f32::from(permille.min(1_000)) / 1_000.0);
-        }
-
-        if matches!(
-            scenario,
-            "floating-call-returning" | "floating-call-returned"
-        ) {
-            // Grabbed by its title bar and drawn back up and in, over the
-            // conversation.
-            let pointer = Point::new(
-                detached.center().x,
-                detached.y0 - self.chrome.call_title_h / 2.0,
-            );
-            self.call
-                .placement
-                .begin_drag(pointer, self.rect, self.desktop_floating_bounds());
-            let _ = self.call.placement.update_drag(
-                Point::new(r.x0 + r.width() * 0.5625, r.y0 + r.height() * 0.2625),
-                self.rect,
-                self.desktop_floating_bounds(),
-            );
-        }
-
-        if scenario == "floating-call-returned" {
-            let id = format!("chat-call:{}", self.call.channel);
-            <Self as FloatingSurfaceProvider>::on_floating_surface_host_message(
-                self,
-                &ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id },
-            );
-        }
-
-        // Make the screenshots on either side of shell ownership directly
-        // comparable: steady detached state is relaxed; both return frames
-        // show the same restrained midpoint deformation.
-        let handoff_phase = if matches!(
-            scenario,
-            "floating-call-returning" | "floating-call-returned"
-        ) {
-            500
-        } else {
-            1_000
-        };
-        self.call
-            .placement
-            .pin_handoff_for_visual_review(handoff_phase);
-    }
-
-    fn conversation_accessibility(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, Role};
-
-        if let Some(peer) = &self.direct_person {
-            let rows = self
-                .person_messages
-                .iter()
-                .map(|message| {
-                    let author = if &message.author == peer {
-                        self.person_display_name(peer)
-                    } else {
-                        self.me.name.clone()
-                    };
-                    AccessNode::new(Role::ListItem)
-                        .with_name(format!("{author}: {}", message.text))
-                        .with_hashed_key((&self.active_channel, &message.id, "private-message"))
-                })
-                .collect();
-            return AccessNode::new(Role::List)
-                .with_name(crate::i18n::t("chat-person-chat-private"))
-                .with_children(rows)
-                .with_hashed_key(("private-message-list", &self.active_channel));
-        }
-        let conversation = self
+        let reactions = ChatPart::paths()
             .messages
-            .iter()
-            .filter(|message| {
-                if self.thread_is_page() {
-                    Some(&message.id) == self.thread_open.as_ref()
-                        || message.parent.as_ref() == self.thread_open.as_ref()
-                } else {
-                    message.parent.is_none() || message.parent.as_ref() == self.thread_open.as_ref()
-                }
-            })
-            .map(|message| {
-                let node = AccessNode::new(Role::ListItem)
-                    .with_name(self.model_message_label(message))
-                    .with_hashed_key((&message.id, "message"));
-                if let Some(work) = &message.work {
-                    node.with_description(crate::render_chat::agent_work_accessible_description(
-                        work,
-                    ))
-                } else {
-                    node
-                }
-            })
-            .collect();
-        AccessNode::new(Role::List)
-            .with_name("Messages")
-            .with_children(conversation)
-            .with_hashed_key("message-list")
+            .item(&ui::tilo_resource::Id::from_raw(msg))
+            .reactions;
+        if reacting {
+            reactions.unreact(emoji)
+        } else {
+            reactions.react(emoji)
+        }
+    }
+
+    /// Where a message's header and body were last painted, if they were.
+    fn message_rect(&self, id: &str) -> Option<Rect> {
+        self.hits.iter().find_map(|(rect, hit)| match hit {
+            Hit::MessageMenu { msg } if msg.as_str() == id => Some(*rect),
+            _ => None,
+        })
     }
 
     // --- model lookups ----------------------------------------------------
-    #[cfg(test)]
     pub(crate) fn user(&self, id: &str) -> Option<&User> {
         self.users.iter().find(|u| u.id == id)
-    }
-
-    /// Take the room's view of the participants off the presence store.
-    ///
-    /// Called once per frame from `draw`. The presence store's participant
-    /// kinds come from the host's certified People projection; Chat never
-    /// infers Agent identity from a payload kind, display name or id prefix.
-    /// Names and colours remain presentation metadata and grant no authority.
-    ///
-    /// The room's answer **replaces** what was held rather than merging into
-    /// it. Merging is how a peer who has gone keeps a name and a colour on
-    /// everyone else's screen for the rest of the session: presence forgets
-    /// them on leave, and anything downstream that only ever learned would go
-    /// on offering a departed participant in the `@` picker and painting their
-    /// colour behind a mention.
-    pub fn adopt_room(&mut self, presence: &PresenceCtx) {
-        self.person_contacts = ui::person_chat::contacts();
-        self.adopt_own_participant(presence);
-        self.room_voice = self
-            .channels
-            .iter()
-            .filter(|channel| channel.kind == model::ChannelKind::Voice)
-            .filter_map(|channel| {
-                let key = Self::voice_presence_key(&channel.id);
-                let people: Vec<Id> = presence
-                    .carets
-                    .get(&key)
-                    .into_iter()
-                    .flatten()
-                    .map(|(user, _)| user.0.clone())
-                    .collect();
-                (!people.is_empty()).then(|| (channel.id.clone(), people))
-            })
-            .collect();
-        self.room_agents = presence
-            .names
-            .keys()
-            .filter(|id| presence.participant_kind(id) == ui::presence::ParticipantKind::Agent)
-            .map(|id| {
-                id.0.strip_prefix("agent:")
-                    .unwrap_or(id.0.as_str())
-                    .to_owned()
-            })
-            .collect();
-        self.room_agents.sort();
-        self.room_agents.dedup();
-        if self
-            .direct_agent
-            .as_ref()
-            .is_some_and(|agent| !self.room_agents.contains(agent))
-            && !self.conversation_surface
-        {
-            self.leave_floated_agent_route();
-        }
-        self.room_names.retain(|id, _| {
-            presence
-                .names
-                .contains_key(&ui::permissions::UserId(id.clone()))
-        });
-        self.room_colors.retain(|id, _| {
-            presence
-                .names
-                .contains_key(&ui::permissions::UserId(id.clone()))
-        });
-        for (id, name) in &presence.names {
-            let name = name.trim();
-            if name.is_empty() {
-                continue;
-            }
-            self.room_names.insert(id.0.clone(), name.to_string());
-            // A colour is the same kind of answer: assigned per room so two
-            // people never collide, and shared with the caret pill and cursor.
-            self.room_colors
-                .insert(id.0.clone(), presence.color_for(id));
-        }
-    }
-
-    /// Take the room's answer to "which of these participants am I".
-    ///
-    /// This window signs what it writes with the id its host gave it, the
-    /// author every action of its person carries. A room that spells the
-    /// same participant differently names them too: lines recorded under
-    /// that spelling are still this person's, so their name stays beside
-    /// them.
-    fn adopt_own_participant(&mut self, presence: &PresenceCtx) {
-        self.room_labels.clone_from(presence.labels());
-        self.own_label = presence.self_label();
-        if let Some(room_id) = presence.self_id()
-            && room_id.0 != self.me.id
-            && !self.former_ids.contains(&room_id.0)
-        {
-            self.former_ids.push(room_id.0.clone());
-        }
-        if let Some(name) = presence.self_name()
-            && name != self.me.name
-        {
-            self.me.name = name.to_string();
-            self.me.initials = crate::identity::initials_for(name);
-        }
     }
 
     /// Whether `id` is this session's own participant, under its own id or
@@ -2207,402 +1165,6 @@ impl ChatApp {
             .unwrap_or_else(|| crate::i18n::t("chat-agent-kind"))
     }
 
-    pub(crate) fn open_agent_conversation(&mut self, agent: &str) -> bool {
-        if !self.room_agents.iter().any(|known| known == agent) {
-            return false;
-        }
-        self.close_person_conversation();
-        self.direct_agent = Some(agent.to_owned());
-        // The conversation the record already holds keeps its id; only a
-        // new one is addressed by the room and the agent.
-        self.active_channel = self
-            .agent_channels
-            .get(agent)
-            .cloned()
-            .unwrap_or_else(|| crate::record::agent_conversation_channel_id(agent).to_string());
-        self.thread_open = None;
-        self.focus = Focus::Main;
-        self.agent_tasks.observe(crate::app::ROOM_SCOPE, agent);
-        self.sync_agent_route();
-        self.scroll = 0.0;
-        let channel = self.active_channel.clone();
-        self.restore_attached_agent_surface(&channel);
-        self.request_relayout();
-        true
-    }
-
-    pub(crate) fn conversation_instance(parent: &Self, agent: &str) -> Self {
-        let mut view = Self::bare(parent.content.clone());
-        view.channels.clone_from(&parent.channels);
-        view.categories.clone_from(&parent.categories);
-        view.users.clone_from(&parent.users);
-        view.messages.clone_from(&parent.messages);
-        view.search_messages.clone_from(&parent.search_messages);
-        view.search_users.clone_from(&parent.search_users);
-        view.voice_members.clone_from(&parent.voice_members);
-        view.me = parent.me.clone();
-        view.perms = parent.perms.clone();
-        view.room_names.clone_from(&parent.room_names);
-        view.room_labels.clone_from(&parent.room_labels);
-        view.own_label.clone_from(&parent.own_label);
-        view.room_colors.clone_from(&parent.room_colors);
-        view.room_agents.clone_from(&parent.room_agents);
-        view.agent_channels.clone_from(&parent.agent_channels);
-        view.capture_agent_presence
-            .clone_from(&parent.capture_agent_presence);
-        view.agent_authors.clone_from(&parent.agent_authors);
-        view.former_ids.clone_from(&parent.former_ids);
-        view.direct_agent.clone_from(&parent.direct_agent);
-        view.person_subscription = parent.person_subscription;
-        view.direct_person = parent
-            .direct_person
-            .as_ref()
-            .filter(|peer| {
-                parent
-                    .person_subscription
-                    .is_some_and(|token| ui::person_chat::retain_current(peer, token))
-            })
-            .cloned();
-        view.person_contacts.clone_from(&parent.person_contacts);
-        view.person_messages.clone_from(&parent.person_messages);
-        view.person_error.clone_from(&parent.person_error);
-        view.active_channel.clone_from(&parent.active_channel);
-        view.agent_intents = parent.agent_intents.clone();
-        if view.direct_agent.is_some() {
-            view.agent_tasks.observe(crate::app::ROOM_SCOPE, agent);
-        }
-        view.conversation_surface = true;
-        view.thread_open = None;
-        view.left_flap.snap(false);
-        view.right_flap.snap(false);
-        view.external_services = parent.external_services;
-        if let Some(dispatcher) = parent.dispatch.clone() {
-            view.attach_framework(dispatcher);
-        }
-        if let Some(chain) = parent.chain.clone() {
-            view.attach_chain(chain);
-        }
-        view
-    }
-
-    pub(crate) fn float_agent_conversation(&mut self) -> bool {
-        let Some(agent) = self
-            .direct_agent
-            .clone()
-            .or_else(|| self.direct_person.clone())
-        else {
-            return false;
-        };
-        let available = if self.direct_person.is_some() {
-            self.main_composer_can_edit()
-        } else {
-            self.direct_agent_is_available()
-        };
-        if !available || self.rect.area() <= 0.0 {
-            return false;
-        }
-        let channel = self.active_channel.clone();
-        if let Some(mut surface) = self.agent_surfaces.remove(&channel) {
-            if matches!(
-                surface.placement.attachment(),
-                ui::floating_surface::Attachment::App { .. }
-            ) {
-                surface.move_editor_to_view(self);
-                surface.placement.detach_to_desktop(surface.source);
-                self.agent_surface_requests.push_back(surface.request());
-            }
-            self.agent_surfaces.insert(channel, surface);
-            self.leave_floated_agent_route();
-            return true;
-        }
-        let mut surface =
-            crate::agent_conversation_surface::AgentConversationSurface::from_attached(
-                self, &agent,
-            );
-        surface.placement.detach_to_desktop(surface.source);
-        self.agent_surface_requests.push_back(surface.request());
-        self.agent_surfaces.insert(channel, surface);
-        self.leave_floated_agent_route();
-        true
-    }
-
-    pub(crate) fn leave_floated_agent_route(&mut self) {
-        let fallback = self
-            .channels
-            .iter()
-            .filter(|channel| {
-                !channel.archived
-                    && channel.kind == model::ChannelKind::Text
-                    && channel.conversation_with.is_none()
-            })
-            .min_by_key(|channel| channel.order)
-            .map(|channel| channel.id.clone());
-        self.direct_agent = None;
-        self.close_person_conversation();
-        self.thread_open = None;
-        if let Some(channel) = fallback {
-            self.active_channel = channel;
-            self.composer_main.set_key(&self.active_channel);
-        } else {
-            self.active_channel.clear();
-        }
-        self.focus = Focus::Main;
-        self.scroll = 0.0;
-        self.request_relayout();
-    }
-
-    pub(crate) fn begin_agent_conversation_drag(&mut self, origin: Point) {
-        let Some(agent) = self
-            .direct_agent
-            .clone()
-            .or_else(|| self.direct_person.clone())
-        else {
-            return;
-        };
-        self.agent_conversation_drag = Some(AgentConversationDrag {
-            agent,
-            channel: self.active_channel.clone(),
-            origin,
-        });
-    }
-
-    pub(crate) fn update_agent_conversation_drag(&mut self, pointer: Point) {
-        let Some(drag) = self.agent_conversation_drag.clone() else {
-            return;
-        };
-        let desktop = self.desktop_floating_bounds();
-        if let Some(surface) = self.agent_surfaces.get_mut(&drag.channel) {
-            let handoff = surface.placement.update_drag(pointer, self.rect, desktop);
-            if handoff == ui::floating_surface::Handoff::Detached {
-                self.agent_surface_requests.push_back(surface.request());
-            }
-            self.request_relayout();
-            return;
-        }
-        if !ui::floating_surface::FloatingPlacement::is_beyond_detach_boundary(pointer, self.rect) {
-            return;
-        }
-        let mut surface =
-            crate::agent_conversation_surface::AgentConversationSurface::from_attached(
-                self,
-                &drag.agent,
-            );
-        surface
-            .placement
-            .begin_drag(drag.origin, self.rect, desktop);
-        if surface.placement.update_drag(pointer, self.rect, desktop)
-            != ui::floating_surface::Handoff::Detached
-        {
-            surface.move_editor_to_parent(self);
-            return;
-        }
-        self.agent_surface_requests.push_back(surface.request());
-        self.agent_surfaces.insert(drag.channel, surface);
-        self.leave_floated_agent_route();
-        self.request_relayout();
-    }
-
-    pub(crate) fn end_agent_conversation_drag(&mut self) {
-        let Some(drag) = self.agent_conversation_drag.take() else {
-            return;
-        };
-        let desktop = self.desktop_floating_bounds();
-        if let Some(surface) = self.agent_surfaces.get_mut(&drag.channel) {
-            surface.placement.end_drag(desktop);
-        }
-    }
-
-    pub(crate) fn restore_attached_agent_surface(&mut self, channel: &str) {
-        let Some(mut surface) = self.agent_surfaces.remove(channel) else {
-            return;
-        };
-        let attached = matches!(
-            surface.placement.attachment(),
-            ui::floating_surface::Attachment::App { .. }
-        );
-        let route_is_active = self.active_channel == channel;
-        if attached && route_is_active {
-            surface.move_editor_to_parent(self);
-            self.set_composer_focus();
-        }
-        // A returned person view is now owned by the parent. Do not retain an
-        // invisible attached copy (and its subscription) after navigating away.
-        let person_returned = attached
-            && route_is_active
-            && matches!(
-                surface.conversation,
-                crate::composer::ConversationKey::Person { .. }
-            );
-        if (!surface.is_closed() || !route_is_active) && !person_returned {
-            self.agent_surfaces.insert(channel.to_owned(), surface);
-        }
-    }
-
-    fn restore_retained_agent_route(&mut self, channel: &str) {
-        if !self.agent_surfaces.contains_key(channel) {
-            return;
-        }
-        self.close_person_conversation();
-        let Some(surface) = self.agent_surfaces.get(channel) else {
-            return;
-        };
-        channel.clone_into(&mut self.active_channel);
-        self.direct_agent.clone_from(&surface.view.direct_agent);
-        self.person_subscription = surface.view.person_subscription;
-        self.direct_person = surface
-            .view
-            .direct_person
-            .as_ref()
-            .filter(|peer| {
-                surface
-                    .view
-                    .person_subscription
-                    .is_some_and(|token| ui::person_chat::retain_current(peer, token))
-            })
-            .cloned();
-        self.person_contacts
-            .clone_from(&surface.view.person_contacts);
-        self.person_messages
-            .clone_from(&surface.view.person_messages);
-        self.thread_open = None;
-        self.focus = Focus::Main;
-        self.scroll = 0.0;
-    }
-
-    fn settle_returned_agent_surface(&mut self, id: &str, closed: bool) {
-        let Some(channel) = self
-            .agent_surfaces
-            .iter()
-            .find_map(|(channel, surface)| (surface.id == id).then(|| channel.clone()))
-        else {
-            return;
-        };
-        if !closed {
-            self.restore_retained_agent_route(&channel);
-        }
-        if closed && let Some(surface) = self.agent_surfaces.get_mut(&channel) {
-            surface.close();
-        }
-        if self.focused_agent_surface.as_deref() == Some(id) {
-            self.focused_agent_surface = None;
-        }
-        if self.input_agent_surface.as_deref() == Some(id) {
-            self.input_agent_surface = None;
-        }
-        self.restore_attached_agent_surface(&channel);
-    }
-
-    pub(crate) fn settle_agent_surface_commands(&mut self) {
-        let requested = self
-            .agent_surfaces
-            .iter_mut()
-            .find_map(|(channel, surface)| {
-                std::mem::take(&mut surface.view.conversation_return_requested)
-                    .then(|| (channel.clone(), surface.id.clone()))
-            });
-        let Some((channel, id)) = requested else {
-            return;
-        };
-        if self
-            .agent_surfaces
-            .get(&channel)
-            .is_some_and(|surface| surface.id == id)
-            && let Some(surface) = self.agent_surfaces.get_mut(&channel)
-        {
-            surface.placement.request_app_return();
-        }
-    }
-
-    pub(crate) fn direct_agent_is_available(&self) -> bool {
-        self.direct_agent
-            .as_ref()
-            .is_some_and(|agent| self.room_agents.contains(agent))
-    }
-
-    pub(crate) fn direct_agent_intent(&self) -> AgentComposerIntent {
-        let Some(agent) = &self.direct_agent else {
-            return AgentComposerIntent::Queue;
-        };
-        self.agent_intents.with(|intents| {
-            intents
-                .get(&(crate::app::ROOM_SCOPE.to_owned(), agent.clone()))
-                .copied()
-                .unwrap_or_else(|| {
-                    if self
-                        .direct_agent_tasks()
-                        .and_then(AgentTaskView::current)
-                        .is_some_and(|task| task.active_agent.is_some())
-                    {
-                        AgentComposerIntent::Steer
-                    } else {
-                        AgentComposerIntent::Queue
-                    }
-                })
-        })
-    }
-
-    pub(crate) fn agent_draft_route(&self) -> Option<String> {
-        let agent = self.direct_agent.as_ref()?;
-        if self.direct_agent_intent() == AgentComposerIntent::Steer {
-            return self.direct_agent_tasks()?.draft_route();
-        }
-        Some(agent.clone())
-    }
-
-    pub(crate) fn sync_agent_route(&mut self) {
-        if let Some(route) = self.agent_draft_route() {
-            self.composer_main
-                .set_agent_draft(crate::app::ROOM_SCOPE, &route);
-            self.draft_main = self.composer_main.private_plain().unwrap_or_default();
-        }
-    }
-
-    fn settle_agent_drafts(&mut self) {
-        for (route, revision) in self.agent_tasks.take_cleared_drafts() {
-            self.composer_main
-                .clear_private_for_revision(crate::app::ROOM_SCOPE, &route, revision);
-            if self.agent_tasks.view(&route).is_some_and(|view| {
-                matches!(view.receipt, crate::agent_tasks::AgentTaskReceipt::Queued)
-            }) {
-                self.agent_intents.update(|intents| {
-                    _ = intents.insert(
-                        (crate::app::ROOM_SCOPE.to_owned(), route),
-                        AgentComposerIntent::Steer,
-                    );
-                });
-            }
-        }
-        self.sync_agent_route();
-    }
-
-    pub(crate) fn set_direct_agent_intent(&mut self, intent: AgentComposerIntent) {
-        let Some(agent) = self.direct_agent.clone() else {
-            return;
-        };
-        if self.direct_agent_intent_allowed(intent) {
-            self.agent_intents.update(|intents| {
-                _ = intents.insert((crate::app::ROOM_SCOPE.to_owned(), agent), intent);
-            });
-            self.sync_agent_route();
-        }
-    }
-
-    pub(crate) fn direct_agent_tasks(&self) -> Option<&AgentTaskView> {
-        self.agent_tasks.view(self.direct_agent.as_deref()?)
-    }
-
-    pub(crate) fn direct_agent_intent_allowed(&self, intent: AgentComposerIntent) -> bool {
-        if !self.direct_agent_is_available() {
-            return false;
-        }
-        match intent {
-            AgentComposerIntent::Queue => self.direct_agent_tasks().is_some(),
-            AgentComposerIntent::Steer => self
-                .direct_agent_tasks()
-                .is_some_and(AgentTaskView::can_steer),
-        }
-    }
-
     pub(crate) fn main_composer_can_edit(&self) -> bool {
         if let Some(peer) = &self.direct_person {
             return self
@@ -2611,176 +1173,7 @@ impl ChatApp {
                 .any(|contact| &contact.public_key == peer)
                 && self.person_error.is_none();
         }
-        self.direct_agent.as_ref().map_or_else(
-            || self.can_participate(),
-            |_| {
-                self.direct_agent_is_available()
-                    && (self.direct_agent_intent() == AgentComposerIntent::Queue
-                        || self
-                            .direct_agent_tasks()
-                            .and_then(AgentTaskView::selected_identity)
-                            .is_some_and(|(_, epoch)| epoch > 0))
-            },
-        )
-    }
-
-    /// What to call `id`: the room's answer first, the document's stored name
-    /// as an offline fallback, and the raw id last so a label is never blank.
-    /// People who share a name carry the number the room tells them apart
-    /// by ("Ada (2)"), this window's own person included.
-    ///
-    /// The precedence is the point. A client that could name itself would be
-    /// telling every other peer what to call it, and two peers disagreeing
-    /// about a third's name is a difference nobody can settle. So the room
-    /// answers, and a peer only ever supplies its id.
-    pub fn display_name(&self, id: &str) -> String {
-        if let Some(agent) = id.strip_prefix("agent:")
-            && self.room_agents.iter().any(|known| known == agent)
-        {
-            return self.agent_display_name(agent);
-        }
-        if self.is_me(id)
-            && let Some(own) = &self.own_label
-        {
-            return own.clone();
-        }
-        if let Some(n) = self.room_names.get(id)
-            && !n.trim().is_empty()
-        {
-            let n = self.room_labels.label(id, n);
-            return if self.is_me(id) {
-                n
-            } else {
-                crate::identity::shared_name_label(id, &n)
-            };
-        }
-        if let Some(agent) = self.agent_authors.get(id) {
-            return agent.clone();
-        }
-        if let Some(u) = self.users.iter().find(|u| u.id == id)
-            && !u.name.trim().is_empty()
-        {
-            let name = self.room_labels.label(id, &u.name);
-            return if self.is_me(id) {
-                name
-            } else {
-                crate::identity::shared_name_label(id, &name)
-            };
-        }
-        // Your own name, which this had no way to reach until the room named
-        // it: `me` is not necessarily a row in `users`, which is built from
-        // the room document, and a room this peer has not spoken in has
-        // never heard of it.
-        if self.is_me(id) && !self.me.name.trim().is_empty() {
-            return self.me.name.clone();
-        }
-        id.to_string()
-    }
-
-    /// What to call `id` on screen: this session's own participant by their
-    /// name like anyone else, and an honest placeholder for someone the room
-    /// has not named yet — nobody is ever shown their raw routing id.
-    pub(crate) fn user_name(&self, id: &str) -> String {
-        // `is_me` rather than a bare comparison: a peer that has adopted the
-        // room's address for itself still wrote its earlier lines under the
-        // id it resolved at startup, and those are still its own. Their own
-        // name, as everyone else reads it.
-        if self.is_me(id) {
-            let own = self.display_name(id);
-            if own != id && !own.trim().is_empty() {
-                return own;
-            }
-            return crate::identity::unnamed_label(id);
-        }
-        if let Some(agent) = id.strip_prefix("agent:")
-            && self.room_agents.iter().any(|known| known == agent)
-        {
-            return crate::i18n::t_args(
-                "chat-agent-task-author",
-                &[("name", self.agent_display_name(agent).into())],
-            );
-        }
-        if let Some(agent) = self.agent_authors.get(id) {
-            return format!("{agent} (agent)");
-        }
-        let named = self.display_name(id);
-        // A name that happens to equal the id is still a name when the
-        // document stores it (a browser mount's author is both).
-        let stored = self
-            .users
-            .iter()
-            .any(|u| u.id == id && u.name.trim() == named.trim());
-        if (named != id || stored) && !named.trim().is_empty() {
-            return crate::identity::shared_name_label(id, &named);
-        }
-        crate::identity::unnamed_label(id)
-    }
-
-    /// The avatar monogram for `id`, derived from whatever the room calls them
-    /// so the letter never disagrees with the name beside it.
-    pub fn initials_for(&self, id: &str) -> String {
-        let name = self.display_name(id);
-        let s = ui::widget::initials_for_name(&name);
-        if s.is_empty() {
-            name.chars()
-                .next()
-                .map(|c| c.to_uppercase().to_string())
-                .unwrap_or_default()
-        } else {
-            s
-        }
-    }
-
-    /// The participant's own colour, in the shared presence vocabulary: the
-    /// room's assignment when it made one, otherwise the system-wide
-    /// per-user colour every other surface derives the same way.
-    pub fn participant_color(&self, id: &str) -> (u8, u8, u8) {
-        self.room_colors
-            .get(id)
-            .copied()
-            .unwrap_or_else(|| ui::presence::user_color(id))
-    }
-
-    /// The chat's people as the composers' `@` lists offer them beside the
-    /// room's roster: someone who wrote here stays mentionable after they
-    /// left the room.
-    pub(crate) fn mention_people(&self) -> Vec<ui::widget::MentionCandidate> {
-        self.users
-            .iter()
-            .map(|user| ui::widget::MentionCandidate {
-                id: user.id.clone(),
-                name: self.display_name(&user.id),
-                kind: ui::presence::ParticipantKind::from(user.is_agent),
-                color: self.participant_color(&user.id),
-                is_self: self.is_me(&user.id),
-            })
-            .collect()
-    }
-
-    /// Everyone a message's `@name`s bind to when it is sent: the
-    /// document's own users, plus anyone the room is talking about who has
-    /// not yet written themselves into it.
-    pub fn participants(&self) -> Vec<crate::mention::Participant> {
-        let mut out: Vec<crate::mention::Participant> = self
-            .users
-            .iter()
-            .map(|u| crate::mention::Participant {
-                id: u.id.clone(),
-                name: self.display_name(&u.id),
-                is_agent: u.is_agent,
-            })
-            .collect();
-        for id in self.room_names.keys() {
-            if !out.iter().any(|p| &p.id == id) {
-                out.push(crate::mention::Participant {
-                    id: id.clone(),
-                    name: self.display_name(id),
-                    is_agent: false,
-                });
-            }
-        }
-        out.sort_by(|a, b| a.name.cmp(&b.name));
-        out
+        self.can_participate()
     }
 
     pub(crate) fn channel(&self, id: &str) -> Option<&Channel> {
@@ -2805,8 +1198,16 @@ impl ChatApp {
         v
     }
 
-    pub(crate) fn category(&self, id: &str) -> Option<&crate::model::Category> {
-        self.categories.iter().find(|c| c.id == id)
+    /// The categories the sidebar lists: each one with a channel in it.
+    /// Someone who keeps the room's layout sees the empty ones too, since
+    /// that is where they add a category's first channel; to everyone else
+    /// an empty heading is only noise between the channels.
+    pub(crate) fn sidebar_categories(&self) -> Vec<&crate::model::Category> {
+        let keeps_layout = self.keeps_layout();
+        self.ws_categories()
+            .into_iter()
+            .filter(|category| keeps_layout || !self.category_channels(&category.id).is_empty())
+            .collect()
     }
 
     /// Cached voice members of `channel` (empty when nobody is connected).
@@ -2826,466 +1227,6 @@ impl ChatApp {
             .collect();
         v.sort_by_key(|c| c.order);
         v
-    }
-
-    /// A single-line local field for channel/category names. The host commits
-    /// the trimmed value through the target-specific CRDT action on submit.
-    fn new_rename_input() -> TextInput {
-        TextInput::local().with_enter_submits(true)
-    }
-
-    /// The composer for the surface the user is typing in.
-    pub(crate) fn focused_composer(&self) -> &crate::composer::DraftComposer {
-        match self.focus {
-            Focus::Thread if self.thread_open.is_some() => &self.composer_thread,
-            _ => &self.composer_main,
-        }
-    }
-
-    pub(crate) fn focused_composer_mut(&mut self) -> &mut crate::composer::DraftComposer {
-        match self.focus {
-            Focus::Thread if self.thread_open.is_some() => &mut self.composer_thread,
-            _ => &mut self.composer_main,
-        }
-    }
-
-    /// Point keyboard focus at the composer for the current surface — but only
-    /// when no inline editor / rename is capturing input. Idempotent; called
-    /// from `reload` and after any focus change.
-    pub(crate) fn set_composer_focus(&mut self) {
-        let editing = self.editing.is_some()
-            || self.rename.is_some()
-            || self.channel_sheet.is_some()
-            || !self.host_focused;
-        // Without an open channel (or an agent to talk to) the main composer
-        // has nowhere to send, so it takes no keys.
-        let has_target =
-            self.direct_agent.is_some() || self.channel(&self.active_channel).is_some();
-        let main = matches!(self.focus, Focus::Main) && !editing && has_target;
-        let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
-        self.composer_main.set_focus(main);
-        self.composer_thread.set_focus(thread);
-        self.edit_input
-            .set_focus(self.host_focused && self.editing.is_some());
-        ui::Widget::set_focus(
-            &mut self.rename_input,
-            self.host_focused && self.rename.is_some(),
-        );
-    }
-
-    /// Presence scope of the composer of a channel or thread, so the others
-    /// there see who is writing. The draft itself is each writer's own.
-    pub(crate) fn draft_presence_key(draft_key: &str) -> ui::presence::PresenceKey {
-        ui::presence::PresenceKey::Widget {
-            path: vec![
-                ui::presence::PathSegment::Field("chat_draft".into()),
-                ui::presence::PathSegment::Field(draft_key.to_owned()),
-            ],
-        }
-    }
-
-    /// Presence scope of a voice channel: who is in its call.
-    pub(crate) fn voice_presence_key(channel: &str) -> ui::presence::PresenceKey {
-        ui::presence::PresenceKey::Widget {
-            path: vec![
-                ui::presence::PathSegment::Field("chat_voice".into()),
-                ui::presence::PathSegment::Field(channel.to_owned()),
-            ],
-        }
-    }
-
-    /// Who is in voice channel `channel`: this person first while they are,
-    /// then everyone the room's presence places there.
-    pub(crate) fn voice_people(&self, channel: &str) -> Vec<Id> {
-        let mut people = Vec::new();
-        if self.call.active && self.call.channel == channel {
-            people.push(self.me.id.clone());
-        }
-        // What the room's presence says, and who the room's call counts in.
-        let present = self.room_voice.get(channel).into_iter().flatten();
-        let counted = self.voice_in(channel).iter().map(|member| &member.user);
-        for person in present.chain(counted) {
-            if !self.is_me(person) && !people.contains(person) {
-                people.push(person.clone());
-            }
-        }
-        people
-    }
-
-    /// The focused composer's scope while the person is writing something
-    /// in it (not an inline edit or rename): that they are, never what or
-    /// where in it.
-    pub(crate) fn composer_presence(
-        &self,
-    ) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
-        if !self.host_focused
-            || self.editing.is_some()
-            || self.rename.is_some()
-            || !self.can_participate()
-            || self.direct_agent.is_some()
-            || self.direct_person.is_some()
-        {
-            return None;
-        }
-        let (composer, key) = match self.focus {
-            Focus::Thread => (&self.composer_thread, self.thread_draft_key()?),
-            Focus::Main => (&self.composer_main, self.active_channel.clone()),
-        };
-        if key.is_empty() || composer.value().trim().is_empty() {
-            return None;
-        }
-        Some((
-            Self::draft_presence_key(&key),
-            ui::PresencePayload::Caret { pos: 0 },
-        ))
-    }
-
-    /// A text field's focus, value and selection (anchor, caret), for the
-    /// hit that stands for it.
-    fn text_field_access(&self, hit: &Hit) -> Option<(bool, String, (usize, usize))> {
-        match hit {
-            Hit::FocusMain | Hit::FocusThread => {
-                let composer = if matches!(hit, Hit::FocusMain) {
-                    &self.composer_main
-                } else {
-                    &self.composer_thread
-                };
-                Some((
-                    composer.is_focused(),
-                    composer.value(),
-                    composer.selection(),
-                ))
-            }
-            Hit::FocusEdit => Some((
-                self.edit_input.is_focused(),
-                self.edit_input.value(),
-                self.edit_input.selection(),
-            )),
-            Hit::FocusRename => {
-                let field = &self.rename_input;
-                let (anchor, focus) = field
-                    .selection_anchor_focus_public()
-                    .unwrap_or_else(|| (field.cursor_pos(), field.cursor_pos()));
-                Some((
-                    ui::Widget::is_focused(field),
-                    field.value().to_owned(),
-                    (anchor, focus),
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    pub(crate) fn thread_draft_key(&self) -> Option<String> {
-        self.thread_open
-            .as_ref()
-            .map(|p| format!("{}::t::{}", self.active_channel, p))
-    }
-
-    /// Rebuild the snapshot from the CRDT. Called at the tail of `sync` and
-    /// after every mutation so `draw` always reflects the latest document.
-    /// Count each channel's unread mentions of this peer, the badge that
-    /// says someone is waiting on you, not just talking, and tell about new
-    /// ones in a live window.
-    fn note_mentions(&mut self, per_channel: &[(Id, Vec<Message>)]) {
-        let me: Vec<&str> = std::iter::once(self.me.id.as_str())
-            .chain(self.former_ids.iter().map(String::as_str))
-            .collect();
-        let mentions: HashMap<Id, u32> = per_channel
-            .iter()
-            .filter(|(id, _)| *id != self.active_channel)
-            .map(|(id, messages)| {
-                let unread = self
-                    .channels
-                    .iter()
-                    .find(|c| c.id == *id)
-                    .map_or(0, |c| usize::try_from(c.unread).unwrap_or(usize::MAX));
-                (id.clone(), unread_mentions(messages, unread, &me))
-            })
-            .collect();
-        for c in &mut self.channels {
-            c.mentions = mentions.get(&c.id).copied().unwrap_or_default();
-        }
-        if let Some(mut alerter) = self.mention_alerts.take() {
-            let named: Vec<(Id, String, &[Message])> = per_channel
-                .iter()
-                .map(|(id, messages)| {
-                    let name = self
-                        .channels
-                        .iter()
-                        .find(|c| c.id == *id)
-                        .map_or_else(String::new, |c| c.name.clone());
-                    (id.clone(), name, messages.as_slice())
-                })
-                .collect();
-            let reading = self.host_focused.then_some(self.active_channel.as_str());
-            let now = ui::tilo_resource::origin_now_ms() / 1000;
-            let alerts = alerter.take_new(&named, &me, (reading, now), |id| self.display_name(id));
-            alerter.show(&alerts);
-            self.mention_alerts = Some(alerter);
-        }
-    }
-
-    pub(crate) fn reload(&mut self, doc: &AutoCommit) {
-        let chat = crate::projection::read(doc);
-        #[cfg(test)]
-        {
-            *self.last_read.borrow_mut() = std::rc::Rc::new(chat.clone());
-        }
-        let held = self.held_messages();
-        self.chain_seen = self.chain.as_ref().map(ui::framework::Chain::revision);
-        self.channels = chat.channel_rows();
-        self.agent_channels.clear();
-        for (id, channel) in chat.channels.iter() {
-            if let Some(agent) = &channel.conversation_with {
-                self.agent_channels
-                    .entry(agent.0.clone())
-                    .or_insert_with(|| id.to_string());
-            }
-        }
-        self.categories = chat.category_rows();
-        for category in &mut self.categories {
-            category.collapsed = self.collapsed.contains(&category.id);
-        }
-        // Keep the active channel valid (e.g. after it was deleted).
-        if self.direct_agent.is_none()
-            && self.direct_person.is_none()
-            && self.channel(&self.active_channel).is_none()
-            && let Some(first) = self
-                .ws_channels()
-                .into_iter()
-                .find(|c| c.kind == model::ChannelKind::Text)
-                .map(|c| c.id.clone())
-        {
-            self.active_channel = first;
-        }
-        // Unread is per-peer derived state, not stored: the channel in view is
-        // always read (0); every other channel shows its top-level messages
-        // beyond this peer's read watermark. The watermark itself is advanced
-        // by `mark_active_read` while a channel is viewed / on open.
-        for c in &mut self.channels {
-            c.unread = if c.id == self.active_channel {
-                0
-            } else {
-                chat.unread(&held, &c.id, &self.me.id)
-            };
-        }
-        // Read every channel's messages once per reload: the open channel,
-        // search and the room's people directory all project from them
-        // (reading them three times dominated typing with a long history).
-        let per_channel: Vec<(Id, Vec<Message>)> = self
-            .channels
-            .iter()
-            .map(|channel| (channel.id.clone(), chat.message_rows(&held, &channel.id)))
-            .collect();
-        self.note_mentions(&per_channel);
-        self.messages = per_channel
-            .iter()
-            .find(|(id, _)| *id == self.active_channel)
-            .map_or_else(
-                || chat.message_rows(&held, &self.active_channel),
-                |(_, messages)| messages.clone(),
-            );
-        self.search_messages = per_channel
-            .iter()
-            .flat_map(|(_, messages)| messages.iter().cloned())
-            .collect();
-        self.search_users = chat.user_rows();
-        self.reports = chat
-            .feedback
-            .iter()
-            .filter_map(|(id, report)| {
-                let submission = report.submission.as_ref()?;
-                Some((id.to_string(), submission.feedback.text.clone()))
-            })
-            .collect();
-        // Drop the body views of messages no longer loaded.
-        let shown: HashSet<&str> = self.messages.iter().map(|m| m.id.as_str()).collect();
-        self.body_views
-            .borrow_mut()
-            .retain(|(_, id), _| shown.contains(id.as_str()));
-        self.agent_authors = chat.agent_authors();
-        // Who is in a call is projected only from the authenticated local
-        // voice service's response.
-        self.refresh_native_streams();
-        self.users = self.room_people_from(&chat, &per_channel);
-        self.sync_reload_composers(doc);
-    }
-
-    fn sync_reload_composers(&mut self, doc: &AutoCommit) {
-        // Point each composer at its surface's draft; the editors read it on
-        // their next sync (`sync_composers`), keeping the caret while typing.
-        if self.direct_person.is_some() {
-            self.sync_person_draft();
-        } else if self.direct_agent.is_some() {
-            self.sync_agent_route();
-        } else {
-            self.composer_main.set_key(&self.active_channel);
-            self.composer_main.sync(doc);
-            self.draft_main = self.composer_main.value();
-        }
-        let placeholder = self.direct_agent.as_ref().map_or_else(
-            || {
-                let channel = self
-                    .channel(&self.active_channel)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
-                format!("Message #{channel}")
-            },
-            |agent| {
-                crate::i18n::t_args(
-                    "chat-agent-message-placeholder",
-                    &[("name", self.agent_display_name(agent).into())],
-                )
-            },
-        );
-        self.composer_main.set_placeholder(&placeholder);
-        if self.direct_person.is_some() {
-            self.composer_main
-                .set_placeholder(&crate::i18n::t("chat-person-chat-placeholder"));
-        }
-        self.composer_main
-            .set_local_author(Some(self.me.id.clone()));
-        let thread_key = self.thread_draft_key().unwrap_or_default();
-        self.composer_thread.set_key(&thread_key);
-        self.composer_thread.sync(doc);
-        self.draft_thread = if thread_key.is_empty() {
-            String::new()
-        } else {
-            self.composer_thread.value()
-        };
-        self.composer_thread.set_placeholder("Reply in thread");
-        self.composer_thread
-            .set_local_author(Some(self.me.id.clone()));
-        self.composer_main
-            .set_read_only(!self.main_composer_can_edit());
-        self.composer_thread.set_read_only(!self.can_participate());
-        self.set_composer_focus();
-    }
-
-    /// Bring both composers up to date with their drafts. `--shots` stages
-    /// its mid-compose draft here.
-    pub(crate) fn sync_composers(&mut self, doc: &AutoCommit) {
-        for composer in [&mut self.composer_main, &mut self.composer_thread] {
-            composer.sync(doc);
-        }
-        self.draft_main = self.composer_main.value();
-        self.draft_thread = self.composer_thread.value();
-    }
-
-    /// Project the document's identity directory onto evidence in the room's
-    /// channels. Channel activity and voice membership are durable evidence;
-    /// the local identity is included so a brand-new room remains a valid
-    /// one-person surface.
-    fn room_people_from(
-        &self,
-        chat: &crate::record::Chat,
-        per_channel: &[(Id, Vec<Message>)],
-    ) -> Vec<User> {
-        let mut ids: HashSet<Id> = HashSet::from([self.me.id.clone()]);
-        ids.extend(self.former_ids.iter().cloned());
-
-        for channel in &self.channels {
-            let messages = per_channel
-                .iter()
-                .find(|(id, _)| *id == channel.id)
-                .map(|(_, messages)| messages);
-            for message in messages.into_iter().flatten() {
-                ids.insert(message.author.clone());
-                for reaction in &message.reactions {
-                    ids.extend(reaction.users.iter().cloned());
-                }
-                ids.extend(message.mentions.iter().map(|mention| mention.user.clone()));
-            }
-        }
-
-        let mut people: Vec<_> = chat
-            .user_rows()
-            .into_iter()
-            .filter(|user| ids.contains(&user.id))
-            .collect();
-        if !people.iter().any(|user| self.is_me(&user.id)) {
-            people.push(User {
-                id: self.me.id.clone(),
-                name: self.me.name.clone(),
-                initials: self.me.initials.clone(),
-                color_idx: self.me.color_idx,
-                status: model::Presence::Online,
-                is_agent: false,
-            });
-        }
-        people.sort_by(|left, right| {
-            left.name
-                .cmp(&right.name)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        people
-    }
-
-    /// Announce this window's person into the shared roster once, under the
-    /// name this device knows them by: what every member shows for them
-    /// until the room names them. A repeat writes nothing.
-    fn announce_me(&mut self, doc: &AutoCommit) {
-        let Some(me) = self.announce.take() else {
-            return;
-        };
-        let chat = crate::projection::read(doc);
-        let color = u32::try_from(me.color_idx).unwrap_or_default();
-        if (chat.channels.is_empty() && chat.people.is_empty())
-            || chat.people.iter().any(|person| {
-                person.id.0 == me.id
-                    && person.name == me.name
-                    && person.initials == me.initials
-                    && person.color == color
-                    && person.status == model::Presence::Online
-            })
-        {
-            return;
-        }
-        self.submit(
-            crate::resource::Chat::INTRODUCE.with(crate::record::chat::Introduce {
-                name: me.name,
-                initials: me.initials,
-                color,
-            }),
-        );
-    }
-
-    /// Advance the local read watermark for the channel currently in view so
-    /// its unread badge stays cleared and doesn't reappear once the user
-    /// navigates away. Idempotent (a no-op when nothing new arrived), so it is
-    /// safe to call every frame.
-    pub(crate) fn mark_active_read(&mut self, doc: &AutoCommit) {
-        if self.direct_person.is_some() || self.active_channel.is_empty() || !self.timeline_at_end {
-            return;
-        }
-        let chat = crate::projection::read(doc);
-        let read = self
-            .held_messages()
-            .read_to_end(&ui::tilo_resource::Id::from_raw(
-                self.active_channel.clone(),
-            ));
-        if read <= chat.read_mark(&self.active_channel, &self.me.id) {
-            return;
-        }
-        // Read state is a durable collaboration fact.  It is authored through
-        // the same door as the palette's "Mark as read", not a side write
-        // that peers/history cannot account for.  The carried position keeps
-        // a message that arrives meanwhile unread.
-        self.submit(
-            crate::resource::Chat::MARK_READ.with(crate::record::chat::MarkRead {
-                channel: ui::tilo_resource::Id::from_raw(self.active_channel.clone()),
-                part: u64::try_from(read.part).unwrap_or_default(),
-                seen: u32::try_from(read.seen).unwrap_or(u32::MAX),
-            }),
-        );
-        if let Some(channel) = self
-            .channels
-            .iter_mut()
-            .find(|channel| channel.id == self.active_channel)
-        {
-            channel.unread = 0;
-        }
     }
 
     pub(crate) fn reveal_category_resource(&mut self, category: &str) -> Result<(), String> {
@@ -3314,331 +1255,13 @@ impl ChatApp {
         Ok(())
     }
 
-    /// The members roster shown in the right flap when no thread is open: every
-    /// user in the room paired with the voice channel they're currently in
-    /// (if any). Sorted in-call first, then by presence, then by name. Real
-    /// projection of the shared user list + voice membership — no placeholders.
-    pub(crate) fn roster_rows(&self) -> Vec<(User, Option<String>)> {
-        // user id → the name of the voice channel they're connected to.
-        let mut in_voice: HashMap<Id, String> = HashMap::new();
-        for channel in self
-            .channels
-            .iter()
-            .filter(|channel| channel.kind == model::ChannelKind::Voice)
-        {
-            for person in self.voice_people(&channel.id) {
-                in_voice.insert(person, channel.name.clone());
-            }
-        }
-        let mut rows: Vec<(User, Option<String>)> = self
-            .users
-            .iter()
-            .cloned()
-            .map(|u| {
-                let voice = in_voice.get(u.id.as_str()).cloned();
-                (u, voice)
-            })
-            .collect();
-        let rank = |u: &User, voice: &Option<String>| -> u8 {
-            if voice.is_some() {
-                0
-            } else {
-                match u.status {
-                    crate::model::Presence::Online => 1,
-                    crate::model::Presence::Idle => 2,
-                    crate::model::Presence::Dnd => 3,
-                    crate::model::Presence::Offline => 4,
-                }
-            }
-        };
-        rows.sort_by(|a, b| {
-            rank(&a.0, &a.1)
-                .cmp(&rank(&b.0, &b.1))
-                .then_with(|| a.0.name.cmp(&b.0.name))
-        });
-        // This session's person once, whichever of its spellings the
-        // document recorded them under.
-        let mut me_listed = false;
-        rows.retain(|(person, _)| {
-            if !self.is_me(&person.id) {
-                return true;
-            }
-            !std::mem::replace(&mut me_listed, true)
-        });
-        rows
-    }
-
-    /// Whether this room has somebody besides the local participant. An
-    /// agent is still a collaborator (and should surface collaboration
-    /// controls), but it is never counted or labelled as a person.
-    pub(crate) fn has_other_collaborator(&self) -> bool {
-        self.users.iter().any(|u| !self.is_me(&u.id))
-    }
-
-    /// The roster's public destination name. `People` is precise when every
-    /// entry is human; once an agent is present, `Collaborators` accurately
-    /// covers both and the row itself keeps the agent visibly typed.
-    pub(crate) fn roster_label(&self) -> &'static str {
-        if self.users.iter().any(|u| u.is_agent) {
-            "Collaborators"
-        } else {
-            "People"
-        }
-    }
-
-    // --- window geometry ---------------------------------------------------
-    //
-    // Two drawers frame the conversation: the navigation drawer (the
-    // room's channel list) at the leading edge, and the detail
-    // drawer (people, or the open thread) at the trailing edge. The toolkit's
-    // `SidebarDrawer` decides, from the window width, whether each docks
-    // beside the conversation or floats over it behind a scrim, eases the
-    // reveal and remembers the person's show/hide choice per size class.
-
-    /// The leading navigation drawer: the room's channel list, at the
-    /// shell's sidebar metrics. One room is one place, so there is no rail
-    /// of other places beside it. It docks while the conversation keeps
-    /// a reading column's minimum; below that the channel list and the
-    /// conversation take turns filling the window.
-    fn navigation_drawer() -> SidebarDrawer {
-        SidebarDrawer::new().content_kind(ui::widget::ContentKind::Reading)
-    }
-
-    /// The trailing detail drawer, summoned on demand. It docks while the
-    /// conversation beside it keeps its minimum width.
-    fn detail_drawer() -> SidebarDrawer {
-        let m = ui::tokens::Metrics::BASE;
-        SidebarDrawer::new()
-            .right()
-            .closed()
-            .docked_width(f64::from(m.inspector_width))
-            .overlay_width(f64::from(m.inspector_width))
-            .breakpoint(f64::from(m.content_min_width + m.inspector_width))
-    }
-
-    /// True when the navigation drawer shows (docked, or revealed floating).
-    pub(crate) fn left_flap_open(&self) -> bool {
-        self.left_flap.is_open()
-    }
-    /// True when the detail drawer (people / thread) shows.
-    pub(crate) fn right_flap_open(&self) -> bool {
-        self.right_flap.is_open()
-    }
-    /// The navigation drawer floats over the conversation (narrow window).
-    pub(crate) fn left_overlay(&self) -> bool {
-        self.left_flap.is_overlay()
-    }
-    /// The detail drawer floats over the conversation.
-    pub(crate) fn right_overlay(&self) -> bool {
-        self.right_flap.is_overlay()
-    }
-
-    /// The navigation drawer's panel: header row and channel list.
-    pub(crate) fn nav_rect(&self) -> Rect {
-        self.left_flap.sidebar_rect()
-    }
-    /// The channel list, under the header row.
-    pub(crate) fn sidebar_rect(&self) -> Rect {
-        let list = self.left_flap.list_rect();
-        let y0 = (list.y0 + self.chrome.header_h).min(list.y1);
-        Rect::new(list.x0, y0, list.x1, list.y1)
-    }
-    /// The conversation column: what the docked drawers leave.
-    pub(crate) fn content_rect(&self) -> Rect {
-        let content = self.right_flap.content_rect();
-        if content.width() > 0.0 {
-            content
-        } else {
-            self.rect
-        }
-    }
-    pub(crate) fn center_left(&self) -> f64 {
-        self.content_rect().x0
-    }
-    pub(crate) fn center_right(&self) -> f64 {
-        self.content_rect().x1
-    }
-    /// The conversation's part of the window's header row.
-    pub(crate) fn header_rect(&self) -> Rect {
-        Rect::new(
-            self.center_left(),
-            self.rect.y0,
-            self.center_right(),
-            self.rect.y0 + self.chrome.header_h,
-        )
-    }
-    /// Reserve the height measured by the same editor that will be drawn.
-    pub(crate) fn composer_height(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        let chrome = &self.chrome;
-        let pad = chrome.composer_min_h - chrome.body_line;
-        let input = (self.composer_main.measured_height() + pad)
-            .clamp(chrome.composer_min_h, chrome.composer_max_h);
-        if self.direct_agent.is_some() {
-            input
-                + self.agent_task_controls_height(
-                    tr,
-                    theme,
-                    (self.center_right() - self.center_left() - 2.0 * chrome.gutter).max(0.0),
-                )
-        } else {
-            input
-        }
-    }
-    pub(crate) fn composer_rect(&self, tr: &mut TextRenderer, theme: &Theme) -> Rect {
-        let pad = self.chrome.composer_pad;
-        // The note strip under the field is always kept, so a line appearing
-        // in it never moves the field.
-        let bottom = self.rect.y1 - pad.max(self.chrome.composer_note_h);
-        let top_limit = self.rect.y0 + self.chrome.header_h + pad;
-        let h = self
-            .composer_height(tr, theme)
-            .min((bottom - top_limit).max(self.chrome.composer_min_h));
-        Rect::new(
-            self.center_left() + self.chrome.gutter,
-            bottom - h,
-            self.center_right() - self.chrome.gutter,
-            bottom,
-        )
-    }
-
-    /// The thread's composer: the same control and height rule as the main
-    /// composer, at the bottom of the thread panel `panel`.
-    pub(crate) fn thread_composer_rect(&self, panel: Rect) -> Rect {
-        let pad = self.chrome.composer_pad;
-        let chrome = &self.chrome;
-        let inset = chrome.composer_min_h - chrome.body_line;
-        let h = (self.composer_thread.measured_height() + inset)
-            .clamp(chrome.composer_min_h, chrome.composer_max_h);
-        let bottom = panel.y1 - pad.max(chrome.composer_note_h);
-        Rect::new(panel.x0 + pad, bottom - h, panel.x1 - pad, bottom)
-    }
-    /// Whether this window draws the floating call window over its content.
-    /// At enlarged text the labelled Call control remains reachable in the
-    /// header instead; a fixed floating huddle would cover the thread and
-    /// composer instead of forming a usable secondary surface.
-    pub(crate) fn app_draws_huddle(&self) -> bool {
-        self.call.active
-            && !self.call.expanded
-            && self.layout_text_scale <= 1.25
-            && ((!self.call.placement.is_return_pending()
-                && matches!(
-                    self.call.placement.attachment(),
-                    ui::floating_surface::Attachment::App { .. }
-                ))
-                || !self.call.placement.is_desktop_covered())
-    }
-
-    /// The timeline: between the header row and the composer. While the call
-    /// window floats over it, the messages keep clear of it and wrap beside
-    /// it, so it never covers what is being said.
-    pub(crate) fn messages_rect(&self, tr: &mut TextRenderer, theme: &Theme) -> Rect {
-        let composer = self.composer_rect(tr, theme);
-        let mut rect = Rect::new(
-            self.center_left(),
-            self.rect.y0 + self.chrome.header_h,
-            self.center_right(),
-            composer.y0 - self.chrome.avatar_gap,
-        );
-        if self.app_draws_huddle() {
-            let call = self.huddle_panel();
-            let overlaps = call.x0 < rect.x1 && call.x1 > rect.x0 && call.y0 < rect.y1;
-            if overlaps {
-                rect.x1 = rect.x1.min(call.x0 - self.chrome.avatar_gap).max(rect.x0);
-            }
-        }
-        rect
-    }
-    /// The detail drawer's panel. A thread is content, not a secondary
-    /// sidebar: on a narrow window it becomes a pushed page over the whole
-    /// window rather than a cramped floating panel.
-    pub(crate) fn thread_rect(&self) -> Rect {
-        if self.right_overlay() && self.thread_open.is_some() {
-            return self.rect;
-        }
-        self.right_flap.sidebar_rect()
-    }
-    /// The open thread fills the window as a pushed page.
-    pub(crate) fn thread_is_page(&self) -> bool {
-        self.right_overlay() && self.thread_open.is_some() && self.right_flap_open()
-    }
-
-    /// Resolve both drawers against the current window: docked or floating,
-    /// and the rects they leave the conversation. Cheap and deterministic, so
-    /// the event path calls it too. Returns true while either drawer slides.
-    pub(crate) fn reconcile_flaps(&mut self) -> bool {
-        if self.rect.width() < 1.0 {
-            return false;
-        }
-        let content = self.left_flap.resolve(self.rect);
-        self.right_flap.resolve(content);
-        self.flap_animating = self.left_flap.is_animating() || self.right_flap.is_animating();
-        self.flap_animating
-    }
-
-    /// Adopt `theme`'s metrics and advance both drawers' reveals for this
-    /// frame (once per paint).
-    pub(crate) fn advance_flaps(&mut self, theme: &Theme) {
-        self.chrome = Chrome::of(theme);
-        self.left_flap.scale_for(theme);
-        self.right_flap.scale_for(theme);
-        // The window's header row holds the sidebar toggle; a floating
-        // drawer opens under it and the row stays live.
-        let row = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + self.chrome.header_h,
-        );
-        let _ = self.left_flap.header(row, theme);
-        if !self.reconcile_flaps() && self.rect.width() < 1.0 {
-            return;
-        }
-        self.left_flap.tick(theme);
-        let content = self.left_flap.content_rect();
-        self.right_flap.resolve(content);
-        self.right_flap.tick(theme);
-        self.flap_animating = self.left_flap.is_animating() || self.right_flap.is_animating();
-    }
-
-    /// A context menu over `target` whose rows say what they do to it.
-    pub(crate) fn context_menu(
-        &self,
-        target: MenuTarget,
-        anchor: Point,
-        items: Vec<MenuAction>,
-    ) -> ContextMenu {
-        let collapsed = match &target {
-            MenuTarget::Category(id) => self
-                .categories
-                .iter()
-                .any(|category| category.id == *id && category.collapsed),
-            _ => false,
-        };
-        let pinned = match &target {
-            MenuTarget::Message(id) => self.message(id).is_some_and(|m| m.pinned),
-            _ => false,
-        };
-        let channel = matches!(target, MenuTarget::Channel(_));
-        let label = move |action: MenuAction| match action {
-            MenuAction::ToggleCollapse if collapsed => "Expand category".to_owned(),
-            MenuAction::PinMessage if pinned => "Unpin message".to_owned(),
-            MenuAction::Delete if channel => "Delete channel".to_owned(),
-            MenuAction::Delete => "Delete category".to_owned(),
-            MenuAction::Rename if channel => "Rename channel".to_owned(),
-            MenuAction::Rename => "Rename category".to_owned(),
-            other => other.label().to_owned(),
-        };
-        ContextMenu::labelled(target, anchor, items, self.rect, label)
-    }
-
     /// Keep the active channel and thread pointing at something that exists
     /// — used after seeding a fresh (real) room whose ids differ from the
     /// demo defaults, and after any structural delete. Returns true when the
     /// active channel changed (the caller must reload so the message list
     /// refreshes).
     pub(crate) fn ensure_selection(&mut self) -> bool {
-        let channel_changed = self.direct_agent.is_none()
-            && self.direct_person.is_none()
+        let channel_changed = self.direct_person.is_none()
             && !self.active_channel.is_empty()
             && self.channel(&self.active_channel).is_none();
         if channel_changed {
@@ -3691,366 +1314,6 @@ impl ChatApp {
             let _ = self.images.get(&e.key());
         }
     }
-
-    /// The host-tile video rect for the current call mode, including the
-    /// dragged overlay offset (docked huddle only — the expanded grid is
-    /// anchored). The single source of truth for both the `VideoPlayer` node
-    /// placement and the surrounding call chrome.
-    pub(crate) fn call_video_rect(&self) -> Rect {
-        if self.call.expanded {
-            // The host is the first cell of the responsive participant grid,
-            // so the tile (and the VideoPlayer surface beneath it) fills its
-            // share of the surface at every width — never a fixed fraction
-            // that leaves the rest of the overlay empty.
-            self.overlay_host_rect()
-        } else {
-            self.call
-                .placement
-                .rect(self.rect, self.desktop_floating_bounds())
-        }
-    }
-
-    pub(crate) fn desktop_floating_bounds(&self) -> Rect {
-        if self.floating_surface_bounds.area() > 0.0 {
-            self.floating_surface_bounds
-        } else {
-            self.rect
-        }
-    }
-
-    pub(crate) fn push_hit(hits: &mut Vec<(Rect, Hit)>, rect: Rect, hit: Hit) {
-        hits.push((rect, hit));
-    }
-
-    /// Pointer, keyboard and assistive technology all derive from this one
-    /// immediate-mode control inventory. Purely decorative/scrim targets stay
-    /// out; every included row has a useful spoken name and an activation path.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive semantic mapping keeps pointer, keyboard and assistive labels from drifting into separate inventories"
-    )]
-    pub(crate) fn semantic_hits_from(
-        &self,
-        hits: &[(Rect, Hit)],
-    ) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
-        use ui::a11y::Role;
-
-        hits.iter()
-            .filter_map(|(rect, hit)| {
-                let (name, role, selected) = match hit {
-                    Hit::Channel(id) | Hit::VoiceChannel(id) => {
-                        let channel = self.channel(id)?;
-                        let unread = if channel.unread == 0 {
-                            String::new()
-                        } else {
-                            format!(", {} unread", channel.unread)
-                        };
-                        (
-                            format!("{}{unread}", channel.kind.label(&channel.name)),
-                            Role::ListItem,
-                            channel.id == self.active_channel,
-                        )
-                    }
-                    Hit::DirectPerson(key) => (self.person_display_name(key), Role::Button, false),
-                    Hit::Agent(agent) => (
-                        format!(
-                            "{}, {}",
-                            self.agent_display_name(agent),
-                            crate::i18n::t("chat-agent-kind")
-                        ),
-                        Role::ListItem,
-                        self.direct_agent.as_deref() == Some(agent.as_str()),
-                    ),
-                    Hit::AgentWindow => (
-                        if self.conversation_surface {
-                            crate::i18n::t("chat-agent-return")
-                        } else {
-                            crate::i18n::t("chat-agent-float")
-                        },
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::AgentIntent(intent) => {
-                        let label = match intent {
-                            AgentComposerIntent::Queue => crate::i18n::t("chat-agent-mode-queue"),
-                            AgentComposerIntent::Steer => crate::i18n::t("chat-agent-mode-steer"),
-                        };
-                        (label, Role::Tab, *intent == self.direct_agent_intent())
-                    }
-                    Hit::AgentTask(task) => (
-                        task.title.clone(),
-                        Role::ListItem,
-                        self.direct_agent_tasks()
-                            .and_then(AgentTaskView::current)
-                            .is_some_and(|current| {
-                                current.task_id == task.task_id
-                                    && current.run_epoch == task.run_epoch
-                                    && current.after_revision == task.after_revision
-                            }),
-                    ),
-                    Hit::AgentTaskMore => {
-                        (crate::i18n::t("chat-agent-task-next"), Role::Button, false)
-                    }
-                    Hit::AgentStart => (crate::i18n::t("chat-agent-start"), Role::Button, false),
-                    Hit::AgentStop => (crate::i18n::t("chat-agent-stop"), Role::Button, false),
-                    Hit::CategoryToggle(id) => {
-                        let category = self.categories.iter().find(|category| category.id == *id);
-                        let name = category.map_or("category", |category| category.name.as_str());
-                        let collapsed = category.is_some_and(|category| category.collapsed);
-                        (
-                            format!("{} {name}", if collapsed { "Expand" } else { "Collapse" }),
-                            Role::ToggleButton,
-                            !collapsed,
-                        )
-                    }
-                    Hit::AddChannel { .. } => ("Add channel".into(), Role::Button, false),
-                    Hit::AddCategory => ("Create channel or category".into(), Role::Button, false),
-                    Hit::FocusRename => ("Rename field".into(), Role::TextInput, false),
-                    Hit::FocusEdit => ("Edit message".into(), Role::MultilineTextInput, false),
-                    Hit::FocusMain => ("Message composer".into(), Role::MultilineTextInput, false),
-                    Hit::FocusThread => (
-                        "Thread reply composer".into(),
-                        Role::MultilineTextInput,
-                        false,
-                    ),
-                    Hit::HostModel(command) => (
-                        crate::i18n::t(&format!("chat-model-{command}")),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::Send => ("Send message".into(), Role::Button, false),
-                    Hit::JumpToLatest => ("Jump to latest message".into(), Role::Button, false),
-                    Hit::ThreadScroll(end) => (
-                        crate::i18n::t(if *end {
-                            "chat-thread-end"
-                        } else {
-                            "chat-thread-start"
-                        }),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::AgentReasoning(id) => (
-                        crate::i18n::t(if self.expanded_reasoning.contains(id) {
-                            "chat-agent-hide-reasoning"
-                        } else {
-                            "chat-agent-show-reasoning"
-                        }),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::ComposerEmoji(_) => {
-                        (crate::i18n::t("chat-emoji-insert"), Role::Button, false)
-                    }
-                    Hit::Attach => ("Share a file".into(), Role::Button, false),
-                    Hit::AttachDevice => ("Upload from this device".into(), Role::Button, false),
-                    Hit::AttachPick(path) => (
-                        format!(
-                            "Attach {}",
-                            std::path::Path::new(path)
-                                .file_name()
-                                .and_then(std::ffi::OsStr::to_str)
-                                .unwrap_or(path)
-                        ),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::StartCall => ("Start or open call".into(), Role::Button, false),
-                    Hit::StopSharingLiveContext => {
-                        (crate::i18n::t("chat-context-stop"), Role::Button, false)
-                    }
-                    Hit::CopyResourceLink(message) => (
-                        self.resource_navigation.label(message, false, true),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::OpenResourceLink(message) => (
-                        self.resource_navigation.label(message, true, true),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::Search => ("Search Chat".into(), Role::Button, false),
-                    Hit::ToggleLeftFlap => {
-                        ("Show conversation navigation".into(), Role::Button, false)
-                    }
-                    Hit::ToggleRightFlap => ("Show people or thread".into(), Role::Button, false),
-                    Hit::TogglePins => {
-                        ("Pinned messages".into(), Role::ToggleButton, self.pins_open)
-                    }
-                    Hit::RevealMessage(message) => (
-                        self.message(message).map_or_else(
-                            || "Pinned message".to_owned(),
-                            |m| format!("{}: {}", self.user_name(&m.author), m.text),
-                        ),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::OpenThread(_) => ("Open message thread".into(), Role::Button, false),
-                    Hit::CloseThread => (crate::i18n::t("chat-thread-close"), Role::Button, false),
-                    Hit::Reaction { msg, emoji } => {
-                        let mine = self
-                            .message(msg)
-                            .and_then(|message| {
-                                message
-                                    .reactions
-                                    .iter()
-                                    .find(|reaction| reaction.emoji == *emoji)
-                            })
-                            .is_some_and(|reaction| reaction.reacted_by(&self.me.id));
-                        (
-                            crate::i18n::t_args(
-                                if mine {
-                                    "chat-reaction-remove"
-                                } else {
-                                    "chat-reaction-add"
-                                },
-                                &[("emoji", emoji.as_str().into())],
-                            ),
-                            Role::ToggleButton,
-                            mine,
-                        )
-                    }
-                    Hit::AddReaction { .. } => (
-                        crate::i18n::t("chat-emoji-add-reaction"),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::EmojiChoice(emoji) => (
-                        crate::i18n::t_args(
-                            "chat-emoji-choose",
-                            &[(
-                                "name",
-                                crate::i18n::emoji_catalogue()
-                                    .get(emoji)
-                                    .map_or(emoji.as_str(), |found| found.name())
-                                    .into(),
-                            )],
-                        ),
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::EmojiGroup(group) => (
-                        crate::i18n::emoji_catalogue()
-                            .groups()
-                            .get(*group)
-                            .map_or_else(
-                                || crate::i18n::t("chat-emoji-group"),
-                                |group| group.label().to_owned(),
-                            ),
-                        Role::Tab,
-                        *group == self.emoji_group,
-                    ),
-                    Hit::FocusEmojiSearch => {
-                        (crate::i18n::t("chat-emoji-search"), Role::TextInput, false)
-                    }
-                    Hit::EditHistory { .. } => ("Show edit history".into(), Role::Button, false),
-                    Hit::EditSave => ("Save message edit".into(), Role::Button, false),
-                    Hit::EditCancel => ("Cancel message edit".into(), Role::Button, false),
-                    Hit::CallMute => (
-                        "Mute microphone".into(),
-                        Role::ToggleButton,
-                        self.call.muted,
-                    ),
-                    Hit::CallCamera => ("Camera".into(), Role::ToggleButton, !self.call.audio_only),
-                    Hit::CallScreen => {
-                        ("Share screen".into(), Role::ToggleButton, self.call.sharing)
-                    }
-                    Hit::CallParticipantsToggle => (
-                        "Show call participants".into(),
-                        Role::ToggleButton,
-                        self.call.participants_expanded,
-                    ),
-                    Hit::CallExpand => (
-                        "Expand or restore call".into(),
-                        Role::Button,
-                        self.call.expanded,
-                    ),
-                    Hit::CallLeave => ("Leave call".into(), Role::Button, false),
-                    _ => return None,
-                };
-                // The composer's pointer target is the whole box (clicking
-                // its padding focuses it), but what assistive technology
-                // reads as the text field is the band the shared `TextInput`
-                // was laid out into — the attach / emoji / send buttons sit
-                // beside that band, not inside it. Before the first paint
-                // the band is empty, so the box stands in for it.
-                let text_band = |field: &crate::composer::DraftComposer| {
-                    let inner = field.rect();
-                    if inner.width() > 0.0 && inner.height() > 0.0 {
-                        inner
-                    } else {
-                        *rect
-                    }
-                };
-                let rect = match hit {
-                    Hit::FocusMain => text_band(&self.composer_main),
-                    Hit::FocusThread => text_band(&self.composer_thread),
-                    _ => *rect,
-                };
-                Some((rect, hit.clone(), name, role, selected))
-            })
-            .collect()
-    }
-
-    pub(crate) fn semantic_hits(&self) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
-        Self::deduplicate_semantic_hits(self.semantic_hits_from(&self.hits))
-    }
-
-    pub(crate) fn hover_tooltip_target(&self, point: Point) -> Option<(Rect, String)> {
-        if let Some((rect, hit)) = self.hits.iter().rev().find(|(rect, hit)| {
-            rect.contains(point)
-                && matches!(
-                    hit,
-                    Hit::Search
-                        | Hit::ToggleLeftFlap
-                        | Hit::ToggleRightFlap
-                        | Hit::TogglePins
-                        | Hit::Attach
-                        | Hit::Send
-                        | Hit::ComposerEmoji(_)
-                        | Hit::AddReaction { .. }
-                )
-        }) && let Some((_, _, label, _, _)) = self
-            .semantic_hits_from(&[(*rect, hit.clone())])
-            .into_iter()
-            .next()
-        {
-            return Some((*rect, label));
-        }
-        // Do not let the broad title region lend its text to a labelled
-        // control layered above it (for example the Call button).
-        if self
-            .hits
-            .iter()
-            .rev()
-            .any(|(rect, hit)| rect.contains(point) && !matches!(hit, Hit::Dismiss))
-        {
-            return None;
-        }
-        let header = self.header_rect();
-        if header.contains(point)
-            && let Some(channel) = self.channel(&self.active_channel)
-        {
-            let mut label = channel.kind.label(&channel.name);
-            if !channel.topic.trim().is_empty() {
-                label.push_str(" — ");
-                label.push_str(channel.topic.trim());
-            }
-            return Some((header, label));
-        }
-        None
-    }
-
-    /// A semantic target names an operation, not a particular paint pass. A
-    /// message can appear in both timeline and thread briefly; exporting one
-    /// retained node keeps that operation's target unambiguous.
-    fn deduplicate_semantic_hits(
-        hits: Vec<(Rect, Hit, String, ui::a11y::Role, bool)>,
-    ) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
-        let mut targets = std::collections::HashSet::new();
-        hits.into_iter()
-            .filter(|(_, hit, ..)| targets.insert(hit.semantic_id()))
-            .collect()
-    }
 }
 
 /// Compute an absolute rect from window-relative fractions.
@@ -4058,6 +1321,12 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
     let x0 = win.x0 + f.0 * win.width();
     let y0 = win.y0 + f.1 * win.height();
     Rect::new(x0, y0, x0 + f.2 * win.width(), y0 + f.3 * win.height())
+}
+
+impl ui::semantic_document_read::SemanticReaders for ChatApp {
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::feedback::READERS
+    }
 }
 
 impl Continuable for ChatApp {
@@ -4094,16 +1363,6 @@ impl Collaborative for ChatApp {
         self.settle_resource_navigation();
         requests.extend(self.resource_navigation.remote_mut().take_collab_requests());
         requests.extend(self.moderation_requests());
-        requests.extend(self.agent_tasks.actions_mut().take_collab_requests());
-        for surface in self.agent_surfaces.values_mut() {
-            requests.extend(
-                surface
-                    .view
-                    .agent_tasks
-                    .actions_mut()
-                    .take_collab_requests(),
-            );
-        }
         self.native_voice.video.wanted = self.wanted_pictures();
         let before = self.native_voice.snapshot.state;
         requests.extend(self.native_voice.take_requests(ui::time::now()));
@@ -4114,14 +1373,6 @@ impl Collaborative for ChatApp {
     }
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
-        self.agent_tasks.actions_mut().handle_collab_event(event);
-        for surface in self.agent_surfaces.values_mut() {
-            surface
-                .view
-                .agent_tasks
-                .actions_mut()
-                .handle_collab_event(event);
-        }
         match event {
             ui::collaboration::CollabEvent::RemoteAction { message } => {
                 self.complete_moderation(message);
@@ -4210,338 +1461,6 @@ impl Collaborative for ChatApp {
     }
 }
 
-impl FloatingSurfaceProvider for ChatApp {
-    fn floating_surface_accessibility(&self, id: &str) -> Option<ui::a11y::AccessNode> {
-        self.agent_surfaces
-            .values()
-            .find(|surface| surface.id == id && !surface.is_closed())?
-            .accessibility()
-    }
-
-    fn perform_floating_surface_accessibility_action(
-        &mut self,
-        id: &str,
-        target: &str,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> bool {
-        let Some((source, child_target)) = target
-            .strip_prefix("agent-surface:")
-            .and_then(|target| target.split_once('|'))
-        else {
-            return false;
-        };
-        if source != id {
-            return false;
-        }
-        let Some(surface) = self
-            .agent_surfaces
-            .values_mut()
-            .find(|surface| surface.id == id && !surface.is_closed())
-        else {
-            return false;
-        };
-        let handled = surface
-            .view
-            .perform_semantic_action(child_target, action, state, path);
-        self.settle_agent_surface_commands();
-        handled
-    }
-
-    fn floating_surface_ime(&self, id: &str) -> Option<(ui::ime::InputContent, Rect)> {
-        let surface = self
-            .agent_surfaces
-            .values()
-            .find(|surface| surface.id == id && !surface.is_closed())?;
-        Some((surface.view.ime_content()?, surface.view.ime_cursor_rect()?))
-    }
-
-    fn take_floating_surface_request(
-        &mut self,
-    ) -> Option<ui::floating_surface::FloatingSurfaceRequest> {
-        self.agent_surface_requests
-            .pop_front()
-            .or_else(|| self.pending_floating.take())
-    }
-
-    fn draw_floating_surfaces(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        let desktop = self.desktop_floating_bounds();
-        for surface in self.agent_surfaces.values_mut() {
-            if surface.is_closed() {
-                continue;
-            }
-            surface.observe_theme(theme);
-            surface.view.perms = self.perms.clone();
-            surface.view.room_agents.clone_from(&self.room_agents);
-            surface.view.room_names.clone_from(&self.room_names);
-            surface.view.room_labels.clone_from(&self.room_labels);
-            surface.view.own_label.clone_from(&self.own_label);
-            surface.view.room_colors.clone_from(&self.room_colors);
-            surface.view.messages.clone_from(&self.messages);
-            surface.view.channels.clone_from(&self.channels);
-            surface.view.canonical_dirty |= surface.view.agent_tasks.pump();
-            surface.view.sync_agent_route();
-            surface.view.settle_agent_drafts();
-            surface.view.refresh_person_conversation();
-            if let Some(agent) = surface.view.direct_agent.clone() {
-                surface
-                    .view
-                    .agent_tasks
-                    .observe(crate::app::ROOM_SCOPE, &agent);
-            }
-            if matches!(
-                surface.placement.attachment(),
-                ui::floating_surface::Attachment::Desktop { .. }
-            ) || surface.placement.is_return_pending()
-            {
-                let content = surface.placement.rect(surface.source, desktop);
-                surface.view.rect = content;
-                let view = &mut surface.view;
-                ui::floating_surface::paint_app_owned_content(
-                    scene,
-                    transform,
-                    content,
-                    theme,
-                    |scene| {
-                        view.draw(scene, transform, text_renderer, theme, presence);
-                        true
-                    },
-                );
-            }
-        }
-        if !self.call.active
-            || self.call.expanded
-            || (!self.call.placement.is_return_pending()
-                && !matches!(
-                    self.call.placement.attachment(),
-                    ui::floating_surface::Attachment::Desktop { .. }
-                ))
-        {
-            return;
-        }
-        let mut hits = Vec::new();
-        self.draw_live_huddle(scene, transform, text_renderer, theme, presence, &mut hits);
-        self.hits.extend(hits);
-    }
-
-    fn draw_floating_surface(
-        &mut self,
-        id: &str,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) -> bool {
-        let desktop = self.desktop_floating_bounds();
-        if let Some(surface) = self
-            .agent_surfaces
-            .values_mut()
-            .find(|surface| surface.id == id)
-        {
-            if surface.is_closed() {
-                return false;
-            }
-            surface.observe_theme(theme);
-            surface.view.perms = self.perms.clone();
-            surface.view.room_agents.clone_from(&self.room_agents);
-            surface.view.room_names.clone_from(&self.room_names);
-            surface.view.room_labels.clone_from(&self.room_labels);
-            surface.view.own_label.clone_from(&self.own_label);
-            surface.view.room_colors.clone_from(&self.room_colors);
-            surface.view.messages.clone_from(&self.messages);
-            surface.view.channels.clone_from(&self.channels);
-            surface.view.canonical_dirty |= surface.view.agent_tasks.pump();
-            surface.view.sync_agent_route();
-            surface.view.settle_agent_drafts();
-            surface.view.refresh_person_conversation();
-            if let Some(agent) = surface.view.direct_agent.clone() {
-                surface
-                    .view
-                    .agent_tasks
-                    .observe(crate::app::ROOM_SCOPE, &agent);
-            }
-            let content = surface.placement.rect(surface.source, desktop);
-            surface.view.rect = content;
-            let view = &mut surface.view;
-            return ui::floating_surface::paint_app_owned_content(
-                scene,
-                transform,
-                content,
-                theme,
-                |scene| {
-                    view.draw(scene, transform, text_renderer, theme, presence);
-                    true
-                },
-            );
-        }
-        let call_id = format!("chat-call:{}", self.call.channel);
-        if id != call_id || !self.call.active {
-            return false;
-        }
-        let mut hits = Vec::new();
-        self.draw_live_huddle(scene, transform, text_renderer, theme, presence, &mut hits);
-        self.hits.extend(hits);
-        true
-    }
-
-    fn floating_surface_presentations(
-        &self,
-    ) -> Vec<ui::floating_surface::FloatingSurfacePresentation> {
-        let mut presentations: Vec<_> = self
-            .agent_surfaces
-            .values()
-            .filter_map(|surface| surface.presentation(self.desktop_floating_bounds()))
-            .collect();
-        let returning_to_app = self.call.placement.is_return_pending();
-        if !self.call.active
-            || self.call.expanded
-            || (!returning_to_app
-                && !matches!(
-                    self.call.placement.attachment(),
-                    ui::floating_surface::Attachment::Desktop { .. }
-                ))
-        {
-            return presentations;
-        }
-        presentations.push(ui::floating_surface::FloatingSurfacePresentation {
-            id: format!("chat-call:{}", self.call.channel),
-            content_rect: self.call_video_rect(),
-            window_rect: self.huddle_panel().inflate(8.0, 8.0),
-            input_rect: Some(self.huddle_panel()),
-            returning_to_app,
-        });
-        presentations
-    }
-
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        let mut ids = self
-            .agent_surfaces
-            .values()
-            .filter(|surface| !surface.is_closed())
-            .map(|surface| surface.id.clone())
-            .collect::<Vec<_>>();
-        ids.extend(
-            self.call
-                .active
-                .then(|| format!("chat-call:{}", self.call.channel)),
-        );
-        ids
-    }
-
-    fn set_floating_surface_bounds(&mut self, bounds: Rect) {
-        self.floating_surface_bounds = bounds;
-    }
-
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &ui::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        let desktop = self.desktop_floating_bounds();
-        let returned = match message {
-            ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id }
-            | ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id } => {
-                Some((id.clone(), false))
-            }
-            ui::floating_surface::FloatingSurfaceHostMessage::Closed { id } => {
-                Some((id.clone(), true))
-            }
-            _ => None,
-        };
-        if self
-            .agent_surfaces
-            .values_mut()
-            .any(|surface| surface.host_message(message, desktop))
-        {
-            if let Some((id, closed)) = returned {
-                self.settle_returned_agent_surface(&id, closed);
-            }
-            self.canonical_dirty = true;
-            return;
-        }
-        let id = format!("chat-call:{}", self.call.channel);
-        if let ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
-            id: request_id,
-            content_rect,
-            transfer_covered,
-            coordinate_offset,
-            ..
-        } = message
-            && request_id == &id
-            && let Ok(rect) = ui::floating_surface::protocol_rect(*content_rect)
-        {
-            self.call.placement.prepare_desktop_rect_with_offset(
-                rect,
-                vello::kurbo::Vec2::new(coordinate_offset[0], coordinate_offset[1]),
-            );
-            self.call
-                .placement
-                .set_desktop_transfer_covered(*transfer_covered);
-            return;
-        }
-        if let ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
-            id: request_id,
-            rect,
-        } = message
-            && request_id == &id
-            && ui::floating_surface::protocol_rect(*rect).is_ok()
-        {
-            self.call.placement.confirm_desktop_adoption();
-            return;
-        }
-        if matches!(
-            message,
-            ui::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request_id }
-                | ui::floating_surface::FloatingSurfaceHostMessage::Closed { id: request_id }
-                if request_id == &id
-        ) {
-            let app = self.rect;
-            let desktop = self.desktop_floating_bounds();
-            self.call.placement.reattach_to_app(app, desktop);
-            return;
-        }
-        if matches!(
-            message,
-            ui::floating_surface::FloatingSurfaceHostMessage::Suspended { id: request_id }
-                if request_id == &id
-        ) {
-            self.call.placement.confirm_app_adoption(self.rect);
-        }
-    }
-
-    fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
-        if focused {
-            self.focused_agent_surface = id.map(str::to_owned);
-        } else if self.focused_agent_surface.as_deref() == id {
-            self.focused_agent_surface = None;
-        }
-        for surface in self.agent_surfaces.values_mut() {
-            surface
-                .view
-                .set_focus(focused && id == Some(surface.id.as_str()));
-        }
-    }
-
-    fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
-        self.focused_agent_surface = id.map(str::to_owned);
-        for surface in self.agent_surfaces.values_mut() {
-            surface.view.set_focus(id == Some(surface.id.as_str()));
-        }
-    }
-
-    fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
-        self.input_agent_surface = id.map(str::to_owned);
-    }
-}
-
 impl ui::widget::controls::ActionControls for ChatApp {
     /// The header's search button asks the platform to open search over
     /// Chat; everything else comes from the children.
@@ -4555,10 +1474,13 @@ impl ui::widget::controls::ActionControls for ChatApp {
 }
 
 impl Widget for ChatApp {
-    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         // The record is lent to the settle pass: the room's other records
         // take writes now.
         self.flush_staged_parts();
+        self.apply_window_toolbar(edits);
+        self.take_sidebar_events(edits);
+        self.follow_window_shares(edits);
     }
 
     ui::provides!(
@@ -4568,7 +1490,8 @@ impl Widget for ChatApp {
         dyn ui::collaboration::participants::Participants,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::application_view::ApplicationViewState,
-        dyn ui::view::capability::ViewState
+        dyn ui::view::capability::ViewState,
+        dyn ui::semantic_document_read::SemanticReaders
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -4584,10 +1507,6 @@ impl Widget for ChatApp {
         for child in self.children_mut() {
             child.set_motion_reduced(reduced);
         }
-    }
-
-    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
-        &crate::semantic_read::action::READERS
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -4637,7 +1556,6 @@ impl Widget for ChatApp {
     fn set_focus(&mut self, focused: bool) {
         self.host_focused = focused;
         if !focused {
-            self.left_flap.set_resize_focused(false);
             self.right_flap.set_resize_focused(false);
         }
         self.canonical_dirty = true;
@@ -4666,9 +1584,7 @@ impl Widget for ChatApp {
         if !self.host_focused {
             return None;
         }
-        if self.rename.is_some() {
-            self.rename_input.ime_cursor_rect()
-        } else if self.editing.is_some() {
+        if self.editing.is_some() {
             self.edit_input.ime_cursor_rect()
         } else {
             self.focused_composer().ime_cursor_rect()
@@ -4696,12 +1612,6 @@ impl Widget for ChatApp {
         self.settle_refused_post();
         self.settle_attachment_import();
         self.refresh_person_conversation();
-        self.canonical_dirty |= self.agent_tasks.pump();
-        self.settle_agent_drafts();
-        if let Some(agent) = self.direct_agent.clone() {
-            self.agent_tasks.observe(crate::app::ROOM_SCOPE, &agent);
-            self.sync_agent_route();
-        }
         {
             use automerge::transaction::Transactable as _;
             // Reload and repaint only when the document moved: committed heads
@@ -4725,7 +1635,7 @@ impl Widget for ChatApp {
                     });
             if !unchanged {
                 self.canonical_dirty = true;
-                self.reload(doc);
+                ui::tilo_resource::profiling::measure("chat.sync.reload", || self.reload(doc));
                 self.synced = Some((heads, pending));
             }
         }
@@ -4829,6 +1739,12 @@ impl Widget for ChatApp {
         root
     }
 
+    /// The host call tile has a node of its own; Chat routes and paints it.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.video);
+        true
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         if !self.presented {
             self.presented = true;
@@ -4860,6 +1776,20 @@ impl Widget for ChatApp {
             };
             self.video.apply_layout(taffy, vn, off);
         }
+        self.laid_video = Some((self.call.expanded, self.call_video_rect()));
+    }
+
+    /// Chat paints what it shows itself; under it only the call's video
+    /// tile is laid out. So a frame elsewhere on the desktop (another window
+    /// opening, an animation, a peer's pointer) re-solves nothing here: the
+    /// layout is dirty only while the expanded call's tile follows the
+    /// participant grid, or when the tile's node would be placed elsewhere
+    /// than it was laid, because the call closed or the tile moved.
+    fn is_layout_dirty(&self) -> bool {
+        self.call.expanded
+            || self
+                .laid_video
+                .is_some_and(|laid| laid != (self.call.expanded, self.call_video_rect()))
     }
 
     fn draw(
@@ -4870,39 +1800,35 @@ impl Widget for ChatApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Adopt the OS-provided permission context so channel participation and
-        // file-embed hydration are gated by the real grant policy (the
-        // compositor scopes each app's context around its draw every frame).
-        if let Some(permissions) = presence.permission_context() {
-            self.perms = ChatPermissions::from_context(permissions);
-        }
-        // Adopt the room's answer for who everybody is. Names and colours are
-        // the room's to give: they arrive on the collaboration context stream
-        // and land in the presence store, and this is the one door an app has
-        // onto that store. Taken first so the same frame that learns a name
-        // paints it.
-        if let Some(capture) = self.capture_agent_presence.clone() {
-            self.adopt_room(&capture);
-        } else {
-            self.adopt_room(presence);
-        }
+        // The attachments painted below say when they step on next.
+        let _draw_phase = ui::tilo_resource::profiling::Phase::start("chat.draw");
+        self.arriving_wake.set(None);
         // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
         self.advance_flaps(theme);
         self.reconcile_huddle_motion(tr, theme);
         self.reconcile_speaking(theme);
-        self.tooltips.tick(ui::time::now());
 
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
-        // The picture tiles this frame draws note themselves again.
+        // The picture tiles this frame draws note themselves again, and so
+        // do the messages it shows.
         self.picture_tiles.borrow_mut().clear();
+        self.painted_messages.clear();
+        // Every region is drawn as a part of its own, compared with the
+        // last frame's: what Chat reports as damage is the regions whose
+        // drawing changed.
+        let mut parts = PaintParts::new(scene);
+        let window = self.rect;
 
         // The conversation stands on the window ground the framework painted.
         // A pushed thread owns the narrow page, including its input targets.
         if !self.thread_is_page() {
-            self.draw_conversation(scene, tf, tr, theme, presence, &mut hits);
+            self.draw_conversation(&mut parts, scene, tf, tr, theme, presence, &mut hits);
         }
-        self.draw_drawers(scene, tf, tr, theme, presence, &mut hits);
+        let drawers_phase = ui::tilo_resource::profiling::Phase::start("chat.draw.drawers");
+        self.draw_drawers(&mut parts, scene, tf, tr, theme, presence, &mut hits);
+        drawers_phase.end();
+        self.declare_window_toolbar();
 
         // Call layers. The host tile is a real VideoPlayer, painted only once
         // a real capture has fed it a frame; otherwise the honest camera-off
@@ -4912,27 +1838,52 @@ impl Widget for ChatApp {
             // Measure the controls and header with this frame's text scale
             // before anything reads their geometry.
             self.measure_call_overlay(tr, theme);
-            self.draw_call_overlay_bg(scene, tf, tr, theme);
-            if host_has_frame {
-                self.video.draw(scene, tf, tr, theme, presence);
-            }
-            self.draw_host_camera_off(scene, tf, tr, theme);
-            self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
+            parts.draw(scene, "chat-call", window, |scene| {
+                self.draw_call_overlay_bg(scene, tf, tr, theme);
+                if host_has_frame {
+                    self.video.draw(scene, tf, tr, theme, presence);
+                }
+                self.draw_host_camera_off(scene, tf, tr, theme);
+                self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
+            });
         } else if self.app_draws_huddle() {
-            self.draw_live_huddle(scene, tf, tr, theme, presence, &mut hits);
+            // Settled, the call window paints its panel and shadow; moving,
+            // it may be anywhere in the window.
+            let placement = &self.call.placement;
+            let bounds = if placement.is_dragging() || placement.is_handoff_animating() {
+                window
+            } else {
+                ui::widget::floating_surface::painted_bounds(self.huddle_panel(), theme)
+                    .intersect(window)
+            };
+            parts.draw(scene, "chat-call", bounds, |scene| {
+                self.draw_live_huddle(scene, tf, tr, theme, presence, &mut hits);
+            });
         }
 
         // Popovers over the conversation; the context menu paints in the
         // top layer, from `draw_overlay`.
         if self.emoji_open {
-            self.draw_emoji_picker(scene, tf, tr, theme, presence, &mut hits);
+            parts.draw(scene, "chat-emoji", window, |scene| {
+                self.draw_emoji_picker(scene, tf, tr, theme, presence, &mut hits);
+            });
         }
         if self.history_open.is_some() {
-            self.draw_history_popover(scene, tf, tr, theme, &mut hits);
+            parts.draw(scene, "chat-history", window, |scene| {
+                self.draw_history_popover(scene, tf, tr, theme, &mut hits);
+            });
         }
         if self.attach_open {
-            self.draw_attach_picker(scene, tf, tr, theme, &mut hits);
+            parts.draw(scene, "chat-attach", window, |scene| {
+                self.draw_attach_picker(scene, tf, tr, theme, &mut hits);
+            });
         }
+        if self.live_shares.panel.is_some() {
+            parts.draw(scene, "chat-share", window, |scene| {
+                self.draw_share_panel(scene, tf, tr, theme, &mut hits);
+            });
+        }
+        self.declare_share_embeds();
 
         // Immediate-mode keyboard focus needs a visible counterpart. The ring
         // is painted last so it remains legible on sidebar and popovers.
@@ -4941,22 +1892,22 @@ impl Widget for ChatApp {
             && let Some(index) = self.keyboard_target
         {
             if let Some((rect, ..)) = semantic.get(index) {
-                ui::widget::paint_focus_ring(
-                    scene,
-                    tf,
-                    *rect,
-                    f64::from(theme.tokens.radii.item),
-                    theme,
-                );
+                parts.draw(scene, "chat-focus", window, |scene| {
+                    ui::widget::paint_focus_ring(
+                        scene,
+                        tf,
+                        *rect,
+                        f64::from(theme.tokens.radii.item),
+                        theme,
+                    );
+                });
             } else {
                 self.keyboard_target = None;
             }
         }
 
-        if let Some((label, anchor)) = self.tooltips.visible() {
-            ui::widget::tooltip::draw_hover_tooltip(scene, tf, tr, theme, anchor, label, self.rect);
-        }
-
+        let frame = parts.finish(scene, vec![window], tf, theme);
+        self.paint_damage.record(window, frame);
         self.hits = hits;
     }
 
@@ -4998,6 +1949,19 @@ impl Widget for ChatApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let _phase = ui::tilo_resource::profiling::Phase::start("chat.handle_event");
+        // What is typed belongs to the control that has the keyboard. A
+        // desktop where no window holds it offers each key to every window
+        // in turn, and Chat must not write into its composer what was not
+        // typed into it.
+        if !self.host_focused
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+            )
+        {
+            return;
+        }
         let secondary = self
             .input_agent_surface
             .as_deref()
@@ -5016,25 +1980,25 @@ impl Widget for ChatApp {
         // Embedded inputs request focus with a temporary layout node. Map
         // that actual request to Chat's retained keyboard/IME owner.
         let was_handled = *ctx.handled;
-        // The navigation drawer takes its toggle, its show/hide shortcut,
-        // Escape and a press on its scrim, unless a popover over the
-        // conversation is open and dismisses first.
+        // The detail drawer takes its show/hide shortcut, Escape and a press
+        // on its scrim, unless a popover over the conversation is open and
+        // dismisses first.
         if self.menu.is_none()
             && self.channel_sheet.is_none()
             && !self.attach_open
+            && self.live_shares.panel.is_none()
             && !self.emoji_open
             && self.history_open.is_none()
             && !self.thread_is_page()
         {
             self.reconcile_flaps();
-            if self.left_flap.handle_event(event, ctx) || self.right_flap.handle_event(event, ctx) {
+            if self.right_flap.handle_event(event, ctx) {
                 *ctx.handled = true;
                 self.canonical_dirty = true;
                 return;
             }
         }
-        self.canonical_dirty |=
-            self.left_flap.take_resize_redraw() | self.right_flap.take_resize_redraw();
+        self.canonical_dirty |= self.right_flap.take_resize_redraw();
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -5042,7 +2006,6 @@ impl Widget for ChatApp {
                 ..
             }
         ) {
-            self.left_flap.set_resize_focused(false);
             self.right_flap.set_resize_focused(false);
         }
         let requested = self.dispatch_event(
@@ -5061,79 +2024,64 @@ impl Widget for ChatApp {
         if !was_handled && requested && ctx.focus_target.is_none() {
             *ctx.focus_target = Some(ctx.node_id);
         }
+        // A menu's Rename names the row in the sidebar, which takes the
+        // keyboard for it.
+        if let Some(place) = self.sidebar_rename.take() {
+            self.places.begin_rename(&place, ctx.focus_target);
+        }
     }
 
+    /// Chat's painted controls and elided header text take their tooltips
+    /// through the toolkit's one mechanism, which shows them after a dwell
+    /// and takes them away when the person acts or the pointer leaves.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        self.hover_tooltip_target(point)
+    }
+
+    /// The flap's resize edge, then the painted control under the pointer:
+    /// a text field's I-beam, a handle's grab, a pointing hand on what a
+    /// press activates. A popover's scrim asks for nothing.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        self.left_flap
-            .resize_cursor(point)
-            .or_else(|| self.right_flap.resize_cursor(point))
+        use winit::window::CursorIcon;
+        if let Some(resize) = self.right_flap.resize_cursor(point) {
+            return Some(resize);
+        }
+        let (_, hit) = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(rect, _)| rect.contains(point))?;
+        match hit {
+            Hit::Dismiss => None,
+            Hit::FocusEmojiSearch => ui::Widget::cursor_shape(&self.emoji_picker, point),
+            Hit::AgentDragHandle | Hit::CallDragHandle => Some(CursorIcon::Grab),
+            hit if self.text_field_access(hit).is_some() => Some(CursorIcon::Text),
+            _ => Some(CursorIcon::Pointer),
+        }
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
+        use ui::a11y::{AccessNode, Role};
 
-        let controls = self
-            .semantic_hits()
-            .into_iter()
-            .enumerate()
-            .map(|(index, (rect, hit, name, role, selected))| {
-                let input = self.text_field_access(&hit);
-                let focused = self.host_focused
-                    && self.keyboard_target.map_or_else(
-                        || input.as_ref().is_some_and(|(focused, _, _)| *focused),
-                        |target| target == index,
-                    );
-                let mut state = AccessState::new().focusable(true).focused(focused);
-                if matches!(role, Role::Tab | Role::ListItem) {
-                    state = state.selected(selected);
-                }
-                if matches!(role, Role::ToggleButton) {
-                    state = state.checked(selected);
-                }
-                let mut node = AccessNode::new(role)
-                    .with_name(name)
-                    .with_state(state)
-                    .with_bounds(rect)
-                    .with_key(index as u64)
-                    .with_action_target(hit.semantic_id());
-                if let Some((_, value, (anchor, focus))) = input {
-                    node = node.with_value(&value).with_text_selection(anchor, focus);
-                }
-                node
-            })
-            .collect();
+        #[cfg(test)]
+        crate::component_tests::ACCESSIBILITY_BUILDS
+            .set(crate::component_tests::ACCESSIBILITY_BUILDS.get() + 1);
+        let controls = self.control_accessibility();
 
         let conversation = self.conversation_accessibility();
         let mut children: Vec<AccessNode> = controls;
-        children.extend(self.left_flap.resize_accessibility());
         children.extend(self.right_flap.resize_accessibility());
         if let Some(peer) = &self.direct_person {
             children.push(
                 AccessNode::new(Role::Heading { level: 1 })
                     .with_name(self.person_display_name(peer))
                     .with_description(crate::i18n::t("chat-person-chat-private"))
-                    .with_bounds(self.header_rect())
                     .with_hashed_key(("person-conversation-heading", &self.active_channel)),
             );
         }
-        if let Some(agent) = self.direct_agent.as_deref() {
-            let mut heading = AccessNode::new(Role::Heading { level: 1 })
-                .with_name(self.header_identity_text().name)
-                .with_bounds(self.header_rect())
-                .with_hashed_key(("agent-conversation-heading", agent));
-            if let Some(tasks) = self.direct_agent_tasks() {
-                let lines = crate::render_chat::agent_task_status_lines(tasks);
-                let description = lines.receipt.map_or_else(
-                    || lines.primary.clone(),
-                    |receipt| format!("{}\n{receipt}", lines.primary),
-                );
-                heading = heading.with_description(description);
-            }
-            children.push(heading);
-        } else if let Some(channel) = self.channel(&self.active_channel) {
+        if let Some(channel) = self.channel(&self.active_channel) {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
                 .with_name(channel.kind.label(&channel.name))
-                .with_bounds(self.header_rect())
                 .with_hashed_key(("conversation-heading", &channel.id));
             if !channel.topic.trim().is_empty() {
                 // The desktop header deliberately elides the topic before the
@@ -5144,6 +2092,24 @@ impl Widget for ChatApp {
             children.push(heading);
         }
         children.push(conversation);
+        // The call panel's count is painted in its title bar: read where it
+        // is drawn, and no stop for the keyboard. Its status (what is
+        // wrong, else how it is connected) is read with it.
+        if self.call.active
+            && let Some((title_bar, _)) = self
+                .hits
+                .iter()
+                .find(|(_, hit)| matches!(hit, Hit::CallDragHandle))
+        {
+            children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(self.call_count_label())
+                    .with_description(self.call_status_label())
+                    .with_bounds(*title_bar)
+                    .with_hashed_key(("call-count", &self.call.channel)),
+            );
+        }
+        children.extend(self.emoji_notice_accessibility());
         if let Some(menu) = self.menu.as_ref()
             && let Some(menu_node) = menu.widget.accessibility()
         {
@@ -5164,8 +2130,9 @@ impl Widget for ChatApp {
         Some(
             AccessNode::new(Role::Group)
                 .with_semantic_key("chat-surface")
-                .with_name("Chat")
-                .with_description("Channels in the current Tilo workspace")
+                .with_name(crate::i18n::t("chat-surface"))
+                .with_interface_name(true)
+                .with_description(crate::i18n::t("chat-surface-detail"))
                 .with_children(children),
         )
     }
@@ -5179,14 +2146,10 @@ impl Widget for ChatApp {
             .map(|(rect, ..)| *rect)
             .or_else(|| {
                 let offset = index.checked_sub(self.semantic_hits().len())?;
-                [
-                    self.left_flap.resize_accessibility(),
-                    self.right_flap.resize_accessibility(),
-                ]
-                .into_iter()
-                .flatten()
-                .nth(offset)
-                .and_then(|node| node.bounds.map(ui::a11y::AccessBounds::to_rect))
+                self.right_flap
+                    .resize_accessibility()
+                    .filter(|_| offset == 0)
+                    .and_then(|node| node.bounds.map(ui::a11y::AccessBounds::to_rect))
             })
     }
 
@@ -5196,19 +2159,15 @@ impl Widget for ChatApp {
         };
         if *index >= self.semantic_hits().len() {
             let offset = index.saturating_sub(self.semantic_hits().len());
-            let target = [
-                self.left_flap.resize_accessibility(),
-                self.right_flap.resize_accessibility(),
-            ]
-            .into_iter()
-            .flatten()
-            .nth(offset)
-            .and_then(|node| node.action_target);
+            let target = self
+                .right_flap
+                .resize_accessibility()
+                .filter(|_| offset == 0)
+                .and_then(|node| node.action_target);
             return target.is_some_and(|target| {
                 self.perform_drawer_resize(&target, &ui::a11y::Action::Focus)
             });
         }
-        self.left_flap.set_resize_focused(false);
         self.right_flap.set_resize_focused(false);
         self.keyboard_target = Some(*index);
         true
@@ -5245,10 +2204,7 @@ impl Widget for ChatApp {
         // focus goes through the same focus route as a click, values remain a
         // local draft until Send/Save, and selections stay inside the toolkit
         // editor rather than becoming a second text model.
-        if matches!(
-            hit,
-            Hit::FocusMain | Hit::FocusThread | Hit::FocusRename | Hit::FocusEdit
-        ) {
+        if matches!(hit, Hit::FocusMain | Hit::FocusThread | Hit::FocusEdit) {
             return self.perform_editor_semantic_action(hit, action, state, path);
         }
         if !matches!(
@@ -5257,20 +2213,8 @@ impl Widget for ChatApp {
         ) {
             return false;
         }
-        if let Hit::AgentTask(frontier) = &hit {
-            return self.select_agent_task(frontier);
-        }
-        if matches!(hit, Hit::AgentStart) {
-            return self.start_agent_task();
-        }
-        if matches!(hit, Hit::AgentStop) {
-            return self.stop_agent_task();
-        }
         if matches!(hit, Hit::Send) && self.direct_person.is_some() {
             return self.send_person_focused();
-        }
-        if matches!(hit, Hit::Send) && self.direct_agent.is_some() {
-            return self.send_agent_focused(state);
         }
         let messages_before = matches!(hit, Hit::Send).then(|| {
             crate::projection::read(state)
@@ -5316,9 +2260,11 @@ impl Widget for ChatApp {
     /// no longer pins a core.
     fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         let model_changed = self.pump_model();
+        let room_changed = self.take_room();
+        self.settle_attachment_save();
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
-        std::mem::take(&mut self.read_on_present) || model_changed
+        std::mem::take(&mut self.read_on_present) || model_changed || room_changed
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -5328,36 +2274,28 @@ impl Widget for ChatApp {
             || (self.thread_open.is_some() && self.thread_scroll.needs_animation_frame())
             || self.flap_animating
             || self.call_chrome_motion.animating
+            || self.message_bar.animating
             || self.speaking.animating
             || self.call.placement.is_dragging()
             || self.call.placement.is_handoff_animating()
             || self.agent_surfaces.values().any(|surface| {
                 surface.placement.is_dragging() || surface.placement.is_handoff_animating()
             })
-            || self.tooltips.needs_frame()
             || !self.images.is_idle()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        self.direct_agent
-            .as_deref()
-            .and_then(|agent| self.agent_tasks.next_refresh_deadline(agent))
+        // An attachment on its way steps its placeholder on at its
+        // deadline; its bytes arriving wake the window themselves.
+        self.native_voice
+            .next_deadline(ui::time::now())
             .into_iter()
-            .chain(
-                self.agent_surfaces
-                    .values()
-                    .filter(|surface| !surface.is_closed())
-                    .filter_map(|surface| {
-                        let agent = surface.view.direct_agent.as_deref()?;
-                        surface.view.agent_tasks.next_refresh_deadline(agent)
-                    }),
-            )
+            .chain(self.arriving_wake.get())
             .min()
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.left_flap.is_resizing()
-            || self.right_flap.is_resizing()
+        self.right_flap.is_resizing()
             || self.call.placement.is_dragging()
             || self.agent_conversation_drag.is_some()
             || (self.thread_open.is_some() && self.thread_scroll.wants_pointer_capture())
@@ -5370,10 +2308,30 @@ impl Widget for ChatApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.canonical_dirty || (self.thread_open.is_some() && self.thread_scroll.needs_redraw())
+        self.canonical_dirty
+            || (self.thread_open.is_some() && self.thread_scroll.needs_redraw())
+            || self
+                .arriving_wake
+                .get()
+                .is_some_and(|at| at <= ui::motion::frame_now())
+    }
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+    fn damage_covers_own_box(&self) -> bool {
+        self.paint_damage.covers_own_bounds()
+    }
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
     }
     fn mark_drawn(&mut self) {
         self.canonical_dirty = false;
+        self.paint_damage.mark_drawn();
         self.composer_main.mark_drawn();
         self.composer_thread.mark_drawn();
         self.thread_scroll.mark_drawn();
@@ -5411,15 +2369,6 @@ impl ChatApp {
                 }
                 Hit::FocusThread => {
                     if !self.perform_thread_editor_action(action, state, path) {
-                        return false;
-                    }
-                }
-                Hit::FocusRename => {
-                    if self.rename.is_none() {
-                        return false;
-                    }
-                    if !ui::Widget::perform_action(&mut self.rename_input, action, &[], state, path)
-                    {
                         return false;
                     }
                 }
@@ -5487,11 +2436,9 @@ impl ChatApp {
 
     fn perform_drawer_resize(&mut self, target: &str, action: &ui::a11y::Action) -> bool {
         if matches!(action, ui::a11y::Action::Focus) {
-            self.left_flap.set_resize_focused(false);
             self.right_flap.set_resize_focused(false);
         }
-        let handled = self.left_flap.perform_resize_action(target, action)
-            || self.right_flap.perform_resize_action(target, action);
+        let handled = self.right_flap.perform_resize_action(target, action);
         if handled {
             self.keyboard_target = None;
             self.reconcile_flaps();
@@ -5506,7 +2453,7 @@ impl ui::presence::capability::PublishesPresence for ChatApp {
     /// they are in: what the others' sidebars show under it.
     fn presence_payload(&self) -> Option<(ui::presence::PresenceKey, ui::PresencePayload)> {
         self.composer_presence().or_else(|| {
-            (self.call.active && !self.call.channel.is_empty()).then(|| {
+            (self.in_call() && !self.call.channel.is_empty()).then(|| {
                 (
                     Self::voice_presence_key(&self.call.channel),
                     ui::PresencePayload::Caret { pos: 0 },
@@ -5581,20 +2528,25 @@ impl ChatApp {
             theme.reduce_motion,
         );
         self.draw_huddle_bg(scene, transform, text_renderer, theme, hits);
-        if self.video.latest_frame().is_some() {
-            self.video
-                .draw(scene, transform, text_renderer, theme, presence);
+        // The large tile shows someone else once anyone is; this person's
+        // own camera only while alone in the call.
+        if self.huddle_features_me() {
+            if self.video.latest_frame().is_some() {
+                self.video
+                    .draw(scene, transform, text_renderer, theme, presence);
+            }
+            self.draw_host_camera_off(scene, transform, text_renderer, theme);
+        } else {
+            self.draw_huddle_featured(scene, transform, text_renderer, theme);
         }
-        self.draw_host_camera_off(scene, transform, text_renderer, theme);
         self.draw_huddle_fg(scene, transform, text_renderer, theme, hits);
     }
 
-    /// The two drawers over (or beside) the conversation: the detail drawer
-    /// (the open thread, or the workspace's people), the navigation drawer
-    /// (the channel list), each over its scrim when it floats, and the
-    /// sidebar toggle.
+    /// The detail drawer over (or beside) the conversation: the open thread,
+    /// the pins or the workspace's people, over its scrim when it floats.
     fn draw_drawers(
         &mut self,
+        parts: &mut PaintParts,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
@@ -5607,9 +2559,11 @@ impl ChatApp {
         if self.right_flap_open() || self.right_flap.reveal() > 0.001 {
             if self.thread_is_page() {
                 let page = self.thread_rect();
-                ui::surface::region(scene, tf, page, ui::surface::Region::Content, theme);
-                ChatApp::push_hit(hits, page, Hit::FocusThread);
-                self.draw_thread(scene, tf, tr, theme, presence, hits);
+                parts.draw(scene, "chat-thread", self.rect, |scene| {
+                    ui::surface::region(scene, tf, page, ui::surface::Region::Content, theme);
+                    ChatApp::push_hit(hits, page, Hit::FocusThread);
+                    self.draw_thread(scene, tf, tr, theme, presence, hits);
+                });
             } else {
                 let scrim = self.right_flap.scrim_rect();
                 if scrim.width() > 0.5 {
@@ -5617,46 +2571,28 @@ impl ChatApp {
                 }
                 let panel = self.right_flap.sidebar_rect();
                 if panel.width() > 0.5 {
-                    crate::paint::push_clip(scene, tf, panel);
-                    let local = self.right_flap.paint_panel(scene, tf, theme);
-                    if self.thread_open.is_some() {
-                        self.draw_thread(scene, tf, tr, &local, presence, hits);
-                    } else if self.pins_open {
-                        self.draw_pins(scene, tf, tr, &local, hits);
-                    } else {
-                        self.draw_members(scene, tf, tr, &local, hits);
-                    }
-                    scene.pop_layer();
+                    // Clipped to its panel, shadow and all.
+                    parts.draw(scene, "chat-detail", panel, |scene| {
+                        crate::paint::push_clip(scene, tf, panel);
+                        let local = self.right_flap.paint_panel(scene, tf, theme);
+                        if self.thread_open.is_some() {
+                            self.draw_thread(scene, tf, tr, &local, presence, hits);
+                        } else if self.pins_open {
+                            self.draw_pins(scene, tf, tr, &local, hits);
+                        } else {
+                            self.draw_members(scene, tf, tr, &local, hits);
+                        }
+                        scene.pop_layer();
+                    });
                 }
             }
         }
-
-        // The navigation drawer: the room's channel list.
-        // Painting it says again where its list scrolls.
-        self.nav_viewport = Rect::ZERO;
-        // A thread pushed over a narrow window is the whole page.
         if self.thread_is_page() {
             return;
         }
-        let scrim = self.left_flap.scrim_rect();
-        if scrim.width() > 0.5 {
-            ChatApp::push_hit(hits, scrim, Hit::Dismiss);
-        }
-        let nav = self.nav_rect();
-        let shown = self.left_flap_open() || self.left_flap.reveal() > 0.001;
-        if shown && nav.width() > 0.5 && nav.x1 > self.rect.x0 {
-            crate::paint::push_clip(scene, tf, nav);
-            let local = self.left_flap.paint_panel(scene, tf, theme);
-            self.draw_nav_header(scene, tf, tr, &local, hits);
-            self.draw_sidebar(scene, tf, tr, &local, presence, hits);
-            scene.pop_layer();
-        }
-
-        // The sidebar toggle: at the drawer's top-leading corner while it
-        // shows, else at the conversation header's leading edge.
-        self.draw_flap_toggles(scene, tf, tr, theme, hits);
-        self.left_flap.paint_resize(scene, tf, theme);
-        self.right_flap.paint_resize(scene, tf, theme);
+        parts.draw(scene, "chat-dividers", self.rect, |scene| {
+            self.right_flap.paint_resize(scene, tf, theme);
+        });
     }
 
     /// Flag a taffy rebuild (kept for parity; the video rect is now set in
@@ -5669,297 +2605,27 @@ impl ChatApp {
 }
 
 #[cfg(test)]
-mod identity_on_screen {
-    use super::*;
-    use ui::widget::Widget;
-
-    /// A window's person joins the roster through `introduce`.
-    #[test]
-    fn a_live_peer_joins_through_the_user_action() {
-        let mut app = ChatApp::new(
-            crate::identity::LocalIdentity::for_participant("person-1"),
-            ChatRuntime::Unavailable,
-            ContentStore::memory(),
-        )
-        .announcing();
-        app.attach_framework(ui::framework::Dispatcher::detached(
-            "so.tilo.chat",
-            "person-1",
-        ));
-        let mut state = ui::State::new();
-        crate::testing::starter(&mut state.doc, "owner", "Owner", "OW");
-        Widget::sync(&mut app, &state.doc, &state.root);
-        app.land(&mut state.doc);
-        let recorded = app
-            .last_dispatched()
-            .expect("the live peer is submitted as introduce");
-        assert_eq!(
-            serde_json::to_value(&recorded).unwrap(),
-            crate::testing::operation(&crate::resource::Chat::INTRODUCE.with(
-                crate::record::chat::Introduce {
-                    name: app.me.name.clone(),
-                    initials: app.me.initials.clone(),
-                    color: u32::try_from(app.me.color_idx).unwrap(),
-                }
-            ))
-        );
-        let joined = crate::testing::users(&state.doc)
-            .into_iter()
-            .find(|user| user.id == app.me.id)
-            .expect("the window's person is in the roster");
-        assert_eq!(
-            (joined.name, joined.initials, joined.status),
-            (
-                app.me.name.clone(),
-                app.me.initials.clone(),
-                crate::model::Presence::Online
-            )
-        );
-    }
-
-    #[test]
-    fn primary_scroll_maps_bottom_anchor_and_clamps_without_editing() {
-        use ui::widget::PrimaryScrollAction;
-        let mut app = ChatApp::new_ephemeral();
-        app.scroll_content = 1000.0;
-        app.scroll_viewport = 200.0;
-        app.scroll = 0.0;
-        assert_eq!(app.primary_vertical_scroll().unwrap().metrics.offset, 800.0);
-        app.apply_primary_vertical_scroll(PrimaryScrollAction::Start);
-        assert_eq!(app.scroll, 800.0);
-        assert!(!app.timeline_at_end);
-        app.apply_primary_vertical_scroll(PrimaryScrollAction::Line(1));
-        assert_eq!(app.scroll, 752.0);
-        app.apply_primary_vertical_scroll(PrimaryScrollAction::End);
-        assert_eq!(app.scroll, 0.0);
-        assert!(app.timeline_at_end);
-        app.scroll_content = 100.0;
-        assert_eq!(
-            app.primary_vertical_scroll().unwrap().metrics.max_scroll(),
-            0.0
-        );
-    }
-
-    fn user(id: &str, is_agent: bool) -> User {
-        User {
-            id: id.into(),
-            name: id.into(),
-            initials: "U".into(),
-            color_idx: 0,
-            status: crate::model::Presence::Online,
-            is_agent,
-        }
-    }
-
-    #[test]
-    fn a_remote_saved_you_name_is_not_the_current_reader() {
-        use ui::widget::Widget as _;
-        let mut app = ChatApp::new_ephemeral();
-        let mut state = ui::State::new();
-        let stranger = "peer@9007495404254172154";
-        let mut room = crate::testing::Room::default();
-        crate::testing::starter(&mut room, stranger, "You", "Y");
-        crate::testing::say(&mut room, stranger, "c_chat", "Retained foreign message");
-        state.doc = room.chat.clone();
-        app.attach_room(&room);
-        app.sync(&state.doc, &state.root);
-        assert_eq!(
-            app.user(stranger)
-                .expect("observe the actual foreign author in the production roster")
-                .name,
-            "You"
-        );
-        let shown = app.user_name(stranger);
-        assert_ne!(
-            shown, "You",
-            "another person's stored name must not read as the current reader"
-        );
-        assert_eq!(
-            app.display_name(stranger),
-            shown,
-            "mentions and message headers name the same foreign person"
-        );
-        assert!(
-            shown.contains("2154"),
-            "ambiguous names must distinguish the actual participant"
-        );
-        assert_eq!(app.user_name(&app.me.id), crate::identity::DEMO_NAME);
-        assert_eq!(
-            crate::testing::users(&state.doc)[0].name,
-            "You",
-            "presentation must not rewrite saved person data"
-        );
-    }
-
-    #[test]
-    fn people_on_screen_are_named_honestly_and_you_by_your_name() {
-        // Phase: roster_vocabulary_never_calls_an_agent_a_person.
-        {
-            let mut app = ChatApp::new_ephemeral();
-            app.users = vec![user("u_me", false), user("u_scribe", true)];
-            assert!(
-                app.has_other_collaborator(),
-                "the agent is another collaborator"
-            );
-            assert_eq!(app.roster_label(), "Collaborators");
-
-            app.users = vec![user("u_me", false), user("u_aria", false)];
-            assert_eq!(app.roster_label(), "People");
-        }
-
-        // Phase: an_unnamed_participant_is_not_shown_their_routing_token.
-        {
-            let app = ChatApp::new_ephemeral();
-            let stranger = "peer@9007495404254172154";
-            let shown = app.user_name(stranger);
-            assert!(
-                !shown.contains("9007495404254172154"),
-                "the id leaked onto the screen as `{shown}`"
-            );
-            assert!(
-                shown.starts_with("Someone"),
-                "an unnamed peer should read as somebody unnamed, got `{shown}`"
-            );
-            assert!(
-                shown.contains("2154"),
-                "two unnamed peers have to be distinguishable, got `{shown}`"
-            );
-        }
-
-        // Phase: your_own_name_is_known_before_the_room_has_heard_of_you.
-        {
-            let mut app = ChatApp::new_ephemeral();
-            app.me.name = "Quinten".to_string();
-            app.users.clear();
-            app.room_names.clear();
-            assert_eq!(
-                app.display_name(&app.me.id.clone()),
-                "Quinten",
-                "the name this process worked out for itself must be reachable",
-            );
-        }
-
-        // Phase: the_person_reading_the_screen_is_shown_their_name.
-        {
-            let app = ChatApp::new_ephemeral();
-            let me = app.me.id.clone();
-            assert_eq!(app.user_name(&me), crate::identity::DEMO_NAME);
-        }
-
-        // Phase: people_sharing_a_name_are_numbered_as_the_room_numbers_them.
-        {
-            use ui::permissions::UserId;
-            let mut app = ChatApp::new_ephemeral();
-            let me = app.me.id.clone();
-            let mut presence = PresenceCtx::default();
-            presence.set_self_participant(UserId(me.clone()), "Sam");
-            presence.set_display_name(UserId("a-peer".into()), "sam");
-            presence.set_display_name(UserId("z-peer".into()), "Kim");
-            app.adopt_room(&presence);
-            assert_eq!(app.user_name("a-peer"), "sam (1)");
-            assert_eq!(app.user_name(&me), "Sam (2)");
-            assert_eq!(app.user_name("z-peer"), "Kim");
-            let offered: Vec<String> = app.participants().into_iter().map(|p| p.name).collect();
-            assert!(
-                offered.contains(&"sam (1)".to_owned()),
-                "the @ picker offers the numbered name, got {offered:?}"
-            );
-
-            presence.set_display_name(UserId("a-peer".into()), "Alex");
-            app.adopt_room(&presence);
-            assert_eq!(app.user_name("a-peer"), "Alex");
-            assert_eq!(
-                app.user_name(&me),
-                "Sam",
-                "the number goes once nobody shares it"
-            );
-        }
-    }
-}
-
+mod identity_on_screen_tests;
 #[cfg(test)]
-mod live_draft_presence {
-    use super::*;
-    use ui::PresencePayload;
-    use ui::permissions::UserId;
+mod sidebar_tests;
 
-    fn focused_app(text: &str) -> ChatApp {
-        let mut app = ChatApp::new_ephemeral();
-        app.active_channel = "c1a2b3c4-0000-4000-8000-00000000c0de".into();
-        app.channels = vec![crate::model::Channel {
-            id: app.active_channel.clone(),
-            category: String::new(),
-            name: "general".into(),
-            topic: String::new(),
-            kind: crate::model::ChannelKind::Text,
-            order: 0,
-            unread: 0,
-            mentions: 0,
-            archived: false,
-            conversation_with: None,
-        }];
-        app.rect = Rect::new(0.0, 0.0, 1100.0, 720.0);
-        let mut doc = AutoCommit::new();
-        app.composer_main.set_key(&app.active_channel);
-        app.composer_main.ensure_draft(&doc);
-        app.composer_main
-            .insert_text(&mut ui::widget::Edits::lend(&mut doc), text);
-        app.composer_main.sync(&doc);
-        Widget::set_focus(&mut app, true);
-        app
-    }
-
-    /// The composer tells the room that its person is writing there, while
-    /// they are, and never what or where in their draft.
-    #[test]
-    fn focused_composer_publishes_only_that_its_person_is_writing() {
-        let mut app = focused_app("hello team");
-        let key = ChatApp::draft_presence_key(&app.active_channel);
-        app.composer_main.select(5, 5);
-        assert_eq!(
-            ui::presence::capability::presence_payload(&app),
-            Some((key.clone(), PresencePayload::Caret { pos: 0 }))
-        );
-        app.composer_main.select(0, 5);
-        assert_eq!(
-            ui::presence::capability::presence_payload(&app),
-            Some((key, PresencePayload::Caret { pos: 0 })),
-            "a selection in the draft is not the room's either"
-        );
-        Widget::set_focus(&mut app, false);
-        assert_eq!(ui::presence::capability::presence_payload(&app), None);
-        let mut idle = focused_app("");
-        assert_eq!(
-            ui::presence::capability::presence_payload(&idle),
-            None,
-            "an empty composer is not someone writing"
-        );
-        Widget::set_focus(&mut idle, false);
-    }
-
-    /// Someone writing in the same channel shows under the composer; someone
-    /// writing in another channel does not.
-    #[test]
-    fn someone_writing_here_shows_as_typing() {
-        let app = focused_app("hello team");
-        let key = ChatApp::draft_presence_key(&app.active_channel);
-        assert_eq!(
-            crate::render_chat::typing_line(&PresenceCtx::empty(), &key),
-            None
-        );
-        let mut presence = PresenceCtx::empty();
-        presence.set_display_name(UserId("ada".into()), "Ada");
-        presence.set_caret(&key, UserId("ada".into()), 0);
-        assert_eq!(
-            crate::render_chat::typing_line(&presence, &key).as_deref(),
-            Some("Ada is typing…")
-        );
-        let mut elsewhere = PresenceCtx::empty();
-        elsewhere.set_caret(
-            &ChatApp::draft_presence_key("other"),
-            UserId("ada".into()),
-            0,
-        );
-        assert_eq!(crate::render_chat::typing_line(&elsewhere, &key), None);
-    }
-}
+mod a11y;
+mod agent_route;
+mod call_chrome_motion;
+mod composer_focus;
+mod document;
+mod floating_surfaces;
+mod hits;
+mod layout;
+#[cfg(test)]
+mod live_draft_presence_tests;
+pub(crate) mod menus;
+pub(crate) mod message_bar;
+mod own_delete;
+mod people;
+mod room;
+mod scenarios;
+mod submission;
+pub(crate) use call_chrome_motion::CallChromeMotion;
+pub(crate) use hits::{Hit, PaintedMessage};
+pub(crate) use menus::{ContextMenu, MenuAction, MenuTarget};

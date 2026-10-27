@@ -118,7 +118,6 @@ pub(crate) fn drain(tree: &WorkspaceTree) -> Vec<Notification> {
 mod tests {
     use super::*;
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn a_collaborator_behind_is_named_and_this_device_behind_updates() {
         let ours = neighbour_wire::PEER_PROTOCOL_VERSION;

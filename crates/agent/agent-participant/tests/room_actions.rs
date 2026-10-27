@@ -84,7 +84,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use support::{Device, ROOM, enrol, ready, start_peer, workspace};
 
 const SHEETS: &str = "so.tilo.sheets";
-const SLIDES: &str = "so.tilo.slides";
+const EBOOK: &str = "so.tilo.ebook";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_existing_native_chat_reference_discovers_local_views_over_the_governed_https_host() {
@@ -100,7 +100,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         "temporary-browser",
         DeviceCapabilities::member(),
     );
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&identity_key, &host, state.path()).await;
     let room = hosted
         .relay
@@ -215,7 +215,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         max_results: 256,
         ..CatalogueQuery::default()
     };
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let page = loop {
         let result = browser.catalogue(query.clone()).await;
         if let Ok(page) = &result
@@ -237,6 +237,48 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
                 .as_ref()
                 .is_some_and(|action| action.kind == tilo_actions::OperationKind::View)
     }));
+    // The app filter travels with the query and the host narrows the record's
+    // own views by it: its own app keeps every row, another app is answered
+    // empty rather than refused, and a query naming no app is unchanged.
+    let matching = browser
+        .catalogue(CatalogueQuery {
+            app_id: Some("so.tilo.chat".into()),
+            ..query.clone()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        matching.rows, page.rows,
+        "the record's own app keeps its views"
+    );
+    assert_eq!(
+        matching
+            .locator
+            .as_ref()
+            .map(|locator| locator.provider.as_str()),
+        Some(provider.as_str()),
+        "a matching app is told where to browse the views"
+    );
+    let elsewhere = browser
+        .catalogue(CatalogueQuery {
+            app_id: Some("so.tilo.notes".into()),
+            ..query.clone()
+        })
+        .await
+        .unwrap();
+    assert!(
+        elsewhere.rows.is_empty(),
+        "another app's rows cannot be this record's views"
+    );
+    assert!(
+        elsewhere.locator.is_none(),
+        "an answer that found nothing names no page to browse"
+    );
+    let unscoped = browser.catalogue(query.clone()).await.unwrap();
+    assert_eq!(
+        unscoped.rows, page.rows,
+        "a query naming no app is unchanged"
+    );
     let locator = page.locator.unwrap();
     assert_eq!(locator.origin, hosted.web.origin);
     assert_eq!(locator.room, room.room);
@@ -347,7 +389,7 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             )
             .unwrap();
         let response = answer
-            .wait_timeout(Duration::from_secs(5))
+            .wait_timeout(tilo_test_env::hang_bound())
             .ok()
             .flatten()
             .unwrap();
@@ -476,6 +518,17 @@ async fn start_browser(
     state: &Path,
     page: Option<&str>,
 ) -> Hosted {
+    start_lending(root, host, state, page, None).await
+}
+
+/// A host lending its rooms' reporters `feedback_reviewer`.
+async fn start_lending(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    page: Option<&str>,
+    feedback_reviewer: Option<Arc<dyn tilo_agent_participant::FeedbackReviewer>>,
+) -> Hosted {
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
         state_root: state.join("relay"),
@@ -502,6 +555,7 @@ async fn start_browser(
             state_dir: state.join("agents"),
             model: ModelChoice::Scripted,
             catalogue: Some(Arc::new(common::catalogue)),
+            feedback_reviewer,
         },
     )
     .await
@@ -519,6 +573,7 @@ async fn start_browser(
             live_origin: None,
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
+            fetch_proxy: None,
         })
         .await
         .unwrap();
@@ -630,7 +685,7 @@ impl Browser {
         what: &str,
         pick: impl Fn(&RemoteActionMessage) -> Option<T>,
     ) -> T {
-        let deadline = Instant::now().checked_add(Duration::from_secs(60)).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
         loop {
             self.pump();
             if let Some(index) = self
@@ -755,6 +810,43 @@ fn sheet_names(app: &Replica) -> Vec<String> {
 }
 
 /// The argument of Sheets' New sheet: the sheet's name.
+#[cfg(test)]
+/// Run one more action on `record` and wait until its sheet reaches the
+/// browser, returning the record's sheet names then. The host writes a
+/// record's changes in order, so anything it wrote before has arrived too:
+/// what is missing now was never written.
+async fn after_a_marker(
+    browser: &mut Browser,
+    record: &DocumentRoute,
+    new_sheet: &ActionAddress,
+    marker: &str,
+) -> Vec<String> {
+    let receipt = browser
+        .invoke(request(
+            &record_provider(record),
+            new_sheet.clone(),
+            sheet_named(marker),
+        ))
+        .await;
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "{receipt:?}"
+    );
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        browser.pump();
+        let names = sheet_names(&browser.mount(record));
+        if names.iter().any(|name| name == marker) {
+            return names;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the marker's change never arrived"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 fn sheet_named(name: &str) -> InvokeArgument {
     let mut arguments = serde_json::Map::new();
     arguments.insert("name".into(), name.into());
@@ -801,7 +893,7 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
@@ -953,15 +1045,17 @@ async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
     drop(steward);
     drop(held);
 
-    let prompt = Duration::from_secs(5);
+    // A request held back by keys that do not come waits as long as the
+    // refused one did, on the same machine under the same load.
+    let prompt = refused_after;
     assert!(
         named_while_held < prompt && listed_while_held < prompt && acted_while_held < prompt,
         "another record's missing keys held a request back: catalogue {named_while_held:?}, \
-         listing {listed_while_held:?}, invoke {acted_while_held:?}"
+         listing {listed_while_held:?}, invoke {acted_while_held:?}, against {prompt:?} refusing"
     );
     assert!(
         ran_after_keys < prompt,
-        "the wait did not end when the keys arrived: {ran_after_keys:?}"
+        "the wait did not end when the keys arrived: {ran_after_keys:?}, against {prompt:?} refusing"
     );
     drop(hosted.web);
     hosted.agents.shutdown();
@@ -973,7 +1067,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
@@ -1063,17 +1157,17 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
 
     let sheets = browser.create(SHEETS);
-    let slides = browser.create(SLIDES);
+    let books = browser.create(EBOOK);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let sheets_provider = record_provider(&sheets);
-    let slides_provider = record_provider(&slides);
+    let books_provider = record_provider(&books);
 
     // 1. The catalogue: every record of the room is a provider, and with no
     // provider named the recent records' actions are listed with the room's
@@ -1085,7 +1179,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         "{providers:?}"
     );
     assert!(
-        providers.contains(&slides_provider.as_str()),
+        providers.contains(&books_provider.as_str()),
         "{providers:?}"
     );
     assert!(
@@ -1117,7 +1211,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         matches!(receipt.status, ReceiptStatus::Completed { .. }),
         "{receipt:?}"
     );
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         browser.pump();
         let by_host = browser
@@ -1148,42 +1242,52 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
             error: ActionHostError::InvocationConflict
         }
     );
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    let app = browser.mount(&sheets);
+    let names = after_a_marker(&mut browser, &sheets, &new_sheet, "After the retry").await;
     assert_eq!(
-        sheet_names(&app)
+        names
             .iter()
             .filter(|name| name.as_str() == "Budget")
             .count(),
         1,
-        "a retry never runs the action twice: {:?}",
-        sheet_names(&app)
+        "a retry never runs the action twice: {names:?}"
     );
-    assert!(!sheet_names(&app).contains(&"Other".to_owned()));
+    assert!(!names.contains(&"Other".to_owned()));
 
-    // 4. Confirmation: a destructive action is refused without the caller's
-    // explicit confirmation, and nothing ran; confirmed, it runs.
-    let slides_page = browser
+    // 4. Confirmation: an action Undo cannot take back is refused without
+    // the caller's explicit confirmation, and nothing ran; confirmed, it
+    // runs. Removing a book asks first: Undo puts the row back but not the
+    // device's access to the book's file.
+    let books_page = browser
         .catalogue(CatalogueQuery {
-            provider: Some(slides_provider.clone()),
+            provider: Some(books_provider.clone()),
             max_results: 200,
             ..CatalogueQuery::default()
         })
         .await
         .unwrap();
-    let destructive = slides_page
+    let destructive = books_page
         .rows
         .iter()
         .filter_map(|row| row.action.as_ref())
-        .find(|action| {
-            action.contract.confirmation == ConfirmationPolicy::Confirm
-                && action.params.is_empty()
-                && matches!(action.input, tilo_actions::InputSpec::None)
-        })
-        .expect("Slides offers a destructive action")
-        .address
+        .find(|action| action.address.action == "remove-from-library")
+        .expect("Books offers Remove from library")
         .clone();
-    let unconfirmed = request(&slides_provider, destructive.clone(), InvokeArgument::None);
+    assert_eq!(
+        destructive.contract.confirmation,
+        ConfirmationPolicy::Confirm,
+        "{destructive:?}"
+    );
+    let destructive = destructive.address;
+    let unconfirmed = request(
+        &books_provider,
+        destructive.clone(),
+        InvokeArgument::Json(
+            serde_json::json!({"book": "book:dusk"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        ),
+    );
     let refused = browser.invoke(unconfirmed.clone()).await;
     assert_eq!(
         refused.status,
@@ -1223,7 +1327,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         new_sheet.clone(),
         sheet_named("Busy"),
     );
-    let queued = request(&sheets_provider, new_sheet, sheet_named("Never"));
+    let queued = request(&sheets_provider, new_sheet.clone(), sheet_named("Never"));
     held.requested().await;
     browser.send(RemoteActionMessage::Invoke(slow.clone()));
     browser.send(RemoteActionMessage::Invoke(queued.clone()));
@@ -1269,9 +1373,8 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
                 observed.receipt().status,
                 ReceiptStatus::Cancelled { .. }
             ));
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            let app = browser.mount(&sheets);
-            assert!(!sheet_names(&app).contains(&"Never".to_owned()));
+            let names = after_a_marker(&mut browser, &sheets, &new_sheet, "After the cancel").await;
+            assert!(!names.contains(&"Never".to_owned()));
         }
         Err(error) => panic!("the queued invocation was not cancellable: {error:?}"),
     }
@@ -1333,7 +1436,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
+    let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _steward = steward::Steward::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
@@ -1357,7 +1460,7 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
         .address
         .clone();
 
-    let mut posing = request(&provider, new_sheet, sheet_named("Budget"));
+    let mut posing = request(&provider, new_sheet.clone(), sheet_named("Budget"));
     posing.appearance = Some(tilo_actions::Appearance::new("Owner", None, None).unwrap());
     let receipt = browser.invoke(posing).await;
     assert!(
@@ -1369,8 +1472,6 @@ async fn a_persons_request_carrying_an_appearance_is_refused_and_runs_nothing() 
         ),
         "{receipt:?}"
     );
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    browser.pump();
-    let app = browser.mount(&sheets);
-    assert!(!sheet_names(&app).contains(&"Budget".to_owned()));
+    let names = after_a_marker(&mut browser, &sheets, &new_sheet, "After the refusal").await;
+    assert!(!names.contains(&"Budget".to_owned()));
 }

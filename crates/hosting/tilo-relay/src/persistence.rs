@@ -10,15 +10,21 @@
 //! # What a commit guarantees after a crash
 //!
 //! An admitted delta is fanned out to other sessions, and a `Commit` is
-//! answered with `Committed`, only after its owner job returned: its retained
-//! record (or pending fallback) and every directory entry leading to it have
-//! been fsynced. So an edit any peer has received, or any author was told is
-//! committed, survives a crash or power loss in retained history, in order.
-//! There is no group commit: no edit waits for another to share a barrier,
-//! and none is published before its own barrier. One edit costs two fsyncs
-//! (the record, then its directory), plus [`State::next_sequence`]'s
-//! reservation renewal at most once per [`SEQUENCE_RESERVATION_NS`] of host
-//! clock per workspace. A checkpoint that starts its lineage (each
+//! answered with `Committed`, only after its retained record (or pending
+//! fallback) and every directory entry leading to it have been fsynced. So
+//! an edit any peer has received, or any author was told is committed,
+//! survives a crash or power loss in retained history, in order.
+//!
+//! Commits share their barriers ([`Group`]): the owner runs every commit
+//! already queued, each appending its record unsynced, then syncs all their
+//! records at once, renames them into place and syncs each generation
+//! directory once, and only then completes them, in order. No commit waits
+//! for one not yet queued, and none is published before the barrier that
+//! covers it. Alone, an edit costs two fsyncs (the record, then its
+//! directory); N queued edits cost their N file barriers, issued together,
+//! and one directory barrier. Add [`State::next_sequence`]'s reservation
+//! renewal at most once per [`SEQUENCE_RESERVATION_NS`] of host clock per
+//! workspace. A checkpoint that starts its lineage (each
 //! newcomer's first record), or stands alone and replaces the whole of it
 //! (a device's next access request or acknowledgement), is staged and made
 //! durable before its turn, which then selects the stage with one barrier,
@@ -94,7 +100,94 @@ const SLICE: std::time::Duration = std::time::Duration::from_millis(4);
 type Job = Box<dyn FnOnce(Arc<Mutex<State>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 struct NormalJob {
     sequence: u64,
+    /// A commit whose completion waits for its group's barriers
+    /// ([`Group`]); any other job runs once every held one was released.
+    grouped: bool,
     job: Job,
+}
+/// A grouped job's completion: given whether the barriers covering its
+/// writes held, it acknowledges and publishes, or fails.
+type Release =
+    Box<dyn FnOnce(Result<(), StoreError>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
+/// Most commits one group holds before its barriers are issued.
+const MAX_GROUP: usize = 64;
+
+/// Group commit: the commits an owner ran since its last barrier, and the
+/// records they appended unsynced. The owner runs every commit already
+/// queued, then makes all their records durable at once and only then
+/// releases their completions, in order: no commit is acknowledged or fanned
+/// out before the barrier covering it, and N queued commits share one round
+/// of barriers instead of paying two each.
+#[derive(Default)]
+pub(crate) struct Group {
+    records: crate::store::retained::SharedGroup,
+    held: Vec<Release>,
+    /// Another commit already waits to join the running one's group. When
+    /// none does, the running commit issues the group's barriers in its own
+    /// last quantum instead of a turn of its own on a blocking worker.
+    joining: bool,
+    /// Why barriers issued in a commit's last quantum failed.
+    failed: Option<String>,
+}
+
+impl Group {
+    /// The records the running commit's appends join.
+    pub(crate) fn records(&self) -> crate::store::retained::SharedGroup {
+        self.records.clone()
+    }
+
+    /// Make every record the group holds durable now.
+    pub(crate) fn flush(&self) -> Result<(), StoreError> {
+        self.records.flush()
+    }
+}
+
+/// [`Group::flush`] as a barrier hook ([`tilo_relay_store::with_barrier_hook`]).
+fn flush_hook(
+    records: crate::store::retained::SharedGroup,
+) -> impl FnMut() -> std::io::Result<()> + 'static {
+    move || {
+        records.flush().map_err(|error| match error {
+            StoreError::Io(error) => error,
+            other @ StoreError::Json(_) => std::io::Error::other(other.to_string()),
+        })
+    }
+}
+
+/// Issue the barriers of every record the owner's group holds, then release
+/// its held completions in order, each told whether the barriers held.
+async fn release_group(state: &Arc<Mutex<State>>, workers: &Arc<Semaphore>) {
+    let (held, records) = {
+        let mut state = state.lock_recover();
+        (std::mem::take(&mut state.group.held), state.group.records())
+    };
+    let failed = state.lock_recover().group.failed.take();
+    if held.is_empty() && !records.pending() && failed.is_none() {
+        return;
+    }
+    let synced = if let Some(failure) = failed {
+        Err(error(failure))
+    } else if records.pending() {
+        let syncing = crate::timing::start();
+        let synced = blocking(workers.clone(), move || records.flush())
+            .await
+            .and_then(std::convert::identity);
+        crate::timing::window("owner.group_sync", syncing);
+        synced
+    } else {
+        Ok(())
+    };
+    if let Err(error) = &synced {
+        tracing::warn!(%error, commits = held.len(), "group commit barrier failed");
+    }
+    for release in held {
+        let outcome = match &synced {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self::error(format!("group commit barrier failed: {error}"))),
+        };
+        release(outcome).await;
+    }
 }
 
 /// Which of an owner's ordered queues a job is admitted to. Both take their
@@ -262,6 +355,8 @@ pub(crate) struct State {
     /// writes ([`State::retaining_only`]); unless it says so, the owner
     /// forgets every listing after it.
     retaining_only: bool,
+    /// The commits and records waiting for one barrier ([`Group`]).
+    pub(crate) group: Group,
 }
 pub(crate) fn error(message: impl Into<String>) -> StoreError {
     StoreError::Io(std::io::Error::other(message.into()))
@@ -304,7 +399,6 @@ impl State {
         // commits syncs it once per reservation instead of once per commit.
         if next > self.reserved {
             let reserved = next.saturating_add(SEQUENCE_RESERVATION_NS);
-            // Syncs the file, and after the rename the store root holding it.
             crate::store::atomic_write(&path, &reserved.to_le_bytes())?;
             // Apple's fsync leaves the drive's cache unflushed; std's
             // `sync_all` there is F_FULLFSYNC (as `retained::durable_write`).
@@ -416,6 +510,7 @@ fn start(
         workers: budgets.workers.clone(),
         replay_worker: budgets.replay_worker.clone(),
         retaining_only: false,
+        group: Group::default(),
     }));
     tokio::spawn(run_owner_lanes(Lanes::new(rx, host_rx), replay_rx, state));
     let handle = Persistence {
@@ -511,6 +606,11 @@ impl Lanes {
 
     const fn open(&self) -> bool {
         self.member_open || self.host_open
+    }
+
+    /// Whether a job waits in either queue.
+    fn queued(&self) -> bool {
+        !self.member.is_empty() || !self.host.is_empty()
     }
 
     fn take(&mut self, lane: Lane, job: NormalJob) -> NormalJob {
@@ -742,19 +842,53 @@ async fn run_owner_lanes(
         };
         match work {
             Work::Normal(job) => {
-                state.lock_recover().retaining_only = false;
-                (job.job)(state.clone()).await;
-                completed.done(job.sequence);
-                prefer_normal = false;
-                // What captures listed stays valid after a job that changed
-                // retained history only through retention; any other may
-                // have changed any lineage.
-                let state = state.lock_recover();
-                if !state.retaining_only {
-                    // Counted: the jobs after which every listing is gone.
-                    crate::timing::window("owner.listing_forgotten", crate::timing::start());
-                    state.store.forget_listed(None);
+                // Every commit already queued runs before the barriers of
+                // what they wrote, which come before any of them completes
+                // ([`Group`]); the group ends at a job that is no commit.
+                let mut grouped = Vec::new();
+                let mut next = Some(job);
+                while let Some(job) = next.take() {
+                    if !job.grouped {
+                        release_group(&state, &workers).await;
+                        for sequence in std::mem::take(&mut grouped) {
+                            completed.done(sequence);
+                        }
+                    }
+                    {
+                        let mut state = state.lock_recover();
+                        state.retaining_only = false;
+                        state.group.joining =
+                            grouped.len().saturating_add(1) < MAX_GROUP && lanes.queued();
+                    }
+                    (job.job)(state.clone()).await;
+                    let state = state.lock_recover();
+                    // What captures listed stays valid after a job that changed
+                    // retained history only through retention; any other may
+                    // have changed any lineage.
+                    if !state.retaining_only {
+                        // Counted: the jobs after which every listing is gone.
+                        crate::timing::window("owner.listing_forgotten", crate::timing::start());
+                        state.store.forget_listed(None);
+                    }
+                    if !job.grouped {
+                        completed.done(job.sequence);
+                        break;
+                    }
+                    grouped.push(job.sequence);
+                    // A job that left scratch or a stage to dispose of ends
+                    // its group: its disposal runs before the next mutation.
+                    let disposal =
+                        state.retention_scratch.is_some() || !state.retention_candidates.is_empty();
+                    drop(state);
+                    if !disposal && grouped.len() < MAX_GROUP {
+                        next = lanes.try_next();
+                    }
                 }
+                release_group(&state, &workers).await;
+                for sequence in grouped {
+                    completed.done(sequence);
+                }
+                prefer_normal = false;
             }
             Work::Replay(job) => {
                 (job.job)(state.clone()).await;
@@ -1055,6 +1189,7 @@ impl Persistence {
             bytes,
             byte_count,
             NORMAL_STEPS,
+            false,
             preparation,
             operation,
             completion,
@@ -1072,7 +1207,11 @@ impl Persistence {
         if let Some(hook) = &self.admission_hook {
             hook();
         }
-        permit.send(NormalJob { sequence, job });
+        permit.send(NormalJob {
+            sequence,
+            grouped: false,
+            job,
+        });
         Ok(rx)
     }
 
@@ -1100,13 +1239,58 @@ impl Persistence {
     /// [`Self::submit_resumable_wait`] on `lane`: a host commit waits only
     /// for the host's budgets and queue, and its owner takes it ahead of
     /// the members' ([`Lanes`]).
+    pub(crate) async fn submit_lane_wait<P, PF, T, F, C, CF>(
+        &self,
+        lane: Lane,
+        bytes: usize,
+        preparation: PF,
+        operation: F,
+        completion: C,
+    ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError>
+    where
+        P: Send + 'static,
+        PF: Future<Output = Result<P, StoreError>> + Send + 'static,
+        T: Send + 'static,
+        F: FnMut(&mut State, &mut Option<P>) -> Result<Step<T>, StoreError> + Send + 'static,
+        C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
+        CF: Future<Output = Result<T, StoreError>> + Send + 'static,
+    {
+        self.submit_lane(lane, false, bytes, preparation, operation, completion)
+            .await
+    }
+
+    /// [`Self::submit_lane_wait`] for a commit that joins its owner's group
+    /// ([`Group`]): its completion runs once the barriers covering every
+    /// record the operation appended to the group held, and fails if they
+    /// did not.
+    pub(crate) async fn submit_commit_wait<P, PF, T, F, C, CF>(
+        &self,
+        lane: Lane,
+        bytes: usize,
+        preparation: PF,
+        operation: F,
+        completion: C,
+    ) -> Result<oneshot::Receiver<Result<T, StoreError>>, StoreError>
+    where
+        P: Send + 'static,
+        PF: Future<Output = Result<P, StoreError>> + Send + 'static,
+        T: Send + 'static,
+        F: FnMut(&mut State, &mut Option<P>) -> Result<Step<T>, StoreError> + Send + 'static,
+        C: FnOnce(Result<T, StoreError>) -> CF + Send + 'static,
+        CF: Future<Output = Result<T, StoreError>> + Send + 'static,
+    {
+        self.submit_lane(lane, true, bytes, preparation, operation, completion)
+            .await
+    }
+
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the admission permits move into the job; the lint does not see the move"
     )]
-    pub(crate) async fn submit_lane_wait<P, PF, T, F, C, CF>(
+    async fn submit_lane<P, PF, T, F, C, CF>(
         &self,
         lane: Lane,
+        grouped: bool,
         bytes: usize,
         preparation: PF,
         operation: F,
@@ -1140,6 +1324,7 @@ impl Persistence {
                 Lane::Member => NORMAL_STEPS,
                 Lane::Host => HOST_STEPS,
             },
+            grouped,
             preparation,
             operation,
             completion,
@@ -1158,7 +1343,11 @@ impl Persistence {
         if let Some(hook) = &self.admission_hook {
             hook();
         }
-        permit.send(NormalJob { sequence, job });
+        permit.send(NormalJob {
+            sequence,
+            grouped,
+            job,
+        });
         Ok(rx)
     }
 
@@ -1222,7 +1411,11 @@ impl Persistence {
         if let Some(hook) = &self.admission_hook {
             hook();
         }
-        permit.send(NormalJob { sequence, job });
+        permit.send(NormalJob {
+            sequence,
+            grouped: false,
+            job,
+        });
         Ok(rx)
     }
 
@@ -1271,6 +1464,7 @@ impl Persistence {
             bytes,
             byte_count,
             REPLAY_STEPS,
+            false,
             preparation,
             operation,
             completion,
@@ -1335,6 +1529,7 @@ fn resumable_job<P, PF, T, F, C, CF>(
     bytes: OwnedSemaphorePermit,
     byte_count: u32,
     steps: JobSteps,
+    grouped: bool,
     preparation: PF,
     operation: F,
     completion: C,
@@ -1357,7 +1552,7 @@ where
     let job = Box::new(
         move |state: Arc<Mutex<State>>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
             Box::pin(async move {
-                let (_slot, _bytes) = (slot, bytes);
+                let permits = (slot, bytes);
                 let workers = state.lock_recover().workers.clone();
                 crate::timing::window(steps.queue, timed);
                 let preparing = crate::timing::start();
@@ -1372,13 +1567,29 @@ where
                             let quantum = blocking(workers.clone(), move || {
                                 let start = std::time::Instant::now();
                                 let mut state = shared.lock_recover();
-                                let result = loop {
-                                    let result = operation(&mut state, &mut prepared);
-                                    if !matches!(result, Ok(Step::More)) || start.elapsed() >= SLICE
-                                    {
-                                        break result;
+                                // Whatever this quantum makes durable is
+                                // ordered after every record its group holds.
+                                let hook = flush_hook(state.group.records());
+                                let result = tilo_relay_store::with_barrier_hook(hook, || {
+                                    loop {
+                                        let result = operation(&mut state, &mut prepared);
+                                        if !matches!(result, Ok(Step::More))
+                                            || start.elapsed() >= SLICE
+                                        {
+                                            break result;
+                                        }
                                     }
-                                };
+                                });
+                                // A commit no other joins issues its group's
+                                // barriers now, sparing the owner a turn on a
+                                // blocking worker before it completes.
+                                if grouped
+                                    && !matches!(result, Ok(Step::More))
+                                    && !state.group.joining
+                                    && let Err(error) = state.group.flush()
+                                {
+                                    state.group.failed = Some(error.to_string());
+                                }
                                 drop(state);
                                 if diagnostics() {
                                     tracing::info!(
@@ -1412,10 +1623,26 @@ where
                 };
                 // The owner serializes this asynchronous authorization/publication
                 // step as well as the blocking transaction, even if tx is closed.
-                let completing = crate::timing::start();
-                let result = completion(result).await;
-                crate::timing::window(steps.complete, completing);
-                let _ = tx.send(result);
+                let complete = move |result| async move {
+                    let completing = crate::timing::start();
+                    let result = completion(result).await;
+                    crate::timing::window(steps.complete, completing);
+                    let _ = tx.send(result);
+                };
+                if !grouped {
+                    complete(result).await;
+                    drop(permits);
+                    return;
+                }
+                // Completed once the group's barriers covered what it wrote,
+                // still holding its admission permits.
+                let release: Release = Box::new(move |synced: Result<(), StoreError>| {
+                    Box::pin(async move {
+                        complete(result.and_then(|value| synced.map(|()| value))).await;
+                        drop(permits);
+                    })
+                });
+                state.lock_recover().group.held.push(release);
             })
         },
     );
@@ -1519,6 +1746,7 @@ mod tests {
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: Group::default(),
         }))
     }
 
@@ -1920,6 +2148,7 @@ mod tests {
         normal_tx
             .send(NormalJob {
                 sequence: 1,
+                grouped: false,
                 job: Box::new(move |_| {
                     Box::pin(async move {
                         signal.notify_one();
@@ -1934,6 +2163,7 @@ mod tests {
         normal_tx
             .send(NormalJob {
                 sequence: 2,
+                grouped: false,
                 job: record_job(order.clone(), "normal-1"),
             })
             .await
@@ -1941,6 +2171,7 @@ mod tests {
         normal_tx
             .send(NormalJob {
                 sequence: 3,
+                grouped: false,
                 job: record_job(order.clone(), "normal-2"),
             })
             .await
@@ -1991,6 +2222,7 @@ mod tests {
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: Group::default(),
         }));
         let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
         let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
@@ -1999,6 +2231,7 @@ mod tests {
         normal_tx
             .send(NormalJob {
                 sequence: 1,
+                grouped: false,
                 job: Box::new(move |state| {
                     Box::pin(async move {
                         let root = state
@@ -2048,6 +2281,7 @@ mod tests {
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: Group::default(),
         }))
     }
 
@@ -2070,6 +2304,7 @@ mod tests {
             normal_tx
                 .send(NormalJob {
                     sequence,
+                    grouped: false,
                     job: record_job(order.clone(), label),
                 })
                 .await
@@ -2079,6 +2314,7 @@ mod tests {
             host_tx
                 .send(NormalJob {
                     sequence: 3 + index as u64,
+                    grouped: false,
                     job: record_job(order.clone(), label),
                 })
                 .await
@@ -2111,6 +2347,7 @@ mod tests {
         normal_tx
             .send(NormalJob {
                 sequence: 1,
+                grouped: false,
                 job: record_job(order.clone(), "member-1"),
             })
             .await
@@ -2118,6 +2355,7 @@ mod tests {
         host_tx
             .send(NormalJob {
                 sequence: 2,
+                grouped: false,
                 job: record_job(order.clone(), "host-2"),
             })
             .await
@@ -2132,6 +2370,7 @@ mod tests {
         host_tx
             .send(NormalJob {
                 sequence: 3,
+                grouped: false,
                 job: record_job(order.clone(), "host-3"),
             })
             .await
@@ -2192,6 +2431,7 @@ mod tests {
         normal_tx
             .send(NormalJob {
                 sequence: 1,
+                grouped: false,
                 job: Box::new(|state| {
                     Box::pin(async move {
                         state.lock().unwrap().retaining_only();
@@ -2205,6 +2445,7 @@ mod tests {
         normal_tx
             .send(NormalJob {
                 sequence: 2,
+                grouped: false,
                 job: Box::new(move |_| {
                     Box::pin(async move {
                         let _ = vouched_tx.send(observed.listed_lineage_names().len());
@@ -2323,6 +2564,7 @@ mod tests {
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: Group::default(),
         }));
         let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
         let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);
@@ -2330,6 +2572,7 @@ mod tests {
         normal_tx
             .send(NormalJob {
                 sequence: 1,
+                grouped: false,
                 job: record_job(order.clone(), "normal-prerequisite"),
             })
             .await
@@ -2345,6 +2588,7 @@ mod tests {
             normal_tx
                 .send(NormalJob {
                     sequence,
+                    grouped: false,
                     job: record_job(order.clone(), label),
                 })
                 .await
@@ -2384,6 +2628,7 @@ mod tests {
             workers: isolated_test_workers(),
             replay_worker: Arc::new(Semaphore::new(1)),
             retaining_only: false,
+            group: Group::default(),
         }));
         let (normal_tx, normal_rx) = mpsc::channel::<NormalJob>(8);
         let (replay_tx, replay_rx) = mpsc::channel::<ReplayJob>(8);

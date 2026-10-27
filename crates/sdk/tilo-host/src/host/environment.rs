@@ -88,6 +88,19 @@ pub struct HostPaths {
     /// (`TILO_FONT_INDEX`), when the host names one; else it is kept in
     /// [`Self::cache_dir`].
     pub font_index: Option<PathBuf>,
+    /// The font catalog to read instead of the one compiled in
+    /// (`TILO_FONT_CATALOG`). A build materializes the pinned catalog on the
+    /// machine that builds it and bakes that path in, so a binary built
+    /// elsewhere — a remote runner — names a directory this one does not have.
+    /// This says where the catalog is here.
+    pub font_catalog: Option<PathBuf>,
+    /// The font artifact cache to look for a prepared catalog in
+    /// (`TILO_FONT_ASSET_CACHE`). The default is under [`Self::cache_dir`],
+    /// where the catalog tool prepares one.
+    pub font_artifact_cache: Option<PathBuf>,
+    /// Explicit development-host record for public identity presentation only.
+    /// It is not signing authority or permission to resolve a secret provider.
+    pub public_identity_record: Option<PathBuf>,
 }
 
 impl HostPaths {

@@ -11,6 +11,8 @@ use crate::{ClipboardBackend, ClipboardTarget};
 extern "C" {
     #[wasm_bindgen(js_name = writeClipboardText)]
     fn write_clipboard_text(text: &str, report: &js_sys::Function) -> bool;
+    #[wasm_bindgen(js_name = writeClipboardRich)]
+    fn write_clipboard_rich(html: &str, plain: &str, report: &js_sys::Function) -> bool;
 }
 
 pub(crate) struct BrowserClipboard;
@@ -43,6 +45,24 @@ impl ClipboardBackend for BrowserClipboard {
         write_clipboard_text(text, forward.as_ref().unchecked_ref())
     }
 
+    fn set_rich_text(&self, html: &str, plain: &str) -> bool {
+        if let Some(written) = events::write_rich(html, plain) {
+            return written;
+        }
+        let Some(report) = events::input_report() else {
+            return false;
+        };
+        let forward =
+            Closure::<dyn Fn(bool, Option<String>)>::new(move |ok, error: Option<String>| {
+                report(if ok {
+                    CopyReport::Copied
+                } else {
+                    CopyReport::Failed(error.unwrap_or_default())
+                });
+            });
+        write_clipboard_rich(html, plain, forward.as_ref().unchecked_ref())
+    }
+
     /// A page can only write `text/plain`: the browser offers no way to
     /// mark a copy as a secret, so it goes out unmarked.
     fn set_secret_text(&self, text: &str) -> bool {
@@ -58,5 +78,9 @@ impl ClipboardBackend for BrowserClipboard {
             return None;
         }
         events::read()
+    }
+
+    fn image(&self) -> Option<crate::ClipboardImage> {
+        events::read_image()
     }
 }

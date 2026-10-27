@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acceptance import gpu  # noqa: E402
+from acceptance import core, gpu  # noqa: E402
 from acceptance.vm import TiloVm, VmError  # noqa: E402
 from acceptance.checks import apps, daily_apps  # noqa: E402
 from acceptance.checks.apps import (FLAT_STDDEV, AppLaunch, Proc, app_launch,  # noqa: E402
@@ -106,6 +106,61 @@ class ChromiumPlatformTests(unittest.TestCase):
         ctx = SimpleNamespace(vm=SimpleNamespace(exec=unavailable))
         with self.assertRaisesRegex(VmError, "slot exec unavailable"):
             daily_apps._ozone_flag(ctx, SimpleNamespace(metrics={}), "wayland")
+
+
+class EnvironmentRefusalTests(unittest.TestCase):
+    # tilo-ush logs through tracing's default format, colours included.
+    REFUSED = ("\x1b[33m WARN\x1b[0m \x1b[2mush::supervisor\x1b[0m\x1b[2m:\x1b[0m ush: the environment "
+               "cannot be built \x1b[3mrecord\x1b[0m\x1b[2m=\x1b[0mdefault \x1b[3mreason\x1b[0m\x1b[2m=\x1b[0m"
+               "no environment can be built on this device: no env-runtime image is installed")
+
+    def test_the_last_refusal_names_why_no_shell_started(self):
+        journal = "\n".join(["Started tilo-ush.service.", self.REFUSED.replace("installed", "older"),
+                              self.REFUSED])
+        self.assertEqual(core.environment_refusal(journal),
+                         "no environment can be built on this device: no env-runtime image is installed")
+
+    def test_a_runtime_that_refused_nothing_names_nothing(self):
+        self.assertIsNone(core.environment_refusal("Started tilo-ush.service.\nush: session opened"))
+
+
+class TerminalWithoutShellTests(unittest.TestCase):
+    def test_no_shell_fails_with_the_refusal_and_types_nothing(self):
+        typed = []
+        ctx = SimpleNamespace(
+            vm=SimpleNamespace(control=lambda *args: typed.append(args),
+                               exec=lambda *a, **k: EnvironmentRefusalTests.REFUSED),
+            shot=lambda name: None, write=lambda name, text: None)
+        res = SimpleNamespace(metrics={})
+        with patch.object(apps, "_lifecycle", return_value=(1, {}, 0)), \
+                patch.object(core, "terminal_shells", return_value=set()), \
+                patch.object(core, "wait_new_terminal_shell", return_value=None), \
+                patch.object(core, "ush_diagnostics", return_value=""):
+            with self.assertRaisesRegex(apps.CheckFailed, "refused it: no environment can be built"):
+                apps.terminal(ctx, res)
+        self.assertEqual(typed, [], "Enter would take the offer of the device's own shell")
+        self.assertIsNone(res.metrics["seconds_to_shell"])
+
+
+    def test_no_shell_without_a_refusal_quotes_the_runtime_session_log_and_guests(self):
+        evidence = ("journal: ush: serving guests|ush: importing the default runtime for its first use|\n"
+                    "session log: \n"
+                    "guests: 4242 61 00:00:40 /usr/libexec/tilo-ush run --host-root /|\n")
+        ctx = SimpleNamespace(
+            vm=SimpleNamespace(control=lambda *args: None,
+                               exec=lambda script, **k: evidence if "guests:" in script else "Started."),
+            shot=lambda name: None, write=lambda name, text: None)
+        res = SimpleNamespace(metrics={})
+        with patch.object(apps, "_lifecycle", return_value=(1, {}, 0)), \
+                patch.object(core, "terminal_shells", return_value=set()), \
+                patch.object(core, "wait_new_terminal_shell", return_value=None), \
+                patch.object(core, "ush_diagnostics", return_value=""):
+            with self.assertRaises(apps.CheckFailed) as failed:
+                apps.terminal(ctx, res)
+        said = str(failed.exception)
+        self.assertIn("importing the default runtime for its first use", said)
+        self.assertIn("4242 61 00:00:40 /usr/libexec/tilo-ush run", said)
+        self.assertNotIn("session log:", said, "an empty part is left out")
 
 
 class ParseProcsTests(unittest.TestCase):
@@ -478,6 +533,81 @@ class FirstTexturedTests(unittest.TestCase):
     def test_the_threshold_itself_is_still_flat(self):
         self.assertEqual(self.run_samples([FLAT_STDDEV], timeout=0.0)[:2], (FLAT_STDDEV, 1))
 
+    def test_a_terminal_filling_its_output_with_only_a_prompt_is_drawn(self):
+        # foot on a 1920x1080 output: its background, a prompt and a cursor.
+        stats, attempts = first_textured(lambda: {"stddev": 0.018, "ink": 425}, 5.0)
+        self.assertEqual((stats["ink"], attempts), (425, 1))
+
+    def test_a_cursor_on_a_blank_window_is_still_flat(self):
+        self.assertFalse(apps.textured({"stddev": 0.006, "ink": 91}))
+
+
+class FullscreenTests(unittest.TestCase):
+    """Super+F on glxgears: its lone tile already spans 1856 of the output's 1920 px."""
+    TILE = {"x": 32.0, "y": 80.0, "w": 1856.0, "h": 988.0}
+    FULL = {"x": 0.0, "y": 0.0, "w": 1920.0, "h": 1080.0}
+
+    def run_fullscreen(self, full_rect, restored_rect):
+        gid, sid = 7, 70
+        phase = {"fs": False, "rect": self.TILE}
+
+        def frames():
+            r = phase["rect"]
+            return [{"surface_id": sid, "rect": r, "buffer": {"w": int(r["w"]), "h": int(r["h"])}}]
+
+        def key(combo):
+            phase["fs"] = not phase["fs"]
+            phase["rect"] = full_rect if phase["fs"] else restored_rect
+
+        def state():
+            return {"chrome": {"displays": [{"id": 0, "groups": [gid]}],
+                               "fullscreen_group": gid if phase["fs"] else None},
+                    "workspace_tree": {"outputs": {"displays": [{"id": 0, "x": 0, "y": 0,
+                                                                 "width": 1920, "height": 1080}]},
+                                       "workspaces": []}}
+
+        vm = SimpleNamespace(foreign_frames=frames, key=key, state=state)
+
+        def wait_state(predicate, timeout, what):
+            s = state()
+            if not predicate(s):
+                raise core.CheckFailed(f"{what} not reached")
+            return s
+
+        ctx = SimpleNamespace(vm=vm, state=state, wait_state=wait_state, shot=lambda label: label)
+        res = SimpleNamespace(metrics={})
+        with patch.object(daily_apps, "wait_until", lambda predicate, *_: predicate() or None), \
+                patch.object(core, "load_image", lambda path: None), \
+                patch.object(core, "region_stats", lambda img, rect: {"mean": 0.1, "stddev": 0.15}):
+            daily_apps._fullscreen(ctx, res, daily_apps.GLXGEARS, sid, gid)
+        return res.metrics
+
+    def test_full_screen_and_back_to_a_tile_that_spans_most_of_the_output(self):
+        metrics = self.run_fullscreen(self.FULL, self.TILE)
+        self.assertEqual(metrics["restored_rect"], self.TILE)
+
+    def test_a_window_left_at_its_tile_size_is_not_full_screen(self):
+        with self.assertRaisesRegex(core.CheckFailed, "does not cover output"):
+            self.run_fullscreen(self.TILE, self.TILE)
+
+    def test_a_window_that_stays_full_screen_is_not_back_in_its_tile(self):
+        with self.assertRaisesRegex(core.CheckFailed, "back in a tile"):
+            self.run_fullscreen(self.FULL, self.FULL)
+
+
+class HistogramInkTests(unittest.TestCase):
+    def test_counts_what_stands_off_the_background(self):
+        hist = [0] * 256
+        hist[36] = 1_800_000  # foot's #242424
+        hist[40] = 500        # antialiasing next to it
+        hist[220] = 400       # the prompt's glyphs
+        self.assertEqual(core.histogram_ink(hist), 400)
+
+    def test_a_flat_fill_has_none(self):
+        hist = [0] * 256
+        hist[200] = 1000
+        self.assertEqual(core.histogram_ink(hist), 0)
+
 
 ROOMS = "/home/tds-a/.local/share/tilo-rooms/personal/so.tilo.file-explorer/.local/state"
 
@@ -614,9 +744,10 @@ class FirstFrameBudgetTests(unittest.TestCase):
         ids = {c.id for c in run.core.REGISTRY}
         self.assertLessEqual({"A14", "R05"}, ids)
         self.assertLess(run.ORDER.index("A14"), run.ORDER.index("R02"))
-        # R05 reads the adapter line of every app the run opened; R08 opens none in the slot
-        # (it signs seat0's greeter in), so only it and P03 may follow R05.
-        self.assertEqual(run.ORDER[-3:], ["R05", "R08", "P03"])
+        # R05 reads the adapter line of every app the run opened. K01 (it restarts the session
+        # with the clock set back), R08 (it signs seat0's greeter in) and C02 (it takes that
+        # account through first use) open none in the slot, so only they and P03 may follow R05.
+        self.assertEqual(run.ORDER[-5:], ["R05", "K01", "R08", "C02", "P03"])
         self.assertEqual(sorted(run.ORDER), sorted(ids - set(run.DE_PASS)))
 
 
@@ -636,6 +767,28 @@ class ListingTests(unittest.TestCase):
 
 
 class GuestAtspiProbeTests(unittest.TestCase):
+    # Stands in for tools/atspi_external_client.py where the guest's bus must answer a
+    # known way: one AT-SPI address, one connection of another process, walks refused.
+    STUB_CLIENT = (
+        "ROOT_PATH = '/org/a11y/atspi/accessible/root'\n"
+        "PATH_RE = None\n"
+        "def command(*args, check=True):\n"
+        "    return ''\n"
+        "def atspi_address():\n"
+        "    return 'unix:path=/run/user/1000/at-spi/bus'\n"
+        "def bus_pids(address):\n"
+        "    return {':1.4': 4101}\n"
+        "def app_process(pid):\n"
+        "    return pid\n"
+        "def process_command(pid):\n"
+        "    return '/usr/bin/other-app'\n"
+        "class AtspiClient:\n"
+        "    def __init__(self, address, bus):\n"
+        "        self.bus = bus\n"
+        "    def property(self, path, name):\n"
+        "        raise RuntimeError('stub refuses the walk')\n"
+    )
+
     def probe(self, client, no_commands):
         proc = subprocess.run(
             [sys.executable, "-", "file-explorer", "Files activity", "Files", "0"],
@@ -672,6 +825,20 @@ class GuestAtspiProbeTests(unittest.TestCase):
             probe = self.probe(client, empty)
         self.assertIn("failed to load: FileNotFoundError:", probe["error"])
         self.assertNotIn("no AT-SPI client", probe["error"])
+
+    def test_no_connection_of_the_program_reports_the_ones_the_bus_has(self):
+        # A bus that answers, holds one connection of another process and none of
+        # file-explorer: the report says so, names the connection it did find with its
+        # process, and leaves the listing unobserved rather than empty.
+        with tempfile.TemporaryDirectory() as empty:
+            client = Path(empty) / "stub_client.py"
+            client.write_text(self.STUB_CLIENT)
+            probe = self.probe(client, empty)
+        self.assertIn("belongs to a file-explorer process", probe["error"])
+        self.assertEqual([(c["bus"], c["app_pid"], c["command"]) for c in probe["clients"]],
+                         [(":1.4", 4101, "/usr/bin/other-app")])
+        self.assertEqual(probe["clients"][0]["error"], "walk failed: stub refuses the walk")
+        self.assertEqual(judge_listing(probe, "m")[0], "unobservable")
 
 
 class GuestClientCopyTests(unittest.TestCase):

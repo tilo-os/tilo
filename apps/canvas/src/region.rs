@@ -244,7 +244,6 @@ impl Region {
         region
     }
 
-    /// The region under `affine`.
     #[must_use]
     pub fn transformed(&self, affine: Affine) -> Self {
         let map = |[x, y]: [f64; 2]| {

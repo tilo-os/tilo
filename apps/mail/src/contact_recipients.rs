@@ -2,9 +2,9 @@
 //! is an exact person/address/sender choice, reviewed through the action door.
 //! Email hints are deliberately independent of confirmed messaging identities.
 
-use tilo_contact_directory::{ContactDirectory, canonical_email_hint};
+use tilo_contact_directory::{ContactDirectory, EmailHint, canonical_email_hint};
 use ui::framework::LiveRow;
-use ui::tilo_resource::{Effect, Id, SearchEntry};
+use ui::tilo_resource::{Effect, SearchEntry};
 
 use super::MailApp;
 use crate::actions::MailEffect;
@@ -63,29 +63,16 @@ impl Choice {
 
 fn choices(directory: &ContactDirectory, accounts: &[crate::account::Account]) -> Vec<Choice> {
     let mut choices = Vec::new();
-    for (id, person) in directory
-        .people
-        .iter()
-        .filter(|(_, person)| !person.removed)
-    {
-        let mut emails: Vec<_> = person
-            .emails
-            .iter()
-            .filter_map(|email| canonical_email_hint(email))
-            .collect();
-        emails.sort();
-        emails.dedup();
-        for email in emails {
-            for account in accounts {
-                if canonical_email_hint(&account.config.email).is_some() {
-                    choices.push(Choice {
-                        person: id.as_str().into(),
-                        label: person.label.clone(),
-                        email: email.clone(),
-                        sender_account: account.id.clone(),
-                        sender_email: account.config.email.clone(),
-                    });
-                }
+    for hint in directory.email_hints() {
+        for account in accounts {
+            if canonical_email_hint(&account.config.email).is_some() {
+                choices.push(Choice {
+                    person: hint.person.clone(),
+                    label: hint.label.clone(),
+                    email: hint.email.clone(),
+                    sender_account: account.id.clone(),
+                    sender_email: account.config.email.clone(),
+                });
             }
         }
     }
@@ -158,18 +145,12 @@ impl MailApp {
             .as_ref()
             .ok_or_else(|| crate::i18n::t("mail-contact-unavailable"))?
             .get();
-        let person = directory
-            .people
-            .get(&Id::from_raw(person))
-            .filter(|person| !person.removed)
-            .ok_or_else(|| crate::i18n::t("mail-contact-person-unavailable"))?;
-        if person.label != label
-            || canonical_email_hint(email).as_deref() != Some(email)
-            || !person
-                .emails
-                .iter()
-                .any(|hint| canonical_email_hint(hint).as_deref() == Some(email))
-        {
+        let hint = EmailHint {
+            person: person.into(),
+            label: label.into(),
+            email: email.into(),
+        };
+        if !directory.holds(&hint) {
             return Err(crate::i18n::t("mail-contact-recipient-changed"));
         }
         let index = self
@@ -213,7 +194,7 @@ impl MailApp {
 mod tests {
     use super::*;
     use ui::framework::{ResourceApp, ViewCx, testing::TestApp};
-    use ui::tilo_resource::Invoke;
+    use ui::tilo_resource::{Id, Invoke};
     use ui::widget::{Element, Text};
 
     // An isolated Contacts owner exercises the actual person-record boundary;
@@ -642,10 +623,16 @@ mod chrome_tests {
             mail.harness().set_theme(theme);
             mail.harness().resize((1280, 800)).unwrap();
             mail.harness().relayout();
-            assert!(mail.harness().a11y_nodes().iter().any(
-                |(_, node)| node.label() == Some(crate::i18n::t("mail-contact-write").as_str())
-            ));
-            mail.harness().click_named("mail-list-action-3").unwrap();
+            // "Write to a contact" is in the window bar's menu.
+            let write = ui::window_toolbar::declared()
+                .and_then(|toolbar| {
+                    toolbar
+                        .actions
+                        .into_iter()
+                        .find(|action| action.name == crate::i18n::t("mail-contact-write"))
+                })
+                .expect("the window's bar offers Write to a contact");
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: write.id });
             mail.settle();
             let inspection = mail.harness().inspection_json().unwrap();
             assert!(

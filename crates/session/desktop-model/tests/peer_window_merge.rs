@@ -15,6 +15,7 @@ fn remote_tab(id: u64, surface: u64) -> ReplicatedTab {
         id,
         order: 0,
         title: "Word Processor".into(),
+        app_title: None,
         tile: Some(TileContent::Foreign {
             app_id: APP.into(),
             surface_id: surface,
@@ -50,6 +51,7 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
                 kind: AppKind::Other(String::new()),
                 label: String::new(),
             },
+            app_title: None,
         });
         let rep = ReplicatedGroup {
             id: local.id,
@@ -86,6 +88,7 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
                 app_id: APP.into(),
                 surface_id: 99,
             },
+            app_title: None,
         });
         let rep = ReplicatedGroup {
             id: local.id,
@@ -120,6 +123,7 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
                 app_id: APP.into(),
                 surface_id: 99,
             },
+            app_title: None,
         });
         let mut rep_tab = remote_tab(7, 4242);
         rep_tab.title = "Terminal".into();

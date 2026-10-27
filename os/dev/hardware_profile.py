@@ -14,7 +14,12 @@ DEFINITION_PATH = Path("usr/lib/tilo/hardware-profile-definition.json")
 ARCH_CONFIG = {"x86_64": "CONFIG_X86_64=y", "aarch64": "CONFIG_ARM64=y"}
 FIELDS = {"schema_version", "id", "architecture", "devicetree", "firmware"}
 FIELDS_V2 = FIELDS | {"system_firmware"}
-OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude"}
+OPTIONAL_V2 = {"boot_modules", "always_on", "kernel_args", "wifi_wake_on_wlan", "internal_keyboards", "firmware_exclude", "crash_record",
+               "dmi"}
+# A board whose firmware describes its devices (ACPI, as every x86-64 handheld
+# does) has no device tree for a model-bound quirk to match on. `dmi` names the
+# DMI system identity instead, so such a quirk stays confined to that model.
+DMI_FIELDS = {"sys_vendor", "product_name"}
 # Fedora firmware RPMs a board layer may remove (`firmware_exclude`), each with
 # the /usr/lib/firmware subtrees it owns. Closed on purpose: a board can only
 # drop vendor firmware known to be separable, and never one whose subtree its
@@ -32,6 +37,42 @@ FIRMWARE_PACKAGE_TREES = {
     "tiwilink-firmware": ("ti-connectivity",),
 }
 INTERNAL_KEYBOARD_FIELDS = {"name", "bus", "vendor", "product", "devicetree_compatible"}
+# The kernel keeps its record of a panic in memory the firmware does not clear
+# on reset. Which memory that is depends on how the board is described:
+#   ramoops       a reserved-memory region the board's device tree declares;
+#   efi-variable  firmware variables, which wear and are the last resort;
+#   block         a reserved region on a block device (pstore/blk);
+#   none          this board has no such memory and leaves no record.
+# Every definition must say which, so a board that leaves no record is a
+# written-down decision rather than an omission.
+CRASH_BACKENDS = ("ramoops", "efi-variable", "block", "none")
+# Watchdogs a board's kernel can feed from userspace. `hardware` is a watchdog
+# built into the board's SoC, which needs no separate module; `module` is a
+# driver the board installs, and `none` is a board that has no watchdog at all.
+CRASH_WATCHDOGS = ("hardware", "module", "none")
+# Lockup detectors a board's kernel can panic from. `buddy` is ARM64's
+# detector, which needs no NMI; `nmi` is the perf detector x86 uses; `none`
+# reports a stuck CPU in the log without stopping the machine.
+CRASH_LOCKUP = ("buddy", "nmi", "none")
+CRASH_FIELDS = {"storage", "watchdog", "lockup"}
+# A watchdog kernel argument that makes the watchdog reset a machine nobody
+# feeds, and a lockup detector that panics. Both name the machine stopping as
+# the thing that leaves the record; a board may only claim what its arguments
+# set.
+CRASH_WATCHDOG_ARGS = (
+    "systemd.watchdog_sec=",
+    "sbsa_gwdt.action=1",
+    "nowayout=1",
+)
+# The argument that makes a stuck CPU panic rather than only log, per detector.
+CRASH_LOCKUP_ARGS = {
+    "buddy": ("nmi_watchdog=panic", "nmi_watchdog=1", "softlockup_panic=1", "hardlockup_panic=1"),
+    "nmi": ("nmi_watchdog=panic", "softlockup_panic=1", "hardlockup_panic=1"),
+    "none": (),
+}
+# Every argument any detector panics from, so a board that declares its stuck
+# CPU only logs is refused when its own command line makes one panic.
+CRASH_PANIC_ARGS = frozenset(arg for detector in CRASH_LOCKUP_ARGS.values() for arg in detector)
 PROFILE_PATH = Path("usr/lib/tilo/hardware-profile.json")
 PROFILE_FIELDS = {"schema_version", "id", "architecture", "devicetree", "devicetree_sha256", "target_update_ref"}
 DEFAULT_TARGET_IMGREF = "registry.tilo.so/tilo/tilo:latest"
@@ -314,14 +355,20 @@ def validate_definition(data):
                 or data["id"] != "lenovo-83ed" or data["architecture"] != "aarch64"
                 or data["devicetree"] != "qcom/x1e80100-lenovo-yoga-slim7x.dtb"):
             raise ValueError("Wi-Fi wake policy requires the Lenovo 83ED definition and disabled WoWLAN")
+    validate_dmi(data)
     validate_internal_keyboards(data)
+    # Every board declares where its record of a crash goes, so a board that
+    # keeps none is a written-down decision rather than an omission.
+    validate_crash_record(data, schema)
     kernel_args = data.get("kernel_args", [])
     if not isinstance(kernel_args, list) or len(kernel_args) > 16:
         raise ValueError("hardware definition kernel arguments must be a bounded list")
     for argument in kernel_args:
         # One unquoted token each: the argument is sealed into the UKI command
         # line verbatim, so whitespace or quotes would split or merge arguments.
-        if not isinstance(argument, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})?", argument):
+        # A value may carry a further `=`, as the kernel's own sub-option
+        # syntax does ("video=<connector>:<option>=<value>").
+        if not isinstance(argument, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})*", argument):
             raise ValueError("hardware definition kernel argument is invalid")
     if len(set(kernel_args)) != len(kernel_args):
         raise ValueError("hardware definition kernel arguments must be unique")
@@ -340,15 +387,15 @@ def validate_internal_keyboards(data):
     keyboards = data.get("internal_keyboards", [])
     if not isinstance(keyboards, list) or len(keyboards) > 8:
         raise ValueError("hardware definition internal keyboards must be a bounded list")
-    if keyboards and data["devicetree"] is None:
-        # The device-tree compatible confines the quirk to this board; a
-        # firmware-described board would need a DMI match instead.
-        raise ValueError("hardware definition internal keyboards require a device-tree board")
+    if keyboards and data["devicetree"] is None and "dmi" not in data:
+        # Something has to confine the quirk to this board: the device tree's
+        # compatible, or the DMI identity of a firmware-described board.
+        raise ValueError("hardware definition internal keyboards require a device-tree or DMI board")
     seen = set()
     for keyboard in keyboards:
         if not isinstance(keyboard, dict) or set(keyboard) != INTERNAL_KEYBOARD_FIELDS:
             raise ValueError("hardware definition internal keyboard has missing or unknown fields")
-        if not all(isinstance(value, str) for value in keyboard.values()):
+        if not all(isinstance(value, str) for value in keyboard.values() if value is not None):
             raise ValueError("hardware definition internal keyboard fields must be strings")
         if keyboard["bus"] not in ("i2c", "spi"):
             # USB and Bluetooth keyboards are external to libinput, PS/2
@@ -358,12 +405,107 @@ def validate_internal_keyboards(data):
             raise ValueError("hardware definition internal keyboard ids must be four uppercase hex digits")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 :._()-]{0,79}", keyboard["name"]):
             raise ValueError("hardware definition internal keyboard name is invalid")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*", keyboard["devicetree_compatible"]):
+        # A device-tree board confines the quirk by its compatible; a
+        # firmware-described one has no compatible and is confined by the
+        # definition's DMI identity instead. Requiring exactly the one that
+        # matches the board keeps a quirk from naming an identity that cannot
+        # both apply and be true of the machine it runs on.
+        compatible = keyboard["devicetree_compatible"]
+        if data["devicetree"] is None:
+            if compatible is not None:
+                raise ValueError("hardware definition internal keyboard on a DMI board has no device-tree compatible")
+        elif not isinstance(compatible, str) or not re.fullmatch(
+                r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*", compatible):
             raise ValueError("hardware definition internal keyboard device-tree compatible is invalid")
         identity = (keyboard["bus"], keyboard["vendor"], keyboard["product"])
         if identity in seen:
             raise ValueError("hardware definition internal keyboards must be unique")
         seen.add(identity)
+
+
+def validate_dmi(data):
+    """The DMI system identity a firmware-described board matches on.
+
+    `sys_vendor` and `product_name` are what `/sys/class/dmi/id` holds for a
+    machine. A libinput quirk matches them through `MatchDMIModalias=dmi:`
+    plus the kernel's `dmi:<sys_vendor>:<product_name>:` modalias prefix, so a
+    colon, which is what separates those fields there, cannot appear in
+    either value.
+    """
+    if "dmi" not in data:
+        return
+    dmi = data["dmi"]
+    if not isinstance(dmi, dict) or set(dmi) != DMI_FIELDS:
+        raise ValueError("hardware definition DMI has missing or unknown fields")
+    for field in sorted(DMI_FIELDS):
+        if not isinstance(dmi[field], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}", dmi[field]):
+            raise ValueError(f"hardware definition DMI {field} is invalid")
+    if data["devicetree"] is not None:
+        # A device tree already names the model, and two identities could
+        # disagree about which board an image was built for.
+        raise ValueError("hardware definition DMI requires a firmware-described board")
+
+
+def validate_crash_record(data, schema):
+    """The board's record of a crash, what resets it and what panics first.
+
+    An image must be able to say, for every board it ships, where the kernel's
+    record of a panic goes and what resets a machine that stops responding.
+    All three are declared here rather than discovered at boot, because a
+    board that leaves nothing behind after a hang says nothing about it.
+
+    The declaration is held to the board's kernel arguments: a board may name
+    a watchdog or a lockup detector only when its own command line sets it.
+    A board that cannot reset itself, and a board whose stuck CPU only logs,
+    say so - but the arguments that would record the hang have to agree.
+    """
+    record = data.get("crash_record")
+    message = "hardware definition crash record must name a storage backend, a watchdog and a lockup detector"
+    if schema == 1:
+        # Schema 1 predates the record and is still accepted as-is; a board
+        # that moves to schema 2 states it.
+        return
+    if not isinstance(record, dict) or len(record) > 16:
+        raise ValueError(message)
+    if set(record) - CRASH_FIELDS:
+        raise ValueError("hardware definition crash record has missing or unknown fields")
+    if not CRASH_FIELDS <= set(record):
+        raise ValueError(message)
+    if record["storage"] not in CRASH_BACKENDS:
+        raise ValueError("hardware definition crash record storage must name a supported backend")
+    if record["watchdog"] not in CRASH_WATCHDOGS:
+        raise ValueError("hardware definition crash record watchdog must name a supported watchdog")
+    if record["lockup"] not in CRASH_LOCKUP:
+        raise ValueError("hardware definition crash record lockup must name a supported detector")
+    # ramoops and pstore/blk are memory the board's own device tree reserves;
+    # a board described by firmware has neither.
+    if data["devicetree"] is None and record["storage"] in ("ramoops", "block"):
+        raise ValueError("hardware definition crash record storage requires a device-tree board")
+    validate_crash_kernel_args(data, record)
+    if record["watchdog"] == "module" and not any(
+            isinstance(name, str) and name.endswith("_wdt") for name in data.get("boot_modules", [])):
+        # The watchdog driver has to reach the initramfs to be fed from boot.
+        raise ValueError("hardware definition crash record watchdog module must be a boot module")
+
+
+def validate_crash_kernel_args(data, record):
+    """The board's kernel arguments must record the hang it declares."""
+    args = data.get("kernel_args", [])
+    if not isinstance(args, list):
+        return
+    if record["watchdog"] == "none":
+        for arg in args:
+            if isinstance(arg, str) and arg.startswith(CRASH_WATCHDOG_ARGS):
+                raise ValueError("hardware definition crash record watchdog must name the watchdog its arguments feed")
+    elif not any(isinstance(arg, str) and arg.startswith(CRASH_WATCHDOG_ARGS) for arg in args):
+        raise ValueError("hardware definition crash record watchdog requires a kernel argument that feeds it")
+    # A board whose detector only reports must not panic from a stuck CPU.
+    panic_args = CRASH_LOCKUP_ARGS[record["lockup"]] if record["lockup"] != "none" else CRASH_PANIC_ARGS
+    set_args = [arg for arg in args if isinstance(arg, str) and arg in panic_args]
+    if record["lockup"] == "none" and set_args:
+        raise ValueError("hardware definition crash record lockup must name the detector its arguments panic from")
+    if record["lockup"] != "none" and not set_args:
+        raise ValueError("hardware definition crash record lockup requires a kernel argument that panics")
 
 
 def read_definition(path):

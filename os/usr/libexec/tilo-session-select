@@ -13,7 +13,7 @@
 set -euo pipefail
 
 if grep -qw 'tilo.install' /proc/cmdline 2>/dev/null; then
-  exec /usr/libexec/tilo-cage-session /usr/bin/tilo-installer
+  exec /usr/libexec/tilo-cage-session /usr/libexec/tilo/tilo-installer
 else
-  exec /usr/libexec/tilo-cage-session /usr/bin/tilo-greeter
+  exec /usr/libexec/tilo-cage-session /usr/libexec/tilo/tilo-greeter
 fi

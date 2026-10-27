@@ -94,8 +94,15 @@ pub(crate) const CALLOUT: &str = "alert";
 /// the page's id, which the document's link validation accepts.
 pub(crate) const PAGE_LINK_PREFIX: &str = "#page-";
 
+/// The scheme a resource link is written with in a `link` mark's target, in
+/// the one form every document codec already round-trips: `tilo://open#…`,
+/// the native link [`tilo_reference::link::Link::to_native`] makes. A link
+/// mark whose target starts with this scheme names a resource, so it is
+/// shown as a [`Mark::ResourceLink`] rather than an external URL.
+pub const RESOURCE_LINK_SCHEME: &str = "tilo://open#";
+
 /// The editor mark a tilo-doc mark shows as, when it has one.
-fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
+pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
     match (name, value) {
         (_, MarkValue::Bool(false)) => None,
         ("strong", _) => Some(Mark::Bold),
@@ -107,12 +114,29 @@ fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
             target
                 .strip_prefix(PAGE_LINK_PREFIX)
                 .and_then(|id| id.parse().ok())
-                .map_or_else(|| Mark::ExternalLink(target.clone()), Mark::Link),
+                .map_or_else(
+                    || {
+                        if is_resource_link(target) {
+                            Mark::ResourceLink(target.clone())
+                        } else {
+                            Mark::ExternalLink(target.clone())
+                        }
+                    },
+                    Mark::Link,
+                ),
         ),
         ("transclusion", MarkValue::Str(page)) => page.parse().ok().map(Mark::Transclusion),
         ("mention", MarkValue::Str(id)) if !id.is_empty() => Some(Mark::Mention(id.clone())),
         _ => None,
     }
+}
+
+/// Whether a `link` target names a resource of this desktop
+/// ([`RESOURCE_LINK_SCHEME`]) rather than a web address.
+pub fn is_resource_link(target: &str) -> bool {
+    target
+        .strip_prefix(RESOURCE_LINK_SCHEME)
+        .is_some_and(|route| !route.is_empty())
 }
 
 /// The tilo-doc mark an editor mark is stored as: its name and value, for an
@@ -127,6 +151,7 @@ pub fn document_mark(mark: &Mark) -> (&'static str, MarkVal) {
         Mark::Link(page) => ("link", MarkVal::Str(format!("{PAGE_LINK_PREFIX}{page}"))),
         Mark::Transclusion(page) => ("transclusion", MarkVal::Str(page.to_string())),
         Mark::ExternalLink(target) => ("link", MarkVal::Str(target.clone())),
+        Mark::ResourceLink(href) => ("link", MarkVal::Str(href.clone())),
         Mark::Mention(id) => ("mention", MarkVal::Str(id.clone())),
     }
 }
@@ -530,7 +555,6 @@ mod tests {
             BlockKind::Callout(CalloutKind::Warning),
             "a quote with an alert is that callout"
         );
-        // A callout made a plain quote again drops its alert.
         let plain = KindSpec::of(&content_of(&cases[2]));
         assert!(plain.same_style(&cases[3]));
         assert_eq!(plain.attr_changes(&cases[3]), [(CALLOUT, None)]);
@@ -597,5 +621,31 @@ mod tests {
         });
         let content = content_of(&paragraph);
         assert!(mark_runs(&editor_runs(&content), &document_runs(&paragraph)).is_empty());
+    }
+
+    #[test]
+    fn a_link_to_a_resource_reads_as_one_and_stays_a_link() {
+        let href = "tilo://open#/me/so.tilo.calendar/-/calendar.event:e-1";
+        assert_eq!(
+            editor_mark("link", &MarkValue::Str(href.into())),
+            Some(Mark::ResourceLink(href.into())),
+            "the editor shows the resource an address names"
+        );
+        assert_eq!(
+            document_mark(&Mark::ResourceLink(href.into())),
+            ("link", MarkVal::Str(href.into())),
+            "the document keeps the link, which a reader without this editor opens"
+        );
+        assert_eq!(
+            editor_mark("link", &MarkValue::Str("https://example.test".into())),
+            Some(Mark::ExternalLink("https://example.test".into())),
+            "a web address stays a web link"
+        );
+        assert!(is_resource_link(href));
+        assert!(!is_resource_link("https://example.test"));
+        assert!(
+            !is_resource_link(RESOURCE_LINK_SCHEME),
+            "a bare scheme names nothing"
+        );
     }
 }

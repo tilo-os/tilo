@@ -14,6 +14,7 @@ use ui::widget::{
     Text, TextInput, TextInputKind, ToggleGroup, Widget,
 };
 
+use crate::i18n::t;
 use crate::link::{Intent, Link};
 use crate::model::{ConnectionProfile, Engine};
 
@@ -84,12 +85,15 @@ impl Fields {
         }
     }
 
-    /// The connection the fields describe.
     pub fn profile(&self) -> ConnectionProfile {
         let engine = self.engine();
         let name = self.name.with(|name| name.trim().to_owned());
-        let mut profile =
-            ConnectionProfile::new(if name.is_empty() { "Untitled" } else { &name }, engine);
+        let title = if name.is_empty() {
+            t("db-untitled")
+        } else {
+            name.clone()
+        };
+        let mut profile = ConnectionProfile::new(&title, engine);
         profile.host = self.host.with(Clone::clone);
         profile.port = self
             .port
@@ -115,31 +119,31 @@ fn name_input(fields: &Fields) -> TextInput {
 fn network_form(fields: &Fields) -> Form {
     Form::new().with_density(Some(Density::Compact)).section(
         FormSection::new("")
-            .field(Field::new("Connection name", name_input(fields)))
+            .field(Field::new(&t("db-connection-name"), name_input(fields)))
             .field(Field::new(
-                "Host",
+                &t("db-host"),
                 input("db.modal.host", &fields.host).with_kind(TextInputKind::Url),
             ))
             .field(Field::new(
-                "Port",
+                &t("db-port"),
                 input("db.modal.port", &fields.port)
                     .with_kind(TextInputKind::Number)
                     .with_char_filter(|c| c.is_ascii_digit()),
             ))
             .field(Field::new(
-                "Database",
+                &t("db-database"),
                 input("db.modal.database", &fields.database).with_kind(TextInputKind::Username),
             ))
             .field(Field::new(
-                "User",
+                &t("db-user"),
                 input("db.modal.user", &fields.user).with_kind(TextInputKind::Username),
             ))
             .field(
                 Field::new(
-                    "Password",
+                    &t("db-password"),
                     input("db.modal.password", &fields.password).with_kind(TextInputKind::Password),
                 )
-                .with_help("The password stays on this device."),
+                .with_help(&t("db-password-stays")),
             ),
     )
 }
@@ -147,9 +151,9 @@ fn network_form(fields: &Fields) -> Form {
 fn sqlite_form(fields: &Fields) -> Form {
     Form::new().with_density(Some(Density::Compact)).section(
         FormSection::new("")
-            .field(Field::new("Connection name", name_input(fields)))
+            .field(Field::new(&t("db-connection-name"), name_input(fields)))
             .field(Field::new(
-                "SQLite file path",
+                &t("db-file-path"),
                 input("db.modal.file-path", &fields.file_path).with_kind(TextInputKind::Path),
             )),
     )
@@ -246,12 +250,14 @@ fn connect_dialog_with_fields(link: &Link) -> (ModalDialog<ConnectForm>, Fields)
     let save_link = link.clone();
     let cancel_link = link.clone();
     let dismiss_link = link.clone();
-    let dialog = ModalDialog::new("New connection", ConnectForm::new(&fields))
+    let dialog = ModalDialog::new(&t("db-new-connection-title"), ConnectForm::new(&fields))
         .with_test_id("db.connect-dialog")
-        .primary_action("Add connection", move || {
+        .primary_action(&t("db-add-connection"), move || {
             save_link.ask(Intent::SaveConnection(Box::new(save.profile())));
         })
-        .secondary_action("Cancel", move || cancel_link.ask(Intent::CloseDialog))
+        .secondary_action(&t("db-cancel"), move || {
+            cancel_link.ask(Intent::CloseDialog)
+        })
         .on_dismiss(move || dismiss_link.ask(Intent::CloseDialog))
         .open(true);
     (dialog, fields)
@@ -273,7 +279,7 @@ pub fn confirm_dialog(link: &Link) -> ModalDialog<Column> {
             Text::dynamic(move || {
                 target.read(|model| {
                     if model.active_name.is_empty() {
-                        "No connection is open.".to_owned()
+                        t("db-no-connection-open")
                     } else {
                         format!("This runs on {}.", model.active_name)
                     }
@@ -286,18 +292,18 @@ pub fn confirm_dialog(link: &Link) -> ModalDialog<Column> {
                 .with_role(TextRole::Code),
         ))
         .push(Box::new(
-            Text::new("The database client cannot undo this.")
+            Text::new(&t("db-cannot-undo"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         ));
     let run = link.clone();
     let cancel = link.clone();
     let dismiss = link.clone();
-    ModalDialog::new("Run this statement?", body)
+    ModalDialog::new(&t("db-run-statement-title"), body)
         .with_test_id("db.confirm-dialog")
         .with_destructive(true)
-        .primary_action("Run statement", move || run.ask(Intent::ConfirmRun))
-        .secondary_action("Cancel", move || cancel.ask(Intent::CloseDialog))
+        .primary_action(&t("db-run-statement"), move || run.ask(Intent::ConfirmRun))
+        .secondary_action(&t("db-cancel"), move || cancel.ask(Intent::CloseDialog))
         .on_dismiss(move || dismiss.ask(Intent::CloseDialog))
         .open(true)
 }

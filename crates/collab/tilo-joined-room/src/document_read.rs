@@ -28,7 +28,6 @@
 use crate::NativeCommittedView;
 use std::time::SystemTime;
 use tilo_peer_state::{BoundedStatePeer, PeerDocumentReadError, PeerLimits};
-use tilo_user_identity::RevocationList;
 
 type HistoryOpener<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
 
@@ -61,7 +60,6 @@ pub struct CommittedDocument {
 
 /// The changes since a revision the reader holds.
 pub struct DocumentChanges {
-    /// The revision the changes lead to.
     pub revision: [u8; 32],
     /// Its heads, sorted.
     pub heads: Vec<[u8; 32]>,
@@ -135,10 +133,6 @@ impl NativeCommittedView {
     }
 
     /// Read `app`'s `record` for the device `reader`.
-    ///
-    /// # Errors
-    /// The reader may not read it now, the room does not hold it as a
-    /// complete plaintext document, or it is larger than `maximum` bytes.
     pub fn read_document(
         &self,
         reader: [u8; 32],
@@ -200,12 +194,13 @@ impl NativeCommittedView {
         let limits = PeerLimits::default();
         #[cfg(test)]
         ROOM_RESTORES.with(|count| count.set(count.get().saturating_add(1)));
+        let (governor, revocations) = self.record.current_governor(now);
         let restored = BoundedStatePeer::restore(
             &self.record.peer,
             &self.record.room.to_string(),
-            &self.record.governor,
+            &governor,
             std::slice::from_ref(&self.record.device),
-            &RevocationList::new(),
+            &revocations,
             now,
             &limits,
         )

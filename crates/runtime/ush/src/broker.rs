@@ -46,7 +46,6 @@ pub enum Request {
     AppUpdate {
         package: Option<String>,
     },
-    /// Stage the signed system image update.
     SystemUpdate,
     /// Update apps and stage the system image, matching `tilo update`.
     AllUpdates,
@@ -106,6 +105,16 @@ pub enum Request {
         args: Vec<String>,
         cwd: PathBuf,
     },
+    /// One file action (`cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`,
+    /// `truncate`) checked against the environment's grants and carried out
+    /// on the host's filesystem, which is what the guest's grants bind.
+    FileAction {
+        action: crate::file_actions::FileAction,
+    },
+    /// Undo one invocation by the id the answer to it carried.
+    UndoFileAction {
+        id: String,
+    },
 }
 
 /// What the broker answers.
@@ -131,6 +140,17 @@ pub enum Response {
     },
     Perms {
         entries: Vec<PermEntry>,
+    },
+    /// The file action ran; `id` names its entry in the recoverable history,
+    /// which `undo file-action ID` takes.
+    FileAction {
+        id: String,
+        operations: usize,
+    },
+    /// Undo put the tree back.
+    Undone {
+        id: String,
+        operations: usize,
     },
     Check {
         allowed: bool,
@@ -263,7 +283,7 @@ fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<
         operation,
         program,
         args,
-        binary: host_root.join("usr/bin").join(program),
+        binary: host_root.join(host_program_dir(program)).join(program),
         mutating,
         time_limit,
     })
@@ -271,6 +291,16 @@ fn host_command_for(host_root: &Path, policy: &Policy, req: &Request) -> Option<
 
 /// The host side of every legacy app shim.
 const LEGACY_PROGRAM: &str = "tilo-legacy";
+
+/// Where the host keeps `program`, relative to its root: Tilo's own programs
+/// live off PATH in /usr/libexec/tilo, the commands people type in /usr/bin.
+fn host_program_dir(program: &str) -> &'static str {
+    if program == LEGACY_PROGRAM {
+        "usr/libexec/tilo"
+    } else {
+        "usr/bin"
+    }
+}
 
 /// `tilo-legacy launch <app> --cwd <cwd> [--share-cwd] -- <args…>`.
 ///
@@ -362,6 +392,9 @@ impl NetworkStatus {
 /// The environment a session was built from, and the way back to its record.
 #[derive(Debug, Clone)]
 pub struct EnvironmentHandle {
+    /// The environment's own `/var` state, as the guest sees it bound at
+    /// `/var/lib` and `/var/cache` — where its recoverable history lives.
+    pub var_dir: PathBuf,
     pub records: Records,
     pub key: String,
     /// The record as the session was built from it.
@@ -383,7 +416,7 @@ impl EnvironmentHandle {
         }
     }
 
-    fn policy(&self) -> Policy {
+    pub fn policy(&self) -> Policy {
         Policy::new(self.current().grants)
     }
 }
@@ -484,6 +517,8 @@ impl BrokerState {
                 Response::Ok
             }
             Request::LegacyLaunch { app, args, cwd } => self.legacy_launch(&app, args, &cwd),
+            Request::FileAction { action } => crate::file_actions::brokered(self, &action),
+            Request::UndoFileAction { id } => crate::file_actions::brokered_undo(self, &id),
         }
     }
 
@@ -1842,19 +1877,30 @@ pub fn ask_streaming_with_progress(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-    const HANG_BOUND: Duration = Duration::from_secs(30);
+    /// Ask the broker for its status from another thread: the answer comes
+    /// while the test still holds a host command, or the wait fails as hung.
+    fn status_while_held(socket: &Path) {
+        let socket = socket.to_path_buf();
+        let (answered, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = answered.send(ask(&socket, &Request::Status));
+        });
+        assert!(matches!(
+            tilo_test_env::recv("the status while a host command runs", &answer),
+            Ok(Response::Status { .. })
+        ));
+    }
 
     use tilo_environment::DEFAULT_RECORD;
 
-    fn state(dir: &Path) -> BrokerState {
+    pub(crate) fn state(dir: &Path) -> BrokerState {
         state_with(dir, Arc::new(tilo_environment::NoToolBuilder))
     }
 
-    fn state_with(dir: &Path, builder: Arc<dyn ToolBuilder>) -> BrokerState {
+    pub(crate) fn state_with(dir: &Path, builder: Arc<dyn ToolBuilder>) -> BrokerState {
         let records = Records::at(dir.join("records"));
         let built_from = records
             .create(
@@ -1865,6 +1911,7 @@ mod tests {
         BrokerState {
             session_id: "s1".into(),
             environment: EnvironmentHandle {
+                var_dir: dir.join("var"),
                 records,
                 key: DEFAULT_RECORD.into(),
                 built_from,
@@ -1922,9 +1969,11 @@ mod tests {
                 },
             )
             .unwrap();
-            assert_eq!(command.binary, PathBuf::from("/usr/bin/tilo-legacy"));
+            assert_eq!(
+                command.binary,
+                PathBuf::from("/usr/libexec/tilo/tilo-legacy")
+            );
             assert!(!command.mutating);
-            // A legacy app runs for as long as the person keeps it open.
             assert_eq!(command.time_limit, None);
         }
         // phase: an untrusted directory is named but not shared
@@ -1983,7 +2032,7 @@ mod tests {
     /// Wait until `path` exists; only a hang reaches the bound.
     fn wait_for_file(path: &Path) {
         let started = Instant::now();
-        while started.elapsed() < HANG_BOUND && !path.exists() {
+        while started.elapsed() < tilo_test_env::hang_bound() && !path.exists() {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(path.exists(), "{} never appeared", path.display());
@@ -2096,18 +2145,20 @@ mod tests {
             .unwrap()
         });
 
-        assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), b"started\n");
+        assert_eq!(
+            rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
+            b"started\n"
+        );
         assert!(!command.is_finished());
-        // A running command does not retain the state lock.
-        let before = Instant::now();
-        assert!(matches!(
-            ask(&socket, &Request::Status),
-            Ok(Response::Status { .. })
-        ));
-        assert!(before.elapsed() < Duration::from_millis(500));
+        // A running command does not retain the state lock: it runs until
+        // released below.
+        status_while_held(&socket);
 
         std::fs::write(&release, b"").unwrap();
-        assert_eq!(rx.recv_timeout(HANG_BOUND).unwrap(), b"finished\n");
+        assert_eq!(
+            rx.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
+            b"finished\n"
+        );
         assert_eq!(command.join().unwrap(), Response::Command { code: 0 });
         drop(broker);
     }
@@ -2143,10 +2194,10 @@ mod tests {
         let worker = std::thread::spawn(move || {
             serve_host_command(&command, &state, &mut writer, &worker_shared)
         });
-        let started = Instant::now();
+        let deadline = tilo_test_env::hang_deadline();
         let mut completed = false;
         let mut released = false;
-        while started.elapsed() < Duration::from_secs(2) {
+        while Instant::now() < deadline {
             completed = audit
                 .read_all()
                 .iter()
@@ -2216,19 +2267,14 @@ mod tests {
             )
             .unwrap()
         });
-        let notice = rx.recv_timeout(HANG_BOUND).unwrap();
+        let notice = rx.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert!(String::from_utf8_lossy(&notice).contains("Waiting for another host update"));
         assert_eq!(
             std::fs::read_to_string(&events).unwrap(),
             "first-start\n",
             "the second update started before the first update exited"
         );
-        let before = Instant::now();
-        assert!(matches!(
-            ask(&socket, &Request::Status),
-            Ok(Response::Status { .. })
-        ));
-        assert!(before.elapsed() < Duration::from_millis(500));
+        status_while_held(&socket);
 
         std::fs::write(&release, b"").unwrap();
         assert_eq!(first.join().unwrap(), Response::Command { code: 0 });
@@ -2333,7 +2379,7 @@ mod tests {
             .map(|pid| pid.parse().unwrap())
             .collect();
         assert_eq!(pids.len(), 2);
-        let deadline = Instant::now() + HANG_BOUND;
+        let deadline = Instant::now() + tilo_test_env::hang_bound();
         while Instant::now() < deadline && !pids.iter().all(|pid| has_terminated(*pid)) {
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -2392,7 +2438,7 @@ mod tests {
         serde_json::to_writer(&mut stream, &Request::AppUpdate { package: None }).unwrap();
         stream.write_all(b"\n").unwrap();
         stream.flush().unwrap();
-        let deadline = Instant::now() + HANG_BOUND;
+        let deadline = Instant::now() + tilo_test_env::hang_bound();
         while Instant::now() < deadline {
             if pid_file.exists() {
                 break;
@@ -2408,7 +2454,7 @@ mod tests {
         drop(stream);
 
         let mut stopped = Vec::new();
-        let stop_deadline = Instant::now() + HANG_BOUND;
+        let stop_deadline = Instant::now() + tilo_test_env::hang_bound();
         while Instant::now() < stop_deadline {
             stopped = pids
                 .iter()
@@ -2848,7 +2894,6 @@ mod tests {
             matches!(serde_json::from_str(&line), Ok(Response::Status { .. })),
             "{line}"
         );
-        // Stopping the broker ends the connection it still holds.
         drop(broker);
     }
 
@@ -2893,7 +2938,7 @@ mod tests {
 
         let ((second, notices), waiting) =
             spawned_thread("tilo-ush-broker", || ask_update("second"));
-        let notice = notices.recv_timeout(HANG_BOUND).unwrap();
+        let notice = notices.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert!(String::from_utf8_lossy(&notice).contains("Waiting for another host update"));
         assert_stays_asleep(&waiting, "host update waiting for another");
 
@@ -2908,7 +2953,6 @@ mod tests {
     fn allow_host_writes_a_net_grant_that_perm_list_shows_and_revoke_removes() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = state(dir.path());
-        // Without a session network the grant is recorded for the next one.
         let Response::NeedsRestart { detail } = s.handle(Request::AllowHost {
             host: "*.Crates.io".into(),
         }) else {

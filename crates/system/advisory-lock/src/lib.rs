@@ -142,9 +142,6 @@ impl FileLock {
     ///
     /// Callers with ownership or permission requirements open the file
     /// themselves and pass it to [`FileLock::lock`].
-    ///
-    /// # Errors
-    /// Returns the error from opening or locking the file.
     pub fn open(path: &Path, mode: LockMode) -> io::Result<Self> {
         Self::lock(open_lock_file(path)?, mode)
     }
@@ -168,9 +165,6 @@ impl FileLock {
     /// locked file is compared with the one at `path`, and on a mismatch the
     /// lock is dropped and taken again on the current file. Holders that
     /// remove the file must do so only while holding it exclusively.
-    ///
-    /// # Errors
-    /// Returns the error from opening or locking the file.
     pub fn open_current(path: &Path, mode: LockMode) -> io::Result<Self> {
         loop {
             let lock = Self::open(path, mode)?;
@@ -224,10 +218,6 @@ impl FileLock {
     /// A conversion is not atomic: the kernel may release the old lock before
     /// granting the new one, so another holder can run in between and
     /// anything validated under the old lock must be validated again.
-    ///
-    /// # Errors
-    /// Returns the operating system's error. The guard is dropped, and so
-    /// unlocked, when conversion fails.
     pub fn convert(mut self, mode: LockMode) -> io::Result<Self> {
         if self.mode != mode {
             sys::convert(&self.file, mode)?;
@@ -256,10 +246,6 @@ impl FileLock {
     ///
     /// The record is diagnostic only. It can be stale or momentarily empty,
     /// so never use it to decide whether the lock is free.
-    ///
-    /// # Errors
-    /// Rejects a shared guard, whose file other holders may be using, and
-    /// returns write errors.
     pub fn record_owner(&self) -> io::Result<()> {
         if self.mode != LockMode::Exclusive {
             return Err(io::Error::new(
@@ -276,9 +262,6 @@ impl FileLock {
 
     /// Unlocks and closes the file, reporting an unlock failure that
     /// dropping the guard would ignore.
-    ///
-    /// # Errors
-    /// Returns the operating system's unlock error.
     pub fn unlock(self) -> io::Result<()> {
         // The destructor's second unlock of an unlocked file is a no-op.
         sys::unlock(&self.file)
@@ -314,9 +297,6 @@ impl Drop for FileLock {
 
 /// Opens `path` for reading and writing, creating it if it is missing and
 /// never truncating an existing file.
-///
-/// # Errors
-/// Returns the error from opening the file.
 pub fn open_lock_file(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .read(true)

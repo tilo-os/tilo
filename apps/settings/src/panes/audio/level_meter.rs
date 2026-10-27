@@ -44,7 +44,6 @@ impl Level {
         self.live.get()
     }
 
-    /// The level as it is now.
     pub fn get(&self) -> f32 {
         f32::from_bits(self.value.load(Ordering::Relaxed))
     }

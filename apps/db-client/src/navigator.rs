@@ -13,6 +13,7 @@ use ui::icons::Icon;
 use ui::widget::{NavAction, NavItem, NavList, NavSection, RowStatus};
 use uuid::Uuid;
 
+use crate::i18n::t;
 use crate::link::{ConnectionRow, Intent, Link};
 use crate::model::{DatabaseSchema, Engine, RelationKind, RelationRef, SchemaInfo};
 
@@ -33,7 +34,6 @@ fn parse_relation(key: &str) -> Option<RelationRef> {
     })
 }
 
-/// The row id of a connection.
 fn connection_key(id: Uuid) -> String {
     id.to_string()
 }
@@ -98,7 +98,7 @@ fn catalog_items(schema: &DatabaseSchema) -> Vec<NavItem> {
 fn connection_section(rows: &[ConnectionRow], open: Option<Uuid>) -> NavSection {
     NavSection::new(
         CONNECTIONS,
-        "Connections",
+        t("db-connections"),
         rows.iter()
             .map(|row| {
                 let mut item = NavItem::new(connection_key(row.id), row.name.clone())
@@ -117,18 +117,17 @@ fn connection_section(rows: &[ConnectionRow], open: Option<Uuid>) -> NavSection 
             })
             .collect(),
     )
-    .trailing_action(NavAction::new("new", Icon::Plus, "New connection"))
+    .trailing_action(NavAction::new("new", Icon::Plus, &t("db-new-connection")))
 }
 
 /// The open database's tables, under the connection's name; the one
 /// section the window's filter narrows.
 fn catalog_section(name: &str, schema: &DatabaseSchema) -> NavSection {
     NavSection::new(CATALOG, name, catalog_items(schema))
-        .empty_caption("No tables")
+        .empty_caption(&t("db-tables"))
         .filterable()
 }
 
-/// Every section of the list.
 fn sections(rows: &[ConnectionRow], open: Option<(Uuid, &DatabaseSchema)>) -> Vec<NavSection> {
     let mut sections = vec![connection_section(rows, open.map(|(id, _)| id))];
     if let Some((id, schema)) = open
@@ -156,7 +155,7 @@ impl Navigator {
         let opened = link.clone();
         let list = NavList::new(sections(&[], None))
             .with_id("db.sidebar")
-            .with_accessible_name("Connections and tables")
+            .with_accessible_name(&t("db-navigator"))
             .on_select(move |id| {
                 if let Some(id) = parse_connection(&id) {
                     // Choosing the connection that is already open keeps it open.
@@ -169,7 +168,11 @@ impl Navigator {
                 }
             })
             .item_actions(
-                vec![NavAction::new("remove", Icon::Trash2, "Remove connection")],
+                vec![NavAction::new(
+                    "remove",
+                    Icon::Trash2,
+                    &t("db-remove-connection"),
+                )],
                 move |id, _action| {
                     if let Some(id) = parse_connection(id) {
                         remove.ask(Intent::RemoveConnection(id));

@@ -16,7 +16,6 @@ use super::{caption, icon_button, percent};
 use crate::model::Artwork;
 use crate::tools::Tools;
 
-/// A layer as its row shows it.
 #[derive(Clone, Default, PartialEq)]
 struct LayerRow {
     id: String,
@@ -31,7 +30,6 @@ struct LayerRow {
     clip: bool,
 }
 
-/// A layer's mask, as its layer's row shows it.
 #[derive(Clone, Default, PartialEq)]
 struct MaskRow {
     id: String,

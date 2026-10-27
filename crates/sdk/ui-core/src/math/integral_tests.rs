@@ -1,5 +1,3 @@
-//! Exercise the same model, layout, hit testing and edits as a live math field.
-
 use super::edit::Editor;
 use super::layout::{BoxKind, layout, nearest_gap};
 use super::model::{Node, Path, Slot, integral_ranges, parse, to_linear};

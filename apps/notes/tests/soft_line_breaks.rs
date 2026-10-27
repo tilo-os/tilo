@@ -35,7 +35,6 @@ fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
             drop(live);
             f.records.try_flush().unwrap();
             let f = f.reopen();
-            // Mounting an existing record loads its persisted bytes into the new owner.
             let mut reopened = driver(&f, 82, &checkout);
             f.records
                 .read(&checkout.id, |doc| {

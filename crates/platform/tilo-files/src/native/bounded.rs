@@ -8,21 +8,26 @@ pub fn read(
     path: &std::path::Path,
     max_bytes: impl TryInto<u64>,
 ) -> std::io::Result<Option<Vec<u8>>> {
-    use std::io::Read as _;
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    let max_bytes: Option<u64> = max_bytes.try_into().ok();
-    let (max_bytes, bound) = max_bytes
-        .and_then(|bytes| Some((bytes, bytes.checked_add(1)?)))
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "file byte bound is invalid",
-            )
-        })?;
+    let max_bytes: u64 = max_bytes.try_into().map_err(|_| invalid_bound())?;
+    read_from(&file, max_bytes).map(Some)
+}
+
+fn invalid_bound() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "file byte bound is invalid",
+    )
+}
+
+/// Read at most `max_bytes` of an open `file`, as [`read`] does.
+pub(super) fn read_from(file: &std::fs::File, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let bound = max_bytes.checked_add(1).ok_or_else(invalid_bound)?;
     let mut bytes = Vec::new();
     file.take(bound).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max_bytes {
@@ -31,14 +36,11 @@ pub fn read(
             "file exceeds its byte bound",
         ));
     }
-    Ok(Some(bytes))
+    Ok(bytes)
 }
 
 /// [`read`], reporting a file over the bound as the caller's `too_large`
 /// error and other failures through its `From<io::Error>`.
-///
-/// # Errors
-/// `too_large` for a file over `max_bytes`, else the converted I/O error.
 pub fn read_or<E: From<std::io::Error>>(
     path: &std::path::Path,
     max_bytes: impl TryInto<u64>,

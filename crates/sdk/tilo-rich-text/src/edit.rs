@@ -1003,14 +1003,12 @@ mod tests {
     #[test]
     fn a_kept_run_is_never_written_again() {
         for (before, after, splices) in [
-            // Formatting typed markdown removes the delimiters around it.
             (
                 "a **bö*",
                 "a bö",
                 vec![(2, 2, String::new()), (4, 1, String::new())],
             ),
             ("*hi", "hi", vec![(0, 1, String::new())]),
-            // Putting the markdown back adds them around it again.
             (
                 "a bö",
                 "a **bö**",

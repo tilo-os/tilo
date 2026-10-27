@@ -43,13 +43,11 @@ fn list_for(device: &Device) -> PersonalWorkspaces {
     PersonalWorkspaces::new(device.cert.user_public_key, device.cert.device_public_key)
 }
 
-/// A device's tree holding one workspace of its own, named `name`.
 fn device_tree(salt: u16, name: &str) -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     tree.set_salt_override(salt);
     let id = WorkspaceId(salted(salt, 1));
-    let mut workspace = Workspace::new(id, name);
-    workspace.set_room(RoomId::new());
+    let mut workspace = Workspace::in_room(id, RoomId::new(), name);
     workspace.set_owner(PERSON.to_string());
     tree.desktop.workspaces.push(workspace);
     tree.desktop.active = id;
@@ -67,7 +65,7 @@ fn open_tab(tree: &mut WorkspaceTree, room: RoomId, salt: u16, title: &str) -> u
         .desktop
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .expect("workspace");
     let mut strip = Strip::new(StripId(salted(salt, 10)), "Main");
     strip.window_groups.push(WindowGroup {
@@ -79,6 +77,7 @@ fn open_tab(tree: &mut WorkspaceTree, room: RoomId, salt: u16, title: &str) -> u
                 kind: AppKind::Other("Notes".into()),
                 label: title.into(),
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,
@@ -102,7 +101,6 @@ fn deliver(
     deliver_as(PERSON, from, from_device, from_tree, to, to_tree)
 }
 
-/// [`deliver`] for the lists of `person`.
 fn deliver_as(
     person: &str,
     from: &mut PersonalWorkspaces,
@@ -126,7 +124,7 @@ fn room_named(tree: &WorkspaceTree, name: &str) -> RoomId {
         .find(|workspace| workspace.name == name)
         .map_or_else(
             || panic!("no workspace named {name}"),
-            |workspace| workspace.room,
+            crate::shell::state::Workspace::room,
         )
 }
 
@@ -211,7 +209,7 @@ fn a_workspace_made_on_one_device_appears_on_the_other_with_its_content() {
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == research)
+        .find(|workspace| workspace.room() == research)
         .expect("the laptop's workspace is on the board");
     assert_eq!(joined.name, "Research");
     assert_eq!(joined.owner().map(String::as_str), Some(person.as_str()));
@@ -239,7 +237,7 @@ fn a_workspace_made_on_one_device_appears_on_the_other_with_its_content() {
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == research)
+        .find(|workspace| workspace.room() == research)
         .and_then(|workspace| {
             workspace
                 .strips
@@ -307,7 +305,7 @@ fn renames_follow_the_list_and_concurrent_ones_converge() {
         .desktop
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room == research)
+        .find(|workspace| workspace.room() == research)
         .expect("joined");
     board_copy.name = "Chapter 1".into();
     deliver(
@@ -328,7 +326,7 @@ fn renames_follow_the_list_and_concurrent_ones_converge() {
         tree.desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.room == research)
+            .find(|workspace| workspace.room() == research)
             .map(|workspace| workspace.name.clone())
     };
     assert_eq!(name_on(&laptop), name_on(&board));
@@ -368,8 +366,11 @@ fn a_person_room_an_older_build_left_unpinned_is_pinned_by_the_list() {
 fn rooms_the_person_is_not_in_are_not_listed() {
     let (laptop_device, _) = person_with_two_devices();
     let mut laptop = device_tree(LAPTOP, "Research");
-    let mut colleague = Workspace::new(WorkspaceId(salted(LAPTOP, 2)), "Their project");
-    colleague.set_room(RoomId::new());
+    let mut colleague = Workspace::in_room(
+        WorkspaceId(salted(LAPTOP, 2)),
+        RoomId::new(),
+        "Their project",
+    );
     colleague.set_owner("person-colleague".to_string());
     laptop.desktop.workspaces.push(colleague);
     let offered = RoomId::new();
@@ -416,7 +417,7 @@ fn a_room_only_offered_by_continuation_becomes_a_workspace_when_listed() {
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == research)
+        .find(|workspace| workspace.room() == research)
         .expect("one entry for the room");
     assert_eq!(held.name, "Research");
     assert_eq!(held.owner().map(String::as_str), Some(PERSON));
@@ -425,7 +426,7 @@ fn a_room_only_offered_by_continuation_becomes_a_workspace_when_listed() {
             .desktop
             .workspaces
             .iter()
-            .filter(|workspace| workspace.room == research)
+            .filter(|workspace| workspace.room() == research)
             .count(),
         1
     );
@@ -524,7 +525,7 @@ fn name_of(tree: &WorkspaceTree, room: RoomId) -> String {
     tree.desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .map(|workspace| workspace.name.clone())
         .expect("workspace held")
 }
@@ -548,7 +549,7 @@ fn any_device_of_the_owner_governs_their_room_until_it_is_revoked() {
     let (person, key) = certified_person(&laptop_device);
     let mut laptop = device_tree(LAPTOP, "Research");
     laptop.desktop.workspaces[0].set_owner(person.clone());
-    let research = laptop.desktop.workspaces[0].room;
+    let research = laptop.desktop.workspaces[0].room();
     let mut board = device_tree(BOARD, "Board home");
     board.desktop.workspaces[0].set_owner(person.clone());
     for tree in [&mut laptop, &mut board] {
@@ -574,7 +575,7 @@ fn any_device_of_the_owner_governs_their_room_until_it_is_revoked() {
         .desktop
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room == research)
+        .find(|workspace| workspace.room() == research)
         .expect("made here")
         .name = "Research notes".into();
     assert!(ship_room(
@@ -597,7 +598,7 @@ fn any_device_of_the_owner_governs_their_room_until_it_is_revoked() {
         .desktop
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room == research)
+        .find(|workspace| workspace.room() == research)
         .expect("joined")
         .name = "Thesis".into();
     assert!(ship_room(
@@ -614,7 +615,7 @@ fn any_device_of_the_owner_governs_their_room_until_it_is_revoked() {
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == research)
+        .find(|workspace| workspace.room() == research)
         .map(|workspace| workspace.id)
         .expect("joined");
     let grant = |tree: &mut WorkspaceTree, who: &str| {
@@ -646,7 +647,7 @@ fn member_of(tree: &WorkspaceTree, room: RoomId, who: &str) -> bool {
     tree.desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .and_then(|workspace| workspace.role_of(who))
         .is_some()
 }
@@ -662,9 +663,8 @@ fn a_room_someone_else_invited_the_person_to_follows_them_with_its_governor() {
     let mut colleague = WorkspaceTree::default();
     colleague.set_salt_override(0xC011);
     let colleague_ws = WorkspaceId(salted(0xC011, 1));
-    let mut project = Workspace::new(colleague_ws, "Their project");
     let room = RoomId::new();
-    project.set_room(room);
+    let mut project = Workspace::in_room(colleague_ws, room, "Their project");
     project.set_owner("person-colleague".to_string());
     colleague.desktop.workspaces.push(project);
     colleague.desktop.active = colleague_ws;
@@ -682,8 +682,7 @@ fn a_room_someone_else_invited_the_person_to_follows_them_with_its_governor() {
     // The laptop accepted the invitation: the colleague is its pinned governor.
     let mut laptop = device_tree(LAPTOP, "Research");
     laptop.desktop.workspaces[0].set_owner(person.clone());
-    let mut joined = Workspace::new(WorkspaceId(salted(LAPTOP, 9)), "Their project");
-    joined.set_room(room);
+    let joined = Workspace::in_room(WorkspaceId(salted(LAPTOP, 9)), room, "Their project");
     laptop.desktop.workspaces.push(joined);
     laptop.pin_room_authority(room, colleague_origin.clone());
     assert!(ship_room(
@@ -737,7 +736,7 @@ fn a_room_someone_else_invited_the_person_to_follows_them_with_its_governor() {
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .expect("joined");
     assert_eq!(held.owner().map(String::as_str), Some("person-colleague"));
     assert!(held.role_of(&person).is_some());
@@ -749,7 +748,7 @@ fn a_room_someone_else_invited_the_person_to_follows_them_with_its_governor() {
         .desktop
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.room == room)
+        .find(|workspace| workspace.room() == room)
         .expect("held")
         .admit("person-mallory", tilo_action_policy::Role::Editor);
     assert!(!ship_room(
@@ -763,9 +762,8 @@ fn a_room_someone_else_invited_the_person_to_follows_them_with_its_governor() {
 
 /// A workspace named `name` added to `tree` as `salt`'s device creates it.
 fn add_workspace(tree: &mut WorkspaceTree, salt: u16, counter: u64, name: &str) -> RoomId {
-    let mut workspace = Workspace::new(WorkspaceId(salted(salt, counter)), name);
     let room = RoomId::new();
-    workspace.set_room(room);
+    let mut workspace = Workspace::in_room(WorkspaceId(salted(salt, counter)), room, name);
     workspace.set_owner(PERSON.to_string());
     tree.desktop.workspaces.push(workspace);
     room
@@ -833,7 +831,7 @@ fn a_workspace_deleted_on_one_device_goes_from_the_other_and_an_undo_brings_it_b
         .desktop
         .workspaces
         .iter()
-        .find(|workspace| workspace.room == research)
+        .find(|workspace| workspace.room() == research)
         .map(|workspace| workspace.id)
         .expect("joined");
     board.desktop.active = on_board;
@@ -849,7 +847,11 @@ fn a_workspace_deleted_on_one_device_goes_from_the_other_and_an_undo_brings_it_b
         &mut board
     ));
     assert!(
-        !board.desktop.workspaces.iter().any(|w| w.room == research),
+        !board
+            .desktop
+            .workspaces
+            .iter()
+            .any(|w| w.room() == research),
         "the board drops the deleted workspace"
     );
     assert!(
@@ -870,7 +872,11 @@ fn a_workspace_deleted_on_one_device_goes_from_the_other_and_an_undo_brings_it_b
         &mut board
     ));
     assert!(
-        board.desktop.workspaces.iter().any(|w| w.room == research),
+        board
+            .desktop
+            .workspaces
+            .iter()
+            .any(|w| w.room() == research),
         "undoing the deletion brings it back to the board"
     );
 }
@@ -981,11 +987,19 @@ fn a_workspace_kept_off_a_device_leaves_it_and_returns_when_shown_again() {
         &mut board,
     );
     assert!(
-        !board.desktop.workspaces.iter().any(|w| w.room == research),
+        !board
+            .desktop
+            .workspaces
+            .iter()
+            .any(|w| w.room() == research),
         "kept off the board"
     );
     assert!(
-        laptop.desktop.workspaces.iter().any(|w| w.room == research),
+        laptop
+            .desktop
+            .workspaces
+            .iter()
+            .any(|w| w.room() == research),
         "still on the laptop"
     );
     // The board still carries the list: it does not delete what it hides.
@@ -996,7 +1010,13 @@ fn a_workspace_kept_off_a_device_leaves_it_and_returns_when_shown_again() {
         &mut laptop_list,
         &mut laptop,
     );
-    assert!(laptop.desktop.workspaces.iter().any(|w| w.room == research));
+    assert!(
+        laptop
+            .desktop
+            .workspaces
+            .iter()
+            .any(|w| w.room() == research)
+    );
 
     assert!(laptop_list.set_shown(research, board_key, true));
     deliver(
@@ -1007,7 +1027,11 @@ fn a_workspace_kept_off_a_device_leaves_it_and_returns_when_shown_again() {
         &mut board,
     );
     assert!(
-        board.desktop.workspaces.iter().any(|w| w.room == research),
+        board
+            .desktop
+            .workspaces
+            .iter()
+            .any(|w| w.room() == research),
         "shown on the board again"
     );
 }
@@ -1044,7 +1068,11 @@ fn a_device_linked_after_an_opt_out_shows_every_workspace() {
         &mut phone,
     );
     assert!(
-        phone.desktop.workspaces.iter().any(|w| w.room == research),
+        phone
+            .desktop
+            .workspaces
+            .iter()
+            .any(|w| w.room() == research),
         "only the board opted out; a device linked later shows it"
     );
 }

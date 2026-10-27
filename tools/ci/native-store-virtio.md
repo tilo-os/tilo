@@ -14,7 +14,7 @@ python3 tools/ci/disposable-native-vm.py \
   -- python3 -c 'import os; print(os.environ["TILO_FS_NATIVE_STORES"])'
 ```
 
-Guest execution and fixture transfer use only `tilo-vm vm ssh`. No new daemon or
+Guest execution and fixture transfer use only `tilo device vm ssh`. No new daemon or
 privileged-exec capability is installed. An older image's daemon protocol mismatch
 is tolerated only for this diagnostic SSH route, not as qualification evidence.
 

@@ -1,4 +1,3 @@
-//! Real persisted activation queues checked at the final writer boundary.
 #![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"
@@ -249,7 +248,6 @@ async fn writer_boundary(
             .live
             .clone();
         assert!(current.load(Ordering::SeqCst));
-        // A fresh delivery on the replacement lease still writes and cleans up.
         let current_delivery = StateDelivery {
             envelope: LiveEnvelope::Original(Arc::new(current_envelope)),
             cleanup: Some(pending.clone()),

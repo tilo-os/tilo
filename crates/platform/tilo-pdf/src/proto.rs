@@ -142,9 +142,7 @@ pub enum FailureKind {
 pub struct ProbeReport {
     /// `open(path)` for reading succeeded.
     pub opened_file: bool,
-    /// Creating a file next to `path` succeeded.
     pub created_file: bool,
-    /// An internet socket could be bound.
     pub inet_socket: bool,
     /// A Unix socket could be bound next to `path`.
     pub unix_socket: bool,
@@ -222,10 +220,6 @@ impl Channel {
         runtime_portal::fd_transport::send_with_fd(&self.stream, FD_MARKER, fd)
     }
 
-    /// # Errors
-    ///
-    /// Socket failures, or a message that is not exactly one descriptor
-    /// marker.
     pub fn recv_fd(&self) -> io::Result<OwnedFd> {
         let (payload, fd) = runtime_portal::fd_transport::recv_with_fd(&self.stream)?;
         match fd {

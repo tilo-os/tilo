@@ -49,6 +49,9 @@ taffy.workspace = true
 anyhow.workspace = true
 # Rendering, text layer, forms and export through Tilo's sandboxed PDF engine.
 tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
+# The page pipeline every page viewer draws through: render queue, bitmap
+# cache, tiles.
+tilo-page-raster = { path = "../../crates/sdk/tilo-page-raster" }
 image = { workspace = true, features = ["png", "jpeg"] }
 tempfile.workspace = true
 # Documents the user opens and saves.
@@ -61,8 +64,13 @@ tilo-files = { path = "../../crates/platform/tilo-files" }
 serial_test.workspace = true
 # Two distinct files for the multi-document test.
 tempfile.workspace = true
+# The zoom test looks at every frame's pixels as the CPU renderer draws them.
+tilo-cpu-raster = { path = "../../crates/sdk/tilo-cpu-raster" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# A reader hosted in a desktop window, as the browser desktop hosts it.
+tilo-desktop-model = { path = "../../crates/session/desktop-model" }
+tilo-desktop-surface = { path = "../../crates/session/desktop-surface" }
 
 [[test]]
 name = "it"

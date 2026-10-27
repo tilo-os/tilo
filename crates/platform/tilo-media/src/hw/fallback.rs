@@ -357,7 +357,6 @@ mod tests {
         assert!(text.contains("no hardware H.264 encoder"), "{text}");
         assert!(text.contains("JPEG"), "{text}");
 
-        // Policy wins over everything.
         assert_eq!(
             explain(
                 Direction::Decode,
@@ -397,7 +396,6 @@ mod tests {
             MEDIA_AV1,
             &FallbackReason::PolicyOff
         ));
-        // As is the other direction.
         assert!(report_once(Direction::Encode, MEDIA_AV1, &reason));
     }
 }

@@ -23,7 +23,9 @@ const SHIPPED: &str = concat!(
     "/../../../os/etc/containers/policy.json"
 );
 const RELEASE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../keys/release");
-const BINARY: &str = env!("CARGO_BIN_EXE_tilo-image-policy-check");
+fn binary() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-image-policy-check")
+}
 const TILO: &str = "registry.tilo.so/tilo/tilo";
 const CODE: &str = "code.tilo.so/tilo/tilo";
 const GUEST: &str = "registry.tilo.so/tilo/legacy-guest";
@@ -454,7 +456,7 @@ fn release_trust_is_read_strictly() {
 }
 
 fn run(args: &[&str]) -> (Option<i32>, String, String) {
-    let output = Command::new(BINARY).args(args).output().unwrap();
+    let output = Command::new(binary()).args(args).output().unwrap();
     (
         output.status.code(),
         String::from_utf8(output.stdout).unwrap(),

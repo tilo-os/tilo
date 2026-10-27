@@ -3,16 +3,16 @@
 [[resources]]
 kind = "chat.workspace"
 label = "Chat"
-version = 5
+version = 6
 fields = [
-  { path = "categories", type = "Collection<Category>", stored = "collection" },
-  { path = "categories.*.name", type = "String", label = true },
-  { path = "channels", type = "Collection<Channel>", stored = "collection" },
-  { path = "channels.*.category", type = "Option<Id>" },
-  { path = "channels.*.name", type = "String", label = true },
-  { path = "channels.*.topic", type = "String" },
+  { path = "categories", type = "Collection<Category>", readonly = true, stored = "collection" },
+  { path = "categories.*.name", type = "String", label = true, readonly = true },
+  { path = "channels", type = "Collection<Channel>", readonly = true, stored = "collection" },
+  { path = "channels.*.category", type = "Option<Id>", readonly = true },
+  { path = "channels.*.name", type = "String", label = true, readonly = true },
+  { path = "channels.*.topic", type = "String", readonly = true },
   { path = "channels.*.kind", type = "ChannelKind", readonly = true },
-  { path = "channels.*.archived", type = "bool" },
+  { path = "channels.*.archived", type = "bool", readonly = true },
   { path = "channels.*.conversation_with", type = "Option<Atom>", readonly = true },
   { path = "people", type = "Keyed<Person>", stored = "keyed" },
   { path = "people.*.id", type = "Atom", readonly = true },
@@ -68,6 +68,9 @@ fields = [
   { path = "moderation.decisions.*.overturned_by", type = "Option<String>" },
   { path = "moderation.decisions.*.overturn_note", type = "Option<String>" },
   { path = "moderation.decisions.*.overturned_at_ms", type = "Option<i64>" },
+  { path = "files", type = "RoomFiles", readonly = true, stored = "record" },
+  { path = "files.largest", type = "u64" },
+  { path = "files.member_hourly", type = "u64" },
 ]
 
 [[resources.verbs]]
@@ -98,6 +101,7 @@ params = [
 
 [[resources.verbs]]
 id = "create-category"
+field = "moderation"
 kind = "undoable"
 params = [
   { name = "name", required = true, schema = { type = "string" } },
@@ -105,6 +109,7 @@ params = [
 
 [[resources.verbs]]
 id = "create-channel"
+field = "moderation"
 kind = "undoable"
 params = [
   { name = "name", required = true, schema = { type = "string" } },
@@ -114,8 +119,21 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "create-channel-with-id"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "category", required = false, schema = { type = ["string", "null"] } },
+  { name = "kind", required = false, schema = { oneOf = [{ type = "null" }, { type = "string", enum = ["text", "voice"] }] } },
+  { name = "topic", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
 id = "delete-category"
 destructive = true
+field = "moderation"
 kind = "undoable"
 params = [
   { name = "category", required = true, schema = { type = "string" } },
@@ -123,6 +141,7 @@ params = [
 
 [[resources.verbs]]
 id = "move-channel"
+field = "moderation"
 kind = "undoable"
 params = [
   { name = "channel", required = true, schema = { type = "string" } },
@@ -131,6 +150,7 @@ params = [
 
 [[resources.verbs]]
 id = "set-channel-category"
+field = "moderation"
 kind = "undoable"
 params = [
   { name = "channel", required = true, schema = { type = "string" } },
@@ -138,8 +158,45 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "rename-channel"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-channel-topic"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "topic", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "archive-channel"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "archived", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "rename-category"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "category", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "delete-channel"
 destructive = true
+field = "moderation"
 kind = "undoable"
 params = [
   { name = "channel", required = true, schema = { type = "string" } },
@@ -213,7 +270,7 @@ kind = "chat.messages"
 label = "Messages"
 version = 2
 fields = [
-  { path = "messages", type = "Collection<Message>", stored = "collection" },
+  { path = "messages", type = "Collection<Message>", readonly = true, stored = "collection" },
   { path = "messages.*.channel", type = "Id", readonly = true },
   { path = "messages.*.author", type = "Atom", readonly = true },
   { path = "messages.*.ts", type = "i64", readonly = true },
@@ -222,7 +279,7 @@ fields = [
   { path = "messages.*.edited", type = "bool", readonly = true },
   { path = "messages.*.history", type = "Vec<Revision>", readonly = true },
   { path = "messages.*.parent", type = "Option<Id>", readonly = true },
-  { path = "messages.*.reactions", type = "ui::tilo_resource::Set<Reacted>", readonly = true },
+  { path = "messages.*.reactions", type = "ui::tilo_resource::Reactions", readonly = true },
   { path = "messages.*.mentions", type = "Vec<crate::mention::Mention>", readonly = true },
   { path = "messages.*.reference", type = "Option<tilo_reference::ResourceRef>", readonly = true, stored = "record" },
   { path = "messages.*.reference.kind", type = "String" },
@@ -261,6 +318,11 @@ fields = [
   { path = "messages.*.appearance.persona", type = "Option<ShownPersona>", stored = "record" },
   { path = "messages.*.appearance.persona.service", type = "String" },
   { path = "messages.*.appearance.persona.account", type = "String" },
+  { path = "messages.*.appearance.persona.linked", type = "Option<String>" },
+  { path = "messages.*.share", type = "Option<WindowShare>", readonly = true, stored = "record" },
+  { path = "messages.*.share.access", type = "ShareAccess" },
+  { path = "messages.*.share.open", type = "bool" },
+  { path = "messages.*.share.ended", type = "bool" },
 ]
 
 [[resources.verbs]]
@@ -303,6 +365,53 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "share-window"
+incoming_message = true
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "reference", required = true, schema = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, span = { type = ["object", "null"], additionalProperties = false, properties = { end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, unit = { type = "string" } }, required = ["start", "end", "unit"] } }, required = ["kind", "id", "label"] } },
+  { name = "source_provider", required = true, schema = { type = "string" } },
+  { name = "access", required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "string", const = "view" }, { type = "string", const = "edit" }] }] } },
+  { name = "text", required = false, schema = { type = ["string", "null"] } },
+  { name = "mentions", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { is_agent = { type = "boolean" }, len = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, user = { type = "string" } }, required = ["user", "start", "len", "is_agent"] } } },
+]
+
+[[resources.verbs]]
+id = "stop-sharing"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "set-share-access"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "access", required = true, schema = { oneOf = [{ type = "string", const = "view" }, { type = "string", const = "edit" }] } },
+]
+
+[[resources.verbs]]
+id = "share-open"
+kind = "undoable"
+params = [
+  { name = "message", required = true, schema = { type = "string" } },
+  { name = "open", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "deliver-message"
+incoming_message = true
+kind = "undoable"
+params = [
+  { name = "channel", required = true, schema = { type = "string" } },
+  { name = "author", required = true, schema = { type = "string" } },
+  { name = "body", required = true, schema = { type = "string" } },
+  { name = "ts", required = false, schema = { type = ["integer", "null"] } },
+]
+
+[[resources.verbs]]
 id = "edit-message"
 kind = "undoable"
 params = [
@@ -338,22 +447,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "react"
-kind = "undoable"
-params = [
-  { name = "message", required = true, schema = { type = "string" } },
-  { name = "emoji", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "unreact"
-kind = "undoable"
-params = [
-  { name = "message", required = true, schema = { type = "string" } },
-  { name = "emoji", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
 id = "record-work"
 kind = "undoable"
 params = [
@@ -370,6 +463,37 @@ params = [
   { name = "reply", required = true, schema = { type = "string" } },
   { name = "name", required = false, schema = { type = ["string", "null"] } },
   { name = "event", required = true, schema = {} },
+]
+
+[[resources]]
+kind = "tilo.workspace.emoji"
+label = "Workspace emoji"
+version = 1
+fields = [
+  { path = "emoji", type = "Map<Emoji>" },
+]
+
+[[resources.verbs]]
+id = "add-emoji"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "image", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-emoji"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-any-emoji"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
 ]
 
 [[resources]]

@@ -4,7 +4,6 @@ contacts-account-person = Contact
 contacts-account-service = Service
 contacts-account-recipient = Account address or identifier
 contacts-account-add = Review association
-contacts-account-close = Close accounts
 contacts-account-remove = Remove association
 contacts-account-review = Review account association
 contacts-account-cancel = Cancel

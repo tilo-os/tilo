@@ -1,0 +1,52 @@
+From: Orbit Calendar <digest@orbit-cal.example>
+To: sam@rivera.example
+Subject: Your week ahead: 4 events, 1 conflict
+Message-ID: <week-27@orbit-cal.example>
+Date: Sun, 28 Jun 2026 18:00:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="orbit"
+
+--orbit
+Content-Type: text/plain; charset=utf-8
+
+Your week ahead: 4 events, 1 conflict.
+Tue 10:00 Design review overlaps with Dentist.
+https://orbit-cal.example/week/27
+
+--orbit
+Content-Type: text/html; charset=utf-8
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta name="color-scheme" content="light dark">
+<meta name="supported-color-schemes" content="light dark">
+<style>
+  :root { color-scheme: light dark; supported-color-schemes: light dark; }
+  body { margin: 0; background: #ffffff; color: #111827; font-family: system-ui, sans-serif; }
+  .card { background: #f3f4f6; border-radius: 12px; padding: 16px 20px; margin: 12px 0; }
+  .when { color: #4b5563; font-size: 13px; }
+  .conflict { border-left: 4px solid #dc2626; }
+  a { color: #2563eb; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #0b1120 !important; color: #e5e7eb !important; }
+    .card { background: #1f2937 !important; }
+    .when { color: #9ca3af !important; }
+    a { color: #93c5fd !important; }
+  }
+</style>
+</head>
+<body>
+<div style="max-width:560px;margin:0 auto;padding:24px">
+  <h1 style="font-size:22px;margin:0 0 4px">Your week ahead</h1>
+  <p class="when" style="margin:0 0 16px">29 June to 5 July</p>
+  <div class="card"><strong>Design review</strong><div class="when">Tuesday 10:00 to 11:00</div></div>
+  <div class="card conflict"><strong>Dentist</strong><div class="when">Tuesday 10:30, overlaps with Design review</div></div>
+  <div class="card"><strong>Seed swap</strong><div class="when">Thursday 18:00, Elm Street garden</div></div>
+  <div class="card"><strong>Call with Lena</strong><div class="when">Friday 15:00</div></div>
+  <p><a href="https://orbit-cal.example/week/27">Open your week</a></p>
+</div>
+</body>
+</html>
+
+--orbit--

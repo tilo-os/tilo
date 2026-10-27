@@ -382,7 +382,6 @@ mod version_tests {
                 "version {version}"
             );
         }
-        // A window that skips versions, and one past the end, still match.
         let window = [1, count - 1, count + 3];
         let series = super::series(&mut d.doc, &window);
         assert_eq!(series[0].as_ref(), Some(&d.materialize_at(1).unwrap()));

@@ -24,6 +24,8 @@ pub type MarkerId = Uuid;
 /// grabbed again.
 pub const MIN_CLIP: f64 = 0.10;
 
+pub use crate::angles::{CutSides, Side, SidePlacement};
+
 /// Per-clip colour + blend filters. All are linear, normalised so the
 /// inspector sliders run 0..1 and a fresh clip is the identity:
 ///   * `brightness`/`contrast`/`saturation`: 0.5 = unchanged, 0 = none,
@@ -1427,8 +1429,6 @@ impl Clip {
         g.clamp(0.0, 1.0)
     }
 
-    // --- animation -------------------------------------------------------
-
     /// The constant this parameter falls back to when it has no curve.
     ///
     /// `EffectAmount` past the end of the stack has no constant either;
@@ -1719,8 +1719,6 @@ impl Clip {
             .collect()
     }
 
-    // --- time remap ------------------------------------------------------
-
     /// Seconds into the source this clip is showing at timeline time
     /// `playhead`.
     ///
@@ -1750,8 +1748,6 @@ impl Clip {
         self.speed = Speed::new(rate, reverse);
         self.duration()
     }
-
-    // --- markers ---------------------------------------------------------
 
     /// Add a marker at absolute timeline time `t`, stored clip-local.
     /// Ignored when `t` is outside the clip.
@@ -1840,8 +1836,6 @@ impl Project {
         }
     }
 
-    // --- format ----------------------------------------------------------
-
     /// Set the frame size, clamped to what can be encoded and rendered, and
     /// rounded to even dimensions (every H.264 encoder requires them, and
     /// `output_dims` would otherwise round the aspect back off by half a
@@ -1897,8 +1891,6 @@ impl Project {
         true
     }
 
-    // --- in / out marks --------------------------------------------------
-
     /// Mark **in** at `t`. An in mark at or past the out mark would describe
     /// an empty render, so it drops the out mark rather than silently
     /// producing a zero-frame file.
@@ -1933,7 +1925,17 @@ impl Project {
     /// estimate and the on-screen band cannot disagree about what will be
     /// rendered.
     pub fn export_range(&self) -> (f64, f64) {
-        let dur = self.duration();
+        // `duration()` keeps the editor's ruler at least one second wide.
+        // That UI minimum is not footage: a shorter cut must not acquire a
+        // black/silent tail in its exported file. Keep the empty-project
+        // fallback, but otherwise stop at the actual last clip edge.
+        let dur = self
+            .clips
+            .iter()
+            .map(Clip::end)
+            .reduce(f64::max)
+            .unwrap_or_else(|| self.duration())
+            .max(0.0);
         let a = self.mark_in.unwrap_or(0.0).clamp(0.0, dur);
         let b = self.mark_out.map_or(dur, |o| o.clamp(0.0, dur));
         if b > a { (a, b) } else { (0.0, dur) }
@@ -1945,8 +1947,6 @@ impl Project {
         let (a, b) = self.export_range();
         (b - a).max(0.0)
     }
-
-    // --- timeline markers ------------------------------------------------
 
     /// Drop a marker at absolute time `t`. Kept sorted so the timeline can
     /// walk them in order and "next marker" is a scan, not a sort.
@@ -2270,8 +2270,6 @@ impl Project {
                 }
             })
     }
-
-    // --- linked audio and video ------------------------------------------
 
     /// Every clip in `id`'s link group, itself included, in a settled order
     /// (by start, then by id) so two peers agree about it.
@@ -2771,9 +2769,18 @@ impl Project {
         let track = clip.track;
         let after = clip.start;
         self.clips.retain(|c| c.id != id);
-        let mut moved = Vec::new();
-        for c in &mut self.clips {
-            if c.track == track && c.start >= after - 1e-9 {
+        // Picked first and changed by position, so only the clips that
+        // shift are handed out to change.
+        let shifting: Vec<usize> = self
+            .clips
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.track == track && c.start >= after - 1e-9)
+            .map(|(at, _)| at)
+            .collect();
+        let mut moved = Vec::with_capacity(shifting.len());
+        for at in shifting {
+            if let Some(c) = self.clips.at_mut(at) {
                 c.start = (c.start - gap).max(0.0);
                 moved.push(c.id);
             }
@@ -2909,7 +2916,6 @@ mod key_and_mask_tests {
         reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
     )]
     fn chroma_key_removes_the_key_hue_with_soft_edges_and_despill() {
-        // Case `an_inactive_key_removes_nothing_at_all`.
         {
             let off = ChromaKey::default();
             assert!(!off.enabled);
@@ -2927,7 +2933,6 @@ mod key_and_mask_tests {
             assert!(!zero.is_active());
             assert_eq!(zero.coverage(GREEN), 1.0);
         }
-        // Case `the_key_colour_goes_and_an_unrelated_colour_stays`.
         {
             let k = keyer();
             assert_eq!(
@@ -2990,7 +2995,6 @@ mod key_and_mask_tests {
                 "a near-black pixel is not confidently green: {almost:?}",
             );
         }
-        // Case `softness_gives_the_edge_partial_coverage_rather_than_a_step`.
         {
             // A green diluted halfway toward grey: near the key but not on it.
             let edge = [
@@ -3023,20 +3027,17 @@ mod key_and_mask_tests {
                 partial > 0.0 && partial < 1.0,
                 "softness must give the edge a partial matte, got {partial}",
             );
-            // And the far side of the soft band is still fully kept.
             assert_eq!(
                 soft.coverage([0.5, 0.5, 0.5]),
                 1.0,
                 "neutral grey is nowhere near"
             );
         }
-        // Case `despill_pulls_the_key_hue_out_without_moving_brightness`.
         {
             let k = ChromaKey {
                 spill: 1.0,
                 ..keyer()
             };
-            // A skin-ish tone with a wash of the key green over it.
             let tinted = [0.62, 0.58, 0.36];
             let clean = k.despilled(tinted);
             let luma = |c: [f64; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
@@ -3059,13 +3060,11 @@ mod key_and_mask_tests {
                 toward_key(clean),
             );
         }
-        // Case `despill_leaves_a_colour_leaning_away_from_the_key_untouched`.
         {
             let k = ChromaKey {
                 spill: 1.0,
                 ..keyer()
             };
-            // Magenta is the opposite side of the chroma plane from green.
             let magenta = [0.7, 0.1, 0.6];
             assert_eq!(k.despilled(magenta), magenta);
         }
@@ -3081,7 +3080,6 @@ mod key_and_mask_tests {
         reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
     )]
     fn masks_cover_shape_feather_invert_move_and_rotate() {
-        // Case `a_mask_that_is_off_covers_everything`.
         {
             let m = Mask::default();
             assert!(!m.is_active());
@@ -3089,7 +3087,6 @@ mod key_and_mask_tests {
                 assert_eq!(m.coverage(u, v, 16.0 / 9.0), 1.0);
             }
         }
-        // Case `an_ellipse_keeps_its_centre_and_drops_its_corners`.
         {
             let m = Mask {
                 shape: MaskShape::Ellipse,
@@ -3134,7 +3131,6 @@ mod key_and_mask_tests {
             assert!(rect.coverage(u, v, 1.0) > 0.9, "the rect keeps its corner");
             assert_eq!(ellipse.coverage(u, v, 1.0), 0.0, "the ellipse does not");
         }
-        // Case `feather_ramps_the_edge_instead_of_cutting_it`.
         {
             let sharp = Mask {
                 shape: MaskShape::Ellipse,
@@ -3147,7 +3143,6 @@ mod key_and_mask_tests {
                 feather: 0.6,
                 ..sharp
             };
-            // Two thirds of the way out along the radius.
             let (u, v) = (0.5 + 0.3 * 0.8, 0.5);
             assert!(
                 (sharp.coverage(u, v, 1.0) - 1.0).abs() < 1e-6,
@@ -3159,7 +3154,6 @@ mod key_and_mask_tests {
                 "feathered, the same point is part-way through the edge: {ramped}",
             );
         }
-        // Case `inverting_a_mask_swaps_what_it_keeps`.
         {
             let m = Mask {
                 shape: MaskShape::Ellipse,
@@ -3181,7 +3175,6 @@ mod key_and_mask_tests {
                 "and the corner is kept"
             );
         }
-        // Case `moving_a_mask_moves_what_it_keeps`.
         {
             let centred = Mask {
                 shape: MaskShape::Ellipse,
@@ -3230,12 +3223,9 @@ mod key_and_mask_tests {
                 turned.coverage(u, 0.5, fa) > 0.9,
                 "inside it once turned on its side"
             );
-            // And the ends of the upright bar are now outside it.
             assert_eq!(turned.coverage(0.5, 0.5 + 0.3, fa), 0.0);
         }
-        // Case `a_mask_fitted_over_a_pip_lands_on_the_pip`.
         {
-            // A quarter-size picture tucked into the top-right corner.
             let t = Transform::pip(0.3, (1.0, -1.0), 0.04);
             let m = Mask::over(MaskShape::Ellipse, &t, 16.0 / 9.0, 16.0 / 9.0);
             assert_eq!(m.shape, MaskShape::Ellipse);
@@ -3293,7 +3283,6 @@ mod key_and_mask_tests {
         reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
     )]
     fn key_and_mask_parameters_animate_through_their_named_fields() {
-        // Case `key_and_mask_read_their_constants_when_nothing_is_animated`.
         {
             let c = keyed_clip();
             assert_eq!(c.key_at(3.0), c.key);
@@ -3322,7 +3311,6 @@ mod key_and_mask_tests {
             // And nothing else on the mask drifted.
             assert!((c.mask_at(4.0).w - c.mask.w).abs() < 1e-9);
         }
-        // Case `keying_the_tolerance_ramps_the_matte_open`.
         {
             let mut c = keyed_clip();
             c.set_key_at(Param::KeyTolerance, 2.0, 0.0, Interp::Linear);
@@ -3337,7 +3325,6 @@ mod key_and_mask_tests {
             assert_eq!(c.key_at(4.0).color, c.key.color);
             assert!(c.key_at(4.0).enabled);
         }
-        // Case `every_new_parameter_reads_and_writes_the_field_it_names`.
         {
             let mut c = keyed_clip();
             for (p, v) in [
@@ -3409,7 +3396,6 @@ mod tests {
         reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
     )]
     fn clip_speed_maps_source_time_and_survives_splits_and_trims() {
-        // Case `speed_divides_the_timeline_length_and_leaves_the_source_window_alone`.
         {
             let (mut p, cid) = speed_fixture();
             let c = p.clip_mut(cid).unwrap();
@@ -3434,7 +3420,6 @@ mod tests {
                 "which moves the clip's right edge"
             );
         }
-        // Case `the_source_time_map_follows_the_rate_and_the_direction`.
         {
             let (mut p, cid) = speed_fixture();
             {
@@ -3476,7 +3461,6 @@ mod tests {
                 "held at the in-point rather than running past it"
             );
         }
-        // Case `a_clip_never_reads_outside_its_own_window`.
         {
             let (mut p, cid) = speed_fixture();
             {
@@ -3499,7 +3483,6 @@ mod tests {
                 "and past the end it holds the out-point"
             );
         }
-        // Case `splitting_a_sped_up_clip_cuts_the_right_source_frame`.
         {
             let (mut p, cid) = speed_fixture();
             {
@@ -3536,7 +3519,6 @@ mod tests {
                 "the halves still add up to the original length",
             );
         }
-        // Case `splitting_a_reversed_clip_cuts_from_the_other_end`.
         {
             let (mut p, cid) = speed_fixture();
             {
@@ -3570,7 +3552,6 @@ mod tests {
                 0.0
             );
         }
-        // Case `trimming_a_sped_up_clip_moves_the_start_by_timeline_seconds`.
         {
             let (mut p, cid) = speed_fixture();
             {
@@ -3596,7 +3577,6 @@ mod tests {
             );
             assert!(((c.duration()) - (3.0)).abs() < 1e-9, "6s of source at 2x");
         }
-        // Case `speed_is_clamped_to_something_playable_and_labels_itself`.
         {
             assert_eq!(Speed::new(0.0, false).rate(), MIN_SPEED);
             assert_eq!(Speed::new(1e9, false).rate(), MAX_SPEED);
@@ -3606,8 +3586,6 @@ mod tests {
             assert_eq!(Speed::new(2.0, true).signed(), -2.0);
         }
     }
-
-    // --- keyframes --------------------------------------------------------
 
     #[test]
     #[allow(
@@ -3619,7 +3597,6 @@ mod tests {
         reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
     )]
     fn animated_parameters_are_clip_relative_and_read_through_one_door() {
-        // Case `a_parameter_reads_its_constant_until_it_is_keyed`.
         {
             let (mut p, cid) = speed_fixture();
             p.clip_mut(cid).unwrap().opacity = 0.4;
@@ -3638,7 +3615,6 @@ mod tests {
             assert!((c.param_at(Param::Opacity, 5.0) - 0.5).abs() < 1e-9);
             assert_eq!(c.opacity, 0.4, "and the constant is still there underneath");
         }
-        // Case `keyframe_times_are_relative_to_the_clip_so_moving_it_carries_them`.
         {
             let (mut p, cid) = speed_fixture();
             {
@@ -3655,7 +3631,6 @@ mod tests {
             );
             assert!((before - 0.5).abs() < 1e-9);
         }
-        // Case `splitting_preserves_the_animated_value_on_both_sides_of_the_cut`.
         {
             let (mut p, cid) = speed_fixture();
             {
@@ -3681,7 +3656,6 @@ mod tests {
                 "the tail keeps rising"
             );
         }
-        // Case `the_grade_and_the_transform_read_through_the_same_door`.
         {
             let (mut p, cid) = speed_fixture();
             {
@@ -3711,7 +3685,6 @@ mod tests {
                 "an unkeyed channel is its constant"
             );
         }
-        // Case `an_effects_intensity_can_be_keyed_and_a_missing_effect_is_ignored`.
         {
             let (mut p, cid) = speed_fixture();
             let orphan = Uuid::from_u128(7);
@@ -3753,7 +3726,6 @@ mod tests {
             assert!(!c.anim.is_animated(Param::EffectAmount(vignette)));
             assert!(c.anim.is_animated(Param::EffectAmount(second)));
         }
-        // Case `a_key_control_can_tell_its_three_states_apart`.
         {
             let (mut p, cid) = speed_fixture();
             let c = p.clip_mut(cid).unwrap();
@@ -3770,12 +3742,10 @@ mod tests {
             assert!(c.has_key_at(Param::Opacity, 2.0 + KEY_TOL * 0.9));
             assert!(!c.has_key_at(Param::Opacity, 2.0 + 0.1));
         }
-        // Case `key_times_are_absolute_deduplicated_and_navigable`.
         {
             let (mut p, cid) = speed_fixture();
             let c = p.clip_mut(cid).unwrap();
             c.start = 10.0;
-            // Two parameters keyed at the same instant are one instant.
             c.set_key_at(Param::Opacity, 12.0, 0.5, Interp::Linear);
             c.set_key_at(Param::Brightness, 12.0, 0.7, Interp::Linear);
             c.set_key_at(Param::Opacity, 16.0, 1.0, Interp::Linear);
@@ -3790,7 +3760,6 @@ mod tests {
             assert_eq!(c.prev_key_before(16.0), Some(12.0));
             assert_eq!(c.prev_key_before(12.0), None);
         }
-        // Case `interpolation_is_read_and_rewritten_at_the_playhead`.
         {
             let (mut p, cid) = speed_fixture();
             let c = p.clip_mut(cid).unwrap();
@@ -3813,11 +3782,8 @@ mod tests {
         }
     }
 
-    // --- markers ----------------------------------------------------------
-
     #[test]
     fn markers_merge_navigate_and_split_with_their_clips() {
-        // Case `markers_live_on_the_project_and_on_clips_and_merge_onto_one_timeline`.
         {
             let (mut p, cid) = speed_fixture();
             p.clip_mut(cid).unwrap().start = 10.0;
@@ -3849,7 +3815,6 @@ mod tests {
             );
             assert_eq!(all[2].2, Some(cid), "carrying which clip it belongs to");
         }
-        // Case `a_clip_marker_outside_the_clip_is_refused_rather_than_clamped`.
         {
             let (mut p, cid) = speed_fixture();
             assert!(
@@ -3861,7 +3826,6 @@ mod tests {
             );
             assert!(p.clip(cid).unwrap().markers.is_empty());
         }
-        // Case `next_and_previous_marker_do_not_wrap`.
         {
             let mut p = Project::new("m");
             p.add_marker(2.0, "a", 0);
@@ -3872,7 +3836,6 @@ mod tests {
             assert_eq!(p.prev_marker_at(8.0), Some(2.0));
             assert_eq!(p.prev_marker_at(0.0), None, "nor at the start");
         }
-        // Case `a_split_hands_each_half_the_markers_inside_it`.
         {
             let (mut p, cid) = speed_fixture();
             p.clip_mut(cid).unwrap().out_point = 10.0;
@@ -3900,7 +3863,6 @@ mod tests {
                 "rebased onto the tail's own start"
             );
         }
-        // Case `marker_navigation_crosses_project_and_clip_markers`.
         {
             let (mut p, cid) = speed_fixture();
             p.add_marker(4.0, "act two", 1);
@@ -3922,11 +3884,8 @@ mod tests {
         }
     }
 
-    // --- transform --------------------------------------------------------
-
     #[test]
     fn transforms_and_filters_default_to_the_identity() {
-        // Case `the_default_transform_is_the_identity_and_a_pip_is_not`.
         {
             let t = Transform::default();
             assert!(t.is_identity());
@@ -3937,7 +3896,6 @@ mod tests {
             assert!(pip.pos_x > 0.0 && pip.pos_y < 0.0, "top-right: {pip:?}");
             assert!((pip.scale_x - 0.25).abs() < 1e-9);
         }
-        // Case `a_crop_that_would_meet_itself_still_leaves_a_sliver`.
         {
             let t = Transform {
                 crop_left: 0.8,
@@ -3950,7 +3908,6 @@ mod tests {
                 "a fully cropped rect would make the inside-test meaningless: {l}..{r}"
             );
         }
-        // Case `filters_default_is_identity`.
         {
             assert!(Filters::default().is_identity());
             assert!(
@@ -4003,7 +3960,6 @@ mod tests {
         reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
     )]
     fn clip_add_split_and_trim_respect_the_source_window() {
-        // Case `add_clip_uses_full_source_length`.
         {
             let (p, _m, _t, cid) = project_with_clip();
             let c = p.clip(cid).unwrap();
@@ -4012,28 +3968,22 @@ mod tests {
             assert_eq!(c.duration(), 20.0);
             assert_eq!(c.end(), 20.0);
         }
-        // Case `split_produces_two_contiguous_clips`.
         {
             let (mut p, _m, _t, cid) = project_with_clip();
             let right = p.split_clip(cid, 8.0).unwrap();
             let left = p.clip(cid).unwrap();
             let right = p.clip(right).unwrap();
-            // Left ends exactly where right begins on the timeline.
             assert!((left.end() - 8.0).abs() < 1e-9);
             assert!((right.start - 8.0).abs() < 1e-9);
-            // Source is contiguous across the cut.
             assert!((left.out_point - right.in_point).abs() < 1e-9);
-            // Total duration is preserved.
             assert!((left.duration() + right.duration() - 20.0).abs() < 1e-9);
         }
-        // Case `split_outside_span_is_rejected`.
         {
             let (mut p, _m, _t, cid) = project_with_clip();
             assert!(p.split_clip(cid, 0.0).is_none());
             assert!(p.split_clip(cid, 25.0).is_none());
             assert_eq!(p.clips.len(), 1);
         }
-        // Case `trim_in_moves_start_and_in_together`.
         {
             let (mut p, _m, _t, cid) = project_with_clip();
             p.trim_in(cid, 3.0);
@@ -4043,14 +3993,12 @@ mod tests {
             // right edge unchanged
             assert!((c.end() - 20.0).abs() < 1e-9);
         }
-        // Case `trim_out_clamps_to_source_length`.
         {
             let (mut p, _m, _t, cid) = project_with_clip();
             p.trim_out(cid, 50.0); // way past the 20s source
             let c = p.clip(cid).unwrap();
             assert!((c.out_point - 20.0).abs() < 1e-9);
         }
-        // Case `trim_in_cannot_cross_out_point`.
         {
             let (mut p, _m, _t, cid) = project_with_clip();
             p.trim_in(cid, 1000.0);
@@ -4061,10 +4009,8 @@ mod tests {
 
     #[test]
     fn timeline_edits_order_ripple_snap_and_paste() {
-        // Case `top_video_clip_prefers_higher_track`.
         {
             let (mut p, mid, _t, _cid) = project_with_clip();
-            // Add a higher video track with an overlapping clip.
             let t2 = Track {
                 id: Uuid::new_v4(),
                 name: "V2".into(),
@@ -4082,7 +4028,6 @@ mod tests {
             let top = p.top_video_clip_at(5.0).unwrap();
             assert_eq!(top.id, over, "V2 clip must win over V1 at the same time");
         }
-        // Case `display_tracks_order_video_above_audio`.
         {
             let mut p = Project::new("t");
             for (name, kind, index) in [
@@ -4106,7 +4051,6 @@ mod tests {
             let order: Vec<&str> = p.display_tracks().iter().map(|t| t.name.as_str()).collect();
             assert_eq!(order, vec!["V2", "V1", "A1", "A2"]);
         }
-        // Case `ripple_delete_closes_the_gap`.
         {
             let (mut p, mid, tid, first) = project_with_clip();
             // first occupies [0,20]. Place two more after it.
@@ -4114,13 +4058,11 @@ mod tests {
             let third = p.add_clip(tid, mid, 40.0).unwrap();
             let first_dur = p.clip(first).unwrap().duration();
             let moved = p.ripple_delete(first);
-            // Both later clips shifted left by the deleted duration.
             assert!(moved.contains(&second) && moved.contains(&third));
             assert!((p.clip(second).unwrap().start - (20.0 - first_dur)).abs() < 1e-9);
             assert!((p.clip(third).unwrap().start - (40.0 - first_dur)).abs() < 1e-9);
             assert_eq!(p.clips.len(), 2);
         }
-        // Case `snap_magnetises_within_tolerance_only`.
         {
             let (p, _m, _t, cid) = project_with_clip();
             // Candidates include 0.0 and the clip end (20.0) and playhead 7.0.
@@ -4131,18 +4073,15 @@ mod tests {
             assert!((Project::snap_to_candidates(7.1, &cands, 0.2) - 7.0).abs() < 1e-9);
             // 12.0 is far from every candidate → unchanged.
             assert!((Project::snap_to_candidates(12.0, &cands, 0.2) - 12.0).abs() < 1e-9);
-            // Excluding the clip removes its edges from the candidate set.
             let excl = p.snap_candidates(cid, 7.0);
             assert!((Project::snap_to_candidates(19.9, &excl, 0.2) - 19.9).abs() < 1e-9);
         }
-        // Case `paste_clip_is_independent_of_source`.
         {
             let (mut p, _m, tid, cid) = project_with_clip();
             let src = p.clip(cid).unwrap().clone();
             let pasted = p.paste_clip(src, tid, 30.0);
             assert_ne!(pasted, cid, "pasted clip gets a fresh id");
             assert!((p.clip(pasted).unwrap().start - 30.0).abs() < 1e-9);
-            // Mutating the paste leaves the source clip untouched.
             p.clip_mut(pasted).unwrap().opacity = 0.1;
             assert!((p.clip(cid).unwrap().opacity - 1.0).abs() < 1e-9);
         }
@@ -4154,7 +4093,6 @@ mod tests {
         reason = "the value is stored, clamped to a literal bound, or a fully-in/fully-out coverage of exactly 0 or 1"
     )]
     fn fades_and_effect_stacks_edit_with_stable_ids() {
-        // Case `fade_envelope_ramps_at_head_and_tail`.
         {
             let (mut p, _m, _t, cid) = project_with_clip(); // [0,20]
             {
@@ -4175,7 +4113,6 @@ mod tests {
             );
             assert!(c.envelope(20.0) < 0.01, "silent at the tail");
         }
-        // Case `split_keeps_fade_in_on_head_and_fade_out_on_tail`.
         {
             let (mut p, _m, _t, cid) = project_with_clip(); // [0,20]
             {
@@ -4191,7 +4128,6 @@ mod tests {
             assert_eq!(right.fade_in, 0.0, "tail loses head fade");
             assert!((right.fade_out - 3.0).abs() < 1e-9, "tail keeps fade-out");
         }
-        // Case `effects_stack_add_remove_and_reorder`.
         {
             let (mut p, _m, _t, cid) = project_with_clip();
             let c = p.clip_mut(cid).unwrap();
@@ -4204,7 +4140,6 @@ mod tests {
                 kinds(c),
                 vec![EffectKind::Grayscale, EffectKind::Sepia, EffectKind::Invert]
             );
-            // A fresh effect carries its kind's default intensity.
             assert!((c.effects[0].amount - EffectKind::Grayscale.default_amount()).abs() < 1e-9);
             // Reorder: move Invert (idx 2) up.
             let invert = c.effects[2].id;
@@ -4213,7 +4148,6 @@ mod tests {
                 kinds(c),
                 vec![EffectKind::Grayscale, EffectKind::Invert, EffectKind::Sepia]
             );
-            // Remove the head.
             c.remove_effect(0);
             assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
             // Out-of-range moves / removes are no-ops.
@@ -4257,7 +4191,6 @@ mod tests {
 
     #[test]
     fn moving_and_placing_clips_respects_kind_and_locks() {
-        // Case `move_clip_to_relocates_across_video_tracks`.
         {
             let (mut p, _m, v1, cid) = project_with_clip();
             let (v2, _a1) = extra_tracks(&mut p);
@@ -4271,7 +4204,6 @@ mod tests {
             assert!(p.clips_on(v1).is_empty(), "it left the source track");
             assert_eq!(p.clips_on(v2).len(), 1);
         }
-        // Case `move_clip_to_refuses_a_kind_mismatch`.
         {
             let (mut p, _m, v1, cid) = project_with_clip();
             let (_v2, a1) = extra_tracks(&mut p);
@@ -4286,7 +4218,6 @@ mod tests {
                 "and did not move in time either"
             );
         }
-        // Case `move_clip_to_refuses_a_locked_destination_and_a_locked_source`.
         {
             let (mut p, _m, v1, cid) = project_with_clip();
             let (v2, _a1) = extra_tracks(&mut p);
@@ -4306,7 +4237,6 @@ mod tests {
             );
             assert_eq!(p.clip(cid).unwrap().track, v1);
         }
-        // Case `clip_editable_follows_its_track_lock`.
         {
             let (mut p, _m, v1, cid) = project_with_clip();
             assert!(p.clip_editable(cid));
@@ -4321,7 +4251,6 @@ mod tests {
                 "a missing track is treated as locked"
             );
         }
-        // Case `placement_track_prefers_the_hint_then_falls_back_by_kind`.
         {
             let (mut p, _m, v1, _cid) = project_with_clip();
             let (v2, a1) = extra_tracks(&mut p);
@@ -4345,13 +4274,11 @@ mod tests {
 
     #[test]
     fn track_mute_solo_and_clip_kind_decide_audibility() {
-        // Case `mute_silences_a_track_and_solo_overrides_it`.
         {
             let (mut p, _m, v1, _cid) = project_with_clip();
             let (v2, a1) = extra_tracks(&mut p);
             // Nothing muted or soloed: everything plays.
             assert!(p.track_audible(v1) && p.track_audible(v2) && p.track_audible(a1));
-            // Mute one.
             p.tracks.iter_mut().find(|t| t.id == v1).unwrap().muted = true;
             assert!(!p.track_audible(v1), "a muted track is silent");
             assert!(p.track_audible(v2), "its neighbours are not");
@@ -4368,7 +4295,6 @@ mod tests {
             );
             assert!(p.track_audible(a1), "audio is unaffected by a video solo");
         }
-        // Case `solo_wins_over_mute_on_the_same_track`.
         {
             let (mut p, _m, v1, _cid) = project_with_clip();
             {
@@ -4382,21 +4308,17 @@ mod tests {
             );
             assert!(p.track(v1).unwrap().muted, "the mute flag is preserved");
         }
-        // Case `clip_audible_follows_its_track`.
         {
             let (mut p, _m, v1, cid) = project_with_clip();
             assert!(p.clip_audible(cid));
             p.tracks.iter_mut().find(|t| t.id == v1).unwrap().muted = true;
             assert!(!p.clip_audible(cid));
         }
-        // Case `clip_kind_reads_through_to_the_media`.
         {
             let (p, _m, _v1, cid) = project_with_clip();
             assert_eq!(p.clip_kind(cid), TrackKind::Video);
         }
     }
-
-    // --- keyframe navigation (what the inspector's key control reads) ----
 }
 
 /// Linked audio and video: the shared group id, what follows it, and what a
@@ -4489,7 +4411,6 @@ mod link_tests {
                 "and the editor can name it, which is what it offers to re-link",
             );
 
-            // Re-linking is the way back, and it works from the picture alone.
             let group = p.link_clips(&[vid, aid]).expect("two clips do link");
             assert!(p.is_linked(vid) && p.is_linked(aid));
             assert_eq!(p.clip(vid).expect("picture").link, Some(group));
@@ -4504,7 +4425,6 @@ mod link_tests {
                 "with its sound gone, the shot must be offered one again",
             );
         }
-        // Case `splitting_the_sound_off_makes_a_second_clip_over_the_same_frames`.
         {
             let (p, vid, aid) = pair();
             let v = p.clip(vid).expect("picture");
@@ -4539,7 +4459,6 @@ mod link_tests {
                 a.filters,
             );
         }
-        // Case `a_link_is_a_group_so_losing_one_half_leaves_an_ordinary_clip`.
         {
             // The whole reason it is a shared id rather than "my partner is clip
             // X": no dangling reference to repair, and no repair to conflict over.
@@ -4560,7 +4479,6 @@ mod link_tests {
                 "and nothing had to be written to repair it",
             );
         }
-        // Case `linking_needs_two_clips_and_unlinking_leaves_two_ordinary_ones`.
         {
             let (mut p, vid, aid) = pair();
             assert_eq!(
@@ -4585,7 +4503,6 @@ mod link_tests {
             assert_eq!(p.clip(vid).expect("picture").link, Some(group));
             assert_eq!(p.clip(aid).expect("sound").link, Some(group));
         }
-        // Case `a_shot_offers_to_split_its_sound_until_it_has`.
         {
             let (p, vid, _a1) = shot();
             assert!(
@@ -4612,7 +4529,6 @@ mod link_tests {
                 "…but the clip it left for is gone, so the offer has to come back",
             );
         }
-        // Case `a_clip_on_an_audio_lane_is_an_audio_clip_whatever_its_source_is`.
         {
             // The sound half references a *video* file. Reading its lane kind off
             // the media would call it a video clip, and `can_place` would then
@@ -4643,7 +4559,6 @@ mod link_tests {
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
     fn linked_halves_split_trim_retime_delete_and_paste_together() {
-        // Case `splitting_a_linked_shot_gives_the_two_tails_a_group_of_their_own`.
         {
             // Four clips in one group would make dragging the second half of the
             // shot drag the first half with it.
@@ -4669,7 +4584,6 @@ mod link_tests {
             assert_eq!(p.link_group(tails[0]).len(), 2);
             assert_eq!(p.link_group(vid).len(), 2);
         }
-        // Case `a_lone_tail_comes_away_unlinked_rather_than_tied_to_its_head`.
         {
             let (mut p, vid, _aid) = pair();
             // Only the picture is offered to the cut (a locked sound lane, say).
@@ -4689,7 +4603,6 @@ mod link_tests {
                 p.group_members(tail),
             );
         }
-        // Case `a_trim_that_clamps_on_one_half_clamps_on_both`.
         {
             // The halves do not have to hold identical windows -- a user can slide
             // the sound. Handing the follower the *raw* delta would move it by
@@ -4709,7 +4622,6 @@ mod link_tests {
                 "the sound took the same 1s, not the 5s that was asked for",
             );
         }
-        // Case `re_timing_one_half_re_times_the_other`.
         {
             // The one field where drifting apart is not cosmetic: the gap grows
             // with every second of the shot and nothing on screen says why.
@@ -4725,10 +4637,8 @@ mod link_tests {
                 "so they still cover the same stretch of timeline",
             );
         }
-        // Case `deleting_or_rippling_one_half_takes_the_whole_shot`.
         {
             let (mut p, vid, aid) = pair();
-            // A later clip on each lane, to prove the gap really closes on both.
             let (v_track, a_track) = (
                 p.clip(vid).expect("picture").track,
                 p.clip(aid).expect("sound").track,
@@ -4759,7 +4669,6 @@ mod link_tests {
                 "half a shot left behind is the surprise"
             );
         }
-        // Case `a_pasted_copy_is_independent_of_the_shot_it_came_from`.
         {
             // Carrying the group over would tie the copy to the original, so
             // dragging the original would drag the copy across the timeline.

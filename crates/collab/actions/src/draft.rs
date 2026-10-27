@@ -124,13 +124,11 @@ impl DraftValue {
     }
 }
 
-/// One field of a draft.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DraftField {
     /// Where the value sits in the arguments: the parameter, then the
     /// field of an object parameter.
     pub path: Vec<String>,
-    /// The field as a person reads it.
     pub label: String,
     pub value: DraftValue,
     /// Whether a person may change it before confirming.
@@ -170,7 +168,6 @@ pub struct DraftEdit {
 }
 
 impl Draft {
-    /// The draft of invoking `descriptor` with `arguments`.
     #[must_use]
     pub fn render(descriptor: &ActionDescriptor, arguments: &Map<String, Value>) -> Self {
         let mut fields = Vec::new();
@@ -243,7 +240,6 @@ impl Draft {
         }
     }
 
-    /// The field with `role`, in a message preview.
     #[must_use]
     pub fn role(&self, role: MessageRole) -> Option<&DraftField> {
         self.fields.iter().find(|field| field.role == Some(role))
@@ -278,10 +274,6 @@ impl Draft {
 
     /// `arguments` with the person's `edits` applied. Only fields this draft
     /// offers for editing change, each keeping its JSON type.
-    ///
-    /// # Errors
-    /// An edit names a field the draft does not offer for editing, or its
-    /// text is not a value of the field's type.
     pub fn apply_edits(
         &self,
         arguments: &Map<String, Value>,

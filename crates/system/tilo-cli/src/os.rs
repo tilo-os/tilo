@@ -507,7 +507,6 @@ mod tests {
 
     #[test]
     fn the_image_is_the_newest_build_for_this_device() {
-        // A board follows its own moving main tag.
         assert_eq!(
             plan(
                 &dev(
@@ -530,7 +529,6 @@ mod tests {
             Plan::Upgrade("registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci".into())
         );
         assert_eq!(upgrade.bootc_words(), vec!["upgrade".to_owned()]);
-        // A generic dev image follows main's dev image.
         assert_eq!(
             plan(&dev(None, None), None).unwrap(),
             Plan::Switch("registry.tilo.so/tilo/tilo-vm:main-ci".into())
@@ -557,7 +555,6 @@ mod tests {
             image_for("localhost/tilo-vm:mine", Some("lenovo-83ed")),
             "localhost/tilo-vm:mine"
         );
-        // A signed image keeps its signed route and refuses another image.
         let signed = Facts::default();
         assert_eq!(plan(&signed, None).unwrap(), Plan::Signed);
         let error = plan(&signed, Some("main-1a2b3c4")).unwrap_err().to_string();

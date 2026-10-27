@@ -23,9 +23,6 @@ use crate::vmbuild::sh_quote;
 
 /// The tag of the locally built images: `TILO_LOCAL_TAG`, `latest` when unset,
 /// so builds from different checkouts on one host can keep their images apart.
-///
-/// # Errors
-/// A value that is not an image tag.
 pub fn local_tag() -> Result<String, CliError> {
     parse_local_tag(std::env::var("TILO_LOCAL_TAG").ok().as_deref())
 }
@@ -68,7 +65,6 @@ pub const BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 /// The OCI layout in the VM that bootc switches to; in /var, so it survives
 /// the switch, and each upgrade only adds the blobs that changed.
 pub const VM_LAYOUT: &str = "/var/lib/tilo-vm/image";
-/// The tag inside that layout.
 pub const LAYOUT_TAG: &str = "tilo-vm";
 /// The bootc image reference of [`VM_LAYOUT`].
 pub fn layout_imgref() -> String {
@@ -119,10 +115,10 @@ pub fn parse_from(
 }
 
 /// Where a CI build of `tag` can come from, in the order `vm upgrade` tries
-/// them: the dev images dev-disk.yml publishes (from the unsigned integration
-/// image, then from a signed release), which the VM pulls itself; then the
+/// them: the dev images published for it (built on the unsigned integration
+/// image, then on a signed release), which the VM pulls itself; then the
 /// production images a dev image can be built FROM here: the integration image
-/// build-image.yml pushes for every main build, then the signed release.
+/// of a main build (t's publish-os-dev-<arch>), then the signed release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiCandidates {
     pub dev_images: Vec<String>,
@@ -134,10 +130,9 @@ pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
     let tag = tag.strip_suffix(&format!("-{arch}")).unwrap_or(tag);
     let dev_tag = tag.strip_suffix("-ci").unwrap_or(tag);
     CiCandidates {
-        dev_images: vec![
-            format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}-ci"),
-            format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}"),
-        ],
+        // The architecture's own image: what main signs (publish-os-dev-<arch>); a dev
+        // image's policy takes no unsigned index.
+        dev_images: vec![format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}-ci-{arch}")],
         bases: vec![
             format!("registry.tilo.so/tilo/tilo-ci:{dev_tag}-{arch}"),
             format!("registry.tilo.so/tilo/tilo:{dev_tag}"),
@@ -164,10 +159,12 @@ pub fn ci_commit(tag: &str) -> Option<&str> {
         .filter(|sha| sha.len() == 7 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// A dev build of a branch or pull request is tagged `<ref>-<sha7>`, so a
-/// commit that is not on main is found by listing the repositories' tags:
-/// `tilo-vm:<ref>-<sha7>-ci` is the published dev image,
-/// `tilo-ci:<ref>-<sha7>-<arch>` the image a dev image can be built FROM.
+/// A branch's own build is tagged `ref-<branch>-<sha7>-<target>` in the
+/// branches' repository `tilo-vm-ref` (t's publish-os-ref-<target>, which
+/// `vm upgrade --ref` dispatches), so a commit that is not on main is found by
+/// listing the repositories' tags: `tilo-vm-ref:ref-<branch>-<sha7>-<arch or
+/// board>` is the published, signed dev image, `tilo-ci:<ref>-<sha7>-<arch>` an
+/// image a dev image can be built FROM.
 /// `skopeo list-tags` output in, candidates out; several refs sort by name so
 /// the choice is stable.
 pub fn ci_ref_candidates(
@@ -193,11 +190,11 @@ pub fn ci_ref_candidates(
         })
     }
     // A board's dev image is the only one that boots it, and has no base here.
-    let dev_suffix = board.map_or_else(|| format!("-{sha}-ci"), |board| format!("-{sha}-{board}"));
+    let dev_suffix = format!("-{sha}-{}", board.unwrap_or(arch));
     let mut dev_images: Vec<String> = tags(vm_tags)
         .into_iter()
-        .filter(|tag| named_ref(tag, &dev_suffix))
-        .map(|tag| format!("registry.tilo.so/tilo/tilo-vm:{tag}"))
+        .filter(|tag| tag.starts_with("ref-") && named_ref(tag, &dev_suffix))
+        .map(|tag| format!("{}:{tag}", crate::ci::REF_IMAGE))
         .collect();
     let mut bases: Vec<String> = tags(ci_tags)
         .into_iter()
@@ -209,7 +206,6 @@ pub fn ci_ref_candidates(
     CiCandidates { dev_images, bases }
 }
 
-/// `skopeo list-tags` for one repository.
 pub fn list_tags_command(repository: &str) -> CommandLine {
     CommandLine::new("skopeo", &["list-tags"]).arg(format!("docker://{repository}"))
 }
@@ -230,13 +226,17 @@ pub fn exists_command(reference: &str) -> CommandLine {
 /// `registry.tilo.so/tilo/tilo-vm`, with a tag or digest: the same rule
 /// `os/dev/build-dev-image.sh` enforces when it tags one.
 pub fn is_dev_name(reference: &str) -> bool {
-    ["localhost/tilo-vm", "registry.tilo.so/tilo/tilo-vm"]
-        .iter()
-        .any(|repo| {
-            reference.strip_prefix(repo).is_some_and(|rest| {
-                rest.len() > 1 && (rest.starts_with(':') || rest.starts_with("@sha256:"))
-            })
+    [
+        "localhost/tilo-vm",
+        "registry.tilo.so/tilo/tilo-vm",
+        crate::ci::REF_IMAGE,
+    ]
+    .iter()
+    .any(|repo| {
+        reference.strip_prefix(repo).is_some_and(|rest| {
+            rest.len() > 1 && (rest.starts_with(':') || rest.starts_with("@sha256:"))
         })
+    })
 }
 
 /// What `podman image inspect` and a look inside say about a local image.
@@ -271,8 +271,6 @@ pub fn probe_command(image_id: &str) -> CommandLine {
     )
 }
 
-/// # Errors
-/// Output that is not `podman image inspect` JSON.
 pub fn parse_inspect(json: &str) -> Result<(String, Option<String>), String> {
     let value: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
     let image = value.get(0).unwrap_or(&value);
@@ -513,6 +511,9 @@ pub struct Deployment {
     pub image: String,
     pub transport: String,
     pub digest: String,
+    /// The composefs identity it boots (`composefs.verity`, without the
+    /// `sha512:` prefix), which is how its boot loader entry names it.
+    pub verity: Option<String>,
 }
 
 impl Deployment {
@@ -526,6 +527,12 @@ impl Deployment {
                 .unwrap_or("registry")
                 .to_owned(),
             digest: image.get("imageDigest")?.as_str()?.to_owned(),
+            verity: value
+                .pointer("/composefs/verity")
+                .and_then(Value::as_str)
+                .map(|v| v.strip_prefix("sha512:").unwrap_or(v))
+                .filter(|v| v.len() == 128 && v.bytes().all(|b| b.is_ascii_hexdigit()))
+                .map(str::to_owned),
         })
     }
 
@@ -554,8 +561,6 @@ pub struct BootcStatus {
     pub rollback: Option<Deployment>,
 }
 
-/// # Errors
-/// Output that is not bootc's status JSON.
 pub fn parse_bootc_status(json: &str) -> Result<BootcStatus, String> {
     let value: Value =
         serde_json::from_str(json.trim()).map_err(|e| format!("bootc status --json: {e}"))?;
@@ -616,8 +621,45 @@ pub fn bootc_line(words: &[&str]) -> String {
         .map(|w| sh_quote(w))
         .collect::<Vec<_>>()
         .join(" ");
+    esp_writable_for(&format!("bootc {command}"))
+}
+
+/// A subshell that runs the shell `command` with the ESP writable, as [`bootc_line`] does.
+fn esp_writable_for(command: &str) -> String {
     format!(
-        "(ro=; if findmnt -n -o FSTYPE,OPTIONS /boot 2>/dev/null | grep -q '^vfat *ro,'; then ro=1; mount -o remount,rw /boot || exit 1; fi; bootc {command}; rc=$?; [ -z \"$ro\" ] || mount -o remount,ro /boot; exit $rc)"
+        "(ro=; if findmnt -n -o FSTYPE,OPTIONS /boot 2>/dev/null | grep -q '^vfat *ro,'; then ro=1; mount -o remount,rw /boot || exit 1; fi; {command}; rc=$?; [ -z \"$ro\" ] || mount -o remount,ro /boot; exit $rc)"
+    )
+}
+
+/// The device's channel helper (os/usr/libexec/tilo-update-channel), and the first word of
+/// [`update_command`].
+pub const UPDATE_CHANNEL: &str = "/usr/libexec/tilo-update-channel";
+
+/// What `vm upgrade` runs to move a device onto a registry image: the device's own update path,
+/// the one its update timer runs. `Some(image)` pins that dev image in place of the device's
+/// channel until the channel moves on; `None` returns it to its channel. [`under_vm_lock`]
+/// turns it into the line.
+pub fn update_command(pin: Option<&str>) -> Vec<String> {
+    let mut words = vec![UPDATE_CHANNEL.to_owned()];
+    words.extend(pin.map(str::to_owned));
+    words
+}
+
+/// [`update_command`] as a shell line: pin (or unpin), then `tilo-verified-update`, which
+/// switches to what the channel helper names and stages it as the timer would. An image that
+/// predates channels has no helper: bootc switches it (or upgrades what it follows) directly.
+fn update_line(pin: Option<&str>) -> String {
+    let (follow, direct) = match pin {
+        Some(image) => (
+            format!("{UPDATE_CHANNEL} pin {}", sh_quote(image)),
+            vec!["switch", image],
+        ),
+        None => (format!("{UPDATE_CHANNEL} unpin"), vec!["upgrade"]),
+    };
+    format!(
+        "if [ -x {UPDATE_CHANNEL} ]; then {follow} && {}; else {}; fi",
+        esp_writable_for("/usr/libexec/tilo-verified-update"),
+        bootc_line(&direct)
     )
 }
 
@@ -633,10 +675,119 @@ pub const ESP_WRITABLE_UNTIL_BOOT: &str = "if findmnt -n -o FSTYPE,OPTIONS /boot
 /// holds it.
 pub fn under_vm_lock(words: &[String]) -> String {
     let args: Vec<&str> = words.iter().map(String::as_str).skip(1).collect();
+    let line = if words.first().map(String::as_str) == Some(UPDATE_CHANNEL) {
+        update_line(args.first().copied())
+    } else {
+        bootc_line(&args)
+    };
     format!(
         "mkdir -p {LOCKS} && flock --nonblock --conflict-exit-code 75 {LOCKS}/vm.lock sh -c {}",
-        sh_quote(&bootc_line(&args))
+        sh_quote(&line)
     )
+}
+
+/// The VM's own boot-entry pass, run right after bootc staged a deployment or
+/// reordered them. A deployment that has never booted well has to carry a
+/// boot loader try counter BEFORE the reboot into it: one that fails before
+/// userspace (a hung disk unlock, a crash in the initrd) never runs anything
+/// that could add it later, and without one the boot loader picks it again on
+/// every boot instead of going back to the previous deployment.
+pub const BOOT_ENTRIES: &str = "if [ -x /usr/libexec/tilo-deployment ]; then /usr/libexec/tilo-deployment entries 2>&1; echo \"@@entries $?\"; else echo '@@entries absent'; fi";
+
+/// What [`BOOT_ENTRIES`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntriesOutcome {
+    /// The pass ran: every deployment that needs a counter has one.
+    Done,
+    /// The image's pass found no boot loader layout: an image from before
+    /// tilo-esp-generator mounts nothing at /boot or /boot/efi, so its pass
+    /// cannot see the ESP even where sd-boot started from one.
+    NoLayout,
+    /// The image has no tilo-deployment at all.
+    Absent,
+    /// The pass failed; its output.
+    Failed(String),
+}
+
+pub fn parse_entries(output: &str) -> EntriesOutcome {
+    let status = output
+        .lines()
+        .rev()
+        .find_map(|line| line.trim().strip_prefix("@@entries "));
+    match status {
+        Some("absent") => EntriesOutcome::Absent,
+        Some("0") if output.contains("nothing to maintain") => EntriesOutcome::NoLayout,
+        Some("0") => EntriesOutcome::Done,
+        _ => EntriesOutcome::Failed(
+            output
+                .lines()
+                .filter(|line| !line.starts_with("@@entries"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+    }
+}
+
+/// How many tries a staged deployment gets; tilo-deployment's own default.
+pub const BOOT_TRIES: u32 = 3;
+
+/// For an image whose own pass cannot see the ESP ([`EntriesOutcome::NoLayout`]
+/// or [`EntriesOutcome::Absent`]): mount the ESP the boot loader started from
+/// (`LoaderDevicePartUUID`) in a private mount namespace and give the entry
+/// that boots `verity` its try counter, the same rename tilo-deployment does.
+/// The entry is found by the composefs identity it boots, never by name:
+/// bootc renumbers every entry when it stages one. Prints `@@counted N`, or
+/// `@@counter none` where no boot loader names an ESP (a VM started without
+/// systemd-boot), or `@@counter failed: WHY`.
+pub fn count_staged_entry_script(verity: &str) -> String {
+    let inner = format!(
+        r#"m=$(mktemp -d) || {{ echo '@@counter failed: no scratch directory'; exit 0; }}
+if ! mount -t vfat -o rw "/dev/disk/by-partuuid/$1" "$m" 2>/dev/null; then echo "@@counter failed: could not mount the ESP (PARTUUID $1) read-write"; exit 0; fi
+n=0
+for f in "$m"/loader/entries.staged/bootc*.conf "$m"/loader/entries/bootc*.conf; do
+  [ -f "$f" ] || continue
+  case "${{f##*/}}" in *+*) continue ;; esac
+  u=$(sed -n 's/^uki[[:space:]]\{{1,\}}//p' "$f" | head -1)
+  if [ -n "$u" ]; then c=$(/usr/libexec/tilo-uki-cmdline show "$m/${{u#/}}" 2>/dev/null); else c=$(sed -n 's/^options[[:space:]]//p' "$f"); fi
+  printf '%s\n' "$c" | tr ' \t' '\n\n' | sed 's/^composefs=sha512:/composefs=/' | grep -qx 'composefs={verity}' || continue
+  mv "$f" "${{f%.conf}}+{BOOT_TRIES}.conf" && n=$((n + 1))
+done
+sync
+umount "$m"; rmdir "$m"
+echo "@@counted $n""#
+    );
+    format!(
+        "p=$(tail -c +5 /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f 2>/dev/null | tr -d '\\000' | tr 'A-F' 'a-f'); \
+         case \"$p\" in ????????-????-????-????-????????????) ;; *) echo '@@counter none'; exit 0 ;; esac; \
+         unshare -m sh -c {} counter \"$p\"",
+        crate::vmbuild::sh_quote(&inner)
+    )
+}
+
+/// What [`count_staged_entry_script`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Counted {
+    Entries(usize),
+    NoBootLoader,
+    Failed(String),
+}
+
+pub fn parse_counted(output: &str) -> Counted {
+    for line in output.lines().rev() {
+        let line = line.trim();
+        if let Some(n) = line.strip_prefix("@@counted ") {
+            return n
+                .parse()
+                .map_or_else(|_| Counted::Failed(line.to_owned()), Counted::Entries);
+        }
+        if line == "@@counter none" {
+            return Counted::NoBootLoader;
+        }
+        if let Some(why) = line.strip_prefix("@@counter failed: ") {
+            return Counted::Failed(why.to_owned());
+        }
+    }
+    Counted::Failed(format!("no answer: {}", output.trim()))
 }
 
 /// Printed in place of bootc's status when the VM has no bootc.
@@ -755,9 +906,6 @@ pub fn export_command(image: &str, layout: &Path, digest_file: &Path) -> Command
 
 /// Mirror the layout into [`VM_LAYOUT`]: only new blobs cross, and blobs no
 /// longer referenced go, so the VM keeps one image's worth.
-///
-/// # Errors
-/// Returns an error when the rsync SSH transport is unavailable.
 pub fn rsync_command(
     layout: &Path,
     endpoint: &SshEndpoint,
@@ -786,7 +934,6 @@ pub fn rsync_command(
     .env("LC_ALL", "C"))
 }
 
-/// Bytes rsync sent, from its `--stats`.
 pub fn rsync_sent_bytes(stats: &str) -> Option<u64> {
     let line = stats
         .lines()
@@ -1077,7 +1224,6 @@ mod tests {
         assert!(is_layout(dir.path()));
         assert!(!is_layout(Path::new("registry.tilo.so/tilo/tilo-vm:main")));
 
-        // The VM already boots this image under another manifest digest.
         assert!(is_already_booted(
             "error: Switching: Composefs Switching: Target image has the same fs-verity digest as the existing Some(Booted) deployment."
         ));
@@ -1086,7 +1232,6 @@ mod tests {
         ));
     }
 
-    /// bootc's space refusal becomes the plain sentence the user reads.
     #[test]
     fn bootcs_space_refusal_reads_as_plain_language() {
         let stderr = "error: Switching: Composefs Switching: Performing Upgrade Operation: Insufficient free space for registry.tilo.so/tilo/tilo-vm:pr-4227-4ab5dcc-lenovo-83ed (available: 2.3 GB required: 5.2 GB)";
@@ -1109,21 +1254,21 @@ mod tests {
         );
     }
 
-    /// A commit off main is found by its `<ref>-<sha7>` tags.
+    /// A commit off main is found by its branch's `ref-<branch>-<sha7>-<target>` tags.
     #[test]
     fn a_pull_request_commit_resolves_through_its_ref_tags() {
         assert_eq!(ci_commit("main-1a2b3c4"), Some("1a2b3c4"));
         assert_eq!(ci_commit("main-1a2b3c4-x86_64"), None);
         assert_eq!(ci_commit("v1.2.3"), None);
-        let vm = r#"{"Repository":"registry.tilo.so/tilo/tilo-vm","Tags":["main-0000000-ci","pr-12-1a2b3c4-ci","pr-12-1a2b3c4-ci-x86_64","fix-x-1a2b3c4-ci","1a2b3c4-ci"]}"#;
+        let vm = r#"{"Repository":"registry.tilo.so/tilo/tilo-vm","Tags":["main-0000000-ci","pr-12-1a2b3c4-ci","ref-pr-12-1a2b3c4-x86_64","ref-fix-x-1a2b3c4-x86_64","ref-fix-x-1a2b3c4-aarch64","1a2b3c4-x86_64"]}"#;
         let ci =
             r#"{"Tags":["pr-12-1a2b3c4-x86_64","pr-12-1a2b3c4-aarch64","main-1a2b3c4x-x86_64"]}"#;
         let found = ci_ref_candidates("1a2b3c4", "x86_64", None, vm, ci);
         assert_eq!(
             found.dev_images,
             vec![
-                "registry.tilo.so/tilo/tilo-vm:fix-x-1a2b3c4-ci".to_owned(),
-                "registry.tilo.so/tilo/tilo-vm:pr-12-1a2b3c4-ci".to_owned(),
+                "registry.tilo.so/tilo/tilo-vm-ref:ref-fix-x-1a2b3c4-x86_64".to_owned(),
+                "registry.tilo.so/tilo/tilo-vm-ref:ref-pr-12-1a2b3c4-x86_64".to_owned(),
             ]
         );
         assert_eq!(
@@ -1133,11 +1278,11 @@ mod tests {
         let none = ci_ref_candidates("1a2b3c4", "aarch64", None, "not json", "{}");
         assert!(none.dev_images.is_empty() && none.bases.is_empty());
         // A board takes only its own board image, and never a base to build from.
-        let boards = r#"{"Tags":["pr-7-1a2b3c4-ci","pr-7-1a2b3c4-lenovo-83ed","pr-7-1a2b3c4-orangepi-3b-v2-1"]}"#;
+        let boards = r#"{"Tags":["ref-pr-7-1a2b3c4-aarch64","ref-pr-7-1a2b3c4-lenovo-83ed","ref-pr-7-1a2b3c4-orangepi-3b-v2-1"]}"#;
         let board = ci_ref_candidates("1a2b3c4", "aarch64", Some("lenovo-83ed"), boards, ci);
         assert_eq!(
             board.dev_images,
-            vec!["registry.tilo.so/tilo/tilo-vm:pr-7-1a2b3c4-lenovo-83ed".to_owned()]
+            vec!["registry.tilo.so/tilo/tilo-vm-ref:ref-pr-7-1a2b3c4-lenovo-83ed".to_owned()]
         );
         assert!(board.bases.is_empty());
         assert_eq!(
@@ -1169,10 +1314,7 @@ mod tests {
         // Phase: ci_candidates_try_published_dev_images_then_bases.
         {
             let expected = CiCandidates {
-                dev_images: vec![
-                    "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci".into(),
-                    "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4".into(),
-                ],
+                dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci-x86_64".into()],
                 bases: vec![
                     "registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64".into(),
                     "registry.tilo.so/tilo/tilo:main-1a2b3c4".into(),
@@ -1368,6 +1510,20 @@ mod tests {
                 "{locked}"
             );
             assert!(locked.contains("bootc upgrade; rc=$?"), "{locked}");
+            // A registry image goes the device's own update way: pinned, then its verified update.
+            let pinned = under_vm_lock(&update_command(Some("registry.tilo.so/tilo/tilo-vm:x")));
+            assert!(
+                pinned.contains("/usr/libexec/tilo-update-channel pin")
+                    && pinned.contains("/usr/libexec/tilo-verified-update; rc=$?")
+                    && pinned.contains("bootc switch"),
+                "{pinned}"
+            );
+            let channel = under_vm_lock(&update_command(None));
+            assert!(
+                channel.contains("/usr/libexec/tilo-update-channel unpin")
+                    && channel.contains("bootc upgrade"),
+                "{channel}"
+            );
             // bootc gets a writable ESP for the one command, and it is read-only again after.
             let line = bootc_line(&["status", "--json"]);
             assert!(line.contains("mount -o remount,rw /boot"), "{line}");
@@ -1465,5 +1621,84 @@ mod tests {
                 (5 + 6) as u64 + std::fs::metadata(blobs.join("dd")).unwrap().len()
             );
         }
+    }
+
+    #[test]
+    fn a_staged_deployment_names_the_composefs_identity_its_entry_boots() {
+        let verity = "ab".repeat(64);
+        let json = format!(
+            r#"{{"status":{{"staged":{{"image":{{"image":{{"image":"registry.tilo.so/tilo/tilo-vm:x","transport":"registry"}},"imageDigest":"sha256:1"}},"composefs":{{"verity":"sha512:{verity}"}}}},"booted":{{"image":{{"image":{{"image":"a"}},"imageDigest":"sha256:0"}},"composefs":{{"verity":"short"}}}}}}}}"#
+        );
+        let status = parse_bootc_status(&json).unwrap();
+        assert_eq!(
+            status.staged.unwrap().verity.as_deref(),
+            Some(verity.as_str())
+        );
+        assert_eq!(
+            status.booted.unwrap().verity,
+            None,
+            "a malformed identity is no identity"
+        );
+    }
+
+    #[test]
+    fn the_boot_entry_pass_says_whether_the_next_boot_is_counted() {
+        assert_eq!(
+            parse_entries(
+                "tilo-deployment: boot counter: bootc_x-1.conf gets 3 tries\n@@entries 0\n"
+            ),
+            EntriesOutcome::Done
+        );
+        // An image from before tilo-esp-generator, and the current wording.
+        assert_eq!(
+            parse_entries(
+                "tilo-deployment: no systemd-boot layout — nothing to maintain\n@@entries 0\n"
+            ),
+            EntriesOutcome::NoLayout
+        );
+        assert_eq!(
+            parse_entries(
+                "tilo-deployment: the ESP this machine started from (PARTUUID x) is not mounted and could not be mounted read-only; nothing to maintain\n@@entries 0\n"
+            ),
+            EntriesOutcome::NoLayout
+        );
+        assert_eq!(parse_entries("@@entries absent\n"), EntriesOutcome::Absent);
+        assert_eq!(
+            parse_entries("tilo-deployment: not a managed UKI entry: x\n@@entries 1\n"),
+            EntriesOutcome::Failed("tilo-deployment: not a managed UKI entry: x".into())
+        );
+        assert!(matches!(parse_entries(""), EntriesOutcome::Failed(_)));
+    }
+
+    #[test]
+    fn the_staged_entry_is_counted_by_the_identity_it_boots_in_a_private_mount() {
+        let verity = "cd".repeat(64);
+        let script = count_staged_entry_script(&verity);
+        assert!(script.contains("LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"));
+        assert!(script.contains("unshare -m sh -c"));
+        assert!(script.contains(&format!("composefs={verity}")));
+        assert!(script.contains("+3.conf"));
+        assert!(script.contains("entries.staged"));
+        assert_eq!(parse_counted("@@counted 1\n"), Counted::Entries(1));
+        assert_eq!(parse_counted("@@counted 0"), Counted::Entries(0));
+        assert_eq!(parse_counted("@@counter none\n"), Counted::NoBootLoader);
+        assert_eq!(
+            parse_counted("@@counter failed: could not mount the ESP (PARTUUID x) read-write\n"),
+            Counted::Failed("could not mount the ESP (PARTUUID x) read-write".into())
+        );
+        assert!(matches!(
+            parse_counted("sh: unshare: not found"),
+            Counted::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn the_counting_script_runs_in_a_shell() {
+        let script = count_staged_entry_script(&"ef".repeat(64));
+        let status = std::process::Command::new("sh")
+            .args(["-n", "-c", &script])
+            .status()
+            .unwrap();
+        assert!(status.success(), "{script}");
     }
 }

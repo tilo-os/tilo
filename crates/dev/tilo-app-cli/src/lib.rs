@@ -35,6 +35,7 @@ pub mod native_libs;
 pub mod native_sdk;
 mod pack;
 pub mod portability;
+pub mod push;
 mod resource_kinds;
 pub mod size;
 pub mod standalone;
@@ -3032,12 +3033,9 @@ fn tree_component_source(
     type_name: &str,
 ) -> (String, Vec<ScreenMessage>) {
     let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
-    let loading = ScreenMessage::new(name, "loading", "Loading…");
-    let load_error = ScreenMessage::new(name, "load-error", "Could not load. Activate to retry");
     let mut source = format!(
         r#"use ui::selection::KeySelection;
-use ui::widget::Text;
-use ui::widget::tree_view::{{NodeId, TreeModel, TreeSlotState, TreeView}};
+use ui::widget::tree_view::{{NodeId, TreeModel, TreeView}};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Config {{
@@ -3064,8 +3062,11 @@ impl Default for {type_name}Config {{
 
 /// Build one reusable `{name}` over any app, database, CRDT, or paged tree model.
 ///
-/// The concrete return type deliberately preserves `TreeView`'s row-delegate,
-/// model-notification, loading, selection, and reorder configuration methods.
+/// A paged model's children on their way ([`TreeModel::child_state`]) keep
+/// their rows with the tree's own placeholder, and a failed one retries when
+/// activated. The concrete return type deliberately preserves `TreeView`'s
+/// row-delegate, model-notification, selection, and reorder configuration
+/// methods.
 pub fn {module_name}<M: TreeModel>(
     id: &str,
     model: M,
@@ -3078,18 +3079,11 @@ pub fn {module_name}<M: TreeModel>(
         .multi_select(config.multi_select)
         .with_viewport(config.viewport_height, config.estimated_row_height)
         .with_accessible_name(&config.accessible_name)
-        .with_slot_delegate(|_, _, _, state| {{
-            let message = match state {{
-                TreeSlotState::Loading => "{name}-loading",
-                TreeSlotState::Error {{ .. }} => "{name}-load-error",
-            }};
-            Box::new(Text::new(message))
-        }})
 }}
 "#
     );
     source.push_str(&tree_component_test_source(module_name, type_name));
-    (source, vec![accessible_name, loading, load_error])
+    (source, vec![accessible_name])
 }
 
 fn tree_component_test_source(module_name: &str, type_name: &str) -> String {
@@ -3169,7 +3163,7 @@ fn list_component_source(
     let mut source = format!(
         r#"use std::hash::Hash;
 use ui::selection::KeySelection;
-use ui::widget::virtual_list::{{ListModel, ListRowState, VirtualList}};
+use ui::widget::virtual_list::{{ListModel, VirtualList}};
 use ui::widget::Element;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3195,17 +3189,19 @@ impl<K: Clone + Eq + Hash> Default for {type_name}Config<K> {{
 
 /// Build one reusable `{name}` over any resident, database, or paged list model.
 ///
-/// The row delegate receives ready, loading, and error states. The concrete
+/// The row delegate builds a row once its data is there: a model's rows
+/// still on their way ([`ListModel::row_state`]) keep their slot with the
+/// list's own placeholder, and failed rows show why. The concrete
 /// return type preserves `VirtualList` activation, notification, measurement,
 /// scrolling, selection, and reorder methods for app-specific configuration.
 pub fn {module_name}<M: ListModel>(
     id: &str,
     model: M,
     config: &{type_name}Config<M::Key>,
-    row_delegate: impl for<'a> FnMut(&M, usize, &M::Key, ListRowState<'a>) -> Element + 'static,
+    row_delegate: impl FnMut(&M, usize, &M::Key) -> Element + 'static,
     encode_key: impl Fn(&M::Key) -> String + 'static,
 ) -> VirtualList<M> {{
-    VirtualList::new_async(model, config.estimated_row_height, row_delegate)
+    VirtualList::new(model, config.estimated_row_height, row_delegate)
         .with_id(id)
         .with_accessible_name(&config.accessible_name)
         .with_semantic_key(encode_key)
@@ -3266,7 +3262,7 @@ mod tests {{
             "example-list",
             SparseItems {{ count: ITEM_COUNT }},
             &config,
-            move |_model, index, key, _state| {{
+            move |_model, index, key| {{
                 let height = if index % 5 == 0 {{ 72.0 }} else {{ 44.0 }};
                 let activated = rows_activated.clone();
                 let key = key.to_string();
@@ -3379,7 +3375,8 @@ mod tests {{
     use ui::a11y::{{Action, Role}};
     use ui::headless::SemanticExpectation;
     use ui::widget::{{Button, ControlSize}};
-    use ui::widget::data_table::{{ColumnWidth, TableRowState}};
+    use ui::widget::data_table::ColumnWidth;
+    use ui::Arrival;
 
     struct Row {{
         name: String,
@@ -3407,11 +3404,11 @@ mod tests {{
             usize::try_from(key).ok().filter(|index| *index < self.count)
         }}
 
-        fn row_state(&self, index: usize) -> TableRowState<'_, Row> {{
+        fn row_state(&self, index: usize) -> Arrival<&Row, &str> {{
             if index < self.count {{
-                TableRowState::Ready(&self.resident)
+                Arrival::Ready(&self.resident)
             }} else {{
-                TableRowState::Error("Row outside the model")
+                Arrival::Failed("Row outside the model")
             }}
         }}
     }}
@@ -9981,7 +9978,7 @@ fn app_test(spec: &AppSpec) -> String {
 
 fn app_manifest(spec: &AppSpec) -> String {
     format!(
-        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[package.isa]\nx86_64 = \"v3\"\naarch64 = \"aarch64\"\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@2\"\ntilo-fs = \"optional@2\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
+        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[package.isa]\nx86_64 = \"v3\"\naarch64 = \"aarch64\"\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@10\"\ntilo-fs = \"optional@10\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
         app_id = spec.app_id,
         title = spec.title,
         package = spec.package_name,

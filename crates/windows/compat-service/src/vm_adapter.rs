@@ -1243,7 +1243,6 @@ mod tests {
 
     #[test]
     fn portal_projections_are_denied_by_default_and_exact_for_leases() {
-        // Phase `default_portal_projection_is_fully_denied`.
         {
             let grants = DenyAllVmPortalAuthority
                 .grants_for("app", "workspace", &CapabilityPlan::empty())
@@ -1253,7 +1252,6 @@ mod tests {
             assert!(!grants.microphone);
             assert!(grants.portal_documents.is_empty());
         }
-        // Phase `canonical_rail_projection_keeps_exact_nethosts_for_the_lease_broker`.
         {
             use windows_vm::CapabilityBroker as _;
 
@@ -1293,7 +1291,6 @@ mod tests {
             assert!(lease.clipboard && lease.microphone);
             assert!(!lease.network && lease.shares.is_empty());
         }
-        // Phase `app_focused_broker_materializes_an_explicit_empty_lease`.
         {
             use windows_vm::CapabilityBroker as _;
             let broker = DenyAllVmCapabilityBroker::default();
@@ -1308,7 +1305,6 @@ mod tests {
             assert!(!lease.network && !lease.clipboard && !lease.microphone);
             assert!(lease.shares.is_empty());
         }
-        // Phase `a_portal_cannot_project_ungranted_network_or_microphone`.
         {
             let result = validate_portal_projection(
                 &windows_vm::VmLaunchGrants {
@@ -1348,7 +1344,6 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn guest_identities_and_statuses_stay_host_owned_and_workspace_scoped() {
-        // Phase `shared_session_summary_comes_from_materialized_broker_resources`.
         {
             use windows_vm::CapabilityBroker as _;
 
@@ -1425,7 +1420,6 @@ mod tests {
             broker.revoke(&lease.lease_id);
             assert_eq!(tracker.summary(), VmSharedSessionLeaseSummary::default());
         }
-        // Phase `published_guest_identity_is_mapped_to_host_owned_opaque_ids`.
         {
             let entry = vm_entry_id("guest-word");
             let app = vm_app_id("guest-word");
@@ -1436,7 +1430,6 @@ mod tests {
             assert_eq!(entry, vm_entry_id("guest-word"));
             assert_ne!(entry, vm_entry_id("guest-excel"));
         }
-        // Phase `workspace_b_cannot_observe_or_publish_workspace_a_candidates`.
         {
             let operation =
                 windows_vm::InstallationOperationId::parse("installer-operation-a").unwrap();
@@ -1475,7 +1468,6 @@ mod tests {
                     .is_none()
             );
         }
-        // Phase `guest_uninstall_status_preserves_running_and_failed_state`.
         {
             let operation =
                 windows_vm::UninstallationOperationId::parse("uninstall-operation-a").unwrap();

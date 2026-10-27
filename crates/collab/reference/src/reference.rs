@@ -137,6 +137,34 @@ impl ResourceRef {
     pub fn is_partial(&self) -> bool {
         self.span.is_some()
     }
+
+    /// The one action that opens this reference: its resource's `open`
+    /// view in `app`, in workspace `room`, on `record` (`None`: the app's
+    /// own record of the workspace). The host launches the app on the record
+    /// when no window shows it, and admits the open as the person who asked
+    /// under their grants, as it admits any action; a search hit, a chip and
+    /// an agent all open things this way.
+    #[must_use]
+    pub fn open_target(
+        &self,
+        room: &str,
+        app: &str,
+        record: Option<&str>,
+    ) -> tilo_actions::remote::RemoteActionTarget {
+        let open = tilo_actions::remote::APPLICATION_OPEN_ACTION;
+        match record {
+            Some(record) => tilo_actions::remote::application_record_target(
+                room,
+                app,
+                record,
+                self.id.clone(),
+                open,
+            ),
+            None => {
+                tilo_actions::remote::application_action_target(room, app, self.id.clone(), open)
+            }
+        }
+    }
 }
 
 /// What an app answers when asked what is selected right now.
@@ -181,6 +209,29 @@ mod tests {
         // Case: a char span may end just past the last character.
         assert_eq!(Span::chars(0, 4).slice("café"), Some("café"));
         assert_eq!(Span::chars(3, 4).slice("café"), Some("é"));
+    }
+
+    #[test]
+    fn a_reference_opens_through_its_apps_open_on_its_record() {
+        let page = ResourceRef::whole("notes.page", "notes.page:1", "Plan");
+        let target = page.open_target("room-1", "so.tilo.notes", Some("uuid:7"));
+        assert_eq!(
+            tilo_actions::remote::application_provider(&target.provider),
+            Some(("room-1", "so.tilo.notes"))
+        );
+        assert_eq!(
+            tilo_actions::remote::application_provider_record(&target.provider),
+            Some("uuid:7")
+        );
+        assert_eq!(
+            target.address,
+            tilo_actions::ActionAddress::new("notes.page:1", "open")
+        );
+        let target = page.open_target("room-1", "so.tilo.notes", None);
+        assert_eq!(
+            tilo_actions::remote::application_provider_record(&target.provider),
+            None
+        );
     }
 
     #[test]

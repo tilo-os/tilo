@@ -26,7 +26,6 @@ const TIER_HYSTERESIS: u64 = 4;
 pub enum ChunkTier {
     /// Small enough to travel inside the record operation; one chunk.
     Inline,
-    /// One chunk.
     Single,
     Small,
     Medium,

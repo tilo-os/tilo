@@ -11,6 +11,8 @@ use std::cell::Cell;
 
 /// How often a running job's progress line is read.
 const PROGRESS_READ: ui::time::Duration = ui::time::Duration::from_millis(250);
+/// The window bar's Back up now ([`BackupsApp::sync_window_toolbar`]).
+const BACK_UP_NOW: &str = "back-up-now";
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -24,7 +26,7 @@ use ui::theme::Theme;
 use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, Column, ModalDialog, ModelPath, NavShell, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 type Picked = ui::portal::PortalOutcome;
 #[derive(Clone, Copy)]
@@ -70,8 +72,12 @@ pub struct BackupsApp {
     restore: Option<ModalDialog<Column>>,
     restore_changed: bool,
     failure: Option<(String, String)>,
-    status_bubble: ui::StatusBubble,
-    cursor: Option<Point>,
+    /// Said in the window's bar for a while when the backups' health
+    /// changes: all healthy again, or how many now need a look.
+    health: ui::widget::toast::Transient<(String, ui::widget::toast::ToastKind)>,
+    /// How many backups needed a look when last read; `None` before the
+    /// first read, which is the window opening, not news.
+    failed_seen: Option<u64>,
     scroll: Rc<Cell<(f32, f32)>>,
     built: Option<ViewKey>,
     dirty: bool,
@@ -158,8 +164,7 @@ impl BackupsApp {
         Self {
             shell: NavShell::new()
                 .content_kind(ui::widget::ContentKind::List)
-                .content_header("", Vec::new())
-                .inspector_header("Snapshot", Vec::new())
+                .with_window_toolbar()
                 .with_id("backups-shell"),
             intents: Intents::default(),
             catalog,
@@ -186,8 +191,8 @@ impl BackupsApp {
             order: Order::NewestFirst,
             restore: None,
             failure: None,
-            status_bubble: ui::StatusBubble::new(),
-            cursor: None,
+            health: ui::widget::toast::Transient::new(),
+            failed_seen: None,
             scroll: Rc::new(Cell::new((0.0, 0.0))),
             built: None,
             dirty: true,
@@ -696,8 +701,6 @@ impl BackupsApp {
             },
         )
     }
-
-    // ---- semantic colour mapping (all sourced from the Theme) -----------
 }
 impl BackupsApp {
     pub(crate) fn answer_effect(
@@ -760,7 +763,8 @@ impl BackupsApp {
     pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         match scenario {
             "status" => {
-                self.status_bubble.poke(ui::time::now());
+                let failed = self.failed_count();
+                self.say_health(failed);
             }
             "progress" => {
                 self.operation_status = Some("642 files totaling 3.8 GB verified so far".into());
@@ -805,8 +809,6 @@ impl BackupsApp {
         );
         self.dirty = true;
     }
-
-    // ---- intents ------------------------------------------------------------
 
     fn drain_intents(&mut self) {
         for intent in self.intents.take() {
@@ -884,8 +886,6 @@ impl BackupsApp {
         }
     }
 
-    // ---- the shell's content ----------------------------------------------
-
     fn setup_key(&self) -> Option<SetupKey> {
         if let Some(error) = &self.repository_error {
             return Some(SetupKey::Unavailable(error.clone()));
@@ -923,10 +923,6 @@ impl BackupsApp {
         }
     }
 
-    fn set_content_header(&mut self, title: String, actions: Vec<ui::widget::Element>) {
-        self.shell.set_content_header(title, actions);
-    }
-
     /// Rebuild the columns when what they show changed.
     fn refresh_view(&mut self) {
         self.keep_selection();
@@ -949,7 +945,6 @@ impl BackupsApp {
             };
             self.shell.set_sidebar(None);
             self.shell.set_inspector(None);
-            self.set_content_header(String::new(), Vec::new());
             self.shell.set_content(view::setup(&state, &self.intents));
             return;
         }
@@ -965,8 +960,6 @@ impl BackupsApp {
                 sidebar.set_selected(Some(&selected));
             }
         }
-        let actions = view::header_actions(key.job, key.can_act, &self.intents);
-        self.set_content_header(view::page_title(&self.catalog, &self.page), actions);
         let now = now();
         let model = view::Model {
             catalog: &self.catalog,
@@ -999,39 +992,86 @@ impl BackupsApp {
         self.shell.set_inspector(details);
     }
 
-    /// "All backups healthy", or how many need a look.
-    fn health_line(&self) -> String {
-        let failed = self.catalog.failed(Filter::All) as u64;
-        if failed == 0 {
+    fn failed_count(&self) -> u64 {
+        self.catalog.failed(Filter::All) as u64
+    }
+
+    /// "All backups healthy", or how many need a look, in the window's bar
+    /// for a while.
+    fn say_health(&mut self, failed: u64) {
+        // A count of failed snapshots is a measurement; "all healthy" is not
+        // a claim this app can make while health is unknown or no source is
+        // configured.
+        let text = if self.catalog.sources.is_empty() {
+            "Backup health is unknown: no source is configured.".to_owned()
+        } else if failed == 0 {
             i18n::t("backups-health-ok")
         } else {
             i18n::counted("backups-health-attention", failed, "")
-        }
+        };
+        let kind = if failed == 0 && !self.catalog.sources.is_empty() {
+            ui::widget::toast::ToastKind::Success
+        } else {
+            ui::widget::toast::ToastKind::Warning
+        };
+        self.health.show((text, kind));
     }
 
-    // ---- overlays -----------------------------------------------------------
+    /// Say the health when it changes, and keep the bar's notice current.
+    fn publish_health(&mut self) {
+        if self.setup_key().is_none() {
+            let failed = self.failed_count();
+            if self.failed_seen.is_some_and(|seen| seen != failed) {
+                self.say_health(failed);
+            }
+            self.failed_seen = Some(failed);
+        }
+        self.health.expire();
+        self.health
+            .publish(|(text, kind)| ui::window_toolbar::ToolbarNotice::new(text.clone(), *kind));
+    }
 
-    fn paint_status(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-    ) {
-        if self.setup_key().is_some() {
-            return;
+    /// Declare the window bar's slots ([`ui::window_toolbar`]): the shell's
+    /// own (the sources list, Back, the snapshot's details), the page as the
+    /// window's location and Back up now; and run what the person did there.
+    fn sync_window_toolbar(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                continue;
+            }
+            if let ui::window_toolbar::ToolbarEvent::Action { id } = &event
+                && id == BACK_UP_NOW
+            {
+                self.intents.push(Intent::BackUpNow);
+            }
         }
-        let now = ui::time::now();
-        let line = self.health_line();
-        self.status_bubble.show(&line, now);
-        // Resting the pointer on the bubble's corner holds it open.
-        if let Some(cursor) = self.cursor {
-            self.status_bubble
-                .pointer_moved(window, cursor, text, theme, now);
+        let mut toolbar = self.shell.window_toolbar();
+        if self.setup_key().is_none() {
+            toolbar.location = Some(ui::window_toolbar::ToolbarLocation {
+                label: view::page_title(&self.catalog, &self.page),
+                ..ui::window_toolbar::ToolbarLocation::default()
+            });
+            let job = self.job_status.as_ref().map(|job| job.kind);
+            let back_up = ui::window_toolbar::ToolbarAction::new(
+                BACK_UP_NOW,
+                "upload",
+                if job == Some(JobKind::Backup) {
+                    "Backing up…"
+                } else {
+                    "Back up now"
+                },
+            )
+            .enabled(self.can_act() && job.is_none());
+            NavShell::push_window_actions(&mut toolbar, [back_up]);
+        } else {
+            // Before anything is set up nothing is open: the window is
+            // Backups.
+            toolbar.location = Some(ui::window_toolbar::ToolbarLocation {
+                label: "Backups".to_owned(),
+                ..ui::window_toolbar::ToolbarLocation::default()
+            });
         }
-        self.status_bubble
-            .paint(scene, transform, text, theme, window, now);
+        ui::window_toolbar::declare(Some(toolbar));
     }
 }
 impl ui::widget::Decorator for BackupsApp {
@@ -1053,6 +1093,7 @@ impl ui::widget::Decorator for BackupsApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.refresh_runtime();
+        self.sync_window_toolbar();
         self.drain_intents();
         self.refresh_view();
         // A narrow window shows the list as a drawer or as its own screen.
@@ -1067,6 +1108,7 @@ impl ui::widget::Decorator for BackupsApp {
             self.shell.snap();
         }
         self.shell.sync(state, path);
+        self.publish_health();
         if let Some(dialog) = &mut self.restore {
             dialog.sync(state, path);
         }
@@ -1079,6 +1121,7 @@ impl ui::widget::Decorator for BackupsApp {
                 .job_progress
                 .lock()
                 .is_ok_and(|shown| *shown != self.operation_status);
+        self.sync_window_toolbar();
         self.drain_intents();
         self.refresh_view();
         self.shell.update(state, path) || self.dirty || progressed
@@ -1093,6 +1136,7 @@ impl ui::widget::Decorator for BackupsApp {
             .flatten();
         progress
             .into_iter()
+            .chain(self.health.deadline())
             .chain(self.shell.next_wake_deadline())
             .min()
     }
@@ -1110,9 +1154,6 @@ impl ui::widget::Decorator for BackupsApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Some(ctx.logical(position));
-        }
         if let Some(dialog) = &mut self.restore {
             dialog.handle_detached(
                 event,
@@ -1166,18 +1207,13 @@ impl ui::widget::Decorator for BackupsApp {
     ) {
         self.shell
             .draw_overlay(scene, transform, text, theme, presence);
-        let window = presence
-            .viewport
-            .get()
-            .unwrap_or_else(|| self.shell.get_rect());
-        self.paint_status(scene, transform, text, theme, window);
         if let Some(dialog) = &mut self.restore {
             dialog.draw_overlay(scene, transform, text, theme, presence);
         }
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.status_bubble.needs_frame(ui::time::now()) || self.shell.needs_animation_frame()
+        self.shell.needs_animation_frame()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1213,6 +1249,7 @@ mod tests {
     use ui::a11y::Action;
     use ui::headless::Framed;
     use ui::widget::{NavList, SidebarPlacement};
+    use vello::kurbo::Point;
     fn demo() -> BackupsApp {
         BackupsApp::with_catalog(Catalog::sample(now()))
     }
@@ -1286,7 +1323,6 @@ mod tests {
             3,
             "backing up, verifying and restoring are unavailable; setup is not"
         );
-        // Every snapshot row offers its effects as unavailable too.
         let rows: Vec<_> =
             crate::actions::live_rows(&Catalog::sample(now()), app.blocked().as_ref())
                 .into_iter()
@@ -1345,7 +1381,6 @@ mod tests {
     }
     #[test]
     fn rail_paints_and_scrolls_only_when_needed() {
-        // Narrow, the list is a screen of its own the window goes back to.
         let mut narrow = frame(demo(), 390.0, 844.0, 1.0);
         assert_eq!(narrow.shell.geometry().sidebar, SidebarPlacement::Screen);
         assert!(
@@ -1356,7 +1391,9 @@ mod tests {
         narrow.shell.snap();
         Framed::harness_mut(&mut narrow).relayout();
         assert!(narrow.shell.is_sidebar_open());
-        let mut short = frame(demo(), 1280.0, 480.0, 1.0);
+        // Short enough that the list overflows the whole window height: no
+        // header row stands above it.
+        let mut short = frame(demo(), 1280.0, 420.0, 1.0);
         let sidebar = short.shell.geometry().sidebar_column;
         let before = short
             .shell
@@ -1387,9 +1424,15 @@ mod tests {
         for width in [340.0, 390.0] {
             for scale in [1.0, 2.0] {
                 let mut app = frame(demo(), width, 844.0, scale);
-                let primary = target(&app, "backups-back-up-now");
-                assert!(primary.width() > 0.0);
-                assert!(primary.x0 >= 0.0 && primary.x1 <= width);
+                let declared =
+                    ui::window_toolbar::declared().expect("the window declares its slots");
+                assert!(
+                    declared
+                        .actions
+                        .iter()
+                        .any(|action| action.id == BACK_UP_NOW),
+                    "{declared:?}"
+                );
                 app.shell.open_sidebar();
                 app.shell.snap();
                 Framed::harness_mut(&mut app).relayout();

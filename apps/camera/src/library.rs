@@ -7,7 +7,7 @@
 //! Responsibilities kept here (pure IO, no rendering / no CRDT):
 //!   * [`resolve_dir`]   — where captures live (overridable for tests).
 //!   * [`write_photo`]   — encode an RGBA frame to a timestamped JPEG/PNG.
-//!   * [`load_luma`]     — decode + downscale an image for the code scanner.
+//!   * [`load_luma_bytes`] — decode + downscale an image for the code scanner.
 
 use std::path::{Path, PathBuf};
 
@@ -132,7 +132,6 @@ mod tests {
 
     #[test]
     fn write_photo_stores_real_decodable_images_and_refuses_malformed_frames() {
-        // Phase `write_round_trips_real_dimensions`.
         {
             let dir = tmp();
             let frame = crate::frame::viewfinder(1, 48, 32);
@@ -146,7 +145,6 @@ mod tests {
             assert_eq!(image::image_dimensions(dir.join(&name)).unwrap(), (48, 32));
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `jpeg_format_writes_a_real_jpeg`.
         {
             let dir = tmp();
             let frame = crate::frame::viewfinder(3, 64, 48);
@@ -163,7 +161,6 @@ mod tests {
             assert_eq!((w, h), (64, 48));
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `scanner_luma_downscales_below_box`.
         {
             let dir = tmp();
             let frame = crate::frame::viewfinder(2, 200, 120);
@@ -174,7 +171,6 @@ mod tests {
             assert_eq!(luma.len(), tw * th);
             std::fs::remove_dir_all(&dir).ok();
         }
-        // Phase `malformed_frames_are_refused_before_io`.
         {
             let dir = tmp();
             assert!(

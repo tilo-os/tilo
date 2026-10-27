@@ -59,7 +59,7 @@ impl ReportProjection {
 /// talking to a registry about a report. A package job runs on the Store's
 /// worker and answers when it finished.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "store.effect", device_only)]
+#[effect(operation = "store.effect")]
 pub enum StoreEffect {
     /// Review a missing optional runtime. Fetches signed metadata, never payload.
     #[effect(job, kind = "read")]
@@ -242,12 +242,6 @@ pub enum StoreEffect {
         #[param("App identity")]
         app: String,
     },
-    /// Remove.
-    #[effect(job, destructive)]
-    Remove {
-        #[param("App identity")]
-        app: String,
-    },
     /// Keep on device.
     #[effect(job)]
     Pin {
@@ -275,12 +269,6 @@ pub enum StoreEffect {
     /// Open.
     #[effect(job)]
     FlatpakOpen {
-        #[param("App identity")]
-        app: String,
-    },
-    /// Remove.
-    #[effect(job, destructive)]
-    FlatpakRemove {
         #[param("App identity")]
         app: String,
     },
@@ -374,10 +362,11 @@ pub enum StoreEffect {
 }
 
 impl StoreEffect {
-    /// The effect that carries out `action` on `app`.
-    pub fn package(action: ActionKind, item: &crate::StoreItem) -> Self {
+    /// The effect that carries out `action` on `app`, when the Store carries
+    /// it out: uninstalling is the system's one action (`app.uninstall`).
+    pub fn package(action: ActionKind, item: &crate::StoreItem) -> Option<Self> {
         let app = item.id.clone();
-        match action {
+        Some(match action {
             ActionKind::RuntimeInstall => Self::InstallRuntime {
                 app,
                 root: item
@@ -388,16 +377,15 @@ impl StoreEffect {
             },
             ActionKind::Open => Self::OpenApp { app },
             ActionKind::Update => Self::Update { app },
-            ActionKind::Remove => Self::Remove { app },
+            ActionKind::Remove | ActionKind::FlatpakRemove => return None,
             ActionKind::MarkInstalled => Self::Pin { app },
             ActionKind::Unmark => Self::Unpin { app },
             ActionKind::FlatpakInstall => Self::FlatpakInstall { app },
             ActionKind::FlatpakUpdate => Self::FlatpakUpdate { app },
             ActionKind::FlatpakOpen => Self::FlatpakOpen { app },
-            ActionKind::FlatpakRemove => Self::FlatpakRemove { app },
             ActionKind::NeedsFlatpakHost => Self::FlatpakSetup { app },
             ActionKind::AddBot => Self::AddBot { app },
-        }
+        })
     }
 
     /// The app and the package operation this effect carries out, when it is
@@ -407,13 +395,11 @@ impl StoreEffect {
             Self::InstallRuntime { app, .. } => (app, ActionKind::RuntimeInstall),
             Self::OpenApp { app } => (app, ActionKind::Open),
             Self::Update { app } => (app, ActionKind::Update),
-            Self::Remove { app } => (app, ActionKind::Remove),
             Self::Pin { app } => (app, ActionKind::MarkInstalled),
             Self::Unpin { app } => (app, ActionKind::Unmark),
             Self::FlatpakInstall { app } => (app, ActionKind::FlatpakInstall),
             Self::FlatpakUpdate { app } => (app, ActionKind::FlatpakUpdate),
             Self::FlatpakOpen { app } => (app, ActionKind::FlatpakOpen),
-            Self::FlatpakRemove { app } => (app, ActionKind::FlatpakRemove),
             Self::FlatpakSetup { app } => (app, ActionKind::NeedsFlatpakHost),
             Self::AddBot { app } => (app, ActionKind::AddBot),
             _ => return None,
@@ -503,6 +489,10 @@ impl ResourceApp for StoreShell {
     ];
     /// A `.flatpakref` to show, or a `tilo-store:app/<id>` link.
     const ARGUMENTS: usize = 1;
+    /// Browsing is anonymous: an app's page, the catalogue and installing
+    /// need nobody's identity. Only what is signed as the person working in
+    /// the workspace (a report, an appeal) asks who that is, when it is done.
+    const OPENS_WITHOUT_IDENTITY: bool = true;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&STORE_CATALOG)
@@ -861,14 +851,9 @@ mod tests {
             "review"
         );
         app.harness().click_named("store.runtime.acquire").unwrap();
-        app.settle();
         // The real worker's connected fixture refuses runtime RPCs. A host
         // failure must remain actionable without a fallback download path.
-        let failed = app
-            .effect(&StoreEffect::InspectRuntime)
-            .unwrap()
-            .value
-            .unwrap();
+        let failed = runtime_after_acquiring(&mut app);
         assert_eq!(failed["phase"], "failed", "{failed}");
         assert!(
             failed["error"]
@@ -921,10 +906,10 @@ mod tests {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream
-                            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                            .set_read_timeout(Some(tilo_test_env::hang_bound()))
                             .unwrap();
                         stream
-                            .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+                            .set_write_timeout(Some(tilo_test_env::hang_bound()))
                             .unwrap();
                         let mut request = [0; 4096];
                         let length = stream.read(&mut request).unwrap();
@@ -964,6 +949,21 @@ mod tests {
                 find(&resource.children, id)
             }
         })
+    }
+
+    /// Search opens a Flatpak's page through this link
+    /// (`tilo-store:app/<id>`): the launch shows that app's details and
+    /// installs nothing; installing stays the person's choice on the page.
+    #[test]
+    fn a_store_link_opens_the_app_page_and_installs_nothing() {
+        let arguments = vec!["tilo-store:app/com.spotify.Client".to_owned()];
+        let invokes = StoreShell::launch(&LaunchInput::new(&arguments, None), false);
+        let expected = Invoke::<Reports>::effect(&StoreEffect::ShowDetails {
+            app: "com.spotify.Client".into(),
+        });
+        assert_eq!(invokes.len(), 1, "one step: {invokes:?}");
+        assert_eq!(invokes[0].id, expected.id);
+        assert_eq!(invokes[0].arguments, expected.arguments);
     }
 
     /// The links a launch may name: an app's identity and nothing else.
@@ -1026,7 +1026,9 @@ mod tests {
     /// Every control on screen invokes an action the published tree has: a
     /// binding the tree does not resolve withholds the window's whole action
     /// surface. Checked on the running Store (whose effects are published),
-    /// on the catalogue, its remotes and its trust page.
+    /// on the catalogue, its remotes and its trust page. The catalogue's
+    /// actions are the window bar's slots: each is enabled there, and a
+    /// press on one runs its published action as a control's would.
     #[test]
     fn every_control_binds_a_published_action() {
         let _offline = offline();
@@ -1034,32 +1036,68 @@ mod tests {
         app.settle();
         for (page, effect) in [
             ("catalogue", None),
-            ("remotes", Some(StoreEffect::ShowRemotes)),
+            ("remotes", None),
             ("trust", Some(StoreEffect::ShowTrust)),
         ] {
             if let Some(effect) = effect {
                 app.effect(&effect).unwrap();
                 app.settle();
             }
-            for name in match page {
-                "catalogue" => &["Flatpak repositories", "Trust and moderation"][..],
-                "remotes" => &["Back", "Refresh repositories"][..],
-                _ => &[],
-            } {
-                let control = app
-                    .harness()
-                    .controls()
-                    .into_iter()
-                    .find(|control| control.name.as_deref() == Some(*name))
-                    .unwrap_or_else(|| panic!("{page}: missing control {name}"));
-                assert!(!control.disabled, "{page}: live owner control {name}");
+            if page == "catalogue" {
+                let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
+                for name in ["Flatpak repositories", "Trust and moderation"] {
+                    let slot = toolbar
+                        .actions
+                        .iter()
+                        .find(|action| action.name == name)
+                        .unwrap_or_else(|| panic!("catalogue: missing bar slot {name}"));
+                    assert!(slot.enabled, "catalogue: live owner slot {name}");
+                }
+            }
+            if page == "remotes" {
+                // Reached through the bar's slot: its action resolves.
+                ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+                    id: "remotes".into(),
+                });
+                app.settle();
+                let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
+                assert_eq!(
+                    toolbar
+                        .location
+                        .as_ref()
+                        .map(|location| location.label.as_str()),
+                    Some("Flatpak repositories"),
+                    "the bar's remotes slot opens the repositories"
+                );
+                // Back is the window bar's slot, not a row the page draws.
+                assert!(
+                    toolbar
+                        .leading
+                        .iter()
+                        .any(|action| action.name == "Back" && action.enabled),
+                    "remotes: the window bar's Back returns to the catalogue: {toolbar:?}"
+                );
+                assert!(
+                    toolbar
+                        .actions
+                        .iter()
+                        .any(|action| action.name == "Refresh repositories" && action.enabled),
+                    "remotes: refreshing the repositories is the window bar's: {toolbar:?}"
+                );
             }
             // The production audit resolves each binding against both the
             // mounted app and the real window-owned search/History doors.
             let audit = app.harness().native_app_audit();
             let bindings =
                 ui::widget::controls::control_action_bindings(app.harness().root_widget());
-            assert!(!bindings.is_empty(), "{page}");
+            if page == "catalogue" {
+                // An empty catalogue holds no control of its own: its search
+                // is the window bar's, which acts on the Store in place, and
+                // its other slots are the bar's (above).
+                assert_bar_search_reaches_the_store(&mut app);
+            } else {
+                assert!(!bindings.is_empty(), "{page}");
+            }
             for binding in bindings {
                 if let ui::widget::ControlBindingKind::Action(address) = &binding.kind {
                     assert!(
@@ -1074,9 +1112,11 @@ mod tests {
                 }
             }
             if page == "catalogue" {
-                // Search inside the Store is the window's filter field.
                 let targets = app.harness().targets();
-                assert!(targets.contains_key("store.search"), "{targets:?}");
+                assert!(
+                    !targets.contains_key("store.search"),
+                    "search is the window bar's, not a field of the Store's: {targets:?}"
+                );
             }
         }
     }
@@ -1314,7 +1354,7 @@ mod tests {
         let invocation = app.start_effect(&StoreEffect::Refresh).unwrap();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .job_updates(invocation)
                         .iter()
@@ -1339,6 +1379,22 @@ mod tests {
             Some("Store refreshed.".to_owned())
         );
         assert_eq!(app.versions().len(), versions, "refresh writes no document");
+    }
+
+    /// The runtime recovery once the acquisition just asked for has finished:
+    /// the worker answers on its own thread, possibly after the catalogue
+    /// reads queued before it, so the first settled frames may still show the
+    /// review or acquiring.
+    fn runtime_after_acquiring(app: &mut TestApp<StoreShell>) -> serde_json::Value {
+        tilo_test_env::wait_for("the runtime acquisition finishes", || {
+            app.settle();
+            let runtime = app
+                .effect(&StoreEffect::InspectRuntime)
+                .unwrap()
+                .value
+                .unwrap();
+            (runtime["phase"] != "review" && runtime["phase"] != "acquiring").then_some(runtime)
+        })
     }
 
     fn settle_catalogue_worker(app: &mut TestApp<StoreShell>) {
@@ -1605,6 +1661,17 @@ mod tests {
         );
     }
 
+    /// The window bar's search acts on the Store in place, whatever the
+    /// slow repository is doing.
+    fn assert_bar_search_reaches_the_store(app: &mut TestApp<StoreShell>) {
+        app.settle();
+        assert_eq!(
+            app.with_surface::<StoreApp, _>(|surface| ui::widget::InPlace::of(surface)),
+            Some(ui::widget::InPlace::Query),
+            "the pending-source view keeps the window bar's search on the Store"
+        );
+    }
+
     #[test]
     fn slow_native_registry_does_not_block_configured_flatpak_browse_or_search() {
         let _offline = offline();
@@ -1629,16 +1696,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(
-            app.harness()
-                .wait_until(ui::time::Duration::from_secs(1), |_| {
-                    gate.entered.load(std::sync::atomic::Ordering::SeqCst)
-                }),
+            app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
+                gate.entered.load(std::sync::atomic::Ordering::SeqCst)
+            }),
             "the actual native catalogue RPC is pending"
         );
         let remote = "remote:system:flathub";
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(1), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     find(&harness.resources(), remote).is_some()
                 }),
             "the independent configured remote must publish while native discovery is pending"
@@ -1664,7 +1730,7 @@ mod tests {
             .unwrap();
         assert_valid_unit_job_completion(&mut app, invocation, &contract);
         assert_visible_owner_control(&mut app, "Editor");
-        assert_visible_owner_control(&mut app, "Filter");
+        assert_bar_search_reaches_the_store(&mut app);
         assert!(browses.load(std::sync::atomic::Ordering::SeqCst) > before);
         assert!(!gate.released.load(std::sync::atomic::Ordering::SeqCst));
         app.effect(&StoreEffect::SetSearch {
@@ -1703,7 +1769,7 @@ mod tests {
                 .unwrap()
         );
         assert_visible_owner_control(&mut app, "Editor");
-        assert_visible_owner_control(&mut app, "Filter");
+        assert_bar_search_reaches_the_store(&mut app);
         assert_background_refresh_keeps_its_locale(&mut app, remote, &contract, &gate);
         service.shutdown().unwrap();
     }
@@ -1776,7 +1842,7 @@ mod tests {
         let remote = "remote:flathub";
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(2), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     gate.entered.load(std::sync::atomic::Ordering::SeqCst)
                         && find(&harness.resources(), remote).is_some()
                 })
@@ -1844,12 +1910,9 @@ mod tests {
         app.with_surface::<StoreApp, _>(|surface| surface.connect_test_host(connection))
             .unwrap()
             .unwrap();
-        assert!(
-            app.harness()
-                .wait_until(ui::time::Duration::from_secs(2), |_| gate
-                    .entered
-                    .load(std::sync::atomic::Ordering::SeqCst))
-        );
+        assert!(app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
+            gate.entered.load(std::sync::atomic::Ordering::SeqCst)
+        }));
         service.shutdown().unwrap();
         // The fixture owns the saved task waker too. Retire it after the
         // transport driver joins, rather than retain a task/future cycle.
@@ -2011,7 +2074,7 @@ mod tests {
             .unwrap();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(5), |harness| harness
+                .wait_until(tilo_test_env::hang_bound(), |harness| harness
                     .job_updates(invocation)
                     .iter()
                     .any(ui::tilo_actions::InvocationUpdate::is_terminal))
@@ -2225,7 +2288,7 @@ mod tests {
     ) {
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .job_updates(invocation)
                         .iter()
@@ -2294,7 +2357,7 @@ mod tests {
         let mut app = TestApp::<StoreShell>::handed(file).unwrap();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(10), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .resources()
                         .iter()
@@ -2328,7 +2391,7 @@ mod tests {
         let mut app = TestApp::<StoreShell>::handed(file).unwrap();
         assert!(
             app.harness()
-                .wait_until(ui::time::Duration::from_secs(10), |harness| {
+                .wait_until(tilo_test_env::hang_bound(), |harness| {
                     harness
                         .resources()
                         .iter()
@@ -2358,7 +2421,7 @@ mod tests {
         let mut app = TestApp::<StoreShell>::launched(&[reference.to_str().unwrap()]).unwrap();
         let shown = app
             .harness()
-            .wait_until(ui::time::Duration::from_secs(20), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 find(&harness.resources(), "app:org.gimp.GIMP").is_some()
             });
         assert!(shown, "the reference's app joins the catalogue");
@@ -2436,7 +2499,7 @@ mod tests {
         let mut app = TestApp::<StoreShell>::launched(&["tilo-store:app/so.tilo.unknown"]).unwrap();
         let asked = app
             .harness()
-            .wait_until(ui::time::Duration::from_secs(20), |harness| {
+            .wait_until(tilo_test_env::hang_bound(), |harness| {
                 harness
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains("so.tilo.unknown"))
@@ -2563,7 +2626,11 @@ mod tests {
             let mut app = TestApp::<StoreShell>::capture(Some(scenario)).unwrap();
             let shown = frame(&mut app);
             assert!(!shown.contains("Use Flathub for my apps"));
-            assert!(shown.contains(control), "{scenario} exposes {control}");
+            let toolbar = ui::window_toolbar::declared().expect("the Store declares its bar");
+            assert!(
+                toolbar.actions.iter().any(|action| action.name == control),
+                "{scenario} exposes {control} in the window's bar: {toolbar:?}"
+            );
             if scenario == "account-remotes" {
                 assert!(shown.contains("Flathub"));
             }
@@ -2601,6 +2668,29 @@ mod tests {
             let shown = frame(&mut app);
             assert!(shown.contains(name));
             assert!(shown.contains(action));
+        }
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// each of its scenarios: none is advertised yet handled only by a
+    /// click. The scenarios stage fixtures; the app someone opens acts on
+    /// this machine (its files, its processes), so it is not walked.
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in super::StoreShell::scenarios() {
+            let mut app = TestApp::<super::StoreShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
         }
     }
 }

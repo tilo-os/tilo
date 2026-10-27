@@ -40,7 +40,6 @@ pub enum OpenError {
     NotOffered,
     /// The action host refused or could not answer.
     Host(ActionHostError),
-    /// The opening action ran and failed.
     Failed(ActionFailure),
 }
 

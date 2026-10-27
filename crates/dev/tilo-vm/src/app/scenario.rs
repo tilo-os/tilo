@@ -1955,7 +1955,6 @@ mod tests {
     }
 
     fn check_development_target_proof(mut payload: Value, source: &Value, target: &str) {
-        // Explicit development targets remain a separate proof protocol.
         let dev_origin = "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci";
         payload["schema"] = json!("tilo.vm-install-image-proof.v4");
         payload["selected_target"]["schema"] = json!("tilo.installer-dev-target.v1");
@@ -2046,7 +2045,6 @@ mod tests {
                 .is_err()
         );
         payload["selected_target"]["provenance"]["generation"] = Value::Null;
-        // A board target on the public repository is refused.
         payload["selected_target"]["target_ref"] =
             json!(format!("registry.tilo.so/tilo/tilo@{target}"));
         assert!(
@@ -2100,7 +2098,8 @@ mod tests {
         let worker = std::thread::spawn(move || {
             super::installer_code_phase(&cycle, json!({"phase":"closed"}))
         });
-        std::thread::sleep(Duration::from_millis(150));
+        // While the transport holds the lock, the window cannot close.
+        assert!(!worker.is_finished());
         assert_eq!(
             std::fs::read_to_string(&phase).unwrap(),
             r#"{"phase":"paused"}"#

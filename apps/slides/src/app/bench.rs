@@ -13,7 +13,7 @@ use winit::keyboard::{Key, NamedKey};
 use super::SlidesApp;
 use crate::SlidesShell;
 use crate::actions::replace_deck_action;
-use crate::model::{Deck, PaletteKind, Slide};
+use crate::model::{Deck, DeckLook, PaletteKind, Slide};
 
 /// The window most tests use.
 pub(super) const WINDOW: (u32, u32) = (1280, 800);
@@ -52,7 +52,6 @@ impl Bench {
         Self::open(&crate::model::seed_deck(), WINDOW)
     }
 
-    /// The editor over one slide.
     pub(super) fn one_slide(slide: Slide) -> Self {
         Self::open(&deck_of(vec![slide]), WINDOW)
     }
@@ -102,7 +101,6 @@ impl Bench {
         self.send(&release_ev());
     }
 
-    /// A left click at `p`.
     pub(super) fn click(&mut self, p: Point) {
         self.app.harness().click_at(p.x, p.y);
     }
@@ -131,7 +129,6 @@ impl Bench {
         self.app.harness().type_text(text);
     }
 
-    /// The deck the document holds.
     pub(super) fn deck(&self) -> Deck {
         crate::deck::mirror(&self.app.state())
     }
@@ -141,11 +138,11 @@ impl Bench {
     }
 }
 
-/// A deck of `slides`, titled "t".
 pub(super) fn deck_of(slides: Vec<Slide>) -> Deck {
     Deck {
         title: "t".into(),
         palette: PaletteKind::Indigo,
+        look: DeckLook::default(),
         slides,
     }
 }

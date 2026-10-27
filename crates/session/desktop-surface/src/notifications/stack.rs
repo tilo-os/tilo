@@ -1,5 +1,5 @@
 //! The live banner stack: title + body cards pinned top-right, sliding in,
-//! fading out and auto-dismissing. Richer than `ui::widget::toast::ToastStack`:
+//! fading out and auto-dismissing, each on the shared `ui::widget::toast::ToastCard`:
 //! dual-line layout, a severity tint, a close affordance, a card for the
 //! banners that do not fit, keyboard focus on request and the
 //! locked-session redaction.
@@ -130,7 +130,9 @@ pub struct NotificationStack {
     /// What a press on a painted banner does, as buttons for assistive
     /// technology (and anything else that reads the semantics): each card
     /// (opening it, labelled by its title) and its action buttons.
-    action_buttons: Vec<(Rect, String)>,
+    /// Each painted control as assistive technology reads it: its rect,
+    /// its label and the target activating it (a [`BannerTarget::key`]).
+    action_buttons: Vec<(Rect, String, String)>,
     rect: Rect,
     /// Mirrored from the last paint so the frame and deadline hooks obey
     /// reduced motion without a theme argument.
@@ -160,6 +162,44 @@ pub struct NotificationStack {
     /// of jumping, and while the person holds the stack a slot that would
     /// close upward waits, so the banner under the pointer stays put.
     slots: Vec<(u64, ui::motion::MotionValue<f64>)>,
+    /// Where the windows' content starts: banners begin below it, so the
+    /// window bars' controls (maximise, close) under the corner stay
+    /// reachable. Zero when the host has no windows to keep clear.
+    clear_top: f64,
+    /// The windows' bars on screen: a banner never covers one, the stack
+    /// shifts below it instead ([`transient_slot`]).
+    window_bars: Vec<Rect>,
+}
+
+/// The least a banner is tall, for where the first one may start.
+const MIN_BANNER_H: f64 = 56.0;
+
+/// Where a transient goes (a banner, the follow bar): the reserved zone on
+/// the trailing side of `viewport`, the area under the top bar, inset from
+/// its corner, starting no higher than `top`, `size` wide and tall. A
+/// window's bar always wins: where the slot would cover one of
+/// `window_bars`, it shifts down below that bar, until it covers none.
+#[must_use]
+pub fn transient_slot(viewport: Rect, top: f64, size: (f64, f64), window_bars: &[Rect]) -> Rect {
+    let (width, height) = size;
+    let x1 = viewport.x1 - EDGE_INSET;
+    let mut y0 = top.max(viewport.y0 + EDGE_INSET);
+    // Each shift clears at least one bar, so this ends.
+    for _ in 0..=window_bars.len() {
+        let slot = Rect::new(x1 - width, y0, x1, y0 + height);
+        let below = window_bars
+            .iter()
+            .filter(|bar| bar.intersect(slot).area() > 0.0)
+            .map(|bar| bar.y1 + TOAST_GAP)
+            .fold(None, |most: Option<f64>, y| {
+                Some(most.map_or(y, |m| m.max(y)))
+            });
+        match below {
+            Some(y) if y > y0 => y0 = y,
+            _ => break,
+        }
+    }
+    Rect::new(x1 - width, y0, x1, y0 + height)
 }
 
 impl NotificationStack {
@@ -175,13 +215,44 @@ impl NotificationStack {
         self.viewport = viewport;
     }
 
+    /// Keep everything above `y` clear: the window bars, whose controls a
+    /// banner pinned under the top bar would cover and take clicks from.
+    pub fn set_clear_top(&mut self, y: f64) {
+        if (self.clear_top - y).abs() > f64::EPSILON {
+            self.targets.cancel_pointer_press();
+        }
+        self.clear_top = y;
+    }
+
+    /// Keep the windows' bars on screen clear: where the first banner
+    /// would cover one, the stack starts below it.
+    pub fn set_window_bars(&mut self, bars: Vec<Rect>) {
+        if self.window_bars != bars {
+            self.targets.cancel_pointer_press();
+        }
+        self.window_bars = bars;
+    }
+
+    /// Where the first banner's top sits: inset from the viewport's corner,
+    /// and below the window bars the host keeps clear.
+    fn first_top(&self) -> f64 {
+        let top = (self.viewport.y0 + EDGE_INSET).max(self.clear_top + TOAST_GAP);
+        transient_slot(
+            self.viewport,
+            top,
+            (self.toast_width(), MIN_BANNER_H),
+            &self.window_bars,
+        )
+        .y0
+    }
+
     /// Exactly what the last paint covered; zero when nothing was painted.
     pub fn rect(&self) -> Rect {
         self.rect
     }
 
     /// Whether the person holds the banners: keyboard focus is in the
-    /// stack, or the pointer reaches for it ([`Self::pointer_holds`]).
+    /// stack, or the pointer reaches for it (`Self::pointer_holds`).
     /// Held banners do not age.
     pub fn held(&self) -> bool {
         self.held_at(ui::time::now())
@@ -211,6 +282,25 @@ impl NotificationStack {
         let key = target.key();
         self.targets.target(&key, rect, label);
         self.target_actions.push((key, target));
+    }
+
+    /// Press the control assistive technology names by `target` (one of
+    /// the action targets [`Self::accessibility`] publishes), as a click on
+    /// it does. Whether it was one of the stack's controls.
+    pub fn perform_semantic(
+        &mut self,
+        host: &dyn NotificationHost,
+        target: &str,
+        action: &ui::a11y::Action,
+    ) -> bool {
+        if !matches!(action, ui::a11y::Action::Activate) {
+            return false;
+        }
+        let Some((_, banner)) = self.target_actions.iter().find(|(id, _)| id == target) else {
+            return false;
+        };
+        Self::dispatch_target(host, &banner.clone());
+        true
     }
 
     /// Retain the matching release when foreground content interrupts a click.
@@ -348,7 +438,6 @@ impl NotificationStack {
         self.focus.is_some()
     }
 
-    /// Whether keyboard focus is in the stack.
     pub fn has_keyboard_focus(&self) -> bool {
         self.focus.is_some()
     }
@@ -601,7 +690,8 @@ impl NotificationStack {
             &style,
         );
         self.register_target(BannerTarget::More, rect, label);
-        self.action_buttons.push((rect, label.to_owned()));
+        self.action_buttons
+            .push((rect, label.to_owned(), BannerTarget::More.key()));
         self.focus_rows.push(FocusRow {
             controls: vec![(
                 BannerTarget::More,
@@ -622,6 +712,7 @@ impl NotificationStack {
         // widget owns the card's look and hands back the close rect.
         let mut card = ToastCard::new(&n.title, n.severity.toast_kind())
             .icon(n.icon_kind.icon())
+            .app_image(n.app_image.as_ref())
             .body(if n.show_preview { &n.body } else { "" })
             .caption(n.app_name.as_deref().unwrap_or(""))
             // A card that offers its own way out ("Not now", "Dismiss")
@@ -704,16 +795,28 @@ impl NotificationStack {
             self.on_screen.push(n.id);
             let (alpha, slide_dx) =
                 Self::animation_state(n, now, (self.reduce_motion, held), width);
+            let card_x0 = x0_rest + slide_dx;
+            let top = self.slot_top(n.id, y, now, held);
+            let card_rect = Rect::new(card_x0, top, card_x0 + width, top + height);
+            bounds.expand(card_rect.y0, card_rect.y1);
             if alpha <= 0.0 {
+                // A banner's fade starts the frame it first comes on screen,
+                // at no opacity. That frame still records its card, unseen,
+                // so it differs from the last one where the banner arrives:
+                // drawn as nothing, the frame matched the last and repainted
+                // nothing until a later frame happened to come.
+                ui::widget::toast::paint_card_surface(
+                    ctx.scene,
+                    ctx.transform,
+                    card_rect,
+                    0.0,
+                    ctx.theme,
+                );
                 y += height + TOAST_GAP;
                 continue;
             }
             let mut card = card;
             card.alpha = alpha;
-            let card_x0 = x0_rest + slide_dx;
-            let top = self.slot_top(n.id, y, now, held);
-            let card_rect = Rect::new(card_x0, top, card_x0 + width, top + height);
-            bounds.expand(card_rect.y0, card_rect.y1);
             let hit = ui::widget::toast::paint_card(
                 ctx.scene,
                 ctx.transform,
@@ -726,7 +829,8 @@ impl NotificationStack {
                 controls: vec![(BannerTarget::Open(n.id), card_rect, card_radius)],
             };
             self.register_target(BannerTarget::Open(n.id), card_rect, &n.title);
-            self.action_buttons.push((card_rect, n.title.clone()));
+            self.action_buttons
+                .push((card_rect, n.title.clone(), BannerTarget::Open(n.id).key()));
             // Painted left to right: the secondary choice, then the primary.
             let mut choices = Vec::new();
             if let Some((key, label)) = actions.first() {
@@ -744,7 +848,8 @@ impl NotificationStack {
                 let target = BannerTarget::Action(n.id, key.clone());
                 self.register_target(target.clone(), rect, label);
                 self.action_rects.push((n.id, key.clone(), rect));
-                self.action_buttons.push((rect, label.clone()));
+                self.action_buttons
+                    .push((rect, label.clone(), target.key()));
                 row.controls.push((target, rect, control_radius));
             }
             if card.closable {
@@ -838,7 +943,7 @@ impl NotificationStack {
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
         let x0_rest = self.viewport.x1 - EDGE_INSET - width;
-        let y = self.viewport.y0 + EDGE_INSET;
+        let y = self.first_top();
         let mut ctx = PaintCtx {
             scene,
             transform,
@@ -877,15 +982,16 @@ impl NotificationStack {
     /// other than the one the stack lives on, pinned top-right into
     /// `viewport` as the stack pins its own: the same cards at rest, newest
     /// first, without controls, hover or focus, which stay with the stack on
-    /// the display in use. Nothing while the session is locked. Returns what
-    /// the cards cover, zero when nothing was painted.
+    /// the display in use. Nothing while the session is locked. Like every
+    /// transient they never cover one of `window_bars`. Returns what the
+    /// cards cover, zero when nothing was painted.
     pub fn draw_machine_wide(
         host: &dyn NotificationHost,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        viewport: Rect,
+        (viewport, window_bars): (Rect, &[Rect]),
     ) -> Rect {
         if viewport.area() == 0.0 || host.session_locked() {
             return Rect::ZERO;
@@ -906,11 +1012,12 @@ impl NotificationStack {
         text_renderer.set_text_scale(1.0);
         let x0 = viewport.x1 - EDGE_INSET - width;
         let bottom = viewport.y1 - EDGE_INSET;
-        let mut y = viewport.y0 + EDGE_INSET;
+        let mut y = transient_slot(viewport, viewport.y0, (width, MIN_BANNER_H), window_bars).y0;
         let mut covered = Rect::ZERO;
         for n in banners {
             let card = ToastCard::new(&n.title, n.severity.toast_kind())
                 .icon(n.icon_kind.icon())
+                .app_image(n.app_image.as_ref())
                 .body(if n.show_preview { &n.body } else { "" })
                 .caption(n.app_name.as_deref().unwrap_or(""))
                 .closable(false);
@@ -943,6 +1050,14 @@ impl NotificationStack {
                 .active()
                 .iter()
                 .any(|n| n.addressed() == Some(Addressed::IncomingCall))
+    }
+
+    /// The notification whose banner is drawn at `p`.
+    pub fn banner_at(&self, p: Point) -> Option<u64> {
+        self.hit_rects
+            .iter()
+            .find(|(_, full, _)| full.contains(p))
+            .map(|(id, _, _)| *id)
     }
 
     /// Activate a completed click at p. Interactive hosts forward the full
@@ -1084,10 +1199,13 @@ impl NotificationStack {
                 .with_children(
                     self.action_buttons
                         .iter()
-                        .map(|(rect, label)| {
+                        .map(|(rect, label, target)| {
                             AccessNode::new(Role::Button)
                                 .with_name(label.clone())
                                 .with_bounds(*rect)
+                                // Pressed by assistive technology as by a
+                                // click: [`Self::perform_semantic`].
+                                .with_action_target(target.clone())
                                 .with_state(
                                     AccessState::new()
                                         .focusable(true)
@@ -1265,6 +1383,27 @@ pub(super) mod tests {
                 ],
                 "the painted choices are buttons a reader can press"
             );
+            // Assistive technology presses them by their targets, as a
+            // click does: each choice reaches the host with its key.
+            for (_, key, _) in &actions {
+                let label = if key == "dismiss" {
+                    "Dismiss"
+                } else {
+                    "Snooze"
+                };
+                let target = buttons
+                    .iter()
+                    .find(|button| button.name.as_deref() == Some(label))
+                    .and_then(|button| button.action_target.clone())
+                    .expect("a choice a reader can press carries its target");
+                assert!(stack.perform_semantic(&host, &target, &ui::a11y::Action::Activate));
+                assert_eq!(host.invoked.borrow().last(), Some(&(id, key.clone())));
+            }
+            assert!(!stack.perform_semantic(
+                &host,
+                "notification:none",
+                &ui::a11y::Action::Activate
+            ));
             let card = stack.hit_rects[0].1;
             for (actual, _, rect) in &actions {
                 assert_eq!(*actual, id);
@@ -1291,6 +1430,30 @@ pub(super) mod tests {
             );
             assert!(stack.action_rects.is_empty());
             assert!(!stack.click_at(&host, actions[1].2.center()));
+        }
+    }
+
+    #[test]
+    fn the_frame_a_banner_arrives_differs_from_the_one_before() {
+        // The running clock: an arriving banner's fade is at its start.
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for theme in [theme.clone().with_reduce_motion(true), theme] {
+                let host = TestHost::default();
+                let mut stack = NotificationStack::new();
+                stack.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+                let mut text = TextRenderer::new();
+                let mut before = Scene::new();
+                stack.draw(&host, &mut before, Affine::IDENTITY, &mut text, &theme);
+                host.push(Notification::new("Build finished", "it passed its tests"));
+                let mut arriving = Scene::new();
+                stack.draw(&host, &mut arriving, Affine::IDENTITY, &mut text, &theme);
+                assert_ne!(
+                    arriving.encoding().n_paths,
+                    before.encoding().n_paths,
+                    "the frame a banner arrives records it, though unseen"
+                );
+                assert!(!stack.rect().is_zero_area(), "it covers where it arrives");
+            }
         }
     }
 
@@ -1421,6 +1584,98 @@ pub(super) mod tests {
         );
     }
 
+    /// A transient's slot shifts below any window bar it would cover, and
+    /// stays where nothing is under it.
+    #[test]
+    fn a_window_bar_wins_and_the_transient_shifts() {
+        let viewport = Rect::new(0.0, 40.0, 1600.0, 900.0);
+        let free = transient_slot(viewport, 0.0, (360.0, 60.0), &[]);
+        assert_eq!(free.y0, 40.0 + EDGE_INSET);
+        assert_eq!(free.x1, 1600.0 - EDGE_INSET);
+        let bars = [
+            Rect::new(900.0, 48.0, 1590.0, 92.0),
+            Rect::new(0.0, 48.0, 880.0, 400.0),
+        ];
+        let slot = transient_slot(viewport, 0.0, (360.0, 60.0), &bars);
+        assert!(bars.iter().all(|bar| bar.intersect(slot).area() <= 0.0));
+        assert_eq!(slot.y0, 92.0 + TOAST_GAP, "just below the bar it met");
+    }
+
+    /// Banners start below the window bars the host keeps clear, so a
+    /// window's maximise and close under the corner keep their clicks.
+    #[test]
+    fn banners_start_below_the_window_bars() {
+        // Motion reads at its end: this checks where the banner rests.
+        let _settled = ui::motion::testing::settled();
+        let host = TestHost::default();
+        host.push(Notification::new("Keep your name and work?", "A passkey"));
+        let mut stack = NotificationStack::new();
+        stack.set_viewport(Rect::new(0.0, 32.0, 1440.0, 900.0));
+        assert!((stack.first_top() - (32.0 + EDGE_INSET)).abs() < f64::EPSILON);
+        // The windows' content starts at 76: their bars run from 32 to 76.
+        stack.set_clear_top(76.0);
+        draw(&mut stack, &host, &Theme::dark());
+        let (_, card, _) = stack
+            .hit_rects
+            .first()
+            .copied()
+            .expect("the banner is painted");
+        assert!(
+            (card.y0 - (76.0 + TOAST_GAP)).abs() < 0.5,
+            "{card:?} rests just below the window bars"
+        );
+        assert!(
+            stack.rect().y0 >= 76.0,
+            "{:?} covers a window bar",
+            stack.rect()
+        );
+    }
+
+    /// The stack keeps clear of the window bars under its column at the
+    /// top, and only of those: a bar beside the column or a window further
+    /// down leaves the banners at the corner.
+    #[test]
+    fn banners_keep_clear_of_the_window_bars_under_the_corner() {
+        let _settled = ui::motion::testing::settled();
+        let host = TestHost::default();
+        host.push(Notification::new("Jonas is calling", "Video call"));
+        let viewport = Rect::new(0.0, 32.0, 1440.0, 900.0);
+        let corner = 32.0 + EDGE_INSET;
+        let mut stack = NotificationStack::new();
+        stack.set_viewport(viewport);
+
+        // A window on the left half: its bar is not under the banners.
+        stack.set_window_bars(vec![Rect::new(0.0, 36.0, 700.0, 80.0)]);
+        assert!((stack.first_top() - corner).abs() < f64::EPSILON);
+        // A window lower down, under the first slot: no bar to clear.
+        stack.set_window_bars(vec![Rect::new(0.0, 400.0, 1440.0, 444.0)]);
+        assert!((stack.first_top() - corner).abs() < f64::EPSILON);
+
+        // A window reaching the right edge, its bar with a toolbar row: the
+        // banner starts below it.
+        let bar = Rect::new(720.0, 36.0, 1428.0, 120.0);
+        stack.set_window_bars(vec![Rect::new(0.0, 36.0, 700.0, 80.0), bar]);
+        draw(&mut stack, &host, &Theme::dark());
+        let (_, card, _) = stack
+            .hit_rects
+            .first()
+            .copied()
+            .expect("the banner is painted");
+        assert!(
+            (card.y0 - (bar.y1 + TOAST_GAP)).abs() < 0.5,
+            "{card:?} rests just below the window bar {bar:?}"
+        );
+        assert!(
+            stack.rect().intersect(bar).area() <= 0.0,
+            "{:?} covers the window bar {bar:?}",
+            stack.rect()
+        );
+
+        // The window goes: the banners go back to the corner.
+        stack.set_window_bars(Vec::new());
+        assert!((stack.first_top() - corner).abs() < f64::EPSILON);
+    }
+
     #[test]
     fn live_notification_requests_entry_frames_and_a_future_exit_wake() {
         let host = TestHost::default();
@@ -1532,7 +1787,7 @@ pub(super) mod tests {
                 stack
                     .action_buttons
                     .iter()
-                    .any(|(rect, name)| *rect == more && *name == label),
+                    .any(|(rect, name, _)| *rect == more && *name == label),
                 "the card names how many more: {label}"
             );
             let log = host.log();
@@ -1609,7 +1864,6 @@ pub(super) mod tests {
         // A fast sweep down the screen across the stack, 40 px every 8 ms.
         let x = card.center().x;
         let mut ms = 0;
-        // From well above the stack to well below it.
         for step in 0..16_u32 {
             let py = card.y0 - 120.0 + 40.0 * f64::from(step);
             stack.note_pointer_at(&host, Some(Point::new(x, py)), at(ms));

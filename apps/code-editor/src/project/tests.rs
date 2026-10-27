@@ -22,7 +22,6 @@ fn ids(project: &Replica<Project>) -> Vec<Id> {
     project.state().unwrap().files.ids().cloned().collect()
 }
 
-/// A new file named `name` in `folder`, holding `text`, and its id.
 fn file(project: &mut Replica<Project>, name: &str, folder: Option<&Id>, text: &str) -> Id {
     let before = ids(project);
     act(
@@ -121,12 +120,11 @@ fn files_and_folders_keep_their_tree_whole() {
         .apply_confirmed(Invoke::apply(&crate::actions::delete_action(main.as_str())).unwrap())
         .unwrap();
     assert!(!project.state().unwrap().buffers.contains_key(main.as_str()));
-    assert!(
-        project
-            .apply(Invoke::apply(&crate::actions::delete_action(nested.as_str())).unwrap())
-            .is_err(),
-        "deleting asks for confirmation"
-    );
+    // Undo takes a deletion back, so it runs at once.
+    project
+        .apply(Invoke::apply(&crate::actions::delete_action(nested.as_str())).unwrap())
+        .expect("an undoable delete runs at once");
+    assert!(!ids(&project).contains(&nested), "the empty folder is gone");
 }
 
 /// What the editor read from disk is recorded once: an entry already
@@ -327,7 +325,6 @@ fn two_replicas_converge() {
     assert_eq!(text(&left, &shared), text(&right, &shared));
 }
 
-/// The terminal's records land in the project's terminal panel.
 #[test]
 fn the_terminal_session_lives_in_one_panel_of_the_project() {
     let mut project = Replica::<Project>::new();
@@ -357,8 +354,6 @@ fn the_terminal_session_lives_in_one_panel_of_the_project() {
     );
 }
 
-/// The terminal's runs land in its panel, and a command asked of it is
-/// queued for the process running it, as in Terminal's own window.
 #[test]
 fn the_terminal_records_its_runs_and_queues_asked_commands() {
     let mut project = Replica::<Project>::new();

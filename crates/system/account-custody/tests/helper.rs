@@ -16,7 +16,9 @@ use accounts::{
 };
 use cloud_source::CredentialSource as _;
 
-const HELPER: &str = env!("CARGO_BIN_EXE_tilo-account-credential");
+fn helper() -> std::path::PathBuf {
+    tilo_test_env::package_binary!("tilo-account-credential")
+}
 
 #[test]
 fn approved_bearer_retains_provider_expiry() {
@@ -67,7 +69,7 @@ fn source(root: &Path, id: &AccountId) -> HandoffCredentialSource {
     HandoffCredentialSource::new(
         id.clone(),
         HandoffStore::open_in(root),
-        Arc::new(CommandRefresher::new(Some(root.to_path_buf())).with_program(HELPER)),
+        Arc::new(CommandRefresher::new(Some(root.to_path_buf())).with_program(helper())),
     )
 }
 
@@ -98,7 +100,7 @@ fn helper_publishes_a_valid_access_token_but_never_the_refresh_token() {
         other => panic!("unexpected {other:?}"),
     }
     // The helper's own output carries no secret either.
-    let output = std::process::Command::new(HELPER)
+    let output = std::process::Command::new(helper())
         .args(["refresh", id.as_str(), "--config-root"])
         .arg(&root)
         .output()
@@ -143,7 +145,7 @@ fn helper_exit_codes_reach_the_daemon_as_typed_errors() {
         }
         other => panic!("unexpected {other:?}"),
     }
-    let status = std::process::Command::new(HELPER)
+    let status = std::process::Command::new(helper())
         .args(["refresh", "missing", "--config-root"])
         .arg(&root)
         .status()
@@ -154,7 +156,7 @@ fn helper_exit_codes_reach_the_daemon_as_typed_errors() {
 #[test]
 fn capability_probe_runs_without_creating_custody_and_rejects_extra_arguments() {
     let directory = tempfile::tempdir().unwrap();
-    let output = std::process::Command::new(HELPER)
+    let output = std::process::Command::new(helper())
         .arg("capabilities")
         .env("HOME", directory.path())
         .env("XDG_CONFIG_HOME", directory.path().join("config"))
@@ -167,7 +169,7 @@ fn capability_probe_runs_without_creating_custody_and_rejects_extra_arguments() 
         serde_json::json!({"schema":1,"protected_grant_protocol":1}),
     );
     assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
-    let refused = std::process::Command::new(HELPER)
+    let refused = std::process::Command::new(helper())
         .args(["capabilities", "--config-root", "ignored"])
         .output()
         .unwrap();

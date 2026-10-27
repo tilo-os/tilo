@@ -108,8 +108,11 @@ impl StoreDirectory {
 
 /// `item` as a search hit opening its page: its glyph, its name and, as
 /// the second line, its tag line (else its source), never a joined string.
+/// An app with no build for this device says so instead; its page says why.
 fn app_entry(item: &StoreItem) -> SearchEntry {
-    let subtitle = if item.summary().is_empty() {
+    let subtitle = if item.not_built_for_this_device() {
+        ui::i18n!("store-not-for-this-device")
+    } else if item.summary().is_empty() {
         crate::catalogue::source_label(item)
     } else {
         item.summary().to_owned()
@@ -165,7 +168,13 @@ fn catalogue_revision(items: &[StoreItem]) -> [u8; 32] {
         }
         hasher.update(item.latest_version().as_bytes());
         hasher.update(&[0]);
-        hasher.update(format!("{:?}{:?}{:?}", item.source, item.trust, item.installed).as_bytes());
+        hasher.update(
+            format!(
+                "{:?}{:?}{:?}{:?}",
+                item.source, item.trust, item.installed, item.listing.arches
+            )
+            .as_bytes(),
+        );
         hasher.update(&[0xff]);
     }
     *hasher.finalize().as_bytes()
@@ -216,12 +225,9 @@ mod tests {
         }
     }
 
-    /// The full catalogue pages, hits open details, and stale addresses are refused.
     #[test]
     fn catalogue_paging_and_stale_addresses_are_refused() {
-        // The group name is the Store's own copy.
         crate::resource::STORE_CATALOG.ensure();
-        // Case `full_catalogue_is_cursor_paged_and_hits_open_details`.
         {
             let items = (0..2_048).map(item).collect::<Vec<_>>();
             let directory = StoreDirectory::default();
@@ -244,7 +250,6 @@ mod tests {
             );
         }
 
-        // Case `removed_catalogue_entry_refuses_stale_palette_address`.
         {
             let directory = StoreDirectory::default();
             directory.sync(&[item(7)]);
@@ -304,7 +309,6 @@ mod tests {
     /// Malformed rebuilds withdraw and older stages never publish after newer ones.
     #[test]
     fn bulk_rebuilds_withdraw_malformed_input_and_publish_in_order() {
-        // Case `malformed_bulk_rebuild_withdraws_instead_of_partially_publishing`.
         {
             let directory = StoreDirectory::default();
             directory.sync(&[item(9)]);
@@ -313,7 +317,6 @@ mod tests {
             assert!(directory.app("dev.example.app9").is_none());
         }
 
-        // Case `serialized_writers_cannot_publish_an_older_stage_after_a_newer_one`.
         {
             let directory = StoreDirectory::default();
             directory.sync(&[item(1)]);

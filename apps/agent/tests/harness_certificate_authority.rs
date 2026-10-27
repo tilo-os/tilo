@@ -1,7 +1,3 @@
-//! The agent integration harness is compiled with `shell` as a normal dependency.
-//! These checks keep its fixture certificate authority attached in that exact graph.
-
-use std::time::Duration;
 use ui::collaboration::CollabRequest;
 
 use crate::typed_peer;
@@ -35,7 +31,6 @@ fn harness_rejects_a_certified_but_unlisted_device() {
     let socket = dir.path().join("unlisted.sock");
     let _broker = typed_peer::spawn_with_agent_actions(&socket, &[]);
     let mut peer = typed_peer::TypedPeer::connect(&socket);
-    peer.set_read_timeout(Some(Duration::from_millis(50)));
 
     let error = peer
         .announce(&socket, &hello("unlisted-device"))

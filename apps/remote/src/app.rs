@@ -4,12 +4,13 @@
 //! what this device observed of each machine's reachability), the current
 //! [`Screen`], the add / edit draft and the live session. The
 //! window is a [`NavShell`]: a docked rail of destinations beside the
-//! current screen, with the screen's title and actions in the header row.
+//! current screen; the screen's name and actions are the window bar's
+//! (`window_bar`).
 //! The list and the form are toolkit widgets rebuilt from this state
-//! ([`crate::view`]); a connected session is [`SessionPane`], which paints
+//! (`crate::view`); a connected session is `SessionPane`, which paints
 //! the remote terminal grid or framebuffer.
 //!
-//! Controls report through one queue of [`Action`]s, drained after every
+//! Controls report through one queue of `Action`s, drained after every
 //! event, so the pointer, the keyboard, assistive technology and the
 //! resource actions agents call share one path. Saved connections change
 //! only through the resource's dispatcher; a connection's password or key
@@ -21,41 +22,39 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 
-use iroh_base::{EndpointId, SecretKey};
-use taffy::{NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Blob, Fill, ImageBrush, ImageData as PenikoImage};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use vello::peniko::{Blob, ImageData as PenikoImage};
+use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
+use ui::LocalState;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::{Atom, Invoke};
-use ui::widget::toast::{ToastKind, ToastStack};
+use ui::tilo_resource::Invoke;
 use ui::widget::{
     AppModel, Collaborative, Column, Element, ModalDialog, ModelPath, NavMode, NavShell,
-    TaffyTreeExt, Text, Widget,
+    TaffyTreeExt, Widget,
 };
-use ui::{LocalState, TextRole};
 
 use crate::model::{
-    AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Remote,
-    Screen, Workspace,
+    AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Remote, Screen,
+    Workspace,
 };
 use crate::session::{SessionStatus, TransportReadiness, connection_readiness};
-use crate::ssh::{SshConfig, SshSession};
+use crate::ssh::SshSession;
 use crate::view::{
     self, Destination, DeviceModel, FormFields, FormModel, FormProblems, Requests, RowModel,
     StatusModel,
 };
-use crate::vnc::{VncConfig, VncInput, VncSession};
+use crate::vnc::{VncInput, VncSession};
 use ui::lock::MutexRecover as _;
 
 /// A live transport backing an open session. SSH is a `russh` PTY channel
@@ -115,27 +114,41 @@ struct TiloSession {
     /// Tilo collaboration events arrive on the UI thread. Keep their H.264
     /// payloads bounded and hand decoding to this private worker so a hostile
     /// or merely busy peer cannot make event dispatch stutter.
-    /// Encoded units in arrival order with their sequence numbers, plus a
-    /// capacity-one wake channel. Every unit is kept, since a delta
-    /// references the ones before it; past [`TILO_UNIT_BACKLOG`] the backlog
-    /// is dropped and the worker waits for a keyframe.
+    /// Encoded units in arrival order, plus a capacity-one wake channel.
+    /// Every admitted unit is kept, since a delta references the ones before
+    /// it; past [`TILO_UNIT_BACKLOG`] the backlog is dropped and the chain
+    /// waits for a keyframe.
     encoded: Arc<Mutex<UnitBacklog>>,
     encoded_wake: SyncSender<()>,
     decoder_available: Arc<AtomicBool>,
     decoded: Arc<Mutex<Option<tilo_callstream::DecodedFrame>>>,
-    /// The unit the worker could not decode, plus one, when it wants the
-    /// target to send a keyframe; `0` when it does not.
-    keyframe_wanted: Arc<AtomicU64>,
+    /// The stream's reference chain, judged as each unit arrives rather than
+    /// when the worker reaches it: a decoder still starting up, or busy with
+    /// a slow unit, must not delay noticing a gap and asking for a keyframe.
+    chain: tilo_callstream::unit_chain::UnitChain,
+    /// When a keyframe was last asked for, while one is awaited.
+    asked: Option<std::time::Instant>,
 }
 
-/// Encoded units waiting for the decode worker, each with its sequence number.
-type UnitBacklog = std::collections::VecDeque<(u64, Vec<u8>)>;
+/// Encoded units waiting for the decode worker, in the order they continue
+/// the chain.
+type UnitBacklog = std::collections::VecDeque<Vec<u8>>;
 
 /// Encoded units waiting for the decode worker before the backlog is
 /// dropped: two seconds of a 30 fps stream.
+/// How long a connection attempt is given before the page says it did not
+/// answer: a Tilo case waits for the owner's consent, and an SSH or VNC
+/// handshake waits on the network, but neither waits without end.
+const CONNECT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Remote, as the ledger and the waiting stack name it.
+fn owner() -> ui::attention::Owner {
+    ui::attention::Owner::new("so.tilo.remote", "Remote").with_icon(Icon::Globe)
+}
+
 const TILO_UNIT_BACKLOG: usize = 60;
 
-/// How long the decode worker waits for an asked-for keyframe before asking
+/// How long the session waits for an asked-for keyframe before asking
 /// again, in case the request or the keyframe was lost too.
 const TILO_KEYFRAME_RETRY: std::time::Duration = std::time::Duration::from_millis(300);
 
@@ -146,8 +159,6 @@ impl TiloSession {
         let encoded_worker = Arc::clone(&encoded);
         let decoder_available = Arc::new(AtomicBool::new(true));
         let decoder_available_worker = Arc::clone(&decoder_available);
-        let keyframe_wanted = Arc::new(AtomicU64::new(0));
-        let keyframe_wanted_worker = Arc::clone(&keyframe_wanted);
         // A replace-only latest slot bounds GPU-upload backlog and guarantees
         // the UI never paints an older decoded frame after a newer one exists.
         let decoded = Arc::new(Mutex::new(None));
@@ -156,35 +167,11 @@ impl TiloSession {
             .name("remote-tilo-decode".into())
             .spawn(move || {
                 let mut h264_decoder = tilo_callstream::VideoDecoder::default();
-                let mut chain = tilo_callstream::unit_chain::UnitChain::default();
-                let mut asked: Option<std::time::Instant> = None;
                 while encoded_rx.recv().is_ok() {
                     let units = std::mem::take(&mut *encoded_worker.lock_recover());
-                    for (seq, encoded) in units {
-                        let keyframe = tilo_callstream::is_keyframe(
-                            tilo_callstream::StreamCodec::H264,
-                            &encoded,
-                        );
-                        match chain.admit(seq, keyframe) {
-                            tilo_callstream::unit_chain::Admission::Decode => {
-                                if keyframe {
-                                    asked = None;
-                                    keyframe_wanted_worker.store(0, Ordering::Release);
-                                }
-                                if let Some(frame) = h264_decoder.decode(&encoded) {
-                                    *decoded_worker.lock_recover() = Some(frame);
-                                }
-                            }
-                            tilo_callstream::unit_chain::Admission::Stale => {}
-                            tilo_callstream::unit_chain::Admission::AwaitingKeyframe { broke } => {
-                                if broke
-                                    || asked.is_none_or(|at| at.elapsed() >= TILO_KEYFRAME_RETRY)
-                                {
-                                    asked = Some(std::time::Instant::now());
-                                    keyframe_wanted_worker
-                                        .store(seq.saturating_add(1), Ordering::Release);
-                                }
-                            }
+                    for encoded in units {
+                        if let Some(frame) = h264_decoder.decode(&encoded) {
+                            *decoded_worker.lock_recover() = Some(frame);
                         }
                     }
                 }
@@ -199,38 +186,61 @@ impl TiloSession {
             encoded_wake,
             decoder_available,
             decoded,
-            keyframe_wanted,
+            chain: tilo_callstream::unit_chain::UnitChain::default(),
+            asked: None,
         })
     }
 
-    fn queue_frame(&self, seq: u64, encoded: Vec<u8>) -> Result<(), String> {
+    /// Hand unit `seq` to the decode worker if it continues the chain.
+    /// `Ok(Some(seq))` names the unit after which the target is asked for a
+    /// keyframe: a unit went missing, the worker fell behind, or an earlier
+    /// request went unanswered.
+    fn queue_frame(&mut self, seq: u64, encoded: Vec<u8>) -> Result<Option<u64>, String> {
         if !self.decoder_available.load(Ordering::Acquire) {
             return Err("Tilo frame decoder is unavailable".into());
         }
-        {
+        let keyframe = tilo_callstream::is_keyframe(tilo_callstream::StreamCodec::H264, &encoded);
+        let fell_behind = {
             let mut queued = self.encoded.lock_recover();
-            if queued.len() >= TILO_UNIT_BACKLOG {
-                // The worker cannot keep up: the units it skips leave a gap
-                // it answers by asking for a keyframe.
+            let full = queued.len() >= TILO_UNIT_BACKLOG;
+            if full {
+                // The worker cannot keep up: the units it skips break the
+                // chain, which waits for a keyframe.
                 queued.clear();
             }
-            queued.push_back((seq, encoded));
+            drop(queued);
+            full
+        };
+        if fell_behind {
+            self.chain.lose();
+        }
+        match self.chain.admit(seq, keyframe) {
+            tilo_callstream::unit_chain::Admission::Decode => {
+                if keyframe {
+                    self.asked = None;
+                }
+                self.encoded.lock_recover().push_back(encoded);
+            }
+            tilo_callstream::unit_chain::Admission::Stale => return Ok(None),
+            tilo_callstream::unit_chain::Admission::AwaitingKeyframe { broke } => {
+                let ask = broke
+                    || fell_behind
+                    || self
+                        .asked
+                        .is_none_or(|at| at.elapsed() >= TILO_KEYFRAME_RETRY);
+                if ask {
+                    self.asked = Some(std::time::Instant::now());
+                }
+                return Ok(ask.then_some(seq));
+            }
         }
         match self.encoded_wake.try_send(()) {
-            Ok(()) | Err(TrySendError::Full(())) => Ok(()),
+            Ok(()) | Err(TrySendError::Full(())) => Ok(None),
             Err(TrySendError::Disconnected(())) => {
                 self.decoder_available.store(false, Ordering::Release);
                 Err("Tilo frame decoder stopped".into())
             }
         }
-    }
-
-    /// The unit the decode worker could not use, once, when it wants the
-    /// target to send a keyframe.
-    fn take_keyframe_request(&self) -> Option<u64> {
-        self.keyframe_wanted
-            .swap(0, Ordering::AcqRel)
-            .checked_sub(1)
     }
 
     fn take_latest_frame(&self) -> Option<tilo_callstream::DecodedFrame> {
@@ -278,9 +288,7 @@ pub(crate) enum Action {
     ConfirmPending,
     /// Dismiss the open confirmation without doing anything.
     CancelPending,
-    /// Pick a protocol in the form.
     SetKind(ConnectionKind),
-    /// Pick an authentication method in the form.
     SetAuth(AuthMethod),
     /// Pick one of the discovered Tilo devices into the form.
     PickTiloDevice(usize),
@@ -313,6 +321,11 @@ enum PendingConfirmation {
         id: ConnectionId,
         target: String,
     },
+    /// End the session open on `id`: its scrollback goes with it.
+    Disconnect {
+        id: ConnectionId,
+        target: String,
+    },
     Delete {
         id: ConnectionId,
         target: String,
@@ -332,6 +345,7 @@ impl PendingConfirmation {
     fn id(&self) -> ConnectionId {
         match self {
             Self::Connect { id, .. }
+            | Self::Disconnect { id, .. }
             | Self::Delete { id, .. }
             | Self::TrustSshHostKey { id, .. }
             | Self::ForgetSshHostKey { id, .. } => *id,
@@ -341,6 +355,7 @@ impl PendingConfirmation {
     fn target(&self) -> &str {
         match self {
             Self::Connect { target, .. }
+            | Self::Disconnect { target, .. }
             | Self::Delete { target, .. }
             | Self::TrustSshHostKey { target, .. }
             | Self::ForgetSshHostKey { target, .. } => target,
@@ -361,6 +376,14 @@ struct SessionCore {
     fb_canvas: Option<Rect>,
     /// Current VNC pointer button mask (bit 0 = left, 1 = middle, 2 = right).
     vnc_buttons: u8,
+    /// The keys this pane pressed on the remote machine and has not released
+    /// there yet, by the physical key: the evdev keycode for a Tilo session,
+    /// the keysym for VNC. Released together when the pane loses the
+    /// keyboard, so no key stays held on the remote side.
+    held_keys: Vec<(PhysicalKey, u32)>,
+    /// Wheel movement not yet sent to a VNC desktop, in wheel clicks: a
+    /// trackpad scrolls in pixels, a desktop in whole clicks.
+    vnc_wheel: (f64, f64),
     /// Whether the remote desktop is scaled to fit (vs. its own size).
     scale_to_fit: bool,
     /// Last pointer position over the pane.
@@ -379,6 +402,8 @@ impl Default for SessionCore {
             fb_image: None,
             fb_canvas: None,
             vnc_buttons: 0,
+            held_keys: Vec::new(),
+            vnc_wheel: (0.0, 0.0),
             scale_to_fit: true,
             pointer: Point::ZERO,
             collab_outbox: Vec::new(),
@@ -449,6 +474,76 @@ impl SessionCore {
         let fy = ((p.y - canvas.y0) / canvas.height() * f64::from(h)).clamp(0.0, f64::from(h - 1))
             as u16;
         Some((fx, fy))
+    }
+
+    /// Release on the remote machine every key this pane still holds there:
+    /// the pane lost the keyboard, and the release will not reach it.
+    fn release_held_keys(&mut self) {
+        for (_, key) in std::mem::take(&mut self.held_keys) {
+            self.send_release(key);
+        }
+    }
+
+    /// Release on the remote machine the key this pane pressed there as
+    /// `physical`, if it still holds it: the key came up, whether or not its
+    /// release reaches the pane.
+    fn release_key(&mut self, physical: PhysicalKey) {
+        if let Some(at) = self.held_keys.iter().position(|(key, _)| *key == physical) {
+            let (_, key) = self.held_keys.remove(at);
+            self.send_release(key);
+        }
+    }
+
+    /// Send the release of `key`, as its press sent it: a keysym to a VNC
+    /// desktop, an evdev keycode to a Tilo session.
+    fn send_release(&mut self, key: u32) {
+        if let Some(s) = self.vnc_session() {
+            let _ = s.send_input(VncInput::Key { down: false, key });
+        } else {
+            self.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
+                keycode: key,
+                pressed: false,
+                modifiers: 0,
+            });
+        }
+    }
+
+    /// Note that `key` was pressed (`Some`) or released on the remote
+    /// machine; a release answers with what its press sent.
+    fn track_key(&mut self, physical: PhysicalKey, pressed: Option<u32>) -> Option<u32> {
+        let at = self.held_keys.iter().position(|(key, _)| *key == physical);
+        let released = at.map(|at| self.held_keys.remove(at).1);
+        if let Some(sent) = pressed {
+            self.held_keys.push((physical, sent));
+            return Some(sent);
+        }
+        released
+    }
+
+    /// Scroll the live remote desktop under `p` by `delta`: each whole wheel
+    /// click is a press and release of the wheel's button (RFB 6143 §7.5.5),
+    /// at most [`VNC_WHEEL_BURST`] of them per event. `false` when the
+    /// pointer is not over the desktop. A trackpad clicks every
+    /// `wheel_line` logical pixels.
+    fn forward_vnc_wheel(
+        &mut self,
+        p: Point,
+        delta: &MouseScrollDelta,
+        scale_factor: f64,
+        wheel_line: f64,
+    ) -> bool {
+        let Some((x, y)) = self.vnc_pointer_target(p) else {
+            return false;
+        };
+        let clicks = vnc_wheel_clicks(&mut self.vnc_wheel, delta, scale_factor, wheel_line);
+        if let Some(s) = self.vnc_session() {
+            for button in clicks {
+                for button_mask in [self.vnc_buttons | button, self.vnc_buttons] {
+                    let _ = s.send_input(VncInput::Pointer { button_mask, x, y });
+                }
+            }
+        }
+        true
     }
 
     /// Send the current button mask at `p` to the live remote desktop, if
@@ -556,7 +651,11 @@ pub struct RemoteApp {
     /// many times; resource-operation completion must never settle an old
     /// invocation against a newer session for the same connection id.
     session_generation: u64,
-    /// The session fills the window, without the rail and the header.
+    /// The connect attempt in flight: when it started, and the job the
+    /// whole system sees while it runs.
+    connect_started: Option<ui::time::Instant>,
+    connect_job: Option<(ConnectionId, ui::jobs::Running)>,
+    /// The session fills the window, without the rail.
     fullscreen: bool,
     /// Discoverable Tilo peers for the form's device picker.
     tilo_devices: Vec<TiloDevice>,
@@ -582,17 +681,15 @@ pub struct RemoteApp {
     /// Confirmation mirroring resource-action policy. Private view state,
     /// never replicated with the connection profile.
     pending_confirmation: Option<PendingConfirmation>,
-    /// The dialog that asks it.
     dialog: Option<ModalDialog<Column>>,
-    /// Outcomes worth a moment's notice (a revalidation that cancelled an
-    /// action). They contain no credential material.
-    toasts: ToastStack,
-    toast_clock: Option<ui::time::Instant>,
 
-    /// The window: rail, header row and current screen.
+    /// The window: rail and current screen.
     shell: NavShell,
     /// The session alone, while it fills the window.
     immersive: Option<SessionPane>,
+    /// When the session went full screen, while the way out is said over
+    /// it ([`FULLSCREEN_HINT`]).
+    fullscreen_hint: Option<ui::time::Instant>,
     /// The queue every control reports to.
     requests: Requests,
     /// Search hits picked in the platform search, waiting to be shown.
@@ -624,6 +721,8 @@ impl RemoteApp {
             session: SharedSession::default(),
             session_for: None,
             session_generation: 0,
+            connect_started: None,
+            connect_job: None,
             fullscreen: false,
             tilo_devices,
             next_tilo_session_id: 1,
@@ -637,13 +736,13 @@ impl RemoteApp {
             pending_resource_operation: None,
             pending_confirmation: None,
             dialog: None,
-            toasts: ToastStack::new(),
-            toast_clock: None,
             shell: NavShell::new()
                 .content_kind(ui::widget::ContentKind::Document)
                 .with_id("remote.shell")
+                .with_window_toolbar()
                 .mode(NavMode::Docked),
             immersive: None,
+            fullscreen_hint: None,
             requests: Requests::default(),
             opened: Rc::default(),
             built: None,
@@ -892,7 +991,7 @@ impl RemoteApp {
                 session.changed = true;
             }
             Action::ToggleFullscreen => self.set_fullscreen(!self.fullscreen),
-            Action::Disconnect => self.disconnect_session(),
+            Action::Disconnect => self.request_disconnect(),
         }
         if self.pending_confirmation.is_none() {
             self.dialog = None;
@@ -907,9 +1006,9 @@ impl RemoteApp {
         }
         self.fullscreen = fullscreen;
         self.immersive = fullscreen.then(|| SessionPane::new(Rc::clone(&self.session)));
-        if fullscreen {
-            self.notify("Press Esc to leave full screen.");
-        }
+        // Full screen hides the window's bar: the way out is said over the
+        // session for a moment.
+        self.fullscreen_hint = fullscreen.then(ui::time::now);
         self.layout_dirty = true;
         self.dirty = true;
     }
@@ -971,17 +1070,26 @@ impl RemoteApp {
         // Asked already, in this window's own dialog.
         let saved = crate::model::Remote::paths().connections;
         self.submit(Invoke::edit(&saved.remove(&crate::model::Remote::item(id))));
-        // The connection's credentials go with it.
-        if let Some(secrets) = &self.secrets {
-            for purpose in [SSH_PASSWORD, KEY_PASSPHRASE, VNC_PASSWORD] {
-                let _ = secrets.item(purpose, &id.to_string()).delete_blocking();
-            }
-        }
+        self.forget_credentials(id);
         if self.selected == Some(id) {
             self.selected = None;
         }
         if matches!(self.screen, Screen::Form { editing: Some(editing) } if editing == id) {
             self.screen = Screen::List;
+        }
+    }
+
+    /// Forget the passwords and passphrase this device saved for a
+    /// connection that is gone, whichever door or device deleted it. A
+    /// capture never forgets one.
+    fn forget_credentials(&self, id: ConnectionId) {
+        if self.capture {
+            return;
+        }
+        if let Some(secrets) = &self.secrets {
+            for purpose in [SSH_PASSWORD, KEY_PASSPHRASE, VNC_PASSWORD] {
+                let _ = secrets.item(purpose, &id.to_string()).delete_blocking();
+            }
         }
     }
 
@@ -1032,414 +1140,12 @@ impl RemoteApp {
         )
     }
 
+    /// An outcome worth a moment's notice (a revalidation that cancelled an
+    /// action), in the window's bar. It holds no credential material.
+    /// Record what happened in the ledger: Remote's outcomes do not expire
+    /// and nothing of them takes the keyboard.
     fn notify(&mut self, message: impl Into<String>) {
-        self.toasts.push(message.into(), ToastKind::Info);
-        self.dirty = true;
-    }
-
-    fn request_connect(&mut self, id: ConnectionId) {
-        let Some(connection) = self.workspace.get(id) else {
-            self.notify("That saved connection no longer exists.");
-            return;
-        };
-        if !connection_readiness(connection).can_connect() {
-            self.open_session(id);
-            return;
-        }
-        self.pending_confirmation = Some(PendingConfirmation::Connect {
-            id,
-            target: Self::confirmation_target(connection),
-        });
-        self.show_confirmation();
-    }
-
-    fn request_delete(&mut self, id: ConnectionId) {
-        let Some(connection) = self.workspace.get(id) else {
-            self.notify("That saved connection no longer exists.");
-            return;
-        };
-        self.pending_confirmation = Some(PendingConfirmation::Delete {
-            id,
-            target: Self::confirmation_target(connection),
-        });
-        self.show_confirmation();
-    }
-
-    fn ssh_host_key_issue(&self, id: ConnectionId) -> Option<crate::ssh::HostKeyIssue> {
-        match (&self.session.borrow().live, self.session_for) {
-            (Some(LiveSession::Ssh(session)), Some(session_id)) if session_id == id => {
-                session.host_key_issue()
-            }
-            _ => None,
-        }
-    }
-
-    fn request_trust_ssh_host_key(&mut self, id: ConnectionId) {
-        let Some(connection) = self.workspace.get(id) else {
-            return;
-        };
-        let target = Self::confirmation_target(connection);
-        let Some(crate::ssh::HostKeyIssue::FirstContact { observed }) = self.ssh_host_key_issue(id)
-        else {
-            self.notify("No new SSH host key is waiting for trust. Forget a changed key before you review it again.");
-            return;
-        };
-        self.pending_confirmation = Some(PendingConfirmation::TrustSshHostKey {
-            id,
-            target,
-            observed,
-        });
-        self.show_confirmation();
-    }
-
-    fn request_forget_ssh_host_key(&mut self, id: ConnectionId) {
-        let Some(connection) = self.workspace.get(id) else {
-            return;
-        };
-        let target = Self::confirmation_target(connection);
-        if !matches!(
-            self.ssh_host_key_issue(id),
-            Some(crate::ssh::HostKeyIssue::Changed { .. })
-        ) {
-            self.notify("Only a changed SSH host key can be forgotten. Reconnect to check this machine again.");
-            return;
-        }
-        self.pending_confirmation = Some(PendingConfirmation::ForgetSshHostKey { id, target });
-        self.show_confirmation();
-    }
-
-    /// Build the dialog that asks the pending confirmation. It states the
-    /// scope in plain language; cancel is the safe default.
-    fn show_confirmation(&mut self) {
-        let Some(pending) = self.pending_confirmation.clone() else {
-            self.dialog = None;
-            return;
-        };
-        let name = self
-            .workspace
-            .get(pending.id())
-            .map_or_else(|| "this connection".to_owned(), |c| c.name.clone());
-        let mut key = None;
-        let (title, detail, primary, destructive) = match &pending {
-            PendingConfirmation::Delete { .. } => (
-                format!("Delete {name}?"),
-                "The saved connection is removed for everyone you share it with. The machine itself is not changed.".to_owned(),
-                "Delete connection",
-                true,
-            ),
-            PendingConfirmation::Connect { .. } => (
-                format!("Connect to {name}?"),
-                "This opens a live session. Remote checks the saved address and access again before anything is sent.".to_owned(),
-                "Connect",
-                false,
-            ),
-            PendingConfirmation::TrustSshHostKey { observed, .. } => {
-                key = Some(format!("{} {}", observed.algorithm, observed.fingerprint));
-                (
-                    format!("Trust the SSH key of {name}?"),
-                    "Check this key with the machine's owner before you trust it. Only this device remembers it.".to_owned(),
-                    "Trust key",
-                    false,
-                )
-            }
-            PendingConfirmation::ForgetSshHostKey { .. } => (
-                format!("Forget the SSH key of {name}?"),
-                "Only this device's saved key is removed. Reconnect to check and trust the new key.".to_owned(),
-                "Forget key",
-                true,
-            ),
-        };
-        let mut body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(Text::new(&detail).with_role(TextRole::Body)));
-        if let Some(key) = key {
-            body = body.push(Box::new(
-                Text::new(&key)
-                    .with_role(TextRole::Code)
-                    .with_kind(ui::TextKind::Secret),
-            ));
-        }
-        let confirm = Rc::clone(&self.requests);
-        let cancel = Rc::clone(&self.requests);
-        let dismiss = Rc::clone(&self.requests);
-        self.dialog = Some(
-            ModalDialog::new(title, body)
-                .with_test_id("remote.confirmation")
-                .primary_action(primary, move || {
-                    confirm.borrow_mut().push(Action::ConfirmPending);
-                })
-                .secondary_action("Cancel", move || {
-                    cancel.borrow_mut().push(Action::CancelPending);
-                })
-                .on_dismiss(move || dismiss.borrow_mut().push(Action::CancelPending))
-                .with_destructive(destructive)
-                .open(true),
-        );
-        self.dirty = true;
-    }
-
-    /// Revalidate against the current shared projection immediately before a
-    /// network attempt or deletion. A late collaborator edit changes neither
-    /// the target nor the document unexpectedly; the user must review it.
-    fn confirm_pending(&mut self) {
-        let Some(pending) = self.pending_confirmation.take() else {
-            return;
-        };
-        let id = pending.id();
-        let Some(connection) = self.workspace.get(id).cloned() else {
-            self.notify("The saved connection was removed before you confirmed.");
-            return;
-        };
-        if Self::confirmation_target(&connection) != pending.target() {
-            self.notify("This connection changed while you were asked. Review it, then try again.");
-            return;
-        }
-        match pending {
-            PendingConfirmation::Connect { .. } => {
-                // `open_session` repeats transport/profile readiness at the I/O
-                // boundary, so an expired capability cannot race confirmation.
-                self.open_session(id);
-            }
-            PendingConfirmation::Delete { .. } => self.delete_connection(id),
-            PendingConfirmation::TrustSshHostKey { observed, .. } => {
-                let current = self.ssh_host_key_issue(id);
-                if !matches!(current, Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
-                {
-                    self.notify("The SSH host key changed before it was trusted. Review it again.");
-                    return;
-                }
-                match crate::ssh::trust_host_key(
-                    &self.known_hosts,
-                    &connection.host.0,
-                    connection.port,
-                    &observed,
-                ) {
-                    Ok(()) => self.open_session(id),
-                    Err(error) => self.notify(format!("Couldn't save the SSH key: {error}")),
-                }
-            }
-            PendingConfirmation::ForgetSshHostKey { .. } => {
-                if !matches!(
-                    self.ssh_host_key_issue(id),
-                    Some(crate::ssh::HostKeyIssue::Changed { .. })
-                ) {
-                    self.notify("The SSH host key is no longer the one you chose to forget. Reconnect to review it again.");
-                    return;
-                }
-                match crate::ssh::forget_host_key(
-                    &self.known_hosts,
-                    &connection.host.0,
-                    connection.port,
-                ) {
-                    Ok(true) => {
-                        self.notify("Forgot the saved SSH key. Reconnect to check the new one before you trust it.");
-                        self.disconnect_session();
-                    }
-                    Ok(false) => self.notify("This device had no saved SSH key for the machine."),
-                    Err(error) => self.notify(format!("Couldn't forget the SSH key: {error}")),
-                }
-            }
-        }
-    }
-
-    /// Open the session surface for a connection. Tilo always uses its real
-    /// shell-broker transport; SSH/VNC require the explicit live-session
-    /// capability. A missing capability or RDP backend gets a first-class
-    /// recovery surface — no socket is opened, and it is not misreported as a
-    /// connection failure.
-    fn open_session(&mut self, id: ConnectionId) {
-        let Some(c) = self.workspace.get(id).cloned() else {
-            return;
-        };
-        self.selected = Some(id);
-        self.destination = Destination::Session;
-        let Some(next_generation) = self.session_generation.checked_add(1) else {
-            // Never recycle a generation: pending actions use it as a
-            // capability to a particular transport attempt. A process that
-            // exhausted u64 attempts must restart rather than aliasing one.
-            self.session_for = Some(id);
-            self.session.borrow_mut().live = Some(LiveSession::Error(
-                "Remote has run out of session identities. Restart it to connect again.".into(),
-            ));
-            self.screen = Screen::Session { id };
-            return;
-        };
-        self.session_generation = next_generation;
-        self.session_for = Some(id);
-        self.set_fullscreen(false);
-        {
-            let mut session = self.session.borrow_mut();
-            session.fb_image = None;
-            session.fb_canvas = None;
-            session.vnc_buttons = 0;
-            session.live = None;
-        }
-        let readiness = connection_readiness(&c);
-        let live = if readiness.can_connect() && self.capture {
-            // A capture reaches nothing outside the process.
-            LiveSession::Preview(SessionStatus::Connecting)
-        } else if readiness.can_connect() {
-            let live = self.start_live(&c);
-            // When a machine was last used follows the person to their other
-            // devices; whether it answered is this device's observation, made
-            // once the transport reports (`pump_session`).
-            let now = self.now_ms();
-            if let Some(connection) = self.workspace.get_mut(id) {
-                connection.last_used_ms = Some(now);
-            }
-            self.submit(Ok(crate::model::Remote::MARK_USED.with(
-                crate::resource::remote::MarkUsed {
-                    connection: crate::model::Remote::item(id),
-                    at_ms: now,
-                },
-            )));
-            live
-        } else {
-            LiveSession::Unavailable {
-                readiness,
-                kind: c.kind,
-            }
-        };
-        self.session.borrow_mut().live = Some(live);
-        self.screen = Screen::Session { id };
-    }
-
-    fn disconnect_session(&mut self) {
-        // Dropping the live session closes the transport (the worker thread
-        // sees its channel close and disconnects).
-        {
-            let mut session = self.session.borrow_mut();
-            if let Some(LiveSession::Tilo(tilo)) = session.live.as_ref() {
-                let session_id = tilo.id;
-                session
-                    .collab_outbox
-                    .push(ui::collaboration::CollabRequest::CloseWorkspaceControl { session_id });
-            }
-            session.live = None;
-            session.fb_image = None;
-            session.fb_canvas = None;
-        }
-        self.session_for = None;
-        // At the identity boundary opening another transport is rejected, so
-        // retaining MAX here cannot allow a stale operation to alias a new
-        // session.
-        if let Some(next_generation) = self.session_generation.checked_add(1) {
-            self.session_generation = next_generation;
-        }
-        self.set_fullscreen(false);
-        self.screen = Screen::List;
-        if self.destination == Destination::Session {
-            self.destination = Destination::Connections;
-        }
-    }
-
-    /// Build the real transport for a connection from its kind + auth and
-    /// the credential saved on this device (secrets are never stored in the
-    /// document).
-    fn start_live(&mut self, c: &Connection) -> LiveSession {
-        match c.kind {
-            ConnectionKind::Ssh => {
-                let prefer_key = matches!(c.auth, AuthMethod::PublicKey);
-                let secret = self.saved_secret(secret_purpose(c.kind, c.auth), c.id);
-                let auth = match crate::ssh::resolve_auth(
-                    prefer_key,
-                    secret,
-                    &crate::ssh::default_key_paths(),
-                ) {
-                    Ok(a) => a,
-                    Err(e) => return LiveSession::Error(e.to_string()),
-                };
-                let user = if c.user.0.is_empty() {
-                    tilo_paths::session::user_name().unwrap_or_else(|| "root".into())
-                } else {
-                    c.user.0.clone()
-                };
-                match SshSession::connect(SshConfig {
-                    host: c.host.0.clone(),
-                    port: c.port,
-                    user,
-                    auth,
-                    cols: 80,
-                    rows: 24,
-                    known_hosts: self.known_hosts.clone(),
-                }) {
-                    Ok(s) => LiveSession::Ssh(Box::new(s)),
-                    Err(e) => LiveSession::Error(e.to_string()),
-                }
-            }
-            ConnectionKind::Vnc => match VncSession::connect(VncConfig {
-                host: c.host.0.clone(),
-                port: c.port,
-                password: self.saved_secret(VNC_PASSWORD, c.id),
-            }) {
-                Ok(s) => LiveSession::Vnc(s),
-                Err(e) => LiveSession::Error(e.to_string()),
-            },
-            ConnectionKind::Tilo => {
-                let target = match c.host.0.parse::<EndpointId>() {
-                    Ok(target) => *target.as_bytes(),
-                    Err(_) => {
-                        return LiveSession::Error(
-                            "Tilo host must be an exact certified device endpoint id".into(),
-                        );
-                    }
-                };
-                let id = self.next_tilo_session_id;
-                self.next_tilo_session_id = self.next_tilo_session_id.saturating_add(1);
-                self.session.borrow_mut().collab_outbox.push(
-                    ui::collaboration::CollabRequest::OpenWorkspaceControl {
-                        session_id: id,
-                        target_device: target,
-                    },
-                );
-                match TiloSession::new(id) {
-                    Ok(session) => LiveSession::Tilo(session),
-                    Err(error) => LiveSession::Error(error),
-                }
-            }
-            // `open_session` preflights RDP as `BackendUnavailable` before
-            // reaching this constructor. Keep the defensive branch explicit
-            // anyway, so a future caller cannot turn a persisted legacy RDP
-            // profile into a generic, misleading transport failure.
-            ConnectionKind::Rdp => LiveSession::Unavailable {
-                readiness: TransportReadiness::BackendUnavailable,
-                kind: ConnectionKind::Rdp,
-            },
-        }
-    }
-
-    /// Drain live-session I/O and note what this device observed of the
-    /// machine: a connection that came up marks it reachable, one that
-    /// failed marks it unreachable. The observation stays on this device.
-    fn pump_session(&mut self) {
-        let (changed, status) = {
-            let mut session = self.session.borrow_mut();
-            let changed = session.pump() || std::mem::take(&mut session.changed);
-            (changed, session.status())
-        };
-        if changed {
-            self.dirty = true;
-        }
-        let Some(id) = self.session_for else {
-            return;
-        };
-        let presence = match status {
-            Some(SessionStatus::Connected) => Presence::Online,
-            Some(SessionStatus::Failed(_)) => Presence::Offline,
-            _ => return,
-        };
-        // A preview has no machine behind it to observe.
-        if matches!(
-            self.session.borrow().live,
-            Some(LiveSession::Preview(_) | LiveSession::Sample(_))
-        ) {
-            return;
-        }
-        if self.workspace.presence_of(id) != presence {
-            self.workspace.presence.insert(id, presence);
-            self.dirty = true;
-        }
+        ui::attention::publish(ui::attention::Notice::did(owner(), message));
     }
 
     /// Commit the form's draft through the resource, and its credential into
@@ -1533,6 +1239,19 @@ impl RemoteApp {
         if self.workspace.connections() == state {
             return;
         }
+        // A connection deleted elsewhere (the palette, an agent, another
+        // device) takes this device's credentials with it, as deleting it
+        // here does.
+        let gone: Vec<ConnectionId> = self
+            .workspace
+            .connections()
+            .iter()
+            .filter(|old| state.iter().all(|now| now.id != old.id))
+            .map(|old| old.id)
+            .collect();
+        for id in gone {
+            self.forget_credentials(id);
+        }
         self.workspace.connections = state.to_vec();
         self.forget_vanished();
         self.dirty = true;
@@ -1581,8 +1300,6 @@ impl RemoteApp {
             self.now_override = Some(sample.now_ms);
         }
     }
-
-    // -- the window ---------------------------------------------------------
 
     /// One list row per connection the destination shows. The meta says
     /// when the machine was last used, or what about the saved connection
@@ -1696,7 +1413,7 @@ impl RemoteApp {
         }
     }
 
-    /// Put the current screen, its header and the rail into the shell.
+    /// Put the current screen and the rail into the shell.
     fn rebuild_views(&mut self) {
         let key = self.view_key();
         if self.built == Some(key) {
@@ -1708,71 +1425,25 @@ impl RemoteApp {
             .and_then(|id| self.workspace.get(id))
             .map(|c| c.kind);
         let rail = view::rail(&self.requests, self.destination, session_kind);
-        let (title, actions, content): (String, Vec<Element>, Element) = match self.content() {
+        let content: Element = match self.content() {
             Content::List {
                 destination,
                 rows,
                 has_connections,
-            } => (
-                match destination {
-                    Destination::Pinned => "Pinned connections".to_owned(),
-                    _ => "Connections".to_owned(),
-                },
-                view::list_actions(&self.requests, has_connections),
-                view::connection_list(&self.requests, destination, &rows, has_connections),
-            ),
-            Content::Form(model) => (
-                String::new(),
-                view::form_actions(&self.requests),
-                view::connection_form(&self.requests, &self.fields, &model),
-            ),
-            Content::Surface(id) => {
-                let connection = self.workspace.get(id);
-                let framebuffer = connection.is_some_and(|c| c.kind.streams_framebuffer());
-                (
-                    connection.map(|c| c.name.clone()).unwrap_or_default(),
-                    view::session_actions(
-                        &self.requests,
-                        framebuffer,
-                        self.session.borrow().scale_to_fit,
-                    ),
-                    Box::new(SessionPane::new(Rc::clone(&self.session))),
-                )
-            }
+            } => view::connection_list(&self.requests, destination, &rows, has_connections),
+            Content::Form(model) => view::connection_form(&self.requests, &self.fields, &model),
+            Content::Surface(_) => Box::new(SessionPane::new(Rc::clone(&self.session))),
             Content::Status { id, .. } => {
-                let name = self
-                    .workspace
-                    .get(id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_default();
-                let actions = if self.session.borrow().live_active() {
-                    view::session_actions(&self.requests, false, true)
-                } else {
-                    Vec::new()
-                };
-                (
-                    name,
-                    actions,
-                    view::session_status(&self.requests, self.status_model(id)),
-                )
+                view::session_status(&self.requests, self.status_model(id))
             }
-            Content::Missing => (
-                String::new(),
-                Vec::new(),
-                Box::new(
-                    ui::widget::EmptyState::new("This connection was deleted")
-                        .with_icon(Icon::Monitor)
-                        .with_message("Someone you share your connections with removed it."),
-                ),
+            Content::Missing => Box::new(
+                ui::widget::EmptyState::new("This connection was deleted")
+                    .with_icon(Icon::Monitor)
+                    .with_message("Someone you share your connections with removed it."),
             ),
         };
-        let mut shell = std::mem::take(&mut self.shell)
-            .with_id("remote.shell")
-            .mode(NavMode::Docked)
-            .content_header(title, actions);
-        shell.set_sidebar(Some(Box::new(rail)));
-        shell.set_content(content);
-        self.shell = shell;
+        self.shell.set_sidebar(Some(Box::new(rail)));
+        self.shell.set_content(content);
     }
 
     /// What a session that shows no remote surface says, and the one way
@@ -1799,15 +1470,15 @@ impl RemoteApp {
                         message: "Its owner is asked before the device shares a workspace."
                             .to_owned(),
                         error: false,
-                        action: None,
+                        action: Some(("Stop", Action::Disconnect)),
                     }
                 } else {
                     StatusModel {
                         icon,
                         title: format!("Connecting to {name}"),
-                        message: "Remote is reaching the machine and signing in.".to_owned(),
+                        message: "Remote is reaching the machine and signing in. This stops on its own after 45 seconds.".to_owned(),
                         error: false,
-                        action: None,
+                        action: Some(("Stop", Action::Disconnect)),
                     }
                 }
             }
@@ -1855,15 +1526,6 @@ impl RemoteApp {
                 action: Some(("Reconnect", Action::RequestConnect(id))),
             },
         }
-    }
-
-    /// Advance the toasts' timers.
-    fn tick_toasts(&mut self) {
-        let now = ui::time::now();
-        if let Some(last) = self.toast_clock {
-            self.toasts.tick(now.saturating_duration_since(last));
-        }
-        self.toast_clock = (!self.toasts.is_empty()).then_some(now);
     }
 
     /// The child that fills the window: the shell, or the session alone.
@@ -1976,7 +1638,6 @@ fn sort_problems(problems: Vec<String>) -> FormProblems {
     sorted
 }
 
-/// The single child node of the app's node.
 fn child_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
     taffy.children(node).ok()?.first().copied()
 }
@@ -2012,12 +1673,10 @@ impl Collaborative for RemoteApp {
             }
             runtime_collab::WorkspaceControlEvent::Frame {
                 encoded_h264, seq, ..
-            } => {
-                if let Err(error) = session.queue_frame(*seq, encoded_h264.clone()) {
-                    session.status = SessionStatus::Failed(error);
-                }
-                keyframe_request = session.take_keyframe_request();
-            }
+            } => match session.queue_frame(*seq, encoded_h264.clone()) {
+                Ok(request) => keyframe_request = request,
+                Err(error) => session.status = SessionStatus::Failed(error),
+            },
             runtime_collab::WorkspaceControlEvent::Closed(reason) => {
                 session.status = SessionStatus::Failed(match reason {
                     runtime_collab::WorkspaceControlCloseReason::Denied(message) => message.clone(),
@@ -2062,13 +1721,16 @@ impl Widget for RemoteApp {
         // picked search hits and queued controls.
         self.settle_pending_effect();
         self.open_found();
+        self.take_window_toolbar_events();
         self.apply_requests();
         self.revalidate();
         self.check_views();
+        self.declare_window_toolbar();
         self.body_mut().sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.declare_window_toolbar();
         self.body_mut().update(state, path)
     }
 
@@ -2122,15 +1784,34 @@ impl Widget for RemoteApp {
     ) {
         self.body_mut()
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        self.tick_toasts();
-        if !self.toasts.is_empty() {
-            self.toasts
-                .place_bottom_right(self.rect, f64::from(theme.tokens.spacing.s4));
-            self.toasts
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.draw_fullscreen_hint(scene, transform, text_renderer, theme);
         if let Some(dialog) = self.dialog.as_mut() {
             dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .chain(self.fullscreen_hint_deadline())
+            .min()
+    }
+
+    // Seen ahead of the framework's shortcuts, the action palette and a
+    // dialog, which keep keys from the session pane: a key the pane pressed
+    // on the remote machine is released there when it comes up, even when
+    // its release goes to the palette, so Ctrl+K leaves no Ctrl held there.
+    fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {
+        match input {
+            ui::widget::PhysicalInput::Key {
+                key,
+                state: ElementState::Released,
+            } => self.session.borrow_mut().release_key(key),
+            ui::widget::PhysicalInput::Focused(false) => {
+                self.session.borrow_mut().release_held_keys();
+            }
+            _ => {}
         }
     }
 
@@ -2153,9 +1834,6 @@ impl Widget for RemoteApp {
             self.apply(action);
             *ctx.handled = true;
             return;
-        }
-        if !self.toasts.is_empty() {
-            self.toasts.handle_event(event, ctx);
         }
         if !*ctx.handled
             && let Some(child) = child_node(ctx.taffy, ctx.node_id)
@@ -2223,6 +1901,18 @@ impl Widget for RemoteApp {
         self.layout_dirty || self.body().is_layout_dirty()
     }
 
+    // Rebuilding the views (the connections or the screen changed, full
+    // screen swapped the body) replaces this widget's children. Say so, or
+    // the host re-places the old tree and the change shows only once
+    // something else asks for a rebuild: a collaborator's deletion left
+    // its row on screen.
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = self.layout_dirty;
+        self.children_mut()
+            .into_iter()
+            .fold(own, |dirty, child| child.take_structure_dirty() || dirty)
+    }
+
     fn layout_needs_measure(&self) -> bool {
         self.layout_dirty || self.body().layout_needs_measure()
     }
@@ -2238,9 +1928,7 @@ impl Widget for RemoteApp {
     fn needs_animation_frame(&self) -> bool {
         // A live session needs continuous frames so incoming remote data
         // (PTY output, framebuffer updates) is drained and painted.
-        self.session.borrow().live_active()
-            || !self.toasts.is_empty()
-            || self.body().needs_animation_frame()
+        self.session.borrow().live_active() || self.body().needs_animation_frame()
     }
 }
 
@@ -2250,969 +1938,21 @@ impl ui::widget::controls::ActionControls for RemoteApp {
     }
 }
 
-impl RemoteApp {
-    /// The open session, published as a live row beside the saved
-    /// connections: disconnect, send text, and the SSH host-key decisions.
-    pub(crate) fn live_connection_rows(&self) -> Vec<ui::framework::LiveRow> {
-        let mut rows: Vec<_> = self
-            .workspace
-            .connections()
-            .iter()
-            .map(crate::actions::connection_row)
-            .collect();
-        if let Some(id) = self.session_for
-            && let Some(connection) = self.workspace.get(id)
-        {
-            let host_key_issue = self.ssh_host_key_issue(id);
-            rows.push(crate::actions::session_row(
-                connection,
-                host_key_issue.as_ref(),
-            ));
-        }
-        rows
-    }
+mod connect;
+mod effects;
+mod fullscreen_hint;
+mod keys;
+mod live_session;
+mod secrets;
+mod seeds;
+mod session_pane;
+mod window_bar;
 
-    /// Answer `effect`. Opening a session and sending text answer once the
-    /// transport says how it went ([`Self::settle_pending_effect`]).
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: crate::actions::RemoteEffect,
-        cx: &mut ui::framework::EffectCx<crate::resource::Remote, Self>,
-    ) -> ui::framework::EffectAnswer {
-        use crate::actions::RemoteEffect;
-        let done = || Ok(ui::framework::Effected::done());
-        match effect {
-            RemoteEffect::ShowConnections => {
-                self.apply(Action::Show(Destination::Connections));
-                done()
-            }
-            RemoteEffect::New => {
-                self.apply(Action::NewConnection);
-                done()
-            }
-            RemoteEffect::EditConnection { connection } => {
-                if self.workspace.get(connection).is_none() {
-                    return Err("saved connection no longer exists".into());
-                }
-                self.apply(Action::EditConnection(connection));
-                done()
-            }
-            RemoteEffect::Connect { connection } => {
-                if self.pending_resource_operation.is_some() {
-                    return Err("another remote operation is still running".into());
-                }
-                let Some(saved) = self.workspace.get(connection) else {
-                    return Err("saved connection no longer exists".into());
-                };
-                let readiness = connection_readiness(saved);
-                if !readiness.can_connect() {
-                    let reason = if readiness == TransportReadiness::InvalidProfile {
-                        saved
-                            .profile_issue()
-                            .unwrap_or_else(|| readiness.detail(saved.kind))
-                    } else {
-                        readiness.detail(saved.kind)
-                    };
-                    return Err(reason.to_string());
-                }
-                self.open_session(connection);
-                let status = self.session.borrow().status();
-                match status {
-                    Some(SessionStatus::Connecting) => {
-                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
-                            reply: Some(cx.reply()),
-                            connection_id: connection,
-                            session_generation: self.session_generation,
-                        });
-                        Ok(ui::framework::Effected::Pending)
-                    }
-                    Some(SessionStatus::Connected) => done(),
-                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
-                        Err(message)
-                    }
-                    Some(SessionStatus::Closed) | None => {
-                        Err("remote transport did not start".into())
-                    }
-                }
-            }
-            RemoteEffect::SendText { connection, text } => {
-                if self.pending_resource_operation.is_some() {
-                    return Err("another remote operation is still running".into());
-                }
-                if self.session_for != Some(connection) {
-                    return Err("that remote session is no longer active".into());
-                }
-                let acknowledgement = match &self.session.borrow().live {
-                    Some(LiveSession::Ssh(session))
-                        if session.status() == SessionStatus::Connected =>
-                    {
-                        session.send_input_ack(text.into_bytes())?
-                    }
-                    _ => return Err("text input requires a connected SSH terminal".into()),
-                };
-                self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
-                    reply: Some(cx.reply()),
-                    connection_id: connection,
-                    session_generation: self.session_generation,
-                    acknowledgement,
-                });
-                Ok(ui::framework::Effected::Pending)
-            }
-            RemoteEffect::Disconnect { connection } => {
-                if self.session_for != Some(connection) {
-                    return Err("that remote session is no longer active".to_string());
-                }
-                self.disconnect_session();
-                done()
-            }
-            RemoteEffect::TrustHostKey {
-                connection,
-                observed,
-            } => self
-                .trust_host_key(connection, &observed)
-                .and_then(|()| done()),
-            RemoteEffect::ForgetHostKey { connection } => {
-                self.forget_host_key(connection).and_then(|()| done())
-            }
-        }
-    }
+pub(crate) use seeds::{Sample, sample_connections, sample_legacy_rdp};
+pub(crate) use session_pane::SessionPane;
 
-    /// Trust the SSH host key `observed` on first contact with `connection_id`,
-    /// then connect.
-    fn trust_host_key(
-        &mut self,
-        connection_id: ConnectionId,
-        observed: &crate::ssh::HostKeyIdentity,
-    ) -> Result<(), String> {
-        let connection = self
-            .workspace
-            .get(connection_id)
-            .ok_or_else(|| "saved connection no longer exists".to_string())?;
-        if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == observed)
-        {
-            return Err(
-                "the observed SSH host key is stale; reconnect to inspect the current key".into(),
-            );
-        }
-        crate::ssh::trust_host_key(
-            &self.known_hosts,
-            &connection.host.0,
-            connection.port,
-            observed,
-        )
-        .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
-        self.open_session(connection_id);
-        Ok(())
-    }
-
-    /// Forget the changed SSH host key of `connection_id`, and disconnect.
-    fn forget_host_key(&mut self, connection_id: ConnectionId) -> Result<(), String> {
-        let connection = self
-            .workspace
-            .get(connection_id)
-            .ok_or_else(|| "saved connection no longer exists".to_string())?;
-        if !matches!(
-            self.ssh_host_key_issue(connection_id),
-            Some(crate::ssh::HostKeyIssue::Changed { .. })
-        ) {
-            return Err("only the currently observed changed SSH host key can be forgotten".into());
-        }
-        crate::ssh::forget_host_key(&self.known_hosts, &connection.host.0, connection.port)
-            .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
-        self.disconnect_session();
-        Ok(())
-    }
-
-    /// Answer the session effect still waiting, once its transport settled.
-    pub(crate) fn settle_pending_effect(&mut self) {
-        let cancelled = match &self.pending_resource_operation {
-            Some(
-                PendingResourceOperation::Connect { reply, .. }
-                | PendingResourceOperation::SshInput { reply, .. },
-            ) => reply
-                .as_ref()
-                .is_some_and(ui::framework::EffectReply::is_cancelled),
-            None => return,
-        };
-        let Some(outcome) = self.pending_outcome(cancelled) else {
-            return;
-        };
-        if let Some(
-            PendingResourceOperation::Connect {
-                reply: Some(reply), ..
-            }
-            | PendingResourceOperation::SshInput {
-                reply: Some(reply), ..
-            },
-        ) = self.pending_resource_operation.take()
-        {
-            reply.finish(outcome.map(|()| tilo_actions::ActionOutput::default()));
-        }
-    }
-
-    /// How the session effect still waiting ended, once it has; `cancelled`
-    /// when its caller gave up on it.
-    pub(crate) fn pending_outcome(&mut self, cancelled: bool) -> Option<Result<(), String>> {
-        let pending = self.pending_resource_operation.as_ref()?;
-        if cancelled
-            && let PendingResourceOperation::Connect {
-                connection_id,
-                session_generation,
-                ..
-            } = pending
-        {
-            // Connect has not completed yet, so dropping its exact generation
-            // cancels the socket/relay attempt. Do not let a cancellation for
-            // an old attempt tear down a newer reconnect of the same saved
-            // profile.
-            if self.session_for == Some(*connection_id)
-                && self.session_generation == *session_generation
-            {
-                self.disconnect_session();
-            }
-            return Some(Err("remote connection attempt cancelled".into()));
-        }
-        Some(match pending {
-            PendingResourceOperation::Connect {
-                connection_id,
-                session_generation,
-                ..
-            } => {
-                if self.session_for != Some(*connection_id)
-                    || self.session_generation != *session_generation
-                {
-                    Err("the connection attempt was superseded by a newer session".into())
-                } else {
-                    match self.session.borrow().status() {
-                        Some(SessionStatus::Connecting) => return None,
-                        Some(SessionStatus::Connected) => Ok(()),
-                        Some(
-                            SessionStatus::Failed(message) | SessionStatus::Unavailable(message),
-                        ) => Err(message),
-                        Some(SessionStatus::Closed) | None => {
-                            Err("remote connection closed before it became ready".into())
-                        }
-                    }
-                }
-            }
-            PendingResourceOperation::SshInput {
-                connection_id,
-                session_generation,
-                acknowledgement,
-                ..
-            } => {
-                if self.session_for != Some(*connection_id)
-                    || self.session_generation != *session_generation
-                {
-                    Err("the SSH session ended before input delivery was acknowledged".into())
-                } else {
-                    match acknowledgement.try_recv() {
-                        Ok(result) => result,
-                        Err(std::sync::mpsc::TryRecvError::Empty) => return None,
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            Err("remote input worker stopped before acknowledgement".into())
-                        }
-                    }
-                }
-            }
-        })
-    }
-}
-
-// ===========================================================================
-// The session surface
-// ===========================================================================
-
-/// A connected session: the remote terminal grid or desktop, painted from
-/// the transport's own state, with the pointer and keyboard forwarded to the
-/// remote machine while the pane has focus.
-pub(crate) struct SessionPane {
-    session: SharedSession,
-    rect: Rect,
-    focused: bool,
-}
-
-impl SessionPane {
-    fn new(session: SharedSession) -> Self {
-        Self {
-            session,
-            rect: Rect::ZERO,
-            focused: true,
-        }
-    }
-
-    /// Paint the remote framebuffer, letterboxed to fit or at its own size.
-    fn draw_framebuffer(
-        core: &mut SessionCore,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        surface: Rect,
-    ) {
-        let media = &theme.tokens.colors.media;
-        scene.fill(Fill::NonZero, transform, media.letterbox, None, &surface);
-        let Some(img) = core.fb_image.clone() else {
-            // Connected, but no frame decoded yet.
-            let style = theme.text(TextRole::Body);
-            let label = "Waiting for the first screen update";
-            let (w, h) = text_renderer.measure_style(label, None, &style);
-            text_renderer.draw_style(
-                scene,
-                label,
-                media.ink_dim,
-                transform
-                    * Affine::translate((
-                        surface.center().x - f64::from(w) / 2.0,
-                        surface.center().y - f64::from(h) / 2.0,
-                    )),
-                None,
-                &style,
-            );
-            return;
-        };
-        let iw = f64::from(img.width.max(1));
-        let ih = f64::from(img.height.max(1));
-        let (w, h) = if core.scale_to_fit {
-            let scale = (surface.width() / iw).min(surface.height() / ih);
-            (iw * scale, ih * scale)
-        } else {
-            (iw.min(surface.width()), ih.min(surface.height()))
-        };
-        let canvas = Rect::from_center_size(surface.center(), (w, h));
-        core.fb_canvas = Some(canvas);
-        let sx = canvas.width() / iw;
-        let sy = canvas.height() / ih;
-        let brush_transform =
-            Affine::translate((canvas.x0, canvas.y0)) * Affine::scale_non_uniform(sx, sy);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            &ImageBrush::new(img),
-            Some(brush_transform),
-            &canvas,
-        );
-    }
-
-    /// The terminal grid the session shows, if it is a terminal.
-    fn terminal_grid(core: &SessionCore) -> Option<&crate::vt::VtGrid> {
-        match &core.live {
-            Some(LiveSession::Ssh(s)) => Some(s.grid()),
-            Some(LiveSession::Sample(SampleSurface::Terminal(grid))) => Some(grid),
-            _ => None,
-        }
-    }
-
-    /// Paint the SSH terminal grid, straight from the remote PTY output held
-    /// in the [`crate::vt::VtGrid`], on the window's content ground in the
-    /// theme's terminal palette.
-    fn draw_terminal(
-        grid: &crate::vt::VtGrid,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        surface: Rect,
-    ) {
-        let palette = &theme.tokens.terminal_palette;
-        let (lines, cursor) = (grid.lines(), grid.cursor());
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &surface,
-        );
-        let regular = theme.text(TextRole::Code);
-        let bold = regular.clone().strong();
-        let (cell_w, line_h) = text_renderer.measure_style("M", None, &regular);
-        let (cell_w, line_h) = (f64::from(cell_w), f64::from(line_h));
-        let pad = f64::from(theme.tokens.spacing.s4);
-        for (row, line) in lines.iter().enumerate() {
-            let y = surface.y0 + pad + row as f64 * line_h;
-            // Draw cells run by run (consecutive cells of one style).
-            let mut x = surface.x0 + pad;
-            let mut i = 0;
-            while let Some(cell) = line.cells.get(i) {
-                let style = (cell.color, cell.bold);
-                let start = i;
-                while line
-                    .cells
-                    .get(i)
-                    .is_some_and(|c| (c.color, c.bold) == style)
-                {
-                    i += 1;
-                }
-                let run: String = line
-                    .cells
-                    .get(start..i)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|c| c.ch)
-                    .collect();
-                let color = style.0.map_or(palette.fg_default, |idx| {
-                    palette
-                        .ansi
-                        .get(idx.min(15))
-                        .copied()
-                        .unwrap_or(palette.fg_default)
-                });
-                text_renderer.draw_style(
-                    scene,
-                    &run,
-                    color,
-                    transform * Affine::translate((x, y)),
-                    None,
-                    if style.1 { &bold } else { &regular },
-                );
-                x += run.chars().count() as f64 * cell_w;
-            }
-        }
-        // Block caret at the remote cursor, in the person's own colour.
-        let (cx, cy) = cursor;
-        let caret = Rect::from_origin_size(
-            (
-                surface.x0 + pad + cx as f64 * cell_w,
-                surface.y0 + pad + cy as f64 * line_h,
-            ),
-            (cell_w, line_h),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.intent.selection_tint,
-            None,
-            &caret,
-        );
-        scene.pop_layer();
-    }
-
-    fn handle_pointer(&self, event: &WindowEvent, scale_factor: f64) -> bool {
-        let mut core = self.session.borrow_mut();
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                if p == core.pointer {
-                    return false;
-                }
-                core.pointer = p;
-                core.forward_vnc_pointer(p);
-                if let Some((x, y)) = core.tilo_pointer_target(p) {
-                    core.queue_tilo_input(runtime_collab::WorkspaceControlInput::PointerMotion {
-                        x,
-                        y,
-                    });
-                }
-                false
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                let p = core.pointer;
-                if core.tilo_pointer_target(p).is_some() {
-                    let evdev_button = match button {
-                        MouseButton::Left => Some(272),
-                        MouseButton::Right => Some(273),
-                        MouseButton::Middle => Some(274),
-                        _ => None,
-                    };
-                    if let Some(evdev_button) = evdev_button {
-                        if *state == ElementState::Pressed && evdev_button == 272 {
-                            core.queue_tilo_input(
-                                runtime_collab::WorkspaceControlInput::KeyboardFocus {
-                                    focused: true,
-                                },
-                            );
-                        }
-                        core.queue_tilo_input(
-                            runtime_collab::WorkspaceControlInput::PointerButton {
-                                button: evdev_button,
-                                pressed: *state == ElementState::Pressed,
-                            },
-                        );
-                    }
-                    return true;
-                }
-                if core.vnc_pointer_target(p).is_some() {
-                    let bit = match button {
-                        MouseButton::Left => 1,
-                        MouseButton::Middle => 2,
-                        MouseButton::Right => 4,
-                        _ => 0,
-                    };
-                    match state {
-                        ElementState::Pressed => core.vnc_buttons |= bit,
-                        ElementState::Released => core.vnc_buttons &= !bit,
-                    }
-                    core.forward_vnc_pointer(p);
-                    return true;
-                }
-                self.rect.contains(p)
-            }
-            _ => false,
-        }
-    }
-
-    fn handle_key(&self, event: &KeyEvent, mods: ModifiersState) -> bool {
-        let mut core = self.session.borrow_mut();
-        let tilo_connected = matches!(
-            core.live.as_ref(),
-            Some(LiveSession::Tilo(session)) if session.status == SessionStatus::Connected
-        );
-        if tilo_connected {
-            if let PhysicalKey::Code(code) = event.physical_key
-                && let Some(keycode) = ui::evdev::from_key_code(code)
-            {
-                core.queue_tilo_input(runtime_collab::WorkspaceControlInput::Key {
-                    keycode,
-                    pressed: event.state == ElementState::Pressed,
-                    modifiers: 0,
-                });
-                return true;
-            }
-            return false;
-        }
-        if event.state != ElementState::Pressed {
-            return false;
-        }
-        let text = event.text.as_ref().map(winit::keyboard::SmolStr::as_str);
-        match &core.live {
-            Some(LiveSession::Ssh(s)) if s.status() == SessionStatus::Connected => {
-                if let Some(bytes) = ssh_key_bytes(&event.logical_key, text, mods) {
-                    // Interactive key events are best-effort when the
-                    // bounded queue is full; the resource action path
-                    // reports that condition exactly to agents.
-                    let _ = s.send_input(bytes);
-                    core.changed = true;
-                    return true;
-                }
-                false
-            }
-            Some(LiveSession::Vnc(s)) if s.status() == SessionStatus::Connected => {
-                if let Some(sym) = vnc_keysym(&event.logical_key, text) {
-                    let _ = s.send_input(VncInput::Key {
-                        down: true,
-                        key: sym,
-                    });
-                    let _ = s.send_input(VncInput::Key {
-                        down: false,
-                        key: sym,
-                    });
-                    core.changed = true;
-                    return true;
-                }
-                false
-            }
-            _ => false,
-        }
-    }
-}
-
-impl Widget for SessionPane {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            flex_grow: 1.0,
-            size: Size::from_percent(1.0, 1.0),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    ui::rect_geometry!();
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        let mut core = self.session.borrow_mut();
-        if let Some(grid) = Self::terminal_grid(&core) {
-            Self::draw_terminal(grid, scene, transform, text_renderer, theme, self.rect);
-        } else {
-            Self::draw_framebuffer(&mut core, scene, transform, text_renderer, theme, self.rect);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let handled = match event {
-            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } => {
-                if matches!(
-                    event,
-                    WindowEvent::MouseInput {
-                        state: ElementState::Pressed,
-                        ..
-                    }
-                ) {
-                    self.focused = self.rect.contains(self.session.borrow().pointer);
-                }
-                self.handle_pointer(event, ctx.scale_factor)
-            }
-            WindowEvent::KeyboardInput { event, .. } if self.focused => {
-                self.handle_key(event, ctx.modifiers.state())
-            }
-            _ => false,
-        };
-        if handled {
-            *ctx.handled = true;
-        }
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn is_default_keyboard_focus(&self) -> bool {
-        true
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.focused = focused;
-    }
-
-    fn is_focused(&self) -> bool {
-        self.focused
-    }
-
-    fn wants_tab_input(&self) -> bool {
-        true
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let core = self.session.borrow();
-        let name = if Self::terminal_grid(&core).is_some() {
-            "Remote terminal"
-        } else {
-            "Remote desktop"
-        };
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-                .with_name(name)
-                .with_bounds(self.rect)
-                .with_state(
-                    ui::a11y::AccessState::new()
-                        .focusable(true)
-                        .focused(self.focused),
-                ),
-        )
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.session.borrow().changed
-    }
-
-    fn name(&self) -> &'static str {
-        "SessionPane"
-    }
-}
-
-/// Translate a key press into the bytes an interactive PTY expects.
-fn ssh_key_bytes(key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<Vec<u8>> {
-    match key {
-        Key::Named(NamedKey::Enter) => Some(vec![b'\r']),
-        Key::Named(NamedKey::Backspace) => Some(vec![0x7f]),
-        Key::Named(NamedKey::Tab) => Some(vec![b'\t']),
-        Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
-        Key::Named(NamedKey::Space) => Some(vec![b' ']),
-        Key::Named(NamedKey::ArrowUp) => Some(b"\x1b[A".to_vec()),
-        Key::Named(NamedKey::ArrowDown) => Some(b"\x1b[B".to_vec()),
-        Key::Named(NamedKey::ArrowRight) => Some(b"\x1b[C".to_vec()),
-        Key::Named(NamedKey::ArrowLeft) => Some(b"\x1b[D".to_vec()),
-        Key::Named(NamedKey::Home) => Some(b"\x1b[H".to_vec()),
-        Key::Named(NamedKey::End) => Some(b"\x1b[F".to_vec()),
-        Key::Named(NamedKey::Delete) => Some(b"\x1b[3~".to_vec()),
-        Key::Character(s) => {
-            if mods.control_key() {
-                // Ctrl+letter → the corresponding control byte (^A=1…^Z=26).
-                let c = s.chars().next()?;
-                let up = c.to_ascii_uppercase();
-                if up.is_ascii_alphabetic() {
-                    return Some(vec![(up as u8) - 0x40]);
-                }
-            }
-            text.map(|t| t.as_bytes().to_vec())
-                .or_else(|| Some(s.as_bytes().to_vec()))
-        }
-        _ => text.map(|t| t.as_bytes().to_vec()),
-    }
-}
-
-/// Map a key press to an X11 keysym for VNC `KeyEvent`s (ASCII + a few
-/// named keys — enough for basic remote typing).
-fn vnc_keysym(key: &Key, text: Option<&str>) -> Option<u32> {
-    match key {
-        Key::Named(NamedKey::Enter) => Some(0xff0d),
-        Key::Named(NamedKey::Backspace) => Some(0xff08),
-        Key::Named(NamedKey::Tab) => Some(0xff09),
-        Key::Named(NamedKey::Escape) => Some(0xff1b),
-        Key::Named(NamedKey::Space) => Some(0x20),
-        Key::Named(NamedKey::ArrowUp) => Some(0xff52),
-        Key::Named(NamedKey::ArrowDown) => Some(0xff54),
-        Key::Named(NamedKey::ArrowLeft) => Some(0xff51),
-        Key::Named(NamedKey::ArrowRight) => Some(0xff53),
-        Key::Named(NamedKey::Delete) => Some(0xffff),
-        _ => text.and_then(|t| t.chars().next()).map(|c| c as u32),
-    }
-}
-
-// ===========================================================================
-// Credentials
-// ===========================================================================
-
-/// The secret-store purposes of a connection's credentials, keyed by its id.
-const SSH_PASSWORD: &str = "ssh-password";
-const KEY_PASSPHRASE: &str = "ssh-key-passphrase";
-const VNC_PASSWORD: &str = "vnc-password";
-
-/// Which credential a connection of `kind` authenticating with `auth` uses.
-fn secret_purpose(kind: ConnectionKind, auth: AuthMethod) -> &'static str {
-    match (kind, auth) {
-        (ConnectionKind::Vnc, _) => VNC_PASSWORD,
-        (_, AuthMethod::PublicKey) => KEY_PASSPHRASE,
-        _ => SSH_PASSWORD,
-    }
-}
-
-// ===========================================================================
-// Sample data: the connections and nearby devices a screenshot shows.
-// ===========================================================================
-
-/// The time, in milliseconds since the Unix epoch, the sample roster's
-/// "last used" reads against.
-const SAMPLE_NOW_MS: i64 = 1_790_000_000_000;
-
-/// What a screenshot shows that the document does not hold: the time "last
-/// used" reads against, which machines answered, and the Tilo devices
-/// nearby.
-pub(crate) struct Sample {
-    now_ms: i64,
-    presence: HashMap<ConnectionId, Presence>,
-    devices: Vec<TiloDevice>,
-}
-
-impl Sample {
-    pub(crate) fn new() -> Self {
-        let presence = with_sample_seeds(|seeds| {
-            seeds
-                .into_iter()
-                .chain([legacy_rdp_seed()])
-                .map(|(index, seed)| (sample_id(index), seed.presence))
-                .collect()
-        });
-        Self {
-            now_ms: SAMPLE_NOW_MS,
-            presence,
-            devices: sample_tilo_devices(),
-        }
-    }
-}
-
-/// Readable fixture input for a sample connection. Named fields keep adjacent
-/// strings, enums, and booleans from being silently transposed.
-struct ConnectionSeed<'a> {
-    name: &'a str,
-    host: &'a str,
-    port: u16,
-    user: &'a str,
-    kind: ConnectionKind,
-    auth: AuthMethod,
-    /// How long ago the last session was, in minutes; `None` for never.
-    used_minutes_ago: Option<i64>,
-    /// Whether the machine answered when this device last tried.
-    presence: Presence,
-    group: &'a str,
-    favorite: bool,
-}
-
-/// The stable id of the `index`th sample machine, so a scenario's frame is
-/// identical on every run.
-fn sample_id(index: u128) -> ConnectionId {
-    Uuid::from_u128(0x7e40_7e00_0000_0000_0000_0000_0000_0000 | index)
-}
-
-impl ConnectionSeed<'_> {
-    fn build(self, index: u128) -> Connection {
-        Connection {
-            id: sample_id(index),
-            name: self.name.into(),
-            host: Atom(self.host.into()),
-            port: self.port,
-            user: Atom(self.user.into()),
-            kind: self.kind,
-            auth: self.auth,
-            last_used_ms: self
-                .used_minutes_ago
-                .map(|minutes| SAMPLE_NOW_MS - minutes * 60_000),
-            group: Atom(self.group.into()),
-            favorite: self.favorite,
-        }
-    }
-}
-
-/// Hand `read` the lived-in list of saved machines, each with its index.
-#[allow(
-    clippy::too_many_lines,
-    reason = "fixture data: one named record per sample machine"
-)]
-fn with_sample_seeds<T>(read: impl FnOnce(Vec<(u128, ConnectionSeed<'_>)>) -> T) -> T {
-    let studio = SecretKey::from_bytes(&[17; 32]).public().to_string();
-    let laptop = SecretKey::from_bytes(&[29; 32]).public().to_string();
-    let seeds = [
-        ConnectionSeed {
-            name: "Build server",
-            host: "build.lab.internal",
-            port: 22,
-            user: "admin",
-            kind: ConnectionKind::Ssh,
-            auth: AuthMethod::PublicKey,
-            used_minutes_ago: Some(12),
-            presence: Presence::Online,
-            group: "Lab",
-            favorite: true,
-        },
-        ConnectionSeed {
-            name: "Studio desktop",
-            host: &studio,
-            port: 0,
-            user: "",
-            kind: ConnectionKind::Tilo,
-            auth: AuthMethod::DeviceIdentity,
-            used_minutes_ago: Some(1),
-            presence: Presence::Online,
-            group: "Tilo",
-            favorite: true,
-        },
-        ConnectionSeed {
-            name: "Design iMac",
-            host: "10.0.0.24",
-            port: 5900,
-            user: "",
-            kind: ConnectionKind::Vnc,
-            auth: AuthMethod::Password,
-            used_minutes_ago: Some(130),
-            presence: Presence::Online,
-            group: "Studio",
-            favorite: false,
-        },
-        ConnectionSeed {
-            name: "Media PC",
-            host: "192.168.1.40",
-            port: 5900,
-            user: "",
-            kind: ConnectionKind::Vnc,
-            auth: AuthMethod::Password,
-            used_minutes_ago: Some(26 * 60),
-            presence: Presence::Online,
-            group: "Home",
-            favorite: false,
-        },
-        ConnectionSeed {
-            name: "Edge gateway",
-            host: "edge.example.com",
-            port: 2222,
-            user: "root",
-            kind: ConnectionKind::Ssh,
-            auth: AuthMethod::PublicKey,
-            used_minutes_ago: Some(3 * 24 * 60),
-            presence: Presence::Online,
-            group: "Production",
-            favorite: false,
-        },
-        ConnectionSeed {
-            name: "Raspberry Pi cluster",
-            host: "192.168.4.2",
-            port: 22,
-            user: "pi",
-            kind: ConnectionKind::Ssh,
-            auth: AuthMethod::Password,
-            used_minutes_ago: Some(8 * 24 * 60),
-            presence: Presence::Offline,
-            group: "Lab",
-            favorite: false,
-        },
-        ConnectionSeed {
-            name: "Workshop laptop",
-            host: &laptop,
-            port: 0,
-            user: "",
-            kind: ConnectionKind::Tilo,
-            auth: AuthMethod::DeviceIdentity,
-            used_minutes_ago: Some(5 * 60),
-            presence: Presence::Online,
-            group: "Tilo",
-            favorite: false,
-        },
-        ConnectionSeed {
-            name: "Backup vault",
-            host: "vault.example.com",
-            port: 22,
-            user: "backup",
-            kind: ConnectionKind::Ssh,
-            auth: AuthMethod::PublicKey,
-            used_minutes_ago: Some(12 * 24 * 60),
-            presence: Presence::Online,
-            group: "Production",
-            favorite: false,
-        },
-    ];
-    read((1_u128..).zip(seeds).collect())
-}
-
-/// A lived-in list of saved machines, with fixed ids so every screenshot is
-/// the same document.
-pub(crate) fn sample_connections() -> Vec<Connection> {
-    with_sample_seeds(|seeds| {
-        seeds
-            .into_iter()
-            .map(|(index, seed)| seed.build(index))
-            .collect()
-    })
-}
-
-/// A remote desktop profile saved before Remote dropped RDP, with its index.
-fn legacy_rdp_seed() -> (u128, ConnectionSeed<'static>) {
-    (
-        100,
-        ConnectionSeed {
-            name: "Windows workstation",
-            host: "10.0.0.31",
-            port: 3389,
-            user: "quinten",
-            kind: ConnectionKind::Rdp,
-            auth: AuthMethod::Password,
-            used_minutes_ago: Some(40 * 24 * 60),
-            presence: Presence::Offline,
-            group: "Work",
-            favorite: false,
-        },
-    )
-}
-
-/// A remote desktop profile saved before Remote dropped RDP: kept so its
-/// owner can switch it to a protocol Remote opens.
-pub(crate) fn sample_legacy_rdp() -> Connection {
-    let (index, seed) = legacy_rdp_seed();
-    seed.build(index)
-}
-
-fn sample_tilo_devices() -> Vec<TiloDevice> {
-    let device = |name: &str, seed: u8, online: bool| TiloDevice {
-        name: name.into(),
-        node: SecretKey::from_bytes(&[seed; 32]).public().to_string(),
-        online,
-    };
-    vec![
-        device("Studio desktop", 17, true),
-        device("Workshop laptop", 29, true),
-        device("Living room TV", 41, true),
-        device("Garage Pi", 53, false),
-    ]
-}
+use keys::vnc_wheel_clicks;
+use secrets::{KEY_PASSPHRASE, SSH_PASSWORD, VNC_PASSWORD, secret_purpose};
 
 #[cfg(test)]
 mod tests;

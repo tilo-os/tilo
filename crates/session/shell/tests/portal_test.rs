@@ -102,7 +102,6 @@ async fn portal_interfaces_and_notifications_meet_their_published_contracts() {
             );
         }
 
-        // Phase `screencast_properties_advertise_capabilities`.
         {
             let (store, _ws) = GrantStoreHandle::test_with_workspace(empty_workspace(205, "ws"));
             let (_s, client, _ctx) = bring_up_pair(
@@ -129,7 +128,6 @@ async fn portal_interfaces_and_notifications_meet_their_published_contracts() {
 
     // Phase `notifications_round_trip_against_the_version_two_contract`.
     {
-        // Phase `notification_add_replace_isolate_and_remove_round_trip`.
         {
             let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(100, "ws"));
             let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
@@ -205,7 +203,6 @@ async fn portal_interfaces_and_notifications_meet_their_published_contracts() {
             assert!(ctx.notifications.drain_close_requests().is_empty());
         }
 
-        // Phase `notification_properties_match_version_two_contract`.
         {
             let (store, _ws_id) =
                 GrantStoreHandle::test_with_workspace(empty_workspace(1001, "ws"));
@@ -340,7 +337,6 @@ fn string_value(value: &str) -> OwnedValue {
 async fn portal_requests_round_trip_and_prompt_outcomes_reach_the_grant_store() {
     // Phase `auto_allowed_portal_requests_round_trip`.
     {
-        // Phase `file_chooser_open_file_round_trips_auto_allow`.
         {
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(101, "ws"));
             let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
@@ -397,7 +393,6 @@ async fn portal_requests_round_trip_and_prompt_outcomes_reach_the_grant_store() 
             let _ = ws_id;
         }
 
-        // Phase `screencast_select_sources_round_trips_auto_allow`.
         {
             let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(102, "ws"));
             let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
@@ -431,7 +426,6 @@ async fn portal_requests_round_trip_and_prompt_outcomes_reach_the_grant_store() 
             assert_eq!(response, 0, "auto-allow must yield response=0");
         }
 
-        // Phase `access_dialog_camera_round_trips_auto_allow`.
         {
             let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(103, "ws"));
             let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
@@ -468,7 +462,6 @@ async fn portal_requests_round_trip_and_prompt_outcomes_reach_the_grant_store() 
 
     // Phase `prompt_outcomes_map_to_responses_and_the_grant_store`.
     {
-        // Phase `always_grant_skips_prompt_queue`.
         {
             // Pre-seed an `Always`-scoped Camera grant. `PromptResolver::Channel`
             // means a request pumped through the queue would show in `queued_len`
@@ -532,7 +525,6 @@ async fn portal_requests_round_trip_and_prompt_outcomes_reach_the_grant_store() 
             let _ = ctx;
         }
 
-        // Phase `deny_outcome_returns_response_one`.
         {
             let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(105, "ws"));
             let queue = PromptQueueHandle::new(PromptResolver::AutoDeny);
@@ -555,7 +547,6 @@ async fn portal_requests_round_trip_and_prompt_outcomes_reach_the_grant_store() 
             assert!(results.is_empty(), "deny path returns empty results");
         }
 
-        // Phase `session_outcome_persists_into_grant_store`.
         {
             let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(106, "ws"));
             let queue = PromptQueueHandle::new(PromptResolver::AutoOutcome(

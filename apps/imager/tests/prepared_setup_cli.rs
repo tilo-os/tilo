@@ -1,4 +1,3 @@
-//! The headless setup binary rejects incomplete requests without publishing output.
 #![cfg(target_os = "linux")]
 
 use std::process::{Command, Stdio};
@@ -12,7 +11,7 @@ fn default_and_selected_setup_modes_reject_incomplete_transport() {
         vec!["--selected-install-generation"],
         vec!["--stream-completed-payload"],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_tilo-prepared-setup"))
+        let output = Command::new(tilo_test_env::package_binary!("tilo-prepared-setup"))
             .args(&arguments)
             .stdin(Stdio::null())
             .output()
@@ -34,7 +33,7 @@ fn installed_consumer_modes_accept_no_path_or_receipt_input() {
         ("--verify-account-consumer-capability", "--root"),
         ("--data-consumer-catalog-facts", "--check"),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_tilo-prepared-setup"))
+        let output = Command::new(tilo_test_env::package_binary!("tilo-prepared-setup"))
             .args([mode, extra, "/tmp"])
             .stdin(Stdio::null())
             .output()

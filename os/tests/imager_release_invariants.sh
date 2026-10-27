@@ -22,6 +22,7 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/publish-github-release.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   "$repo/apps/imager/packaging/publish-internal-bundle.sh" \
+  "$repo/apps/imager/packaging/publish-target-policy.sh" \
   "$repo/os/dev/export-internal-bundle.sh" \
   "$repo/os/tests/internal_bundle_export.sh" \
   "$repo/os/tests/internal_bundle_catalog.sh" \
@@ -40,6 +41,23 @@ bash "$repo/os/tests/public_release_origin.sh" \
   || bad 'installer catalog is not bound to the configured public release origin'
 bash "$repo/os/tests/internal_bundle_catalog.sh" \
   || bad 'internal installer catalog entries are not bound to exact published manifests'
+target_job="$(sed -n '/^  target_policy:/,/^  medium:/p' "$workflow")"
+if grep -Fq "if: startsWith(github.ref, 'refs/tags/imager-v')" <<<"$target_job" \
+   && grep -Fq './os/dev/use-published-image.sh "$TILO_PUBLISHED_OS_IMAGE"' <<<"$target_job" \
+   && grep -Fq 'export-target-policy.py export' <<<"$target_job" \
+   && grep -Fq -- '--expected-source "$TILO_EXPECTED_OS_SOURCE_REVISION"' <<<"$target_job" \
+   && grep -Fq 'publish-target-policy.sh dist/tilo-target-policy' <<<"$target_job" \
+   && grep -Fq 'name: tilo-target-policy-${{ matrix.arch }}' <<<"$target_job" \
+   && grep -Fq 'target-policy-catalog-${{ matrix.arch }}.json' <<<"$target_job" \
+   && grep -Fq 'needs: [plan, medium, target_policy]' "$workflow" \
+   && grep -Fq 'export-target-policy.py" verify' "$repo/apps/imager/packaging/build-release-catalog.sh" \
+   && grep -Fq 'target-policy-catalog-*.json|tilo-target-policy-*.tar' \
+      "$repo/apps/imager/packaging/publish-github-release.sh" \
+      "$repo/apps/imager/packaging/publish-forgejo-release.sh"; then
+  ok 'tag releases export and publish one signed target policy from the exact OS image'
+else
+  bad 'target policy producer, publication or catalog wiring is missing'
+fi
 [ "$(grep -Fc "startsWith(github.ref, 'refs/tags/imager-v') && vars.IMAGER_INTERNAL_BUNDLE == 'publish'" "$workflow")" -eq 2 ] \
   && grep -Fq 'IMAGER_INTERNAL_BUNDLE_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'sudo -n bash os/tests/internal_bundle_export.sh' "$workflow" \
@@ -112,7 +130,7 @@ else
 fi
 
 grep -Fq 'id-token: write' "$workflow" \
-  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 8 ] \
+  && [ "$(grep -Fc 'enable-openid-connect: true' "$workflow")" -eq 9 ] \
   && grep -Fq 'IMAGER_LINUX_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_WINDOWS_CREDENTIAL_BROKER' "$workflow" \
   && grep -Fq 'IMAGER_MACOS_CREDENTIAL_BROKER' "$workflow" \
@@ -261,8 +279,7 @@ grep -Fq 'sha256sum --check --strict "$(basename "$path").sha256"' "$workflow" \
 
 grep -Fxq 'os/tests/imager_linux_release_trust.sh' \
     "$repo/tools/security-boundary-invariants.txt" \
-  && grep -Fq 'bash tools/run-security-boundary-invariants.sh' \
-    "$repo/.forgejo/workflows/check.yml" \
+  && grep -Fqx 'run = "bash tools/run-security-boundary-invariants.sh"' "$repo/t.toml" \
   && ok 'Linux release trust tamper test runs in required checks' \
   || bad 'Linux release trust tamper test is not wired into CI'
 
@@ -270,7 +287,11 @@ linux_launcher="$repo/apps/imager/packaging/linux/tilo-imager"
 mac_launcher="$repo/apps/imager/packaging/macos/tilo-imager"
 windows_launcher="$repo/apps/imager/packaging/windows/Start-Tilo-Imager.ps1"
 writer="$repo/apps/imager/src/write.rs"
-if grep -Fq 'host-media-writer = []' "$repo/apps/imager/Cargo.toml" \
+# The writer's privileged half (helper, UDisks2 descriptor) lives in the backend.
+backend="$repo/crates/platform/imager-backend"
+write_helper="$backend/src/write/helper.rs"
+if grep -Fq 'host-media-writer = ["installation", "imager-backend/host-media-writer"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'host-media-writer = []' "$backend/Cargo.toml" \
   && grep -Fq 'cfg!(feature = "host-media-writer")' "$writer" \
   && [ "$(grep -Fc 'cargo test -p imager --lib --locked --features host-media-writer' "$workflow")" -eq 3 ] \
   && grep -Fq -- '--features host-media-writer' \
@@ -285,9 +306,10 @@ flatpak_manifest="$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml"
 flatpak_package="$repo/apps/imager/packaging/package-flatpak.sh"
 if grep -Fq -- '--system-talk-name=org.freedesktop.UDisks2' "$flatpak_manifest" \
   && ! grep -Eq -- '--(device=all|filesystem=host|talk-name=org.freedesktop.Flatpak)' "$flatpak_manifest" \
-  && grep -Fq 'flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'flatpak-media-writer = ["installation", "imager-backend/flatpak-media-writer"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'flatpak-media-writer = ["block-devices/udisks", "dep:zbus"]' "$backend/Cargo.toml" \
   && grep -Fq 'O_EXCL | libc::O_SYNC | libc::O_CLOEXEC' \
-    "$repo/apps/imager/src/write.rs" \
+    "$backend/src/write/udisks.rs" \
   && grep -Fq 'cargo test -p imager --lib --locked --features flatpak-media-writer' "$workflow" \
   && grep -Fq 'apps/imager/packaging/package-flatpak.sh' "$workflow" \
   && grep -Fq -- '--tilo-flatpak-probe-smoke' "$flatpak_package" \
@@ -301,11 +323,11 @@ if grep -Fq 'exec pkexec' "$linux_launcher" \
   || grep -Fq -- '-Verb RunAs' "$windows_launcher"; then
   bad 'a native launcher still elevates the complete Imager GUI'
 elif grep -Fq 'WriteBackend::PrivilegedHelper' "$writer" \
-  && grep -Fq 'Command::new("pkexec")' "$writer" \
-  && grep -Fq 'with administrator privileges' "$writer" \
-  && grep -Fq -- '-Verb RunAs' "$writer" \
   && grep -Fq 'without_secrets' "$writer" \
-  && grep -Fq 'write helper request changed after authorization' "$writer"; then
+  && grep -Fq 'Command::new("pkexec")' "$write_helper" \
+  && grep -Fq 'with administrator privileges' "$write_helper" \
+  && grep -Fq -- '-Verb RunAs' "$write_helper" \
+  && grep -Fq 'write helper request changed after authorization' "$write_helper"; then
   ok 'native GUIs stay unprivileged and authenticate only a digest-bound secret-free writer'
 else
   bad 'write-time least-privilege helper is incomplete for a native platform'
@@ -385,8 +407,8 @@ grep -Fq 'site-downloads:' "$workflow" \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq "'brew install --cask tilo-imager' 'brew install tilo-imager'" \
     "$repo/apps/imager/packaging/publish-site-release.sh" \
-  && grep -Fq "IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases'" \
-    "$repo/.forgejo/workflows/release-imager-winget.yml" \
+  && grep -Fq 'TILO_RELEASE_REPOSITORY="$release_repository"' \
+    "$repo/apps/imager/packaging/monitor-winget-acceptance.sh" \
   && grep -Fq 'raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/Tilo/Imager/${version}/Tilo.Imager.yaml' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'TILO_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}' "$workflow" \
   && ok 'landing-page manifest advances only through the gated release workflow' \
@@ -615,19 +637,31 @@ grep -Fq "group: release-imager-\${{ startsWith(github.ref, 'refs/tags/imager-v'
   && ok 'tag promotion is serialized while stale branch validation is superseded' \
   || bad 'release promotion can regress or stale validation can block the current commit'
 
-winget_monitor="$repo/.forgejo/workflows/release-imager-winget.yml"
+# t's scheduled check (tools/ci/products.toml): every six hours, never cached, with the site
+# token from t's server config as its only credential, and refusing to run without it.
 winget_reconcile="$repo/apps/imager/packaging/monitor-winget-acceptance.sh"
-grep -Fq 'cron: "23 */6 * * *"' "$winget_monitor" \
-  && grep -Fq "IMAGER_PUBLIC_RELEASE_REPOSITORY || 'tilo-os/releases'" "$winget_monitor" \
-  && grep -Fq "if: vars.IMAGER_SITE_CREDENTIAL_BROKER != ''" "$winget_monitor" \
-  && ! grep -Fq 'secrets.' "$winget_monitor" \
-  && grep -Fq 'enable-openid-connect: true' "$winget_monitor" \
-  && grep -Fq 'IMAGER_SITE_CREDENTIAL_BROKER' "$winget_monitor" \
-  && grep -Fq 'acquire-release-token.sh' "$winget_monitor" \
+winget_check=bad
+if python3 - "$repo/tools/ci/products.toml" <<'PY'
+import subprocess, sys, tomllib
+checks = {c["name"]: c for m in tomllib.load(open(sys.argv[1], "rb"))["matrix"] for c in m["check"]}
+check = checks["imager-winget-acceptance"]
+assert check["on"] == ["schedule:23 */6 * * *", "dispatch"], check["on"]
+assert check["cache"] is False and check["secrets"] == ["TILO_SITE_TOKEN"]
+assert "id_token" not in check and "env" not in check
+assert "TILO_SITE_GIT_TOKEN=$TILO_SITE_TOKEN" in check["run"]
+assert "bash apps/imager/packaging/monitor-winget-acceptance.sh" in check["run"]
+unset = subprocess.run(["bash", "-c", check["run"]], env={"PATH": "/usr/bin:/bin"},
+                       capture_output=True, text=True)
+assert unset.returncode != 0 and "TILO_SITE_TOKEN is not set" in unset.stderr, unset.stderr
+PY
+then
+  winget_check=ok
+fi
+[[ $winget_check == ok ]] \
   && grep -Fq 'state="$(jq -r '\''.channels.winget // empty'\'' "$manifest")"' "$winget_reconcile" \
-  && grep -Fq 'GITHUB_REF_NAME="$tag" apps/imager/packaging/publish-site-release.sh' "$winget_reconcile" \
+  && grep -Fq 'GITHUB_REF_NAME="$tag" TILO_RELEASE_SERVER="$release_server"' "$winget_reconcile" \
   && grep -Fq 'published landing-page release has invalid WinGet state' "$winget_reconcile" \
-  && ok 'WinGet acceptance is reconciled automatically with short-lived site authority' \
+  && ok 'WinGet acceptance is reconciled automatically, with a site token only that check holds' \
   || bad 'WinGet acceptance still requires a manual site-promotion rerun'
 
 exit "$fail"

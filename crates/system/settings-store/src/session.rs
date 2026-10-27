@@ -141,6 +141,14 @@ fn copy_identity(path: &Path) -> Option<CopyIdentity> {
     })
 }
 
+/// Whether something other than a file (a directory) stands at `path`.
+fn not_a_file(path: &Path) -> bool {
+    tilo_files::file_at(path)
+        .ok()
+        .and_then(|(dir, name)| tilo_files::blocking::metadata(&dir, &name).ok())
+        .is_some_and(|found| found.kind != tilo_files::Kind::File)
+}
+
 /// Whether the copy is not what `state` last wrote or read. Size and time
 /// answer unless the copy is recent enough that a second write could share
 /// both; then its contents do.
@@ -382,7 +390,7 @@ impl Touched {
     }
 }
 
-/// The session's settings document: see the [module docs](self).
+/// The session's settings document: see the module docs.
 pub struct SessionSettings {
     paths: SessionPaths,
     copy_access: CopyAccess,
@@ -474,8 +482,8 @@ impl SessionSettings {
         &self.paths
     }
 
-    /// The source installed for ordinary host event-loop readers. Its worker
-    /// wakes only when read; another process's write to the copy reaches it
+    /// The source installed for ordinary host event-loop readers. Reading it
+    /// touches no file; another process's write to the copy reaches it
     /// through the host's watch of the copy calling [`Self::refresh`].
     ///
     /// # Errors
@@ -487,8 +495,8 @@ impl SessionSettings {
     }
 
     /// [`Self::host_view`] for a host that could not watch the copy: the
-    /// view takes in another process's write to it every `interval` as well
-    /// as on each read, so readers that only wait for
+    /// view's worker takes in another process's write to it every
+    /// `interval`, so readers that only wait for
     /// [`SettingsSource::changes`] still hear of it.
     ///
     /// # Errors
@@ -691,10 +699,9 @@ impl SessionSettings {
     /// Whether [`Self::refresh`] may find another process's write: the
     /// copy's size or time is not what this source last wrote or read, or it
     /// is too recent for them to tell. One identity check, no storage lock: a state
-    /// held by a writer answers yes and leaves the deciding to `refresh`. A
-    /// reader asks this before waking a refresh worker, so reads of an
-    /// unchanged copy wake nobody.
-    pub(super) fn copy_may_have_changed(&self) -> bool {
+    /// held by a writer answers yes and leaves the deciding to `refresh`.
+    #[cfg(test)]
+    fn copy_may_have_changed(&self) -> bool {
         let Ok(identity) = self.copy_access.identity() else {
             return true;
         };
@@ -720,6 +727,38 @@ impl SessionSettings {
             CopyAccess::Checked(_) => {}
         }
         let (copy, identity) = self.copy_access.read()?;
+        self.take_in_read(state, copy, identity)
+    }
+
+    /// [`Self::take_in_copy`] for a write to the records. Something that is
+    /// not a file standing where the legacy copy goes (a directory) holds no
+    /// edit to take in: the records are the durable store and the copy only
+    /// their compatibility mirror, so the write goes on and reports the copy
+    /// for repair, leaving the obstruction alone. A copy file that cannot be
+    /// read may hold another process's edit, so it still blocks the write
+    /// until that edit is readable; so does any checked copy that cannot be
+    /// read, and a record that cannot be written is still an error.
+    fn take_in_copy_for_write(&self, state: &mut State) -> std::io::Result<Option<std::io::Error>> {
+        let CopyAccess::Legacy(path) = &self.copy_access else {
+            return self.take_in_copy(state).map(|()| None);
+        };
+        if !copy_changed(path, state) {
+            return Ok(None);
+        }
+        match self.copy_access.read() {
+            Ok((copy, identity)) => self.take_in_read(state, copy, identity).map(|()| None),
+            Err(error) if not_a_file(path) => Ok(Some(error)),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Apply the copy just read, and persist what it changed in the records.
+    fn take_in_read(
+        &self,
+        state: &mut State,
+        copy: Map<String, Value>,
+        identity: Option<CopyIdentity>,
+    ) -> std::io::Result<()> {
         let (person, device) = (state.person.clone(), state.device.clone());
         let mut log = Vec::new();
         let touched = state.take_in(&copy, &state.copy.clone(), &mut log);
@@ -782,7 +821,7 @@ impl SessionSettings {
     ) -> std::io::Result<ConditionalUpdate> {
         let mut state = self.state.lock_recover();
         let _lock = self.copy_access.lock()?;
-        self.take_in_copy(&mut state)?;
+        let unread = self.take_in_copy_for_write(&mut state)?;
         // Writes the loop accepted come first, so this one is decided and
         // ordered after them.
         self.apply_pending(&mut state);
@@ -807,10 +846,19 @@ impl SessionSettings {
         }
         // The records keep the change even when the copy cannot be written;
         // the next change or refresh writes it again.
-        Ok(match self.copy_access.write_copy(&self.paths, &mut state) {
+        Ok(self.mirror(&mut state, unread))
+    }
+
+    /// Bring the copy up to date after a write to the records, unless what
+    /// stands in its place is not a file ([`Self::take_in_copy_for_write`]).
+    fn mirror(&self, state: &mut State, unread: Option<std::io::Error>) -> ConditionalUpdate {
+        if let Some(error) = unread {
+            return ConditionalUpdate::StoredWithCopyRepair(error);
+        }
+        match self.copy_access.write_copy(&self.paths, state) {
             Ok(()) => ConditionalUpdate::Stored,
             Err(error) => ConditionalUpdate::StoredWithCopyRepair(error),
-        })
+        }
     }
 }
 
@@ -876,7 +924,7 @@ impl SettingsSource for SessionSettings {
     ) -> std::io::Result<ConditionalUpdate> {
         let mut state = self.state.lock_recover();
         let _lock = self.copy_access.lock()?;
-        self.take_in_copy(&mut state)?;
+        let unread = self.take_in_copy_for_write(&mut state)?;
         self.apply_pending(&mut state);
         if !update.matches(&state.projection()) {
             return Ok(ConditionalUpdate::Superseded);
@@ -912,10 +960,7 @@ impl SettingsSource for SessionSettings {
         if touched.device {
             self.publish_committed(&state);
         }
-        Ok(match self.copy_access.write_copy(&self.paths, &mut state) {
-            Ok(()) => ConditionalUpdate::Stored,
-            Err(error) => ConditionalUpdate::StoredWithCopyRepair(error),
-        })
+        Ok(self.mirror(&mut state, unread))
     }
 
     fn revision(&self) -> u64 {
@@ -986,7 +1031,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn checked_open_rejects_malformed_copies_and_legacy_preserves_unreadable_bytes() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let root = dir.path().canonicalize().unwrap();
         let paths = SessionPaths::beside(root.join("settings.json"));
         for invalid in [b"".as_slice(), b"{", b"[]", b"null", b"\xff"] {
@@ -1018,7 +1063,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn checked_read_errors_leave_records_history_revision_and_pending_unchanged() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let root = dir.path().canonicalize().unwrap();
         let session =
             SessionSettings::open_checked(SessionPaths::beside(root.join("settings.json")))
@@ -1067,7 +1112,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn checked_session_retains_copy_directory_after_rename() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let root = dir.path().canonicalize().unwrap();
         let original = root.join("original");
         let paths = SessionPaths {
@@ -1104,7 +1149,7 @@ mod tests {
     #[test]
     fn opening_a_session_preserves_unreadable_records_and_copy() {
         for target in ["person", "device", "copy"] {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = crate::test_dir();
             let paths = SessionPaths::beside(dir.path().join("settings.json"));
             std::fs::create_dir_all(paths.person.parent().unwrap()).unwrap();
             let path = match target {
@@ -1130,7 +1175,7 @@ mod tests {
 
     #[test]
     fn unreadable_copy_blocks_writes_until_the_external_edit_is_readable() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         session
             .update_section("appearance", object(json!({"dark_theme": "dark"})))
@@ -1163,10 +1208,41 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_where_the_copy_goes_does_not_block_the_records() {
+        let dir = crate::test_dir();
+        let session = open(dir.path());
+        session
+            .update_section("appearance", object(json!({"dark_theme": "dark"})))
+            .unwrap();
+        std::fs::remove_file(&session.paths.copy).unwrap();
+        std::fs::create_dir(&session.paths.copy).unwrap();
+
+        // A directory holds no edit to take in: the record takes the write
+        // and the copy is reported for repair, left as it is.
+        let stored = session
+            .update_section_report("appearance", object(json!({"dark_theme": "light"})))
+            .unwrap();
+        assert!(matches!(stored, ConditionalUpdate::StoredWithCopyRepair(_)));
+        assert_eq!(
+            load_at(&session.paths.person)["appearance"]["dark_theme"],
+            "light"
+        );
+        assert!(session.paths.copy.is_dir());
+        assert_eq!(session.load()["appearance"]["dark_theme"], "light");
+
+        std::fs::remove_dir(&session.paths.copy).unwrap();
+        session.refresh();
+        assert_eq!(
+            load_at(&session.paths.copy)["appearance"]["dark_theme"],
+            "light"
+        );
+    }
+
+    #[test]
     fn missing_and_malformed_copies_are_repaired_from_durable_records() {
         for missing in [true, false] {
             for reopen in [true, false] {
-                let dir = tempfile::tempdir().unwrap();
+                let dir = crate::test_dir();
                 let session = open(dir.path());
                 session
                     .update_section("appearance", object(json!({"dark_theme": "dark"})))
@@ -1198,7 +1274,7 @@ mod tests {
 
     #[test]
     fn display_update_commits_transaction_and_profiles_in_one_device_record() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let update = crate::DisplayUpdate::new(
             &session.load(),
@@ -1225,7 +1301,7 @@ mod tests {
 
     #[test]
     fn display_update_refuses_a_new_external_profile_without_overwriting_either_section() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let update = crate::DisplayUpdate::new(
             &session.load(),
@@ -1249,7 +1325,7 @@ mod tests {
 
     #[test]
     fn display_update_record_failure_rolls_back_both_sections() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let before = session.load();
         let update = crate::DisplayUpdate::new(
@@ -1266,7 +1342,7 @@ mod tests {
 
     #[test]
     fn display_update_copy_failure_reports_durable_both_sections_and_repairs_later() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let update = crate::DisplayUpdate::new(
             &session.load(),
@@ -1295,7 +1371,7 @@ mod tests {
 
     #[test]
     fn every_change_rings_its_readers_and_nothing_else_does() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let rung = std::sync::Arc::new(AtomicU64::new(0));
         let count = std::sync::Arc::clone(&rung);
@@ -1360,7 +1436,7 @@ mod tests {
 
     #[test]
     fn a_deferred_write_returns_while_the_disk_is_parked_and_is_read_back_at_once() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let before = view.revision();
         // The copy's lock stands for a disk that does not answer: every
@@ -1377,7 +1453,7 @@ mod tests {
             })
         };
         let seen = returned
-            .recv_timeout(std::time::Duration::from_secs(30))
+            .recv_timeout(tilo_test_env::hang_bound())
             .expect("the write waited for the disk");
         writer.join().unwrap();
         assert_eq!(seen["appearance"]["mode"], "Dark", "read back at once");
@@ -1395,7 +1471,7 @@ mod tests {
     /// A flush joins a worker that took the edits before it finished writing.
     #[test]
     fn a_flush_waits_for_an_in_flight_deferred_write() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let parked = lock_copy(&session.paths.copy).unwrap();
         view.update_section("appearance", object(json!({"mode": "Dark"})))
@@ -1427,7 +1503,7 @@ mod tests {
 
     #[test]
     fn deferred_writes_keep_their_order_and_their_read_modify_write_steps() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let parked = lock_copy(&session.paths.copy).unwrap();
         let origin = ChangeOrigin::default();
@@ -1474,7 +1550,7 @@ mod tests {
 
     #[test]
     fn dropping_the_view_makes_accepted_writes_durable() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let paths = SessionPaths::beside(dir.path().join("settings.json"));
         {
             let (session, view) = deferring_view(dir.path());
@@ -1490,9 +1566,12 @@ mod tests {
 
     #[test]
     fn a_deferred_write_that_cannot_be_stored_is_reverted_and_reported() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let before = view.load();
+        // The copy's lock holds the worker's write back, so the write is
+        // seen accepted before it fails.
+        let parked = lock_copy(&session.paths.copy).unwrap();
         std::fs::create_dir_all(session.paths.device.parent().unwrap()).unwrap();
         std::fs::create_dir(&session.paths.device).unwrap();
         std::fs::create_dir(&session.paths.person).unwrap();
@@ -1504,6 +1583,7 @@ mod tests {
             "accepted for now"
         );
         let revision = view.revision();
+        drop(parked);
         view.flush_pending();
         assert_eq!(view.load(), before, "the document went back");
         assert!(view.revision() > revision, "readers are told it went back");
@@ -1520,7 +1600,7 @@ mod tests {
 
     #[test]
     fn one_failed_batch_names_every_section_it_reverted_once() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let (session, view) = deferring_view(dir.path());
         let parked = lock_copy(&session.paths.copy).unwrap();
         std::fs::create_dir_all(session.paths.device.parent().unwrap()).unwrap();
@@ -1546,9 +1626,8 @@ mod tests {
     #[test]
     fn a_durable_write_wait_does_not_block_the_last_committed_read_snapshot() {
         use std::sync::{Arc, TryLockError, mpsc};
-        use std::time::{Duration, Instant};
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         let before = (session.load(), session.revision());
         // Another settings writer owns the real canonical copy lock. No
@@ -1557,28 +1636,23 @@ mod tests {
         let writing = Arc::clone(&session);
         let writer =
             std::thread::spawn(move || writing.update_section("power", object(json!({"idle": 5}))));
-        let limit = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
-        let mut contended = false;
-        while Instant::now() < limit {
-            if matches!(session.state.try_lock(), Err(TryLockError::WouldBlock)) {
-                contended = true;
-                break;
-            }
-            std::thread::yield_now();
-        }
+        tilo_test_env::wait_until("the writer to reach the held storage lock", || {
+            matches!(session.state.try_lock(), Err(TryLockError::WouldBlock))
+        });
         let reading = session.host_view().unwrap();
         let (sender, receiver) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let snapshot = (reading.load(), reading.revision());
             sender.send(snapshot).unwrap();
         });
-        let observed = receiver.recv_timeout(Duration::from_secs(1));
+        // The storage lock stays held until the read answers, so a read that
+        // waited for the writer would never answer.
+        let observed = receiver.recv_timeout(tilo_test_env::hang_bound());
         // Always release and join before asserting, including the known-red
         // baseline. A failed read proof must not leave a locked writer behind.
         drop(storage_lock);
         writer.join().unwrap().unwrap();
         reader.join().unwrap();
-        assert!(contended, "the real writer reached the held storage lock");
         assert_eq!(
             observed.expect("committed reads must remain available during storage contention"),
             before,
@@ -1590,13 +1664,14 @@ mod tests {
     }
 
     #[test]
-    fn host_view_refreshes_external_writes_and_notifies_after_the_committed_snapshot() {
+    fn a_polling_host_view_refreshes_external_writes_and_notifies_after_the_committed_snapshot() {
         use std::sync::{Arc, mpsc};
-        use std::time::Duration;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
-        let view = session.host_view().unwrap();
+        let view = session
+            .host_view_polling_copy(std::time::Duration::from_millis(20))
+            .unwrap();
         let initial_revision = view.revision();
         let observed_view = Arc::downgrade(&view);
         let (sender, receiver) = mpsc::channel();
@@ -1614,10 +1689,9 @@ mod tests {
             object(json!({"theme": "Light"})),
         )
         .unwrap();
-        // No file watcher or manually forced refresh: ordinary view reads
-        // supply the fallback when the host's watcher is unavailable.
-        let _ = view.revision();
-        let (document, revision) = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        // No file watcher, no forced refresh and no read: the view's worker
+        // looks at the copy when the host's watch is unavailable.
+        let (document, revision) = tilo_test_env::recv("the refreshed view", &receiver);
         assert_eq!(document["appearance"]["theme"], json!("Light"));
         assert!(revision > initial_revision);
         assert_eq!(open(dir.path()).load(), document);
@@ -1639,34 +1713,35 @@ mod tests {
         (listener, receiver)
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn a_host_view_looks_at_the_copy_only_when_read() {
+    fn a_host_view_never_looks_at_the_copy_itself() {
         use std::sync::Arc;
-        use std::time::Duration;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
-        let view = session.host_view().unwrap();
+        let (view, worker) =
+            tilo_test_env::idle::spawned_thread("tilo-settings-r", || session.host_view().unwrap());
         let (_listener, rings) = ringing_view(&view);
+        crate::tests::blocked_count(&worker);
         crate::update_section_at(
             &session.paths.copy,
             "appearance",
             object(json!({"theme": "Light"})),
         )
         .unwrap();
-        // No timer: the host's watch of the copy (or a read) takes the write
-        // in, so an idle view costs no wakeups. 1.5 s outlasts the 1 s
-        // stamp poll a reader used to drive.
+        // Reading the view (as the frame loop, which never waits on the
+        // disk, does) looks at no file, and no timer does
+        // either, so an idle view costs no wakeups.
+        let _ = (view.load(), view.revision());
+        tilo_test_env::idle::assert_stays_asleep(&worker, "read view's refresh worker");
         assert!(
-            rings.recv_timeout(Duration::from_millis(1500)).is_err(),
-            "an unread view looked at the copy on its own"
+            rings.try_recv().is_err(),
+            "the view looked at the copy on its own"
         );
-        let _ = view.revision();
-        // The read hands the refresh to the view's worker; on a loaded
-        // machine its locked read of the copy can take seconds.
-        rings
-            .recv_timeout(Duration::from_secs(20))
-            .expect("a read takes the copy's write in");
+        // The host's watch of the copy takes the write in.
+        session.refresh();
+        tilo_test_env::recv("the watch's refresh to take the copy's write in", &rings);
         assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
     }
 
@@ -1687,7 +1762,10 @@ mod tests {
 
     #[test]
     fn a_settled_copy_needs_no_look_until_another_process_writes_it() {
-        let dir = tempfile::tempdir().unwrap();
+        // "Within the clock tick" is judged against the wall clock; it stands
+        // still here, before the copy is written.
+        tilo_clock::freeze_wall(tilo_clock::wall());
+        let dir = crate::test_dir();
         let session = open(dir.path());
         assert!(
             session.copy_may_have_changed(),
@@ -1713,21 +1791,18 @@ mod tests {
     #[test]
     fn reads_of_an_unchanged_copy_leave_the_refresh_worker_asleep() {
         use std::sync::Arc;
-        use std::time::Duration;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         settle_copy(&session);
         let (view, worker) =
             tilo_test_env::idle::spawned_thread("tilo-settings-r", || session.host_view().unwrap());
         let (_listener, rings) = ringing_view(&view);
-        std::thread::sleep(Duration::from_millis(50));
-        let before = tilo_test_env::idle::context_switches(&worker);
+        let before = crate::tests::blocked_count(&worker);
         for _ in 0..50 {
             let _ = (view.load(), view.revision());
         }
-        std::thread::sleep(Duration::from_millis(200));
-        let woke = tilo_test_env::idle::context_switches(&worker).saturating_sub(before);
+        let woke = crate::tests::blocked_count(&worker).saturating_sub(before);
         assert_eq!(
             woke, 0,
             "50 reads of an unchanged copy woke the worker {woke} times"
@@ -1738,7 +1813,8 @@ mod tests {
             object(json!({"theme": "Light"})),
         )
         .unwrap();
-        let _ = view.revision();
+        // The host's watch of the copy takes the write in.
+        session.refresh();
         rings.recv_timeout(tilo_test_env::hang_bound()).unwrap();
         assert_eq!(view.load()["appearance"]["theme"], json!("Light"));
     }
@@ -1748,7 +1824,7 @@ mod tests {
         use std::sync::Arc;
         use std::time::Duration;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         let view = session
             .host_view_polling_copy(Duration::from_millis(50))
@@ -1770,7 +1846,7 @@ mod tests {
     fn a_refused_record_write_never_replaces_the_host_committed_view() {
         use std::sync::Arc;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         let view = session.host_view().unwrap();
         let before = (view.load(), view.revision());
@@ -1790,7 +1866,7 @@ mod tests {
     fn dropping_the_last_host_view_retires_its_pending_reader_and_record_owner() {
         use std::sync::Arc;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = Arc::new(open(dir.path()));
         let owner = Arc::downgrade(&session);
         let view = session.host_view().unwrap();
@@ -1810,7 +1886,7 @@ mod tests {
 
     #[test]
     fn a_write_lands_in_its_scopes_record_reaches_the_copy_and_survives_a_restart() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let paths = session.paths().clone();
         let before = session.revision();
@@ -1847,10 +1923,16 @@ mod tests {
 
     #[test]
     fn origin_is_recorded() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let paths = session.paths().clone();
-        let origin = ChangeOrigin::action("x").by("agent:alice");
+        let origin =
+            ChangeOrigin::action("x")
+                .by("agent:alice")
+                .invoked_by(Some(crate::InvokingAction {
+                    action: "palette.y".into(),
+                    invocation: Some("run-1".into()),
+                }));
         session
             .update_section_by(
                 "input",
@@ -1880,6 +1962,11 @@ mod tests {
         assert_eq!(touchpad["after"], false);
         assert_eq!(touchpad["action"], "x");
         assert_eq!(touchpad["principal"], "agent:alice");
+        assert_eq!(
+            touchpad["invoked_by"],
+            json!({"action": "palette.y", "invocation": "run-1"}),
+            "the action that ran `x` is kept beside it"
+        );
         assert_eq!(touchpad["via"], "session");
         assert_eq!(entry("tap_to_click")["action"], "x");
         let external = entry("auto_suspend");
@@ -1890,12 +1977,13 @@ mod tests {
             "a copy take-in has no origin"
         );
         assert_eq!(external["principal"], Value::Null);
+        assert_eq!(external["invoked_by"], Value::Null);
         assert_eq!(external["via"], "copy");
     }
 
     #[test]
     fn a_section_change_reads_and_writes_under_the_records_lock() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = std::sync::Arc::new(open(dir.path()));
         let threads: Vec<_> = (0..2)
             .map(|_| {
@@ -1932,7 +2020,7 @@ mod tests {
 
     #[test]
     fn the_change_log_keeps_its_newest_half_once_full() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let filler = "x".repeat(4096);
         let mut writes = 0_u64;
@@ -1963,7 +2051,7 @@ mod tests {
 
     #[test]
     fn another_processs_write_to_the_copy_reaches_the_session_and_its_records() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = open(dir.path());
         let paths = session.paths().clone();
         session
@@ -2018,7 +2106,7 @@ mod tests {
 
     #[test]
     fn what_the_copy_gained_while_no_session_ran_is_taken_in_and_the_records_keep_the_rest() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let copy = dir.path().join("settings.json");
         // First boot writes the copy before any session exists.
         crate::update_section_at(
@@ -2064,7 +2152,7 @@ mod tests {
     #[test]
     fn concurrent_writers_in_and_out_of_the_session_lose_nothing() {
         const WRITES: usize = 40;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_dir();
         let session = std::sync::Arc::new(open(dir.path()));
         let copy = session.paths().copy.clone();
         let outside = std::thread::spawn(move || {

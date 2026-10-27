@@ -53,10 +53,6 @@ pub(crate) fn mysql_opts(profile: &crate::model::ConnectionProfile) -> OptsBuild
 impl MySqlEngine {
     /// Open a real connection. A refused socket or a failed auth surfaces as
     /// the driver's own error string — never a fabricated success.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if the TCP connection is refused or
-    /// authentication fails.
     pub fn connect(profile: &crate::model::ConnectionProfile) -> Result<Self, String> {
         let opts: Opts = mysql_opts(profile).into();
         let conn = Conn::new(opts.clone()).map_err(|e| e.to_string())?;
@@ -73,11 +69,6 @@ impl MySqlEngine {
     /// Introspect the connection's current database into the shared
     /// [`DatabaseSchema`] shape. `MySQL`'s schema namespace is the database, so
     /// this yields a single [`SchemaInfo`] named after it.
-    ///
-    /// # Errors
-    /// Returns the driver's error string if any of the underlying
-    /// `information_schema` queries (listing tables, or a table's columns,
-    /// foreign keys or indexes) fail.
     pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
         let db: Option<String> = self
             .conn
@@ -244,17 +235,17 @@ impl MySqlEngine {
                 elapsed_ms: elapsed_ms(start),
                 rows_affected: Some(affected),
                 is_select: false,
-                truncated: false,
+                truncation: None,
             });
         }
 
         let mut rows_out: Vec<Vec<Cell>> = Vec::new();
-        let mut truncated = false;
+        let mut truncation: Option<crate::model::Truncation> = None;
         let mut retained_bytes = 0usize;
         let mut retained_cells = 0usize;
         for row_res in result.by_ref() {
             if rows_out.len() == MAX_QUERY_ROWS {
-                truncated = true;
+                truncation = Some(crate::model::Truncation::RowLimit);
                 break;
             }
             let row = row_res.map_err(|e| e.to_string())?;
@@ -265,7 +256,7 @@ impl MySqlEngine {
                 .map(|(i, v)| cell_from_value(v, col_meta.get(i).map(|(_, ct)| *ct)))
                 .collect();
             if !can_retain_result_row(retained_bytes, retained_cells, &cells) {
-                truncated = true;
+                truncation = Some(crate::model::Truncation::Payload);
                 break;
             }
             retained_bytes += row_retained_bytes(&cells);
@@ -280,7 +271,7 @@ impl MySqlEngine {
             elapsed_ms: elapsed_ms(start),
             rows_affected: None,
             is_select: true,
-            truncated,
+            truncation,
         })
     }
 }
@@ -460,7 +451,6 @@ mod tests {
                 ),
                 Cell::Text("42".into())
             );
-            // NULL and already-typed binary-protocol values pass straight through.
             assert_eq!(
                 cell_from_value(Value::NULL, Some(ColumnType::MYSQL_TYPE_LONG)),
                 Cell::Null

@@ -25,6 +25,7 @@ use tube::model::Route;
 use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::{MediaSize, Widget};
+use ui::window_toolbar::ToolbarEvent;
 use vello::kurbo::Rect;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
@@ -64,6 +65,11 @@ fn click_id(framed: &mut Framed<TubeApp>, id: &str) {
         .click_named(id)
         .unwrap_or_else(|error| panic!("{error}"));
     harness.relayout();
+}
+
+/// Whether the window bar's navigation offers Back.
+fn bar_offers_back() -> bool {
+    ui::window_toolbar::declared().is_some_and(|bar| !bar.leading.is_empty())
 }
 
 fn find<'a>(w: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
@@ -154,16 +160,14 @@ impl Harness {
         find(&*self.app, id).map(Widget::get_rect)
     }
     fn has_id(&self, id: &str) -> bool {
-        self.rect_by_id(if id == "back_btn" {
-            "nav-shell-back"
-        } else {
-            id
-        })
-        .is_some()
+        if id == "back_btn" {
+            return bar_offers_back();
+        }
+        self.rect_by_id(id).is_some()
     }
     fn click_id(&mut self, id: &str) {
         if id == "back_btn" {
-            click_control(&mut self.app, "Back");
+            Framed::harness_mut(&mut self.app).press_window_slot(ToolbarEvent::Back);
         } else {
             click_id(&mut self.app, id);
         }
@@ -295,15 +299,11 @@ fn the_rail_and_cards_navigate_and_back_returns() {
         };
         app.effect(&effect).unwrap();
         app.settle();
-        let centre = app
-            .harness()
-            .controls()
-            .into_iter()
-            .find(|control| control.name.as_deref() == Some("Back"))
-            .and_then(|control| control.bounds)
-            .expect("browsed content exposes Back")
-            .center();
-        app.harness().click_at(centre.x, centre.y);
+        assert!(
+            bar_offers_back(),
+            "the window bar offers Back on browsed content"
+        );
+        app.harness().press_window_slot(ToolbarEvent::Back);
         app.settle();
         assert_eq!(
             route(&mut app),
@@ -341,7 +341,6 @@ fn another_rail_destination_navigates() {
     }
 }
 
-/// A real viewport refresh between motion and press keeps the rail's hit state.
 #[test]
 fn rail_click_survives_a_layout_refresh_between_motion_and_press() {
     let mut app = live_app();
@@ -484,11 +483,12 @@ fn pages_lay_out_without_overlap_at_every_size() {
     // Case `back_goes_to_the_narrow_rail_through_a_real_click`.
     {
         // Too narrow for the rail beside the grid, the window shows one
-        // screen at a time and keeps the page it showed. Back must go to
-        // the rail, and choosing a destination there must
-        // show its page, via real clicks, not app.apply.
+        // screen at a time and keeps the page it showed, a top-level page
+        // with no Back. The bar's sidebar toggle must go to the rail, and
+        // choosing a destination there must show its page, via real clicks,
+        // not app.apply.
         let mut app = live_app();
-        app.harness().resize((420, 800)).unwrap();
+        app.harness().resize((340, 800)).unwrap();
         app.harness().relayout();
         let open = |app: &mut ui::framework::testing::TestApp<tube::TubeShell>| {
             app.with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
@@ -499,10 +499,10 @@ fn pages_lay_out_without_overlap_at_every_size() {
             "narrowing keeps the page in front of the rail"
         );
 
-        app.harness().click_named("nav-shell-back").unwrap();
+        app.harness().press_window_slot(ToolbarEvent::ToggleSidebar);
         app.settle();
         app.harness().relayout();
-        assert!(open(&mut app), "Back goes to the rail");
+        assert!(open(&mut app), "the toggle goes to the rail");
 
         click(&mut app, "nav_home");
         assert_eq!(route(&mut app), Route::Home);
@@ -522,31 +522,29 @@ fn search_inputs_are_present_and_navigate() {
         app.harness()
             .set_theme(Theme::dark().with_text_scale(scale));
         if viewport.0 < 800 {
-            // A new narrow window opens on the rail, one screen at a time;
-            // the search belongs to the page a destination shows.
+            // At its first text size the window docks the rail beside the
+            // grid; the larger text leaves no room for both, so it shows one
+            // screen at a time and keeps the page it was on. The bar's
+            // sidebar toggle goes to the rail.
+            let on_rail = app
+                .with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
+                .expect("the window shows Tube");
+            if !on_rail {
+                app.harness().press_window_slot(ToolbarEvent::ToggleSidebar);
+                app.settle();
+                app.harness().relayout();
+            }
             click(&mut app, "nav_home");
         }
-        let search = app
-            .harness()
-            .controls()
-            .into_iter()
-            .find(|control| {
-                control.name.as_deref()
-                    == Some(ui::i18n::I18nManager::lookup_plain("standalone-search-title").as_str())
-            })
-            .expect("system search is present even with an empty query");
-        let bounds = search.bounds.expect("search has measured geometry");
-        assert!(
-            bounds.width() > 10.0 && bounds.height() > 10.0,
-            "search is reachable: {bounds:?}"
-        );
-        let centre = bounds.center();
-        app.harness().click_at(centre.x, centre.y);
+        // The window bar's search opens platform search narrowed to Tube.
+        app.harness()
+            .open_search(&ui::search::SearchRequest::this_app())
+            .expect("the window bar's search opens");
         app.settle();
         let (_, focused) = app
             .harness()
             .a11y_focus()
-            .expect("pointer activation focuses the platform search input");
+            .expect("opening search focuses the platform search input");
         assert_eq!(focused.role(), ui::accesskit::Role::TextInput);
         assert_eq!(focused.label(), Some("Search"));
         assert_eq!(focused.description(), Some("Search actions and results"));
@@ -575,14 +573,6 @@ fn search_inputs_are_present_and_navigate() {
                 .all(|control| !(control.role == ui::accesskit::Role::TextInput
                     && control.name.as_deref() == Some("Search"))),
             "Escape closes the actual platform query field"
-        );
-        assert!(
-            app.harness()
-                .controls()
-                .iter()
-                .any(|control| control.role == ui::accesskit::Role::Button
-                    && control.name.as_deref() == search.name.as_deref()),
-            "Escape restores the platform Search button"
         );
         assert_eq!(
             route(&mut app),
@@ -614,7 +604,6 @@ fn search_inputs_are_present_and_navigate() {
             "arriving via search leaves Home to go back to"
         );
 
-        // Scroll the results down, then record where the grid sits.
         h.wheel_at(vello::kurbo::Point::new(640.0, 500.0), -6.0);
         let grid_after_scroll = h
             .rect_by_id("video_grid")
@@ -644,7 +633,7 @@ fn search_inputs_are_present_and_navigate() {
             "clicking a result opens its watch page"
         );
 
-        // Press Back (a real click on the top-bar Back button).
+        // Press the window bar's Back.
         assert!(
             h.has_id("back_btn"),
             "the Back affordance is present on the watch page"
@@ -667,6 +656,49 @@ fn search_inputs_are_present_and_navigate() {
             "scroll preserved on Back: grid y0 {grid_after_back} vs pre-nav {grid_after_scroll}",
         );
     }
+}
+
+/// Search from the window bar: a hit opens what it names, and anything
+/// else typed searches `YouTube` for it, with Enter alone.
+#[test]
+fn platform_search_opens_hits_and_searches_youtube() {
+    let open_search = |app: &mut ui::framework::testing::TestApp<tube::TubeShell>| {
+        app.harness()
+            .open_search(&ui::search::SearchRequest::this_app())
+            .expect("the window bar's search opens");
+        app.settle();
+    };
+    let sample = tube::sample::model();
+    let video = sample
+        .videos
+        .iter()
+        .find(|video| video.title.contains("compositor"))
+        .expect("the sample holds a compositor video")
+        .id
+        .clone();
+
+    let mut app = live_catalogue();
+    open_search(&mut app);
+    app.harness().type_text("compositor");
+    app.settle();
+    // Past the row that searches `YouTube`, which leads.
+    app.harness().key("ArrowDown");
+    app.settle();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(route(&mut app), Route::Watch(video), "a video hit opens it");
+
+    let mut app = live_catalogue();
+    open_search(&mut app);
+    app.harness().type_text("lo-fi zzz");
+    app.settle();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        route(&mut app),
+        Route::Search("lo-fi zzz".into()),
+        "Enter searches YouTube for what was typed"
+    );
 }
 
 #[test]
@@ -736,7 +768,6 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             "player height {} should be ~65% of the {viewport_h}px viewport (bigger video)",
             player.height()
         );
-        // Centered in the content lane.
         let lane_center = f64::midpoint(lane_left, lane_right);
         assert!(
             (player.center().x - lane_center).abs() < 3.0,
@@ -750,7 +781,6 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             "player right edge {} must stay left of the scrollbar lane ({lane_right})",
             player.x1
         );
-        // And it stays inset from the rail on the left.
         assert!(
             player.x0 >= lane_left - 0.5,
             "player left edge {} stays right of the nav rail ({lane_left})",
@@ -833,36 +863,21 @@ fn share_copies_a_link_through_a_real_click() {
     // settle() above flushes effects but does not await the NavShell entrance.
     assert!(
         app.harness()
-            .settle_for_capture(ui::time::Duration::from_secs(5)),
+            .settle_for_capture(tilo_test_env::hang_bound()),
         "the watch page must finish its entrance before clicking Share"
     );
-    // Observe the real effect through the published accessibility notice.
+    // Observe the real effect through the window bar's notice.
     // Under a busy shard, the click can enqueue work beyond the next host
     // tick, so inspect the model only after that effect has appeared.
     tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click begins");
     app.harness().click_named("watch_copy_link").unwrap();
     tracing::debug!(target: "tube::share", at = ?ui::time::now(), "real share click returned");
-    let observed = app
-        .harness()
-        .wait_until(ui::time::Duration::from_secs(5), |h| {
-            h.a11y_nodes().iter().any(|(_, node)| {
-                node.label() == Some("Notifications")
-                    && node.value().is_some_and(|value| {
-                        value.contains("Link copied") && value.contains(WATCH_ID)
-                    })
-            })
-        });
+    let observed = link_copied(&mut app);
     if !observed {
-        let notices: Vec<_> = app
-            .harness()
-            .a11y_nodes()
-            .into_iter()
-            .filter(|(_, node)| node.label() == Some("Notifications"))
-            .map(|(_, node)| node.value().map(str::to_owned))
-            .collect();
         eprintln!(
-            "share timeout at {:?}; a11y notices: {notices:?}",
-            ui::time::now()
+            "share timeout at {:?}; bar notice: {:?}",
+            ui::time::now(),
+            ui::window_toolbar::notice()
         );
         app.with_surface::<TubeApp, _>(|viewer| {
             eprintln!(
@@ -905,14 +920,10 @@ fn share_copies_a_link_through_a_real_click() {
     })
     .unwrap();
     assert!(
-        app.harness().a11y_nodes().iter().any(|(_, node)| {
-            node.label() == Some("Notifications")
-                && node.live() == Some(ui::accesskit::Live::Assertive)
-                && node
-                    .value()
-                    .is_some_and(|value| value.contains("Link copied") && value.contains(WATCH_ID))
-        }),
-        "the share confirmation is actually published by the toast strip"
+        ui::window_toolbar::notice().is_some_and(
+            |notice| notice.text.contains("Link copied") && notice.text.contains(WATCH_ID)
+        ),
+        "the share confirmation is the window bar's notice"
     );
 }
 
@@ -934,7 +945,7 @@ fn hovering_copy_link() -> (
     app.settle();
     assert!(
         app.harness()
-            .settle_for_capture(ui::time::Duration::from_secs(5)),
+            .settle_for_capture(tilo_test_env::hang_bound()),
         "the watch page must finish its entrance before the pointer arrives"
     );
     let centre = app.harness().targets()["watch_copy_link"].center();
@@ -989,15 +1000,11 @@ fn press(
 }
 
 fn link_copied(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> bool {
-    app.harness()
-        .wait_until(ui::time::Duration::from_secs(5), |h| {
-            h.a11y_nodes().iter().any(|(_, node)| {
-                node.label() == Some("Notifications")
-                    && node.value().is_some_and(|value| {
-                        value.contains("Link copied") && value.contains(WATCH_ID)
-                    })
-            })
+    app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
+        ui::window_toolbar::notice().is_some_and(|notice| {
+            notice.text.contains("Link copied") && notice.text.contains(WATCH_ID)
         })
+    })
 }
 
 /// A person hovers "Copy link", the page updates under the still pointer,
@@ -1086,7 +1093,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
             );
             columns_per_width.push(top.len());
 
-            // Equal-width flex tracks.
             let w0 = top[0].width();
             for c in &top {
                 assert!(
@@ -1256,7 +1262,6 @@ fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
         let mut hb = Harness::new(app_before, (1280.0, 900.0));
         let avatars_before = hb.image_draw_count();
 
-        // The production reconciliation pass bridges UC_B's avatar onto UC_A.
         model.reconcile_channel_avatars();
         assert_eq!(
             model.channel("UC_A").unwrap().avatar_url,

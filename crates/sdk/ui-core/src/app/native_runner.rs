@@ -10,11 +10,23 @@ use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_lock::MutexRecover as _;
 
+mod held_frame;
+mod ime;
 #[cfg(target_os = "linux")]
 mod linux_header;
 mod private_text_input;
+mod process_windows;
+mod slot_bar;
 #[cfg(any(windows, target_os = "linux"))]
 pub(super) mod startup;
+mod wheel_batch;
+
+use ime::{
+    NativeImeWindowState, PrimaryPreeditUpdate, apply_native_ime, apply_native_ime_content,
+    pending_floating_ime_state, preedit_after_event, primary_floating_ime_state,
+    primary_ime_state_for_held_child, retained_return_ime_state, routes_to_floating_ime,
+    secondary_ime_state,
+};
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
@@ -47,6 +59,12 @@ fn create_accessibility_adapter(
     }
 }
 
+/// How often an occluded window runs the passes nobody asks it to draw.
+/// Long enough that a window left behind another app costs nothing, short
+/// enough that work queued behind an occlusion is answered while the person
+/// waits for it.
+const OCCLUDED_TICK_INTERVAL: Duration = Duration::from_millis(50);
+
 /// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` live on a
 /// dedicated worker thread (see [`crate::render_thread`]) — this struct
 /// keeps only the channel ends to ship frames and recycle scene buffers.
@@ -57,6 +75,12 @@ struct AppHandler {
     /// When the next "just typed" highlight steps down its fade
     /// (`PresenceCtx::typing_next_step`).
     typing_step_at: Option<crate::time::Instant>,
+    /// A frame held for a local read ([`crate::arriving`]): drawn when the
+    /// read answers, or at this instant when its frame budget runs out.
+    held_frame: Option<crate::time::Instant>,
+    /// When the next state pass of an occluded window is due (see
+    /// [`App::run_state_tick`]); `None` while nothing is pending.
+    occluded_tick_at: Option<crate::time::Instant>,
     /// Debug check that animation frames move something.
     still_animation: animation_schedule::StillAnimation,
     native_scenario: Option<crate::native_scenario::Scenario>,
@@ -106,6 +130,8 @@ struct AppHandler {
     /// keyboard/IME events reach the reattached primary editor.
     floating_ime_return_continuation: Option<String>,
     private_input: private_text_input::Bridge,
+    /// Wheel deltas of this wake, routed as one event ([`wheel_batch`]).
+    wheel_batch: wheel_batch::WheelBatch,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
     /// The field with the keyboard was touched since the last IME sync.
@@ -157,6 +183,8 @@ struct AppHandler {
     /// Who decorates the window, and the header bar when the app does.
     #[cfg(target_os = "linux")]
     decorations: linux_header::Decorations,
+    /// The app's window-bar slots, drawn here while nothing hosts them.
+    slot_bar: slot_bar::SlotBar,
     /// The host OS's appearance, for a standalone app outside Tilo OS.
     host_appearance: Option<crate::host_appearance::Source>,
     /// Settings.json changed while this process was idle. The next
@@ -169,6 +197,9 @@ struct AppHandler {
     /// ([`crate::workspace_identity`]): the loop ends with the window kept
     /// for the launch to open the app in.
     handing_over: bool,
+    /// The window is done: the last window of the process ends its loop, any
+    /// other closes alone ([`process_windows`]).
+    closing: std::cell::Cell<bool>,
 }
 
 #[cfg(test)]
@@ -778,92 +809,6 @@ fn dispatch_native_surface_accessibility(
     root.perform_floating_surface_accessibility_action(id, target, &action, state, path)
 }
 
-/// A held protocol resource can anchor an editor outside its native window.
-/// Wayland cursor positions are signed; the shared widget/browser contract
-/// stays unchanged, while native handoff translations must not clamp to zero.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct NativeImeWindowState {
-    content: crate::ime::InputContent,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-impl NativeImeWindowState {
-    fn from_rect(content: crate::ime::InputContent, rect: KurboRect) -> Self {
-        let shared = ImeWindowState::from_rect(content, rect);
-        let signed = |value: f64| {
-            if value.is_finite() {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "rounded coordinate is bounded to the signed Wayland position range"
-                )]
-                {
-                    value
-                        .round()
-                        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-                }
-            } else {
-                0
-            }
-        };
-        Self {
-            content,
-            x: signed(rect.x0),
-            y: signed(rect.y0),
-            width: shared.width,
-            height: shared.height,
-        }
-    }
-}
-
-impl From<NativeImeWindowState> for ImeWindowState {
-    fn from(native: NativeImeWindowState) -> Self {
-        Self::from_rect(
-            native.content,
-            KurboRect::from_origin_size(
-                (f64::from(native.x), f64::from(native.y)),
-                (f64::from(native.width), f64::from(native.height)),
-            ),
-        )
-    }
-}
-
-impl From<ImeWindowState> for NativeImeWindowState {
-    fn from(shared: ImeWindowState) -> Self {
-        Self::from_rect(
-            shared.content,
-            KurboRect::from_origin_size(
-                (f64::from(shared.x), f64::from(shared.y)),
-                (f64::from(shared.width), f64::from(shared.height)),
-            ),
-        )
-    }
-}
-
-fn apply_native_ime(
-    window: &Window,
-    next: Option<NativeImeWindowState>,
-    previous: &mut Option<NativeImeWindowState>,
-) {
-    if next == *previous {
-        return;
-    }
-    match next {
-        Some(intent) => {
-            apply_native_ime_content(window, intent);
-            window.set_ime_allowed(true);
-            window.set_ime_cursor_area(
-                winit::dpi::LogicalPosition::new(intent.x, intent.y),
-                winit::dpi::LogicalSize::new(intent.width, intent.height),
-            );
-        }
-        None => window.set_ime_allowed(false),
-    }
-    *previous = next;
-}
-
 /// App-owned surfaces remain fixed to their live presentation rectangle.
 /// Winit's non-resizable Wayland window captures min/max at creation; a
 /// later request_inner_size does not advance those hints. Keep them aligned
@@ -873,170 +818,6 @@ fn resize_native_floating_window(window: &Window, rect: KurboRect) {
     window.set_min_inner_size(Some(size));
     window.set_max_inner_size(Some(size));
     let _ = window.request_inner_size(size);
-}
-
-fn apply_native_ime_content(window: &Window, intent: NativeImeWindowState) {
-    // Wayland takes the field's whole content type; other platforms take
-    // no more than winit's own purposes.
-    let (hint, purpose) = intent.content.wayland();
-    tilo_presentation::text_input::set_content_type(window, hint, purpose);
-    window.set_ime_purpose(intent.content.winit_purpose());
-}
-
-fn secondary_ime_state(
-    root: &dyn Widget,
-    id: &str,
-    desktop_rect: KurboRect,
-    focused: bool,
-) -> Option<NativeImeWindowState> {
-    if !focused {
-        return None;
-    }
-    let (content, rect) = root.floating_surface_ime(id)?;
-    Some(NativeImeWindowState::from_rect(
-        content,
-        rect - desktop_rect.origin().to_vec2(),
-    ))
-}
-
-fn primary_floating_ime_state(
-    root: &dyn Widget,
-    id: &str,
-    coordinate_offset: Vec2,
-) -> Option<NativeImeWindowState> {
-    let (content, rect) = root.floating_surface_ime(id)?;
-    Some(NativeImeWindowState::from_rect(
-        content,
-        rect - coordinate_offset,
-    ))
-}
-
-fn pending_floating_ime_state(
-    app: &App,
-    preedit_active: bool,
-    previous: Option<NativeImeWindowState>,
-) -> Option<NativeImeWindowState> {
-    preedit_active.then_some(())?;
-    app.pending_floating_ime_source()?;
-    previous
-}
-
-fn primary_ime_state_for_held_child(
-    primary: Option<ImeWindowState>,
-    primary_origin: Vec2,
-    child_origin: Vec2,
-) -> Option<NativeImeWindowState> {
-    let primary = primary?;
-    let rect = KurboRect::new(
-        f64::from(primary.x),
-        f64::from(primary.y),
-        f64::from(primary.x.saturating_add(primary.width)),
-        f64::from(primary.y.saturating_add(primary.height)),
-    ) + primary_origin
-        - child_origin;
-    Some(NativeImeWindowState::from_rect(primary.content, rect))
-}
-
-/// Refresh a held child's caret when the returned editor projects one, while
-/// keeping its real protocol alive across a transient missing projection.
-/// Only the exact retained, still-composing source may preserve prior state;
-/// every definitive lifecycle end returns the projected `None` and disables.
-fn retained_return_ime_state(
-    projected: Option<NativeImeWindowState>,
-    retained: Option<NativeImeWindowState>,
-    exact_source_active: bool,
-) -> Option<NativeImeWindowState> {
-    if exact_source_active {
-        projected.or(retained)
-    } else {
-        projected
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PrimaryPreeditUpdate {
-    Active,
-    PendingClear,
-    Finished,
-}
-
-fn preedit_after_event(event: &WindowEvent) -> Option<PrimaryPreeditUpdate> {
-    match event {
-        WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) if text.is_empty() => {
-            Some(PrimaryPreeditUpdate::PendingClear)
-        }
-        WindowEvent::Ime(winit::event::Ime::Preedit(_, _)) => Some(PrimaryPreeditUpdate::Active),
-        WindowEvent::Ime(winit::event::Ime::Commit(_) | winit::event::Ime::Disabled) => {
-            Some(PrimaryPreeditUpdate::Finished)
-        }
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod floating_ime_continuation_tests {
-    use super::*;
-
-    #[test]
-    fn returned_caret_keeps_signed_child_coordinates_and_content_type() {
-        let primary = ImeWindowState {
-            content: crate::ime::InputContent {
-                purpose: crate::ime::InputPurpose::Email,
-                hints: crate::ime::InputHints {
-                    multiline: true,
-                    ..crate::ime::InputHints::default()
-                },
-            },
-            x: 20,
-            y: 30,
-            width: 2,
-            height: 24,
-        };
-        let projected = primary_ime_state_for_held_child(
-            Some(primary),
-            Vec2::new(100.0, 80.0),
-            Vec2::new(300.0, 200.0),
-        )
-        .unwrap();
-        assert_eq!((projected.x, projected.y), (-180, -90));
-        assert_eq!((projected.width, projected.height), (2, 24));
-        assert_eq!(projected.content, primary.content);
-        assert_eq!(
-            retained_return_ime_state(None, Some(projected), true),
-            Some(projected)
-        );
-        assert_eq!(
-            retained_return_ime_state(None, Some(projected), false),
-            None
-        );
-    }
-
-    #[test]
-    fn empty_preedit_does_not_retire_custody_before_the_commit_in_the_same_batch() {
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Preedit(
-                String::new(),
-                None
-            ))),
-            Some(PrimaryPreeditUpdate::PendingClear)
-        );
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Commit("文字".into()))),
-            Some(PrimaryPreeditUpdate::Finished)
-        );
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Disabled)),
-            Some(PrimaryPreeditUpdate::Finished)
-        );
-        assert!(!routes_to_floating_ime(&WindowEvent::Focused(false)));
-    }
-}
-
-fn routes_to_floating_ime(event: &WindowEvent) -> bool {
-    matches!(
-        event,
-        WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-    )
 }
 
 fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
@@ -1539,12 +1320,7 @@ fn announce_frame(window: &Window) {
 }
 
 impl AppHandler {
-    fn handle_routed_window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn handle_routed_window_event(&mut self, window_id: WindowId, event: WindowEvent) {
         let _entry = self.app.enter_wake_scope();
         // A pen's sample is no event of its own: widgets read it while they
         // handle the pointer event it precedes.
@@ -1613,14 +1389,14 @@ impl AppHandler {
             .iter()
             .position(|surface| surface.window.id() == window_id)
         {
-            self.handle_native_floating_window_event(event_loop, index, event);
+            self.handle_native_floating_window_event(index, event);
             return;
         }
         let Some(window) = self.window.clone() else {
             return;
         };
         if window.id() == window_id {
-            self.handle_primary_window_event(event_loop, &window, event);
+            self.handle_primary_window_event(&window, event);
         }
     }
     fn visible_auxiliary_needs_shared_root(&self) -> bool {
@@ -1639,7 +1415,7 @@ impl AppHandler {
     }
     fn route_window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+
         window_id: WindowId,
         event: WindowEvent,
         origin: native_input_isolation::EventOrigin,
@@ -1650,7 +1426,7 @@ impl AppHandler {
             origin,
             event,
             |event| {
-                self.handle_routed_window_event(event_loop, window_id, event);
+                self.handle_routed_window_event(window_id, event);
             },
         )
     }
@@ -1949,13 +1725,14 @@ impl AppHandler {
             }
         };
         damage_regions.clear();
-        let size = audience.window.inner_size();
-        let scale = audience.window.scale_factor();
+        let extent =
+            render.frame_extent(audience.window.inner_size(), audience.window.scale_factor());
+        let scale = extent.scale;
         let rect = vello::kurbo::Rect::new(
             0.0,
             0.0,
-            f64::from(size.width) / scale,
-            f64::from(size.height) / scale,
+            f64::from(extent.width) / scale,
+            f64::from(extent.height) / scale,
         );
         let secrets = crate::secret_paint::SecretPaint::begin();
         let drawn = self.app.root_widget.draw_audience_presentation(
@@ -1982,12 +1759,13 @@ impl AppHandler {
                 cpu_frame_id: None,
                 on_present: None,
                 scene,
-                width: size.width.max(1),
-                height: size.height.max(1),
+                width: extent.width,
+                height: extent.height,
                 base_color: self.app.theme.tokens.colors.surfaces.content,
                 damage_regions,
                 scroll_copies: Vec::new(),
                 full_redraw: true,
+                partial: false,
                 backdrop: crate::backdrop::BackdropFrame::default(),
             })
             .is_err()
@@ -2102,9 +1880,7 @@ impl AppHandler {
         } else {
             self.app
                 .ime_window_state()
-                .filter(|_| {
-                    !self.app.focused_ime_requires_deferred_ack() || self.private_input.admitted()
-                })
+                .filter(|_| self.private_input.standard_input_open(&self.app))
                 .map(NativeImeWindowState::from)
         };
         #[cfg(target_os = "android")]
@@ -2384,13 +2160,22 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
                 | crate::floating_surface::FloatingSurfaceHostMessage::ShareSelection
+                | crate::floating_surface::FloatingSurfaceHostMessage::PointAt { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::Pick { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions {
+                    ..
+                }
                 | crate::floating_surface::FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
                     ..
                 }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
                     ..
                 }
+                | crate::floating_surface::FloatingSurfaceHostMessage::DrawsEmbeds
+                | crate::floating_surface::FloatingSurfaceHostMessage::EmbedStates { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::OpenWindows { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::WindowShareAsk { .. }
                 // Never delivered: the client's `pump` ends on it.
                 | crate::floating_surface::FloatingSurfaceHostMessage::VersionMismatch {
                     ..
@@ -2549,9 +2334,9 @@ impl AppHandler {
         // Every pooled scene is either newly seeded or reset by the worker
         // before recycling. Resetting it again here only rewrote all stream
         // lengths on every frame.
-        let inner = surface.window.inner_size();
         let scale = surface.window.scale_factor();
-        let transform = crate::scale::composite_transform(scale)
+        let extent = render.frame_extent(surface.window.inner_size(), scale);
+        let transform = crate::scale::composite_transform(extent.scale)
             .pre_translate((-surface.desktop_rect.x0, -surface.desktop_rect.y0).into());
         let presentation = app
             .root_widget
@@ -2618,12 +2403,13 @@ impl AppHandler {
                 cpu_frame_id: None,
                 on_present: None,
                 scene,
-                width: inner.width.max(1),
-                height: inner.height.max(1),
+                width: extent.width,
+                height: extent.height,
                 base_color: Color::TRANSPARENT,
                 damage_regions,
                 scroll_copies: Vec::new(),
                 full_redraw: true,
+                partial: false,
                 // The compositor puts this window over the desktop; nothing
                 // under its surfaces is in this scene to blur.
                 backdrop: crate::backdrop::BackdropFrame::default(),
@@ -2735,7 +2521,7 @@ impl AppHandler {
     /// error-path behaviour with no clippy/cargo loop available here to
     /// verify against.
     #[allow(clippy::too_many_lines, reason = "see doc comment above")]
-    fn handle_redraw_requested(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
+    fn handle_redraw_requested(&mut self, window: &Arc<Window>) {
         let native_redraw_entry = self
             .native_input_origin
             .map(|origin| (origin, crate::time::now()));
@@ -2753,13 +2539,23 @@ impl AppHandler {
         if self.surface_suspended {
             return;
         }
+        if first_primary_frame {
+            // The frame budget local reads get is one refresh of the display
+            // the window opens on.
+            self.animation_schedule.set_refresh_millihertz(
+                window
+                    .current_monitor()
+                    .and_then(|monitor| monitor.refresh_rate_millihertz()),
+            );
+            crate::arriving::set_frame_budget(self.animation_schedule.interval());
+        }
         if self.render.is_none() {
             tilo_startup_metrics::mark("first-redraw-init-render-start");
             if let Err(reason) = self.init_render(window) {
                 // Retrying every redraw would only spin.
                 crate::diag!("tilo: {reason}");
                 stop_abnormally(
-                    event_loop,
+                    &self.closing,
                     format!("its renderer could not start: {reason}"),
                 );
                 return;
@@ -2857,7 +2653,7 @@ impl AppHandler {
         if surface_gone {
             let reason = crate::render_thread::take_surface_loss()
                 .unwrap_or_else(|| "its drawing surface was lost".to_owned());
-            stop_abnormally(event_loop, reason);
+            stop_abnormally(&self.closing, reason);
             return;
         }
         // Do not consume sync/layout/dirty state unless a finite render buffer
@@ -2870,13 +2666,14 @@ impl AppHandler {
             Ok(true) => {}
             Ok(false) => return,
             Err(_) => {
-                stop_abnormally(event_loop, "its render thread stopped".to_owned());
+                stop_abnormally(&self.closing, "its render thread stopped".to_owned());
                 return;
             }
         }
         sync_safe_area(&mut self.app, window);
         #[cfg(target_os = "linux")]
         self.decorations.refresh(&mut self.app, window);
+        self.slot_bar.refresh(&mut self.app, window);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -2899,13 +2696,20 @@ impl AppHandler {
         }
 
         let inner = window.inner_size();
-        let width = inner.width;
-        let height = inner.height;
+        // The frame is drawn at the window's size and scale unless that is
+        // past the device's largest texture (a window over several
+        // displays): then at the lower scale that fits, which the
+        // compositor stretches over the window. Input and accessibility
+        // keep the window's own scale; both meet in logical pixels.
+        let extent = render.frame_extent(inner, window.scale_factor());
+        let width = extent.width;
+        let height = extent.height;
         #[allow(
             clippy::cast_possible_truncation,
             reason = "scale factor is intentionally narrowed to f32 for the render pipeline; identical to today's output"
         )]
-        let scale_factor = window.scale_factor() as f32;
+        let scale_factor = extent.scale as f32;
+        let window_scale = window.scale_factor();
         app.layout.last_frame_size = Some(inner);
         let mut floating_content_changed =
             app.layout.layout_dirty || app.layout.structure_dirty || app.needs_sync;
@@ -2952,7 +2756,7 @@ impl AppHandler {
             || app.take_close_window_request()
         {
             if app.admit_native_close_request() {
-                event_loop.exit();
+                self.closing.set(true);
                 return;
             }
             if let Some(window) = self.window.as_ref() {
@@ -3007,7 +2811,7 @@ impl AppHandler {
                 .is_none_or(|history| history.live_interactive())
             && app.history_layout.is_none()
             && app.close_admission.dialog.is_none())
-        .then(|| crate::scroll_copy::placed(app.root_widget.as_ref()));
+        .then(|| crate::damage::widget_boxes(app.root_widget.as_ref()));
         let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
         let layout_phase = slow_event::phase("layout");
         let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
@@ -3026,6 +2830,21 @@ impl AppHandler {
         };
         drop(layout_phase);
         mark_first_frame("first-frame-layout-done");
+        // A local read this frame would show has not answered and is still
+        // inside its frame budget ([`crate::arriving`]): the frame on screen
+        // stays until the data lands (its wake redraws) or the budget runs
+        // out (`about_to_wait` redraws then), so a window or a view opens
+        // complete. Like an aborted layout, the held frame keeps its render
+        // admission; the frame that is drawn rebuilds and repaints in full.
+        let now = crate::time::now();
+        if let Some(until) =
+            held_frame::frame_held_until(app.root_widget.holds_frame_until(now), now)
+        {
+            app.layout.structure_dirty = true;
+            self.held_frame = Some(until);
+            return;
+        }
+        self.held_frame = None;
         // A relayout that moved widgets and rebuilt or resized nothing may be
         // scrolls this window copies; that is decided with the frame's damage.
         let moved_from = boxes_before.filter(|_| {
@@ -3048,7 +2867,7 @@ impl AppHandler {
         // wait on GPU work; aborted layouts retain it in the handle for retry.
         let __prof_pool_wait = app.profiler.as_ref().map(|_| crate::time::now());
         let Ok((mut scene, mut damage_regions)) = render.buffers.recv() else {
-            stop_abnormally(event_loop, "its render thread stopped".to_owned());
+            stop_abnormally(&self.closing, "its render thread stopped".to_owned());
             return;
         };
         if let Some(p) = app.profiler.as_mut() {
@@ -3076,9 +2895,34 @@ impl AppHandler {
         // backdrop under the material before the frame renders.
         let backdrop_recording = crate::backdrop::BackdropRecording::begin();
         crate::backdrop::layer_scene(&scene, 0);
+        // The local render worker repaints only the damage from each scene,
+        // over the pixels it presented last: a frame that repaints neither
+        // whole nor under layers the widgets' damage does not describe is
+        // drawn only where its damage needs it (`crate::draw_cull`).
+        let culls = !full_redraw_required
+            && !self.top_layer_drawn
+            && app.history.is_none()
+            && app.history_layout.is_none()
+            && !crate::render_thread::remote::requested();
+        let mut culling = culls.then(|| std::mem::take(&mut app.layout.cull));
+        let culled = culling.is_some();
+        let cull_frame = culling.as_mut().map(crate::draw_cull::Culling::begin);
         let draw_phase = slow_event::phase("draw");
-        let drawn = draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        let drawn = draw_frame_content_with(
+            app,
+            &mut scene,
+            (width, height),
+            scale_factor,
+            t_draw_start,
+            culling.as_mut().map(|culling| &mut culling.scenes),
+        );
         drop(draw_phase);
+        // Culled, what paints over the widgets waits with their layers, to
+        // be composed over them once the frame knows its damage.
+        let over: &mut Scene = match culling.as_mut() {
+            Some(culling) => &mut culling.scenes.layers,
+            None => &mut scene,
+        };
         // An empty state waiting for its room's first sync turns a spinner
         // no widget's damage covers (`crate::room_sync`): a new pose damages
         // its slot, in scene pixels.
@@ -3091,15 +2935,27 @@ impl AppHandler {
         let mut top_layer = drawn.top_layer.is_some() || drawn.tooltip.is_some();
         // What paints over the widgets without moving with a scroll and is no
         // widget the copy planner sees: the header bar another desktop gets.
-        let before_decorations = scene.encoding().draw_tags.len();
+        let before_decorations = over.encoding().draw_tags.len();
         #[cfg(target_os = "linux")]
         {
-            self.decorations.draw(app, &mut scene, transform);
+            self.decorations.draw(app, over, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
-        let decorated = scene.encoding().draw_tags.len() != before_decorations;
-        let backdrop =
-            crate::backdrop::BackdropFrame::from_single_scene(backdrop_recording.finish());
+        self.slot_bar.draw(app, over, transform);
+        full_redraw_required |= self.slot_bar.take_repaint();
+        let decorated = over.encoding().draw_tags.len() != before_decorations;
+        // Culled, the floating surfaces drawn into the frame's scenes reach
+        // its scene once they are composed into it.
+        let mut backdrop_recording = Some(backdrop_recording);
+        let mut backdrop = if culled {
+            crate::backdrop::BackdropFrame::default()
+        } else {
+            backdrop_recording
+                .take()
+                .map_or_else(crate::backdrop::BackdropFrame::default, |recording| {
+                    crate::backdrop::BackdropFrame::from_single_scene(recording.finish())
+                })
+        };
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         // Peer pointers, names and activity paint over the widgets and damage
         // only the marks that changed. Carets, selections and marks widgets
@@ -3112,9 +2968,9 @@ impl AppHandler {
             window_rect,
             crate::time::now(),
         );
-        scene.append(self.presence_layer.scene(), None);
+        over.append(self.presence_layer.scene(), None);
         full_redraw_required |= presence_damage.is_none();
-        let content_draw_tags = scene.encoding().draw_tags.len();
+        let content_draw_tags = over.encoding().draw_tags.len();
 
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
@@ -3138,7 +2994,7 @@ impl AppHandler {
                         "frame_commit_us": self.native_input_origin.map(|origin| origin.elapsed().as_micros()),
                         // Capture after drawing: layout may clamp scroll state.
                         // Input-time effects alone cannot prove the frame used it.
-                        "state": app.native_input_snapshot(),
+                        "state": self.slot_bar.with_search_evidence(app.native_input_snapshot()),
                     }),
                 );
             }
@@ -3154,14 +3010,14 @@ impl AppHandler {
         record_main_stage(&mut native_main_stages, MainStage::AfterNativeFrameLog);
 
         if app.debug_mode {
-            draw_debug_outlines(app, &mut scene, transform);
+            draw_debug_outlines(app, over, transform);
         }
         record_main_stage(&mut native_main_stages, MainStage::AfterDebugOutlines);
 
         // Debug outlines paint over the widgets too. A layer drawn this
         // frame, or one erased since the last, covers pixels no widget's
         // damage reports. (The presence layer reports its own.)
-        top_layer |= scene.encoding().draw_tags.len() != content_draw_tags;
+        top_layer |= over.encoding().draw_tags.len() != content_draw_tags;
         full_redraw_required |=
             top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer);
 
@@ -3191,7 +3047,7 @@ impl AppHandler {
                 let moves = (!offers.is_empty()).then(|| {
                     crate::scroll_copy::moves_besides(
                         before,
-                        &crate::scroll_copy::placed(root),
+                        &crate::damage::widget_boxes(root),
                         &offers,
                     )
                 });
@@ -3256,6 +3112,40 @@ impl AppHandler {
                 scroll_copies = planned.copies;
             }
         }
+        // A culled frame shows only what it drew: nothing it left out may
+        // be repainted, and the worker must be able to repaint its damage
+        // alone. Otherwise its widgets are drawn again in full. Then its
+        // scenes are composed into the frame's.
+        let mut partial = false;
+        if let Some(mut culling) = culling {
+            let left_out = cull_frame
+                .as_ref()
+                .is_some_and(crate::draw_cull::Frame::skipped_any);
+            let holds = left_out
+                && !full_redraw_required
+                && crate::render_thread::renders_damage_alone(width, height, &damage_regions)
+                && cull_frame
+                    .as_ref()
+                    .is_some_and(|frame| frame.holds(Some(&damage_regions)));
+            drop(cull_frame);
+            if left_out && !holds {
+                redraw_culled_widgets(app, &mut culling.scenes, &drawn);
+            }
+            culling.tally(left_out, left_out && !holds);
+            partial = left_out && holds;
+            let secret = culling.shows_secret(app.floating.secret_on_screen, partial);
+            app.set_secret_on_screen(secret);
+            compose_culled(&mut scene, &culling.scenes);
+            if let Some(recording) = backdrop_recording.take() {
+                backdrop = crate::backdrop::BackdropFrame::from_single_scene(recording.finish());
+            }
+            culling.repainted(&damage_regions, !scroll_copies.is_empty());
+            app.layout.cull = culling;
+        } else if !full_redraw_required {
+            app.layout
+                .cull
+                .repainted(&damage_regions, !scroll_copies.is_empty());
+        }
         if !app.capture_frame_ready() {
             scene.reset();
             render.buffers.unprepare((scene, damage_regions));
@@ -3273,12 +3163,9 @@ impl AppHandler {
             if let Some(adapter) = self.a11y_adapter.as_mut() {
                 let _a11y = slow_event::phase("a11y");
                 let app_ref: &mut App = app;
-                let scale = f64::from(scale_factor);
-                adapter.update_if_active(|| {
-                    crate::accesskit_bridge::native_tree_update(
-                        app_ref.build_a11y_tree_update(scale),
-                    )
-                });
+                let scale = window_scale;
+                let bar = &self.slot_bar;
+                adapter.update_if_active(|| slot_bar::window_tree_update(app_ref, bar, scale));
             }
             record_main_stage(&mut native_main_stages, MainStage::AfterAccessibility);
         });
@@ -3333,7 +3220,11 @@ impl AppHandler {
 
             if let Some(trace) = self.physical_input_trace.as_mut()
                 && trace.has_pending()
-                && let Some(row) = trace.drawn(cpu_frame_id, app.native_input_snapshot())
+                && let Some(row) = trace.drawn(
+                    cpu_frame_id,
+                    self.slot_bar
+                        .with_search_evidence(app.native_input_snapshot()),
+                )
             {
                 crate::native_scenario::log::emit_json("tilo-physical-frame", row);
             }
@@ -3347,6 +3238,7 @@ impl AppHandler {
                 damage_regions,
                 scroll_copies,
                 full_redraw: full_redraw_required,
+                partial,
                 backdrop,
                 on_present: self.dev_reload_timing.take().map(|timing| {
                     let submitted = crate::time::wall();
@@ -3401,7 +3293,7 @@ impl AppHandler {
             if send_result.is_err() {
                 let reason = crate::render_thread::take_surface_loss()
                     .unwrap_or_else(|| "its render thread stopped".to_owned());
-                stop_abnormally(event_loop, reason);
+                stop_abnormally(&self.closing, reason);
                 return;
             }
             mark_first_frame("first-frame-submitted");
@@ -3478,14 +3370,8 @@ impl AppHandler {
 
 impl AppHandler {
     /// `UserEvent` injection keeps the ordinary window dispatch after admission.
-    fn injected_window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn injected_window_event(&mut self, window_id: WindowId, event: WindowEvent) {
         self.route_window_event(
-            event_loop,
             window_id,
             event,
             native_input_isolation::EventOrigin::Injected,
@@ -3588,12 +3474,89 @@ impl AppHandler {
     }
 }
 
+impl AppHandler {
+    /// Route one event the platform reported for `window_id` (wheel deltas
+    /// already summed, [`wheel_batch`]).
+    fn platform_window_event(&mut self, window_id: WindowId, event: WindowEvent) {
+        let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
+        // Ctrl+C copies whichever source is typing: name the chord by its
+        // Latin key before any handler matches it.
+        let event =
+            crate::latin_chord::renamed(&event, self.app.input.modifiers.state()).unwrap_or(event);
+        // What this event opens or closes follows it (a key lands it at
+        // once, a click moves it): `motion::input_source`.
+        crate::motion::note_input(&event);
+        if let Some(window) = self
+            .window
+            .clone()
+            .filter(|window| window.id() == window_id)
+            && self
+                .private_input
+                .event(&mut self.app, window.as_ref(), &event)
+        {
+            self.sync_ime(&window);
+            return;
+        }
+        #[cfg(target_os = "android")]
+        if let WindowEvent::Touch(touch) = &event
+            && touch.phase == winit::event::TouchPhase::Started
+            && self.ime_state.is_some()
+            && self.touches_focused_field(window_id, touch.location)
+        {
+            for settled in self.text_input.settle() {
+                self.route_window_event(
+                    window_id,
+                    settled,
+                    native_input_isolation::EventOrigin::Platform,
+                );
+            }
+            self.text_input_touched = true;
+        }
+        let physical_input = if crate::physical_input_trace::Trace::observes(&event)
+            && self
+                .window
+                .as_ref()
+                .is_some_and(|window| window.id() == window_id)
+        {
+            let state = self.physical_input_trace.as_ref().and_then(|_| {
+                self.slot_bar
+                    .with_search_evidence(self.app.native_input_snapshot())
+            });
+            self.physical_input_trace
+                .as_mut()
+                .and_then(|trace| trace.begin(&event, state))
+        } else {
+            None
+        };
+        self.note_host_appearance_event(&event);
+        let admitted = self.route_window_event(
+            window_id,
+            event,
+            native_input_isolation::EventOrigin::Platform,
+        );
+        if let Some(input) = physical_input {
+            let mut row = crate::physical_input_trace::Trace::effect(
+                input,
+                self.slot_bar
+                    .with_search_evidence(self.app.native_input_snapshot()),
+            );
+            let modifiers = self.app.input.modifiers.state();
+            row["input_route_admitted"] = serde_json::json!(admitted);
+            row["modifiers"] = serde_json::json!({
+                "shift": modifiers.shift_key(), "control": modifiers.control_key(),
+                "alt": modifiers.alt_key(), "super": modifiers.super_key(),
+            });
+            crate::native_scenario::log::emit_json("tilo-physical-input", row);
+        }
+    }
+}
+
 impl ApplicationHandler<UserEvent> for AppHandler {
     #[allow(
         clippy::too_many_lines,
         reason = "winit requires the complete synthetic event dispatch at this callback boundary"
     )]
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         let _slow = slow_event::Span::begin(
             "user_event",
             match &event {
@@ -3646,19 +3609,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     && wake.requires_sync()
                     && let Some(window) = self.window.as_ref()
                 {
+                    // The wake may have come from this app's own engine or
+                    // worker, which an occluded window still hears. Run the
+                    // state passes now; a redraw is the paint's business.
+                    self.app.run_state_tick();
                     window.request_redraw();
                 }
                 return;
             }
             UserEvent::DevSessionStop => {
                 self.app.autosave_flush();
-                super::checkpoint_and_exit(&self.app, event_loop);
+                super::write_dev_checkpoint_now(&self.app);
+                self.closing.set(true);
                 return;
             }
             UserEvent::DevSessionReload => {
                 self.reload_open_windows_in_place();
                 return;
             }
+            // The process opens the window ([`process_windows`]), not one of
+            // its windows.
+            UserEvent::OpenWindow(_) => return,
             other => other,
         };
         let Some(window) = self.window.clone() else {
@@ -3699,18 +3670,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         "lateness_us": now.saturating_duration_since(packet.scheduled_at).as_micros(),
                     }),
                 );
-                let before = self.app.native_input_snapshot();
+                let before = self
+                    .slot_bar
+                    .with_search_evidence(self.app.native_input_snapshot());
                 self.native_input_ids.push(packet.id);
                 // Pen steps carry their samples ahead of each pointer event,
                 // so a paced stroke reaches widgets as a tablet's would.
                 for event in packet.input.window_events() {
-                    self.injected_window_event(event_loop, window_id, event);
+                    self.injected_window_event(window_id, event);
                 }
                 if let Some(before) = before {
                     crate::native_scenario::log::emit_json(
                         "tilo-native-effect",
                         serde_json::json!({
-                            "id": packet.id, "before": before, "after": self.app.native_input_snapshot(),
+                            "id": packet.id, "before": before, "after": self.slot_bar.with_search_evidence(self.app.native_input_snapshot()),
                         }),
                     );
                 }
@@ -3721,20 +3694,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         match event {
             UserEvent::Hover { x, y } => {
                 let ev = crate::synthetic_input::cursor_moved(x, y);
-                self.injected_window_event(event_loop, window_id, ev);
+                self.injected_window_event(window_id, ev);
             }
             UserEvent::Click { x, y } => {
                 let moved = crate::synthetic_input::cursor_moved(x, y);
-                self.injected_window_event(event_loop, window_id, moved);
+                self.injected_window_event(window_id, moved);
                 let press = crate::synthetic_input::mouse_press();
-                self.injected_window_event(event_loop, window_id, press);
+                self.injected_window_event(window_id, press);
                 let release = crate::synthetic_input::mouse_release();
-                self.injected_window_event(event_loop, window_id, release);
+                self.injected_window_event(window_id, release);
             }
             UserEvent::Key(key) => {
                 for state in [ElementState::Pressed, ElementState::Released] {
                     self.injected_window_event(
-                        event_loop,
                         window_id,
                         crate::synthetic_input::key_input(&key, state),
                     );
@@ -3742,7 +3714,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             UserEvent::Wheel { dx, dy } => {
                 let ev = crate::synthetic_input::mouse_wheel(dx, dy);
-                self.injected_window_event(event_loop, window_id, ev);
+                self.injected_window_event(window_id, ev);
             }
             UserEvent::External(payload) => {
                 let app = &mut self.app;
@@ -3756,6 +3728,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             UserEvent::HostCommand(invocation) => {
                 self.app.invoke_host_command(&invocation);
+                // The door is a wake too: what the command started is answered
+                // by the state passes even when no frame follows (a window
+                // macOS is not drawing, an agent driving it unseen).
+                self.app.run_state_tick();
                 self.app.needs_sync = true;
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
@@ -3776,7 +3752,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 for op in super::android_text_input::bridge::drain() {
                     for event in self.text_input.events(op) {
                         self.route_window_event(
-                            event_loop,
                             window_id,
                             event,
                             native_input_isolation::EventOrigin::Platform,
@@ -3790,6 +3765,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             | UserEvent::RenderReady(_)
             | UserEvent::DevSessionStop
             | UserEvent::DevSessionReload => {}
+            UserEvent::OpenWindow(_) => {}
             UserEvent::AccessKit {
                 event: ak_event, ..
             } => {
@@ -3799,10 +3775,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         if let Some(adapter) = self.a11y_adapter.as_mut() {
                             let scale = window.scale_factor();
                             let app_ref: &mut App = &mut self.app;
+                            let bar = &self.slot_bar;
                             adapter.update_if_active(|| {
-                                crate::accesskit_bridge::native_tree_update(
-                                    app_ref.build_a11y_tree_update(scale),
-                                )
+                                slot_bar::window_tree_update(app_ref, bar, scale)
                             });
                         }
                         window.request_redraw();
@@ -3816,16 +3791,27 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             req.action,
                             req.data.as_ref(),
                         ) {
-                            let click = self.app.dispatch_a11y_action(req.target_node, &action);
+                            // The window's row of slots is no widget of the
+                            // app's: its nodes run their slots.
+                            let slot_ran = self.slot_bar.perform_accessibility(
+                                &mut self.app,
+                                req.target_node,
+                                &action,
+                            );
+                            let click = if slot_ran {
+                                None
+                            } else {
+                                self.app.dispatch_a11y_action(req.target_node, &action)
+                            };
                             if let Some((x, y)) = click {
                                 let scale = window.scale_factor();
                                 let (px, py) = (x * scale, y * scale);
                                 let moved = crate::synthetic_input::cursor_moved(px, py);
-                                self.injected_window_event(event_loop, window_id, moved);
+                                self.injected_window_event(window_id, moved);
                                 let press = crate::synthetic_input::mouse_press();
-                                self.injected_window_event(event_loop, window_id, press);
+                                self.injected_window_event(window_id, press);
                                 let release = crate::synthetic_input::mouse_release();
-                                self.injected_window_event(event_loop, window_id, release);
+                                self.injected_window_event(window_id, release);
                             }
                             window.request_redraw();
                         }
@@ -3862,6 +3848,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             None
         };
         let app_id = primary_window_app_id(self.app.window.app_id.as_deref());
+        // The window opens at the content zoom this app had here.
+        self.app.restore_content_zoom(&app_id);
+        // Its shells take up the sidebar widths the person left them at.
+        crate::widget::remember_sidebar_widths_for_app(&app_id);
         // The window the launch made before constructing the app, when it
         // announces the id this app's window must have. Its surface may
         // already be configured on the renderer-preparation thread.
@@ -3895,7 +3885,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             use winit::platform::macos::ActiveEventLoopExtMacOS;
             if let Err(error) = event_loop.set_quit_request_window(Some(window.id())) {
                 crate::diag!("tilo: cannot protect application Quit: {error}");
-                event_loop.exit();
+                self.closing.set(true);
                 return;
             }
         }
@@ -3910,7 +3900,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // Scripted inputs still use the normal UserEvent dispatch route.
             if let Err(error) = window.set_cursor_hittest(false) {
                 eprintln!("Native benchmark pointer isolation failed: {error}");
-                event_loop.exit();
+                self.closing.set(true);
                 return;
             }
             self.native_input_pointer_passthrough = true;
@@ -3936,7 +3926,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         #[cfg(windows)]
         if let Err(reason) = self.init_render(&window) {
             crate::diag!("tilo: {reason}");
-            event_loop.exit();
+            self.closing.set(true);
             return;
         }
         #[cfg(any(target_os = "macos", windows))]
@@ -4009,82 +3999,26 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
     fn window_event(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        _event_loop: &ActiveEventLoop,
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
-        // What this event opens or closes follows it (a key lands it at
-        // once, a click moves it): `motion::input_source`.
-        crate::motion::note_input(&event);
-        if let Some(window) = self
-            .window
-            .clone()
-            .filter(|window| window.id() == window_id)
-            && self
-                .private_input
-                .event(&mut self.app, window.as_ref(), &event)
-        {
-            self.sync_ime(&window);
-            return;
-        }
-        #[cfg(target_os = "android")]
-        if let WindowEvent::Touch(touch) = &event
-            && touch.phase == winit::event::TouchPhase::Started
-            && self.ime_state.is_some()
-            && self.touches_focused_field(window_id, touch.location)
-        {
-            for settled in self.text_input.settle() {
-                self.route_window_event(
-                    event_loop,
-                    window_id,
-                    settled,
-                    native_input_isolation::EventOrigin::Platform,
-                );
-            }
-            self.text_input_touched = true;
-        }
-        let physical_input = if crate::physical_input_trace::Trace::observes(&event)
-            && self
-                .window
-                .as_ref()
-                .is_some_and(|window| window.id() == window_id)
-        {
-            let state = self
-                .physical_input_trace
-                .as_ref()
-                .and_then(|_| self.app.native_input_snapshot());
-            self.physical_input_trace
-                .as_mut()
-                .and_then(|trace| trace.begin(&event, state))
-        } else {
-            None
-        };
-        self.note_host_appearance_event(&event);
-        let admitted = self.route_window_event(
-            event_loop,
-            window_id,
-            event,
-            native_input_isolation::EventOrigin::Platform,
-        );
-        if let Some(input) = physical_input {
-            let mut row =
-                crate::physical_input_trace::Trace::effect(input, self.app.native_input_snapshot());
-            let modifiers = self.app.input.modifiers.state();
-            row["input_route_admitted"] = serde_json::json!(admitted);
-            row["modifiers"] = serde_json::json!({
-                "shift": modifiers.shift_key(), "control": modifiers.control_key(),
-                "alt": modifiers.alt_key(), "super": modifiers.super_key(),
-            });
-            crate::native_scenario::log::emit_json("tilo-physical-input", row);
+        // Wheel deltas reported in one wake route as one event; anything
+        // else routes the waiting sum first.
+        for (window_id, event) in self.wheel_batch.push(window_id, event) {
+            self.platform_window_event(window_id, event);
         }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let _slow = slow_event::Span::begin("about_to_wait", "");
+        // The wake's last wheel deltas go before the loop waits.
+        if let Some((window_id, event)) = self.wheel_batch.flush() {
+            self.platform_window_event(window_id, event);
+        }
         self.app.service_close_admission();
         if self.app.finish_close_if_ready() {
-            event_loop.exit();
+            self.closing.set(true);
             return;
         }
         // Someone chose who works in this workspace while the window waited
@@ -4095,7 +4029,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             for error in self.app.checkpoint_before_close() {
                 tracing::error!(%error, "could not save before opening the workspace");
             }
-            event_loop.exit();
+            self.closing.set(true);
             return;
         }
         let _entry = self.app.enter_wake_scope();
@@ -4211,7 +4145,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     "tilo-native-scenario",
                     serde_json::json!({"event":"failed", "error":error}),
                 );
-                event_loop.exit();
+                self.closing.set(true);
             }
         }
 
@@ -4294,6 +4228,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         if app.poll_model_invocations() {
             request_primary_redraw();
+        }
+        // Occlusion is not permission to stall. Once the surface has told us
+        // it is not being drawn, keep running the state passes on the loop's
+        // own pace while anything is pending: a frame may never come, and
+        // the work an agent or the engine is waiting on is theirs, not the
+        // pixels'. Nothing is marked dirty for paint that nobody asks for.
+        if self.primary_retry.known_occluded() && app.needs_sync {
+            let tick_due = self
+                .occluded_tick_at
+                .is_none_or(|at| at <= crate::time::now());
+            if tick_due {
+                app.run_state_tick();
+                self.occluded_tick_at = crate::time::now()
+                    .checked_add(OCCLUDED_TICK_INTERVAL)
+                    .filter(|_| app.needs_sync);
+            }
+        } else {
+            self.occluded_tick_at = None;
         }
         // Reveal requests must not wait on rendering an occluded/minimized
         // window: consume them as soon as its admitted actions are polled.
@@ -4382,6 +4334,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
                 )
+                .chain(app.accessibility.zoom.deadline())
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -4406,7 +4359,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .into_iter()
                 .chain(app.local_input_capture_deadline())
                 .chain(app.presence_ctx.interaction_next_wake_deadline(now))
+                .chain(app.accessibility.zoom.deadline())
                 .any(|due| due <= now);
+            app.accessibility.zoom.publish();
             let widget_due = app
                 .root_widget
                 .next_wake_deadline()
@@ -4435,6 +4390,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
                 )
+                .chain(app.accessibility.zoom.deadline())
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -4450,10 +4406,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if tooltip_pending {
             request_primary_redraw();
         }
+        // A frame held for a local read is drawn once its budget runs out.
+        let held_due = self
+            .held_frame
+            .is_some_and(|until| until <= crate::time::now());
+        if held_due {
+            self.held_frame = None;
+            request_primary_redraw();
+        }
         let scheduled_deadline = scheduled_deadline
             .into_iter()
             .chain(tooltip_reveal.filter(|_| !tooltip_pending))
             .chain(self.typing_step_at)
+            .chain(self.held_frame)
             .min();
 
         // A widget asking for a frame is served whatever the motion setting.
@@ -4465,6 +4430,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // A motion started outside the polled tree (a menu its owner draws in
         // its own overlay pass) asks through the motion clock.
         let widget_animation = app.root_widget.needs_animation_frame()
+            || self.slot_bar.needs_frame()
             || crate::motion::frames_wanted(crate::time::now());
         let needs_frame = widget_animation
             || app
@@ -4562,6 +4528,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     .busy()
                     .then(|| crate::time::now() + Duration::from_millis(50)),
             )
+            .chain(self.occluded_tick_at)
             .min();
         match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
@@ -4698,12 +4665,7 @@ impl AppHandler {
         }
     }
 
-    fn handle_native_floating_window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        index: usize,
-        event: WindowEvent,
-    ) {
+    fn handle_native_floating_window_event(&mut self, index: usize, event: WindowEvent) {
         self.app.root_widget.on_floating_surface_event_source(None);
         let Some(surface) = self.floating_windows.get(index) else {
             return;
@@ -4734,7 +4696,7 @@ impl AppHandler {
             }
             let preedit = preedit_after_event(&event);
             if let Some(primary) = self.window.clone() {
-                self.handle_primary_window_event_routed(event_loop, &primary, event);
+                self.handle_primary_window_event_routed(&primary, event);
             }
             if let Some(update) = preedit {
                 self.update_floating_preedit(index, update);
@@ -4828,12 +4790,7 @@ impl AppHandler {
         }
     }
 
-    fn handle_primary_window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window: &Arc<Window>,
-        event: WindowEvent,
-    ) {
+    fn handle_primary_window_event(&mut self, window: &Arc<Window>, event: WindowEvent) {
         if matches!(event, WindowEvent::Focused(false)) {
             self.app.floating.pending_ime_ids.clear();
             // The compositor deliberately keeps the source protocol focus
@@ -4853,7 +4810,7 @@ impl AppHandler {
             .root_widget
             .on_floating_surface_event_source(routed_surface.as_deref());
         let preedit = preedit_after_event(&event);
-        self.handle_primary_window_event_routed(event_loop, window, event);
+        self.handle_primary_window_event_routed(window, event);
         self.app.root_widget.on_floating_surface_event_source(None);
         if let Some(update) = preedit {
             match update {
@@ -4884,12 +4841,7 @@ impl AppHandler {
         }
     }
 
-    fn handle_primary_window_event_routed(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window: &Arc<Window>,
-        event: WindowEvent,
-    ) {
+    fn handle_primary_window_event_routed(&mut self, window: &Arc<Window>, event: WindowEvent) {
         forward_native_surface_focus(self.app.root_widget.as_mut(), None, &event);
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(window, &event);
@@ -4898,15 +4850,18 @@ impl AppHandler {
         {
             let routed = self.decorations.route(&mut self.app, window, &event);
             if routed.close {
-                self.close_primary_window(event_loop, window);
+                self.close_primary_window(window);
             }
             if routed.consumed {
                 return;
             }
         }
+        if self.slot_bar.route(&mut self.app, window, &event) {
+            return;
+        }
         self.dispatch_touch_pointer_events(window, &event);
         match event {
-            WindowEvent::CloseRequested => self.close_primary_window(event_loop, window),
+            WindowEvent::CloseRequested => self.close_primary_window(window),
             WindowEvent::Resized(_) => {
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
@@ -4919,11 +4874,11 @@ impl AppHandler {
                 self.app.layout.layout_dirty = true;
                 window.request_redraw();
             }
-            WindowEvent::RedrawRequested => self.handle_redraw_requested(event_loop, window),
+            WindowEvent::RedrawRequested => self.handle_redraw_requested(window),
             WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
             other if self.app.input.platform.platform() == crate::platform::Platform::Android => {
                 if let Some(escape) = crate::interaction::back_key_as_escape(&other) {
-                    self.handle_back_key(event_loop, window, escape);
+                    self.handle_back_key(window, escape);
                 } else {
                     self.handle_other_window_event(window, other);
                 }
@@ -4934,11 +4889,11 @@ impl AppHandler {
         }
     }
 
-    fn close_primary_window(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
+    fn close_primary_window(&mut self, window: &Arc<Window>) {
         match crate::component_lifecycle::on_window_close_requested(self.app.root_widget.as_mut()) {
             crate::widget::WindowCloseAdmission::Allow => {
                 if self.app.admit_native_close_request() {
-                    event_loop.exit();
+                    self.closing.set(true);
                 } else {
                     window.request_redraw();
                 }
@@ -4953,12 +4908,7 @@ impl AppHandler {
 
     /// Back dismisses what Escape would, then navigates back, and at the root
     /// closes the app; exiting the event loop lets Android finish the activity.
-    fn handle_back_key(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window: &Arc<Window>,
-        escape: WindowEvent,
-    ) {
+    fn handle_back_key(&mut self, window: &Arc<Window>, escape: WindowEvent) {
         let pressed = matches!(
             &escape,
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed
@@ -4976,24 +4926,34 @@ impl AppHandler {
             window.request_redraw();
             return;
         }
-        self.close_primary_window(event_loop, window);
+        self.close_primary_window(window);
     }
 
     fn dispatch_touch_pointer_events(&mut self, window: &Arc<Window>, event: &WindowEvent) {
         let WindowEvent::Touch(touch) = event else {
             return;
         };
-        self.app
-            .set_interaction_environment(self.app.input.interaction.with_touch_modality());
         let scale = window.scale_factor();
         let app = &self.app;
-        let pointer_events = self.touch_pointer.events(touch, |position| {
-            app.claims_raw_touch_at(vello::kurbo::Point::new(
+        let pointer_events = self.touch_pointer.events_claimed(touch, |position| {
+            app.touch_claim_at(vello::kurbo::Point::new(
                 position.x / scale,
                 position.y / scale,
             ))
         });
         self.dispatch_touch_pointer(window, touch.device_id, pointer_events);
+        self.settle_touch_modality();
+    }
+
+    /// Lay out for touch once every gesture begun has landed: until then a
+    /// touch is hit-tested against the layout the person saw when it
+    /// began, not the touch-sized one it brings. A raw contact's own touch
+    /// events follow this in the same event, before any frame lays out.
+    fn settle_touch_modality(&mut self) {
+        if self.touch_pointer.settled() {
+            self.app
+                .set_interaction_environment(self.app.input.interaction.with_touch_modality());
+        }
     }
 
     fn dispatch_touch_pointer(
@@ -5014,6 +4974,7 @@ impl AppHandler {
     fn poll_touch_hold(&mut self, window: &Arc<Window>) {
         if let Some((device_id, events)) = self.touch_pointer.poll(crate::time::now()) {
             self.dispatch_touch_pointer(window, device_id, events);
+            self.settle_touch_modality();
             window.request_redraw();
         }
     }
@@ -5048,8 +5009,26 @@ impl App {
         clippy::unwrap_used,
         reason = "event-loop creation/run failure is unrecoverable at process startup; the public run()/run_with_setup() signature is called from every app's main() and returning Result here would ripple across the whole app surface for a failure with no fallback"
     )]
-    pub fn run_with_setup<F>(mut self, setup: F)
+    pub fn run_with_setup<F>(self, setup: F)
     where
+        F: FnOnce(EventLoopProxy<UserEvent>),
+    {
+        self.run_windows(setup, None);
+    }
+
+    /// [`Self::run_with_setup`], serving the windows the shell opens in this
+    /// process later with `open` ([`crate::window_door`]): each becomes one
+    /// more window of the loop, and the loop ends with the last.
+    #[allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "event-loop creation/run failure is unrecoverable at process startup; the public run()/run_with_setup() signature is called from every app's main() and returning Result here would ripple across the whole app surface for a failure with no fallback"
+    )]
+    pub(crate) fn run_windows<F>(
+        mut self,
+        setup: F,
+        open: Option<&mut process_windows::OpenWindow<'_>>,
+    ) where
         F: FnOnce(EventLoopProxy<UserEvent>),
     {
         assert!(
@@ -5095,6 +5074,67 @@ impl App {
         super::install_dev_session_stop(proxy.clone());
         #[cfg(target_os = "android")]
         super::android_text_input::bridge::install(proxy.clone());
+        #[allow(
+            clippy::panic,
+            reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario"
+        )]
+        let native_scenario = crate::native_scenario::load_from_env()
+            .unwrap_or_else(|error| panic!("invalid native performance scenario: {error}"));
+        assert!(
+            native_scenario.is_none() || self.profiler.is_some(),
+            "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
+        );
+        let handler = self.into_handler(&proxy, native_scenario, setup);
+        let door = open.and_then(|open| process_windows::serve_door(&proxy).map(|()| open));
+        let mut handler = process_windows::ProcessWindows::new(handler, proxy, door);
+        // Run on demand, so a window that gives its place to the next one
+        // (`hand_over`) keeps the loop for that window to run on. On every
+        // target winit's `run_app` is this same loop, consuming it.
+        let (ended, event_loop) = {
+            use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
+            let mut event_loop = event_loop;
+            (event_loop.run_app_on_demand(&mut handler), event_loop)
+        };
+        match ended {
+            Ok(()) => {}
+            Err(winit::error::EventLoopError::ExitFailure(status)) => {
+                tracing::debug!(status, "window system disconnected; application exiting");
+            }
+            Err(error) => {
+                tracing::error!(%error, "application event loop failed; application exiting");
+            }
+        }
+        let mut handler = handler.into_first();
+        let handing_over = handler.as_ref().is_some_and(|handler| handler.handing_over);
+        if handing_over && let Some(handler) = handler.as_mut() {
+            hand_over(handler, event_loop);
+        }
+        // The app and its state are dropped (and saved) before the process
+        // reports how its window ended, and so are the settings it changed.
+        drop(handler);
+        crate::storage::flush_settings_writes();
+        if !handing_over && let Some(reason) = take_abnormal_stop() {
+            report_window_lost_and_exit(&reason);
+        }
+    }
+
+    /// The window this app is shown in, on the loop `proxy` wakes: its wake
+    /// scope bound, its settings watched, `setup` run and its layout
+    /// initialised. Its window itself is made when the loop resumes it.
+    #[allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "a live App's wake scope is open and unbound until its window takes it"
+    )]
+    fn into_handler<F>(
+        mut self,
+        proxy: &EventLoopProxy<UserEvent>,
+        native_scenario: Option<crate::native_scenario::Scenario>,
+        setup: F,
+    ) -> AppHandler
+    where
+        F: FnOnce(EventLoopProxy<UserEvent>),
+    {
         let wake_proxy = proxy.clone();
         self.wake_scope
             .as_mut()
@@ -5106,16 +5146,6 @@ impl App {
         // The AccessKit adapter routes events back through this as
         // `UserEvent::AccessKit`.
         let a11y_proxy = proxy.clone();
-        #[allow(
-            clippy::panic,
-            reason = "invalid explicitly requested benchmark input must stop startup rather than silently run an unmeasured scenario"
-        )]
-        let native_scenario = crate::native_scenario::load_from_env()
-            .unwrap_or_else(|error| panic!("invalid native performance scenario: {error}"));
-        assert!(
-            native_scenario.is_none() || self.profiler.is_some(),
-            "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
-        );
         let settings_store_changed = Arc::new(AtomicBool::new(false));
         let settings_watch = {
             let _entry = self.enter_wake_scope();
@@ -5134,7 +5164,7 @@ impl App {
         tilo_startup_metrics::mark("run-settings-watched");
         let host_appearance = {
             let _entry = self.enter_wake_scope();
-            setup(proxy);
+            setup(proxy.clone());
             tilo_startup_metrics::mark("run-setup-done");
             self.init_layout();
             tilo_startup_metrics::mark("run-init-layout-done");
@@ -5144,7 +5174,7 @@ impl App {
         };
         tilo_startup_metrics::mark("run-host-appearance-started");
 
-        let mut handler = AppHandler {
+        AppHandler {
             app: self,
             clipboard_attachment: None,
             window: None,
@@ -5161,6 +5191,7 @@ impl App {
             floating_ime_continuation: None,
             floating_ime_return_continuation: None,
             private_input: private_text_input::Bridge::default(),
+            wheel_batch: wheel_batch::WheelBatch::default(),
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
             #[cfg(target_os = "android")]
@@ -5172,6 +5203,7 @@ impl App {
             mark_bounds: crate::scene_parts::DrawBounds::default(),
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
+            occluded_tick_at: None,
             floating_source_clear_frames: std::collections::HashMap::new(),
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
@@ -5186,6 +5218,7 @@ impl App {
             native_input_route_isolation: false,
             animation_schedule: animation_schedule::AnimationSchedule::default(),
             typing_step_at: None,
+            held_frame: None,
             still_animation: animation_schedule::StillAnimation::default(),
             dev_window_state: std::collections::HashMap::new(),
             dev_loaded_library: crate::host::environment()
@@ -5199,38 +5232,12 @@ impl App {
             host_commands_key: None,
             #[cfg(target_os = "linux")]
             decorations: linux_header::Decorations::Unsettled,
+            slot_bar: slot_bar::SlotBar::new(),
             host_appearance,
             settings_store_changed,
             _settings_watch: settings_watch,
             handing_over: false,
-        };
-        // Run on demand, so a window that gives its place to the next one
-        // (`hand_over`) keeps the loop for that window to run on. On every
-        // target winit's `run_app` is this same loop, consuming it.
-        let (ended, event_loop) = {
-            use winit::platform::run_on_demand::EventLoopExtRunOnDemand as _;
-            let mut event_loop = event_loop;
-            (event_loop.run_app_on_demand(&mut handler), event_loop)
-        };
-        match ended {
-            Ok(()) => {}
-            Err(winit::error::EventLoopError::ExitFailure(status)) => {
-                tracing::debug!(status, "window system disconnected; application exiting");
-            }
-            Err(error) => {
-                tracing::error!(%error, "application event loop failed; application exiting");
-            }
-        }
-        let handing_over = handler.handing_over;
-        if handing_over {
-            hand_over(&mut handler, event_loop);
-        }
-        // The app and its state are dropped (and saved) before the process
-        // reports how its window ended, and so are the settings it changed.
-        drop(handler);
-        crate::storage::flush_settings_writes();
-        if !handing_over && let Some(reason) = take_abnormal_stop() {
-            report_window_lost_and_exit(&reason);
+            closing: std::cell::Cell::new(false),
         }
     }
 }
@@ -5263,10 +5270,10 @@ static ABNORMAL_STOP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(N
 
 /// Stop the event loop because the window cannot go on, keeping why. The
 /// process then exits non-zero instead of looking like a deliberate quit.
-fn stop_abnormally(event_loop: &ActiveEventLoop, reason: String) {
+fn stop_abnormally(closing: &std::cell::Cell<bool>, reason: String) {
     tracing::error!(%reason, "{}", super::WINDOW_LOST);
     ABNORMAL_STOP.lock_recover().get_or_insert(reason);
-    event_loop.exit();
+    closing.set(true);
 }
 
 fn take_abnormal_stop() -> Option<String> {

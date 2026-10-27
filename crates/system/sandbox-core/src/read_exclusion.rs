@@ -216,9 +216,6 @@ impl PreparedReadExclusion {
 
     /// Install only the prepared ruleset in the child immediately before exec.
     /// Contains no path lookups, allocations, locks or Rust runtime callbacks.
-    ///
-    /// # Errors
-    /// Fails closed if either required kernel operation is refused.
     pub fn install_before_exec(&self) -> io::Result<()> {
         // SAFETY: integer-only process-local kernel calls with a live ruleset fd.
         if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {

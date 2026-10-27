@@ -27,6 +27,10 @@
 //!   remote actions the host answers for the delegating user's devices
 //!   ([`control`]); a grant is requested from the page and approved with
 //!   its delegation in one consent step.
+//! - **Pictures.** A planning model that sees is shown what a read rendered
+//!   (a canvas look, a PDF page) and the pictures it asks to look at, within
+//!   limits; the room's own pictures only where the person running the agent
+//!   allows, and decoded only in a confined worker ([`vision`]).
 //! - **Hosting.** [`AgentHost`] runs each agent on its own thread, keeps
 //!   grants and agents under a state directory, resumes them when the host
 //!   restarts and settles expired grants ([`host`]).
@@ -34,35 +38,45 @@
 //! See `docs/architecture/browser-runtime.md`, "Agents".
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 
 pub mod apps;
 pub mod bot;
 pub mod control;
 mod desk;
+pub mod facts;
 pub mod host;
+pub mod message_lines;
 pub mod model;
 pub mod participant;
 pub mod planner;
 pub mod profile;
+pub mod render;
 pub mod room_actions;
+pub mod search;
+mod values;
+pub mod vision;
 mod web_apps;
 pub mod worker;
 
-pub use apps::{AppCatalogue, AppError, Replica, ReplicaActor, Seed, component_apps};
+pub use apps::{
+    AppCatalogue, AppError, Replica, ReplicaActor, Seed, agent_only_apps, component_apps,
+};
 pub use control::{
     AgentControl, AgentHostLink, AgentIdentity, AgentSupervisor, ApprovalDone, GrantRecord,
     Spawner, SupervisorHost, SupervisorSnapshot, Witness,
 };
 pub use host::{AgentHost, CatalogueFactory, HostEndpoint};
 pub use model::{
-    ApiKey, CLOUD_MODEL, GatewayModel, ModelChoice, ModelPlanner, OpenAiModel, PlanModel,
-    ScriptedModel,
+    ApiKey, Briefing, CLOUD_MODEL, GatewayModel, ModelChoice, ModelPlanner, NoPlanReads,
+    OpenAiModel, PlanModel, PlanReads, READ_VIEW, ReadView, ScriptedModel,
 };
 pub use participant::actions::{RECORD_PROVIDER, record_provider};
 pub use participant::{AgentParticipant, Next, ParticipantConfig, Pumped};
-pub use planner::{DirectPlanner, PlanContext, Planner, Step, StepAction};
-pub use room_actions::{HostActions, RoomActions, RoomRecordsLink};
+pub use planner::{
+    DirectPlanner, NoReads, Obligations, PlanContext, PlanRole, Planner, Reads, Role, Step,
+    StepAction, TurnRetries,
+};
+pub use room_actions::{FeedbackReviewer, HostActions, RoomActions, RoomRecordsLink};
 pub use worker::ConfinedReplica;
 
 // Unit tests admit peer bytes through the Automerge isolate, whose workers

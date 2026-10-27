@@ -186,6 +186,7 @@ mod tests {
         accepts: bool,
     }
     impl Widget for MutableAdmission {
+        crate::provides!(dyn crate::widget::ResourceOperations);
         fn name(&self) -> &str {
             "MutableAdmission"
         }
@@ -197,9 +198,13 @@ mod tests {
         ) -> NodeId {
             tree.leaf_node(Style::default())
         }
+    }
+
+    impl crate::widget::ResourceOperations for MutableAdmission {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &["mutable.effect"]
         }
+
         fn start_operation(
             &mut self,
             op: &ResourceOperation<'_>,

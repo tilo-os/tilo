@@ -141,7 +141,6 @@ pub(crate) struct Watchers {
 }
 
 struct Registration {
-    /// The watched entry, as a full key.
     watched: String,
     /// The `Dir`'s root, as a full key, stripped from reported paths.
     root: String,
@@ -212,7 +211,6 @@ impl Wakes {
     }
 }
 
-/// Whether `key` is `watched` or below it.
 pub(crate) fn covers(watched: &str, key: &str) -> bool {
     watched.is_empty()
         || key == watched

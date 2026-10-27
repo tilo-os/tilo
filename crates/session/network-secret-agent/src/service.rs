@@ -204,8 +204,6 @@ impl SecretAgent {
         outcome.map(|secrets| request.response(&secrets))
     }
 
-    /// `NetworkManager` no longer needs the secrets it asked for; the sheet
-    /// goes away.
     async fn cancel_get_secrets(
         &self,
         #[zbus(header)] header: Header<'_>,

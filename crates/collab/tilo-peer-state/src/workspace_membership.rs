@@ -64,6 +64,12 @@ pub struct BotRequest {
     /// the room's `set-connector-secret` action.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub inputs: std::collections::BTreeMap<String, String>,
+    /// A developer's own program for the entry, canonical text, run instead
+    /// of the listed one: the room keeps it with the request, so every
+    /// member reads exactly what runs, and `version` names the build. The
+    /// person asking must hold every grant the program asks for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
 }
 
 /// Most bytes a requested entry or version takes.
@@ -106,8 +112,132 @@ impl BotRequest {
                 return Err(format!("invalid value for the bot input `{name}`"));
             }
         }
+        if let Some(program) = &self.program {
+            if program.len() > tilo_automation::program::MAX_PROGRAM_BYTES {
+                return Err("the bot program is too large".into());
+            }
+            tilo_automation::program::parse_program(program.as_bytes())
+                .map_err(|error| format!("the bot program does not parse: {error}"))?;
+        }
         Ok(())
     }
+}
+
+/// The version of an app a room runs. Every member's desktop runs this
+/// version, and a change made with another version waits until its author
+/// runs this one: mixed versions never write each other's data unseen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppRelease {
+    /// The app (`so.tilo.notes`).
+    pub app: String,
+    /// The version its package names (`1.4.0`, `1.5.0-dev.3`).
+    pub version: String,
+    /// The BLAKE3 hash of the package's `surface.toml`, hex: the surface
+    /// every change made with this version names.
+    pub surface: String,
+    /// The package's `tapp:` hash (the BLAKE3 of its signed root), hex:
+    /// what each member fetches and verifies before running the version.
+    pub package: String,
+    /// The publisher key that signed the package, hex.
+    pub publisher: String,
+    /// The BLAKE3 hash of the `.tapp` file, hex, when the room's host keeps
+    /// it: members fetch it from the room by this hash and install it,
+    /// bound to `package` and `publisher`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// A developer's own build, signed with their key and never reviewed by
+    /// a registry; every window of the app says so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dev: bool,
+}
+
+/// Most bytes an app release's version takes.
+const MAX_APP_VERSION: usize = 64;
+
+impl AppRelease {
+    /// Validate what the release names.
+    ///
+    /// # Errors
+    /// An app id, version or hash that is not canonical.
+    pub fn validate(&self) -> Result<(), String> {
+        validate_app_id(&self.app)?;
+        if self.version.is_empty()
+            || self.version.len() > MAX_APP_VERSION
+            || !self
+                .version
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+'))
+        {
+            return Err("invalid app version".into());
+        }
+        for (what, hash) in [
+            ("surface", &self.surface),
+            ("package", &self.package),
+            ("publisher", &self.publisher),
+        ]
+        .into_iter()
+        .chain(self.file.iter().map(|file| ("file", file)))
+        {
+            if hash.len() != 64
+                || !hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(format!("the app's {what} is not 64 lowercase hex digits"));
+            }
+        }
+        Ok(())
+    }
+
+    /// The surface the changes made with this release name.
+    #[must_use]
+    pub fn surface_hash(&self) -> Option<[u8; 32]> {
+        hex::decode(&self.surface).ok()?.try_into().ok()
+    }
+
+    /// The package file a device that runs `installed` (the package root it
+    /// has of this app, hex, if any) fetches from the room to run this
+    /// release: `None` when it already runs it or the room's host keeps no
+    /// file of it.
+    #[must_use]
+    pub fn file_to_fetch(&self, installed: Option<&str>) -> Option<&str> {
+        if installed == Some(self.package.as_str()) {
+            return None;
+        }
+        self.file.as_deref()
+    }
+
+    /// Check `bytes` fetched from the room are this release's package file.
+    /// The install that follows binds them to `package` and `publisher`.
+    ///
+    /// # Errors
+    /// The release names no file, or the bytes hash to another.
+    pub fn check_file(&self, bytes: &[u8]) -> Result<(), String> {
+        let file = self
+            .file
+            .as_deref()
+            .ok_or("the room's host keeps no package file of this version")?;
+        if blake3::hash(bytes).to_hex().as_str() == file {
+            Ok(())
+        } else {
+            Err("the fetched package does not hash to the room's version".into())
+        }
+    }
+}
+
+/// A canonical application identifier: lowercase, dotted.
+fn validate_app_id(app: &str) -> Result<(), String> {
+    if app.is_empty()
+        || app.len() > 128
+        || app.split('.').any(str::is_empty)
+        || !app.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
+        })
+    {
+        return Err("invalid canonical application identifier".into());
+    }
+    Ok(())
 }
 
 /// A directory entry id, as the registry names bots: lowercase, dotted.
@@ -124,6 +254,10 @@ fn validate_bot_entry(entry: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Why a retired task grant command is refused.
+pub const RETIRED_TASK_GRANTS: &str =
+    "a task's grants are retired; an issue's grants are ordinary grants";
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceMembershipCommand {
     AddAgent {
@@ -137,18 +271,19 @@ pub enum WorkspaceMembershipCommand {
     GrantAppAuthorship {
         app: String,
     },
-    /// Add to open task `task`'s grant set: work done in the task gets
-    /// `answer` for actions of `kinds` at `node`, a path below the room,
-    /// for as long as the task is open. A task's grant set only bounds the
-    /// work: it never gives anyone more than they hold.
-    GrantForTask {
+    /// Retired with room tasks: an issue's grants are ordinary grants. It
+    /// keeps the commands after it at their encoded positions, still reads
+    /// where rooms hold it, and is refused.
+    #[serde(rename = "GrantForTask")]
+    RetiredGrantForTask {
         task: String,
         node: TreePath,
         kinds: KindSet,
         answer: Answer,
     },
-    /// Take `grant` out of task `task`'s grant set.
-    RevokeForTask {
+    /// Retired with room tasks, as [`Self::RetiredGrantForTask`].
+    #[serde(rename = "RevokeForTask")]
+    RetiredRevokeForTask {
         task: String,
         grant: GrantId,
     },
@@ -192,12 +327,14 @@ pub enum WorkspaceMembershipCommand {
     WithdrawBotRequest {
         entry: String,
     },
-}
-
-/// The id of the grant task `task`'s grant set holds for `node`.
-#[must_use]
-pub fn task_grant_id(task: &str, node: &TreePath) -> GrantId {
-    GrantId::new(format!("task-grant:{task}:{node}"))
+    /// Run this release of its app in the room, for every member
+    /// ([`AppRelease`]).
+    InstallApp(AppRelease),
+    /// Stop choosing a version of `app`: each member runs the one they
+    /// have.
+    UninstallApp {
+        app: String,
+    },
 }
 
 impl WorkspaceMembershipCommand {
@@ -206,8 +343,8 @@ impl WorkspaceMembershipCommand {
         match self {
             Self::AddAgent { agent, .. } | Self::RemoveAgent { agent } => Some(agent),
             Self::GrantAppAuthorship { .. }
-            | Self::GrantForTask { .. }
-            | Self::RevokeForTask { .. }
+            | Self::RetiredGrantForTask { .. }
+            | Self::RetiredRevokeForTask { .. }
             | Self::Grant { .. }
             | Self::Revoke { .. }
             | Self::InstallBot(_)
@@ -218,7 +355,9 @@ impl WorkspaceMembershipCommand {
             | Self::SetBotAppearance { .. }
             | Self::AdoptBot(_)
             | Self::RequestBot(_)
-            | Self::WithdrawBotRequest { .. } => None,
+            | Self::WithdrawBotRequest { .. }
+            | Self::InstallApp(_)
+            | Self::UninstallApp { .. } => None,
         }
     }
 
@@ -227,6 +366,12 @@ impl WorkspaceMembershipCommand {
     /// # Errors
     /// Refuses empty, unbounded, unnormalised or control-containing identifiers.
     pub fn validate(&self) -> Result<(), String> {
+        if matches!(
+            self,
+            Self::RetiredGrantForTask { .. } | Self::RetiredRevokeForTask { .. }
+        ) {
+            return Err(RETIRED_TASK_GRANTS.into());
+        }
         if let Self::InstallBot(install) = self {
             install.installation.validate()?;
             if install.program.len() > tilo_automation::program::MAX_PROGRAM_BYTES {
@@ -239,6 +384,12 @@ impl WorkspaceMembershipCommand {
         }
         if let Self::WithdrawBotRequest { entry } = self {
             return validate_bot_entry(entry);
+        }
+        if let Self::InstallApp(release) = self {
+            return release.validate();
+        }
+        if let Self::UninstallApp { app } = self {
+            return validate_app_id(app);
         }
         // Installation ids are checked when they are read; a bot command
         // carries nothing else free-form.
@@ -253,50 +404,16 @@ impl WorkspaceMembershipCommand {
         ) {
             return Ok(());
         }
-        if let Self::GrantForTask { task, .. } | Self::RevokeForTask { task, .. } = self
-            && (!task.starts_with("task:")
-                || task.len() > 128
-                || task.chars().any(|c| c.is_control() || c.is_whitespace()))
-        {
-            return Err("invalid workspace task identifier".into());
-        }
-        if let Self::GrantForTask { node, .. } = self
-            && node.room_id().is_some()
-        {
-            return Err("a task grant names a path below the room".into());
-        }
-        if let Self::RevokeForTask { task, grant } = self
-            && !grant.as_str().starts_with(&format!("task-grant:{task}:"))
-        {
-            return Err("the grant is not in that task's grant set".into());
-        }
         if let Self::Grant { grant } = self
             && grant.id.as_str().trim().is_empty()
         {
             return Err("a grant needs an id".into());
         }
-        if matches!(
-            self,
-            Self::GrantForTask { .. }
-                | Self::RevokeForTask { .. }
-                | Self::Grant { .. }
-                | Self::Revoke { .. }
-        ) {
+        if matches!(self, Self::Grant { .. } | Self::Revoke { .. }) {
             return Ok(());
         }
         if let Self::GrantAppAuthorship { app } = self {
-            if app.is_empty()
-                || app.len() > 128
-                || app.split('.').any(str::is_empty)
-                || !app.bytes().all(|byte| {
-                    byte.is_ascii_lowercase()
-                        || byte.is_ascii_digit()
-                        || matches!(byte, b'.' | b'-' | b'_')
-                })
-            {
-                return Err("invalid canonical application identifier".into());
-            }
-            return Ok(());
+            return validate_app_id(app);
         }
         let agent = self.agent().ok_or("missing canonical agent identifier")?;
         if agent.is_empty()
@@ -381,6 +498,7 @@ mod tests {
                 entry: entry.into(),
                 version: version.into(),
                 inputs: std::collections::BTreeMap::new(),
+                program: None,
             })
             .validate()
         };
@@ -392,6 +510,7 @@ mod tests {
                     .iter()
                     .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
                     .collect(),
+                program: None,
             }
             .validate()
         };
@@ -405,7 +524,6 @@ mod tests {
             "no control characters"
         );
         assert!(with_inputs(&[("server", &"x".repeat(257))]).is_err());
-        // An old request, without inputs, still reads.
         let old: BotRequest =
             serde_json::from_str(r#"{"entry":"so.tilo.bots.standup","version":"1.0.0"}"#).unwrap();
         assert!(old.inputs.is_empty());
@@ -453,5 +571,70 @@ mod tests {
         }
         .validate()
         .unwrap();
+    }
+
+    /// Postcard names a variant by its position; rooms keep these commands,
+    /// and the digests of their administration requests, in those bytes.
+    #[test]
+    fn a_membership_command_keeps_its_bytes_around_the_retired_task_grants() {
+        let cases: Vec<(WorkspaceMembershipCommand, Vec<u8>)> = vec![
+            (
+                WorkspaceMembershipCommand::RemoveAgent { agent: "a".into() },
+                vec![0x01, 0x01, b'a'],
+            ),
+            (
+                WorkspaceMembershipCommand::GrantAppAuthorship { app: "x".into() },
+                vec![0x02, 0x01, b'x'],
+            ),
+            (
+                WorkspaceMembershipCommand::RetiredGrantForTask {
+                    task: "t".into(),
+                    node: TreePath::room("r"),
+                    kinds: KindSet::READ,
+                    answer: Answer::Allow,
+                },
+                [
+                    &[0x03, 0x01, b't', 0x06][..],
+                    b"room:r",
+                    &[0x01, 0x00, 0x02],
+                ]
+                .concat(),
+            ),
+            (
+                WorkspaceMembershipCommand::RetiredRevokeForTask {
+                    task: "t".into(),
+                    grant: GrantId::new("g"),
+                },
+                vec![0x04, 0x01, b't', 0x01, b'g'],
+            ),
+            (
+                WorkspaceMembershipCommand::Revoke {
+                    grant: GrantId::new("g"),
+                },
+                vec![0x06, 0x01, b'g'],
+            ),
+            (
+                WorkspaceMembershipCommand::WithdrawBotRequest { entry: "e".into() },
+                vec![0x0f, 0x01, b'e'],
+            ),
+        ];
+        for (command, golden) in cases {
+            assert_eq!(
+                postcard::to_stdvec(&command).unwrap(),
+                golden,
+                "{command:?}"
+            );
+            assert_eq!(
+                postcard::from_bytes::<WorkspaceMembershipCommand>(&golden).unwrap(),
+                command
+            );
+        }
+    }
+
+    #[test]
+    fn a_retired_task_grant_command_reads_and_is_refused() {
+        let held = [0x04, 0x01, b't', 0x01, b'g'];
+        let command = postcard::from_bytes::<WorkspaceMembershipCommand>(&held).unwrap();
+        assert_eq!(command.validate(), Err(RETIRED_TASK_GRANTS.into()));
     }
 }

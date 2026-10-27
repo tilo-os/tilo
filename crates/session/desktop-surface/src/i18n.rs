@@ -43,6 +43,39 @@ mod tests {
         );
     }
 
+    /// A workspace holds strips; the desktop names a strip a strip
+    /// everywhere, as the native strip switcher does, never a "desk".
+    #[test]
+    fn a_strip_is_called_a_strip_in_every_locale() {
+        for (locale, source) in CATALOGS {
+            for line in source.lines().filter(|line| !line.starts_with('#')) {
+                let value = line.split_once('=').map_or(line, |(_, value)| value);
+                for word in value.split(|c: char| !c.is_alphanumeric()) {
+                    assert!(
+                        !matches!(
+                            word.to_lowercase().as_str(),
+                            "desk" | "desks" | "schreibtisch" | "schreibtische"
+                        ),
+                        "{locale}: {line}"
+                    );
+                }
+            }
+        }
+        assert_eq!(t("workspace-menu-new-strip"), "New strip");
+    }
+
+    /// A window whose app crashed says so in words, naming the app twice:
+    /// what stopped, and what to open again.
+    #[test]
+    fn a_crashed_app_is_named_in_plain_words() {
+        let notice = t_args("browser-app-crashed", &[("app", "Canvas".into())]);
+        assert_eq!(
+            notice,
+            "Canvas stopped working, so it was closed to keep the rest of the desktop running. \
+             Close this window, or open Canvas again."
+        );
+    }
+
     #[test]
     fn every_catalogue_entry_resolves_to_a_real_string() {
         let keys = catalog::messages(CATALOGS[0].1);
@@ -69,7 +102,6 @@ mod tests {
     fn every_key_used_in_code_is_in_every_catalogue() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut dirs = vec![manifest.join("src")];
-        // The native desktop resolves the rest of this catalogue.
         let desktop = manifest.join("../desktop/src");
         if desktop.is_dir() {
             dirs.push(desktop);

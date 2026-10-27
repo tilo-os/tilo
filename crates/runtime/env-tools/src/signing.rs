@@ -11,10 +11,6 @@ use tilo_user_identity::IdentityPaths;
 
 /// This device's signing identity, from the system identity root
 /// (`TILO_IDENTITY_ROOT` overrides it, as for every other identity reader).
-///
-/// # Errors
-///
-/// The device key is missing, unreadable, or too widely readable to trust.
 pub fn device_identity() -> anyhow::Result<SigningIdentity> {
     let paths = std::env::var_os("TILO_IDENTITY_ROOT")
         .filter(|v| !v.is_empty())

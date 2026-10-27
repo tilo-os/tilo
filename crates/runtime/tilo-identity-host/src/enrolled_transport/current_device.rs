@@ -432,10 +432,6 @@ impl AuthenticatedCurrentDeviceReference {
     }
     /// Resolve the same real current-owner record. No import, repair, remint,
     /// selector update, system-key write or certificate replacement occurs.
-    ///
-    /// # Errors
-    /// Returns an error if current-owner review or revalidation fails, reference
-    /// encoding fails, or the current reference differs from the authenticated one.
     pub fn resolve_current(
         &self,
         system_root: &Path,

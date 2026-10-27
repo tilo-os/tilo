@@ -3,7 +3,7 @@
 A scripted acceptance run of the desktop essentials in a real KVM session: a headful
 `tilo-vm` slot on two outputs with a test identity, driven only through `tilo-vm` — the
 control socket's semantic ops first (`actions`, `state-dump`, `list-targets`), uinput
-input (`tilo-vm input`) where the input path is what is under test. Every run writes
+input (`tilo device input`) where the input path is what is under test. Every run writes
 `report.json` and `report.md` with the commit, the booted image digest, pass/fail per
 check, numbers and evidence (shots, frame traces).
 
@@ -54,96 +54,88 @@ shell exit handling and app-workload prerequisites without starting a VM.
 
 ## Run it in CI
 
-`.forgejo/workflows/vm-acceptance.yml` (Dev / VM acceptance) runs the suite on a
-`runner-disk-100g` runner, whose KVM the dev disk and legacy guest boots already use, so
-a run needs no laptop memory:
+t's `vm-acceptance` check (`tools/ci/vm-acceptance.sh`) runs the suite in a micro-VM with
+KVM on a `disk-100g` x86-64 node, so a run needs no laptop memory:
 
 ```bash
-fgj workflow run vm-acceptance.yml -r main                       # every check on main
-fgj workflow run vm-acceptance.yml -r main -f ref=my-branch -f only=window -f gl=off
+t test vm-acceptance                                          # the checks your tree's changes select
+t dispatch vm-acceptance --ref main                           # every check on main
+t dispatch vm-acceptance --ref my-branch --input only=window --input gl=off
+t outputs vm-acceptance                                       # the report
 ```
 
-`fgj -f` splits values on commas, so a list (`only=B06,A13`, `swap=shell,app:notes`,
-`outputs`) goes through the forge's "Run workflow" form or its dispatch API instead.
+A working tree's run checks only what its changes reach (`ci_select.py`): the checks of the
+changed check modules (and of the modules importing from them), just `provenance` when only
+this README or unit tests changed, and every check when anything else in this directory or
+`tools/ci/vm-acceptance.sh` changed. A dispatched run, and `vm-acceptance-perf`, run every
+check unless `only` names some.
 
-It also runs nightly on main, and on pull requests that change this directory: with only
-the checks of the changed check modules (and of the modules importing from them), just
-`provenance` when only this README or unit tests changed, and every check when anything
-else changed (`ci_select.py`).
+The disk is the tree's own dev image as `os-dev-disk-x86_64` installed it with
+`os/dev/build-image.sh` (the disk the dev channel publishes, which nothing boots
+itself); each run boots a throwaway overlay of it, so R06 times a cold boot. tilo-vm is
+`tilo-vm-binary-x86_64`'s. Both come from t's cache when their inputs are unchanged, and
+so does the run itself when the suite, its driver and the files the scenarios read are
+too. The script writes the provenance record itself, so P01 reads the tree's commit.
 
-The base disk is what CI published for the newest main commit at or before `ref`: its
-dev disk (`tilo-vm-disk/main-<sha7>-ci`) when a lane published one, else its dev image
-(`tilo-vm:main-<sha7>-ci-x86_64`, pushed by Build / OS dev for main commits), installed
-with `os/dev/build-image.sh` exactly as Release / Dev VM disk installs it. The workflow
-writes the provenance record itself.
+`swap` (default `none`) exercises the swap path on top: run.py `--swap` runs `tilo device
+swap <component> --builder host` from a copy of the tree (`--swap-from`) after the slot is
+up, session components and apps into the run's slot, VM-wide ones into `vm`; `all` swaps
+every userspace component in `os/components.toml`, or name a list (`--input
+swap=shell,app:notes`). P01 then reads `base <commit> + <components> swapped from <ref>`
+and fails unless every requested swap is the layer its slot runs.
 
-`ref`'s own code reaches the VM the way it does on a laptop: after the slot is up, run.py
-`--swap` runs `tilo-vm swap <component> --builder host` from a worktree of `ref`
-(`--swap-from`), session components and apps into the run's slot, VM-wide ones into `vm`.
-`swap=default` is `shell` plus every `app:<dir>` the ref changed: a branch's own diff
-from main, or for a main commit what changed since the base (nothing when `ref` is the
-base commit), `all` every userspace component in
-`os/components.toml`, `none` nothing, or a list. The job runs in the CI builder image (the
-dev image's Fedora, with the runner's sccache), so swapped binaries link against the
-libraries the VM has. P01 then reads `base <commit> + <components> swapped from <ref>` and
-fails unless every requested swap is the layer its slot runs; the report's header lists
-the swaps. A base more than 20 commits behind `ref` gets a warning at the top of the
-summary: everything not swapped is the base's code.
-
-A change to the shared app runtime (anything in the `apps+runtime` assembly: `ui-core`,
-`tilo-app`, the platform crates every app links) is tested from its branch with
-`prebuilt_cohort=true` and `swap=apps+runtime`; a standalone `app:<dir>` swap is refused
-because an app needs the exact runtime it was built with, and the host builder does not
-assemble the paired cohort:
+`vm-acceptance-cohort` installs the commit's launcher, install, shell and apps+runtime as
+prebuilt signed layers through verified `swap-artifact` (`docs/layer-artifacts.md`), the
+route for a change to the shared app runtime (a standalone `app:<dir>` swap is refused
+because an app needs the exact runtime it was built with):
 
 ```sh
-echo '{"ref":"main","inputs":{"ref":"<branch>","swap":"apps+runtime",
-       "prebuilt_cohort":"true","only":"P01,A15"}}' |
-  fgj api --hostname code.tilo.so -X POST repos/tilo/tilo/actions/workflows/vm-acceptance.yml/dispatches
+t dispatch vm-acceptance-cohort --ref <branch> --input only=P01,A15
 ```
 
-(`fgj actions workflow run -f only=P01,A15` splits the value at its comma and sends
-`only=P01`; the API body does not.) The outer `ref` picks the workflow, the checks and the
-artifact consumer (main, or a branch that changes them); `inputs.ref` is the code under test. P01 then reads `+ launcher, install, shell,
-apps+runtime swapped from <branch>`, and each swap entry names the consumer that
-installed it. The ref's own `tilo-vm` packs the layers, so it needs `layer-pack`.
+Its needs do the handoff (`tools/ci/vm-cohort.sh`): `vm-cohort-x86_64` packs the full layer
+streams with the tree's own `tilo-vm` (`layer_artifacts.py produce`), and
+`vm-cohort-verifier-x86_64` builds the `tilo-vm` that verifies and imports them from main's
+head, fetched from the forge, and checks the handoff with main's `layer_artifacts.py`: the
+code under test never verifies its own artifacts. The receipt names an exact clean commit,
+so the producer refuses a working tree with uncommitted changes. The handoff's identity (the
+source commit, the builder image t.toml pins, a random handoff number standing for the
+workflow run, and the receipt's SHA256) travels in the producer's outputs, which t hands
+only to the checks that need that result; the consumer checks them, the architecture and the
+component completeness before the VM is created, and verifies and imports through the normal
+signed cohort path. Any artifact error fails without a build fallback; slot readback and P01
+still describe the installed layers, and each swap entry names the consumer that installed
+it.
 
-The existing native CI identity builds full signed layers with the maintained packer, including
-matching launcher, install and shell prerequisites. Pinned same-run artifact
-actions transfer only layers, inventories and the v1 manifest. Its expected SHA256
-comes from the producer step output; the consumer checks source, immutable builder,
-workflow API run ID/attempt, architecture and component completeness before VM
-creation. The CLI verifies and imports through the normal signed cohort path.
-The acceptance user needs no remote builder credentials. Any artifact error fails
-without a build fallback; slot readback and P01 still describe installed layers.
-The default workflow and local host/remote swap behavior remain available when
-artifact mode is absent.
-
-The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the job installs
+The VM is a libvirt session VM, the way `tilo-vm` runs on a laptop: the script installs
 libvirt's QEMU driver, passt, OVMF and Pillow (pixel checks), and runs `run.py` as an
-unprivileged user (root cannot hand passt its socket in a session). The runners have no
-GPU, so `gl=auto` creates the VM without virgl and the report records the software
-renderer; frame-timing checks gated to real display hardware report that. The report
-(`report.md`, `report.json`, shots, frame traces) is the run's artifact, `report.md` its
-job summary, and the job fails unless every check passes.
+unprivileged user (root cannot hand passt its socket in a session). The nodes have no GPU,
+so `gl=auto` creates the VM without virgl and the report records the software renderer;
+frame-timing checks gated to real display hardware report that. The report (`report.md`,
+`report.json`, shots, frame traces) is the check's output, and the check fails unless every
+check passes.
 
 
-### Agent door (M01-M04) and input fidelity (I01-I07)
+### Agent door (M01-M04) and input fidelity (I01-I08)
 
 M01-M04 (`checks/agent.py`) run `guest/mcp_client.py` in the guest, as Claude Code would run
 `tilo-runtime-mcp --connect`: the person's consent is answered through the control socket's
-`permission-prompts` actions, `tilo_list_apps` must list the desktop's live apps (Notes is
-open), a Notes `new-page` is read back through the desktop, and refusals must reach the agent
-as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
+`permission-prompts` actions, the door must offer the path-addressed agent tools, `tilo_ls`
+must list Notes as a running app (it is open), a note made with `notes#new-note` (the harness
+grants the test agent Notes for the session) is read back through the desktop, and refusals
+must reach the agent as `isError` / a JSON-RPC error. Until the image serves `$XDG_RUNTIME_DIR/tilo-session/agent.sock`
 (fix/agent-door) they report **xfail** with that reason: an expected failure does not fail the
 run (`core.ExpectedFailure`), is listed in the report, and becomes an ordinary check when the
 socket appears.
 
-I01-I07 (`checks/input_devices.py`) plug uinput devices copied from the Lenovo Yoga Slim 7x
+I01-I08 (`checks/input_devices.py`) plug uinput devices copied from the Lenovo Yoga Slim 7x
 (`os/hardware/profiles/lenovo-83ed/input/*.json`: I2C bus, 048D:8987 keyboard, 0488:1054
-touchpad; `tilo-vm input device plug lenovo-83ed-keyboard`) and check German keysyms,
+touchpad; `tilo device input device plug lenovo-83ed-keyboard`) and check German keysyms,
 layout state over hotplug, no stuck modifiers after a lock, and touchpad tap/click/scroll and
-disable-while-typing. I05-I07 are `calibrating`: their observables come from the compositor's
+disable-while-typing. I08 starts a terminal that keeps printing, blanks the display, forces the next wake to read its CRTC as dark,
+suspends the VM through logind and checks the session log: the wake check saw the dark CRTC,
+redid the modeset and lit the output, the session still holds the keyboard, and a key after
+the resume arrives and unlocks. I05-I08 are `calibrating`: their observables come from the compositor's
 code and have not yet been seen in a CI run, so a failure is **xfail** (with its reason) until
 the marker is removed. hwdb `KEYBOARD_KEY_` remaps need the real driver and are not covered.
 Capture a new profile from a device's `/sys/class/input/eventN/device/capabilities/*` and HID
@@ -151,6 +143,25 @@ report descriptor (see `crates/dev/tilo-vm-protocol/src/profile.rs`).
 
 Pull requests touching the input path, tilo-vm(d), the profiles or the agent door run only
 these areas (`ci_select.py`).
+
+### Secret custody (C01, C02)
+
+The compositor loads the device key and is therefore non-dumpable, so the store cannot read
+its executable; it proves the device key on each bus connection instead
+(docs/identity-security.md). C01 (`checks/secrets.py`) judges that in the slot: its
+`/proc/<pid>/exe` is hidden from its own user, `tilo-secret-service apps list` names
+`binary:/usr/bin/shell` with the MLS key it keeps, the sealed MLS state sits in an
+owner-only directory with no custody warning in the session log, and Notes' portal secret
+(`org.freedesktop.portal.Secret`, asked from an `app-tilo-so.tilo.notes-<n>.scope` as a
+host-launched app asks) comes from the store, and comes back the same after
+`tilo-secret-service` restarts under the running compositor. C02 takes the dev account
+R08 signed in at seat0 through first use on its own control socket's `onboarding` actions:
+its identity must name `secret_ref.backend = secret-service-v1` with no key file beside it,
+and after signing out and in again the store still holds what the compositor keeps and
+the MLS state is intact. A slot's throwaway identity uses owner-only files by design, so
+only a person's login shows the identity part. No secret is printed: the portal secret is
+compared with itself inside the guest. Changes to the store, its client, the MLS vault,
+the portal backend or the identity's secret providers select these checks (`ci_select.py`).
 
 ### Startup and GPU (A14, R05)
 
@@ -165,12 +176,12 @@ client (`tools/atspi_external_client.py`, copied from the checkout into the slot
 `~/.cache/acceptance/`; the image does not ship test tooling) and requires its folder listing to
 hold entries; it creates an `acc-files-*` folder in home first, so home is never empty.
 
-R05 runs `tilo system health --gpu --json` in the guest and reads every app's `tilo-gpu:
+R05 runs `tilo device health --gpu --json` in the guest and reads every app's `tilo-gpu:
 window adapter` line from the session log. A machine without a hardware render node
 cannot show a CPU fallback, so a plain software VM leaves R05 unobservable; `--gl` boots
 virgl, where a degraded health report, a window on a `type=Cpu` adapter or a reported CPU
 fallback fails it. `gpu_check.py` is the same judgement for gates that boot an installed
-image without tilo-vm (the installed-desktop gate in `build-image.yml`):
+image without tilo-vm (the installed-desktop gate of t's `os-acceptance-{arch}` check):
 
 ```bash
 ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/gpu_check.py --probe)" \
@@ -187,8 +198,8 @@ frame takes longer than its budget: 1 s, or 600 ms for small single-view apps
 (`acceptance/app_startup.py`), and 1 s for opening History. A launch whose window
 adapter is a CPU rasterizer (llvmpipe in a VM without a GPU) compiles vello's shaders and
 renders on the CPU, so it is held to the VM checks' software budget, 3 s, instead. The
-judgement prints every `APP-STARTUP` line it read, with all its phases. The installed-desktop gate in
-`build-image.yml` runs it after its app checks, having typed a ~2000-character note on the
+judgement prints every `APP-STARTUP` line it read, with all its phases. The installed-desktop gate of
+`os-acceptance-{arch}` runs it after its app checks, having typed a ~2000-character note on the
 real keyboard and reopened Notes on it (`reopen-history`), so a note with thousands of
 changes in its history is part of every judged run. Under TCG it reports without judging.
 
@@ -199,7 +210,7 @@ changes in its history is part of every judged run. Under TCG it reports without
 
 ### Installed-desktop gates (R06, R07, R08, A15, A16)
 
-The checks `build-image.yml` runs on an installed image, which per-push dev builds skip,
+The checks `os-acceptance-{arch}` runs on an installed image, which per-push dev builds skip,
 run here on every full run instead, on the dev disk under KVM:
 
 - R06 runs the boot gate (`os/tests/boot_performance_gate.sh`, sent from the checkout in
@@ -261,7 +272,7 @@ run here on every full run instead, on the dev disk under KVM:
   predates `monotonic_us` leaves the first frame untimed, and R08 unobservable.
 
 The greeter keystroke check (`os/dev/greeter-acceptance.py`) needs QEMU's monitor, which
-a `tilo-vm` VM does not expose, so it stays in `build-image.yml`.
+a `tilo-vm` VM does not expose, so it stays in `os-acceptance-{arch}`.
 
 ### An idle shared workspace (R09)
 
@@ -302,8 +313,9 @@ An image whose `tilo-enroll` predates `certify --home-peer-service` leaves R09 u
 ### Performance records
 
 `run.py --records FILE` writes one record per KPI (`tools/perf/record.py`) from what the
-checks measured, whether they passed or not; the CI run's `perf` job compares them with
-the store (docs/measurements/performance.md) and publishes the nightly run's.
+checks measured, whether they passed or not; t's `vm-acceptance-perf` compares them with
+the store (docs/measurements/performance.md) and publishes them where the run holds the
+store's token.
 
 | KPI | Unit | Check | What |
 |---|---|---|---|
@@ -381,7 +393,7 @@ Retain these **canonical `run.json` receipts** under the names below (the CLI's
 | `remove-run.json` | `slot rm SLOT`, only after fresh ownership was acknowledged |
 
 Capture `fixture-before.json` before the fault injection and `fixture-after.json`
-after recovery through `tilo-vm slot exec`. Each object contains `vm`, `slot`,
+after recovery through `tilo device slot exec`. Each object contains `vm`, `slot`,
 `user`, `uid`, `home`, `identity_root` and `sentinel_sha256`. Read only the named
 environment fields and hash one sentinel created in this fresh user's home;
 never dump the environment, keys, personal documents or existing identities.
@@ -446,7 +458,7 @@ while locked the compositor refuses every action invocation and snapshot with
 `session_locked` (on purpose; W21 asserts the snapshot refusal), and each later check would
 report that instead of its subject. The harness enforces it: after every check `run_check`
 reads the state dump, and a check that ended with the session locked fails ("left the
-session locked") and the slot's session is restarted (`tilo-vm slot restart`) before the next
+session locked") and the slot's session is restarted (`tilo device slot restart`) before the next
 one; the report's `session_recovered_after` lists those checks. W21, the one check that locks
 on purpose, unlocks in a `finally` the way a person would (the passcode on the real
 keyboard), falls back to the restart, and records the route in its `unlock_recovery` metric.
@@ -503,8 +515,9 @@ unobservable, not passed. The trace reading is unit-tested beside the app checks
 
 Touchpad gestures (W15) are driven through the control socket's `swipe` and `pinch`, which
 feed the shell's gesture tracker; libinput's own touchpad decoding needs a uinput touchpad
-`tilo-vm input` does not have yet. Not yet drivable, so failing as unobservable: output
-hotplug (B06; a slot's outputs are fixed at creation).
+`tilo device input` does not have yet. Output hotplug (B06) is driven by forcing one
+connector's sysfs status off and back to `detect`, each followed by the card's change uevent, which is
+the notification the compositor listens for.
 
 ## Terminal after a userspace cohort update
 
@@ -628,14 +641,14 @@ record refusal; they do not claim physical installation or presentation.
 
 After the deployment owner confirms the matched apps/runtime, Shell/control,
 launcher/install and AppHost cohort is active, `store-chooser.py` uses the normal
-owner console actions through `tilo-vm slot exec`. It opens no private app socket,
+owner console actions through `tilo device slot exec`. It opens no private app socket,
 does not stage bytes or grant publisher trust, and submits no raw path to Store.
 The owner console must admit the actual slot user; it never falls back to an
 Agent, a synthetic actor, or a different socket when refused.
 
 First acquire the public ARM package through a canonically verified official
 catalogue using the independently pinned registry owner. Verify the signed full
-archive and derive the thin archive with `tilo-app-package thin`, preserving the
+archive and derive the thin archive with `tilo package thin`, preserving the
 same signed root. Retain the canonical `verified-offer.json` receipt. The exact
 runtime named by that offer must be resolvable through the normal independently
 verified runtime resolver; an unrelated private SDK or a historical runtime tag
@@ -674,7 +687,7 @@ not use the runner concurrently with human or automated portal requests.
 
 The default performs two reviews only. Add `--install-open` only when the owner
 has authorized the one install and Calculator Open. It installs once and replays
-`tilo-install verify`, then requires canonical `inspect` to match the reviewed
+`tilo app verify`, then requires canonical `inspect` to match the reviewed
 root, publisher, version and runtime. It reports update/reuse when already
 installed (including the private cohort); it never closes an existing window.
 A same-room mapped tab must have its public `local_app_records` association.
@@ -685,7 +698,7 @@ unobservable completion fail the run; they are never replaced with CLI install,
 clicks, retries, or trust changes. Review completion alone is not installation.
 
 Mapped SDK verification reads only public runtime metadata through maintained
-`tilo-vm vm ssh` maintenance transport, as root where Linux requires that access.
+`tilo device vm ssh` maintenance transport, as root where Linux requires that access.
 This does not change the identity or authority of any semantic action: Store and
 chooser actions still execute as the actual slot owner on the owner console.
 The probe opens the exact `/proc/PID/map_files/START-END` kernel object and hashes

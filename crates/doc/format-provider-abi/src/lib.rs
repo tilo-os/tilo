@@ -68,11 +68,6 @@ pub enum Tier {
 }
 
 impl Tier {
-    /// Numeric value carried in [`Confidence::tier`].
-    pub fn as_u32(self) -> u32 {
-        self as u32
-    }
-
     /// Parse a `priority = "…"` value from the registry TOML.
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {

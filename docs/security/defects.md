@@ -650,7 +650,7 @@ Two adjacent holes in the same guarantee were found alongside it:
   written (it hardcodes the `tilo/fedora-bootc` destination and asserts an `ostree.linux` label
   fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
   fedora-minimal, and add a second ref to `os/base-snapshot.env` that
-  `.forgejo/workflows/release-relay.yml` passes alongside `BASE_REF`.
+  `tools/ci/publish/relay-build.sh` passes alongside `BASE_REF`.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
   webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
   still open. (**Closed by removal:** the browser moved from WPE to a Chromium engine and the
@@ -1063,6 +1063,49 @@ and its dead local-signing arm are gone. Held by
 (the secret is deleted from its provider before the launch),
 `crates/runtime/runtime-identity/src/unix.rs::tests::a_launch_reads_public_fields_without_the_secret_provider`
 and `crates/runtime/runtime-identity/src/broker.rs::tests::broker_answers_metadata_and_refuses_every_sign_over_pinned_bounded_frames`.
+
+---
+
+## P1-13 — The boot sign-in screen has no screen reader and no touch
+
+`os/usr/share/plymouth/themes/tilo/tilo.script` ("Sign-in"), driven by
+`crates/system/boot-signin`. On a machine whose system volume does not open by
+itself, the first screen is the sign-in screen in the initramfs
+([sign-in.md](sign-in.md) §3.2). Plymouth draws it: it lays out the person's name, the field
+for their secret, the message line and the other ways in like the login screen, but
+Plymouth has no accessibility interface, no speech and no pointer or touch input. A
+blind person hears nothing at that screen, and a tablet without a keyboard cannot
+enter anything there. Every function of the screen is reachable by keyboard (Tab and
+the arrow keys to pick a person, Enter to choose, Enter on an empty field for the other
+ways in), and the same choices are offered on a serial console through systemd's
+password agents, so the gap is speech and touch, not keyboard reach. AGENTS.md
+requires parity for assistive technology on every surface; this one does not have
+it. Sign-in.md §10 lists it as still to establish.
+
+**Closing it:** carry the greeter itself into the initramfs, instead of Plymouth, on
+machines that sign in there: a DRM/KMS kiosk (cage or a minimal compositor), the
+greeter binary, its fonts and AccessKit's AT-SPI path, the D-Bus session it needs,
+`tilo-tts` with a voice for speech, libinput for touch, and the boot-time handoff
+to `tilo-auth boot-unlock` in place of `tilo-boot-signin`'s screen. The cost is
+initramfs size (every generation's UKI carries it, and the ESP holds several) and
+start-up time before the first frame, both of which have to stay within the boot
+budgets.
+
+---
+
+## P2-10 — Plymouth keeps every secret it relays until it quits
+
+Plymouth's daemon appends every answer to a password request to an in-memory list
+(`cached_passwords` in its boot server) and returns the whole list to any root client
+that asks for cached passwords. That includes the boot sign-in secret
+`tilo-boot-signin` asks through systemd's agents, the rollback PIN and the disk
+passphrase. The list lives until plymouthd exits, which on a booted system is when
+`plymouth-quit.service` runs as the login screen starts. A compromise of the running
+system in that window (the pre-sign-in exposure of [sign-in.md](sign-in.md) §6.1)
+can read the secret instead of only guessing it against the TPM. No client option
+turns the caching off. Closing it means asking the secret without Plymouth's password
+request: the greeter in the initramfs of P1-13 does, as would reading the keyboard
+in `tilo-boot-signin` while Plymouth only draws.
 
 ---
 

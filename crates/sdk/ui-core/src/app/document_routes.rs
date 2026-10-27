@@ -31,22 +31,69 @@ pub(super) fn outbound_failure(
 }
 
 fn live_document_owners(root: &dyn Widget) -> Vec<crate::history_mode::HistoryOwner> {
-    fn collect(root: &dyn Widget, owners: &mut Vec<crate::history_mode::HistoryOwner>) {
-        for owner in root.history_owner().into_iter().chain(root.record_owners()) {
-            if !owners.iter().any(|known| known.same_owner(&owner)) {
-                owners.push(owner);
+    LiveOwners::of(root).all
+}
+
+/// The live document owners of a window's widgets, by role.
+struct LiveOwners {
+    /// Every record a widget holds: those its views show, and those kept
+    /// beside them.
+    all: Vec<crate::history_mode::HistoryOwner>,
+    /// The records its views show ([`Widget::history_owner`]).
+    shown: Vec<crate::history_mode::HistoryOwner>,
+    /// The records kept beside what the views show
+    /// ([`Widget::record_owners`]: the person's, the workspace's emoji).
+    beside: Vec<crate::history_mode::HistoryOwner>,
+}
+
+impl LiveOwners {
+    fn of(root: &dyn Widget) -> Self {
+        fn push(
+            owners: &mut Vec<crate::history_mode::HistoryOwner>,
+            owner: &crate::history_mode::HistoryOwner,
+        ) {
+            if !owners.iter().any(|known| known.same_owner(owner)) {
+                owners.push(owner.clone());
             }
         }
-        for child in root.children() {
-            collect(child, owners);
+        fn collect(root: &dyn Widget, owners: &mut LiveOwners) {
+            let shown = root.history_owner();
+            let beside = root.record_owners();
+            if let Some(owner) = &shown {
+                push(&mut owners.shown, owner);
+            }
+            for owner in &beside {
+                push(&mut owners.beside, owner);
+            }
+            for owner in shown.iter().chain(beside.iter()) {
+                push(&mut owners.all, owner);
+            }
+            for child in root.children() {
+                collect(child, owners);
+            }
         }
+        let mut current = Self {
+            all: vec![],
+            shown: vec![],
+            beside: vec![],
+        };
+        collect(root, &mut current);
+        crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
+            collect(live, &mut current);
+        });
+        current
     }
-    let mut current = vec![];
-    collect(root, &mut current);
-    crate::history_mode::capability::visit_framework_history(root, &mut |_, live| {
-        collect(live, &mut current);
-    });
-    current
+
+    /// Whether `entry` syncs only records kept beside what the views show.
+    /// Such a record takes no part in the window's controls, so neither
+    /// the surface the window publishes nor an invocation of one of its
+    /// actions acts through it, and neither waits for its route.
+    fn keeps_only_beside(&self, entry: &crate::history_mode::routes::OwnerRoute) -> bool {
+        entry.owners.iter().all(|owner| {
+            self.beside.iter().any(|kept| kept.same_owner(owner))
+                && !self.shown.iter().any(|shown| shown.same_owner(owner))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -186,9 +233,8 @@ impl App {
         if let Some(reported) = reported {
             return Some(Cow::Borrowed(reported));
         }
-        let key = if self.local_input_capture.has_pending() {
-            Some("history-local-action-pending")
-        } else if self.document_routes.witness.is_none() {
+        // A change still on its way to the history says nothing.
+        let key = if self.document_routes.witness.is_none() {
             let manager = &self.collaboration.manager;
             // A change the workspace refused stops sync just as a lost
             // connection does, but reconnecting will not resume it, and the
@@ -256,6 +302,9 @@ impl App {
             self.autosave_generation,
             &self.state.doc,
         );
+        // The routes an accepted invocation of this window's actions waits
+        // to be current on before it runs: never one only kept beside.
+        let live = LiveOwners::of(self.root_widget.as_ref());
         let routes = self
             .document_routes
             .witness
@@ -265,6 +314,7 @@ impl App {
                 self.document_routes
                     .owners
                     .iter()
+                    .filter(|entry| !live.keeps_only_beside(entry))
                     .map(|owner| owner.route.clone()),
             )
             .collect();
@@ -295,21 +345,28 @@ impl App {
             .witness
             .as_ref()
             .map(|witness| &witness.route);
-        live_document_owners(self.root_widget.as_ref())
-            .iter()
-            .all(|owner| {
-                self.document_routes.owners.iter().any(|entry| {
-                    entry
-                        .owners
-                        .iter()
-                        .any(|installed| installed.same_owner(owner))
-                })
+        let live = LiveOwners::of(self.root_widget.as_ref());
+        live.all.iter().all(|owner| {
+            self.document_routes.owners.iter().any(|entry| {
+                entry
+                    .owners
+                    .iter()
+                    .any(|installed| installed.same_owner(owner))
             })
-            && self.collaboration.manager.document_route_ready(route)
+        }) && self.collaboration.manager.document_route_ready(route)
             && self.document_routes.owners.iter().all(|entry| {
-                self.collaboration
-                    .manager
-                    .document_route_ready(Some(&entry.route))
+                // A record held only for a tree (a chat's next part) or kept
+                // beside the shown ones (the person's, the workspace's
+                // emoji) syncs on its own; the surface the person acts
+                // through never waits for its route to open, or every input
+                // meanwhile would act through a stale one, or through none
+                // while that route never opens.
+                self.document_routes.holds_only_tree_records(entry)
+                    || live.keeps_only_beside(entry)
+                    || self
+                        .collaboration
+                        .manager
+                        .document_route_ready(Some(&entry.route))
             })
     }
 
@@ -357,25 +414,6 @@ impl App {
         }
     }
 
-    fn send_owned_document(
-        &mut self,
-        route: RouteSpec,
-        request: CollabRequest,
-    ) -> Result<(), crate::collaboration::CollabSendError> {
-        #[cfg(test)]
-        if let Some(refusal) = self.document_routes.refuse_for_test.clone() {
-            return Err(refusal);
-        }
-        #[cfg(test)]
-        let observation = (route.clone(), request.clone());
-        self.collaboration
-            .manager
-            .try_send_to_route(route, request)?;
-        #[cfg(test)]
-        self.document_routes.sent.push(observation);
-        Ok(())
-    }
-
     /// Ordinary background/history publication remains best effort. Only a
     /// directed terminal requires the explicit complete-queue result below.
     #[cfg(any(test, feature = "native"))]
@@ -399,7 +437,7 @@ impl App {
         if self.document_routes.witness.is_none() {
             return Err("the admitted document route is unavailable");
         }
-        let mut blocked = current
+        let blocked = current
             .iter()
             .any(|owner| {
                 !self.document_routes.owners.iter().any(|entry| {
@@ -410,77 +448,13 @@ impl App {
                 })
             })
             .then_some("a live document owner has no usable publication route");
-        let mut sends = vec![];
-        for entry in &mut self.document_routes.owners {
-            let Some(owner) = entry.owners.first() else {
-                blocked.get_or_insert("a document route has no owner");
-                continue;
-            };
-            if entry.owners.iter().any(|other| !owner.same_document(other)) {
-                entry.pending.failure = Some("Multiple different document owners claim this collaboration route. Synchronization is stopped.".into());
-                blocked.get_or_insert("document owners conflict on the publication route");
-                continue;
-            }
-            let publication = owner.prepare_publication(
-                &self.state.doc,
-                &entry.sent_heads,
-                entry.needs_snapshot,
-                entry.pending.failure.is_some(),
-            );
-            let (mutation, authorization, heads) = match publication {
-                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unchanged) => continue,
-                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unfinished) => {
-                    blocked.get_or_insert("an owned document has unfinished changes");
-                    continue;
-                }
-                Ok(crate::history_mode::owner::OwnedDocumentPublication::Blocked) => {
-                    blocked.get_or_insert("a changed document requires synchronization recovery");
-                    continue;
-                }
-                Ok(crate::history_mode::owner::OwnedDocumentPublication::Changed {
-                    mutation,
-                    authorization,
-                    heads,
-                }) => (mutation, authorization, heads),
-                Err(_) => {
-                    blocked.get_or_insert("an owned document is unreadable");
-                    continue;
-                }
-            };
-            let request = CollabRequest::Document {
-                mutation,
-                authorization,
-            };
-            sends.push((entry.route.clone(), request, heads));
+        let published = self
+            .document_routes
+            .publish_owned(&mut self.collaboration.manager, &self.state.doc);
+        if published.status_changed {
+            self.layout.layout_dirty = true;
         }
-        for (route, request, heads) in sends {
-            let result = self.send_owned_document(route.clone(), request);
-            let failure = outbound_failure(&result);
-            if result.is_err() {
-                blocked.get_or_insert("the document command could not enter the transport queue");
-            }
-            let Some(entry) = self
-                .document_routes
-                .owners
-                .iter_mut()
-                .find(|entry| entry.route == route)
-            else {
-                continue;
-            };
-            // Only an accepted change moves the route's frontier; a refused
-            // one is offered again on the next publication.
-            if result.is_ok() {
-                entry.sent_heads = heads;
-                entry.needs_snapshot = false;
-            }
-            if let Some(failure) = failure
-                && entry.outbound_failure.as_ref() != failure.as_ref()
-            {
-                entry.outbound_failure = failure;
-                self.layout.layout_dirty = true;
-            }
-        }
-        blocked.map_or(Ok(()), Err)
+        blocked.or(published.blocked).map_or(Ok(()), Err)
     }
 
     /// A local mutation may already exist. Suppress its terminal and retire the
@@ -513,8 +487,259 @@ impl App {
     }
 
     fn drain_document_routes_after_refresh(&mut self) {
+        let mut changed = self.document_routes.merge_owned();
+        while let Some(mutation) = self.document_routes.primary.front() {
+            match self.state.merge_remote_committed(mutation) {
+                Ok(Some(applied)) => {
+                    self.document_routes.primary.pop_applied();
+                    changed |= applied;
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    let reason = format!(
+                        "Remote document could not be applied: {error}. Synchronization needs recovery."
+                    );
+                    if error.is_invalid_mutation() {
+                        self.document_routes
+                            .primary
+                            .quarantine_invalid_front(reason);
+                        continue;
+                    }
+                    self.document_routes.primary.failure = Some(reason);
+                    break;
+                }
+            }
+        }
+        if changed {
+            self.invalidate_widget_resource_cache();
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+        }
+    }
+
+    /// Peers wrote `records` of this window's trees (a chain's next part, a
+    /// container's child) that it does not hold: every store a live owner
+    /// reads from is told, so whatever follows a tree there holds them, and
+    /// they sync on their own routes from then on
+    /// ([`crate::history_mode::routes`]).
+    pub(super) fn records_arrived(&mut self, records: &[String]) {
+        let records: Vec<crate::record::RecordId> = records
+            .iter()
+            .filter_map(|record| crate::record::RecordId::parse(record))
+            .collect();
+        let mut stores: Vec<crate::record::RecordStore> = Vec::new();
+        for owner in live_document_owners(self.root_widget.as_ref()) {
+            let (store, _) = owner.store_checkout();
+            if !stores.iter().any(|known| known.same_owner(store)) {
+                stores.push(store.clone());
+            }
+        }
+        for store in &stores {
+            store.announce(records.iter().cloned());
+        }
+        self.needs_sync = true;
+    }
+
+    pub(super) fn pump_document_routes(&mut self) {
+        self.refresh_document_routes();
+        self.drain_document_routes_after_refresh();
+        let _ = self.queue_owned_documents_after_refresh();
+    }
+    pub(super) fn apply_signed_document_envelope(
+        &mut self,
+        envelope: &collab_types::SignedOp,
+        decrypted_payload: Option<&[u8]>,
+    ) {
+        // Before the first record checkout the launcher's unqualified route
+        // carries room-index discovery, never the editable record document.
+        if self.persistence.records.is_some()
+            && self.collaboration.room_manager.is_none()
+            && self.native_room_route.is_none()
+        {
+            if let Some(route) = self
+                .collaboration
+                .manager
+                .primary_route()
+                .map(|witness| witness.route.clone())
+            {
+                let _ =
+                    self.apply_room_index_document_envelope(&route, envelope, decrypted_payload);
+            }
+            return;
+        }
+        self.refresh_document_routes();
+        if self.document_routes.witness.is_none() {
+            return;
+        }
+        // Signature/role/replay verification remains the SDK's responsibility.
+        // This door additionally checks deterministic artifact, attestation and
+        // encrypted channel against the actual installed route before decoding.
+        if let Some(refused) = self
+            .document_routes
+            .admit_owned(envelope, decrypted_payload)
+        {
+            if refused {
+                self.layout.layout_dirty = true;
+            }
+            self.drain_document_routes_after_refresh();
+            return;
+        }
+        let Some(witness) = self.document_routes.witness.as_ref() else {
+            return;
+        };
+        let primary = validated_route_payload_with(&witness.route, envelope, decrypted_payload)
+            .and_then(|payload| {
+                let active = !self.document_routes.retired_route(&witness.route)
+                    && match witness.route.record.as_deref() {
+                        Some(record) => self
+                            .persistence
+                            .records
+                            .as_ref()
+                            .and_then(|set| set.active())
+                            .is_some_and(|id| id.as_str() == record),
+                        None => self
+                            .persistence
+                            .records
+                            .as_ref()
+                            .is_none_or(|set| set.active().is_none()),
+                    };
+                active.then(|| (witness.route.clone(), payload))
+            });
+        let Some((route, payload)) = primary else {
+            return;
+        };
+        let mutation = match decode_routed_mutation(&route, payload, decrypted_payload) {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                tracing::warn!(%error, "collab: invalid routed document mutation");
+                return;
+            }
+        };
+        let queue = &mut self.document_routes.primary;
+        let accepted = queue.admit(mutation);
+        if !accepted {
+            self.layout.layout_dirty = true;
+            tracing::warn!(status = ?queue.failure, "collab: routed document deferred queue refused update; resynchronization required");
+        }
+        self.drain_document_routes_after_refresh();
+    }
+}
+
+/// What publishing a holder's records reported.
+pub(super) struct Published {
+    /// Why some record's changes are not reaching peers, if any.
+    pub(super) blocked: Option<&'static str>,
+    /// A route's user-visible status changed.
+    pub(super) status_changed: bool,
+}
+
+impl crate::history_mode::routes::OwnerDocumentRoutes {
+    /// Publish what changed in every held record through `manager`: a
+    /// route's whole document once it opens or a peer asks, its changes
+    /// since what the transport last accepted otherwise. `outer` is the
+    /// window's document, which an owner of the window's own record reads.
+    pub(super) fn publish_owned(
+        &mut self,
+        manager: &mut crate::collaboration::CollaborationManager,
+        outer: &automerge::AutoCommit,
+    ) -> Published {
+        let mut blocked = None;
+        let mut status_changed = false;
+        let mut sends = vec![];
+        for entry in &mut self.owners {
+            if entry.opening {
+                if !manager.document_route_publishable(&entry.route) {
+                    // Its whole document goes out once the route opens.
+                    continue;
+                }
+                entry.opening = false;
+            }
+            let Some(owner) = entry.owners.first() else {
+                blocked.get_or_insert("a document route has no owner");
+                continue;
+            };
+            if entry.owners.iter().any(|other| !owner.same_document(other)) {
+                entry.pending.failure = Some("Multiple different document owners claim this collaboration route. Synchronization is stopped.".into());
+                blocked.get_or_insert("document owners conflict on the publication route");
+                continue;
+            }
+            let publication = owner.prepare_publication(
+                outer,
+                &entry.sent_heads,
+                entry.needs_snapshot,
+                entry.pending.failure.is_some(),
+            );
+            let (mutation, authorization, heads) = match publication {
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unchanged) => continue,
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Unfinished) => {
+                    blocked.get_or_insert("an owned document has unfinished changes");
+                    continue;
+                }
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Blocked) => {
+                    blocked.get_or_insert("a changed document requires synchronization recovery");
+                    continue;
+                }
+                Ok(crate::history_mode::owner::OwnedDocumentPublication::Changed {
+                    mutation,
+                    authorization,
+                    heads,
+                }) => (mutation, authorization, heads),
+                Err(_) => {
+                    blocked.get_or_insert("an owned document is unreadable");
+                    continue;
+                }
+            };
+            let request = CollabRequest::Document {
+                mutation,
+                authorization,
+            };
+            sends.push((entry.route.clone(), request, heads));
+        }
+        for (route, request, heads) in sends {
+            #[cfg(test)]
+            let result = if let Some(refusal) = self.refuse_for_test.clone() {
+                Err(refusal)
+            } else {
+                let observation = (route.clone(), request.clone());
+                let result = manager.try_send_to_route(route.clone(), request);
+                if result.is_ok() {
+                    self.sent.push(observation);
+                }
+                result
+            };
+            #[cfg(not(test))]
+            let result = manager.try_send_to_route(route.clone(), request);
+            let failure = outbound_failure(&result);
+            if result.is_err() {
+                blocked.get_or_insert("the document command could not enter the transport queue");
+            }
+            let Some(entry) = self.owners.iter_mut().find(|entry| entry.route == route) else {
+                continue;
+            };
+            // Only an accepted change moves the route's frontier; a refused
+            // one is offered again on the next publication.
+            if result.is_ok() {
+                entry.sent_heads = heads;
+                entry.needs_snapshot = false;
+            }
+            if let Some(failure) = failure
+                && entry.outbound_failure.as_ref() != failure.as_ref()
+            {
+                entry.outbound_failure = failure;
+                status_changed = true;
+            }
+        }
+        Published {
+            blocked,
+            status_changed,
+        }
+    }
+
+    /// Merge what peers sent into every held record. Whether a record
+    /// changed.
+    pub(super) fn merge_owned(&mut self) -> bool {
         let mut changed = false;
-        for entry in &mut self.document_routes.owners {
+        for entry in &mut self.owners {
             let Some(owner) = entry.owners.first() else {
                 continue;
             };
@@ -587,123 +812,34 @@ impl App {
                 }
             }
         }
-        while let Some(mutation) = self.document_routes.primary.front() {
-            match self.state.merge_remote_committed(mutation) {
-                Ok(Some(applied)) => {
-                    self.document_routes.primary.pop_applied();
-                    changed |= applied;
-                }
-                Ok(None) => break,
-                Err(error) => {
-                    let reason = format!(
-                        "Remote document could not be applied: {error}. Synchronization needs recovery."
-                    );
-                    if error.is_invalid_mutation() {
-                        self.document_routes
-                            .primary
-                            .quarantine_invalid_front(reason);
-                        continue;
-                    }
-                    self.document_routes.primary.failure = Some(reason);
-                    break;
-                }
-            }
-        }
-        if changed {
-            self.invalidate_widget_resource_cache();
-            self.needs_sync = true;
-            self.layout.layout_dirty = true;
-        }
+        changed
     }
 
-    pub(super) fn pump_document_routes(&mut self) {
-        self.refresh_document_routes();
-        self.drain_document_routes_after_refresh();
-        let _ = self.queue_owned_documents_after_refresh();
-    }
-    pub(super) fn apply_signed_document_envelope(
+    /// Queue `envelope` for the held record whose route it came on, if any:
+    /// `Some` whether its queue refused it, `None` when no held record's
+    /// route carried it.
+    pub(super) fn admit_owned(
         &mut self,
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
-    ) {
-        // Before the first record checkout the launcher's unqualified route
-        // carries room-index discovery, never the editable record document.
-        if self.persistence.records.is_some()
-            && self.collaboration.room_manager.is_none()
-            && self.native_room_route.is_none()
-        {
-            if let Some(route) = self
-                .collaboration
-                .manager
-                .primary_route()
-                .map(|witness| witness.route.clone())
-            {
-                let _ =
-                    self.apply_room_index_document_envelope(&route, envelope, decrypted_payload);
-            }
-            return;
-        }
-        self.refresh_document_routes();
-        let Some(witness) = self.document_routes.witness.as_ref() else {
-            return;
-        };
-        // Signature/role/replay verification remains the SDK's responsibility.
-        // This door additionally checks deterministic artifact, attestation and
-        // encrypted channel against the actual installed route before decoding.
-        let owned = self
-            .document_routes
-            .owners
-            .iter()
-            .enumerate()
-            .find_map(|(index, entry)| {
+    ) -> Option<bool> {
+        let (index, route, payload) =
+            self.owners.iter().enumerate().find_map(|(index, entry)| {
                 validated_route_payload_with(&entry.route, envelope, decrypted_payload)
                     .map(|payload| (index, entry.route.clone(), payload))
-            });
-        let primary = validated_route_payload_with(&witness.route, envelope, decrypted_payload)
-            .and_then(|payload| {
-                let active = !self.document_routes.retired_route(&witness.route)
-                    && match witness.route.record.as_deref() {
-                        Some(record) => self
-                            .persistence
-                            .records
-                            .as_ref()
-                            .and_then(|set| set.active())
-                            .is_some_and(|id| id.as_str() == record),
-                        None => self
-                            .persistence
-                            .records
-                            .as_ref()
-                            .is_none_or(|set| set.active().is_none()),
-                    };
-                active.then(|| (witness.route.clone(), payload))
-            });
-        let (owned, route, payload) = if let Some((index, route, payload)) = owned {
-            (Some(index), route, payload)
-        } else if let Some((route, payload)) = primary {
-            (None, route, payload)
-        } else {
-            return;
-        };
+            })?;
         let mutation = match decode_routed_mutation(&route, payload, decrypted_payload) {
             Ok(mutation) => mutation,
             Err(error) => {
                 tracing::warn!(%error, "collab: invalid routed document mutation");
-                return;
+                return Some(false);
             }
         };
-        let queue = if let Some(index) = owned {
-            let Some(entry) = self.document_routes.owners.get_mut(index) else {
-                return;
-            };
-            &mut entry.pending
-        } else {
-            &mut self.document_routes.primary
-        };
-        let accepted = queue.admit(mutation);
-        if !accepted {
-            self.layout.layout_dirty = true;
-            tracing::warn!(status = ?queue.failure, "collab: routed document deferred queue refused update; resynchronization required");
+        let entry = self.owners.get_mut(index)?;
+        let refused = !entry.pending.admit(mutation);
+        if refused {
+            tracing::warn!(status = ?entry.pending.failure, "collab: routed document deferred queue refused update; resynchronization required");
         }
-        self.drain_document_routes_after_refresh();
+        Some(refused)
     }
 }

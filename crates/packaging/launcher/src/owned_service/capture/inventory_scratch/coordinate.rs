@@ -280,7 +280,7 @@ mod tests {
                 .env(CHILD, &marker)
                 .spawn()
                 .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 if let Some(status) = child.try_wait().unwrap() {
                     assert!(status.success());
@@ -461,7 +461,7 @@ mod tests {
                     .spawn()
                     .unwrap(),
             ));
-            let deadline = Instant::now() + Duration::from_secs(20);
+            let deadline = tilo_test_env::hang_deadline();
             loop {
                 if let Some(status) = child.0.as_mut().unwrap().try_wait().unwrap() {
                     child.0.take(); // try_wait observed and reaped this exact child.

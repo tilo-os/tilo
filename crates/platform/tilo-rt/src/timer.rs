@@ -11,6 +11,16 @@ pub async fn sleep(duration: Duration) {
     imp::sleep(duration).await;
 }
 
+/// The instant the runtime's timers measure against: tokio's clock, which a
+/// test runtime started paused holds still and advances itself. A deadline
+/// that a tokio timer enforces is read on this clock, so the timer and the
+/// expiry check agree however promptly a loaded host runs them.
+#[cfg(not(target_family = "wasm"))]
+#[must_use]
+pub fn timer_now() -> tokio::time::Instant {
+    tokio::time::Instant::now()
+}
+
 #[cfg(not(target_family = "wasm"))]
 mod imp {
     use std::time::Duration;

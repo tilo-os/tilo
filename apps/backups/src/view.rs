@@ -12,15 +12,16 @@ use std::rc::Rc;
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use ui::LocalState;
+use ui::fact::{Measure, Measured};
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Banner, Button, ButtonRole, ChipStyle, Column, Container, ControlSize, Dropdown, Element,
-    EmptyState, Field, FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection,
-    NumberInput, ProgressBar, ProgressRing, ProgressRingSize, Property, PropertyList, Row,
-    Scrollable, Section, SectionHeader, Spacer, StatGroup, StatTile, Text, Tone, TreeNode,
-    TreeRowDecoration, TreeRowTone, TreeView, Widget,
+    Banner, Button, ChipStyle, Column, Container, ControlSize, Dropdown, Element, EmptyState,
+    Field, FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection, NumberInput,
+    ProgressBar, ProgressRing, ProgressRingSize, Property, PropertyList, Row, Scrollable, Section,
+    SectionHeader, Spacer, StatGroup, StatTile, Text, Tone, TreeNode, TreeRowDecoration,
+    TreeRowTone, TreeView, Widget,
 };
 
 use crate::i18n;
@@ -33,9 +34,7 @@ use crate::model::{
 /// A place in the sidebar, and the page the content shows for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Page {
-    /// Every snapshot of every source.
     All,
-    /// One source's snapshots and schedule.
     Source(String),
     /// One destination's capacity and the snapshots stored on it.
     Destination(String),
@@ -77,7 +76,6 @@ impl Page {
         }
     }
 
-    /// Whether the page lists snapshots.
     pub fn lists_snapshots(&self) -> bool {
         !matches!(self, Page::Retention)
     }
@@ -157,8 +155,6 @@ pub struct Model<'a> {
     /// The last operation failed: what, and what to do.
     pub failure: Option<(&'a str, &'a str)>,
 }
-
-// ---- formatting ---------------------------------------------------------
 
 /// A stored size in the platform's unit for stored data (SI).
 pub fn size(bytes: u64) -> String {
@@ -298,15 +294,14 @@ fn kind_title(snapshot: &Snapshot) -> &'static str {
         (SnapType::Auto, Retention::Weekly) => "Weekly snapshot",
         (SnapType::Auto, Retention::Monthly) => "Monthly snapshot",
         (SnapType::Auto, Retention::Keep) => "Kept snapshot",
+        (SnapType::Unknown, _) | (_, Retention::Unknown) => "Snapshot",
     }
 }
-
-// ---- sidebar ------------------------------------------------------------
 
 /// The dot a place shows when it needs the person; a healthy one shows none.
 fn health_status(health: Health) -> Option<ui::widget::RowStatus<'static>> {
     match health {
-        Health::Ok => None,
+        Health::Ok | Health::Unknown => None,
         Health::Warning => Some(ui::widget::RowStatus::Warning),
     }
 }
@@ -395,26 +390,6 @@ pub fn page_title(catalog: &Catalog, page: &Page) -> String {
     }
 }
 
-/// The content header's control: the one main action of the window. History
-/// is the window's own glyph at the end of the same row.
-pub fn header_actions(job: Option<JobKind>, can_back_up: bool, intents: &Intents) -> Vec<Element> {
-    let back_up = intents.clone();
-    vec![Box::new(
-        Button::new(
-            "backups-back-up-now",
-            if job == Some(JobKind::Backup) {
-                "Backing up…"
-            } else {
-                "Back up now"
-            },
-        )
-        .role(ButtonRole::Primary)
-        .control_size(ControlSize::Small)
-        .with_enabled(can_back_up && job.is_none())
-        .on_effect(move || back_up.push(Intent::BackUpNow)),
-    )]
-}
-
 /// The timeline's heading, with its order beside it.
 fn timeline_heading(current: Order, intents: &Intents) -> Row {
     let order = intents.clone();
@@ -450,9 +425,6 @@ fn timeline_heading(current: Order, intents: &Intents) -> Row {
         ))
 }
 
-// ---- pages ----------------------------------------------------------------
-
-/// The content for `model.page`.
 pub fn content(
     model: &Model<'_>,
     intents: &Intents,
@@ -539,6 +511,35 @@ fn progress(job: &Job) -> Section {
     ])
 }
 
+/// One summary tile: `fact`'s value over the caption that says where it
+/// came from and when.
+fn fact_tile(
+    label: &str,
+    fact: &Measured,
+    unit: Option<String>,
+    tone: Option<Tone>,
+    at: std::time::SystemTime,
+) -> Element {
+    let mut tile = StatTile::new(label, fact.value_or_dash().to_owned());
+    if let Some(unit) = unit {
+        tile = tile.unit(unit);
+    }
+    if let Some(tone) = tone {
+        tile = tile.tone(tone);
+    }
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(tile))
+            .push(Box::new(
+                Text::new(&fact.caption(at))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            )),
+    )
+}
+
 /// Protected size, snapshot count, last backup and next run, all derived
 /// from the catalog and the schedules.
 fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGroup {
@@ -548,30 +549,85 @@ fn summary(catalog: &Catalog, filter: Filter<'_>, now: NaiveDateTime) -> StatGro
     };
     let (value, unit) = split_unit(&size(protected));
     let count = catalog.timeline(filter).len();
+    let at = ui::time::wall();
+    let tile = |label: &str, fact: Measured, unit: Option<String>, tone: Option<Tone>| {
+        fact_tile(label, &fact, unit, tone, at)
+    };
+    let protected_fact = Measured::known(
+        Measure::new("Protected size").unit(unit.clone()),
+        value,
+        "repository manifest",
+        at,
+        None,
+    );
     let mut tiles: Vec<Element> = vec![
-        Box::new(StatTile::new("Protected", value).unit(unit)),
-        Box::new(StatTile::new("Snapshots", i18n::group_digits(count as u64))),
+        tile("Protected", protected_fact, Some(unit), None),
+        tile(
+            "Snapshots",
+            Measured::known(
+                Measure::new("Snapshots"),
+                i18n::group_digits(count as u64),
+                "repository manifest",
+                at,
+                None,
+            ),
+            None,
+            None,
+        ),
     ];
-    tiles.push(Box::new(match catalog.last_backup(filter) {
+    tiles.push(match catalog.last_backup(filter) {
         Some(last) => {
             let (value, unit) = ago(last.taken, now);
-            let tile = StatTile::new("Last backup", value).unit(unit);
-            // Two days without a good backup is the tile's news.
-            if now - last.taken > chrono::Duration::days(2) {
-                tile.tone(Tone::Warning)
-            } else {
-                tile
-            }
+            let tone = (now - last.taken > chrono::Duration::days(2)).then_some(Tone::Warning);
+            tile(
+                "Last backup",
+                Measured::known(
+                    Measure::new("Time since last backup").unit(unit.clone()),
+                    value,
+                    "repository manifest",
+                    at,
+                    None,
+                ),
+                Some(unit),
+                tone,
+            )
         }
-        None => StatTile::new("Last backup", "None yet").tone(Tone::Warning),
-    }));
-    tiles.push(Box::new(match catalog.next_run(filter, now) {
+        None => tile(
+            "Last backup",
+            Measured::unknown(
+                Measure::new("Time since last backup"),
+                "no completed snapshot",
+            ),
+            None,
+            Some(Tone::Warning),
+        ),
+    });
+    tiles.push(match catalog.next_run(filter, now) {
         Some(next) => {
             let (value, unit) = ahead(next, now);
-            StatTile::new("Next run", value).unit(unit)
+            tile(
+                "Next run",
+                Measured::known(
+                    Measure::new("Time to next run").unit(unit.clone()),
+                    value,
+                    "schedule",
+                    at,
+                    None,
+                ),
+                Some(unit),
+                None,
+            )
         }
-        None => StatTile::new("Next run", "On demand"),
-    }));
+        None => tile(
+            "Next run",
+            Measured::unknown(
+                Measure::new("Time to next run"),
+                "no scheduler runs on this device; back up when you choose",
+            ),
+            None,
+            None,
+        ),
+    });
     StatGroup::new(tiles)
 }
 
@@ -613,8 +669,10 @@ fn destination_summary(dest: &Destination, catalog: &Catalog, now: NaiveDateTime
     if let Some(last) = catalog.last_backup(Filter::Destination(&dest.id)) {
         facts.push(Property::new("Last backup", when(last.taken, now)));
     }
-    if dest.health != Health::Ok {
-        facts.push(Property::new("Status", "Last run failed"));
+    match dest.health {
+        Health::Warning => facts.push(Property::new("Status", "Last run failed")),
+        Health::Unknown => facts.push(Property::new("Status", "Not checked yet")),
+        Health::Ok => {}
     }
     let facts = PropertyList::new(facts);
     let Some(frac) = dest.used_fraction() else {
@@ -701,7 +759,10 @@ fn snapshot_row(
     let secondary = match snapshot.status {
         SnapStatus::Complete => changed(snapshot),
         SnapStatus::Verifying => format!("Verifying on {dest}"),
-        SnapStatus::Failed => format!("Couldn’t copy to {dest}"),
+        SnapStatus::Failed => match &snapshot.failure {
+            Some(reason) => format!("Couldn’t copy to {dest}: {reason}"),
+            None => format!("Couldn’t copy to {dest} (no reason was recorded)"),
+        },
     };
     let id = snapshot.id.clone();
     let intents = intents.clone();
@@ -716,6 +777,9 @@ fn snapshot_row(
     let mut tags: Vec<(&str, ChipStyle)> = Vec::new();
     if snapshot.kind == SnapType::Manual {
         tags.push(("Manual", ChipStyle::Neutral));
+    }
+    if snapshot.kind == SnapType::Unknown {
+        tags.push(("Type not recorded", ChipStyle::Neutral));
     }
     if snapshot.retention == Retention::Keep {
         tags.push(("Kept", ChipStyle::Neutral));
@@ -763,8 +827,6 @@ fn retention_page(states: &[LocalState<f64>; 4]) -> Container {
         .with_child(Box::new(form))
 }
 
-// ---- the selected snapshot ----------------------------------------------
-
 /// The inspector: everything known about the selected snapshot, and what
 /// can be done with it.
 pub fn snapshot_details(
@@ -784,6 +846,9 @@ pub fn snapshot_details(
         Property::new("Size", size(snapshot.size_bytes)).with_kind(TextKind::Numeric),
         Property::new("Changed", changed_size(snapshot)).with_kind(TextKind::Numeric),
     ];
+    if let Some(reason) = &snapshot.failure {
+        facts.push(Property::new("Failure", reason.clone()));
+    }
     if let Some(source) = source {
         facts.push(Property::new("Source", source.name.clone()));
         facts.push(Property::new("Folder", source.path.clone()).with_kind(TextKind::Identifier));
@@ -829,8 +894,6 @@ pub fn snapshot_details(
             )),
     )
 }
-
-// ---- restore --------------------------------------------------------------
 
 /// The restore sheet's body: what recovery does, the snapshot it restores,
 /// and a read-only preview of its contents. Recovery is the whole snapshot,
@@ -963,8 +1026,6 @@ fn open_branches(node: &TreeNode<Option<u64>>, out: &mut Vec<u64>) {
     }
 }
 
-// ---- first run and recovery -----------------------------------------------
-
 /// Where setup stands on a device with no usable repository.
 pub enum Setup<'a> {
     /// Nothing chosen yet.
@@ -1006,8 +1067,6 @@ pub fn setup(state: &Setup<'_>, intents: &Intents) -> Element {
         Intent::Setup,
     ))
 }
-
-// ---- signal forwarding ------------------------------------------------------
 
 /// A widget whose one signal (a dismissed banner, an empty state's action)
 /// leaves as an intent.

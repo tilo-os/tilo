@@ -158,7 +158,6 @@ pub struct Pending<T> {
     _abandon: AbandonOnDrop,
 }
 
-/// A connected [`Completer`] and [`Pending`].
 #[must_use]
 pub fn pending<T>() -> (Completer<T>, Pending<T>) {
     let abandon = Arc::new(AbandonSignal::default());
@@ -287,11 +286,6 @@ impl<T> Pending<T> {
 
     /// Block the calling thread until the answer arrives or `timeout`
     /// passes. For threads that do not drive the answer's producer.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(self)` on timeout, so the caller may keep waiting, and
-    /// `Ok(None)` if the producer abandoned the answer.
     pub fn wait_timeout(mut self, timeout: Duration) -> Result<Option<T>, Self> {
         let deadline = Instant::now().checked_add(timeout);
         let mut state = self.slot.state.lock_recover();

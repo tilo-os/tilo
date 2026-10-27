@@ -80,10 +80,6 @@ impl NativeCommittedView {
 }
 impl NativeWorkspaceOwner {
     /// Start authenticating a delivery descriptor for `room` with the host.
-    ///
-    /// # Errors
-    /// `key` is not the enrolled device, or the descriptor does not verify
-    /// against the pinned governor and host.
     pub fn begin_bootstrap(
         &self,
         room: RoomId,
@@ -193,8 +189,13 @@ impl NativeWorkspaceOwner {
                 .map_err(|e| e.to_string())?;
             Ok(view.clone())
         })?;
-        candidate.record.hint = Some(pending.hint);
-        candidate.record.floor = Some(record::DescriptorFloor {
+        let enrollment = candidate
+            .record
+            .enrollment
+            .as_mut()
+            .ok_or("the room is governed here, not joined through a host")?;
+        enrollment.hint = Some(pending.hint);
+        enrollment.floor = Some(record::DescriptorFloor {
             generation: response.generation,
             digest: response.descriptor_digest,
         });

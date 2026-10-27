@@ -2,6 +2,8 @@ counter = Value: { $count }
 tab-modified = Unsaved changes
 tab-search-in = Search in { $title }
 tab-held-by = { $name }’s window
+tab-controls-desktop = Controls your desktop
+tab-dev-build = Dev build by { $installer }
 standalone-search-title = Search
 standalone-history-title = History
 standalone-history-close = Close history
@@ -30,6 +32,9 @@ host-undo = Undo
 host-undo-named = Undo { $change }
 host-redo = Redo
 host-redo-named = Redo { $change }
+host-zoom-in = Zoom in
+host-zoom-out = Zoom out
+host-zoom-reset = Actual size
 host-history-show = Show History
 host-history-hide = Hide History
 host-history-compare = Compare Selection
@@ -60,8 +65,18 @@ window-toolbar-back = Back
 window-toolbar-forward = Forward
 window-toolbar-go = Go
 window-toolbar-more = More actions
+window-toolbar-views = View
+window-toolbar-suggestions = Suggestions
+window-toolbar-edited = Edited
+window-toolbar-view-only = View only
+segmented-choose = Choose
 window-toolbar-show-sidebar = Show sidebar
 window-toolbar-hide-sidebar = Hide sidebar
+window-toolbar-show-inspector = Show inspector
+window-toolbar-hide-inspector = Hide inspector
+# A window shared live into a conversation, from its own menu.
+window-share-to-channel = Share to channel…
+window-stop-sharing-in = Stop sharing in { $place }
 history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }
@@ -115,8 +130,7 @@ history-mode-pending-held-unnamed = An action was held while History was open
 history-mode-continue = Continue
 history-mode-confirm = Confirm
 history-mode-cancel = Cancel
-history-mode-confirmation-unavailable = confirmation unavailable
-history-mode-type-to-confirm = Type { $phrase } to confirm
+history-mode-type-to-confirm = Type “{ $phrase }” to confirm
 history-mode-owner-gone = History owner is no longer available
 history-mode-custody-lost = The original component custody could not be recovered during History
 history-mode-control-owner-closed = The original registered control owner is closed
@@ -187,23 +201,54 @@ history-selection-count = { $count ->
    *[other] { $count } changes selected
 }
 history-selection-name = Name these
+history-band-name = Name
+history-band-rename = Rename
+history-band-undo = Undo
+history-band-restore = Restore
+history-entry-revert = Revert
+history-entry-copy = Copy
+history-band-open = still open
+history-band-shown = { $shown } of { $total } shown
+history-redacted = Removed by { $who } { $when }: { $reason }
+history-empty = No activity yet
+history-empty-filtered = No activity matches these filters
+history-empty-hidden = { $count ->
+    [one] One change is loaded, and none is shown
+   *[other] { $count } changes are loaded, and none are shown
+}
+history-empty-hidden-by = { $count ->
+    [one] One change is hidden by { $filters }
+   *[other] { $count } changes are hidden by { $filters }
+}
+history-filter-dates = a date range
+history-filters-clear = Clear filters
+history-entries = History entries
+history-author-anyone = Anyone
 history-work-task = Task
-history-work-agent-run = Agent run
+history-work-agent-run = Run
 history-work-shortcut = Shortcut
 history-selection-clear = Clear
 history-sync-finish-edit = Finish the current edit before receiving remote changes
 history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
 history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
 history-sync-offline = Working offline. Changes will sync when you're back.
+arriving-loading = Loading
+arriving-from = From { $source }
+arriving-received-of = { $received } of { $total }
+arriving-received = { $received } received
+arriving-failed = Couldn’t load this
+arriving-retry = Try again
+content-unavailable = None of the connected devices has it
 room-sync-connecting = Connecting to { $workspace }…
 room-sync-connecting-unnamed = Connecting…
 room-sync-host-needs-update = This workspace’s host needs to update
 room-sync-host-needs-update-body = Nothing here syncs until it has. Your changes stay on this device and reach it then.
 room-sync-device-needs-update = Tilo needs to update to sync this workspace
 room-sync-device-needs-update-body = The update is on its way. Your changes stay on this device until then.
-history-local-action-unconfirmed = Sharing this edit was not confirmed.
-history-local-action-unsigned = This edit has no authenticated sharing history.
-history-local-action-pending = Action history is waiting for confirmation.
+room-sync-shell-gone = This window lost its connection to Tilo, so what this room holds can’t reach it. Open it again.
+history-local-action-not-saved = Couldn't save this change to your history.
+history-local-action-retry = Retry
+history-local-action-unrecorded = Your changes in this window are saved, but your history doesn't record them.
 
 history-sync-refused = Syncing stopped: this workspace didn't accept a change. Your edits stay on this device.
 history-sync-remote-waiting = Remote updates will apply when the current edit finishes.
@@ -290,11 +335,6 @@ table-add-row = Add row
 table-add-column = Add column
 
 block-editor-empty = Write something…
-block-editor-find-placeholder = Find in note
-block-editor-find-no-results = No results
-block-editor-find-previous = Previous match
-block-editor-find-next = Next match
-block-editor-find-close = Close find
 block-editor-change-type = Change block type
 block-editor-copy-code-hint = Copy code
 
@@ -322,9 +362,10 @@ widget-filepicker-name-placeholder = Filename…
 widget-filepicker-name-invalid = That isn’t a file name.
 widget-filepicker-name-no-folder = There’s no folder “{ $folder }”.
 widget-filepicker-name-not-allowed = This app can’t save in “{ $folder }”.
-widget-filepicker-column-name = Name
-widget-filepicker-column-size = Size
-widget-filepicker-column-modified = Modified
+widget-filetable-column-name = Name
+widget-filetable-column-size = Size
+widget-filetable-column-modified = Modified
+widget-filetable-column-kind = Kind
 widget-filepicker-empty = This folder is empty
 widget-filepicker-place-home = Home
 widget-filepicker-place-documents = Documents
@@ -332,6 +373,20 @@ widget-filepicker-place-downloads = Downloads
 widget-filepicker-place-pictures = Pictures
 widget-filepicker-place-music = Music
 widget-filepicker-place-videos = Videos
+widget-filepicker-place-recent = Recent
+widget-filepicker-search = Search
+widget-filepicker-search-results = Search results
+widget-filepicker-location = Location
+widget-filepicker-recent-empty = Nothing has been chosen here yet
+widget-filepicker-no-matches = No matches
+widget-filepicker-wants-open-file = { $app } wants to open a file
+widget-filepicker-wants-open-files = { $app } wants to open files
+widget-filepicker-wants-save-file = { $app } wants to save a file
+widget-filepicker-wants-choose-folder = { $app } wants to use a folder
+widget-filepicker-title-open-file = Open a file
+widget-filepicker-title-open-files = Open files
+widget-filepicker-title-save-file = Save a file
+widget-filepicker-title-choose-folder = Choose a folder
 
 widget-block-indent = Indent block and children
 widget-block-text = Block text
@@ -347,6 +402,26 @@ tree-move-outdent = Move out of the parent item
 # The show/hide control inside every password field.
 text-input-show-password = Show password
 text-input-hide-password = Hide password
+
+# The password prompt every secret in Tilo is asked by.
+secret-prompt-continue = Continue
+secret-prompt-cancel = Cancel
+secret-prompt-username = User name
+secret-prompt-password = Password
+secret-prompt-pin = PIN
+secret-prompt-puk = PUK
+secret-prompt-new-pin = New PIN
+secret-prompt-confirm-pin = Confirm new PIN
+secret-prompt-caps-lock = Caps Lock is on
+secret-prompt-pin-length = { $min } to { $max } digits
+secret-prompt-pin-length-exact = { $count } digits
+secret-prompt-attempts-left = { $count ->
+    [one] One attempt left
+   *[other] { $count } attempts left
+}
+secret-prompt-pins-differ = The new PINs don’t match
+secret-prompt-keypad-delete = Delete
+secret-prompt-keypad-enter = Done
 
 # Authentication surfaces share the system theme and catalog.
 lock-welcome-back = Welcome back
@@ -565,13 +640,11 @@ history-day-earlier = Earlier
 
 save-status-stalled = Couldn't save yet. Retrying…
 save-status-not-saved = Not saved
-save-status-not-saved-detail = Your changes are still here.
 save-status-not-saved-named = { $document } wasn't saved
 save-status-not-saved-notice = Your changes are still in { $app }.
 save-status-saved = Saved
 save-status-failed = Save failed
 save-status-retry = Try again
-save-status-dismiss = Dismiss
 
 # Find bar: the band at the top of a document that finds in it.
 find-bar-name = Find
@@ -594,18 +667,16 @@ widget-mention-shortcut = Shortcut
 widget-mention-app = App
 widget-mention-bot = Bot
 widget-mention-list = People to mention
+mention-notice-title = { $name } mentioned you in ‘{ $place }’
+mention-notice-channel = { $name } mentioned you in { $channel }
+mention-notice = { $name } mentioned you
+mention-notice-someone = Someone
 widget-block-duplicate = Duplicate block and children
 
 widget-block-duplicate-selection = Duplicate selected or focused blocks
 
 widget-block-move-selection-up = Move selected blocks up
 widget-block-move-selection-down = Move selected blocks down
-
-block-editor-replace-placeholder = Replace with
-block-editor-replace = Replace
-
-block-editor-replace-all = Replace all
-block-editor-replace-all-help = Shift+Enter in the replacement field replaces all
 
 block-callout-note = Note
 block-callout-tip = Tip
@@ -641,6 +712,11 @@ dictation-cancel = Cancel
 
 widget-sidebar-resize = Resize sidebar
 widget-inspector-resize = Resize inspector
+widget-inspector = Inspector
+widget-sheet-height = Height
+widget-sheet-peek = Lowered
+widget-sheet-half = Half height
+widget-sheet-full = Full height
 
 dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript
@@ -652,10 +728,10 @@ host-native-page-history-scope = Undo and redo apply to this page’s editing hi
 
 # Shared native screen topology canvas
 display-arrangement-name = Display arrangement
-display-arrangement-description = Drag a display to place it beside another. Each display's position menu does the same from the keyboard.
+display-arrangement-description = Press a display to choose it and drag it to place it beside another. From the keyboard, the display picker chooses one and the arrow keys move it.
 display-arrangement-empty = No displays to arrange
 display-arrangement-item = Display { $number }: { $name }
-display-arrangement-item-primary = Display { $number }: { $name }, primary
+display-arrangement-item-primary = Display { $number }: { $name }, main display
 display-arrangement-item-position = { $width } × { $height } at { $x }, { $y }
 
 device-display-session-unavailable = The Tilo session is unavailable.
@@ -677,6 +753,10 @@ framework-unreadable = This can't be opened
 framework-unreadable-hint = This version of the app can't read what is saved here. Nothing was changed; an update to the app may open it.
 # The disclosure under an empty or error state that holds what went wrong technically.
 empty-state-details = Details
+# Under an app's "open a file" empty state: the file can also be dragged in.
+file-open-drop-hint = Or drop a file here
+# The empty state while a file is dragged over the window.
+file-open-release = Release to open
 # Shown instead of a window's document while it cannot be opened.
 record-unavailable-title = Can't open this document
 record-unavailable-hint = It isn't available on this device right now. It may still be on its way, or it was moved or deleted.
@@ -686,25 +766,23 @@ display-arrangement-offline-excluded = Offline, not in the layout
 display-arrangement-item-status = { $position }; { $status }
 display-arrangement-caption-status = { $status } · { $name }
 
-# Search: starting points in the empty applications palette
-search-apps-group-start-here = Start here
-search-apps-group-everyday = Everyday
-search-apps-group-work = Work
-search-apps-group-media = Media
-search-apps-group-system-tools = System tools
-search-apps-group-more-apps = More apps
-search-apps-group-developer-tools = Developer tools
+# Search: the row that lists the rest of a group the palette cut short
+search-show-all = Show all { $count }
+search-no-matches = No matches
 
 approved-check-reports-disabled = Phase reports unavailable
 
 author-bot-chip = Bot
+author-via-chip = via { $service }
+author-from-service = From { $service }
+author-from-service-as = From { $service } as { $handle }
 author-bot-details = { $bot } (bot, added by { $installer })
 author-bot-details-as = { $name }, via { $bot } (bot, added by { $installer })
 author-bot-linked = Linked to { $person } on Tilo
 author-persona-suffix = { $name } · { $service }
 
-# Context menu entry: ask the desktop agent about what is selected here.
-ask-agent-about-selection = Ask agent…
+# Context menu entry: tell an agent to do something with what the menu is about.
+tell-agent = Tell an agent…
 
 widget-screenshot-saved = Saved
 widget-screenshot-copied = Copied
@@ -714,41 +792,64 @@ widget-screenshot-edit = Edit
 widget-screenshot-open = Open
 widget-screenshot-reveal = Show in Files
 widget-screenshot-send = Send…
+widget-capture-title = Capture
 widget-capture-dismiss = Dismiss
 widget-capture-mode-screenshot = Screenshot
 widget-capture-mode-recording = Recording
-widget-capture-mode-pip = Picture in picture
-widget-capture-source-region = Region
+widget-capture-mode-pip = PiP
+widget-capture-mode-pip-name = Picture in picture
+widget-capture-source-region = Selection
 widget-capture-source-window = Window
-widget-capture-source-display = Display
-widget-capture-source-several = Several
-widget-capture-extent-visible = Visible part
-widget-capture-extent-full-app = Whole app
-widget-capture-extent-strip = Whole strip
+widget-capture-source-display = Screen
+widget-capture-source-strip = Strip
+widget-capture-options = Options
+widget-capture-delay = Delay
+widget-capture-delay-none = No delay
+widget-capture-delay-choice = { $seconds } seconds
+widget-capture-pointer = Show pointer
+widget-capture-system-audio = System audio
+widget-capture-microphone = Microphone
+widget-capture-keep-recent = Keep last 30 s
+widget-capture-combine = Combine selections
 widget-capture-layout-auto = Arranged
 widget-capture-layout-grid = Grid
 widget-capture-layout-stack = Stacked
-widget-capture-pointer = Pointer
-widget-capture-system-audio = System audio
-widget-capture-microphone = Microphone
-widget-capture-delay-off = No delay
-widget-capture-delay-seconds = { $seconds } s delay
-widget-capture-delay-none = No delay
-widget-capture-delay-choice = { $seconds } seconds
-widget-capture-pin = Pin
-widget-capture-keep-recent = Keep last 30 s
 widget-capture-take = Take screenshot
 widget-capture-record = Start recording
+widget-capture-stop = Stop recording
 widget-capture-create-pip = Create picture in picture
-widget-capture-hint-mode = Mode
-widget-capture-hint-source = Source
-widget-capture-hint-delay = Delay
-widget-capture-hint-close = Close
-widget-capture-offscreen-app = { $app } (off screen)
 widget-capture-remove-selection = Remove this selection
+widget-recording-saved = Recording saved
+widget-recording-play = Play
+widget-replay-save = Save last 30 s
+widget-replay-stop = Stop keeping the last 30 s
 widget-screenshot-send-workspace = Save to this workspace's files
 widget-screenshot-send-no-device = No other device is online
 widget-screenshot-send-device = Send to { $device }
+widget-markup-title = Markup
+widget-markup-close = Close
+widget-markup-undo = Undo
+widget-markup-redo = Redo
+widget-markup-tools-pen = Pen tools
+widget-markup-tools-highlighter = Highlight tools
+widget-markup-tools-arrow = Arrow tools
+widget-markup-tools-rectangle = Shape tools
+widget-markup-tools-redact = Redact tools
+widget-markup-tool-pen = Pen
+widget-markup-tool-highlighter = Highlight
+widget-markup-tool-arrow = Arrow
+widget-markup-tool-rectangle = Rectangle
+widget-markup-tool-redact = Redact
+widget-markup-fit = Fit image
+widget-markup-colors = Colours
+widget-markup-color-red = Red
+widget-markup-color-yellow = Yellow
+widget-markup-color-blue = Blue
+widget-markup-color-green = Green
+widget-markup-color-white = White
+widget-markup-open = Open in app
+widget-markup-copy = Copy
+widget-markup-save = Save copy
 
 ## Block editor
 block-a11y-formula-source = Source editor
@@ -765,6 +866,7 @@ block-a11y-table-row = Row { $row }
 block-a11y-table = Table
 block-a11y-open-link = Open linked note
 block-a11y-open-external = Open web link
+block-a11y-open-resource = Open { $label }
 block-a11y-block = { $kind } block { $position }
 block-a11y-level = Level { $level }
 block-a11y-document = Drag a block's handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; Escape, then Tab, leaves the editor.
@@ -788,15 +890,15 @@ block-embed-missing = The linked note was deleted.
 block-kind-code-short = Code
 block-table-add-cell = Add cell
 
-window-search-open = Search
 window-search-name = Search in this window
 window-search-placeholder = Search
 window-search-app = Search { $app }
 window-search-this-app = Search this app
 window-search-everywhere = Search everywhere
 window-search-close = Close search
+window-search-options = Find options
+window-search-replace-options = Find options and replace
 history-panel-title = History
-history-panel-close = Close History
 history-panel-selected-changes = { $count } changes
 history-mode-restore-change = Restore just this change
 history-panel-name = Name these changes
@@ -811,3 +913,150 @@ workspace-identity-required-choose = Choose identity
 date-field-none = No date
 date-field-calendar = Calendar
 date-field-clear = Clear date
+
+# The menu a secondary click or a long press opens on editable words.
+text-menu-cut = Cut
+text-menu-copy = Copy
+text-menu-paste = Paste
+text-menu-paste-plain = Paste without formatting
+text-menu-select-all = Select all
+text-menu-bold = Bold
+text-menu-italic = Italic
+text-menu-underline = Underline
+text-menu-strikethrough = Strikethrough
+text-menu-bulleted-list = Bulleted list
+text-menu-numbered-list = Numbered list
+
+# A reference to something another app keeps, shown as a chip; $label is its name.
+reference-open = Open { $label }
+
+# A signal meter's name, by how strong the signal is (a Wi-Fi or mobile network).
+signal-meter-unknown = Signal strength unknown
+signal-meter-weak = Weak signal
+signal-meter-fair = Fair signal
+signal-meter-good = Good signal
+signal-meter-strong = Strong signal
+
+# Reactions: the pills under a message or on a page, one per emoji. $emoji is
+# the emoji itself, or a workspace emoji written as :name:.
+reaction-strip-add = Add reaction
+reaction-strip-react = Add { $emoji } reaction
+reaction-strip-unreact = Remove { $emoji } reaction
+reaction-strip-count = { $count ->
+    [one] One reaction
+   *[other] { $count } reactions
+}
+# Who reacted, in the tooltip of a pill; $emoji is the emoji's name.
+reaction-strip-you = You
+reaction-strip-reacted-one = { $first } reacted with { $emoji }
+reaction-strip-reacted-two = { $first } and { $second } reacted with { $emoji }
+reaction-strip-reacted-three = { $first }, { $second } and { $third } reacted with { $emoji }
+reaction-strip-reacted-more = { $first }, { $second } and { $others ->
+    [one] one other
+   *[other] { $others } others
+} reacted with { $emoji }
+
+# The emoji picker: the workspace's own emoji, the recently used ones and
+# Unicode's groups as tabs.
+emoji-chooser-title = Emoji
+emoji-chooser-search = Search emoji
+emoji-chooser-groups = Emoji categories
+emoji-chooser-workspace = Workspace
+emoji-chooser-recent = Recently used
+emoji-chooser-results = Matching emoji
+emoji-chooser-no-results = No emoji found
+emoji-chooser-arriving = More emoji are on their way
+emoji-chooser-add = Add emoji
+emoji-chooser-add-failed = Couldn't add that picture: { $reason }
+emoji-chooser-tones = Skin tones
+emoji-chooser-tone-hint = Pick a skin tone
+emoji-chooser-toned = { $name }, { $tone }
+emoji-chooser-tone-light = light skin tone
+emoji-chooser-tone-medium-light = medium-light skin tone
+emoji-chooser-tone-medium = medium skin tone
+emoji-chooser-tone-medium-dark = medium-dark skin tone
+emoji-chooser-tone-dark = dark skin tone
+
+## The workspace's own emoji
+workspace-emoji-choose-title = Add an emoji
+workspace-emoji-choose-accept = Add
+workspace-emoji-image-files = Pictures
+# Why a picture chosen in the emoji picker was not added, after
+# emoji-chooser-add-failed's colon: short, it shares the picker's last line.
+workspace-emoji-loading = the picture tools are still loading
+workspace-emoji-not-a-picture = it isn't a PNG, JPEG or WebP
+workspace-emoji-too-detailed = it's too detailed for an emoji
+workspace-emoji-unavailable = this workspace's emoji aren't available
+workspace-emoji-not-allowed = you may not add emoji here
+# The conversation substrate: the delivery vocabulary and the attachment
+# ladder, shared by every app that draws a conversation.
+conversation-delivery-queued = Queued
+conversation-delivery-sending = Sending
+conversation-delivery-submitted = Submitted
+conversation-delivery-sent = Sent
+conversation-delivery-delivered = Delivered
+conversation-delivery-read = Read
+conversation-delivery-failed = Not sent
+conversation-delivery-uncertain = Status uncertain
+conversation-attachment-open = Open
+conversation-attachment-open-full-size = Open full size
+conversation-attachment-save = Save
+conversation-attachment-save-as = Save as…
+conversation-attachment-open-saved = Open saved copy
+conversation-attachment-saved = a copy on this device
+conversation-attachment-no-access = This file is not shared with you
+conversation-attachment-unavailable = This file is not on this device
+conversation-attachment-uploading = Uploading
+conversation-attachment-cancel-upload = Cancel upload
+conversation-attachment-upload-cancelled = Upload cancelled
+conversation-attachment-save-failed = Couldn’t save the file
+conversation-attachment-image = Image
+conversation-attachment-video = Video
+conversation-attachment-file = File
+conversation-draft = Draft
+conversation-draft-preview = Draft: {$text}
+conversation-unread = Unread message
+conversation-day-earlier = {$date}
+# Jobs: what is running. A job's row says what it is doing and how far.
+jobs-starting = Starting
+# $phase is what it is doing ("Downloading"), $done and $total are what it has
+# got through and how much there is, each in the job's own unit.
+jobs-phase-of = { $phase } { $done } of { $total }
+# $phase is what it is doing, $seen is how much it has seen where there is no
+# total to read.
+jobs-phase-seen = { $phase } { $seen }
+jobs-percent = { $percent }%
+jobs-bar-of = { $done } of { $total }
+jobs-failed = Couldn’t finish: { $reason }
+jobs-stopped = Stopped
+jobs-stop = Stop
+jobs-stopping = Stopping
+jobs-show-me = Show me
+jobs-read = Read
+# $count is how many jobs the band is not showing.
+jobs-more = { $count } more
+jobs-running-heading = In progress
+jobs-finished-heading = Finished
+jobs-none = Nothing is running
+jobs-none-message = Anything longer than a breath appears while it runs, and says how it ended.
+
+jobs-files-one = { $count } file
+jobs-files = { $count } files
+jobs-items-one = { $count } item
+jobs-items = { $count } items
+jobs-steps-one = { $count } step
+jobs-steps = { $count } steps
+
+# Needs you: what wants a person.
+attention-blocking = Now
+attention-waiting = Waiting
+attention-noted = Worth knowing
+attention-none = Nothing needs you
+attention-none-message = Anything that waits on your decision keeps waiting here.
+# $about is what it is about, $because is why it is waiting.
+attention-because = { $about }, { $because }
+attention-defer = Put aside for now
+attention-deferred-one = { $count } put aside
+attention-deferred = { $count } put aside
+attention-pill-one = { $count } waiting
+attention-pill = { $count } waiting

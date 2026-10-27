@@ -1,56 +1,36 @@
-#[derive(Default)]
-struct NativeFacadeHostSteps(Mutex<Vec<(String, String)>>);
+/// One host-step service under `provider`, offering `action` on
+/// `resource`; every step it starts is recorded in the shared log.
+struct NativeFacadeHostSteps {
+    provider: &'static str,
+    resource: &'static str,
+    action: &'static str,
+    started: Arc<Mutex<Vec<(String, String)>>>,
+}
 
-impl NativeFacadeHostSteps {
-    fn descriptor(resource: &str, action: &str) -> Vec<tilo_actions::ActionDescriptor> {
+impl crate::services::HostStepServices for NativeFacadeHostSteps {
+    fn provider(&self) -> &'static str {
+        self.provider
+    }
+    fn app_id(&self) -> &'static str {
+        "so.tilo.settings"
+    }
+    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
         let mut descriptor = directory_state("native-host-step-r1")
             .borrow()
             .row()
             .descriptor
             .unwrap()
             .descriptor(tilo_actions::ExecutionLocus::default());
-        descriptor.address = tilo_actions::ActionAddress::new(resource, action);
-        descriptor.resource_kind = resource.into();
+        descriptor.address = tilo_actions::ActionAddress::new(self.resource, self.action);
+        descriptor.resource_kind = self.resource.into();
         descriptor.contract = tilo_actions::ActionContract::view();
         vec![descriptor]
     }
-}
-
-impl crate::services::IdentityAdminServices for NativeFacadeHostSteps {
-    fn app_id(&self) -> &'static str {
-        "so.tilo.settings"
-    }
-    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
-        use tilo_actions::remote::identity_admin;
-        Self::descriptor(identity_admin::RESOURCE, identity_admin::LIST)
-    }
     fn start(
         &self,
-        request: &crate::services::IdentityAdminRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<crate::services::IdentityAdminOutcome>, String> {
-        self.0
-            .lock()
-            .unwrap()
-            .push((request.room.into(), request.actor.id().into()));
-        Ok(tilo_actions::remote::Pending::ready(Ok(
-            tilo_actions::ActionOutput::default(),
-        )))
-    }
-}
-
-impl crate::services::DevicePairingServices for NativeFacadeHostSteps {
-    fn app_id(&self) -> &'static str {
-        "so.tilo.settings"
-    }
-    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
-        use tilo_actions::remote::device_pairing;
-        Self::descriptor(device_pairing::RESOURCE, device_pairing::DISCOVER)
-    }
-    fn start(
-        &self,
-        request: &crate::services::DevicePairingRequest<'_>,
-    ) -> Result<tilo_actions::remote::Pending<crate::services::DevicePairingOutcome>, String> {
-        self.0
+        request: &crate::services::HostStepRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<crate::services::HostStepOutcome>, String> {
+        self.started
             .lock()
             .unwrap()
             .push((request.room.into(), request.actor.id().into()));
@@ -66,13 +46,31 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
         .run_until(async {
             use tilo_actions::remote::{device_pairing, identity_admin};
             let env = Environment::new();
-            let steps = Arc::new(NativeFacadeHostSteps::default());
+            let started = Arc::new(Mutex::new(Vec::new()));
+            let step = |provider, resource, action| {
+                Arc::new(NativeFacadeHostSteps {
+                    provider,
+                    resource,
+                    action,
+                    started: started.clone(),
+                }) as Arc<dyn crate::services::HostStepServices>
+            };
             let rig = Rig::with_services(
                 &env,
                 HostServices {
                     local_person: Some(Arc::new(NativePersonFixture(env.authority.clone()))),
-                    identity_admin: Some(steps.clone()),
-                    device_pairing: Some(steps.clone()),
+                    host_steps: vec![
+                        step(
+                            identity_admin::PROVIDER,
+                            identity_admin::RESOURCE,
+                            identity_admin::LIST,
+                        ),
+                        step(
+                            device_pairing::PROVIDER,
+                            device_pairing::RESOURCE,
+                            device_pairing::DISCOVER,
+                        ),
+                    ],
                     ..env.membership.services()
                 },
             )
@@ -122,7 +120,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
                     .unwrap();
             }
             assert_eq!(
-                *steps.0.lock().unwrap(),
+                *started.lock().unwrap(),
                 vec![
                     (
                         env.route.cluster_id.clone(),
@@ -139,7 +137,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_custody() 
                     .await
                     .is_err()
             );
-            assert_eq!(steps.0.lock().unwrap().len(), 2);
+            assert_eq!(started.lock().unwrap().len(), 2);
             rig.stop().await;
         })
         .await;

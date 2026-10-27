@@ -161,7 +161,6 @@ pub struct Action {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum Pressure {
-    /// The same pressure all along.
     Constant(f64),
     /// Pressures spread evenly from the stroke's start to its end.
     Along(Vec<f64>),
@@ -189,10 +188,6 @@ pub struct Frame {
 
 impl Computer {
     /// The computer named by the environment, if any.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a relative socket path and scratch-directory creation errors.
     pub fn from_env(profile: &Path) -> io::Result<Option<Self>> {
         let Some(socket) = std::env::var_os(CONTROL_ENV) else {
             return Ok(None);

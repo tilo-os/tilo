@@ -12,6 +12,9 @@ homepage.workspace = true
 # page. The page supplies the device signer (WebCrypto) and persistence
 # (IndexedDB) through the `DeviceSigner` and `PeerStore` seams.
 [dependencies]
+# Sorts without a copy of std's sort per call site, which kept the web
+# desktop's start module large.
+tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-relay-client = { version = "0.1.0", path = "../../hosting/tilo-relay-client", default-features = false }
 tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
@@ -39,6 +42,11 @@ blake3.workspace = true
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, optional = true }
 # The browser is a channel member device, as native peers are.
 channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto" }
+# Whether a joined room shares its members' layout, read off the room
+# document its host relays (`room_layout`).
+automerge.workspace = true
+tilo-automerge.workspace = true
+tilo-desktop-model = { version = "0.1.0", path = "../../session/desktop-model" }
 
 [features]
 default = ["iroh"]
@@ -49,15 +57,12 @@ toolkit = ["dep:ui"]
 
 [dev-dependencies]
 tilo-automerge-isolate.workspace = true
-automerge.workspace = true
-tilo-automerge.workspace = true
 test-http = { path = "../../dev/test-http" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 # The native side of a call: the shell's joined-room owner and participation.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
-tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # A session's codec negotiation, run against the host's advert for its
 # browser members (no GStreamer: the pure negotiation only).
@@ -74,12 +79,15 @@ sha2.workspace = true
 bytes.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tempfile.workspace = true
+tilo-paths.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 serde_json.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 # The node apps probe speaks remote-action frames.
 tilo-actions = { path = "../../collab/actions" }
+# The broker's verdict, for the browser's to be checked against.
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # A call's voice channel is a real Chat channel, written by Chat's own model.
 chat = { path = "../../../apps/chat", default-features = false }
 # A refused commit reaches the app that made it, mounted headlessly.

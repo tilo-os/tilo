@@ -16,6 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 hex.workspace = true
+# The composefs image's fs-verity digest (FS_IOC_MEASURE_VERITY).
+libc.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 # utimensat without following a symlink, umask, geteuid and uname without FFI.
 rustix = { workspace = true, features = ["fs", "process", "system", "std"] }
@@ -31,6 +33,9 @@ tilo-pycompat = { path = "../tilo-pycompat" }
 # The image's component manifest, which a live system update classifies by.
 toml.workspace = true
 workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

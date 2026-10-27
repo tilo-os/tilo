@@ -16,6 +16,7 @@
 //! through [`WindowSource`] and [`WindowThumbnails`].
 
 use std::collections::HashMap;
+use tilo_sort::CompactSort as _;
 use ui::num::f32_of_f64;
 
 use vello::Scene;
@@ -26,7 +27,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::i18n::ArgValue;
-use ui::icons::AppImage;
+use ui::icons::{AppImage, Icon};
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -95,7 +96,7 @@ impl PreviewState {
 pub trait WindowSource {
     /// The glyph shown for `tile` when its application has no artwork.
     fn app_kind(&self, tile: &TileContent) -> UiAppKind {
-        crate::resolver::tile_app_kind(tile)
+        tilo_desktop_surface::tile_app_kind(tile)
     }
 
     /// The application's own artwork for `tile`.
@@ -185,6 +186,11 @@ pub struct WindowApp {
     /// The glyph shown when the application has no artwork of its own.
     pub kind: UiAppKind,
     pub icon: Option<AppImage>,
+    /// The toolkit's own symbol for the application, the one its launcher
+    /// entry wears: what a window picture shows when there is no live
+    /// picture and no artwork. [`Icon::AppWindow`] for an app it has no
+    /// symbol for, which then shows [`Self::kind`]'s mark.
+    pub glyph: Icon,
 }
 
 impl WindowApp {
@@ -198,24 +204,20 @@ impl WindowApp {
                 key: format!("app:{app_id}"),
                 kind,
                 icon: source.app_icon(tile),
+                glyph: ui::icons::app_glyph(app_id, None),
             },
             TileContent::AppPlaceholder { kind: app, .. } | TileContent::Stub { kind: app, .. } => {
                 Self {
                     key: format!("kind:{}", app.as_str()),
                     kind,
                     icon: None,
+                    glyph: Icon::AppWindow,
                 }
             }
-            TileContent::WorkspaceActivity => Self {
-                key: "workspace-activity".into(),
-                kind,
-                icon: None,
-            },
         }
     }
 }
 
-/// One window as the switcher lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SwitcherWindow {
     pub address: WindowAddress,
@@ -414,7 +416,7 @@ impl FocusHistory {
                 (tier, along_strip, window)
             })
             .collect();
-        keyed.sort_by_key(|(tier, along, _)| (*tier, *along));
+        keyed.compact_sort_by_key(|(tier, along, _)| (*tier, *along));
         keyed.into_iter().map(|(_, _, window)| window).collect()
     }
 }
@@ -1413,29 +1415,94 @@ pub fn draw_preview_well(
         &well_rr,
     );
     if !live {
-        let center = well.rect.center();
-        let half = well.icon / 2.0;
-        ui::widget::draw_app_mark(
-            scene,
-            transform,
-            Rect::new(
-                center.x - half,
-                center.y - half,
-                center.x + half,
-                center.y + half,
-            ),
-            window.app.icon.as_ref(),
-            window.app.kind,
-            colors.on_content().ink,
-        );
+        draw_app_face(scene, transform, well, &window.app, colors.on_content().ink);
     }
     live
+}
+
+/// What a well shows for `app` with no live picture: the app's artwork,
+/// else the toolkit's symbol for it, else its kind's mark, at the well's
+/// mark size, in `ink`. Neutral ink, as the launcher's symbols are: the
+/// accent marks a choice, never an app at rest.
+fn draw_app_face(
+    scene: &mut Scene,
+    transform: Affine,
+    well: PreviewWell,
+    app: &WindowApp,
+    ink: vello::peniko::Color,
+) {
+    let center = well.rect.center();
+    let half = well.icon / 2.0;
+    let mark = Rect::new(
+        center.x - half,
+        center.y - half,
+        center.x + half,
+        center.y + half,
+    );
+    if app
+        .icon
+        .as_ref()
+        .is_some_and(|image| ui::icons::draw_app_image(scene, transform, mark, image))
+    {
+        return;
+    }
+    if app.glyph == Icon::AppWindow {
+        ui::widget::draw_app_mark(scene, transform, mark, None, app.kind, ink);
+    } else {
+        // The symbol's stroke grows with it, as the launcher's large
+        // symbols are drawn, so a big face does not read as a hairline.
+        let stroke = (well.icon / 24.0 * 1.5).clamp(1.5, 3.0);
+        app.glyph
+            .draw_with_stroke(scene, transform, mark, ink, stroke);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tilo_desktop_model::{Strip, Tab, WindowGroup, WindowWidth, Workspace};
+
+    /// A window with no live picture and no artwork shows its app's own
+    /// symbol, so two apps' windows look different, in either host.
+    #[test]
+    fn a_window_without_a_picture_shows_its_apps_symbol() {
+        let app = |app_id: &str| {
+            WindowApp::of(
+                &TileContent::LocalApp {
+                    app_id: app_id.into(),
+                    label: app_id.into(),
+                    note: String::new(),
+                },
+                &PlainWindows,
+            )
+        };
+        let (weather, chat, unknown) = (
+            app("so.tilo.weather"),
+            app("so.tilo.chat"),
+            app("org.example.unknown"),
+        );
+        assert_eq!(weather.glyph, Icon::Cloud);
+        assert_eq!(chat.glyph, Icon::MessageSquare);
+        assert_eq!(unknown.glyph, Icon::AppWindow, "no symbol: the kind's mark");
+
+        let theme = Theme::dark();
+        let well = PreviewWell {
+            rect: Rect::new(0.0, 0.0, 160.0, 100.0),
+            radius: 8.0,
+            icon: 48.0,
+        };
+        let drawn = |app: &WindowApp| {
+            let mut scene = Scene::new();
+            draw_app_face(&mut scene, Affine::IDENTITY, well, app, theme.text_primary);
+            scene.encoding().path_data.clone()
+        };
+        assert!(!drawn(&weather).is_empty());
+        assert_ne!(drawn(&weather), drawn(&chat), "each app has its own face");
+        assert!(
+            !drawn(&unknown).is_empty(),
+            "an unknown app still has a mark"
+        );
+    }
 
     fn tab(id: u64, app: &str) -> Tab {
         Tab {
@@ -1445,6 +1512,7 @@ mod tests {
                 app_id: app.into(),
                 surface_id: id,
             },
+            app_title: None,
         }
     }
 
@@ -1754,6 +1822,10 @@ mod tests {
             std::path::PathBuf::from,
         );
         std::fs::create_dir_all(&out).expect("capture output");
+        #[allow(
+            clippy::useless_vec,
+            reason = "the themes are too large to sit on the stack as an array"
+        )]
         for (name, theme, width, height) in vec![
             ("dark", Theme::dark(), 960_u32, 540_u32),
             ("light", Theme::light(), 960, 540),

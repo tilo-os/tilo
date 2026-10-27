@@ -8,10 +8,14 @@
 //! excerpt. A widget that knows its selection better (a multi-block editor)
 //! says so through [`PublishesPresence::shared_selection`].
 //!
-//! Asking goes through the desktop: [`ask_agent`] queues the request, and the
-//! app runner hands it to the session shell, which opens its agent composer
-//! seeded with the selection. Outside a Tilo session nothing can answer, so
-//! [`agent_host_available`] is false and no "Ask agent…" entry is offered.
+//! Every context menu ends with "Tell an agent…" ([`crate::widget::ContextMenu`]),
+//! about what the menu acts on: a row's item, the selection, else the window.
+//! Asking goes through the desktop: [`ask_agent`] and [`tell_agent_at`] queue
+//! the request, and the app runner hands it to the session shell with a typed
+//! reference ([`AgentRequest::resolve`]), which opens its agent composer
+//! there. The reference names a place; it grants nothing, so an agent reaches
+//! it only through the app's published actions, as every task does. Outside a Tilo session nothing can answer, so
+//! [`agent_host_available`] is false and no "Tell an agent…" entry is offered.
 //!
 //! [`PublishesPresence::shared_selection`]: crate::presence::capability::PublishesPresence::shared_selection
 
@@ -244,30 +248,111 @@ pub fn subtree_selection(root: &dyn Widget) -> Option<SharedSelection> {
 /// faster than frames are drawn must not queue unbounded composers.
 const MAX_PENDING: usize = 4;
 
+/// Someone asked to tell an agent about something in this window.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AgentRequest {
+    /// What it is about, when its asker knew: a selection, or an item a
+    /// menu was opened on. `None` leaves it to [`AgentRequest::resolve`].
+    pub about: Option<SharedSelection>,
+    /// Where the person pointed, in window coordinates, when a context menu
+    /// asked: the composer opens there.
+    pub at: Option<vello::kurbo::Point>,
+}
+
+impl AgentRequest {
+    /// The typed reference the request travels with, and where in the
+    /// window (protocol bounds) the composer opens beside.
+    ///
+    /// What its asker named wins. Otherwise the `focused` selection, when
+    /// the person pointed at it (or did not point at all). Otherwise the
+    /// window itself: the first resource the app `published`, as one whole
+    /// item. Its resource is named from `published` when the reference does
+    /// not name one.
+    #[must_use]
+    pub fn resolve(
+        self,
+        focused: Option<SharedSelection>,
+        published: &[tilo_actions::Resource],
+    ) -> (Option<SharedSelection>, Option<[f64; 4]>) {
+        let at = self.at;
+        let focused = focused.filter(|selection| match (at, selection.bounds) {
+            (Some(at), Some(bounds)) => bounds.contains(at),
+            (Some(_), None) => false,
+            (None, _) => true,
+        });
+        let mut about = self
+            .about
+            .filter(|about| !about.is_empty())
+            .or(focused)
+            .or_else(|| {
+                let window = published.first()?;
+                Some(
+                    SharedSelection::of_text(&window.label)
+                        .at(SelectionPlace::item(window.id.0.as_str()))
+                        .in_resource(ActionResource {
+                            id: window.id.0.clone(),
+                            kind: window.kind.clone(),
+                            label: window.label.clone(),
+                        }),
+                )
+            });
+        if let Some(about) = about.as_mut() {
+            about.resolve_resource(published);
+        }
+        let pointed = at.map(|at| {
+            crate::floating_surface::protocol_rect_array(vello::kurbo::Rect::from_center_size(
+                at,
+                (1.0, 1.0),
+            ))
+        });
+        let bounds = about
+            .as_ref()
+            .and_then(SharedSelection::protocol_bounds)
+            .or(pointed);
+        (about, bounds)
+    }
+}
+
 thread_local! {
-    static PENDING: RefCell<VecDeque<Option<SharedSelection>>> =
-        const { RefCell::new(VecDeque::new()) };
+    static PENDING: RefCell<VecDeque<AgentRequest>> = const { RefCell::new(VecDeque::new()) };
     static HOSTED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn queue(request: AgentRequest) {
+    PENDING.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        if pending.len() < MAX_PENDING {
+            pending.push_back(request);
+        }
+    });
 }
 
 /// Ask the desktop's agent about `selection` (or about this window, with
 /// nothing selected). The app runner hands the request to the shell.
 pub fn ask_agent(selection: Option<SharedSelection>) {
-    PENDING.with(|pending| {
-        let mut pending = pending.borrow_mut();
-        if pending.len() < MAX_PENDING {
-            pending.push_back(selection.filter(|selection| !selection.is_empty()));
-        }
+    queue(AgentRequest {
+        about: selection.filter(|selection| !selection.is_empty()),
+        at: None,
+    });
+}
+
+/// Tell an agent about `about`, pointed at `at` (window coordinates): what
+/// a context menu's "Tell an agent…" entry asks. With nothing named, the
+/// app runner attaches what is under the pointer, else the window.
+pub fn tell_agent_at(about: Option<SharedSelection>, at: vello::kurbo::Point) {
+    queue(AgentRequest {
+        about: about.filter(|about| !about.is_empty()),
+        at: Some(at),
     });
 }
 
 /// Requests made since the last call, oldest first. For the app runner.
-pub fn take_agent_requests() -> Vec<Option<SharedSelection>> {
+pub fn take_agent_requests() -> Vec<AgentRequest> {
     PENDING.with(|pending| pending.borrow_mut().drain(..).collect())
 }
 
 /// Whether a desktop is connected that can hand a request to an agent, so
-/// "Ask agent…" is worth offering.
+/// "Tell an agent…" is worth offering.
 pub fn agent_host_available() -> bool {
     HOSTED.with(Cell::get)
 }
@@ -276,12 +361,6 @@ pub fn agent_host_available() -> bool {
 /// For the app runner.
 pub fn set_agent_host_available(available: bool) {
     HOSTED.with(|hosted| hosted.set(available));
-}
-
-/// Ask the agent about the selection under `root`, for an "Ask agent…"
-/// entry that acts on whatever its surface has selected.
-pub fn ask_agent_about(root: &dyn Widget) {
-    ask_agent(subtree_selection(root));
 }
 
 #[cfg(test)]
@@ -431,36 +510,138 @@ mod tests {
         assert_eq!(selection_of(&secret), None);
     }
 
+    fn right_press() -> winit::event::WindowEvent {
+        crate::synthetic_input::mouse_input(
+            winit::event::ElementState::Pressed,
+            winit::event::MouseButton::Right,
+        )
+    }
+
+    fn left_press() -> winit::event::WindowEvent {
+        crate::synthetic_input::mouse_input(
+            winit::event::ElementState::Pressed,
+            winit::event::MouseButton::Left,
+        )
+    }
+
+    fn tell_agent() -> String {
+        crate::i18n::I18nManager::lookup_plain("tell-agent")
+    }
+
     #[test]
-    fn a_menu_offers_to_ask_only_while_a_desktop_agent_can_answer() {
-        let editor = Editor {
+    fn a_context_menu_offers_to_tell_an_agent_only_while_one_can_be_told() {
+        let editor = || Editor {
             text: "late results",
             selected: (0, 4),
             protected: false,
         };
         let _ = take_agent_requests();
-        set_agent_host_available(false);
-        assert!(crate::widget::ask_agent_entry(&editor).is_none());
-        set_agent_host_available(true);
-        let entry = crate::widget::ask_agent_entry(&editor).expect("offered");
-        assert_eq!(
-            entry.item().label(),
-            Some(crate::i18n::I18nManager::lookup_plain("ask-agent-about-selection").as_str())
-        );
-        let mut area = crate::widget::ContextMenuArea::new(Box::new(editor), |_| {
+        let mut area = crate::widget::ContextMenuArea::new(Box::new(editor()), |_| {
             vec![crate::widget::MenuEntry::new("Copy", || {})]
         });
+        set_agent_host_available(false);
+        crate::widget::context_menu::note_input(&right_press());
+        assert!(area.open_at(vec2_point(), true));
+        assert_eq!(area.menu().items().len(), 1, "no desktop agent: no entry");
+        set_agent_host_available(true);
+        crate::widget::context_menu::note_input(&left_press());
+        assert!(area.open_at(vec2_point(), true));
+        assert_eq!(
+            area.menu().items().len(),
+            1,
+            "a menu a button opened is no context menu"
+        );
+        crate::widget::context_menu::note_input(&right_press());
         assert!(area.open_at(vec2_point(), true));
         let last = area.menu().items().len() - 1;
+        assert_eq!(
+            area.menu().items()[last].label(),
+            Some(tell_agent().as_str())
+        );
         area.choose(last);
         set_agent_host_available(false);
         let asked = take_agent_requests();
         assert_eq!(asked.len(), 1);
-        let asked = asked[0].clone().expect("the selection");
-        assert_eq!(asked.anchor.excerpt.as_deref(), Some("late"));
+        assert_eq!(asked[0].at, Some(vec2_point()));
+        let about = asked[0].about.clone().expect("the selection");
+        assert_eq!(about.anchor.excerpt.as_deref(), Some("late"));
         assert_eq!(
-            asked.anchor.place,
+            about.anchor.place,
             Some(SelectionPlace::range("para-3", 0, 4))
+        );
+    }
+
+    #[test]
+    fn a_menu_with_nothing_else_to_offer_still_tells_an_agent_and_reports_no_choice() {
+        let _ = take_agent_requests();
+        set_agent_host_available(true);
+        crate::widget::context_menu::note_input(&right_press());
+        let mut menu = crate::widget::ContextMenu::new();
+        let row = SharedSelection::of_text("Invoice")
+            .at(SelectionPlace::item("row-4"))
+            .in_resource(ActionResource {
+                id: "inbox".into(),
+                kind: "mailbox".into(),
+                label: "Inbox".into(),
+            });
+        menu.set_about(Some(row.clone()));
+        menu.open_at([30.0, 40.0]);
+        menu.open_at([30.0, 40.0]);
+        set_agent_host_available(false);
+        assert_eq!(menu.items().len(), 1);
+        menu.click_item(0);
+        assert_eq!(menu.take_selection(), None, "the owner has no row 0");
+        let asked = take_agent_requests();
+        assert_eq!(
+            asked,
+            vec![AgentRequest {
+                about: Some(row),
+                at: Some(vello::kurbo::Point::new(30.0, 40.0)),
+            }]
+        );
+    }
+
+    fn published() -> Vec<tilo_actions::Resource> {
+        vec![tilo_actions::Resource::new("doc:1", "notebook", "Notebook")]
+    }
+
+    #[test]
+    fn with_nothing_named_under_the_pointer_the_window_is_attached_where_it_was_clicked() {
+        let at = vello::kurbo::Point::new(200.0, 300.0);
+        let focused = SharedSelection::of_text("elsewhere")
+            .within(vello::kurbo::Rect::new(0.0, 0.0, 50.0, 20.0));
+        let (about, bounds) = AgentRequest {
+            about: None,
+            at: Some(at),
+        }
+        .resolve(Some(focused.clone()), &published());
+        let about = about.expect("the window");
+        assert_eq!(
+            about.resource.as_ref().map(|resource| resource.id.as_str()),
+            Some("doc:1")
+        );
+        assert_eq!(about.anchor.place, Some(SelectionPlace::item("doc:1")));
+        assert_eq!(bounds, Some([199.5, 299.5, 200.5, 300.5]));
+        let (about, bounds) = AgentRequest {
+            about: None,
+            at: Some(vello::kurbo::Point::new(10.0, 10.0)),
+        }
+        .resolve(Some(focused), &published());
+        let about = about.expect("the selection");
+        assert_eq!(about.anchor.excerpt.as_deref(), Some("elsewhere"));
+        assert_eq!(
+            about.resource.map(|resource| resource.id),
+            Some("doc:1".into())
+        );
+        assert_eq!(bounds, Some([0.0, 0.0, 50.0, 20.0]));
+        // An app that publishes nothing has only its window to point at.
+        assert_eq!(
+            AgentRequest {
+                about: None,
+                at: Some(at),
+            }
+            .resolve(None, &[]),
+            (None, Some([199.5, 299.5, 200.5, 300.5]))
         );
     }
 
@@ -477,7 +658,7 @@ mod tests {
         }
         let requests = take_agent_requests();
         assert_eq!(requests.len(), MAX_PENDING);
-        assert_eq!(requests[0], None);
+        assert_eq!(requests[0].about, None);
         assert!(take_agent_requests().is_empty());
     }
 }

@@ -59,10 +59,15 @@ pub struct Held<P: Resource> {
     live: Live<P>,
     sync: Sync<P>,
     apply: Apply<P>,
-    /// The last publication, at the record's and the locale's revision it
-    /// was built at: published again only when either moved.
-    published: RefCell<Option<((u64, u64), tilo_actions::Resource)>>,
+    /// The last publication, at the record's revision and loads and the
+    /// locale's revision it was built at: published again only when one
+    /// moved.
+    published: RefCell<Option<(Published, tilo_actions::Resource)>>,
 }
+
+/// The record's revision and loads ([`Live::loads`]), the locale's
+/// revision, and why the record did not read.
+type Published = (u64, u64, u64, Option<String>);
 
 impl<P: Resource> Held<P> {
     pub(crate) fn new(
@@ -84,7 +89,6 @@ impl<P: Resource> Held<P> {
         }
     }
 
-    /// The id the record is published under.
     pub(crate) fn id(&self) -> &str {
         &self.id
     }
@@ -107,9 +111,6 @@ impl<P: Resource> Held<P> {
     }
 
     /// Apply `action` for `invoker`.
-    ///
-    /// # Errors
-    /// The record is read here only, or the action refused.
     pub(crate) fn apply(
         &self,
         action: &P::Action,
@@ -131,18 +132,32 @@ impl<P: Resource> Held<P> {
     /// role in the room; nothing to change where it is read only.
     pub(crate) fn publish(&self) -> tilo_actions::Resource {
         self.sync();
-        let revision = (self.live.revision(), ui_core::i18n::I18nManager::revision());
+        // Reading it again changes no revision — the state stays the last
+        // one that read — so whether it reads is part of what the
+        // publication is for.
+        let revision = (
+            self.live.revision(),
+            self.live.loads(),
+            ui_core::i18n::I18nManager::revision(),
+            self.live.unreadable().map(|why| why.reason),
+        );
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision
         {
             return published.clone();
         }
-        let state = self.live.get();
-        let published = route(
-            tilo_resource::publish::<P>(&self.id, &self.label, &state),
-            &self.id,
-            self.editable,
-        );
+        let published = if let Some(state) = self.live.get_checked() {
+            tilo_resource::publish::<P>(&self.id, &self.label, &state)
+        } else {
+            // Read here, never meant to change here: say why its actions do
+            // not apply rather than publish a record that reads as empty.
+            let why = self
+                .live
+                .unreadable()
+                .map_or_else(|| "the record does not read".to_owned(), |why| why.reason);
+            tilo_resource::resource::unreadable_parts::<P>(&self.id, &self.label, &why)
+        };
+        let published = route(published, &self.id, self.editable);
         *self.published.borrow_mut() = Some((revision, published.clone()));
         published
     }
@@ -214,6 +229,18 @@ pub(crate) trait RecordDoor {
     ) -> Result<tilo_actions::ActionOutput, String> {
         self.apply_encoded(action, invoker)
             .map(|()| tilo_actions::ActionOutput::default())
+    }
+    /// [`Self::apply_answering`] in the window's pass over the record it
+    /// shows, lent as `live`: what a door that writes that record too (a
+    /// container listing a new child) writes it through.
+    fn apply_in(
+        &self,
+        action: &EncodedAction,
+        invoker: &ActionInvoker,
+        live: &mut ui_core::widget::Edits<'_>,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let _ = live;
+        self.apply_answering(action, invoker)
     }
 }
 
@@ -320,8 +347,35 @@ pub struct Records<'a> {
     /// The app's own record, as `Live` of its resource: what the actions of
     /// a chain kept beside it read where they are invoked.
     base: Option<Rc<dyn std::any::Any>>,
+    /// The door of the app's own record, as the `Dispatcher` of its
+    /// resource: what a container of children it lists writes it through.
+    dispatch: Option<Rc<dyn std::any::Any>>,
     /// The resource types of the chains declared, while declaring.
     chains: Vec<tilo_resource::ResourceKind>,
+    /// Where a host without a window keeps the settings sections declared,
+    /// with the app they are the settings of ([`super::SettingsRecords`]).
+    sections: Option<Sections>,
+    /// The provider keeping the records being declared, inside
+    /// [`Self::kept_by`].
+    provider: Option<&'static str>,
+    /// What [`Self::kept_by`] declared, with the provider keeping it.
+    kept: Vec<(&'static str, Declare)>,
+}
+
+/// A declaration of records ([`ResourceApp::records`](super::ResourceApp::records)).
+pub type Declare = fn(&mut Records<'_>);
+
+/// Where a host without a window holds the settings sections declared.
+pub(crate) struct Sections {
+    /// The app whose settings they are.
+    pub(crate) app_id: &'static str,
+    /// The settings document they are stored in.
+    pub(crate) document: ui_core::storage::SettingsDocument,
+    /// The person's records they are kept in, with this device: their edits
+    /// are the person's steps. Without, each is kept in a document of the
+    /// host's own.
+    pub(crate) person: Option<(Rc<super::person::PersonState>, Option<String>)>,
+    pub(crate) doors: Vec<Rc<super::section::SectionDoor>>,
 }
 
 impl<'a> Records<'a> {
@@ -329,7 +383,11 @@ impl<'a> Records<'a> {
         Self {
             storage: Some(storage),
             base: None,
+            dispatch: None,
             chains: Vec::new(),
+            sections: None,
+            provider: None,
+            kept: Vec::new(),
         }
     }
 
@@ -340,8 +398,33 @@ impl<'a> Records<'a> {
         Self {
             storage: None,
             base: None,
+            dispatch: None,
             chains: Vec::new(),
+            sections: None,
+            provider: None,
+            kept: Vec::new(),
         }
+    }
+
+    /// The settings sections an app declares, held where `sections` says;
+    /// nothing else it declares is opened.
+    pub(crate) const fn sections(sections: Sections) -> Self {
+        Self {
+            storage: None,
+            base: None,
+            dispatch: None,
+            chains: Vec::new(),
+            sections: Some(sections),
+            provider: None,
+            kept: Vec::new(),
+        }
+    }
+
+    /// The settings sections held, after [`Self::sections`].
+    pub(crate) fn into_sections(self) -> Vec<Rc<super::section::SectionDoor>> {
+        self.sections
+            .map(|sections| sections.doors)
+            .unwrap_or_default()
     }
 
     /// The resource types of the chains declared.
@@ -349,8 +432,31 @@ impl<'a> Records<'a> {
         self.chains
     }
 
-    pub(crate) fn with_base<R: Resource>(mut self, live: Live<R>) -> Self {
+    /// What was declared kept by another provider ([`Self::kept_by`]),
+    /// with the provider keeping each: what a host standing in for those
+    /// providers (the native test hosts do) serves.
+    #[must_use]
+    pub fn into_kept(self) -> Vec<(&'static str, Declare)> {
+        self.kept
+    }
+
+    /// The records `declare` declares, kept by the host as `provider`
+    /// (the session keeps the person's settings sections): the window holds
+    /// and shows them and its views bind their controls to them as usual,
+    /// but each change is `provider`'s action, invoked there through the
+    /// workspace's broker and admitted, run and recorded there as any
+    /// caller's. The window publishes none of them; `provider` does.
+    pub fn kept_by(&mut self, provider: &'static str, declare: Declare) -> &mut Self {
+        self.kept.push((provider, declare));
+        let outer = self.provider.replace(provider);
+        declare(self);
+        self.provider = outer;
+        self
+    }
+
+    pub(crate) fn with_base<R: Resource>(mut self, live: Live<R>, dispatch: Dispatcher<R>) -> Self {
         self.base = Some(Rc::new(live));
+        self.dispatch = Some(Rc::new(dispatch));
         self
     }
 
@@ -395,7 +501,15 @@ impl<'a> Records<'a> {
             );
             return self;
         };
-        let _ = storage.children::<C>(move || parent.get());
+        let children = storage.children::<C>(move || parent.get());
+        if let (Some(children), Some(door)) = (
+            children,
+            self.dispatch
+                .clone()
+                .and_then(|door| door.downcast::<Dispatcher<C::Parent>>().ok()),
+        ) {
+            children.write_parent_through((*door).clone());
+        }
         self
     }
 
@@ -418,16 +532,51 @@ impl<'a> Records<'a> {
         self
     }
 
+    /// The record `P` that every app of the room opens and this app keeps
+    /// (`collab_types::WORKSPACE_RECORDS`; the workspace's emoji are
+    /// Chat's): opened with the window, so the app's surface lists it and
+    /// every member's change to it is decided against that surface.
+    pub fn workspace<P: Resource>(&mut self) -> &mut Self {
+        let Some(storage) = self.storage else {
+            return self;
+        };
+        storage.workspace_record::<P>();
+        self
+    }
+
     /// The settings section `T`, a resource model ([`RecordEnv::settings`](super::RecordEnv::settings)).
     pub fn settings<T>(&mut self) -> &mut Self
     where
         T: Resource<State = T> + Fields + SettingsSchema,
     {
+        // A setting that means nothing on this device is not published.
+        if !T::available_on(ui_core::storage::DeviceClass::current()) {
+            return self;
+        }
+        if let Some(sections) = &mut self.sections {
+            let settings = ui_core::storage::Settings::<T>::for_app(sections.app_id)
+                .in_document(sections.document.clone());
+            let kind = super::section::SectionKind::of(&settings);
+            let door = match &sections.person {
+                Some((person, device)) => person.open_section(kind, device.as_deref()),
+                None => super::section::SectionDoor::window(kind, true)
+                    .map(Rc::new)
+                    .map_err(|error| {
+                        tracing::warn!(kind = T::KIND, %error, "settings section unavailable");
+                    })
+                    .ok(),
+            };
+            sections.doors.extend(door);
+        }
         let Some(storage) = self.storage else {
             return self;
         };
         let settings = storage.storage().settings::<T>();
-        let _ = storage.section(&settings);
+        if let Some(door) = storage.section(&settings)
+            && let Some(provider) = self.provider
+        {
+            storage.keep_by(door.id(), provider);
+        }
         self
     }
 }
@@ -500,7 +649,11 @@ fn record_actions<P: Resource>(
     alive: std::rc::Weak<()>,
     door: Rc<dyn RecordDoor>,
 ) -> Actions<P> {
-    let actions = Actions::new(app, Rc::new(door.publish())).routed_to(door.id(), door.editable());
+    let actions = Actions::new(app, Rc::new(door.publish())).routed_to(
+        door.id(),
+        door.editable(),
+        storage.kept_provider(door.id()),
+    );
     follow_publication(storage, alive, door, actions.table());
     actions
 }

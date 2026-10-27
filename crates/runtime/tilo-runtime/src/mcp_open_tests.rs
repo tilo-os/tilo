@@ -224,7 +224,6 @@ impl Writer {
                     Vec::new(),
                 ),
             ];
-        // Scripted text edits are offered by the fixture holding that text.
         if self.document.is_some() {
             rows.extend(text_edit_rows());
         }
@@ -609,8 +608,8 @@ impl ActionHost for Writer {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        Ok(())
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 
@@ -878,7 +877,6 @@ fn opening_a_file_an_instance_holds_returns_that_instance() {
     let (first, second) = (session(), session());
     let open = |path: &str| json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open", "arguments": {"path": path}});
     run(async {
-        // Case `a_workspace_open_is_answered_by_the_instance_it_opened_in`.
         {
             call(&first, "tilo_invoke", open("/data/in/Sales.csv"))
                 .await
@@ -892,7 +890,6 @@ fn opening_a_file_an_instance_holds_returns_that_instance() {
             assert!(again["directory"]["resources"].is_array(), "{again}");
         }
 
-        // Case `a_file_imported_directly_is_found_too`.
         {
             call(&first, "tilo_invoke", json!({"peer_id": 1, "resource": DOC, "action": "import-csv", "arguments": {"path": "/data/in/Costs.csv"}}))
                 .await
@@ -1149,8 +1146,8 @@ impl ActionHost for FailingMutationHost {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        Ok(())
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 

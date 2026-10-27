@@ -62,10 +62,6 @@ pub fn valid_interface_name(name: &str) -> bool {
 
 impl InterfaceRequirement {
     /// A requirement on `version` of `name`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `name` is malformed or `version` is zero.
     pub fn new(name: &str, version: u32) -> Result<Self, InterfaceError> {
         if !valid_interface_name(name) {
             return Err(InterfaceError::Name(name.to_owned()));
@@ -329,7 +325,6 @@ mod tests {
         assert!(long.parse::<InterfaceRequirement>().is_err());
     }
 
-    // USER REQUIREMENT (2026-10-18): "it's fine if we break compat with old versions every few days, people just need to update"
     #[test]
     fn an_os_meets_exactly_the_one_version_it_serves() {
         let os = ProvidedInterfaces::new([("system", 2), ("runtime", 3)], ["collab"]);

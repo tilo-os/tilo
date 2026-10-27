@@ -67,6 +67,8 @@ pub enum RootAction {
     },
     /// Play sound through this output (its audio graph node).
     SoundOutput(u32),
+    /// Mute the output, or unmute it when it is muted.
+    ToggleMute,
     /// A press on a row the host describes (a Devices row, a copy): at
     /// `point` for a pointer, or `None` from the keyboard.
     Hosted {
@@ -85,8 +87,6 @@ pub enum WifiIntent {
     Join(String),
     /// Ask for a protected network's password, in place.
     AskPassword(String),
-    SubmitPassword,
-    CancelPassword,
 }
 
 /// What a press in the Bluetooth section asks for.
@@ -112,7 +112,6 @@ pub struct PendingRootActions {
     pub power: Option<PowerProfile>,
 }
 
-/// A row under the tiles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootRow {
     /// The battery (or, without one, the power mode): opens its section.
@@ -122,7 +121,6 @@ pub enum RootRow {
     Notifications,
 }
 
-/// A button in the panel's footer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FooterButton {
     Settings,
@@ -183,6 +181,8 @@ enum RootStop {
     Expand(usize, QuickSettingsControl),
     /// The volume slider's chevron: opens or closes where sound plays.
     SoundExpand,
+    /// The speaker beside the volume slider: mutes and unmutes.
+    VolumeMute,
     /// A stop inside the open section.
     Section(SectionStop),
     Row(RootRow),
@@ -264,6 +264,16 @@ enum Anchor {
     Row(RootRow),
 }
 
+/// Who owns the arrangement this page shows. Hosts that inject a model
+/// (tests, screenshots and embedders) must not silently rewrite the desktop
+/// user's persisted arrangement: only the normal session constructor owns
+/// that file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfigOwner {
+    Session,
+    Injected,
+}
+
 /// Root interaction state.  Editing uses the shared Tilo reorder controller;
 /// it never serialises paint geometry, only stable control identifiers.
 pub struct QuickSettingsRoot {
@@ -304,10 +314,7 @@ pub struct QuickSettingsRoot {
     // stop. Keyboard navigation sets it; the index follows it.
     root_focus: Option<RootStop>,
     config: QuickSettingsConfig,
-    // Hosts that inject a model (tests, screenshots and embedders) must not
-    // silently rewrite the desktop user's persisted arrangement. Only the
-    // normal session constructor owns that file.
-    persist_config: bool,
+    config_owner: ConfigOwner,
     edit_mode: bool,
     edit_drag: DragController<QuickSettingsControl>,
     /// How much of each section shows, on the disclosure motion: the open
@@ -317,10 +324,24 @@ pub struct QuickSettingsRoot {
     followed: Option<QsSection>,
     /// The motion settings and input source of the last change.
     motion: Option<(EffectiveMotion, MotionSource)>,
-    /// The password typed into the inline Wi-Fi prompt can be submitted
-    /// (the field itself is the host's secret input).
-    password_ready: bool,
+    /// The switches the open sections paint, sliding as a click turns them.
+    faces: ui::widget::FaceMotions,
+    /// Where each slider's thumb is drawn: on its value, except while it
+    /// glides to where its track was pressed.
+    slider_thumbs: std::cell::RefCell<HashMap<usize, ui::motion::Thumb>>,
+    /// The slider whose thumb glides to a press, and where the press was:
+    /// past a few pixels from there the drag is welded to the hand.
+    slider_glide: std::cell::Cell<Option<(usize, Point)>>,
+    /// One tile per control on the page, in the page's order.
+    tiles: Vec<(QuickSettingsControl, ui::widget::QuickTile)>,
+    /// How wide a tile's chevron half is in the theme of the last frame,
+    /// so hit-testing and accessibility split a tile where it paints.
+    tile_details_width: f64,
 }
+
+/// How far the hand moves from a press on a slider before the drag is the
+/// hand's: a thumb gliding to the press gives way to it there.
+const SLIDER_DRAG_SLOP: f64 = 3.0;
 
 impl Default for QuickSettingsRoot {
     /// Deterministic for tests. Production construction calls
@@ -366,7 +387,10 @@ impl QuickSettingsRoot {
         Self {
             panel: Rect::ZERO,
             viewport: Rect::ZERO,
-            scroll: ui::widget::ScrollRegion::vertical(),
+            // The bar sits in the page's trailing padding: a section
+            // opening past the popover's height scrolls the page, and never
+            // narrows it, so only the panel's height ever changes.
+            scroll: ui::widget::ScrollRegion::vertical().with_overlaid_bars(),
             scroll_viewport: Rect::ZERO,
             layout_scale: 1.0,
             text_scale: 1.0,
@@ -376,13 +400,21 @@ impl QuickSettingsRoot {
             keyboard_focus: None,
             root_focus: None,
             config: config.normalised(),
-            persist_config,
+            config_owner: if persist_config {
+                ConfigOwner::Session
+            } else {
+                ConfigOwner::Injected
+            },
             edit_mode: false,
             edit_drag: DragController::vertical(),
             reveal: HashMap::new(),
             followed: None,
             motion: None,
-            password_ready: false,
+            faces: ui::widget::FaceMotions::default(),
+            slider_thumbs: std::cell::RefCell::default(),
+            slider_glide: std::cell::Cell::new(None),
+            tiles: Vec::new(),
+            tile_details_width: TARGET,
         }
     }
     pub fn reset_focus(&mut self) {
@@ -393,12 +425,6 @@ impl QuickSettingsRoot {
         self.root_focus = None;
         // Each opening starts at the top of the page.
         self.scroll.set_offset(vello::kurbo::Vec2::ZERO);
-    }
-
-    /// Whether the password typed into the inline Wi-Fi prompt can be
-    /// submitted; the host owns the secret field and says so each frame.
-    pub fn set_wifi_password_ready(&mut self, ready: bool) {
-        self.password_ready = ready;
     }
 
     /// Single-line height of a chrome type role at the user's text scale.
@@ -550,11 +576,16 @@ impl QuickSettingsRoot {
         self.scroll
             .handle_window_event(event, scale_factor, modifiers, handled, theme)
     }
+    /// Step a glide after a flick to the frame's time; returns whether the
+    /// page moved.
+    pub fn advance_scroll(&mut self) -> bool {
+        self.scroll.advance()
+    }
     /// Whether the page's scrollbar is being dragged.
     pub fn scroll_dragging(&self) -> bool {
         self.scroll.is_dragging()
     }
-    /// The scrollbar's fade, for the host's frame clock.
+    /// The scrollbar's fade and a glide, for the host's frame clock.
     pub fn scroll_needs_frame(&self, theme: &Theme) -> bool {
         self.scrolls() && self.scroll.needs_animation_frame(theme)
     }
@@ -590,8 +621,6 @@ impl QuickSettingsRoot {
         self.panel = self.page_rect(state);
     }
 
-    // ---------- sections and their motion ----------
-
     /// The section open on the page: the state's, when its control is on
     /// the page.
     fn open_section(&self, state: &QuickSettingsState) -> Option<QsSection> {
@@ -610,11 +639,12 @@ impl QuickSettingsRoot {
                     QsSection::Devices => RootRow::Devices,
                     _ => RootRow::Clipboard,
                 };
-                return self.rows(state).contains(&row).then_some(Anchor::Row(row));
+                return Self::rows(state).contains(&row).then_some(Anchor::Row(row));
             }
             QsSection::Wifi => QuickSettingsControl::Wifi,
             QsSection::Bluetooth => QuickSettingsControl::Bluetooth,
             QsSection::Vpn => QuickSettingsControl::Vpn,
+            QsSection::PowerMode => QuickSettingsControl::PowerMode,
         };
         let index = self
             .visible_controls(state)
@@ -629,6 +659,8 @@ impl QuickSettingsRoot {
             QuickSettingsControl::Wifi if state.radios.wifi_available => Some(QsSection::Wifi),
             QuickSettingsControl::Bluetooth => Some(QsSection::Bluetooth),
             QuickSettingsControl::Vpn => Some(QsSection::Vpn),
+            // The one place the power mode is chosen.
+            QuickSettingsControl::PowerMode => Some(QsSection::PowerMode),
             _ => None,
         }
     }
@@ -685,7 +717,8 @@ impl QuickSettingsRoot {
         }
     }
 
-    /// Whether a section is still opening or closing.
+    /// Whether a section is still opening or closing. Its switches,
+    /// boxes and slider thumbs ask the motion clock for their own frames.
     pub fn is_animating(&self, now: Instant) -> bool {
         self.reveal.values().any(|extent| extent.is_moving(now))
     }
@@ -710,12 +743,10 @@ impl QuickSettingsRoot {
         (width - 2.0 * self.scaled(PANEL_PAD)).max(1.0)
     }
 
-    // ---------- layout ----------
-
     /// The rows under the tiles that this machine shows.
-    fn rows(&self, state: &QuickSettingsState) -> Vec<RootRow> {
+    fn rows(state: &QuickSettingsState) -> Vec<RootRow> {
         let mut rows = Vec::new();
-        if state.battery.present
+        if state.battery().present
             || !state.power_profiles.is_empty()
             || !state.awake_holders.is_empty()
         {
@@ -820,7 +851,7 @@ impl QuickSettingsRoot {
         }
 
         y += section_gap;
-        for (index, row) in self.rows(state).into_iter().enumerate() {
+        for (index, row) in Self::rows(state).into_iter().enumerate() {
             if index > 0 {
                 y += self.scaled(ui::tokens::Spacing::BASE.s1.into());
             }
@@ -838,7 +869,7 @@ impl QuickSettingsRoot {
         layout.edit = Rect::new(x0, y, x0 + side, y + side);
         let count = FooterButton::ALL.len();
         for (index, button) in FooterButton::ALL.into_iter().enumerate() {
-            let from_end = f64_of_usize(count - index);
+            let from_end = f64_of_usize(count.saturating_sub(index));
             let x = x1 - from_end * side - (from_end - 1.0) * related_gap;
             layout
                 .footer
@@ -893,7 +924,7 @@ impl QuickSettingsRoot {
     fn sliders_height_at(&self, scale: f64) -> f64 {
         let count = self.slider_count();
         let captions: f64 = (0..count).map(|i| self.slider_caption_height(i)).sum();
-        (2.0 * CONTROL_PAD + f64_of_usize(count.saturating_sub(1)) * RELATED_GAP) * scale
+        f64_of_usize(count.saturating_sub(1)) * RELATED_GAP * scale
             + f64_of_usize(count) * Self::target_at(scale)
             + captions
     }
@@ -931,14 +962,14 @@ impl QuickSettingsRoot {
     }
     fn slider_available(&self, state: &QuickSettingsState, i: usize) -> bool {
         if i == self.volume_slider() {
-            state.volume_available
+            state.volume_available && state.status.volume.is_some()
         } else {
             !state.displays.is_empty() || state.brightness_available
         }
     }
     fn slider_value(&self, state: &QuickSettingsState, i: usize) -> f32 {
         if i == self.volume_slider() {
-            state.volume
+            state.volume_level()
         } else {
             state
                 .displays
@@ -948,7 +979,7 @@ impl QuickSettingsRoot {
     }
     fn set_slider_value(&self, state: &mut QuickSettingsState, i: usize, value: f32) {
         if i == self.volume_slider() {
-            state.volume = value;
+            state.set_volume_level(value);
             return;
         }
         if let Some(display) = state.displays.get_mut(i) {
@@ -1125,7 +1156,7 @@ impl QuickSettingsRoot {
         let mut settled = Self::with_config(self.config.clone());
         settled.layout_scale = self.layout_scale;
         settled.text_scale = self.text_scale;
-        settled.display_names = self.display_names.clone();
+        settled.display_names.clone_from(&self.display_names);
         settled.sound = self.sound;
         settled.panel = if self.panel.width() > 0.0 {
             Rect::new(self.panel.x0, panel.y0, self.panel.x1, panel.y0)
@@ -1137,7 +1168,7 @@ impl QuickSettingsRoot {
     }
     fn save_config(&mut self) {
         self.config = self.config.clone().normalised();
-        if !self.persist_config {
+        if self.config_owner == ConfigOwner::Injected {
             // Interaction tests and embedded previews exercise the same
             // model, but never write a developer's real desktop settings.
             // Their caller owns persistence, if any.
@@ -1246,29 +1277,24 @@ impl QuickSettingsRoot {
         )
     }
 
-    /// A tile's chevron area: its trailing pointer-floor-wide strip.
+    /// A tile's chevron half, where the tile paints it.
     fn expand_rect(&self, tile: Rect) -> Rect {
-        Rect::new(
-            (tile.x1 - self.scaled(Self::EXPAND_WIDTH)).max(tile.x0),
-            tile.y0,
-            tile.x1,
-            tile.y1,
-        )
+        ui::widget::QuickTile::split(tile, self.tile_details_width).1
     }
     /// Slider `i`'s face: after the leading glyph slot, the rest of the
     /// block's width, at least one minimum pointer target tall (HIG §9.6). The
-    /// two faces sit one related step apart inside the control padding, so
-    /// neither touches the other or the block's edge. One helper feeds
+    /// faces sit one related step apart, the first on the block's top edge
+    /// (the panel padding above it). One helper feeds
     /// paint, hit-testing and the accessibility tree.
     fn slider_face_rect(&self, block: Rect, i: usize) -> Rect {
         let above: f64 = (0..i).map(|j| self.slider_caption_height(j)).sum();
         let y = block.y0
-            + self.scaled(CONTROL_PAD)
             + f64_of_usize(i) * (Self::target_at(self.layout_scale) + self.scaled(RELATED_GAP))
             + above
             + self.slider_caption_height(i);
-        // The volume slider leaves room for its chevron.
-        let trailing = if self.sound && i == self.volume_slider() {
+        // Every slider leaves room for the volume slider's chevron, so all
+        // the tracks are one length.
+        let trailing = if self.sound {
             self.scaled(Self::EXPAND_WIDTH)
         } else {
             self.scaled(CONTROL_INSET)
@@ -1279,6 +1305,13 @@ impl QuickSettingsRoot {
             block.x1 - trailing,
             y + Self::target_at(self.layout_scale),
         )
+    }
+
+    /// The speaker on the volume slider's leading edge: the glyph column,
+    /// one target tall.
+    fn volume_mute_rect(&self, block: Rect) -> Rect {
+        let face = self.slider_face_rect(block, self.volume_slider());
+        Rect::new(block.x0, face.y0, face.x0, face.y1)
     }
 
     /// The volume slider's chevron, on its band's trailing edge.
@@ -1294,8 +1327,10 @@ impl QuickSettingsRoot {
     }
     /// Slider `i`'s geometry in a popover `panel`, for integration tests.
     pub fn slider_geometry(panel: Rect, i: usize) -> (Rect, f64) {
-        let mut root = Self::default();
-        root.panel = panel;
+        let root = Self {
+            panel,
+            ..Self::default()
+        };
         root.slider_geometry_for(root.sliders_block(), i)
     }
 
@@ -1318,10 +1353,13 @@ impl QuickSettingsRoot {
                 .map(|(stop, _)| RootStop::Section(stop))
                 .collect();
         }
-        let mut stops: Vec<RootStop> = (0..self.slider_count())
-            .filter(|&index| self.slider_available(state, index))
-            .map(RootStop::Slider)
-            .collect();
+        let mut stops = Vec::new();
+        for index in (0..self.slider_count()).filter(|&index| self.slider_available(state, index)) {
+            if index == self.volume_slider() {
+                stops.push(RootStop::VolumeMute);
+            }
+            stops.push(RootStop::Slider(index));
+        }
         let open = self.open_section(state);
         if self.sound {
             stops.push(RootStop::SoundExpand);
@@ -1401,13 +1439,14 @@ impl QuickSettingsRoot {
                 .get(index)
                 .map_or(Rect::ZERO, |(_, r)| self.expand_rect(*r)),
             RootStop::SoundExpand => self.volume_expand_rect(layout.sliders),
+            RootStop::VolumeMute => self.volume_mute_rect(layout.sliders),
             RootStop::Section(section_stop) => self
                 .open_slot(layout, state)
                 .and_then(|slot| {
                     sections::stops(&slot.layout, state, self.section_metrics())
                         .into_iter()
                         .find(|(s, _)| *s == section_stop)
-                        .map(|(_, r)| r + slot.rect.origin().to_vec2())
+                        .map(|(_, r)| on_page(slot.rect, r))
                 })
                 .unwrap_or(Rect::ZERO),
             RootStop::Row(row) => layout
@@ -1451,6 +1490,7 @@ impl QuickSettingsRoot {
                 )
             }
             RootStop::SoundExpand => "quick_settings_volume_details".into(),
+            RootStop::VolumeMute => "quick_settings_volume_mute".into(),
             RootStop::Section(stop) => format!("quick_settings_{}", section_stop_name(stop, state)),
             RootStop::Row(row) => format!(
                 "quick_settings_{}",
@@ -1554,7 +1594,8 @@ impl QuickSettingsRoot {
                 None => RootAction::None,
             },
             RootStop::SoundExpand => Self::toggle_section(QsSection::Sound, state),
-            RootStop::Section(stop) => Self::activate_section_stop(stop, state),
+            RootStop::VolumeMute => RootAction::ToggleMute,
+            RootStop::Section(stop) => self.activate_section_stop(stop, state),
             RootStop::Row(RootRow::Battery) => Self::toggle_section(QsSection::Battery, state),
             RootStop::Row(RootRow::Devices) => Self::toggle_section(QsSection::Devices, state),
             RootStop::Row(RootRow::Clipboard) => Self::toggle_section(QsSection::Clipboard, state),
@@ -1592,8 +1633,22 @@ impl QuickSettingsRoot {
         true
     }
 
-    fn activate_section_stop(stop: SectionStop, state: &mut QuickSettingsState) -> RootAction {
+    fn activate_section_stop(
+        &self,
+        stop: SectionStop,
+        state: &mut QuickSettingsState,
+    ) -> RootAction {
         match stop {
+            // The Battery section's power mode row leads to the Power mode
+            // tile's section, where the mode is chosen; with the tile taken
+            // off the page, to the power settings.
+            SectionStop::PowerMode => {
+                if self.anchor(QsSection::PowerMode, state).is_some() {
+                    Self::toggle_section(QsSection::PowerMode, state)
+                } else {
+                    RootAction::OpenSettings(Some("settings://power"))
+                }
+            }
             SectionStop::TurnOn => {
                 let mut pending = PendingRootActions::default();
                 match state.section {
@@ -1618,11 +1673,9 @@ impl QuickSettingsRoot {
                     RootAction::Wifi(WifiIntent::Join(network.ssid.clone()))
                 }
             }
-            SectionStop::PasswordCancel => RootAction::Wifi(WifiIntent::CancelPassword),
-            SectionStop::PasswordConnect => RootAction::Wifi(WifiIntent::SubmitPassword),
             SectionStop::Settings => RootAction::OpenSettings(Some(match state.section {
                 Some(QsSection::Bluetooth) => "settings://bluetooth",
-                Some(QsSection::Battery) => "settings://power",
+                Some(QsSection::Battery | QsSection::PowerMode) => "settings://power",
                 Some(QsSection::Sound) => "settings://sound",
                 Some(QsSection::Devices) => "settings://devices_sync",
                 _ => "settings://network",
@@ -1684,12 +1737,13 @@ impl QuickSettingsRoot {
     }
     fn devices_subline(state: &QuickSettingsState) -> String {
         match state.personal_devices {
-            None => t("qs-devices-audio-and-media"),
+            // No personal devices known: nothing to count, so nothing said.
+            None => String::new(),
             Some(count) => t_args("qs-devices-count", &[("count", count.into())]),
         }
     }
     fn clipboard_subline(state: &QuickSettingsState) -> String {
-        match state.clipboard_items {
+        match state.clipboard.total {
             0 => t("qs-clipboard-empty"),
             count => t_args("qs-clipboard-count", &[("count", count.into())]),
         }
@@ -1728,10 +1782,10 @@ impl QuickSettingsRoot {
             QuickSettingsControl::Wifi => ui::icons::Icon::Wifi,
             QuickSettingsControl::Bluetooth => ui::icons::Icon::Bluetooth,
             QuickSettingsControl::Vpn => ui::icons::Icon::Shield,
-            QuickSettingsControl::NightLight => ui::icons::Icon::Sun,
+            QuickSettingsControl::NightLight => ui::icons::Icon::Moon,
             QuickSettingsControl::AirplaneMode => ui::icons::Icon::Plane,
             QuickSettingsControl::MobileData => ui::icons::Icon::Globe,
-            QuickSettingsControl::DoNotDisturb => ui::icons::Icon::Moon,
+            QuickSettingsControl::DoNotDisturb => ui::icons::Icon::BellOff,
             QuickSettingsControl::RotationLock => ui::icons::Icon::RotateCw,
             QuickSettingsControl::PowerMode => ui::icons::Icon::Gauge,
         }
@@ -1755,7 +1809,7 @@ impl QuickSettingsRoot {
     /// The network Wi-Fi is on: the observed link when it is Wi-Fi or
     /// offline, else (wired, or not observed yet) the last scan's.
     fn wifi_subline(s: &QuickSettingsState) -> String {
-        match &s.link {
+        match &s.status.link {
             Some(link) if link.kind == os_actions::LinkKind::Wifi => link
                 .name
                 .clone()
@@ -1911,7 +1965,6 @@ impl QuickSettingsRoot {
         self.lay_out(panel, state);
     }
 
-    /// Whether a stop holds keyboard focus.
     #[must_use]
     pub fn has_keyboard_focus(&self) -> bool {
         self.root_focus.is_some() || self.keyboard_focus.is_some()
@@ -2107,6 +2160,15 @@ impl QuickSettingsRoot {
             // The pointer target is the painted face — the same rect the
             // accessibility tree publishes — not a second band around the track.
             if self.slider_face_rect(layout.sliders, i).contains(point) {
+                // The value goes where the press is at once; a press away
+                // from the thumb glides it there.
+                let drawn = self
+                    .slider_thumbs
+                    .borrow()
+                    .get(&i)
+                    .map(|thumb| bar.x0 + thumb.get(ui::motion::frame_now()) * bar.width());
+                let away = drawn.is_some_and(|x| (point.x - x).abs() > SliderFace::overhang());
+                self.slider_glide.set(away.then_some((i, point)));
                 let value = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
                 self.set_slider_value(state, i, value);
                 self.slider_drag = Some(i);
@@ -2118,7 +2180,7 @@ impl QuickSettingsRoot {
         if let Some(slot) = self.open_slot(&layout, state)
             && slot.clip().contains(point)
         {
-            let local = point - slot.rect.origin().to_vec2();
+            let local = Point::new(point.x - slot.rect.x0, point.y - slot.rect.y0);
             return sections::stop_at(&slot.layout, state, self.section_metrics(), local).map_or(
                 RootAction::None,
                 |stop| match stop {
@@ -2128,7 +2190,7 @@ impl QuickSettingsRoot {
                         index,
                         point: Some(point),
                     },
-                    _ => Self::activate_section_stop(stop, state),
+                    _ => self.activate_section_stop(stop, state),
                 },
             );
         }
@@ -2218,6 +2280,18 @@ impl QuickSettingsRoot {
         }
         RootAction::None
     }
+    /// Whether `point` is on a slider's face, on the page as last laid out:
+    /// where a press, or a finger ([`ui::widget::SliderTouch`]), takes hold
+    /// of it in [`Self::handle_click`].
+    pub fn slider_face_at(&self, point: Point, state: &QuickSettingsState) -> bool {
+        if self.edit_mode || (self.scrolls() && !self.visible_rect().contains(point)) {
+            return false;
+        }
+        let layout = self.page_layout(state);
+        !layout.paste
+            && (0..self.slider_count())
+                .any(|i| self.slider_face_rect(layout.sliders, i).contains(point))
+    }
     pub fn update_drag(
         &mut self,
         point: Point,
@@ -2227,6 +2301,14 @@ impl QuickSettingsRoot {
         let panel = self.lay_out(panel, state);
         if let Some(i) = self.slider_drag {
             let (bar, _) = self.slider_geometry_for(panel, i);
+            // The hand moved off its press: the thumb is welded to it.
+            if self
+                .slider_glide
+                .get()
+                .is_some_and(|(_, from)| (point.x - from.x).abs() > SLIDER_DRAG_SLOP)
+            {
+                self.slider_glide.set(None);
+            }
             let v = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
             self.set_slider_value(state, i, v);
             return true;
@@ -2270,8 +2352,6 @@ impl QuickSettingsRoot {
         self.slider_drag.is_some() || self.edit_drag.is_pending()
     }
 
-    /// The inline Wi-Fi password field, where the host draws its secret
-    /// input: inside the open Wi-Fi section, while it is revealed.
     /// Where row `index` of the host-described rows of `section` is on the
     /// page, while that section is the open one. The host hit-tests the
     /// row's buttons against it with [`super::hosted`]'s geometry.
@@ -2293,10 +2373,12 @@ impl QuickSettingsRoot {
             .items
             .iter()
             .find(|item| item.kind == sections::ItemKind::Hosted(index))
-            .map(|item| item.rect + slot.rect.origin().to_vec2())
+            .map(|item| on_page(slot.rect, item.rect))
     }
 
-    pub fn wifi_password_field_rect(&self, state: &QuickSettingsState) -> Option<Rect> {
+    /// The inline Wi-Fi password prompt, where the host draws it: inside
+    /// the open Wi-Fi section, while it is revealed.
+    pub fn wifi_password_rect(&self, state: &QuickSettingsState) -> Option<Rect> {
         if self.edit_mode || state.wifi_password.is_none() {
             return None;
         }
@@ -2310,19 +2392,7 @@ impl QuickSettingsRoot {
             .items
             .iter()
             .find(|item| item.kind == sections::ItemKind::Password)?;
-        Some(
-            sections::password_field(item.rect, self.section_metrics())
-                + slot.rect.origin().to_vec2(),
-        )
-    }
-
-    /// The inline prompt's Cancel and Connect, while it shows.
-    pub fn wifi_password_button_rects(&self, state: &QuickSettingsState) -> Option<(Rect, Rect)> {
-        self.wifi_password_field_rect(state)?;
-        Some((
-            self.stop_rect(RootStop::Section(SectionStop::PasswordCancel), state),
-            self.stop_rect(RootStop::Section(SectionStop::PasswordConnect), state),
-        ))
+        Some(on_page(slot.rect, item.rect))
     }
 
     /// What the page shows of itself: the popover, less the bar lane while
@@ -2341,6 +2411,7 @@ impl QuickSettingsRoot {
         cursor: Option<Point>,
         state: &QuickSettingsState,
     ) {
+        self.tile_details_width = ui::widget::QuickTile::details_width(theme);
         self.sync_scroll(panel, theme, state);
         self.lay_out(panel, state);
         // A pointer over the bar lane or outside the shown page hovers
@@ -2398,7 +2469,12 @@ impl QuickSettingsRoot {
             &title_style.with_weight(TextWeight::Semibold),
         );
     }
-    fn draw_root(&self, ctx: &mut PaintCtx<'_>, cursor: Option<Point>, state: &QuickSettingsState) {
+    fn draw_root(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        cursor: Option<Point>,
+        state: &QuickSettingsState,
+    ) {
         // One layout and one focus lookup for the whole frame.
         let layout = self.page_layout(state);
         let stops = self.stops_in(&layout, state);
@@ -2416,9 +2492,7 @@ impl QuickSettingsRoot {
             return;
         }
         self.draw_sliders(ctx, &layout, &frame);
-        for (index, (control, rect)) in layout.tiles.iter().enumerate() {
-            self.draw_tile(ctx, &frame, (index, *control, *rect));
-        }
+        self.draw_tiles(ctx, &layout, &frame);
         for slot in &layout.sections {
             self.draw_section(ctx, &frame, slot);
         }
@@ -2434,12 +2508,37 @@ impl QuickSettingsRoot {
             layout.edit,
         );
         for (button, rect) in &layout.footer {
-            self.draw_footer_button(ctx, &frame, *button, *rect);
+            Self::draw_footer_button(ctx, &frame, *button, *rect);
         }
     }
 
-    /// The slider block: one Control surface holding a band per slider,
-    /// each with its glyph on the leading inset of the band.
+    /// The slider block: a band per slider straight on the panel, each with
+    /// its glyph on the leading inset, in the tiles' glyph column. No Control
+    /// surface of its own: the panel is already the surface, and a card in it
+    /// read as a card in a card. The list rows below sit on the panel too.
+    /// Where slider `i`'s thumb is drawn this frame for a value of `value`
+    /// (`0..=1`): gliding there from a press away from it, under the hand
+    /// while dragged, and at once for a key, the hardware or a sync.
+    fn drawn_thumb(&self, i: usize, value: f64, motion: EffectiveMotion) -> f64 {
+        let now = ui::motion::frame_now();
+        let mut thumbs = self.slider_thumbs.borrow_mut();
+        let thumb = thumbs
+            .entry(i)
+            .or_insert_with(|| ui::motion::Thumb::at(value));
+        let gliding = self.slider_glide.get().is_some_and(|(glide, _)| glide == i);
+        if thumb.target().to_bits() != value.clamp(0.0, 1.0).to_bits() {
+            if gliding {
+                thumb.go(value, motion, MotionSource::Pointer, now);
+            } else {
+                thumb.snap(value);
+            }
+        }
+        if gliding && !thumb.is_moving(now) && self.slider_drag != Some(i) {
+            self.slider_glide.set(None);
+        }
+        thumb.get(now)
+    }
+
     fn draw_sliders(&self, ctx: &mut PaintCtx<'_>, layout: &PageLayout, frame: &RootFrame<'_>) {
         let (state, cursor) = (frame.state, frame.cursor);
         let (scene, transform, text, theme) =
@@ -2448,7 +2547,14 @@ impl QuickSettingsRoot {
         let glyph = Self::glyph_at(self.layout_scale);
         let inset = self.scaled(CONTROL_INSET);
         let sliders = layout.sliders;
-        paint_control(scene, transform, theme, sliders, false, false);
+        // The tracks sit on the panel ground, so they are inked for that
+        // ground (as the video player's controls on their floating panel
+        // are), and their unfilled well is the tone an off switch's track
+        // takes on it: one lift off the panel, visible on every material
+        // now that no card sits under it.
+        let ground = ui::chrome::shell::panel_ground(theme);
+        let mut on_panel = theme.on_ground(ground);
+        on_panel.tokens.colors.surfaces.raised = on_panel.tokens.colors.lift_on(ground, 1.0);
         let caption_style = theme.text(TextRole::Caption);
         for i in 0..self.slider_count() {
             let face = self.slider_face_rect(sliders, i);
@@ -2467,11 +2573,22 @@ impl QuickSettingsRoot {
                     &caption_style,
                 );
             }
+            let volume = i == self.volume_slider();
+            let muted = volume && state.volume_muted();
+            if volume && available {
+                // The speaker is a control: it lifts under the pointer as
+                // the chevron does.
+                let mute = self.volume_mute_rect(sliders);
+                let focused = frame.focused == Some(RootStop::VolumeMute);
+                paint_glyph_target(scene, transform, theme, mute, cursor, focused);
+            }
             ui::icons::draw_icon(
                 scene,
                 transform,
                 leading_glyph(band, inset, glyph),
-                if i == self.volume_slider() {
+                if muted {
+                    ui::icons::Icon::VolumeX
+                } else if volume {
                     ui::icons::Icon::Volume2
                 } else {
                     ui::icons::Icon::Sun
@@ -2479,11 +2596,19 @@ impl QuickSettingsRoot {
                 colors.text_dim,
                 1.5,
             );
+            // A muted output is silent at any level: its track is empty, as
+            // the volume readout's is.
+            let shown = if muted {
+                0.0
+            } else {
+                f64::from(self.slider_value(state, i))
+            };
+            let shown = self.drawn_thumb(i, shown, theme.motion());
             Slider::paint(
                 scene,
                 transform,
-                theme,
-                &SliderFace::new(face, f64::from(self.slider_value(state, i)))
+                &on_panel,
+                &SliderFace::new(face, shown)
                     .hovered(available && cursor.is_some_and(|p| face.contains(p)))
                     .focused(frame.focused == Some(RootStop::Slider(i)))
                     .dragging(self.slider_drag == Some(i))
@@ -2494,150 +2619,86 @@ impl QuickSettingsRoot {
             let expand = self.volume_expand_rect(sliders);
             let turn = self.chevron_turn(QsSection::Sound, state);
             let chevron = Rect::from_center_size(expand.center(), (glyph, glyph));
-            if cursor.is_some_and(|p| expand.contains(p)) {
-                // The chevron's own target lifts under the pointer, as a
-                // tile's half does.
-                ui::widget::primitives::QuickTileFace {
-                    rect: expand,
-                    main: expand,
-                    expand: None,
-                    on: false,
-                    hovered: Some(expand),
-                    radius: control_radius(theme, expand),
-                }
-                .paint_ground(
-                    scene,
-                    transform,
-                    theme,
-                    tilo_desktop::drill_in::control_fill(theme, true),
-                );
-            }
+            // The chevron's own target lifts under the pointer, as a tile's
+            // half does.
+            let focused = frame.focused == Some(RootStop::SoundExpand);
+            paint_glyph_target(scene, transform, theme, expand, cursor, focused);
             ui::icons::draw_icon(
                 scene,
-                transform
-                    * Affine::rotate_about(std::f64::consts::FRAC_PI_2 * turn, chevron.center()),
+                transform.pre_rotate_about(std::f64::consts::FRAC_PI_2 * turn, chevron.center()),
                 chevron,
                 ui::icons::Icon::ChevronRight,
                 colors.text_dim,
                 1.5,
             );
-            if frame.focused == Some(RootStop::SoundExpand) {
-                ui::widget::paint_focus_ring(
-                    scene,
-                    transform,
-                    expand,
-                    control_radius(theme, expand),
-                    theme,
-                );
-            }
         }
     }
 
-    /// A tile: the on colour when its control is on, its glyph, name and
-    /// state line, and — when it has a section — a chevron area of its own
-    /// that turns as the section opens.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "a tile's two targets, their hover, the chevron's turn and both focus rings paint in one ordered pass over one geometry"
-    )]
-    fn draw_tile(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        frame: &RootFrame<'_>,
-        (index, c, r): (usize, QuickSettingsControl, Rect),
-    ) {
-        let (s, cursor) = (frame.state, frame.cursor);
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-        let on = Self::on(c, s);
-        let section = Self::section_of(c, s);
-        let expand = section.map(|_| self.expand_rect(r));
-        let main = expand.map_or(r, |e| Rect::new(r.x0, r.y0, e.x0, r.y1));
-        let over = |rect: Rect| cursor.is_some_and(|p| rect.contains(p));
-        let main_hovered = over(main) && !expand.is_some_and(over);
-        let radius = control_radius(theme, r);
-        let hovered = if main_hovered {
-            Some(main)
-        } else {
-            expand.filter(|e| over(*e))
-        };
-        let face = ui::widget::primitives::QuickTileFace {
-            rect: r,
-            main,
-            expand,
-            on,
-            hovered,
-            radius,
-        };
-        if !on {
-            paint_control(scene, transform, theme, r, false, false);
-        }
-        // A control that is on is filled with the on colour: the whole tile
-        // says it at a glance. Hover lifts the half under the pointer.
-        face.paint_ground(
-            scene,
-            transform,
-            theme,
-            tilo_desktop::drill_in::control_fill(theme, true),
-        );
-        let (ink, ink_dim) = face.ink(theme);
-        let inset = self.scaled(CONTROL_INSET);
-        let glyph = Self::glyph_at(self.layout_scale);
-        let icon = leading_glyph(main, inset, glyph);
-        ui::icons::draw_icon(scene, transform, icon, Self::icon(c, s), ink, 1.5);
-        let text_x = icon.x1 + self.scaled(RELATED_GAP);
-        let text_width =
-            f32v((main.x1 - self.scaled(ui::tokens::Spacing::BASE.s1.into()) - text_x).max(1.0));
-        let label_style = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
-        let sub_style = theme.text(TextRole::Caption);
-        let label =
-            text.elide_to_width_style(&Self::rendered_label(c, s), text_width, &label_style);
-        let sub = text.elide_to_width_style(&Self::subline(c, s), text_width, &sub_style);
-        let (_, label_h) = text.measure_style(&label, None, &label_style);
-        let (_, sub_h) = text.measure_style(&sub, None, &sub_style);
-        let top = centred_text_top(main, f64::from(label_h) + f64::from(sub_h));
-        text.draw_style(
-            scene,
-            &label,
-            ink,
-            transform.pre_translate((text_x, top).into()),
-            None,
-            &label_style,
-        );
-        text.draw_style(
-            scene,
-            &sub,
-            ink_dim,
-            transform.pre_translate((text_x, top + f64::from(label_h)).into()),
-            None,
-            &sub_style,
-        );
-        if let (Some(expand), Some(section)) = (expand, section) {
-            // A hairline sets the chevron's area apart from the switch.
-            let inset_y =
-                self.scaled(CONTROL_PAD) + self.scaled(ui::tokens::Spacing::BASE.s1.into());
-            face.paint_divider(scene, transform, theme, inset_y);
-            let turn = self.chevron_turn(section, s);
-            let chevron = Rect::from_center_size(expand.center(), (glyph, glyph));
-            let rotation =
-                Affine::rotate_about(std::f64::consts::FRAC_PI_2 * turn, chevron.center());
-            ui::icons::draw_icon(
-                scene,
-                transform * rotation,
-                chevron,
-                ui::icons::Icon::ChevronRight,
-                ink,
-                1.5,
-            );
-        }
-        let radius = control_radius(theme, r);
-        if frame.focused == Some(RootStop::Control(index, c)) {
-            ui::widget::paint_focus_ring(scene, transform, main, radius, theme);
-        }
-        if let Some(expand) = expand
-            && frame.focused == Some(RootStop::Expand(index, c))
+    /// The tiles, one retained [`ui::widget::QuickTile`] per control, kept
+    /// in the page's order and told the control's state, the pointer and
+    /// which of its halves has keyboard focus.
+    fn draw_tiles(&mut self, ctx: &mut PaintCtx<'_>, layout: &PageLayout, frame: &RootFrame<'_>) {
+        let state = frame.state;
+        let controls: Vec<QuickSettingsControl> = layout.tiles.iter().map(|(c, _)| *c).collect();
+        if self
+            .tiles
+            .iter()
+            .map(|(c, _)| *c)
+            .ne(controls.iter().copied())
         {
-            ui::widget::paint_focus_ring(scene, transform, expand, radius, theme);
+            let mut kept = std::mem::take(&mut self.tiles);
+            self.tiles = controls
+                .iter()
+                .map(|control| {
+                    let tile = kept.iter().position(|(c, _)| c == control).map_or_else(
+                        || {
+                            ui::widget::QuickTile::new(
+                                format!("quick_settings_{}", Self::semantic_control_name(*control)),
+                                Self::icon(*control, state),
+                                Self::rendered_label(*control, state),
+                            )
+                        },
+                        |at| kept.swap_remove(at).1,
+                    );
+                    (*control, tile)
+                })
+                .collect();
+        }
+        let turns: Vec<Option<f64>> = controls
+            .iter()
+            .map(|c| Self::section_of(*c, state).map(|section| self.chevron_turn(section, state)))
+            .collect();
+        for (index, ((control, rect), turn)) in layout.tiles.iter().zip(turns).enumerate() {
+            let Some((_, tile)) = self.tiles.get_mut(index) else {
+                continue;
+            };
+            tile.set_content(
+                Self::icon(*control, state),
+                &Self::rendered_label(*control, state),
+                &Self::subline(*control, state),
+            );
+            tile.set_on(Self::on(*control, state));
+            tile.set_details(turn.map(|_| Self::details_label(*control)));
+            tile.set_details_open(turn.unwrap_or(0.0));
+            tile.apply_layout_external(*rect);
+            tile.set_pointer(frame.cursor);
+            tile.set_focused_part(match frame.focused {
+                Some(RootStop::Control(i, _)) if i == index => {
+                    Some(ui::widget::QuickTilePart::Switch)
+                }
+                Some(RootStop::Expand(i, _)) if i == index => {
+                    Some(ui::widget::QuickTilePart::Details)
+                }
+                _ => None,
+            });
+            ui::widget::Widget::draw(
+                tile,
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &ui::presence::PresenceCtx::default(),
+            );
         }
     }
 
@@ -2696,9 +2757,9 @@ impl QuickSettingsRoot {
                 origin,
                 cursor: cursor
                     .filter(|point| open && clip.contains(*point))
-                    .map(|point| point - origin.to_vec2()),
+                    .map(|point| Point::new(point.x - origin.x, point.y - origin.y)),
                 focused,
-                password_ready: self.password_ready,
+                faces: &self.faces,
             },
         );
         ctx.scene.pop_layer();
@@ -2734,7 +2795,8 @@ impl QuickSettingsRoot {
         let turn = self.chevron_turn(section, state);
         ui::icons::draw_icon(
             ctx.scene,
-            ctx.transform * Affine::rotate_about(std::f64::consts::FRAC_PI_2 * turn, slot.center()),
+            ctx.transform
+                .pre_rotate_about(std::f64::consts::FRAC_PI_2 * turn, slot.center()),
             slot,
             ui::icons::Icon::ChevronRight,
             ctx.theme.tokens.colors.text_dim,
@@ -2753,16 +2815,16 @@ impl QuickSettingsRoot {
         };
         match row {
             RootRow::Battery => {
-                let present = state.battery.present;
+                let present = state.battery().present;
                 let title = t(if present { "qs-battery" } else { "qs-power" });
-                let value = present.then(|| format!("{}%", state.battery.percent));
+                let value = present.then(|| format!("{}%", state.battery().percent));
                 let secondary = if present {
                     sections::battery_time_text(state)
                         .unwrap_or_else(|| sections::battery_state_text(state))
                 } else {
                     state.power_profile.label()
                 };
-                let icon = match state.battery.state {
+                let icon = match state.battery().state {
                     tilo_power_mgmt::BatteryState::Charging if present => {
                         ui::icons::Icon::BatteryCharging
                     }
@@ -2827,7 +2889,6 @@ impl QuickSettingsRoot {
 
     /// A footer button: quiet — its glyph and name, lifting on hover.
     fn draw_footer_button(
-        &self,
         ctx: &mut PaintCtx<'_>,
         frame: &RootFrame<'_>,
         button: FooterButton,
@@ -3218,6 +3279,9 @@ impl QuickSettingsRoot {
                         node.state.expanded =
                             Some(self.open_section(state) == Some(QsSection::Sound));
                     }
+                    RootStop::VolumeMute => {
+                        node.state.checked = Some(state.volume_muted());
+                    }
                     RootStop::Section(SectionStop::Output(index)) => {
                         node.state.selected = state
                             .sound_outputs
@@ -3293,15 +3357,16 @@ impl QuickSettingsRoot {
                 AccessNode::new(Role::Button).with_name(Self::details_label(control))
             }
             RootStop::SoundExpand => AccessNode::new(Role::Button).with_name(t("qs-sound-output")),
+            RootStop::VolumeMute => AccessNode::new(Role::Switch).with_name(t("qs-volume-mute")),
             RootStop::Section(stop) => section_access_node(stop, state),
             RootStop::Row(RootRow::Battery) => AccessNode::new(Role::Button)
-                .with_name(t(if state.battery.present {
+                .with_name(t(if state.battery().present {
                     "qs-battery"
                 } else {
                     "qs-power"
                 }))
-                .with_value(if state.battery.present {
-                    format!("{}%", state.battery.percent)
+                .with_value(if state.battery().present {
+                    format!("{}%", state.battery().percent)
                 } else {
                     state.power_profile.label()
                 }),
@@ -3356,6 +3421,7 @@ impl QuickSettingsRoot {
 fn section_stop_name(stop: SectionStop, state: &QuickSettingsState) -> String {
     match stop {
         SectionStop::TurnOn => "section_turn_on".into(),
+        SectionStop::PowerMode => "battery_power_mode".into(),
         SectionStop::Network(index) => format!(
             "wifi_network_{}",
             state
@@ -3363,8 +3429,6 @@ fn section_stop_name(stop: SectionStop, state: &QuickSettingsState) -> String {
                 .get(index)
                 .map_or_else(String::new, |n| n.ssid.clone())
         ),
-        SectionStop::PasswordCancel => "wifi_password_cancel".into(),
-        SectionStop::PasswordConnect => "wifi_password_connect".into(),
         SectionStop::Settings => "section_settings".into(),
         SectionStop::Device(index) => format!(
             "bluetooth_device_{}",
@@ -3433,14 +3497,10 @@ fn section_access_node(stop: SectionStop, state: &QuickSettingsState) -> ui::a11
                     _ => "qs-wifi-open",
                 }))
         }
-        SectionStop::PasswordCancel => AccessNode::new(Role::Button).with_name(t("portal-cancel")),
-        SectionStop::PasswordConnect => {
-            AccessNode::new(Role::Button).with_name(t("portal-connect"))
-        }
         SectionStop::Settings => AccessNode::new(Role::Link).with_name(t(match state.section {
             Some(QsSection::Bluetooth) => "qs-bluetooth-pair",
-            Some(QsSection::Battery) if state.battery.present => "qs-battery-settings",
-            Some(QsSection::Battery) => "qs-power-settings",
+            Some(QsSection::Battery) if state.battery().present => "qs-battery-settings",
+            Some(QsSection::Battery | QsSection::PowerMode) => "qs-power-settings",
             Some(QsSection::Vpn) => "qs-vpn-settings",
             Some(QsSection::Sound) => "qs-sound-settings",
             Some(QsSection::Devices) => "qs-devices-settings",
@@ -3481,6 +3541,9 @@ fn section_access_node(stop: SectionStop, state: &QuickSettingsState) -> ui::a11
                 .map_or_else(String::new, |p| p.name.clone()),
         ),
         SectionStop::Mode(mode) => AccessNode::new(Role::RadioButton).with_name(mode.label()),
+        SectionStop::PowerMode => AccessNode::new(Role::Button)
+            .with_name(t("qs-power-mode"))
+            .with_value(state.power_profile.label()),
         SectionStop::Output(index) => AccessNode::new(Role::RadioButton).with_name(
             state
                 .sound_outputs
@@ -3490,770 +3553,43 @@ fn section_access_node(stop: SectionStop, state: &QuickSettingsState) -> ui::a11
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::shell::quick_settings::{BtDevice, WifiNetwork};
-    use ui::time::Duration;
-    use ui::tokens::Motion;
-    const PANEL: Rect = Rect::new(100., 48., 500., 960.);
+/// `rect`, laid out inside a section whose own rect on the page is
+/// `section`, in the page's coordinates.
+fn on_page(section: Rect, rect: Rect) -> Rect {
+    Affine::translate(section.origin().to_vec2()).transform_rect_bbox(rect)
+}
 
-    fn motion() -> EffectiveMotion {
-        EffectiveMotion::new(Motion::default(), false)
-    }
-
-    /// A laptop: Wi-Fi, Bluetooth, a battery and the power daemon.
-    fn laptop() -> QuickSettingsState {
-        let mut state = QuickSettingsState {
-            brightness_available: true,
-            bluetooth_available: true,
-            bluetooth: true,
-            radios: os_actions::RadioState {
-                wifi_available: true,
-                wifi_enabled: true,
-                ..os_actions::RadioState::default()
-            },
-            wifi: true,
-            power_profiles: vec![
-                PowerProfile::Saver,
-                PowerProfile::Balanced,
-                PowerProfile::Performance,
-            ],
-            ..QuickSettingsState::default()
-        };
-        state.battery = tilo_power_mgmt::BatterySnapshot {
-            present: true,
-            percent: 64,
-            state: tilo_power_mgmt::BatteryState::Discharging,
-        };
-        state.wifi_networks = vec![
-            WifiNetwork {
-                ssid: "Home".into(),
-                signal: 4,
-                secure: true,
-                security: os_actions::WifiSecurity::Wpa2,
-                connected: true,
-                known: true,
-            },
-            WifiNetwork {
-                ssid: "Cafe".into(),
-                signal: 2,
-                secure: true,
-                security: os_actions::WifiSecurity::Wpa2,
-                connected: false,
-                known: false,
-            },
-            WifiNetwork {
-                ssid: "Library".into(),
-                signal: 3,
-                secure: false,
-                security: os_actions::WifiSecurity::Open,
-                connected: false,
-                known: false,
-            },
-        ];
-        state.bt_devices = vec![BtDevice {
-            name: "Headphones".into(),
-            address: "02:00:00:00:00:01".into(),
-            battery: 80,
-            connected: true,
-        }];
-        state
-    }
-
-    fn laid_out(state: &QuickSettingsState) -> QuickSettingsRoot {
-        let mut root = QuickSettingsRoot::default();
-        root.panel = PANEL;
-        root.settle_sections(state);
-        root
-    }
-
-    fn tile(
-        root: &QuickSettingsRoot,
-        state: &QuickSettingsState,
-        control: QuickSettingsControl,
-    ) -> Rect {
-        root.page_layout(state)
-            .tiles
-            .into_iter()
-            .find(|(c, _)| *c == control)
-            .map(|(_, rect)| rect)
-            .expect("the tile is shown")
-    }
-
-    #[test]
-    fn the_default_grid_holds_the_everyday_controls_this_machine_has() {
-        let root = QuickSettingsRoot::default();
-        assert_eq!(root.config().controls, QuickSettingsControl::DEFAULT);
-        let mut state = laptop();
-        assert_eq!(
-            root.visible_controls(&state),
-            [
-                QuickSettingsControl::Wifi,
-                QuickSettingsControl::Bluetooth,
-                QuickSettingsControl::DoNotDisturb,
-                QuickSettingsControl::NightLight,
-                QuickSettingsControl::AirplaneMode,
-                QuickSettingsControl::PowerMode,
-            ],
-            "VPN without profiles and rotation lock without a sensor stay hidden"
-        );
-        state.vpns = vec![os_actions::VpnConnectionInfo {
-            name: "Work".into(),
-            uuid: "work-uuid".into(),
-            active: false,
-            kind: "wireguard".into(),
-        }];
-        state.rotation_available = true;
-        assert_eq!(root.control_count(&state), 8);
-
-        // No radio, no adapter, no daemon: no inert tiles.
-        let bare = QuickSettingsState::default();
-        assert_eq!(
-            root.visible_controls(&bare),
-            [
-                QuickSettingsControl::DoNotDisturb,
-                QuickSettingsControl::NightLight
-            ]
-        );
-    }
-
-    #[test]
-    fn root_controls_reflect_present_hardware_and_migrated_config() {
-        // Wired only: the network slot is the wired tile.
-        let root = QuickSettingsRoot::default();
-        let mut state = QuickSettingsState::default();
-        state.wired = Some(os_actions::WiredInfo {
-            connected: true,
-            device: Some("enp0s31f6".into()),
-            ..Default::default()
-        });
-        assert!(
-            root.visible_controls(&state)
-                .contains(&QuickSettingsControl::Wifi)
-        );
-        assert_eq!(
-            QuickSettingsRoot::rendered_label(QuickSettingsControl::Wifi, &state),
-            "Wired network"
-        );
-        assert_eq!(
-            QuickSettingsRoot::section_of(QuickSettingsControl::Wifi, &state),
-            None,
-            "a wired network has nothing to open"
-        );
-        let names: Vec<_> = root
-            .accessibility_snapshot(&state)
-            .children
-            .iter()
-            .filter_map(|node| node.name.clone())
-            .collect();
-        assert!(names.contains(&"Wired network".to_owned()));
-        assert!(!names.contains(&"Bluetooth".to_owned()));
-
-        // A saved layout that kept Airplane mode keeps it removable without
-        // a radio.
-        let kept = QuickSettingsRoot::with_config(QuickSettingsConfig {
-            controls: vec![
-                QuickSettingsControl::Wifi,
-                QuickSettingsControl::NightLight,
-                QuickSettingsControl::AirplaneMode,
-            ],
-        });
-        assert!(
-            kept.edit_controls(&QuickSettingsState::default())
-                .contains(&QuickSettingsControl::NightLight)
-        );
-        assert!(
-            !kept
-                .edit_controls(&QuickSettingsState::default())
-                .contains(&QuickSettingsControl::MobileData)
-        );
-    }
-
-    #[test]
-    fn semantic_targets_cover_every_visible_root_control() {
-        let state = laptop();
-        let root = laid_out(&state);
-        let targets = root.semantic_rects(&state);
-        for required in [
-            "quick_settings_edit",
-            "quick_settings_settings",
-            "quick_settings_lock",
-            "quick_settings_power",
-            "quick_settings_devices",
-            "quick_settings_clipboard",
-            "quick_settings_notifications",
-            "quick_settings_battery",
-            "quick_settings_brightness",
-            "quick_settings_volume",
-            "quick_settings_network",
-            "quick_settings_network_details",
-            "quick_settings_bluetooth",
-            "quick_settings_bluetooth_details",
-            "quick_settings_night_light",
-            "quick_settings_power_mode",
-        ] {
-            assert!(
-                targets
-                    .iter()
-                    .any(|(name, rect)| name == required && rect.area() > 0.0),
-                "missing semantic target {required}"
-            );
+/// A glyph's own target beside a slider — the speaker, the chevron: it
+/// lifts under the pointer and wears the focus ring when focused.
+fn paint_glyph_target(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    target: Rect,
+    cursor: Option<Point>,
+    focused: bool,
+) {
+    let radius = control_radius(theme, target);
+    if cursor.is_some_and(|p| target.contains(p)) {
+        ui::widget::primitives::QuickTileFace {
+            rect: target,
+            main: target,
+            expand: None,
+            on: false,
+            hovered: Some(target),
+            radius,
         }
-        // No two targets overlap: a tile's switch and chevron are two.
-        for (i, (a, ra)) in targets.iter().enumerate() {
-            for (b, rb) in targets.iter().skip(i + 1) {
-                if a == "quick_settings_edit" || b == "quick_settings_edit" {
-                    continue;
-                }
-                let overlap = ra.intersect(*rb);
-                assert!(
-                    overlap.width() <= 1e-9 || overlap.height() <= 1e-9,
-                    "{a} {ra:?} overlaps {b} {rb:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_tile_turns_its_control_on_and_its_chevron_opens_its_section() {
-        let mut state = laptop();
-        let mut root = laid_out(&state);
-        let wifi = tile(&root, &state, QuickSettingsControl::Wifi);
-        let body = Point::new(wifi.x0 + 12.0, wifi.center().y);
-        assert_eq!(
-            root.handle_click(body, PANEL, &mut state),
-            RootAction::Changed(PendingRootActions {
-                wifi: Some(false),
-                ..Default::default()
-            }),
-            "the body turns Wi-Fi off"
-        );
-        assert_eq!(state.section, None, "and opens nothing");
-
-        let chevron = root.expand_rect(wifi).center();
-        assert_eq!(
-            root.handle_click(chevron, PANEL, &mut state),
-            RootAction::SectionOpened(QsSection::Wifi)
-        );
-        assert_eq!(state.section, Some(QsSection::Wifi));
-        assert!(state.wifi, "opening the list does not change the radio");
-
-        // One section at a time: Bluetooth's chevron moves the open one.
-        root.settle_sections(&state);
-        let bluetooth = tile(&root, &state, QuickSettingsControl::Bluetooth);
-        assert_eq!(
-            root.handle_click(root.expand_rect(bluetooth).center(), PANEL, &mut state),
-            RootAction::SectionOpened(QsSection::Bluetooth)
-        );
-        assert_eq!(state.section, Some(QsSection::Bluetooth));
-        // Its chevron again closes it, and Esc closes whatever is open.
-        root.settle_sections(&state);
-        assert_eq!(
-            root.handle_click(root.expand_rect(bluetooth).center(), PANEL, &mut state),
-            RootAction::LayoutChanged
-        );
-        assert_eq!(state.section, None);
-        state.open_section(QsSection::Battery);
-        assert!(root.close_section(&mut state));
-        assert_eq!(state.section, None);
-        assert!(!root.close_section(&mut state));
-    }
-
-    #[test]
-    fn a_section_opens_in_place_under_its_row_and_the_tiles_stay_put() {
-        let mut state = laptop();
-        let root = laid_out(&state);
-        let before = root.page_layout(&state);
-        let height_before = root.preferred_height(&state);
-
-        state.open_section(QsSection::Wifi);
-        let root = laid_out(&state);
-        let after = root.page_layout(&state);
-        assert_eq!(before.tiles.len(), after.tiles.len());
-        let slot = after
-            .sections
-            .iter()
-            .find(|slot| slot.section == QsSection::Wifi)
-            .expect("the Wi-Fi section shows");
-        let wifi = tile(&root, &state, QuickSettingsControl::Wifi);
-        assert!(slot.rect.y0 > wifi.y1, "under the Wi-Fi tile's row");
-        assert_eq!(slot.rect.x0, after.sliders.x0, "full width");
-        assert_eq!(slot.rect.x1, after.sliders.x1);
-        let grown = slot.rect.height() + RELATED_GAP;
-        for ((control, a), (_, b)) in before.tiles.iter().zip(&after.tiles) {
-            if a.y0 <= wifi.y0 {
-                assert_eq!(a, b, "{control:?} on or above the row stays put");
-            } else {
-                assert!(
-                    (b.y0 - a.y0 - grown).abs() < 1e-6,
-                    "{control:?} moves down with it"
-                );
-            }
-        }
-        assert!((after.bottom - before.bottom - grown).abs() < 1e-6);
-        assert!(
-            (root.preferred_height(&state) - height_before - grown).abs() < 1e-6,
-            "the panel grows by the section"
+        .paint_ground(
+            scene,
+            transform,
+            theme,
+            tilo_desktop::drill_in::control_fill(theme, true),
         );
     }
-
-    #[test]
-    fn opening_and_closing_a_section_moves_on_the_disclosure_motion() {
-        let mut state = laptop();
-        let mut root = laid_out(&state);
-        let start = ui::time::now();
-        let closed = root.page_layout_at(PANEL, &state, start);
-        assert!(closed.sections.is_empty());
-
-        state.open_section(QsSection::Wifi);
-        root.follow_sections(&state, motion(), MotionSource::Pointer, start);
-        assert!(root.is_animating(start));
-        let full = sections::layout(
-            QsSection::Wifi,
-            &state,
-            root.section_width(),
-            root.section_metrics(),
-        )
-        .height;
-        let settles = root.reveal[&QsSection::Wifi]
-            .settles_at()
-            .expect("it moves");
-        let mut last = -1.0;
-        let mut last_bottom = closed.bottom;
-        let steps = 12;
-        for step in 1..=steps {
-            let at = start + (settles - start) * step / steps;
-            let page = root.page_layout_at(PANEL, &state, at);
-            let shown = page.sections.first().map_or(0.0, |slot| slot.shown);
-            assert!(shown >= last, "the reveal only grows: {shown} after {last}");
-            assert!(page.bottom >= last_bottom, "the page grows with it");
-            last = shown;
-            last_bottom = page.bottom;
-        }
-        assert!((last - full).abs() < 0.5, "it ends fully open");
-        assert!(!root.is_animating(settles + Duration::from_millis(1)));
-
-        // Closing runs it back to nothing; the content stays laid out at
-        // full height under the shrinking clip.
-        let closing = settles + Duration::from_millis(5);
-        state.section = None;
-        root.follow_sections(&state, motion(), MotionSource::Pointer, closing);
-        let midway = root.page_layout_at(PANEL, &state, closing + Duration::from_millis(40));
-        let slot = midway.sections.first().expect("still closing");
-        assert!(slot.shown < full && (slot.rect.height() - full).abs() < 1e-9);
-        let ends = root.reveal[&QsSection::Wifi]
-            .settles_at()
-            .expect("it moves");
-        let gone = root.page_layout_at(PANEL, &state, ends + Duration::from_millis(1));
-        assert!(gone.sections.is_empty());
-        assert!((gone.bottom - closed.bottom).abs() < 1e-6);
-    }
-
-    #[test]
-    fn the_wifi_section_turns_wifi_on_and_joins_networks_or_asks_for_a_password() {
-        let mut state = laptop();
-        state.wifi = false;
-        state.radios.wifi_enabled = false;
-        state.open_section(QsSection::Wifi);
-        let mut root = laid_out(&state);
-        let stops = root.root_stops(&state);
-        assert!(stops.contains(&RootStop::Section(SectionStop::TurnOn)));
-        let turn_on = root.stop_rect(RootStop::Section(SectionStop::TurnOn), &state);
-        assert_eq!(
-            root.handle_click(turn_on.center(), PANEL, &mut state),
-            RootAction::Changed(PendingRootActions {
-                wifi: Some(true),
-                ..Default::default()
-            })
-        );
-
-        state.wifi = true;
-        root.settle_sections(&state);
-        let press = |root: &mut QuickSettingsRoot, state: &mut QuickSettingsState, index: usize| {
-            let rect = root.stop_rect(RootStop::Section(SectionStop::Network(index)), state);
-            root.handle_click(rect.center(), PANEL, state)
-        };
-        assert_eq!(
-            press(&mut root, &mut state, 1),
-            RootAction::Wifi(WifiIntent::AskPassword("Cafe".into())),
-            "a protected network this machine does not know asks for its password"
-        );
-        assert_eq!(
-            press(&mut root, &mut state, 2),
-            RootAction::Wifi(WifiIntent::Join("Library".into()))
-        );
-        state.wifi_networks[1].known = true;
-        assert_eq!(
-            press(&mut root, &mut state, 1),
-            RootAction::Wifi(WifiIntent::Join("Cafe".into())),
-            "a known one joins without asking"
-        );
-
-        // The password is asked in place, under its network.
-        state.wifi_networks[1].known = false;
-        state.wifi_password = Some(crate::shell::quick_settings::WifiPasswordPrompt::new(
-            "Cafe",
-        ));
-        root.settle_sections(&state);
-        let field = root
-            .wifi_password_field_rect(&state)
-            .expect("the field is inside the section");
-        let cafe = root.stop_rect(RootStop::Section(SectionStop::Network(1)), &state);
-        assert!(field.y0 > cafe.y1);
-        let connect = root.stop_rect(RootStop::Section(SectionStop::PasswordConnect), &state);
-        assert!(connect.y0 > field.y1);
-        assert_eq!(
-            root.handle_click(connect.center(), PANEL, &mut state),
-            RootAction::Wifi(WifiIntent::SubmitPassword)
-        );
-    }
-
-    #[test]
-    fn the_volume_chevron_chooses_where_sound_plays_under_the_sliders() {
-        let mut state = laptop();
-        state.sound_outputs = vec![
-            crate::shell::quick_settings::SoundOutput {
-                node: 41,
-                name: "Speakers".into(),
-                current: true,
-            },
-            crate::shell::quick_settings::SoundOutput {
-                node: 57,
-                name: "Headphones".into(),
-                current: false,
-            },
-        ];
-        let mut root = laid_out(&state);
-        root.sync_displays(&state);
-        let wifi_before = tile(&root, &state, QuickSettingsControl::Wifi);
-        let chevron = root.stop_rect(RootStop::SoundExpand, &state);
-        let volume = root.slider_face_rect(root.sliders_block(), root.volume_slider());
-        assert!(
-            chevron.x0 >= volume.x1,
-            "the chevron is beside the slider, not on it"
-        );
-        assert_eq!(
-            root.handle_click(chevron.center(), PANEL, &mut state),
-            RootAction::SectionOpened(QsSection::Sound)
-        );
-        root.settle_sections(&state);
-        let headphones = root.stop_rect(RootStop::Section(SectionStop::Output(1)), &state);
-        assert!(headphones.y0 > volume.y1, "under the sliders");
-        assert!(
-            tile(&root, &state, QuickSettingsControl::Wifi).y0 > wifi_before.y0,
-            "the tiles move down to make room"
-        );
-        assert_eq!(
-            root.handle_click(headphones.center(), PANEL, &mut state),
-            RootAction::SoundOutput(57)
-        );
-        let speakers = root.stop_rect(RootStop::Section(SectionStop::Output(0)), &state);
-        assert_eq!(
-            root.handle_click(speakers.center(), PANEL, &mut state),
-            RootAction::None,
-            "where sound already plays has nothing to do"
-        );
-    }
-
-    #[test]
-    fn the_battery_row_opens_its_section_with_the_three_power_modes() {
-        let mut state = laptop();
-        let mut root = laid_out(&state);
-        let row = root.stop_rect(RootStop::Row(RootRow::Battery), &state);
-        assert_eq!(
-            root.handle_click(row.center(), PANEL, &mut state),
-            RootAction::SectionOpened(QsSection::Battery)
-        );
-        root.settle_sections(&state);
-        let saver = root.stop_rect(
-            RootStop::Section(SectionStop::Mode(PowerProfile::Saver)),
-            &state,
-        );
-        assert!(saver.y0 > row.y1, "the modes are under the battery row");
-        assert_eq!(
-            root.handle_click(saver.center(), PANEL, &mut state),
-            RootAction::Changed(PendingRootActions {
-                power: Some(PowerProfile::Saver),
-                ..Default::default()
-            })
-        );
-        assert_eq!(state.power_profile, PowerProfile::Saver);
-        // The Power mode tile switches the saver back off.
-        let tile = tile(&root, &state, QuickSettingsControl::PowerMode);
-        assert_eq!(
-            root.handle_click(tile.center(), PANEL, &mut state),
-            RootAction::Changed(PendingRootActions {
-                power: Some(PowerProfile::Balanced),
-                ..Default::default()
-            })
-        );
-    }
-
-    #[test]
-    fn root_focus_order_matches_visible_actions() {
-        // Opening has no hidden focus, and the first Tab selects Brightness.
-        let mut state = laptop();
-        let mut root = laid_out(&state);
-        root.keyboard_focus = Some(4);
-        root.reset_focus();
-        assert_eq!(root.keyboard_focus, None);
-        assert!(root.focus_next(&state, false));
-        assert_eq!(root.focused_stop(&state), Some(RootStop::Slider(0)));
-
-        // Shift+Tab from no selection lands on Power, whatever hardware
-        // precedes it.
-        let mut bare = QuickSettingsState::default();
-        let mut root = laid_out(&bare);
-        root.reset_focus();
-        assert!(root.focus_next(&bare, true));
-        assert_eq!(
-            root.focused_stop(&bare),
-            Some(RootStop::Footer(FooterButton::Power))
-        );
-        assert_eq!(
-            root.activate_focused(PANEL, &mut bare),
-            RootAction::OpenPowerMenu
-        );
-        // Device state arriving under focus keeps it on its stop.
-        bare.volume_available = true;
-        bare.brightness_available = true;
-        assert_eq!(
-            root.focused_stop(&bare),
-            Some(RootStop::Footer(FooterButton::Power))
-        );
-
-        // Every stop activates as what it is.
-        let mut root = laid_out(&state);
-        for (stop, expected) in [
-            (
-                RootStop::Row(RootRow::Devices),
-                RootAction::SectionOpened(QsSection::Devices),
-            ),
-            (
-                RootStop::Row(RootRow::Clipboard),
-                RootAction::SectionOpened(QsSection::Clipboard),
-            ),
-            (
-                RootStop::Row(RootRow::Notifications),
-                RootAction::Enter(QsLevel::Notifications),
-            ),
-            (
-                RootStop::Footer(FooterButton::Settings),
-                RootAction::OpenSettings(None),
-            ),
-            (RootStop::Footer(FooterButton::Lock), RootAction::Lock),
-            (RootStop::Edit, RootAction::LayoutChanged),
-        ] {
-            // An opened section adds its stops: find this one afresh.
-            let stops = root.root_stops(&state);
-            let path = stops.iter().position(|s| *s == stop).unwrap();
-            assert!(root.focus_accessibility_path(&[path], &state));
-            assert_eq!(root.focused_stop(&state), Some(stop));
-            assert_eq!(root.activate_focused(PANEL, &mut state), expected);
-            root.edit_mode = false;
-        }
-
-        // An open section's stops follow its row, before the next row.
-        state.open_section(QsSection::Wifi);
-        let root = laid_out(&state);
-        let stops = root.root_stops(&state);
-        let expand = stops
-            .iter()
-            .position(|s| matches!(s, RootStop::Expand(_, QuickSettingsControl::Wifi)))
-            .unwrap();
-        let first_section = stops
-            .iter()
-            .position(|s| matches!(s, RootStop::Section(_)))
-            .unwrap();
-        let next_row_tile = stops
-            .iter()
-            .position(|s| matches!(s, RootStop::Control(_, QuickSettingsControl::DoNotDisturb)))
-            .unwrap();
-        assert!(expand < first_section && first_section < next_row_tile);
-    }
-
-    #[test]
-    fn each_focus_stop_marks_exactly_one_accessibility_node() {
-        let mut state = laptop();
-        state.open_section(QsSection::Wifi);
-        let mut root = laid_out(&state);
-        let stops = root.root_stops(&state);
-        for (index, stop) in stops.iter().enumerate() {
-            assert!(root.focus_accessibility_path(&[index], &state));
-            let snapshot = root.accessibility_snapshot(&state);
-            assert_eq!(snapshot.children.len(), stops.len());
-            let focused: Vec<_> = snapshot
-                .children
-                .iter()
-                .enumerate()
-                .filter(|(_, node)| node.state.focused)
-                .map(|(i, _)| i)
-                .collect();
-            assert_eq!(focused, [index], "{stop:?}");
-            assert_eq!(
-                snapshot.children[index]
-                    .bounds
-                    .map(ui::a11y::AccessBounds::to_rect),
-                Some(root.stop_rect(*stop, &state)),
-                "{stop:?} publishes the rect it paints"
-            );
-        }
-    }
-
-    #[test]
-    fn the_layout_never_overlaps_and_grows_with_large_text() {
-        let mut state = laptop();
-        state.open_section(QsSection::Battery);
-        for scale in [1.0_f32, 1.5, 2.0] {
-            let mut root = QuickSettingsRoot::default();
-            root.set_layout_text_scale(scale);
-            root.panel = PANEL;
-            root.settle_sections(&state);
-            let page = root.page_layout(&state);
-            let mut rects: Vec<Rect> = vec![page.sliders];
-            rects.extend(page.tiles.iter().map(|(_, r)| *r));
-            rects.extend(page.sections.iter().map(SectionSlot::clip));
-            rects.extend(page.rows.iter().map(|(_, r)| *r));
-            rects.extend(page.footer.iter().map(|(_, r)| *r));
-            for (i, a) in rects.iter().enumerate() {
-                for b in rects.iter().skip(i + 1) {
-                    let overlap = a.intersect(*b);
-                    assert!(
-                        overlap.width() <= 1e-9 || overlap.height() <= 1e-9,
-                        "{a:?} overlaps {b:?} at {scale}"
-                    );
-                }
-            }
-            for (_, tile) in &page.tiles {
-                assert!(
-                    tile.height() >= root.line_height(TextRole::Label) + root.caption_line_height(),
-                    "a tile holds its two lines at {scale}"
-                );
-            }
-        }
-    }
-
-    /// Lay `root` out in a popover `viewport` shorter than its page, then
-    /// Tab through every stop: each lands fully inside the shown part of the
-    /// popover, scrolled there the way a list follows its focus.
-    #[test]
-    fn a_short_popover_scrolls_every_stop_into_view() {
-        let mut state = laptop();
-        state.open_section(QsSection::Wifi);
-        let mut root = QuickSettingsRoot::default();
-        root.panel = PANEL;
-        root.settle_sections(&state);
-        let viewport = Rect::new(100.0, 48.0, 500.0, 448.0);
-        let theme = Theme::dark();
-        root.sync_displays(&state);
-        root.sync_scroll(viewport, &theme, &state);
-        root.lay_out(viewport, &state);
-        assert!(root.scrolls(), "a page taller than {viewport:?} scrolls");
-        let stops = root.root_stops(&state);
-        root.reset_focus();
-        let mut deepest: f64 = 0.0;
-        for stop in &stops {
-            root.focus_next(&state, false);
-            assert_eq!(root.focused_stop(&state), Some(*stop));
-            let shown = root.visible_rect();
-            let rect = root.stop_rect(*stop, &state);
-            if *stop == RootStop::Edit {
-                continue;
-            }
-            assert!(
-                rect.y0 >= shown.y0 - 1e-6 && rect.y1 <= shown.y1 + 1e-6,
-                "{stop:?} at {rect:?} is not shown in {shown:?}"
-            );
-            deepest = deepest.max(root.scroll_offset());
-        }
-        assert!(deepest > 0.0, "reaching the last stops scrolled the page");
-    }
-
-    #[test]
-    fn edit_mode_adds_removes_and_reorders_by_keyboard_pointer_and_explicit_remove() {
-        // Keyboard reorder, then add from the available chips.
-        let mut root = QuickSettingsRoot::default();
-        let state = laptop();
-        root.edit_mode = true;
-        root.panel = PANEL;
-        root.keyboard_focus = Some(0);
-        assert!(root.reorder_focused(&state, 1));
-        assert_eq!(root.config.controls[1], QuickSettingsControl::Wifi);
-
-        // The row body starts a reorder; only its explicit action removes.
-        let mut root = QuickSettingsRoot::default();
-        root.edit_mode = true;
-        root.panel = PANEL;
-        let row = root.edit_row(PANEL, 1);
-        let bluetooth = QuickSettingsControl::Bluetooth;
-        assert_eq!(root.edit_click(row.center(), &state), RootAction::None);
-        assert!(root.config.controls.contains(&bluetooth));
-        let _ = root.finish_drag(&state);
-        assert_eq!(
-            root.edit_click(root.edit_action_rect(row).center(), &state),
-            RootAction::LayoutChanged
-        );
-        assert!(!root.config.controls.contains(&bluetooth));
-        // It is offered back as available and adds again.
-        let (_, chip) = root
-            .available_chips(&state)
-            .into_iter()
-            .find(|(c, _)| *c == bluetooth)
-            .expect("Bluetooth is offered back");
-        assert_eq!(
-            root.edit_click(chip.center(), &state),
-            RootAction::LayoutChanged
-        );
-        assert!(root.config.controls.contains(&bluetooth));
-
-        // Done is the last edit stop and leaves edit mode with no stale focus.
-        let edit_count = root.edit_controls(&state).len();
-        root.keyboard_focus = Some(edit_count.saturating_add(1));
-        let mut state = state;
-        assert_eq!(
-            root.activate_focused(PANEL, &mut state),
-            RootAction::LayoutChanged
-        );
-        assert!(!root.edit_mode());
-        assert_eq!(root.keyboard_focus, None);
-    }
-
-    #[test]
-    fn edit_help_copy_uses_font_safe_keyboard_names() {
-        let copy = QuickSettingsRoot::edit_help_copy();
-        assert_eq!(copy, "Drag or press Ctrl + Up/Down to reorder");
-        assert!(!copy.contains('·'), "no middle-dot join in chrome copy");
-    }
-
-    #[test]
-    fn each_monitor_gets_a_named_brightness_slider() {
-        let mut state = laptop();
-        state.displays = vec![
-            crate::shell::chrome_state::DisplayBrightness {
-                connector: "eDP-1".into(),
-                name: "Built-in display".into(),
-                level: 0.5,
-            },
-            crate::shell::chrome_state::DisplayBrightness {
-                connector: "DP-2".into(),
-                name: "Dell U2720Q".into(),
-                level: 0.75,
-            },
-        ];
-        let mut root = laid_out(&state);
-        root.sync_displays(&state);
-        assert_eq!(root.slider_count(), 3);
-        assert_eq!(root.slider_name(1), "Brightness, Dell U2720Q");
-        let names: Vec<String> = root
-            .semantic_rects(&state)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        assert!(names.contains(&"quick_settings_brightness_1".to_owned()));
-        assert_eq!(
-            root.slider_commit(&state, 1),
-            SliderCommit::DisplayBrightness(1, 75.0)
-        );
+    if focused {
+        ui::widget::paint_focus_ring(scene, transform, target, radius, theme);
     }
 }
+
+#[cfg(test)]
+mod tests;

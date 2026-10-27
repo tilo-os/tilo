@@ -112,9 +112,7 @@ pub enum OpenIntent {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct OpenContext<'a> {
     pub intent: OpenIntent,
-    /// The strip the person is in.
     pub strip: Option<StripId>,
-    /// The group selected in that strip.
     pub selected: Option<GroupId>,
     pub viewport: Option<&'a StripViewport>,
 }
@@ -163,10 +161,6 @@ impl OpenContext<'_> {
 
 /// Where an opened app goes in `workspace`, inside the strips and groups
 /// `owns` accepts so an owner keeps placement in its own topology namespace.
-///
-/// # Errors
-///
-/// Returns a description when no strip `owns` accepts can receive the tab.
 pub fn open_app_placement(
     workspace: &Workspace,
     at: &OpenContext<'_>,
@@ -246,6 +240,7 @@ mod tests {
                             kind: AppKind::Terminal,
                             label: "t".into(),
                         },
+                        app_title: None,
                     })
                     .collect();
                 WindowGroup {
@@ -401,6 +396,7 @@ mod tests {
                     kind: AppKind::Terminal,
                     label: "a".into(),
                 },
+                app_title: None,
             }],
             width: WindowWidth::Normal,
             maximized: false,

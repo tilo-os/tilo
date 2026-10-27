@@ -28,6 +28,7 @@ fn rows(theme: &Theme) -> Vec<RosterRow> {
             availability: ui::Availability::Available,
             call: None,
             join: None,
+            own_device: false,
         })
         .collect()
 }
@@ -56,10 +57,13 @@ fn paint_here(
             unavailable: None,
             exposure: None,
             may_invite: false,
+            may_pin: false,
             followed_id: None,
             following_pairs: &[],
             expanded_id,
             watching,
+            waved: &[],
+            spectating: false,
         },
         None,
     );

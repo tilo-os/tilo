@@ -17,7 +17,16 @@
 //! the download continues in the background and the result arrives as a
 //! notification.
 
+mod prepared;
+mod recovery_key;
 mod semantic;
+mod session;
+mod snapshot;
+use recovery_key::{
+    RecoveryKeyCopy, WordsCheck, import_recovery_words, recovery_key_copy_page, short_fingerprint,
+};
+use session::SessionPaths;
+pub use snapshot::OnboardingVisualState;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -69,8 +78,8 @@ const ACCESSIBLE_PANEL_HEIGHT: f32 = 672.0;
 /// them enough preferred height to avoid needless scrolling on a wide laptop;
 /// flex shrink still preserves the safety gutter on a compact display.
 const DENSE_PANEL_PREFERRED_HEIGHT: f32 = 560.0;
-/// The two choice screens get a lower cap than the recovery and completion
-/// stages; they still shrink to their contents.
+/// The introduction's choice gets a lower cap than the other stages; it
+/// still shrinks to its contents.
 const INTRO_PANEL_HEIGHT: f32 = 520.0;
 /// Completion is a hand-off surface, not a compact alert. Give its title,
 /// confirmation, next-step explanation, and backup guidance a stable canvas
@@ -153,6 +162,7 @@ enum AfterJournal {
     EnterReady,
     FinishPortableBackup,
     Import(PathBuf),
+    ImportWords,
     RetryMint,
     Mint,
     Tour(Option<TourPage>),
@@ -290,33 +300,6 @@ pub enum OnboardingContext {
     HostDesktop,
 }
 
-/// Deterministic states used only by the offscreen production renderer.
-/// They exercise the composition without performing identity I/O.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum OnboardingVisualState {
-    Intro,
-    Existing,
-    Nearby,
-    NearbyCode,
-    Restore,
-    Protect,
-    Backup,
-    BackupVerified,
-    Ready,
-    TourNavigate,
-    TourOrganise,
-    TourCollaborate,
-    TourStart,
-    CreateError,
-    RestoreError,
-    Codecs,
-    CodecsInstalling,
-    CodecsWaitingForNetwork,
-    CodecsInstalled,
-    CodecsFailed,
-}
-
 #[must_use]
 pub fn host_desktop_intro_title() -> String {
     t("onboarding-host-intro-title")
@@ -331,6 +314,11 @@ pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_EXISTING: &str = "onboarding.existing";
 pub const KEY_CHOOSE_NEARBY: &str = "onboarding.existing.nearby";
 pub const KEY_CHOOSE_RESTORE: &str = "onboarding.existing.restore";
+pub const KEY_CHOOSE_RECOVERY_KEY: &str = "onboarding.existing.recovery-key";
+pub const KEY_RECOVERY_KEY_RESTORE: &str = "onboarding.recovery-key.restore";
+pub const KEY_RECOVERY_KEY_SHOW: &str = "onboarding.backup.recovery-key";
+pub const KEY_RECOVERY_KEY_CONFIRM: &str = "onboarding.backup.recovery-key.confirm";
+pub const KEY_RECOVERY_KEY_CLOSE: &str = "onboarding.backup.recovery-key.close";
 pub const KEY_BACK: &str = "onboarding.back";
 pub const KEY_CONNECT_BROWSE: &str = "onboarding.connect.browse";
 pub const KEY_IMPORT: &str = "onboarding.import";
@@ -504,7 +492,51 @@ impl TourPage {
 }
 
 type Minter = Box<dyn Fn() -> Result<MintedIdentity, String> + Send>;
+/// Restore an identity from the backup at `source` into `import_dir` and
+/// make it active, with the same root to device chain minting provisions.
+fn import_identity(
+    import_dir: &Path,
+    identity_paths: &tilo_user_identity::IdentityPaths,
+    source: &Path,
+    passphrase: &[u8],
+) -> Result<MintedIdentity, String> {
+    let store = crate::identity_registry::IdentityRegistryStore::at(import_dir);
+    let profile = if passphrase.is_empty() {
+        // Explicit compatibility path for schema-1 exports from
+        // older Tilo builds. New backups always require a
+        // passphrase and never expose plaintext JSON.
+        store.import(source).map_err(|error| error.to_string())?
+    } else {
+        store
+            .import_portable(source, passphrase)
+            .map_err(|error| error.to_string())?
+    };
+    let runtime_id = profile
+        .record_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "imported identity has no valid runtime id".to_string())?;
+    runtime_identity::set_active_identity(import_dir, runtime_id)
+        .map_err(|error| error.to_string())?;
+    // Restoring on a fresh machine must provision the exact same
+    // complete root -> device chain as minting. The narrower
+    // identity-keyed certificate helper leaves the legacy system
+    // owner/certificate absent until a later login repair.
+    crate::firstboot::ensure_collaboration_identity(import_dir, identity_paths)
+        .map_err(|error| error.to_string())?;
+    crate::device_fleet::DeviceFleetStore::at(import_dir, identity_paths.clone())
+        .register_current_device(&profile.id)
+        .map_err(|error| error.to_string())?;
+    Ok(MintedIdentity {
+        fingerprint: profile.id,
+        path: profile.record_path,
+    })
+}
+
 type Importer = Box<dyn Fn(&PathBuf, &[u8]) -> Result<MintedIdentity, String> + Send>;
+/// Restores an identity from the words of a recovery key.
+type WordsImporter = Box<dyn Fn(&str) -> Result<MintedIdentity, String> + Send>;
+
 type BackupCapability = Box<dyn Fn(&Path) -> Result<bool, String> + Send>;
 fn canonical_backup_capability(path: &Path) -> Result<bool, String> {
     runtime_identity::load_from_path(path.to_owned())
@@ -523,6 +555,8 @@ enum IdentityDone {
     Import(Result<MintedIdentity, String>),
     /// The destination the backup was written to.
     Export(Result<PathBuf, String>),
+    /// The words of this identity's recovery key, to write down.
+    RecoveryWords(Result<Zeroizing<String>, String>),
 }
 
 /// Identity work running off the compositor's loop.
@@ -688,8 +722,31 @@ pub struct OnboardingView {
     prepared_worker: Option<crate::onboarding_prepared::Worker>,
     prepared_home_password: Option<([u8; 32], Zeroizing<Vec<u8>>)>,
     prepared_review: Option<crate::onboarding_prepared::Pending>,
+    #[cfg(target_os = "linux")]
+    peer: Option<crate::onboarding_peer::Peer>,
+    #[cfg(target_os = "linux")]
+    peer_received: Option<crate::onboarding_peer::Received>,
+    #[cfg(target_os = "linux")]
+    peer_attempted: bool,
     minter: Shared<Minter>,
     importer: Shared<Importer>,
+    words_importer: Shared<WordsImporter>,
+    /// The recovery key being typed. A secret: zeroized when it is used or
+    /// the screen is left.
+    recovery_words: Arc<Mutex<String>>,
+    recovery_check: WordsCheck,
+    /// The identity this computer belongs to, when its public record is
+    /// still readable: a recovery key for any other identity is refused.
+    expected_identity: Option<[u8; 32]>,
+    /// Why startup could not use this computer's identity, when it opened
+    /// recovery: the explanation and the step that may fix it differ.
+    recovery_problem: Option<crate::onboarding::IdentityProblem>,
+    /// The recovery key shown on the backup step, while it is written down.
+    recovery_key_copy: Option<RecoveryKeyCopy>,
+    /// The backup step was completed by writing down the recovery key.
+    recovery_key_written: bool,
+    /// The typed-back words match, as of the last frame.
+    recovery_key_copy_confirmed: bool,
     exporter: Shared<Exporter>,
     /// Identity work the worker thread is doing, if any. While it runs,
     /// actions that write the journal wait, still pressed, and Back and the
@@ -762,6 +819,7 @@ pub struct OnboardingView {
     backup_passphrase: Arc<Mutex<String>>,
     backup_confirmation: Arc<Mutex<String>>,
     identity_dir: Option<PathBuf>,
+    session: SessionPaths,
     nearby: Option<crate::onboarding_nearby::NearbyPairing>,
     nearby_status: Option<String>,
     /// Why the last pairing attempt ended without joining. The nearby
@@ -864,57 +922,45 @@ impl OnboardingView {
         context: OnboardingContext,
         recovery_only: bool,
     ) -> Self {
+        Self::new_in_session(
+            identity_dir,
+            SessionPaths::from_process(),
+            context,
+            recovery_only,
+        )
+    }
+
+    fn new_in_session(
+        identity_dir: PathBuf,
+        session: SessionPaths,
+        context: OnboardingContext,
+        recovery_only: bool,
+    ) -> Self {
         let mint_dir = identity_dir.clone();
         let import_dir = identity_dir.clone();
-        let minter: Minter = match context {
-            OnboardingContext::FullSystem => {
-                Box::new(move || crate::onboarding::mint_into(&mint_dir).map_err(|e| e.to_string()))
+        let words_dir = identity_dir.clone();
+        let mint_paths = session.identity_paths();
+        let import_paths = session.identity_paths();
+        let words_paths = session.identity_paths();
+        let minter: Minter = Box::new(move || {
+            let paths = mint_paths
+                .as_ref()
+                .ok_or_else(session::identity_root_unavailable)?;
+            match context {
+                OnboardingContext::FullSystem => crate::onboarding::mint_into(&mint_dir, paths),
+                OnboardingContext::HostDesktop => {
+                    crate::onboarding::mint_into_for_legacy_linux_host(&mint_dir, paths)
+                }
             }
-            OnboardingContext::HostDesktop => Box::new(move || {
-                crate::onboarding::mint_into_for_legacy_linux_host(&mint_dir)
-                    .map_err(|e| e.to_string())
-            }),
-        };
+            .map_err(|e| e.to_string())
+        });
         let mut view = Self::with_all_handlers_in_context(
             minter,
             Box::new(move |source, passphrase| {
-                let store = crate::identity_registry::IdentityRegistryStore::at(&import_dir);
-                let profile = if passphrase.is_empty() {
-                    // Explicit compatibility path for schema-1 exports from
-                    // older Tilo builds. New backups always require a
-                    // passphrase and never expose plaintext JSON.
-                    store.import(source).map_err(|error| error.to_string())?
-                } else {
-                    store
-                        .import_portable(source, passphrase)
-                        .map_err(|error| error.to_string())?
-                };
-                let runtime_id = profile
-                    .record_path
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .ok_or_else(|| "imported identity has no valid runtime id".to_string())?;
-                runtime_identity::set_active_identity(&import_dir, runtime_id)
-                    .map_err(|error| error.to_string())?;
-                // Restoring on a fresh machine must provision the exact same
-                // complete root -> device chain as minting. The narrower
-                // identity-keyed certificate helper leaves the legacy system
-                // owner/certificate absent until a later login repair.
-                crate::firstboot::ensure_collaboration_identity(
-                    &import_dir,
-                    &crate::firstboot::collaboration_identity_paths(),
-                )
-                .map_err(|error| error.to_string())?;
-                crate::device_fleet::DeviceFleetStore::at(
-                    &import_dir,
-                    crate::firstboot::collaboration_identity_paths(),
-                )
-                .register_current_device(&profile.id)
-                .map_err(|error| error.to_string())?;
-                Ok(MintedIdentity {
-                    fingerprint: profile.id,
-                    path: profile.record_path,
-                })
+                let paths = import_paths
+                    .as_ref()
+                    .ok_or_else(session::identity_root_unavailable)?;
+                import_identity(&import_dir, paths, source, passphrase)
             }),
             Box::new(move |identity, destination, passphrase| {
                 runtime_identity::export_portable_backup(identity, destination, passphrase)
@@ -924,6 +970,19 @@ impl OnboardingView {
             context,
         );
         view.backup_capability = Box::new(canonical_backup_capability);
+        view.words_importer = Arc::new(Mutex::new(Box::new(move |words: &str| {
+            let paths = words_paths
+                .as_ref()
+                .ok_or_else(session::identity_root_unavailable)?;
+            import_recovery_words(&words_dir, paths, words)
+        })));
+        if recovery_only {
+            view.recovery_problem = crate::onboarding::IdentityProblem::from_recovery_env();
+        }
+        view.expected_identity = runtime_identity::recovery_expected_identity(&identity_dir)
+            .ok()
+            .flatten();
+        view.session = session;
         view.nearby_status_path = Some(identity_dir.join(".nearby-enrollment-status.json"));
         view.recovery_only = recovery_only;
         if context == OnboardingContext::FullSystem
@@ -937,7 +996,10 @@ impl OnboardingView {
         }
         view.load_prepared_setup(&identity_dir);
         if context == OnboardingContext::FullSystem {
-            view.migration = crate::onboarding_prepared::session_home()
+            view.migration = view
+                .session
+                .home
+                .clone()
                 .map(crate::onboarding_migration::Migration::open);
         }
         view.identity_dir = Some(identity_dir);
@@ -974,77 +1036,6 @@ impl OnboardingView {
             view.error = Some(t("onboarding-connect-recovery-message"));
         }
         view
-    }
-
-    fn load_prepared_setup(&mut self, identity_dir: &Path) {
-        if let Some(home) = crate::onboarding_prepared::session_home()
-            && crate::onboarding_prepared::pending_at(&home)
-        {
-            self.prepared_pending = true;
-            match crate::onboarding_prepared::Pending::open(&home) {
-                Ok(pending) => match pending.completed(identity_dir) {
-                    Ok(true) => {
-                        self.prepared_pending = false;
-                        match pending.portable_home(identity_dir) {
-                            Ok(Some(declaration)) => {
-                                if let Ok(portable) = crate::onboarding_portable_home::Pending::open(
-                                    home.clone(),
-                                    identity_dir.to_path_buf(),
-                                    declaration,
-                                ) {
-                                    self.portable_home = Some(portable);
-                                } else {
-                                    self.prepared_pending = true;
-                                    self.error = Some(t("onboarding-portable-home-unavailable"));
-                                }
-                            }
-                            Ok(None) => (),
-                            Err(_) => self.prepared_pending = true,
-                        }
-                        match pending.portable_applications(identity_dir) {
-                            Ok(Some(declaration)) => {
-                                match crate::onboarding_portable_applications::Pending::open(
-                                    home.clone(),
-                                    identity_dir.to_path_buf(),
-                                    declaration,
-                                ) {
-                                    Ok(applications) => {
-                                        self.portable_applications = Some(applications)
-                                    }
-                                    Err(_) => {
-                                        self.prepared_pending = true;
-                                        self.error =
-                                            Some(t("onboarding-portable-applications-unavailable"));
-                                    }
-                                }
-                            }
-                            Ok(None) => (),
-                            Err(_) => self.prepared_pending = true,
-                        }
-                        match pending.browser(identity_dir) {
-                            Ok(Some(declaration)) => {
-                                crate::shell::launcher::set_browser_continuity(None);
-                                self.browser = crate::onboarding_browser::Pending::open(
-                                    home.clone(),
-                                    identity_dir.to_path_buf(),
-                                    declaration,
-                                )
-                                .ok();
-                                if self.browser.is_none() {
-                                    self.prepared_pending = true;
-                                    self.error = Some(t("onboarding-browser-unavailable"));
-                                }
-                            }
-                            Ok(None) => (),
-                            Err(_) => self.prepared_pending = true,
-                        }
-                    }
-                    Ok(false) => self.prepared_review = Some(pending),
-                    Err(_) => self.error = Some(t("onboarding-prepared-failed")),
-                },
-                Err(_) => self.error = Some(t("onboarding-prepared-failed")),
-            }
-        }
     }
 
     /// Build with an injected minter, so tests drive the whole widget without writing a key to disk.
@@ -1106,8 +1097,24 @@ impl OnboardingView {
             prepared_worker: None,
             prepared_home_password: None,
             prepared_review: None,
+            #[cfg(target_os = "linux")]
+            peer: None,
+            #[cfg(target_os = "linux")]
+            peer_received: None,
+            #[cfg(target_os = "linux")]
+            peer_attempted: false,
             minter: Arc::new(Mutex::new(minter)),
             importer: Arc::new(Mutex::new(importer)),
+            words_importer: Arc::new(Mutex::new(Box::new(|_: &str| {
+                Err("recovery keys are unavailable in this test".to_string())
+            }) as WordsImporter)),
+            recovery_words: Arc::new(Mutex::new(String::new())),
+            recovery_check: WordsCheck::Empty,
+            expected_identity: None,
+            recovery_problem: None,
+            recovery_key_copy: None,
+            recovery_key_written: false,
+            recovery_key_copy_confirmed: false,
             exporter: Arc::new(Mutex::new(exporter)),
             identity_work: None,
             error: None,
@@ -1147,6 +1154,7 @@ impl OnboardingView {
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
             identity_dir: None,
+            session: SessionPaths::default(),
             nearby: None,
             nearby_status: None,
             nearby_failure: None,
@@ -1241,7 +1249,14 @@ impl OnboardingView {
 
     /// Setup's total step count: the codecs step adds one.
     fn total_steps(&self) -> u8 {
-        if self.codec_step_offered { 5 } else { 4 }
+        if self.recovery_only {
+            // Recovery is choosing a way back, then taking it.
+            2
+        } else if self.codec_step_offered {
+            5
+        } else {
+            4
+        }
     }
 
     fn codec_install_requested(&self) -> bool {
@@ -1458,7 +1473,7 @@ impl OnboardingView {
     pub fn secret_rect(&self) -> Option<Rect> {
         let shows_secret = self.tour_page.is_none()
             && match self.flow.screen() {
-                Screen::Nearby | Screen::Restore => true,
+                Screen::Nearby | Screen::Restore | Screen::RecoveryKey => true,
                 Screen::Done => !self.identity_ready_page,
                 Screen::Intro | Screen::Existing | Screen::NoRecovery => false,
             };
@@ -1707,6 +1722,11 @@ impl OnboardingView {
                     self.import_identity(&source);
                 }
             }
+            AfterJournal::ImportWords => {
+                if self.flow.screen() == Screen::RecoveryKey {
+                    self.import_words();
+                }
+            }
             AfterJournal::RetryMint => {
                 if self.recovery_only && self.flow.screen() == Screen::Existing {
                     self.retry_existing_identity();
@@ -1807,29 +1827,39 @@ impl OnboardingView {
             IdentityDone::RetryMint(identity) => self.finish_retry(identity),
             IdentityDone::Import(identity) => self.finish_import(identity),
             IdentityDone::Export(exported) => self.finish_export(exported),
+            IdentityDone::RecoveryWords(words) => match words {
+                Ok(words) => {
+                    self.backup_error = None;
+                    self.recovery_key_copy = Some(RecoveryKeyCopy::new(words));
+                }
+                Err(error) => self.backup_error = Some(error),
+            },
         }
         self.invalidation.structure();
     }
 
     fn finish_ceremony(&mut self) {
         self.finished = true;
+        if let Some(copy) = self.recovery_key_copy.take() {
+            copy.clear();
+        }
         clear_secret(&self.connect_passphrase);
+        clear_secret(&self.recovery_words);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
     }
 
     fn start_nearby_pairing(&mut self) {
-        if let (Some(identity_dir), Some(status_path)) =
-            (&self.identity_dir, &self.nearby_status_path)
-        {
-            let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
-            let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
-                .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
+        if let (Some(identity_dir), Some(status_path), Some(system)) = (
+            &self.identity_dir,
+            &self.nearby_status_path,
+            &self.session.identity,
+        ) {
             match crate::onboarding_nearby::NearbyPairing::start(
-                &identity_root,
+                &system.root,
                 identity_dir,
                 status_path,
-                &label,
+                &self.session.device_label,
             ) {
                 Ok(pairing) => {
                     self.nearby = Some(pairing);
@@ -1876,6 +1906,8 @@ impl OnboardingView {
         match imported {
             Ok(identity) => {
                 self.error = None;
+                clear_secret(&self.recovery_words);
+                self.recovery_check = WordsCheck::Empty;
                 self.error = self
                     .accept_connected_identity(identity)
                     .err()
@@ -2023,135 +2055,6 @@ impl OnboardingView {
         })
     }
 
-    /// Put the entrance transition in its steady state for deterministic
-    /// offscreen review. Production never calls this; the live compositor
-    /// advances the exact same transition on animation frames.
-    #[doc(hidden)]
-    pub fn settle_motion_for_snapshot(&mut self) {
-        self.transition = ui::motion::Presence::opened();
-    }
-
-    #[doc(hidden)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one fixture arm per reviewed onboarding state"
-    )]
-    pub fn set_visual_state_for_snapshot(&mut self, state: OnboardingVisualState) {
-        self.flow = Onboarding::new();
-        self.error = None;
-        self.backup_error = None;
-        self.backup_saved = None;
-        self.backup_was_verified = false;
-        self.backup_copy_form_open = false;
-        self.identity_ready_page = false;
-        self.joined_member = false;
-        self.portable_backup_only = false;
-        self.tour_page = None;
-        self.tour_only = false;
-        self.codec_page = false;
-        self.codec_error = None;
-        self.nearby_status = None;
-        self.nearby_failure = None;
-        self.nearby_code = None;
-        self.nearby_active_for_snapshot = false;
-        let minted = MintedIdentity {
-            fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
-            path: PathBuf::from("/var/lib/tilo/identities/primary.json"),
-        };
-        match state {
-            OnboardingVisualState::Intro => {}
-            OnboardingVisualState::Existing => self.flow.begin_existing(),
-            OnboardingVisualState::Nearby | OnboardingVisualState::NearbyCode => {
-                self.flow.begin_existing();
-                self.flow.choose_nearby();
-                self.nearby_active_for_snapshot = true;
-                if state == OnboardingVisualState::NearbyCode {
-                    self.nearby_code = Some("482913".into());
-                    self.nearby_status = Some(t("onboarding-nearby-code"));
-                } else {
-                    self.nearby_status = Some(t("onboarding-nearby-waiting"));
-                }
-            }
-            OnboardingVisualState::Restore | OnboardingVisualState::RestoreError => {
-                self.flow.begin_existing();
-                self.flow.choose_restore();
-                if state == OnboardingVisualState::RestoreError {
-                    self.error = Some(t("onboarding-snapshot-restore-error"));
-                }
-            }
-            OnboardingVisualState::Protect | OnboardingVisualState::CreateError => {
-                self.flow.begin();
-                if state == OnboardingVisualState::CreateError {
-                    self.error = Some(t("onboarding-snapshot-create-error"));
-                }
-            }
-            OnboardingVisualState::Backup
-            | OnboardingVisualState::BackupVerified
-            | OnboardingVisualState::Ready => {
-                self.flow.begin();
-                self.flow.set_acknowledged(true);
-                let _ = self.flow.complete(minted);
-                self.backup_was_verified = state == OnboardingVisualState::BackupVerified;
-                self.backup_saved = self.backup_was_verified.then(|| {
-                    PathBuf::from("/home/quinten/Documents/tilo-identity-backup.tilo-identity")
-                });
-                self.identity_ready_page = state == OnboardingVisualState::Ready;
-            }
-            OnboardingVisualState::TourNavigate => {
-                self.set_tour_visual_state_for_snapshot(minted, TourPage::Navigate);
-            }
-            OnboardingVisualState::TourOrganise => {
-                self.set_tour_visual_state_for_snapshot(minted, TourPage::Organise);
-            }
-            OnboardingVisualState::TourCollaborate => {
-                self.set_tour_visual_state_for_snapshot(minted, TourPage::Collaborate);
-            }
-            OnboardingVisualState::TourStart => {
-                self.set_tour_visual_state_for_snapshot(minted, TourPage::Start);
-            }
-            OnboardingVisualState::Codecs
-            | OnboardingVisualState::CodecsInstalling
-            | OnboardingVisualState::CodecsWaitingForNetwork
-            | OnboardingVisualState::CodecsInstalled
-            | OnboardingVisualState::CodecsFailed => {
-                self.flow.begin();
-                self.flow.set_acknowledged(true);
-                let _ = self.flow.complete(minted);
-                self.backup_was_verified = true;
-                self.identity_ready_page = true;
-                self.codec_step_offered = true;
-                self.codec_page = true;
-                self.codec_status = CodecPackStatus::parse(match state {
-                    OnboardingVisualState::CodecsInstalling => {
-                        r#"{"state":"installing","desired":true,"progress":{"step":3,"steps":5,"label":"Downloading","bytes":14000000,"total":38000000}}"#
-                    }
-                    OnboardingVisualState::CodecsWaitingForNetwork => {
-                        r#"{"state":"waiting-for-network","desired":true}"#
-                    }
-                    OnboardingVisualState::CodecsInstalled => {
-                        r#"{"state":"installed","parts":{"tilo-codecs":"enabled","tilo-codecs-mesa":"enabled"},"desired":true}"#
-                    }
-                    OnboardingVisualState::CodecsFailed => {
-                        r#"{"state":"failed","desired":true,"last_error":"Could not download the manifest (connection reset)."}"#
-                    }
-                    _ => r#"{"state":"not-installed"}"#,
-                });
-            }
-        }
-        self.composed = None;
-        self.invalidation.both();
-        self.settle_motion_for_snapshot();
-    }
-
-    fn set_tour_visual_state_for_snapshot(&mut self, minted: MintedIdentity, page: TourPage) {
-        self.flow.begin();
-        self.flow.set_acknowledged(true);
-        let _ = self.flow.complete(minted);
-        self.backup_was_verified = true;
-        self.identity_ready_page = true;
-        self.tour_page = Some(page);
-    }
-
     #[expect(
         clippy::too_many_lines,
         reason = "a declarative page composition covering every onboarding screen"
@@ -2168,13 +2071,15 @@ impl OnboardingView {
             && theme.text_scale <= 1.0
             && !theme.name.eq_ignore_ascii_case("high contrast");
         let total = self.total_steps();
-        let (step, stage) = if self.prepared_pending {
+        let (step, stage) = if self.recovery_only && self.flow.screen() == Screen::Existing {
+            (1, t("onboarding-stage-choose"))
+        } else if self.recovery_only || self.prepared_pending {
             (2, t("onboarding-stage-restore"))
         } else {
             match self.flow.screen() {
                 Screen::Intro => (1, t("onboarding-stage-choose")),
                 Screen::Existing | Screen::Nearby => (2, t("onboarding-stage-connect")),
-                Screen::Restore => (2, t("onboarding-stage-restore")),
+                Screen::Restore | Screen::RecoveryKey => (2, t("onboarding-stage-restore")),
                 Screen::NoRecovery => (2, t("onboarding-stage-protect")),
                 Screen::Done if self.identity_ready_page && self.codec_page => {
                     (4, t("onboarding-stage-media"))
@@ -2191,6 +2096,7 @@ impl OnboardingView {
                 Screen::Existing => self.existing(theme),
                 Screen::Nearby => self.nearby(theme),
                 Screen::Restore => self.restore(theme),
+                Screen::RecoveryKey => self.recovery_key(theme),
                 Screen::NoRecovery => self.no_recovery(theme),
                 Screen::Done if self.identity_ready_page && self.codec_page => self.codecs(theme),
                 Screen::Done if self.identity_ready_page => self.done(theme, compact_ready),
@@ -2214,10 +2120,14 @@ impl OnboardingView {
                 Row::new()
                     .with_padding(spacing.s3, 0.0)
                     .push(Box::new(
-                        Text::new(&t("onboarding-progress-eyebrow"))
-                            .with_id("onboarding.progress.eyebrow")
-                            .with_role(ui::tokens::typography::TextRole::Label)
-                            .with_color(theme.text_dim),
+                        Text::new(&t(if self.recovery_only {
+                            "onboarding-recovery-eyebrow"
+                        } else {
+                            "onboarding-progress-eyebrow"
+                        }))
+                        .with_id("onboarding.progress.eyebrow")
+                        .with_role(ui::tokens::typography::TextRole::Label)
+                        .with_color(theme.text_dim),
                     ))
                     .push(Box::new(Spacer::new()))
                     .push(Box::new(
@@ -2266,8 +2176,10 @@ impl OnboardingView {
         let backup_in_scroll = self.flow.screen() == Screen::Done && !self.identity_ready_page;
         let acknowledgement_footer = matches!(self.flow.screen(), Screen::NoRecovery);
         let choice_footer = self.choice_footer_height(theme);
-        let backup_acknowledgement_visible =
-            backup_in_scroll && !self.portable_backup_only && !self.backup_was_verified;
+        let backup_acknowledgement_visible = backup_in_scroll
+            && !self.portable_backup_only
+            && !self.backup_was_verified
+            && self.recovery_key_copy.is_none();
         let footer_height = if backup_in_scroll {
             FOOTER_HEIGHT
                 + if backup_acknowledgement_visible {
@@ -2294,8 +2206,13 @@ impl OnboardingView {
                 || theme.name.eq_ignore_ascii_case("high contrast")
                 || matches!(
                     self.flow.screen(),
-                    Screen::Intro | Screen::Nearby | Screen::Restore | Screen::NoRecovery
+                    Screen::Intro
+                        | Screen::Nearby
+                        | Screen::Restore
+                        | Screen::RecoveryKey
+                        | Screen::NoRecovery
                 )
+                || (self.recovery_only && self.flow.screen() == Screen::Existing)
                 || self.flow.screen() == Screen::Done);
         let mut scroll = Scrollable::new_vertical();
         if backup_in_scroll {
@@ -2394,33 +2311,27 @@ impl OnboardingView {
     }
 
     fn backup_decision_footer(&self, theme: &Theme) -> Box<dyn Widget> {
-        if self.portable_backup_only || self.backup_was_verified {
+        if self.portable_backup_only || self.backup_was_verified || self.recovery_key_copy.is_some()
+        {
             return self.identity_actions();
         }
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
-                .with_vertical_padding(theme.tokens.spacing.s2)
-                .with_gap(theme.tokens.spacing.s3)
-                .push(Box::new(
-                    Checkbox::new(
-                        "onboarding.backup.skip-acknowledged.box",
-                        KEY_BACKUP_SKIP_ACKNOWLEDGED,
-                    )
-                    .with_id("onboarding.backup.skip-acknowledged.row")
-                    .with_label(t("onboarding-backup-skip-acknowledgement"))
-                    .on_change({
-                        let pending = Rc::clone(&self.acknowledgements);
-                        move |checked| {
-                            pending
-                                .borrow_mut()
-                                .push((AcknowledgementKind::SkipBackup, checked));
-                        }
-                    }),
-                ))
-                .push(self.identity_actions()),
+        acknowledgement_footer(
+            theme,
+            Checkbox::new(
+                "onboarding.backup.skip-acknowledged.box",
+                KEY_BACKUP_SKIP_ACKNOWLEDGED,
+            )
+            .with_id("onboarding.backup.skip-acknowledged.row")
+            .with_label(t("onboarding-backup-skip-acknowledgement"))
+            .on_change({
+                let pending = Rc::clone(&self.acknowledgements);
+                move |checked| {
+                    pending
+                        .borrow_mut()
+                        .push((AcknowledgementKind::SkipBackup, checked));
+                }
+            }),
+            self.identity_actions(),
         )
     }
 
@@ -2430,12 +2341,12 @@ impl OnboardingView {
     }
 
     /// The ways forward from a choice screen, one row per flow.
-    fn choices(&self) -> Option<[Choice; 2]> {
+    fn choices(&self) -> Option<Vec<Choice>> {
         if self.prepared_pending {
             return None;
         }
         match self.flow.screen() {
-            Screen::Intro => Some([
+            Screen::Intro => Some(vec![
                 Choice {
                     id: "onboarding.existing.card",
                     icon: ui::icons::Icon::User,
@@ -2451,13 +2362,20 @@ impl OnboardingView {
                     key: KEY_BEGIN,
                 },
             ]),
-            Screen::Existing => Some([
+            Screen::Existing => Some(vec![
                 Choice {
                     id: "onboarding.existing.nearby.card",
                     icon: ui::icons::Icon::Monitor,
                     title: "onboarding-choice-nearby",
                     detail: "onboarding-choice-nearby-detail",
                     key: KEY_CHOOSE_NEARBY,
+                },
+                Choice {
+                    id: "onboarding.existing.recovery-key.card",
+                    icon: ui::icons::Icon::ListOrdered,
+                    title: "onboarding-choice-recovery-key",
+                    detail: "onboarding-choice-recovery-key-detail",
+                    key: KEY_CHOOSE_RECOVERY_KEY,
                 },
                 Choice {
                     id: "onboarding.existing.restore.card",
@@ -2487,7 +2405,7 @@ impl OnboardingView {
         })
     }
 
-    fn choice_footer(&self, theme: &Theme, choices: [Choice; 2]) -> Box<dyn Widget> {
+    fn choice_footer(&self, theme: &Theme, choices: Vec<Choice>) -> Box<dyn Widget> {
         let spacing = &theme.tokens.spacing;
         let rows = choices
             .into_iter()
@@ -2534,6 +2452,9 @@ impl OnboardingView {
             return self.choice_footer(theme, choices);
         }
         let acknowledgement = match self.flow.screen() {
+            // A first session returns from creating its identity straight to
+            // the desktop: there is nothing left to acknowledge or accept.
+            Screen::Done if self.joined_member => None,
             Screen::NoRecovery => Some(
                 Checkbox::new("onboarding.understood.box", KEY_UNDERSTOOD)
                     .with_id("onboarding.understood.row")
@@ -2552,21 +2473,7 @@ impl OnboardingView {
         let Some(acknowledgement) = acknowledgement else {
             return self.identity_actions();
         };
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                // Match the scroll content gutter so a long acknowledgement
-                // measures and wraps inside the panel rather than running
-                // into its edge. The vertical inset is part of the sticky
-                // footer's reserved height and keeps the label distinct from
-                // the action row below it.
-                .with_horizontal_padding(theme.tokens.spacing.s3, theme.tokens.spacing.s3)
-                .with_vertical_padding(theme.tokens.spacing.s2)
-                .with_gap(theme.tokens.spacing.s3)
-                .push(Box::new(acknowledgement))
-                .push(self.identity_actions()),
-        )
+        acknowledgement_footer(theme, acknowledgement, self.identity_actions())
     }
 
     #[expect(
@@ -2620,6 +2527,23 @@ impl OnboardingView {
                 }
                 footer_actions(actions)
             }
+            Screen::RecoveryKey => footer_actions(vec![
+                back_button(&self.pressed),
+                Box::new(
+                    self.pressed
+                        .button(
+                            "onboarding.recovery-key.restore.button",
+                            &t("onboarding-restore-backup"),
+                            KEY_RECOVERY_KEY_RESTORE,
+                        )
+                        .with_icon(ui::icons::Icon::ArrowRight)
+                        .role(ui::widget::ButtonRole::Primary)
+                        .with_enabled(
+                            matches!(self.recovery_check, WordsCheck::Ready { .. })
+                                && self.identity_idle(),
+                        ),
+                ),
+            ]),
             Screen::Restore => footer_actions(vec![
                 back_button(&self.pressed),
                 Box::new(
@@ -2650,6 +2574,25 @@ impl OnboardingView {
             ]),
             Screen::Done if self.identity_ready_page && self.codec_page => self.codec_actions(),
             Screen::Done if self.identity_ready_page => self.finish_action(),
+            Screen::Done if !self.identity_ready_page && self.recovery_key_copy.is_some() => {
+                footer_actions(vec![
+                    Box::new(self.pressed.button(
+                        "onboarding.backup.recovery-key.close.button",
+                        &t("onboarding-back"),
+                        KEY_RECOVERY_KEY_CLOSE,
+                    )),
+                    Box::new(
+                        self.pressed
+                            .button(
+                                "onboarding.backup.recovery-key.confirm.button",
+                                &t("onboarding-recovery-key-confirm-button"),
+                                KEY_RECOVERY_KEY_CONFIRM,
+                            )
+                            .role(ui::widget::ButtonRole::Primary)
+                            .with_enabled(self.recovery_key_copy_confirmed),
+                    ),
+                ])
+            }
             Screen::Done if self.portable_backup_only => footer_actions(vec![
                 Box::new(self.pressed.button(
                     "onboarding.backup.cancel.button",
@@ -2942,16 +2885,42 @@ impl OnboardingView {
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(theme.tokens.spacing.s4)
-            .push(heading(&t("onboarding-existing-title"), theme))
-            .push(paragraph(&t("onboarding-existing-body"), theme));
+            .with_gap(theme.tokens.spacing.s4);
         if self.recovery_only {
-            body = body.push(spaced_banner(
-                Banner::warning(t("onboarding-connect-recovery-title"))
-                    .with_message(t("onboarding-connect-recovery-message"))
-                    .with_icon(ui::icons::Icon::Shield),
-                theme,
-            ));
+            // Recovery is reached from a computer that already belongs to
+            // someone: say what happened and that nothing was replaced,
+            // then the same ways back as setting up a new computer.
+            use crate::onboarding::IdentityProblem;
+            let explanation = match self.recovery_problem {
+                Some(IdentityProblem::KeyringUnavailable) => "onboarding-recovery-body-keyring",
+                Some(IdentityProblem::RecordMissing) => "onboarding-recovery-body-missing",
+                Some(IdentityProblem::ChainInvalid) => "onboarding-recovery-body-invalid",
+                None => "onboarding-recovery-body",
+            };
+            body = body
+                .push(heading(&t("onboarding-recovery-title"), theme))
+                .push(paragraph(&t(explanation), theme));
+            if let Some(identity) = self.expected_identity {
+                // Which identity to bring back: matches the start of the
+                // fingerprint shown on the person's other devices.
+                body = body.push(Box::new(
+                    Text::new(&t_args(
+                        "onboarding-recovery-identity",
+                        &[(
+                            "fingerprint",
+                            short_fingerprint(&hex::encode(identity)).into(),
+                        )],
+                    ))
+                    .with_id("onboarding.recovery.identity")
+                    .with_role(ui::tokens::typography::TextRole::Label)
+                    .with_color(theme.text_dim)
+                    .numeric(),
+                ));
+            }
+        } else {
+            body = body
+                .push(heading(&t("onboarding-existing-title"), theme))
+                .push(paragraph(&t("onboarding-existing-body"), theme));
         }
         if let Some(error) = &self.error {
             body = body.push(spaced_banner(
@@ -3053,6 +3022,20 @@ impl OnboardingView {
         }
         if self.prepared_worker.is_some() {
             body = body.push(paragraph(&t("onboarding-prepared-working"), theme));
+        } else if let Some(peer) = &self.peer {
+            // The package arrives over the peer transport, so there is no
+            // password to type. Show the same code the preparing computer
+            // shows; a person compares them before approving this computer
+            // there. A code appears only once this receiver has bound its own
+            // endpoint and key.
+            if let Some(code) = peer.verification_code() {
+                body = body.push(paragraph(
+                    &t_args("onboarding-prepared-peer-code", &[("code", code.into())]),
+                    theme,
+                ));
+            } else {
+                body = body.push(paragraph(&t("onboarding-prepared-peer-waiting"), theme));
+            }
         } else {
             body = body.push(Box::new(secret_input(
                 "onboarding.prepared.password",
@@ -3214,7 +3197,7 @@ impl OnboardingView {
     ) -> Result<(), ()> {
         if !self
             .backup_status()
-            .is_some_and(|status| status["can_save"] == true)
+            .is_some_and(|status| json_flag(&status, "can_save"))
             || destination.len() > 4096
             || !Path::new(destination).is_absolute()
             || passphrase.len() > 4096
@@ -3249,21 +3232,22 @@ impl OnboardingView {
         self.invalidation.both();
         Ok(())
     }
-    pub(crate) fn invoke_migration(&mut self, op: &str, operation: Option<&str>) -> Result<(), ()> {
-        if op == "resume"
-            && !self.prepared_pending
+    /// Resume the deferred migration `operation` names (or the first one
+    /// deferred): the portable home, then its applications, then the
+    /// browser. `None` when nothing deferred is waiting.
+    fn resume_deferred(&mut self, operation: Option<&str>) -> Option<Result<(), ()>> {
+        if !self.prepared_pending
             && self.flow.is_done()
             && let Some(portable) = self.portable_home.as_mut()
         {
             if operation.is_some_and(|selected| portable.operation() != selected) {
-                return Err(());
+                return Some(Err(()));
             }
             let result = portable.invoke("resume", b"").map_err(|_| ());
             self.invalidation.both();
-            return result;
+            return Some(result);
         }
-        if op == "resume"
-            && !self.prepared_pending
+        if !self.prepared_pending
             && self.flow.is_done()
             && !self
                 .portable_home
@@ -3275,23 +3259,30 @@ impl OnboardingView {
                 .filter(|pending| pending.deferred())
         {
             if operation.is_some_and(|selected| applications.operation() != selected) {
-                return Err(());
+                return Some(Err(()));
             }
             let result = applications.invoke("resume", b"").map_err(|_| ());
             self.invalidation.both();
-            return result;
+            return Some(result);
         }
-        if op == "resume"
-            && !self.prepared_pending
+        if !self.prepared_pending
             && self.flow.is_done()
             && let Some(browser) = self.browser.as_mut().filter(|pending| pending.deferred())
         {
             if operation.is_some_and(|selected| browser.operation() != selected) {
-                return Err(());
+                return Some(Err(()));
             }
             let result = browser.invoke("resume", b"").map_err(|_| ());
             self.invalidation.both();
-            return result;
+            return Some(result);
+        }
+        None
+    }
+    pub(crate) fn invoke_migration(&mut self, op: &str, operation: Option<&str>) -> Result<(), ()> {
+        if op == "resume"
+            && let Some(resumed) = self.resume_deferred(operation)
+        {
+            return resumed;
         }
         if !self.migration_active() {
             return Err(());
@@ -3309,13 +3300,7 @@ impl OnboardingView {
             } else {
                 op
             };
-            let password = Zeroizing::new(
-                self.connect_passphrase
-                    .lock()
-                    .map_err(|_| ())?
-                    .as_bytes()
-                    .to_vec(),
-            );
+            let password = typed_passphrase(&self.connect_passphrase)?;
             let result = portable.invoke(op, &password).map_err(|_| ());
             clear_secret(&self.connect_passphrase);
             self.error = result
@@ -3338,13 +3323,7 @@ impl OnboardingView {
             } else {
                 op
             };
-            let password = Zeroizing::new(
-                self.connect_passphrase
-                    .lock()
-                    .map_err(|_| ())?
-                    .as_bytes()
-                    .to_vec(),
-            );
+            let password = typed_passphrase(&self.connect_passphrase)?;
             let result = applications.invoke(op, &password).map_err(|_| ());
             clear_secret(&self.connect_passphrase);
             self.error = result
@@ -3363,13 +3342,7 @@ impl OnboardingView {
             } else {
                 op
             };
-            let password = Zeroizing::new(
-                self.connect_passphrase
-                    .lock()
-                    .map_err(|_| ())?
-                    .as_bytes()
-                    .to_vec(),
-            );
+            let password = typed_passphrase(&self.connect_passphrase)?;
             let result = browser.invoke(op, &password).map_err(|_| ());
             crate::shell::launcher::set_browser_continuity(
                 browser.verified_projection().map(Path::to_owned),
@@ -3448,37 +3421,37 @@ impl OnboardingView {
         Ok(())
     }
 
+    /// What the migration page is titled: the step in hand.
+    fn migration_title_key(&self) -> &'static str {
+        if self
+            .portable_home
+            .as_ref()
+            .is_some_and(crate::onboarding_portable_home::Pending::pending)
+        {
+            "onboarding-portable-home-title"
+        } else if self
+            .portable_applications
+            .as_ref()
+            .is_some_and(crate::onboarding_portable_applications::Pending::pending)
+        {
+            "onboarding-portable-applications-title"
+        } else if self
+            .browser
+            .as_ref()
+            .is_some_and(crate::onboarding_browser::Pending::pending)
+        {
+            "onboarding-browser-title"
+        } else {
+            "onboarding-migration-title"
+        }
+    }
+
     fn migration_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let mut body = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(theme.tokens.spacing.s4)
-            .push(heading(
-                &t(
-                    if self
-                        .portable_home
-                        .as_ref()
-                        .is_some_and(crate::onboarding_portable_home::Pending::pending)
-                    {
-                        "onboarding-portable-home-title"
-                    } else if self
-                        .portable_applications
-                        .as_ref()
-                        .is_some_and(crate::onboarding_portable_applications::Pending::pending)
-                    {
-                        "onboarding-portable-applications-title"
-                    } else if self
-                        .browser
-                        .as_ref()
-                        .is_some_and(crate::onboarding_browser::Pending::pending)
-                    {
-                        "onboarding-browser-title"
-                    } else {
-                        "onboarding-migration-title"
-                    },
-                ),
-                theme,
-            ));
+            .push(heading(&t(self.migration_title_key()), theme));
         let status = self.migration_status().unwrap_or_default();
         let state = status
             .get("state")
@@ -3488,61 +3461,7 @@ impl OnboardingView {
             .get("retained_access")
             .and_then(serde_json::Value::as_bool)
             == Some(true);
-        let apps = status
-            .get("applications_only")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-            || retained && matches!(state, "reviewed" | "ready-to-adopt");
-        let text = if status["browser"] == true {
-            "onboarding-browser-body"
-        } else if status
-            .get("portable_applications")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-            && matches!(state, "pending" | "failed" | "unavailable" | "cancelled")
-        {
-            "onboarding-portable-applications-body"
-        } else if retained && state == "pending" {
-            "onboarding-existing-files-body"
-        } else if apps && state == "reviewed" {
-            "onboarding-existing-files-apps-reviewed"
-        } else if apps && state == "ready-to-adopt" {
-            "onboarding-existing-files-apps-adopt"
-        } else if status
-            .get("portable_home")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-            && matches!(state, "pending" | "failed" | "unavailable")
-        {
-            "onboarding-portable-home-body"
-        } else {
-            match state {
-                "pending" => "onboarding-migration-body",
-                "reviewed" => "onboarding-migration-reviewed",
-                "ready-to-adopt" => "onboarding-migration-adopt-body",
-                _ if status["transfer_complete"] == true
-                    && status["cleanup_state"] == "running" =>
-                {
-                    "onboarding-migration-cleanup-running"
-                }
-                _ if status["transfer_complete"] == true
-                    && status["cleanup_state"] == "pending" =>
-                {
-                    "onboarding-migration-cleanup-pending"
-                }
-                _ if status["transfer_complete"] == true
-                    && status["cleanup_state"] == "unavailable" =>
-                {
-                    "onboarding-migration-cleanup-unavailable"
-                }
-                "complete" => "onboarding-migration-complete",
-                "existing-files-available" => "onboarding-existing-files-available",
-                "incomplete" => "onboarding-migration-incomplete",
-                "failed" | "unavailable" => "onboarding-migration-failed",
-                "cancelled" => "onboarding-migration-cancelled",
-                _ => "onboarding-migration-working",
-            }
-        };
+        let text = migration_body_key(&status, state, retained);
         body = body.push(paragraph(&t(text), theme));
         if self
             .portable_home
@@ -3592,26 +3511,9 @@ impl OnboardingView {
         )
     }
 
-    fn migration_actions(&self, state: &str) -> Box<dyn Widget> {
-        let cleanup = self.migration_status().unwrap_or_default();
-        let cleanup_pending =
-            cleanup["transfer_complete"] == true && cleanup["cleanup_state"] == "pending";
-        let cleanup_blocked =
-            cleanup["transfer_complete"] == true && cleanup["cleanup_state"] != "finished";
-        let busy = !cleanup_pending
-            && [
-                "copying",
-                "verifying",
-                "retirement-pending",
-                "restoring-applications",
-                "adopting",
-                "reviewing",
-                "cancelling",
-                "releasing-applications",
-                "activating-browser",
-            ]
-            .contains(&state);
-        let label = match state {
+    /// What the migration's main button says in `state`.
+    fn migration_next_label(&self, state: &str, cleanup_pending: bool) -> &'static str {
+        match state {
             _ if cleanup_pending => "onboarding-migration-cleanup-resume",
             "pending" | "unavailable" | "failed" | "cancelled" => "onboarding-migration-review",
             "reviewed"
@@ -3626,14 +3528,14 @@ impl OnboardingView {
             "reviewed"
                 if self
                     .migration_status()
-                    .is_some_and(|value| value["portable_applications"] == true) =>
+                    .is_some_and(|value| json_flag(&value, "portable_applications")) =>
             {
                 "onboarding-portable-applications-start"
             }
             "reviewed"
                 if self
                     .migration_status()
-                    .is_some_and(|value| value["browser"] == true) =>
+                    .is_some_and(|value| json_flag(&value, "browser")) =>
             {
                 "onboarding-browser-start"
             }
@@ -3642,7 +3544,57 @@ impl OnboardingView {
             "complete" | "existing-files-available" => "onboarding-continue",
             "incomplete" => "onboarding-migration-retry",
             _ => "onboarding-migration-working",
-        };
+        }
+    }
+
+    /// Whether the migration under way in `state` can still be cancelled.
+    fn migration_cancellable(&self, state: &str) -> bool {
+        state != "cancelling"
+            && (state != "reviewing"
+                || self
+                    .portable_home
+                    .as_ref()
+                    .is_some_and(crate::onboarding_portable_home::Pending::busy)
+                || self
+                    .portable_applications
+                    .as_ref()
+                    .is_some_and(crate::onboarding_portable_applications::Pending::busy)
+                || self
+                    .browser
+                    .as_ref()
+                    .is_some_and(crate::onboarding_browser::Pending::busy)
+                || self.migration_status().and_then(|value| {
+                    value
+                        .get("original_copy")
+                        .and_then(serde_json::Value::as_bool)
+                }) == Some(true)
+                || self.migration_status().and_then(|value| {
+                    value
+                        .get("retained_access")
+                        .and_then(serde_json::Value::as_bool)
+                }) == Some(true))
+    }
+
+    fn migration_actions(&self, state: &str) -> Box<dyn Widget> {
+        let cleanup = self.migration_status().unwrap_or_default();
+        let cleanup_pending = json_flag(&cleanup, "transfer_complete")
+            && json_text(&cleanup, "cleanup_state") == Some("pending");
+        let cleanup_blocked = json_flag(&cleanup, "transfer_complete")
+            && json_text(&cleanup, "cleanup_state") != Some("finished");
+        let busy = !cleanup_pending
+            && [
+                "copying",
+                "verifying",
+                "retirement-pending",
+                "restoring-applications",
+                "adopting",
+                "reviewing",
+                "cancelling",
+                "releasing-applications",
+                "activating-browser",
+            ]
+            .contains(&state);
+        let label = self.migration_next_label(state, cleanup_pending);
         let mut actions: Vec<Box<dyn Widget>> = vec![Box::new(
             self.pressed
                 .button(
@@ -3661,31 +3613,7 @@ impl OnboardingView {
                         &t("onboarding-migration-cancel"),
                         "onboarding.migration.cancel",
                     )
-                    .with_enabled(
-                        state != "cancelling"
-                            && (state != "reviewing"
-                                || self
-                                    .portable_home
-                                    .as_ref()
-                                    .is_some_and(crate::onboarding_portable_home::Pending::busy)
-                                || self.portable_applications.as_ref().is_some_and(
-                                    crate::onboarding_portable_applications::Pending::busy,
-                                )
-                                || self
-                                    .browser
-                                    .as_ref()
-                                    .is_some_and(crate::onboarding_browser::Pending::busy)
-                                || self.migration_status().and_then(|value| {
-                                    value
-                                        .get("original_copy")
-                                        .and_then(serde_json::Value::as_bool)
-                                }) == Some(true)
-                                || self.migration_status().and_then(|value| {
-                                    value
-                                        .get("retained_access")
-                                        .and_then(serde_json::Value::as_bool)
-                                }) == Some(true)),
-                    ),
+                    .with_enabled(self.migration_cancellable(state)),
             ));
         } else if !cleanup_blocked {
             actions.push(Box::new(
@@ -3708,158 +3636,6 @@ impl OnboardingView {
         footer_actions(actions)
     }
 
-    pub(crate) fn prepared_setup_status(&self) -> Option<&'static str> {
-        self.prepared_pending.then_some(
-            if self.prepared_worker.is_some() || self.prepared_secret_queued {
-                "busy"
-            } else if self.prepared_review.is_some() {
-                "ready"
-            } else {
-                "unavailable"
-            },
-        )
-    }
-    pub(crate) fn submit_prepared_setup_secret(&mut self, password: &[u8]) -> Result<(), ()> {
-        if self.prepared_setup_status() != Some("ready") {
-            return Err(());
-        }
-        let text = std::str::from_utf8(password).map_err(|_| ())?;
-        if text.is_empty() || text.len() > 4096 {
-            return Err(());
-        }
-        let mut secret = self.connect_passphrase.lock().map_err(|_| ())?;
-        secret.zeroize();
-        secret.push_str(text);
-        drop(secret);
-        self.prepared_secret_queued = true;
-        self.press(KEY_PREPARED_IMPORT);
-        self.invalidation.both();
-        Ok(())
-    }
-    fn activate_prepared(
-        &self,
-        mut imported: crate::onboarding_prepared::Imported,
-    ) -> Result<
-        (
-            MintedIdentity,
-            [u8; 32],
-            Option<crate::onboarding_prepared::PortableHome>,
-            Option<crate::onboarding_prepared::PortableApplications>,
-            Option<crate::onboarding_prepared::BrowserDeclaration>,
-            Option<crate::onboarding_prepared::ServiceSessions>,
-            Option<tilo_identity_host::enrolled_transport::ResolvedCurrentIdentity>,
-        ),
-        (),
-    > {
-        self.prepared_review
-            .as_ref()
-            .ok_or(())?
-            .validate()
-            .map_err(|_| ())?;
-        let directory = self.identity_dir.as_ref().ok_or(())?;
-        if let Some(resolved) = imported.resolved_current.take() {
-            resolved.validate().map_err(|_| ())?;
-            let claim = resolved.declaration().map_err(|_| ())?;
-            if imported.current_identity.as_ref() != Some(&claim)
-                || claim.public_key() != imported.identity_public_key
-            {
-                return Err(());
-            }
-            let signer = resolved.load().map_err(|_| ())?;
-            let registry = crate::identity_registry::IdentityRegistryStore::at(directory)
-                .load()
-                .map_err(|_| ())?;
-            let profile = registry
-                .identities
-                .values()
-                .find(|profile| {
-                    profile.id == hex::encode(signer.group_public_key())
-                        && profile.user_public_key == signer.group_public_key()
-                        && profile.record_path == directory.join(claim.record_name())
-                })
-                .ok_or(())?;
-            let identity = MintedIdentity {
-                fingerprint: profile.id.clone(),
-                path: profile.record_path.clone(),
-            };
-            resolved.validate().map_err(|_| ())?;
-            return Ok((
-                identity,
-                imported.identity_public_key,
-                imported.portable_home,
-                imported.portable_flatpak,
-                imported.browser,
-                imported.service_sessions,
-                Some(resolved),
-            ));
-        }
-        if imported.current_identity.is_some() {
-            return Err(());
-        }
-        let primary = directory.join("primary.json");
-        let signer = runtime_identity::load_from_path(primary.clone()).map_err(|_| ())?;
-        if signer.group_public_key() != imported.identity_public_key {
-            return Err(());
-        }
-        let store = crate::identity_registry::IdentityRegistryStore::at(directory);
-        let mut registry = store.load_reconciled().map_err(|_| ())?;
-        let profile = registry.register_record(&primary).map_err(|_| ())?.clone();
-        store.save(&registry).map_err(|_| ())?;
-        let runtime_id = profile
-            .record_path
-            .file_stem()
-            .and_then(|v| v.to_str())
-            .ok_or(())?;
-        runtime_identity::set_active_identity(directory, runtime_id).map_err(|_| ())?;
-        let paths = crate::firstboot::collaboration_identity_paths();
-        if imported.device_label.is_empty() {
-            crate::firstboot::ensure_collaboration_identity(directory, &paths)
-        } else {
-            crate::firstboot::ensure_collaboration_identity_with_device_label(
-                directory,
-                &paths,
-                &imported.device_label,
-            )
-        }
-        .map_err(|_| ())?;
-        crate::device_fleet::DeviceFleetStore::at(
-            directory,
-            crate::firstboot::collaboration_identity_paths(),
-        )
-        .register_current_device(&profile.id)
-        .map_err(|_| ())?;
-        Ok((
-            MintedIdentity {
-                fingerprint: profile.id,
-                path: profile.record_path,
-            },
-            imported.identity_public_key,
-            imported.portable_home,
-            imported.portable_flatpak,
-            imported.browser,
-            imported.service_sessions,
-            None,
-        ))
-    }
-
-    fn load_browser_declaration(
-        &mut self,
-        declaration: crate::onboarding_prepared::BrowserDeclaration,
-    ) {
-        crate::shell::launcher::set_browser_continuity(None);
-        self.browser = crate::onboarding_prepared::session_home().and_then(|home| {
-            self.identity_dir.clone().and_then(|identity| {
-                crate::onboarding_browser::Pending::open(home, identity, declaration).ok()
-            })
-        });
-        if self.browser.is_none() {
-            self.prepared_pending = true;
-            self.error = Some(t("onboarding-browser-unavailable"));
-        }
-    }
-    pub(crate) fn verified_browser_projection(&self) -> Option<&Path> {
-        self.browser.as_ref()?.verified_projection()
-    }
     fn persist_progress(&mut self, stage: PersistedStage) -> bool {
         let Some(identity_dir) = self.identity_dir.as_ref() else {
             return true;
@@ -3877,173 +3653,6 @@ impl OnboardingView {
                 self.invalidation.structure();
                 false
             }
-        }
-    }
-
-    fn sync_prepared(&mut self) {
-        if self.pressed.take(KEY_PREPARED_IMPORT) && self.prepared_worker.is_none() {
-            self.prepared_secret_queued = false;
-            let result = (|| {
-                let home = crate::onboarding_prepared::session_home().ok_or(())?;
-                let pending = crate::onboarding_prepared::Pending::open(&home).map_err(|_| ())?;
-                let password = Zeroizing::new(
-                    self.connect_passphrase
-                        .lock()
-                        .map_err(|_| ())?
-                        .as_bytes()
-                        .to_vec(),
-                );
-                let directory = self.identity_dir.clone().ok_or(())?;
-                pending.prepare_targets(&directory).map_err(|_| ())?;
-                if !self.persist_progress(PersistedStage::AcquiringIdentity) {
-                    return Err(());
-                }
-                let worker = pending
-                    .start(
-                        &directory,
-                        &password,
-                        self.context == OnboardingContext::HostDesktop,
-                    )
-                    .map_err(|_| ())?;
-                self.prepared_home_password = Some((pending.digest(), password));
-                self.prepared_review = Some(pending);
-                self.prepared_worker = Some(worker);
-                Ok::<(), ()>(())
-            })();
-            clear_secret(&self.connect_passphrase);
-            if result.is_err() {
-                self.prepared_home_password = None;
-            }
-            self.error = result.err().map(|()| t("onboarding-prepared-failed"));
-            self.invalidation.both();
-        }
-        let outcome = self
-            .prepared_worker
-            .as_mut()
-            .and_then(crate::onboarding_prepared::Worker::poll);
-        if let Some(outcome) = outcome {
-            self.prepared_worker = None;
-            let prepared_password = self.prepared_home_password.take();
-            let imported = outcome
-                .map_err(|_| ())
-                .and_then(|imported| self.activate_prepared(imported));
-            match imported {
-                Ok((
-                    identity,
-                    key,
-                    portable_home,
-                    portable_applications,
-                    browser,
-                    service_sessions,
-                    current_identity,
-                )) => {
-                    self.flow.resume_created(identity);
-                    if self.refresh_backup_capability().is_err() {
-                        self.error = Some(t("onboarding-prepared-failed"));
-                        self.invalidation.both();
-                        return;
-                    }
-                    let current_claim = match current_identity
-                        .as_ref()
-                        .map(|identity| identity.declaration())
-                        .transpose()
-                    {
-                        Ok(claim) => claim,
-                        Err(_) => {
-                            self.error = Some(t("onboarding-prepared-failed"));
-                            self.invalidation.both();
-                            return;
-                        }
-                    };
-                    if self.persist_progress(if self.identity_ready_page {
-                        PersistedStage::ReadyToEnter
-                    } else {
-                        PersistedStage::IdentityReady
-                    }) && self.prepared_review.as_ref().is_some_and(|review| {
-                        review
-                            .acknowledge(
-                                key,
-                                portable_home.clone(),
-                                portable_applications.clone(),
-                                browser.clone(),
-                                service_sessions.clone(),
-                                current_claim.clone(),
-                            )
-                            .is_ok()
-                    }) {
-                        self.prepared_pending = false;
-                        self.error = None;
-                        if let Some(declaration) = portable_home {
-                            self.portable_home = crate::onboarding_prepared::session_home()
-                                .and_then(|home| {
-                                    self.identity_dir.clone().and_then(|directory| {
-                                        crate::onboarding_portable_home::Pending::open(
-                                            home,
-                                            directory,
-                                            declaration,
-                                        )
-                                        .ok()
-                                    })
-                                });
-                            if let (Some(portable), Some((digest, password))) =
-                                (self.portable_home.as_mut(), prepared_password.as_ref())
-                            {
-                                // The authenticated installer selection is prior consent.
-                                // The reducer continues it after activation; failures retain
-                                // the ordinary explicit retry/password controls.
-                                let _ = portable.receive_prepared_password(
-                                    *digest,
-                                    Zeroizing::new(password.to_vec()),
-                                );
-                            }
-                            if self.portable_home.is_none() {
-                                self.prepared_pending = true;
-                                self.error = Some(t("onboarding-portable-home-unavailable"));
-                            }
-                        }
-                        if let Some(declaration) = portable_applications {
-                            self.portable_applications = crate::onboarding_prepared::session_home()
-                                .and_then(|home| {
-                                    self.identity_dir.clone().and_then(|directory| {
-                                        crate::onboarding_portable_applications::Pending::open(
-                                            home,
-                                            directory,
-                                            declaration,
-                                        )
-                                        .ok()
-                                    })
-                                });
-                            if let (Some(applications), Some((digest, password))) = (
-                                self.portable_applications.as_mut(),
-                                prepared_password.as_ref(),
-                            ) {
-                                let _ = applications.receive_prepared_password(
-                                    *digest,
-                                    Zeroizing::new(password.to_vec()),
-                                );
-                            }
-                            if self.portable_applications.is_none() {
-                                self.prepared_pending = true;
-                                self.error =
-                                    Some(t("onboarding-portable-applications-unavailable"));
-                            }
-                        }
-                        if let Some(declaration) = browser {
-                            self.load_browser_declaration(declaration);
-                            if let (Some(browser), Some((digest, password))) =
-                                (self.browser.as_mut(), prepared_password)
-                            {
-                                let _ = browser.receive_prepared_password(digest, password);
-                            }
-                        }
-                        self.prepared_review = None;
-                    } else {
-                        self.error = Some(t("onboarding-prepared-failed"));
-                    }
-                }
-                Err(()) => self.error = Some(t("onboarding-prepared-failed")),
-            }
-            self.invalidation.both();
         }
     }
 
@@ -4163,6 +3772,9 @@ impl OnboardingView {
         if !self.backup_export_available {
             return self.done(theme, false);
         }
+        if let Some(copy) = &self.recovery_key_copy {
+            return recovery_key_copy_page(theme, copy);
+        }
         let compact = self.rect.height() <= 540.0;
         let mut backup = Column::new().with_no_padding().with_intrinsic_height();
         if let Some(error) = &self.backup_error {
@@ -4171,7 +3783,14 @@ impl OnboardingView {
                 theme,
             ));
         }
-        if let Some(path) = &self.backup_saved {
+        if self.recovery_key_written && self.backup_saved.is_none() {
+            backup = backup.push(spaced_banner(
+                Banner::success(t("onboarding-recovery-key-written"))
+                    .with_message(t("onboarding-recovery-key-written-detail"))
+                    .with_icon(ui::icons::Icon::Check),
+                theme,
+            ));
+        } else if let Some(path) = &self.backup_saved {
             backup = backup.push(spaced_banner(
                 Banner::success(t("onboarding-backup-verified"))
                     .with_message(path.display().to_string())
@@ -4202,6 +3821,22 @@ impl OnboardingView {
         if self.backup_error.is_some() || self.backup_saved.is_some() || self.backup_was_verified {
             page = page.push(Box::new(backup));
         }
+        if !self.recovery_key_written && (!self.backup_was_verified || self.backup_copy_form_open) {
+            // The quicker way to keep the identity: 24 words on paper. Offered
+            // first and beside the file, never instead of it, because the two
+            // suit different people.
+            let pressed = self.pressed.clone();
+            page = page.push(Box::new(Section::new(vec![Box::new(
+                ListRow::new(
+                    "onboarding.backup.recovery-key.row",
+                    t("onboarding-backup-recovery-key"),
+                )
+                .icon(ui::icons::Icon::ListOrdered)
+                .secondary(t("onboarding-backup-recovery-key-detail"))
+                .disclosure()
+                .on_activate(move || pressed.press(KEY_RECOVERY_KEY_SHOW)),
+            )])));
+        }
         if !self.backup_was_verified || self.backup_copy_form_open {
             page = page.push(self.backup_form(theme));
         }
@@ -4210,6 +3845,9 @@ impl OnboardingView {
 
     fn done(&self, theme: &Theme, compact: bool) -> Box<dyn Widget> {
         if !self.joined_member {
+            // The hand-off is the footer action, exactly like every other
+            // setup screen's: one control at the bottom edge, never a second
+            // way in floating inside the page.
             return Box::new(
                 Column::new()
                     .with_no_padding()
@@ -4286,9 +3924,6 @@ impl OnboardingView {
         }
         Box::new(page)
     }
-
-    /// The media codecs offer: what it enables, where it comes from, and the
-    /// live result once the owner chose to install.
 
     /// The offer to play more formats: a centred title and one short line
     /// over a single large Install button, with a quiet way past it. Nothing
@@ -4400,17 +4035,13 @@ impl OnboardingView {
         )])
     }
 
-    /// Sticky final action, deliberately outside the Done screen's scrollable
-    /// backup content so it remains visible at narrow and large-text sizes.
+    /// The one action that ends the ceremony, in the same sticky footer as
+    /// every other setup screen's.
     fn finish_action(&self) -> Box<dyn Widget> {
-        // Continuing to the desktop is the primary hand-off. The optional
-        // tour remains explicit rather than making “Skip” the first desktop
-        // action a new user has to decipher.
-        let tour = self.pressed.button(
-            "onboarding.tour.start.button",
-            &t("onboarding-tour-take"),
-            KEY_TOUR_START,
-        );
+        // Entering the desktop is the hand-off and the only way out of the
+        // ceremony. A first session has no tour to accept or decline: the
+        // desktop teaches itself by being used, and its own overlay hint
+        // and search carry what a page of prose would have said.
         let enter = self
             .pressed
             .button(
@@ -4420,7 +4051,7 @@ impl OnboardingView {
             )
             .with_icon(ui::icons::Icon::ArrowRight)
             .role(ui::widget::ButtonRole::Primary);
-        footer_actions(vec![Box::new(tour), Box::new(enter)])
+        footer_actions(vec![Box::new(enter)])
     }
 }
 
@@ -4562,6 +4193,32 @@ fn actions(buttons: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
 
 /// Sticky page navigation with a deliberate 20 px side and 16 px bottom
 /// inset, independent of the scrollable page body.
+/// An acknowledgement above the action row. Only the checkbox takes the
+/// content gutter, so a long label wraps inside the panel; the actions keep
+/// every other footer's inset, so the buttons do not jump between steps.
+fn acknowledgement_footer(
+    theme: &Theme,
+    acknowledgement: Checkbox,
+    actions: Box<dyn Widget>,
+) -> Box<dyn Widget> {
+    let spacing = &theme.tokens.spacing;
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_vertical_padding(spacing.s2)
+            .with_gap(spacing.s3)
+            .push(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_horizontal_padding(spacing.s3, spacing.s3)
+                    .push(Box::new(acknowledgement)),
+            ))
+            .push(actions),
+    )
+}
+
 fn footer_actions(buttons: Vec<Box<dyn Widget>>) -> Box<dyn Widget> {
     let mut row = Row::new().push(Box::new(Spacer::new()));
     for button in buttons {
@@ -4622,6 +4279,14 @@ fn labelled_secret_field(
                 placeholder,
             ))),
     )
+}
+
+/// The passphrase typed into `buffer`, copied out to be cleared after its
+/// one use.
+fn typed_passphrase(buffer: &Arc<Mutex<String>>) -> Result<Zeroizing<Vec<u8>>, ()> {
+    Ok(Zeroizing::new(
+        buffer.lock().map_err(|_| ())?.as_bytes().to_vec(),
+    ))
 }
 
 fn clear_secret(buffer: &Arc<Mutex<String>>) {
@@ -4716,6 +4381,7 @@ impl OnboardingView {
             return;
         };
         let panel = composed.get_rect();
+        let on_panel = ui::chrome::shell::on_panel(theme);
         if panel.area() > 0.0 {
             // Panel role (HIG §9.1–§9.3): the onboarding card floats over the
             // backdrop, so it casts the same Panel shadow every other Panel
@@ -4724,11 +4390,17 @@ impl OnboardingView {
             // nothing — the edge does the separating (§9.3) — so the former
             // by-name high-contrast guard is not needed. Ground is
             // `panel_ground`, edge the derived Panel border.
-            ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+            let _ = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         }
 
         let mut local = Scene::new();
-        composed.draw(&mut local, Affine::IDENTITY, text_renderer, theme, presence);
+        composed.draw(
+            &mut local,
+            Affine::IDENTITY,
+            text_renderer,
+            &on_panel,
+            presence,
+        );
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -4898,6 +4570,15 @@ impl Widget for OnboardingView {
         self.settle_journal();
         self.settle_identity_work();
 
+        // The chooser lists and checks on a worker; what it answered shows
+        // now, and a confirmed choice is taken below.
+        if self
+            .picker
+            .as_mut()
+            .is_some_and(|(_, picker)| picker.poll_lookups())
+        {
+            self.invalidation.both();
+        }
         let picker_outcome = self
             .picker
             .as_mut()
@@ -4932,6 +4613,8 @@ impl Widget for OnboardingView {
             self.flow.choose_restore();
         }
 
+        self.sync_recovery_key();
+
         // Choosing the nearby flow is the explicit request to pair, so the
         // screen opens with pairing already under way.
         let mut start_nearby = self.pressed.take(KEY_CHOOSE_NEARBY)
@@ -4949,18 +4632,18 @@ impl Widget for OnboardingView {
             && self.flow.screen() == Screen::Restore
             && self.picker.is_none()
         {
-            let (initial, roots) = onboarding_picker_scope();
+            let (initial, roots) = self.session.picker_scope();
             self.picker = Some((
                 PickerPurpose::ImportIdentity,
-                FilePicker::new(t("onboarding-picker-import-title"), initial, roots).with_filters(
-                    vec![
+                FilePicker::new(t("onboarding-picker-import-title"), initial, roots)
+                    .with_waker(Some(crate::shell::search::invocation_wake::waker()))
+                    .with_filters(vec![
                         ui::widget::file_picker::FileFilter::new(
                             t("onboarding-picker-import-filter"),
                             &["tilo-identity", "tilo-identity-backup", "json"],
                         ),
                         ui::widget::file_picker::FileFilter::all(),
-                    ],
-                ),
+                    ]),
             ));
             self.invalidation.focus();
         }
@@ -5019,6 +4702,8 @@ impl Widget for OnboardingView {
             }
         }
 
+        self.sync_recovery_key_copy();
+
         if self.pressed.take(KEY_BACKUP_ANOTHER)
             && self.flow.screen() == Screen::Done
             && !self.identity_ready_page
@@ -5051,10 +4736,11 @@ impl Widget for OnboardingView {
                 _ => Some(t("onboarding-passphrase-unavailable")),
             };
             if self.backup_error.is_none() {
-                let (initial, roots) = onboarding_picker_scope();
+                let (initial, roots) = self.session.picker_scope();
                 self.picker = Some((
                     PickerPurpose::BackupIdentity,
                     FilePicker::new(t("onboarding-picker-backup-title"), initial, roots)
+                        .with_waker(Some(crate::shell::search::invocation_wake::waker()))
                         .with_mode(FilePickerMode::Save)
                         .with_filters(vec![ui::widget::file_picker::FileFilter::new(
                             t("onboarding-picker-backup-filter"),
@@ -5068,7 +4754,7 @@ impl Widget for OnboardingView {
             }
         }
 
-        if self.take_journaled(KEY_BACKUP_CONTINUE) {
+        if self.pressed.take(KEY_BACKUP_CONTINUE) {
             let skip_acknowledged = self
                 .backup_continue_ack
                 .take()
@@ -5248,6 +4934,7 @@ impl Widget for OnboardingView {
                 && self.flow.is_done()
                 && self.identity_ready_page
                 && !self.codec_page;
+            let knows_where_it_stands = self.backup_was_verified || self.backup_skip_acknowledged;
             // A reopened, tour-only flow exposes “Skip tour” on every page.
             // Its action is KEY_FINISH, so it must dismiss from every page,
             // not only from the final hand-off page.
@@ -5255,6 +4942,24 @@ impl Widget for OnboardingView {
                 self.finish_ceremony();
             } else if (at_tour_end || skipping_tour) && self.flow.is_done() {
                 self.journal_then(JournalChange::Clear, AfterJournal::Finish);
+            } else if self.tour_page.is_none()
+                && self.flow.is_done()
+                && !self.identity_ready_page
+                && knows_where_it_stands
+            {
+                // Ready and Backup are the same hand-off: at the end of setup
+                // there is only one choice left, to enter the desktop, and a
+                // restart in the middle of first login must still reach it.
+                // Backup therefore never refuses the way out, and the Ready
+                // page steps in exactly where the journal says so.
+                self.journal_then(
+                    JournalChange::Store(if self.backup_was_verified {
+                        PersistedStage::ReadyToEnterBackedUp
+                    } else {
+                        PersistedStage::ReadyToEnter
+                    }),
+                    AfterJournal::EnterReady,
+                );
             } else {
                 self.finished = false;
             }
@@ -5294,9 +4999,9 @@ impl Widget for OnboardingView {
             theme.text_scale > 1.0 || theme.name.eq_ignore_ascii_case("high contrast");
         let panel_height = if accessibility_expanded {
             ACCESSIBLE_PANEL_HEIGHT
-        } else if self.tour_page.is_none()
-            && matches!(self.flow.screen(), Screen::Intro | Screen::Existing)
-        {
+        } else if self.tour_page.is_none() && self.flow.screen() == Screen::Intro {
+            // The three ways to bring an existing identity (and recovery's
+            // explanation above them) need the ordinary limit.
             INTRO_PANEL_HEIGHT
         } else {
             PANEL_MAX_HEIGHT
@@ -5313,8 +5018,10 @@ impl Widget for OnboardingView {
             && (accessibility_expanded
                 || matches!(
                     self.flow.screen(),
-                    Screen::Nearby | Screen::Restore | Screen::NoRecovery
+                    Screen::Nearby | Screen::Restore | Screen::RecoveryKey | Screen::NoRecovery
                 )
+                // Recovery explains what happened above its three ways back.
+                || (self.recovery_only && self.flow.screen() == Screen::Existing)
                 || (self.flow.screen() == Screen::Done
                     && (!self.identity_ready_page || self.codec_page)));
         // The scroll/footer budget must use the same preferred height as the
@@ -5329,8 +5036,6 @@ impl Widget for OnboardingView {
             DENSE_PANEL_PREFERRED_HEIGHT
         } else if codecs_page {
             CODECS_PANEL_PREFERRED_HEIGHT
-        } else if ready_identity_page {
-            READY_PANEL_PREFERRED_HEIGHT
         } else {
             panel_height
         };
@@ -5354,8 +5059,6 @@ impl Widget for OnboardingView {
                 taffy::Dimension::length(DENSE_PANEL_PREFERRED_HEIGHT)
             } else if codecs_page {
                 taffy::Dimension::length(CODECS_PANEL_PREFERRED_HEIGHT)
-            } else if ready_identity_page {
-                taffy::Dimension::length(READY_PANEL_PREFERRED_HEIGHT)
             } else if intro_page {
                 taffy::Dimension::length(INTRO_PANEL_HEIGHT)
             } else {
@@ -5597,7 +5300,7 @@ fn screen_order(screen: Screen) -> u8 {
     match screen {
         Screen::Intro => 0,
         Screen::Existing | Screen::NoRecovery => 1,
-        Screen::Nearby | Screen::Restore => 2,
+        Screen::Nearby | Screen::Restore | Screen::RecoveryKey => 2,
         Screen::Done => 3,
     }
 }
@@ -5610,54 +5313,6 @@ fn view_order(screen: Screen, tour: Option<TourPage>) -> u8 {
         Some(TourPage::Start) => 7,
         None => screen_order(screen),
     }
-}
-
-/// OOBE is trusted compositor chrome, so its chooser follows the user rather
-/// than an application's capability scope. Keep roots narrow: the home tree
-/// plus conventional removable-media mount roots, never the whole filesystem.
-fn onboarding_picker_scope() -> (PathBuf, Vec<PathBuf>) {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute() && path.is_dir());
-    let mut roots = Vec::new();
-    if let Some(home) = home.as_ref() {
-        roots.push(home.clone());
-    }
-    let user = std::env::var_os("USER").filter(|value| !value.is_empty());
-    let mut media_roots = Vec::new();
-    if let Some(user) = user {
-        for base in [PathBuf::from("/run/media"), PathBuf::from("/media")] {
-            let candidate = base.join(&user);
-            if candidate.is_dir() {
-                media_roots.push(candidate);
-            }
-        }
-    }
-    if media_roots.is_empty() && PathBuf::from("/media").is_dir() {
-        media_roots.push(PathBuf::from("/media"));
-    }
-    let mounted = media_roots
-        .iter()
-        .find(|root| directory_has_subdirectory(root))
-        .cloned();
-    roots.extend(media_roots);
-    let initial = mounted
-        .or_else(|| home.clone())
-        .unwrap_or_else(std::env::temp_dir);
-    if roots.is_empty() {
-        roots.push(initial.clone());
-    }
-    (initial, roots)
-}
-
-fn directory_has_subdirectory(path: &std::path::Path) -> bool {
-    std::fs::read_dir(path).is_ok_and(|entries| {
-        entries.filter_map(Result::ok).any(|entry| {
-            entry
-                .file_type()
-                .is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
-        })
-    })
 }
 
 fn onboarding_picker_rect(viewport: Rect) -> Rect {
@@ -5694,6 +5349,89 @@ struct Choice {
     key: &'static str,
 }
 
+/// What the migration page says for its `status` in `state`; `retained`
+/// when this device keeps the old computer's files where they are.
+fn migration_body_key(status: &serde_json::Value, state: &str, retained: bool) -> &'static str {
+    let apps = status
+        .get("applications_only")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        || retained && matches!(state, "reviewed" | "ready-to-adopt");
+    if json_flag(status, "browser") {
+        "onboarding-browser-body"
+    } else if status
+        .get("portable_applications")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        && matches!(state, "pending" | "failed" | "unavailable" | "cancelled")
+    {
+        "onboarding-portable-applications-body"
+    } else if retained && state == "pending" {
+        "onboarding-existing-files-body"
+    } else if apps && state == "reviewed" {
+        "onboarding-existing-files-apps-reviewed"
+    } else if apps && state == "ready-to-adopt" {
+        "onboarding-existing-files-apps-adopt"
+    } else if status
+        .get("portable_home")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        && matches!(state, "pending" | "failed" | "unavailable")
+    {
+        "onboarding-portable-home-body"
+    } else {
+        match state {
+            "pending" => "onboarding-migration-body",
+            "reviewed" => "onboarding-migration-reviewed",
+            "ready-to-adopt" => "onboarding-migration-adopt-body",
+            _ if json_flag(status, "transfer_complete")
+                && json_text(status, "cleanup_state") == Some("running") =>
+            {
+                "onboarding-migration-cleanup-running"
+            }
+            _ if json_flag(status, "transfer_complete")
+                && json_text(status, "cleanup_state") == Some("pending") =>
+            {
+                "onboarding-migration-cleanup-pending"
+            }
+            _ if json_flag(status, "transfer_complete")
+                && json_text(status, "cleanup_state") == Some("unavailable") =>
+            {
+                "onboarding-migration-cleanup-unavailable"
+            }
+            "complete" => "onboarding-migration-complete",
+            "existing-files-available" => "onboarding-existing-files-available",
+            "incomplete" => "onboarding-migration-incomplete",
+            "failed" | "unavailable" => "onboarding-migration-failed",
+            "cancelled" => "onboarding-migration-cancelled",
+            _ => "onboarding-migration-working",
+        }
+    }
+}
+
+/// Whether `value`'s `key` is `true`.
+fn json_flag(value: &serde_json::Value, key: &str) -> bool {
+    value.get(key).and_then(serde_json::Value::as_bool) == Some(true)
+}
+
+/// `value`'s `key` as text.
+fn json_text<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(serde_json::Value::as_str)
+}
+
+/// A step arriving now, on the drill.
+fn step_arriving(motion: ui::tokens::EffectiveMotion) -> ui::motion::Presence {
+    let mut arriving = ui::motion::Presence::closed();
+    arriving.show(
+        true,
+        ui::motion::Drill::SPEC,
+        motion,
+        ui::tokens::MotionSource::Pointer,
+        ui::time::now(),
+    );
+    arriving
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(all(target_os = "linux", feature = "native-current-device-qualification"))]
@@ -5720,6 +5458,7 @@ mod tests {
         ));
         let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
         view.identity_dir = Some(directory.clone());
+        view.session.home = Some(home.path().into());
         view.load_prepared_setup(&directory);
         assert!(!view.prepared_pending);
         assert_eq!(
@@ -5752,6 +5491,7 @@ mod tests {
         );
         let mut other_view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
         other_view.identity_dir = Some(other_identity.clone());
+        other_view.session.home = Some(home.path().into());
         other_view.load_prepared_setup(&other_identity);
         assert!(other_view.prepared_pending);
         assert!(other_view.verified_browser_projection().is_none());
@@ -5786,6 +5526,7 @@ mod tests {
         assert!(crate::onboarding_prepared::session_pending(&directory));
         let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
         view.identity_dir = Some(directory.clone());
+        view.session.home = Some(home.path().into());
         view.load_prepared_setup(&directory);
         assert!(!view.prepared_pending);
         assert!(view.browser.is_some());
@@ -5838,6 +5579,7 @@ mod tests {
         let before = std::fs::read(directory.join("primary.json")).unwrap();
         let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
         view.identity_dir = Some(directory.clone());
+        view.session.home = Some(home.path().into());
         view.load_prepared_setup(&directory);
         assert!(!view.prepared_pending);
         assert!(
@@ -5884,6 +5626,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn migration_first_use_semantic_actions_are_bound_to_pending_operation_and_defer_truthfully() {
         use std::os::unix::fs::PermissionsExt;
         let home = tempfile::tempdir().unwrap();
@@ -5936,6 +5679,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn composite_cleanup_retry_is_visible_semantic_and_retains_rw_fence() {
         use launcher::retained_view::installed_copy::{CopyOwnerCommand, CopyOwnerEvent};
         use std::os::unix::fs::PermissionsExt;
@@ -5956,7 +5700,7 @@ mod tests {
             &identity,
             "Source owner",
             [20, 30, 40],
-            tilo_identity_host::provisioning::IdentityStorage::for_session(),
+            tilo_identity_host::provisioning::IdentityStorage::Files,
         )
         .unwrap();
         runtime_identity::set_active_identity(&identity, "primary").unwrap();
@@ -6251,7 +5995,7 @@ mod tests {
     use tilo_identity_ceremony::{IdentityRecord, SerializableIdentity};
     use winit::event::Modifiers;
 
-    fn view() -> (OnboardingView, Arc<AtomicUsize>) {
+    pub(super) fn view() -> (OnboardingView, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
         let v = OnboardingView::with_minter(Box::new(move || {
@@ -6266,8 +6010,11 @@ mod tests {
 
     #[test]
     fn cancelling_nearby_pairing_revokes_the_entire_process_group() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let started = dir.path().join("descendant");
         let child = Command::new("sh")
-            .args(["-c", "trap '' TERM; sleep 30 & wait"])
+            .args(["-c", r#"trap '' TERM; sleep 30 & touch "$STARTED"; wait"#])
+            .env("STARTED", &started)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -6275,9 +6022,8 @@ mod tests {
             .spawn()
             .expect("spawn pairing-shaped process tree");
         let pgid = i32::try_from(child.id()).expect("test process ID");
-        // Give the shell enough time to create the descendant that used to
-        // survive when only the group leader was killed.
-        std::thread::sleep(Duration::from_millis(40));
+        // The descendant that used to survive when only its leader was killed.
+        tilo_test_env::wait_until("the shell to start its descendant", || started.exists());
         let mut child = Some(child);
 
         crate::onboarding_nearby::terminate(&mut child);
@@ -6537,7 +6283,7 @@ mod tests {
         })
     }
 
-    fn press(view: &OnboardingView, doc: &mut AutoCommit, key: &'static str) {
+    pub(super) fn press(view: &OnboardingView, doc: &mut AutoCommit, key: &'static str) {
         // Checkboxes are bound to the document; every other action is a
         // click on the view's button.
         if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
@@ -6807,7 +6553,12 @@ mod tests {
             press(&view, &mut document, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &document);
             view.picker.as_mut().expect("save picker").1.click_open();
-            view.sync(&document, &automerge::ROOT);
+            // The picker checks where it saves on its worker; the frame
+            // takes its answer and hands the export to its own worker.
+            tilo_test_env::wait_until("the save picker to answer", || {
+                view.sync(&document, &automerge::ROOT);
+                view.picker.is_none()
+            });
             assert!(!view.identity_idle(), "the export is running");
             for _ in 0..3 {
                 view.sync(&document, &automerge::ROOT);
@@ -6951,7 +6702,7 @@ mod tests {
 
             store_progress(directory.path(), PersistedStage::IdentityReady)
                 .expect("backup journal");
-            let mut backup = OnboardingView::new(directory.path().to_path_buf());
+            let mut backup = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(backup.flow().screen(), Screen::Done);
             assert!(!backup.identity_ready_page);
             let mut blocked_finish = AutoCommit::new();
@@ -6961,13 +6712,13 @@ mod tests {
 
             store_progress(directory.path(), PersistedStage::IdentityReadyBackedUp)
                 .expect("verified-backup journal");
-            let backed_up = OnboardingView::new(directory.path().to_path_buf());
+            let backed_up = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert!(!backed_up.identity_ready_page);
             assert!(backed_up.backup_was_verified);
 
             store_progress(directory.path(), PersistedStage::ReadyToEnter).expect("ready journal");
 
-            let mut done = OnboardingView::new(directory.path().to_path_buf());
+            let mut done = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(done.flow().screen(), Screen::Done);
             assert!(done.flow().is_done());
             assert_eq!(
@@ -6979,44 +6730,19 @@ mod tests {
             assert!(!done.flow().can_create(), "resume never reopens creation");
 
             let mut document = AutoCommit::new();
-            press(&done, &mut document, KEY_TOUR_START);
+            // `restart_resumes_backup_ready_and_enters_the_desktop_without_a_tour`.
+            // The ready hand-off is one action; a first session teaches
+            // itself on the desktop instead of through pages read in advance.
+            press(&done, &mut document, KEY_FINISH);
             sync_journaled(&mut done, &document);
-            assert_eq!(done.tour_page, Some(TourPage::Navigate));
+            assert!(done.finished());
             assert!(
-                done.presents_desktop_context(),
-                "the first-login tour must explain the desktop over the real desktop"
+                !done.presents_desktop_context(),
+                "nothing of first login is left over the desktop"
             );
-            assert_eq!(
-                load_progress(directory.path()).expect("tour journal"),
-                Some(PersistedStage::TourNavigate)
-            );
-
-            let mut navigate_restart = OnboardingView::new(directory.path().to_path_buf());
-            assert_eq!(navigate_restart.tour_page, Some(TourPage::Navigate));
-            press(&navigate_restart, &mut document, KEY_TOUR_NEXT);
-            sync_journaled(&mut navigate_restart, &document);
-            assert_eq!(navigate_restart.tour_page, Some(TourPage::Organise));
-
-            let mut organise_restart = OnboardingView::new(directory.path().to_path_buf());
-            assert_eq!(organise_restart.tour_page, Some(TourPage::Organise));
-            press(&organise_restart, &mut document, KEY_TOUR_NEXT);
-            sync_journaled(&mut organise_restart, &document);
-            assert_eq!(organise_restart.tour_page, Some(TourPage::Collaborate));
-
-            let mut collaborate_restart = OnboardingView::new(directory.path().to_path_buf());
-            assert_eq!(collaborate_restart.tour_page, Some(TourPage::Collaborate));
-            press(&collaborate_restart, &mut document, KEY_TOUR_NEXT);
-            sync_journaled(&mut collaborate_restart, &document);
-            assert_eq!(collaborate_restart.tour_page, Some(TourPage::Start));
-
-            let mut start_restart = OnboardingView::new(directory.path().to_path_buf());
-            assert_eq!(start_restart.tour_page, Some(TourPage::Start));
-            press(&start_restart, &mut document, KEY_FINISH);
-            sync_journaled(&mut start_restart, &document);
-            assert!(start_restart.finished());
             assert!(!has_pending_progress(directory.path()));
 
-            let established = OnboardingView::new(directory.path().to_path_buf());
+            let established = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(
                 established.flow().screen(),
                 Screen::Intro,
@@ -7035,7 +6761,7 @@ mod tests {
             assert!(has_pending_progress(directory.path()));
             assert!(load_progress(directory.path()).is_err());
             write_fixture_identity(directory.path());
-            let resumed = OnboardingView::new(directory.path().to_path_buf());
+            let resumed = OnboardingView::isolated(directory.path().to_path_buf(), false);
             assert_eq!(resumed.flow().screen(), Screen::Done);
             assert!(resumed.progress_error.is_some());
 
@@ -7193,9 +6919,7 @@ mod tests {
                 KEY_CREATE,
                 KEY_BACKUP_SKIP_ACKNOWLEDGED,
                 KEY_BACKUP_CONTINUE,
-                KEY_TOUR_START,
-                KEY_TOUR_NEXT,
-                KEY_TOUR_SKIP,
+                KEY_FINISH,
             ] {
                 press(&view, &mut document, key);
                 sync_journaled(&mut view, &document);
@@ -7207,13 +6931,13 @@ mod tests {
         });
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            stages[2..],
+            stages,
             [
+                None,
+                None,
                 Some(PersistedStage::IdentityReady),
                 Some(PersistedStage::IdentityReady),
                 Some(PersistedStage::ReadyToEnter),
-                Some(PersistedStage::TourNavigate),
-                Some(PersistedStage::TourOrganise),
                 None,
             ]
         );
@@ -7419,7 +7143,7 @@ mod tests {
                 let directory = TempDir::new().expect("progress directory");
                 write_fixture_identity(directory.path());
                 store_progress(directory.path(), stage).expect("tour progress");
-                let mut view = OnboardingView::new(directory.path().to_path_buf());
+                let mut view = OnboardingView::isolated(directory.path().to_path_buf(), false);
                 let mut document = AutoCommit::new();
 
                 assert_eq!(view.tour_page, Some(page));
@@ -7485,7 +7209,7 @@ mod tests {
             write_fixture_identity(directory.path());
             store_progress(directory.path(), PersistedStage::TourOrganise)
                 .expect("organise journal");
-            let mut view = OnboardingView::new(directory.path().to_path_buf());
+            let mut view = OnboardingView::isolated(directory.path().to_path_buf(), false);
 
             assert_eq!(view.tour_page, Some(TourPage::Organise));
             assert!(
@@ -7546,7 +7270,10 @@ mod tests {
             } else {
                 assert!(navigation.contains("Super+Space"));
             }
-            assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
+            // The palette opened empty shows tabs, apps and actions; the tour
+            // names those, never categories the palette doesn't have.
+            assert!(navigation.contains("see your tabs, apps and actions"));
+            assert!(!navigation.contains("Everyday"));
             assert!(navigation.contains("Super+Tab"));
             assert!(navigation.contains("Super+Tab or pinch"));
             assert!(navigation.contains("Super+arrow keys"));
@@ -7774,7 +7501,7 @@ mod tests {
         // Phase `recovery_mode_starts_on_restore_and_never_offers_creation`.
         {
             let identity = tempfile::tempdir().expect("identity directory");
-            let mut recovery = OnboardingView::new_for_recovery(identity.path().to_path_buf());
+            let mut recovery = OnboardingView::isolated(identity.path().to_path_buf(), true);
             assert!(recovery.recovery_only);
             assert_eq!(recovery.flow.screen(), Screen::Existing);
             let mut document = AutoCommit::new();
@@ -7960,16 +7687,16 @@ mod tests {
         })
     }
 
-    fn backup_console(view: &mut OnboardingView, request: serde_json::Value) -> serde_json::Value {
+    fn backup_console(view: &mut OnboardingView, request: &serde_json::Value) -> serde_json::Value {
         serde_json::from_str(&semantic::test_dispatch(
-            &serde_json::to_vec(&request).unwrap(),
+            &serde_json::to_vec(request).unwrap(),
             view,
             None,
         ))
         .unwrap()
     }
     fn backup_action_id(view: &mut OnboardingView, operation: &str) -> String {
-        let catalog = backup_console(view, serde_json::json!({"op":"actions_enumerate"}));
+        let catalog = backup_console(view, &serde_json::json!({"op":"actions_enumerate"}));
         catalog["answer"]["actions"]
             .as_array()
             .unwrap()
@@ -8007,6 +7734,7 @@ mod tests {
         view
     }
     #[test]
+    #[allow(clippy::too_many_lines, reason = "one scenario read top to bottom")]
     fn identity_ready_does_not_complete_visible_first_use() {
         const CHILD: &str = "TILO_ONBOARDING_CONTINUATION_TEST_CHILD";
         if std::env::var_os(CHILD).is_none() {
@@ -8022,7 +7750,7 @@ mod tests {
                         return;
                     };
                     let _ = child.kill();
-                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let deadline = tilo_test_env::hang_deadline();
                     loop {
                         if matches!(child.try_wait(), Ok(Some(_))) {
                             return;
@@ -8081,7 +7809,8 @@ mod tests {
             return;
         }
         let directory = runtime_identity::identity_dir_from_env().unwrap();
-        let minted = crate::onboarding::mint_into(&directory).unwrap();
+        let paths = crate::firstboot::collaboration_identity_paths();
+        let minted = crate::onboarding::mint_into(&directory, &paths).unwrap();
         let original = std::fs::read(&minted.path).unwrap();
         let view = real_backup_view(&directory);
         assert!(
@@ -8102,8 +7831,7 @@ mod tests {
             .unwrap()
             .try_into()
             .unwrap();
-        let certificate =
-            crate::firstboot::collaboration_identity_paths().device_cert_for_user(&person);
+        let certificate = paths.device_cert_for_user(&person);
         let held = certificate.with_extension("continuation-held");
         std::fs::rename(&certificate, &held).unwrap();
         assert!(
@@ -8141,14 +7869,14 @@ mod tests {
         let passphrase = "synthetic private backup passphrase";
         let mismatch = backup_console(
             &mut view,
-            serde_json::json!({"op":"actions_invoke", "provider":"onboarding", "id":save,
+            &serde_json::json!({"op":"actions_invoke", "provider":"onboarding", "id":save,
             "args":{"destination":backup,"passphrase":passphrase,"confirmation":"different"}}),
         );
         assert!(mismatch.get("err").is_some());
         assert!(!backup.exists());
         let answer = backup_console(
             &mut view,
-            serde_json::json!({"op":"actions_invoke", "provider":"onboarding", "id":save,
+            &serde_json::json!({"op":"actions_invoke", "provider":"onboarding", "id":save,
             "args":{"destination":backup,"passphrase":passphrase,"confirmation":passphrase}}),
         );
         assert_eq!(answer["answer"]["status"], "accepted");
@@ -8166,7 +7894,7 @@ mod tests {
             load_progress(&directory).unwrap(),
             Some(PersistedStage::IdentityReadyBackedUp)
         );
-        let status = backup_console(&mut view, serde_json::json!({"op":"actions_status"}));
+        let status = backup_console(&mut view, &serde_json::json!({"op":"actions_status"}));
         assert_eq!(status["answer"]["backup"]["state"], "verified");
         assert!(!status.to_string().contains(passphrase));
         assert!(!status.to_string().contains(backup.to_str().unwrap()));
@@ -8174,7 +7902,7 @@ mod tests {
         assert_eq!(
             backup_console(
                 &mut view,
-                serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{}})
+                &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{}})
             )["answer"]["status"],
             "accepted"
         );
@@ -8189,7 +7917,7 @@ mod tests {
             std::fs::read(directory.join("primary.json")).unwrap(),
             original
         );
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":save,"args":{"destination":backup,"passphrase":passphrase,"confirmation":passphrase}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":save,"args":{"destination":backup,"passphrase":passphrase,"confirmation":passphrase}})).get("err").is_some());
         // Actual loaded recovery state preserves the verified backup after restart.
         let mut reopened = real_backup_view(&directory);
         reopened.restore_pending_progress_from_disk();
@@ -8210,13 +7938,13 @@ mod tests {
         let original = std::fs::read(directory.join("primary.json")).unwrap();
         let mut view = real_backup_view(&directory);
         let next = backup_action_id(&mut view, "backup.continue");
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{}})).get("err").is_some());
         assert!(!view.identity_ready_page);
         assert!(semantic::test_observe(&view).is_some());
         assert_eq!(
             backup_console(
                 &mut view,
-                serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{"acknowledge_without_backup":true}})
+                &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":next,"args":{"acknowledge_without_backup":true}})
             )["answer"]["status"],
             "accepted"
         );
@@ -8257,7 +7985,7 @@ mod tests {
         let id = backup_action_id(view, operation);
         let reply = backup_console(
             view,
-            serde_json::json!({
+            &serde_json::json!({
                 "op":"actions_invoke", "provider":"onboarding", "id":id, "args":{}
             }),
         );
@@ -8267,7 +7995,7 @@ mod tests {
     }
 
     #[test]
-    fn first_login_footer_semantics_preserve_progress_through_tour_and_finish() {
+    fn first_login_footer_semantics_enter_the_desktop_and_complete_first_use() {
         let root = TempDir::new().unwrap();
         let directory = root.path().join("identity");
         let public = ed25519_dalek::SigningKey::from_bytes(&[19; 32])
@@ -8280,33 +8008,28 @@ mod tests {
         let doc = AutoCommit::new();
         assert!(view.identity_ready_page);
         assert!(semantic::test_observe(&view).is_some());
-        let ready_finish = backup_action_id(&mut view, "onboarding.finish");
-        invoke_footer(&mut view, "onboarding.tour.start", &doc);
-        assert_eq!(view.tour_step(), Some(1));
-        assert_eq!(
-            load_progress(&directory).unwrap(),
-            Some(PersistedStage::TourNavigate)
+        let _ready_finish = backup_action_id(&mut view, "onboarding.finish");
+        // The ready screen hands off to the desktop and nothing else. A first
+        // session learns the desktop by using it; the overlay hints and the
+        // desktop tour reopen from Search when someone asks for them.
+        assert!(
+            backup_console(
+                &mut view,
+                &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":"onboarding.tour.start","args":{}}),
+            )
+            .get("err")
+            .is_some(),
+            "the ready screen offers no tour to press"
         );
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":ready_finish,"args":{}})).get("err").is_some());
-        let first_next = invoke_footer(&mut view, "onboarding.tour.next", &doc);
-        assert_eq!(view.tour_step(), Some(2));
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":first_next,"args":{}})).get("err").is_some());
-        invoke_footer(&mut view, "onboarding.tour.back", &doc);
-        assert_eq!(view.tour_step(), Some(1));
-        for step in [2, 3, 4] {
-            invoke_footer(&mut view, "onboarding.tour.next", &doc);
-            assert_eq!(view.tour_step(), Some(step));
-            assert!(semantic::test_observe(&view).is_some());
-        }
         let last = invoke_footer(&mut view, "onboarding.finish", &doc);
         assert!(view.finished());
-        assert!(!semantic::test_observe(&view).is_some());
+        assert!(semantic::test_observe(&view).is_none());
         assert_eq!(load_progress(&directory).unwrap(), None);
         assert_eq!(
             std::fs::read(directory.join("primary.json")).unwrap(),
             record
         );
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":last,"args":{}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":last,"args":{}})).get("err").is_some());
     }
 
     #[test]
@@ -8328,7 +8051,7 @@ mod tests {
         assert_eq!(
             backup_console(
                 &mut view,
-                serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":continue_id,"args":{"acknowledge_without_backup":true}})
+                &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":continue_id,"args":{"acknowledge_without_backup":true}})
             )["answer"]["status"],
             "accepted"
         );
@@ -8341,10 +8064,10 @@ mod tests {
         assert!(!view.codec_page_visible());
         assert!(fake.runs().is_empty());
         assert!(semantic::test_observe(&view).is_some());
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":stale_install,"args":{}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":stale_install,"args":{}})).get("err").is_some());
         invoke_footer(&mut view, "onboarding.finish", &doc);
         assert!(view.finished());
-        assert!(!semantic::test_observe(&view).is_some());
+        assert!(semantic::test_observe(&view).is_none());
         assert_eq!(load_progress(&directory).unwrap(), None);
         assert_eq!(
             std::fs::read(directory.join("primary.json")).unwrap(),
@@ -8381,7 +8104,7 @@ mod tests {
         assert_eq!(
             backup_console(
                 &mut view,
-                serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":continue_id,"args":{"acknowledge_without_backup":true}})
+                &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":continue_id,"args":{"acknowledge_without_backup":true}})
             )["answer"]["status"],
             "accepted"
         );
@@ -8390,20 +8113,18 @@ mod tests {
         assert!(view.codec_page_visible());
         let install = invoke_footer(&mut view, "onboarding.codecs.install", &doc);
         assert_eq!(
-            started
-                .recv_timeout(std::time::Duration::from_secs(2))
-                .unwrap(),
+            tilo_test_env::recv("the codec install to start", &started),
             CodecAction::Install
         );
         assert!(view.codec_running.is_some());
-        assert!(backup_console(&mut view, serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":install,"args":{}})).get("err").is_some());
+        assert!(backup_console(&mut view, &serde_json::json!({"op":"actions_invoke","provider":"onboarding","id":install,"args":{}})).get("err").is_some());
         invoke_footer(&mut view, "onboarding.codecs.continue", &doc);
         assert!(!view.codec_page_visible());
         assert!(semantic::test_observe(&view).is_some());
         release.send(()).unwrap();
         invoke_footer(&mut view, "onboarding.finish", &doc);
         assert!(view.finished());
-        assert!(!semantic::test_observe(&view).is_some());
+        assert!(semantic::test_observe(&view).is_none());
         assert_eq!(
             std::fs::read(directory.join("primary.json")).unwrap(),
             record
@@ -8466,7 +8187,7 @@ mod tests {
         );
         assert!(!view.backup_was_verified);
         assert!(semantic::test_observe(&view).is_some());
-        let catalog = backup_console(&mut view, serde_json::json!({"op":"actions_enumerate"}));
+        let catalog = backup_console(&mut view, &serde_json::json!({"op":"actions_enumerate"}));
         assert!(
             !catalog["answer"]["actions"]
                 .as_array()
@@ -8560,6 +8281,11 @@ mod tests {
             press(&view, &mut doc, KEY_BACKUP_BROWSE);
             sync_journaled(&mut view, &doc);
             view.picker.as_mut().expect("save picker").1.click_open();
+            // The picker checks where it saves on its worker first.
+            tilo_test_env::wait_until("the save picker to answer", || {
+                view.sync(&doc, &automerge::ROOT);
+                view.picker.is_none()
+            });
             sync_journaled(&mut view, &doc);
             assert_eq!(exports.load(Ordering::SeqCst), 1);
             assert!(view.backup_saved.is_some());
@@ -9130,19 +8856,21 @@ mod tests {
                     KEY_BACKUP_SKIP_ACKNOWLEDGED,
                     KEY_BACKUP_CONTINUE,
                 ],
-                &["onboarding.tour.start.button", "onboarding.finish.button"],
+                &["onboarding.finish.button"],
                 false,
             ),
         ];
 
-        for (width, height, theme) in [
+        for (width, height, theme) in vec![
             (1600.0, 900.0, Theme::dark()),
             (1366.0, 768.0, Theme::dark()),
             (1280.0, 720.0, Theme::dark()),
             (800.0, 600.0, Theme::dark()),
             (1280.0, 720.0, Theme::dark().with_text_scale(1.3)),
             (1280.0, 720.0, Theme::high_contrast().with_ui_scale(1.25)),
-        ] {
+        ]
+        .into_boxed_slice()
+        {
             for &(keys, action_ids, error_state) in scenarios {
                 let mut view = OnboardingView::with_minter_for_host_desktop(Box::new(|| {
                     Ok(MintedIdentity {
@@ -9350,38 +9078,25 @@ mod tests {
                     }
                 }
 
-                if view.flow().screen() == Screen::Done
-                    && view.identity_ready_page
-                    && !view.codec_page
-                {
-                    assert_eq!(
-                        scroll.max_offset_y(),
-                        0.0,
-                        "the brief Ready invitation must be wholly visible at {width}x{height}, theme={}",
+                if view.flow().screen() == Screen::Done && view.identity_ready_page {
+                    // The ready screen says what the desktop is for and offers
+                    // exactly one way on: the desktop, with no tour to accept.
+                    // A long line of body copy may still need a couple of
+                    // lines scrolled at one size; that is why this asserts the
+                    // copy is reachable, never that it cannot need scrolling.
+                    assert!(
+                        widget_rect("onboarding.done.heading").area() > 0.0
+                            && widget_rect("onboarding.done.body").area() > 0.0,
+                        "the ready screen keeps its title and line at {width}x{height}, theme={}",
                         theme.name
                     );
-                    let heading = widget_rect("onboarding.done.heading");
-                    let invitation = widget_rect("onboarding.done.body");
-                    let footer_top = rects
-                        .iter()
-                        .map(|rect| rect.y0)
-                        .fold(f64::INFINITY, f64::min);
-                    let gap = footer_top - invitation.y1;
                     assert!(
-                        heading.area() > 0.0
-                            && invitation.area() > 0.0
-                            && heading.y0 >= content_viewport.y0
-                            && heading.y1 <= invitation.y0
-                            && invitation.y1 <= content_viewport.y1,
-                        "Ready title and invitation must be wholly visible, ordered and clear of the footer: heading={heading:?}, invitation={invitation:?}, viewport={content_viewport:?}"
-                    );
-                    assert!(
-                        gap >= f64::from(theme.tokens.spacing.s2) - 0.5
-                            && gap
-                                <= f64::from(
-                                    theme.tokens.spacing.s6 * 2.0 + theme.tokens.spacing.s3
-                                ),
-                        "Ready actions must follow their invitation without an empty canvas: gap={gap}, invitation={invitation:?}, actions={rects:?}, panel={panel:?}, theme={}",
+                        node_map.values().any(|&ptr| unsafe {
+                            (*ptr).test_id() == Some("onboarding.finish.button")
+                        }) && !node_map.values().any(|&ptr| unsafe {
+                            (*ptr).test_id() == Some("onboarding.tour.start.button")
+                        }),
+                        "the ready screen offers the desktop and no tour at {width}x{height}, theme={}",
                         theme.name
                     );
                 }
@@ -9408,18 +9123,19 @@ mod tests {
         reason = "one walk through every choice screen, its cards, and the flows they open"
     )]
     fn choices_open_separate_flows_from_pinned_focusable_cards() {
-        // Phase `each_choice_screen_offers_two_cards_that_stay_in_view`.
+        // Phase `each_choice_screen_offers_cards_that_stay_in_view`.
         for (keys, cards) in [
             (
                 &[][..],
-                ["onboarding.existing.card", "onboarding.begin.card"],
+                &["onboarding.existing.card", "onboarding.begin.card"][..],
             ),
             (
                 &[KEY_EXISTING][..],
-                [
+                &[
                     "onboarding.existing.nearby.card",
+                    "onboarding.existing.recovery-key.card",
                     "onboarding.existing.restore.card",
-                ],
+                ][..],
             ),
         ] {
             for (width, height, theme) in [
@@ -9952,10 +9668,10 @@ mod tests {
                         .downcast_mut::<Scrollable>()
                         .unwrap();
                     scroll.scroll_into_view(
-                        (save.x0 - viewport.x0) as f32,
-                        (save.y0 - viewport.y0) as f32,
-                        save.width() as f32,
-                        save.height() as f32,
+                        ui::num::f32_of_f64(save.x0 - viewport.x0),
+                        ui::num::f32_of_f64(save.y0 - viewport.y0),
+                        ui::num::f32_of_f64(save.width()),
+                        ui::num::f32_of_f64(save.height()),
                     );
                 }
                 view.apply_layout(&taffy, node, Point::ZERO);
@@ -10101,26 +9817,28 @@ mod tests {
                 "large-text ready screen must fit the laptop-height viewport: {panel:?}",
             );
 
-            for id in ["onboarding.finish.button", "onboarding.tour.start.button"] {
-                let action = node_map
-                    .values()
-                    .find_map(|&ptr| unsafe {
-                        ((*ptr).test_id() == Some(id)).then(|| (*ptr).get_rect())
-                    })
-                    .unwrap_or_else(|| panic!("Done screen exposes {id}"));
-                assert!(action.area() > 0.0, "action={action:?}");
-                assert!(
-                    action.x0 >= 0.0
-                        && action.x1 <= 1000.0
-                        && action.y0 >= 0.0
-                        && action.y1 <= 720.0,
-                    "the action must stay fully in the viewport, id={id}, action={action:?}"
-                );
-                assert!(
-                    action.y0 >= panel.y0 && action.y1 <= panel.y1,
-                    "the panel must hold the action unclipped, id={id}, action={action:?}, panel={panel:?}"
-                );
-            }
+            let enter = "onboarding.finish.button";
+            let action = node_map
+                .values()
+                .find_map(|&ptr| unsafe {
+                    ((*ptr).test_id() == Some(enter)).then(|| (*ptr).get_rect())
+                })
+                .unwrap_or_else(|| panic!("Done screen exposes {enter}"));
+            assert!(action.area() > 0.0, "action={action:?}");
+            assert!(
+                action.x0 >= 0.0 && action.x1 <= 1000.0 && action.y0 >= 0.0 && action.y1 <= 720.0,
+                "the action must stay fully in the viewport, action={action:?}"
+            );
+            assert!(
+                action.y0 >= panel.y0 && action.y1 <= panel.y1,
+                "the panel must hold the action unclipped, action={action:?}, panel={panel:?}"
+            );
+            assert!(
+                !node_map.values().any(|&ptr| unsafe {
+                    (*ptr).test_id() == Some("onboarding.tour.start.button")
+                }),
+                "the ready screen hands off to the desktop without offering a tour"
+            );
         }
         // Phase `large_text_backup_action_keeps_a_clear_gap_below_confirmation`.
         {
@@ -10253,17 +9971,4 @@ mod tests {
             }
         }
     }
-}
-
-/// A step arriving now, on the drill.
-fn step_arriving(motion: ui::tokens::EffectiveMotion) -> ui::motion::Presence {
-    let mut arriving = ui::motion::Presence::closed();
-    arriving.show(
-        true,
-        ui::motion::Drill::SPEC,
-        motion,
-        ui::tokens::MotionSource::Pointer,
-        ui::time::now(),
-    );
-    arriving
 }

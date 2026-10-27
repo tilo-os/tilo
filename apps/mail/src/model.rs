@@ -84,7 +84,7 @@ impl Folder {
     }
 
     /// The stable string key this folder is stored under in the CRDT (and the
-    /// key a [`crate::actions::MailAction::Move`] carries). The inverse of
+    /// key a [`crate::resource::Mail::move_messages`] carries). The inverse of
     /// [`Folder::from_key`]. Kept here (rather than in `doc`) so the action layer
     /// and the persistence layer share one canonical spelling.
     pub fn as_key(self) -> &'static str {
@@ -164,10 +164,20 @@ impl Addr {
         self.email.clone()
     }
 
-    /// RFC 5322 mailbox rendering: `Name <email>` or bare `email`.
+    /// RFC 5322 mailbox rendering: `Name <email>` or bare `email`. A name
+    /// holding a separator, a quote or other punctuation the address
+    /// grammar reserves is quoted, so "Lovelace, Ada" reads back as one
+    /// recipient rather than two.
     pub fn rfc5322(&self) -> String {
         match &self.name {
-            Some(n) if !n.is_empty() => format!("{} <{}>", n, self.email),
+            Some(n) if !n.is_empty() => {
+                if n.chars().any(|ch| "()<>[]:;@\\,.\"".contains(ch)) {
+                    let escaped = n.replace('\\', "\\\\").replace('"', "\\\"");
+                    format!("\"{escaped}\" <{}>", self.email)
+                } else {
+                    format!("{n} <{}>", self.email)
+                }
+            }
             _ => self.email.clone(),
         }
     }
@@ -194,9 +204,13 @@ pub struct Attachment {
     #[serde(skip, default)]
     pub content: Vec<u8>,
     /// The bytes are kept on this device with the message's other kept mail
-    /// ([`crate::store`]), to be read when the attachment is opened or saved.
+    /// (`crate::store`), to be read when the attachment is opened or saved.
     #[serde(default)]
     pub kept: bool,
+    /// The `Content-ID` of a part the message's HTML shows in place
+    /// (`cid:`): an image of the message rather than a file attached to it.
+    #[serde(default)]
+    pub inline_id: Option<String>,
 }
 
 impl Attachment {
@@ -210,6 +224,7 @@ impl Attachment {
             content_id: None,
             content: Vec::new(),
             kept: false,
+            inline_id: None,
         }
     }
 
@@ -227,6 +242,7 @@ impl Attachment {
             content_id: None,
             content,
             kept: false,
+            inline_id: None,
         }
     }
 
@@ -291,13 +307,12 @@ pub struct Message {
     /// Minutes since the Unix epoch — coarse, but enough for relative
     /// "2h ago" style rendering without pulling `chrono`.
     pub timestamp_min: i64,
-    // ---- mutable flags (mirrored to the CRDT) ----
     pub read: bool,
     pub starred: bool,
     pub folder: Folder,
     /// User-applied labels/tags, mirrored from the CRDT (`flags/<id>/labels`).
-    /// These are set exclusively through [`crate::actions::MailAction::AddLabel`]
-    /// / [`crate::actions::MailAction::RemoveLabel`] and overlaid onto the
+    /// These are set exclusively through field edits of
+    /// [`crate::resource::MessageState::labels`] and overlaid onto the
     /// in-memory message by [`crate::resource::Mail::apply_flags`]; empty for a
     /// message that has never been tagged.
     #[serde(default)]
@@ -342,7 +357,16 @@ impl Message {
     }
 
     pub fn has_attachments(&self) -> bool {
-        !self.attachments.is_empty()
+        self.shown_attachments().next().is_some()
+    }
+
+    /// The files attached to the message, with their indices: every
+    /// attachment but the images its HTML shows in place.
+    pub fn shown_attachments(&self) -> impl Iterator<Item = (usize, &Attachment)> {
+        self.attachments
+            .iter()
+            .enumerate()
+            .filter(|(_, attachment)| attachment.inline_id.is_none())
     }
 }
 
@@ -861,8 +885,6 @@ impl Mailbox {
         }
     }
 
-    // ---- mutating actions (the reader/list issue these) ----
-
     pub fn mark_read(&mut self, id: MessageId, read: bool) {
         if let Some(m) = self.messages.get_mut(&id)
             && m.read != read
@@ -939,6 +961,36 @@ mod tests {
         assert!(!format!("{config:?}").contains("private-mail-password"));
     }
 
+    /// A reply's `To`, a reply-all's `Cc` and a picked contact are written
+    /// as `Name <address>` and read back as recipients. A name written
+    /// "Last, First" (or holding any other separator or quote) stays one
+    /// recipient with its whole name, not a stray "Last" beside "First".
+    #[test]
+    fn a_written_recipient_reads_back_as_the_same_one() {
+        for name in [
+            "Ada Lovelace",
+            "Lovelace, Ada",
+            "Ada \"Countess\" Lovelace",
+            "Dr. Ada Lovelace",
+            "Ada (Analytical) Lovelace",
+            "Back\\slash",
+        ] {
+            let addr = Addr::new(name, "ada@analytical.example");
+            assert_eq!(
+                crate::transport::parse_addr_list(&addr.rfc5322()),
+                vec![addr.clone()],
+                "{name:?} written as {:?}",
+                addr.rfc5322()
+            );
+        }
+        let two = [
+            Addr::new("Lovelace, Ada", "ada@analytical.example"),
+            Addr::new("Babbage, Charles", "charles@engine.example"),
+        ];
+        let written = two.iter().map(Addr::rfc5322).collect::<Vec<_>>().join(", ");
+        assert_eq!(crate::transport::parse_addr_list(&written), two.to_vec());
+    }
+
     fn msg(subject: &str, ts: i64, folder: Folder) -> Message {
         Message {
             id: Uuid::new_v4(),
@@ -963,7 +1015,6 @@ mod tests {
 
     #[test]
     fn threads_follow_rfc_links_and_stay_stable() {
-        // Phase `normalize_strips_reply_prefixes`.
         {
             assert_eq!(normalize_subject("Re: Re: Hello"), "Hello");
             assert_eq!(normalize_subject("FWD: Fw: Plan"), "Plan");
@@ -993,7 +1044,6 @@ mod tests {
             assert_eq!(threads[1].id, "unrelated@example.test");
         }
 
-        // Phase `references_root_keeps_a_multihop_thread_stable_during_hydration`.
         {
             let mut mb = Mailbox::default();
             // C's raw mail held `References: <launch-root> <launch-middle>`;
@@ -1026,7 +1076,6 @@ mod tests {
 
     #[test]
     fn folder_flags_track_unread_star_and_trash() {
-        // Phase `unread_count_and_mark_read`.
         {
             let mut mb = Mailbox::default();
             let m = msg("Hi", 10, Folder::Inbox);
@@ -1037,7 +1086,6 @@ mod tests {
             assert_eq!(mb.unread_count(Folder::Inbox), 0);
         }
 
-        // Phase `star_makes_message_appear_in_virtual_folder`.
         {
             let mut mb = Mailbox::default();
             let m = msg("Hi", 10, Folder::Inbox);
@@ -1048,7 +1096,6 @@ mod tests {
             assert_eq!(mb.count(Folder::Starred), 1);
         }
 
-        // Phase `delete_moves_to_trash_then_purges`.
         {
             let mut mb = Mailbox::default();
             let m = msg("Hi", 10, Folder::Inbox);
@@ -1063,7 +1110,6 @@ mod tests {
 
     #[test]
     fn mailbox_search_is_bounded_and_case_insensitive() {
-        // Phase `search_page_enforces_work_and_result_bounds_without_losing_newest_order`.
         {
             let mut mb = Mailbox::default();
             for ts in 0..6 {
@@ -1088,7 +1134,6 @@ mod tests {
             assert!(body_page.truncated);
         }
 
-        // Phase `search_matches_subject_and_body_case_insensitively`.
         {
             let mut mb = Mailbox::default();
             mb.insert(msg("Launch Plan", 10, Folder::Inbox));

@@ -68,11 +68,18 @@ pub(crate) fn note_mount(
 /// Name every noted actor in `directory`. An agent mount's actor, and one
 /// whose author is among `agents` (the workspace's agent members), is shown
 /// as that agent. All of one participant's actors share its identity, so
-/// history groups and counts them as the one participant they are.
-pub(crate) fn register(directory: &mut AuthorDirectory, agents: &[String]) {
+/// history groups and counts them as the one participant they are. A
+/// person `person` knows (by the principal they write as) is named and
+/// coloured as presence shows them.
+pub(crate) fn register(
+    directory: &mut AuthorDirectory,
+    agents: &[String],
+    person: tilo_desktop_surface::history_log::PersonOf<'_>,
+) {
     AUTHORS.with_borrow(|authors| {
         for (actor, author) in authors {
-            let name = if author.agent || agents.contains(&author.name) {
+            let agent = author.agent || agents.contains(&author.name);
+            let name = if agent {
                 format!("agent:{}", author.name)
             } else {
                 author.name.clone()
@@ -80,8 +87,14 @@ pub(crate) fn register(directory: &mut AuthorDirectory, agents: &[String]) {
             // The key a participant's own handle actor has, so an actor
             // history resolves by its handle alone agrees too.
             let identity = ui::automerge::ActorId::from(name.as_bytes()).to_hex_string();
-            let rgb = ui::presence::user_color(&name);
-            directory.register(actor, author_coloured(name, short_id(&identity), rgb));
+            let (shown, rgb) = (!agent)
+                .then(|| person(&name))
+                .flatten()
+                .unwrap_or_else(|| {
+                    let rgb = ui::presence::user_color(&name);
+                    (name, rgb)
+                });
+            directory.register(actor, author_coloured(shown, short_id(&identity), rgb));
         }
     });
 }
@@ -100,7 +113,7 @@ mod tests {
         note(&reader, "Reading agent", None);
         note_mount(Some(&agent), "agent-task:reading", Some("Scribe"));
         let mut directory = AuthorDirectory::new();
-        register(&mut directory, &["Reading agent".into()]);
+        register(&mut directory, &["Reading agent".into()], &|_| None);
         let name = |actor: &ui::automerge::ActorId| directory.resolve(&actor.to_hex_string()).name;
         assert_eq!(name(&phone), "You");
         assert_eq!(
@@ -128,7 +141,7 @@ mod tests {
 
         note(&phone, "Reading agent", None);
         let mut shared = AuthorDirectory::new();
-        register(&mut shared, &[]);
+        register(&mut shared, &[], &|_| None);
         assert_eq!(
             shared.resolve(&phone.to_hex_string()).name,
             "You",
@@ -141,6 +154,23 @@ mod tests {
         );
     }
 
+    /// A mount writes as its person's principal (a key, in a room): their
+    /// edits read by the name and colour presence shows them, not the key.
+    #[test]
+    fn a_person_presence_knows_reads_by_their_name_and_colour() {
+        let record = ui::automerge::ActorId::random();
+        let key = "c0ffee00c0ffee00c0ffee00c0ffee00";
+        let pink = (0xee, 0x83, 0xaf);
+        note_mount(Some(&record), key, None);
+        let mut directory = AuthorDirectory::new();
+        register(&mut directory, &[], &|user| {
+            (user == key).then(|| ("Eager Dolphin".to_owned(), pink))
+        });
+        let author = directory.resolve(&ui::record::author_writer(&record, key).to_hex_string());
+        assert_eq!(author.name, "Eager Dolphin");
+        assert_eq!(author.rgb(), pink);
+    }
+
     #[test]
     fn every_mount_names_its_own_writer_on_a_shared_record_and_one_identity_per_author() {
         let record = ui::automerge::ActorId::random();
@@ -148,7 +178,7 @@ mod tests {
         note_mount(Some(&record), "Scout", None);
         note_mount(Some(&record), "agent-task:scout", Some("Scout"));
         let mut directory = AuthorDirectory::new();
-        register(&mut directory, &["Scout".into()]);
+        register(&mut directory, &["Scout".into()], &|_| None);
         let resolve = |actor: &ui::automerge::ActorId| directory.resolve(&actor.to_hex_string());
         let ada = resolve(&ui::record::author_writer(&record, "Ada"));
         assert_eq!(ada.name, "Ada");

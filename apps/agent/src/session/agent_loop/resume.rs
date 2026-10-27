@@ -38,7 +38,7 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
         state: &mut LoopState,
     ) -> Result<Resumed> {
-        let Some(paused) = run.paused.as_ref().filter(|_| self.native_task.is_some()) else {
+        let Some(paused) = run.paused.as_ref() else {
             return Ok(Resumed::Fresh);
         };
         let catalogue = self.task_catalogue();
@@ -79,12 +79,9 @@ impl Session {
         let told = match outcome {
             Ok(outcome) => {
                 self.chooser
-                    .mark(tilo_model_gateway::TraceEvent::ActionSettled, index);
+                    .mark(tilo_model_client::TraceEvent::ActionSettled, index);
                 state.completed += 1;
                 *state.done_apps.entry(offer.app).or_default() += 1;
-                state
-                    .actions
-                    .push(format!("{label}: succeeded (confirmed by the person)"));
                 let told = format!(
                     "{label} ran once the person answered, and succeeded. {}",
                     result_line(&outcome)
@@ -93,7 +90,6 @@ impl Session {
                 told
             }
             Err(TaskActionStop::Failed(message)) => {
-                state.actions.push(format!("{label}: {message}"));
                 format!("{label} did not run: {message}")
             }
             Err(TaskActionStop::Cancelled(message)) => {

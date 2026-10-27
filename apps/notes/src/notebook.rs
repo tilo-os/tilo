@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use tilo_document::action::{RegionKind, Span};
 use tilo_document::{ClipBlock, RichText, RichTextAction};
 use ui::tilo_resource::{
-    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, Refusal, Set, resource,
+    self, ActionCx, Atom, Bytes, Collection, Id, Map, Model, Reactions, Refusal, Set, resource,
 };
 use ui::widget::BlockContent;
 use ui::widget::marks::Mark;
@@ -73,6 +73,18 @@ pub struct Page {
     pub body: RichText,
     /// Tags
     pub tags: Set<Id>,
+    /// Made by
+    ///
+    /// The person or agent whose action made the note; none for a note
+    /// made before notes kept it, or by a field edit. Only making the note
+    /// sets it.
+    #[model(readonly)]
+    #[model(default = None)]
+    pub creator: Option<Atom>,
+    /// Reactions
+    ///
+    /// What people answered the note with, shown under its title.
+    pub reactions: Reactions,
 }
 
 /// A named tag notes carry.
@@ -111,6 +123,18 @@ impl Page {
         }
     }
 
+    /// This note, made by whoever invoked the action `cx` applies.
+    #[must_use]
+    pub fn made(self, cx: &ActionCx) -> Self {
+        Self {
+            creator: cx
+                .author()
+                .filter(|author| !author.is_empty())
+                .map(|author| Atom(author.to_owned())),
+            ..self
+        }
+    }
+
     /// The body's paragraphs as the editor shows them, a block per
     /// paragraph, with their ids.
     #[must_use]
@@ -122,7 +146,11 @@ impl Page {
             .body()
             .all()
             .filter_map(|id| state.block(id))
-            .map(|view| tilo_rich_text::content_of(view))
+            .map(|view| {
+                #[cfg(test)]
+                tests::MATERIALIZED_BLOCKS.with(|count| count.set(count.get() + 1));
+                tilo_rich_text::content_of(view)
+            })
             .collect()
     }
 }
@@ -131,6 +159,42 @@ impl Page {
 #[must_use]
 pub fn page_id(page: PageId) -> Id {
     Id::from(page.to_string())
+}
+
+/// The id a note is stored under, from either form a reader meets it in:
+/// the stored id, or the resource the notebook's read lists it as
+/// (`notes.notebook/pages/<id>`).
+fn note_key(id: Id) -> Id {
+    crate::actions::page_of_resource(id.as_str()).map_or(id, page_id)
+}
+
+/// The most titles a refusal names, so it stays one readable line.
+const MOST_TITLES: usize = 20;
+
+/// A title as notes are found by it: case aside, any run of spaces as one.
+fn folded(title: &str) -> String {
+    title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// `pages`' titles as a refusal names them.
+fn titles(pages: &[&Page]) -> String {
+    if pages.is_empty() {
+        return "none yet".to_owned();
+    }
+    let more = pages.len().saturating_sub(MOST_TITLES);
+    let mut named: Vec<String> = pages
+        .iter()
+        .take(MOST_TITLES)
+        .map(|page| format!("“{}”", page.title))
+        .collect();
+    if more > 0 {
+        named.push(format!("and {more} more"));
+    }
+    named.join(", ")
 }
 
 /// The note a stored id names, when it is one.
@@ -162,13 +226,14 @@ impl Notebook {
         #[param("Title")] title: String,
         #[param("The note it goes under; none for a top-level note")] parent: Option<Id>,
     ) -> Result<(), Refusal> {
+        let parent = parent.map(note_key);
         if let Some(parent) = &parent {
             self.pages
                 .get(parent)
                 .ok_or("the note it goes under is gone")?;
         }
         let id = Id::from(cx.uuid().to_string());
-        self.pages.push(id, Page::titled(&title, parent));
+        self.pages.push(id, Page::titled(&title, parent).made(cx));
         Ok(())
     }
 
@@ -185,7 +250,7 @@ impl Notebook {
         self.pages.get(page).ok_or("no such note")?;
         let id = Id::from(cx.uuid().to_string());
         self.pages
-            .push(id, Page::titled(&title, Some(page.clone())));
+            .push(id, Page::titled(&title, Some(page.clone())).made(cx));
         Ok(())
     }
 
@@ -205,7 +270,9 @@ impl Notebook {
         }
         note.title.clone_from(&title);
         if let Some(target) = page_of(page) {
-            self.relabel_links(target, &title);
+            ui::tilo_resource::profiling::measure("notes.rename.relabel", || {
+                self.relabel_links(target, &title);
+            });
         }
         Ok(())
     }
@@ -226,14 +293,14 @@ impl Notebook {
     ///
     /// Put the note under `parent` (top level when none), before the note
     /// `before` there, or after the notes there when none.
-    #[action(item = pages)]
+    #[action(item = pages, audience = "agents")]
     pub fn move_note(
         &mut self,
         page: &Id,
         #[param("The note it goes under; none for the top level")] parent: Option<Id>,
         #[param("The note it goes before; none to go last")] before: Option<Id>,
     ) -> Result<(), Refusal> {
-        self.place(page, parent, before.as_ref())
+        self.place(page, parent.map(note_key), before.map(note_key).as_ref())
     }
 
     /// Move note up
@@ -350,7 +417,11 @@ impl Notebook {
                 parent,
                 body: written(&blocks),
                 tags: original.tags.clone(),
-            };
+                creator: None,
+                // People reacted to the original; the copy starts unanswered.
+                reactions: Reactions::new(),
+            }
+            .made(cx);
             self.pages.insert(at, copy.clone(), page_copy);
             at = at.saturating_add(1);
         }
@@ -424,7 +495,7 @@ impl Notebook {
     ///
     /// Keep a PNG, JPEG or WebP picture with the notebook, for a note's body
     /// to show by `![alt](asset:<digest>)`.
-    #[action]
+    #[action(audience = "agents")]
     pub fn keep_image(
         &mut self,
         cx: &mut ActionCx,
@@ -437,7 +508,7 @@ impl Notebook {
     ///
     /// Keep a PNG, JPEG or WebP picture with the notebook and show it at the
     /// end of the note, described by `alt`.
-    #[action(item = pages)]
+    #[action(item = pages, audience = "agents")]
     pub fn place_image(
         &mut self,
         cx: &mut ActionCx,
@@ -465,7 +536,7 @@ impl Notebook {
     /// bullets, `- [ ]` checklists, quotes, code, tables and `[[Note title]]`
     /// links. A leading `# title` equal to the title is dropped. Answers the
     /// note's id and resource.
-    #[action(answers)]
+    #[action(answers, audience = "agents")]
     pub fn create_page(
         &mut self,
         cx: &mut ActionCx,
@@ -480,7 +551,7 @@ impl Notebook {
             crate::markdown::strip_matching_title_heading(&markdown.unwrap_or_default(), title);
         check_markdown_import(&markdown).map_err(Refusal::new)?;
         let id = Id::from(cx.uuid().to_string());
-        let page = Page::titled(title, None);
+        let page = Page::titled(title, None).made(cx);
         let new = page_of(&id);
         let blocks = crate::MainPanel::seed_blocks(&markdown, |target| {
             if target == page.title {
@@ -506,7 +577,7 @@ impl Notebook {
     /// Add Markdown text as a new top-level note titled `title`, with the
     /// pictures it shows. A `[[Title]]` link leads to the note of that
     /// title.
-    #[action]
+    #[action(audience = "agents")]
     pub fn import_markdown(
         &mut self,
         cx: &mut ActionCx,
@@ -537,7 +608,8 @@ impl Notebook {
                 &title
             },
             None,
-        );
+        )
+        .made(cx);
         let new = page_of(&id);
         let blocks = crate::MainPanel::seed_blocks(&markdown, |target| {
             if target == page.title {
@@ -557,9 +629,95 @@ impl Notebook {
         );
         Ok(())
     }
+
+    /// Append to note
+    ///
+    /// Add Markdown at the end of a note, a block per line: headings,
+    /// bullets, `- [ ]` checklists, quotes and code. The note is the one
+    /// titled `title` (case and spacing aside); with no title, the one note
+    /// you made. An agent names notes by the titles it reads, so it need
+    /// not look the note's id up first; answers the note's id and resource.
+    #[action(answers, audience = "agents")]
+    pub fn append_to_note(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The note's title, case and spacing aside; the one note you made when omitted")]
+        title: Option<String>,
+        #[param("What to add, as Markdown")] markdown: String,
+    ) -> Result<(), Refusal> {
+        check_markdown_import(&markdown).map_err(Refusal::new)?;
+        if markdown.trim().is_empty() {
+            return Err(Refusal::new("give the Markdown to add"));
+        }
+        let id = match title.as_deref().map(str::trim) {
+            Some(title) if !title.is_empty() => self.titled(title)?,
+            _ => self.made_by(cx.author())?,
+        };
+        let note = self.pages.get_mut(&id).ok_or("no such note")?;
+        note.body.perform(RichTextAction::InsertMarkdown {
+            at: tilo_document::block_edit::Placement::End,
+            markdown,
+        });
+        Ok(())
+    }
 }
 
 impl Notebook {
+    /// The note titled `title`: an exact title first, else the one title
+    /// equal with case and spacing aside; refused, naming the notes, when
+    /// none or several are. Never another note in its place: an append
+    /// that lands on the wrong note reads as done.
+    fn titled(&self, title: &str) -> Result<Id, Refusal> {
+        let wanted = title.trim();
+        if wanted.is_empty() {
+            return Err(Refusal::new("name the note by its title"));
+        }
+        if let Some((id, _)) = self.pages.iter().find(|(_, page)| page.title == wanted) {
+            return Ok(id.clone());
+        }
+        let wanted_folded = folded(wanted);
+        let alike: Vec<(&Id, &Page)> = self
+            .pages
+            .iter()
+            .filter(|(_, page)| folded(&page.title) == wanted_folded)
+            .collect();
+        match alike.as_slice() {
+            [(id, _)] => Ok((*id).clone()),
+            [] => Err(Refusal::new(format!(
+                "no note is titled “{wanted}”; the notes are {}",
+                titles(&self.pages.iter().map(|(_, page)| page).collect::<Vec<_>>())
+            ))),
+            several => Err(Refusal::new(format!(
+                "several notes are titled {}: give its exact title",
+                titles(&several.iter().map(|(_, page)| *page).collect::<Vec<_>>())
+            ))),
+        }
+    }
+
+    /// The one note `author` made, for an append that names none. The note
+    /// open in a window, or the first, is someone's but not necessarily
+    /// the caller's, so with none or several the caller names one.
+    fn made_by(&self, author: Option<&str>) -> Result<Id, Refusal> {
+        let made: Vec<(&Id, &Page)> = self
+            .pages
+            .iter()
+            .filter(|(_, page)| {
+                author.is_some_and(|author| page.creator.as_ref().is_some_and(|by| by.0 == author))
+            })
+            .collect();
+        match made.as_slice() {
+            [(id, _)] => Ok((*id).clone()),
+            [] => Err(Refusal::new(format!(
+                "name the note by its title: you made none here; the notes are {}",
+                titles(&self.pages.iter().map(|(_, page)| page).collect::<Vec<_>>())
+            ))),
+            several => Err(Refusal::new(format!(
+                "name the note by its title: you made {}",
+                titles(&several.iter().map(|(_, page)| *page).collect::<Vec<_>>())
+            ))),
+        }
+    }
+
     /// The note `page` and every note under it, parents before their
     /// children, in notebook order.
     #[must_use]
@@ -672,40 +830,64 @@ impl Notebook {
 
     /// Relabel every link and embed of note `target` to read `title`.
     fn relabel_links(&mut self, target: PageId, title: &str) {
-        let chars =
-            |text: &str, byte: usize| text.get(..byte).map_or(0, |head| head.chars().count());
-        for (_, page) in self.pages.iter_mut() {
-            for block in page.blocks() {
+        let mut edits = Vec::new();
+        for (id, page) in self.pages.iter() {
+            let Some(state) = page.body.state() else {
+                continue;
+            };
+            let mut ops = Vec::new();
+            // Read the shared paragraphs' marks, without copying every
+            // page's prose and formatting into editor blocks.
+            for block in state.blocks(0..usize::MAX) {
                 let mut ranges: Vec<_> = block
                     .marks
                     .iter()
-                    .filter(|span| {
-                        matches!(&span.mark, Mark::Link(linked) | Mark::Transclusion(linked) if *linked == target)
+                    .filter_map(|span| {
+                        let mark = tilo_rich_text::editor_mark(&span.name, &span.value)?;
+                        if !matches!(&mark, Mark::Link(linked) | Mark::Transclusion(linked) if *linked == target)
+                        {
+                            return None;
+                        }
+                        let byte = |at| {
+                            block
+                                .text
+                                .char_indices()
+                                .nth(at)
+                                .map_or(block.text.len(), |(byte, _)| byte)
+                        };
+                        let start = byte(span.start);
+                        let end = byte(span.end);
+                        let old = block.text.get(start..end)?;
+                        (start < end && old != title)
+                            .then(|| (span.start, old.chars().count(), mark))
                     })
-                    .filter(|span| block.text.get(span.range.clone()) != Some(title))
-                    .map(|span| (span.range.clone(), span.mark.clone()))
                     .collect();
                 // Last first, so each edit leaves the earlier ranges where
-                // they are.
-                ranges.sort_unstable_by_key(|(range, _)| std::cmp::Reverse(range.start));
-                for (range, mark) in ranges {
-                    let at = chars(&block.text, range.start);
-                    let del = block
-                        .text
-                        .get(range.clone())
-                        .map_or(0, |old| old.chars().count());
-                    page.body.perform(RichTextAction::SpliceText {
+                // they are. Stored marks already use character offsets.
+                ranges.sort_unstable_by_key(|(at, _, _)| std::cmp::Reverse(*at));
+                for (at, del, mark) in ranges {
+                    ops.push(RichTextAction::SpliceText {
                         region: RegionKind::Body,
                         block: block.id.clone(),
                         at,
                         del,
                         ins: title.to_owned(),
                     });
-                    page.body.perform(mark_op(
+                    ops.push(mark_op(
                         &block.id,
                         at..at.saturating_add(title.chars().count()),
                         &mark,
                     ));
+                }
+            }
+            if !ops.is_empty() {
+                edits.push((id.clone(), ops));
+            }
+        }
+        for (id, ops) in edits {
+            if let Some(page) = self.pages.get_mut(&id) {
+                for op in ops {
+                    page.body.perform(op);
                 }
             }
         }
@@ -723,6 +905,23 @@ impl Notebook {
     ) -> Option<serde_json::Value> {
         use tilo_resource::Resource as _;
         let notebook = Notebook::read(doc).ok()?;
+        // Appending names its note by title: answer the note it found.
+        if action == "append-to-note" {
+            return changes.iter().find_map(|patch| {
+                patch.path.iter().find_map(|(_, prop)| {
+                    let automerge::Prop::Map(key) = prop else {
+                        return None;
+                    };
+                    let page = page_of(&Id::from(key.as_str()))?;
+                    notebook.pages.contains(&page_id(page)).then(|| {
+                        serde_json::json!({
+                            "page": page.to_string(),
+                            "resource": crate::actions::page_resource_id(page),
+                        })
+                    })
+                })
+            });
+        }
         // A block action of a note's body answers the blocks it touched.
         if tilo_document::block_actions::ANSWERING.contains(&action) {
             return notebook.pages.iter().find_map(|(id, _)| {
@@ -763,9 +962,11 @@ impl Notebook {
     }
 
     /// One note, or the notebook, as a reader reads it: the notebook as its
-    /// notes and tags; a note (by its id) as its title and blocks, each with
-    /// the id edits of its body name it by; a note's body resource as those
-    /// blocks.
+    /// notes and tags, the notes in notebook order (so the notes under one
+    /// parent are listed in the order the sidebar shows them); a note (by its
+    /// id) as its title and blocks, one Markdown line per block in order,
+    /// each with the id edits of its body name it by; a note's body resource
+    /// as those blocks.
     fn read_note(
         &self,
         doc: &tilo_resource::Doc,

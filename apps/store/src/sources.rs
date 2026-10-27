@@ -421,6 +421,7 @@ pub fn flathub_record_to_item(
             developer: r.developer.clone(),
             license: r.license.clone(),
             updated_at_unix: r.updated_at_unix,
+            arches: r.arches.clone(),
             ..crate::model::Listing::default()
         },
         id: r.app_id.clone(),
@@ -595,7 +596,7 @@ pub(crate) mod tests {
     #[test]
     fn tapp_versions_keep_their_runtime_pin_and_runtime_packages_offer_install() {
         let mut entry = tilo_entry("so.tilo.runtime.chromium", "Chromium", "1.0.0", [1; 32]);
-        let runtime = "tilo-runtime/2026.10.17-chromium";
+        let runtime = "tilo-runtime/2026.10.23-chromium";
         let version = &mut entry.versions[0];
         version.tapp_mut().unwrap().target.runtime = Some(runtime.into());
         let stored = tilo_version_to_store(version, version.tapp().unwrap());
@@ -670,7 +671,6 @@ pub(crate) mod tests {
             signature_hex: String::new(),
         };
         let key = SigningKey::from_bytes(&publisher);
-        // Update the pubkey hex to match the SigningKey's public half.
         e.publisher_pubkey_hex = hex::encode(key.verifying_key().to_bytes());
         sign_entry(&mut e, &key);
         e
@@ -766,10 +766,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// Registry entries resolve installed, update, immutable and locally-installed states.
     #[test]
     fn catalogue_entries_resolve_install_and_update_state() {
-        // Case `tilo_entry_deserializes_installed_state`.
         {
             let entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
             let installed = vec![installed_package(
@@ -788,7 +786,6 @@ pub(crate) mod tests {
             assert!(matches!(item.source, StoreSource::Tilo { .. }));
         }
 
-        // Case `tilo_entry_with_newer_registry_version_flags_update`.
         {
             let entry = tilo_entry("so.tilo.notes", "Notes", "0.2.0", [1u8; 32]);
             let installed = vec![installed_package(
@@ -802,7 +799,6 @@ pub(crate) mod tests {
             assert!(item.installed.update_available());
         }
 
-        // Case `immutable_system_entry_is_installed_but_not_mutable`.
         {
             let entry = tilo_entry("so.tilo.settings", "Settings", "1.0.0", [2u8; 32]);
             let installed = vec![installed_package(
@@ -819,7 +815,6 @@ pub(crate) mod tests {
             assert!(item.remove_action().is_none());
         }
 
-        // Case `locally_installed_tilo_item_stays_actionable_without_catalogue_metadata`.
         {
             let item = installed_tilo_to_store_item(
                 &installed_package("so.tilo.offline", "1.2.3", "ab".repeat(32), true, true),
@@ -837,7 +832,6 @@ pub(crate) mod tests {
             assert!(item.versions[0].download_url.is_none());
         }
 
-        // Case `locally_installed_flatpak_stays_actionable_without_a_popular_feed_row`.
         {
             let item = installed_flatpak_to_item("org.example.Offline", "4.0");
             assert_eq!(item.name, "org.example.Offline");
@@ -873,7 +867,6 @@ pub(crate) mod tests {
             };
             flathub_record_to_item(&record, &[])
         };
-        // Case `merge_dedups_by_name_tilo_wins`.
         {
             let tilo_entry = tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32]);
             let tilo = tilo_to_store_item(&verified(tilo_entry), "Tilo main", &[]);
@@ -884,7 +877,6 @@ pub(crate) mod tests {
             assert!(matches!(merged[0].source, StoreSource::Tilo { .. }));
         }
 
-        // Case `merge_preserves_distinct_flathub_items`.
         {
             let q = tilo_to_store_item(
                 &verified(tilo_entry("so.tilo.notes", "Notes", "0.1.0", [1u8; 32])),
@@ -896,7 +888,6 @@ pub(crate) mod tests {
             assert_eq!(merged.len(), 2);
         }
 
-        // Case `distinct_categories_sorted_and_deduped`.
         {
             let a =
                 tilo_to_store_item(&verified(tilo_entry("a", "A", "1", [2u8; 32])), "Tilo", &[]);
@@ -907,7 +898,6 @@ pub(crate) mod tests {
             assert_eq!(cats, vec!["Games".to_string(), "Productivity".to_string()]);
         }
 
-        // Case `appstream_detail_prefers_plain_long_description`.
         {
             let record = AppStreamRecord {
                 app_id: "org.example.App".into(),

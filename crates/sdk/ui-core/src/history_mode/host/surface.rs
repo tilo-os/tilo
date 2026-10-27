@@ -28,14 +28,17 @@ impl HistoryHost {
         // the live app is inert, so the control moves into this bar.
         let control = (self.open_button && !self.open && !self.invalid_owner)
             .then_some(crate::widget::window_header::HistoryControl::Closed);
-        let presents = live
+        let offered = live
             .as_deref_mut()
             .is_some_and(|live| crate::widget::window_header::offer_history_control(live, control));
+        // An app whose controls are its window bar's slots keeps History
+        // there too: whoever shows the slots (the desktop's bar, the
+        // runner's row) shows it, and this bar never stands above the app.
+        let presents =
+            offered || (control.is_some() && crate::window_toolbar::declared().is_some());
         // Closed, the sync status reads as quiet text in the same row; open,
         // it stays with this bar.
-        let status = (!self.open)
-            .then_some(self.sync_status.as_deref())
-            .flatten();
+        let status = (!self.open).then_some(self.sync_status.as_ref()).flatten();
         let presents_status = live
             .as_deref_mut()
             .is_some_and(|live| crate::widget::window_header::offer_sync_status(live, status));
@@ -561,7 +564,9 @@ impl Widget for HistoryHost {
         }
         if self.bar_status.text().is_some()
             && let Some(row) = self.toolbar.children().first()
-            && let Some(control) = row.children().last()
+            // The status ends before the row's first control: its Retry,
+            // when it has one, or the History control.
+            && let Some(control) = row.children().first()
         {
             let row = row.get_rect();
             self.bar_status.paint(
@@ -694,6 +699,23 @@ impl Widget for HistoryHost {
             children.push(&mut self.banner);
         }
         children
+    }
+    /// Everything a composition can lay out, also under an open review and
+    /// whichever side the preview is not showing. The live app is its
+    /// owner's child, not this one's.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.toolbar);
+        visitor(&self.bar_status);
+        visitor(&self.timeline);
+        visitor(&self.unavailable);
+        visitor(&self.before);
+        visitor(&self.after);
+        visitor(&self.footer);
+        visitor(&self.banner);
+        if let Some(panel) = &self.review {
+            visitor(&panel.dialog);
+        }
+        true
     }
     fn get_rect(&self) -> Rect {
         self.rect

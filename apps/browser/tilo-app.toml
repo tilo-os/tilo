@@ -16,7 +16,7 @@ category = "Network"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
-optional-runtimes = ["tilo-runtime/2026.10.17-chromium"]
+optional-runtimes = ["tilo-runtime/2026.10.23-chromium"]
 platforms = ["linux", "macos"]
 platform-reason = "Embeds a WebView engine."
 
@@ -28,7 +28,7 @@ aarch64 = "aarch64"
 [capabilities]
 required = ["network.http", "webview"]
 # Reviewed account-session imports need secret custody; ordinary browsing does not.
-optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes", "settings", "secrets", "gpu"]
+optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes", "settings", "secrets", "gpu", "notifications"]
 
 [resources]
 kinds = ["browser.address-book", "browser.application", "browser.browsing-history", "browser.personal-bookmarks"]
@@ -69,10 +69,10 @@ mode = "host"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@2"
-tilo-fs = "optional@2"
-shell-ui = "optional@10"
-app-host = "optional@2"
+collab = "optional@10"
+tilo-fs = "optional@10"
+shell-ui = "optional@17"
+app-host = "optional@3"
 
 [entrypoint]
 bin             = "bin/browser"

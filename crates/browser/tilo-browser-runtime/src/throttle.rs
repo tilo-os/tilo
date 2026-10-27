@@ -37,11 +37,20 @@ impl PublicationSchedule {
         PublicationDecision::Now
     }
 
-    /// Hold a change that was not even looked at: inside the window it
+    /// Hold a change that was not even looked at, and return when it is
+    /// due: a change already held keeps its instant, one inside the window
     /// waits for the window's end, as [`Self::decide`] would defer it, and
-    /// the instant is returned; outside it `None`, and the caller must look.
+    /// one outside it waits a whole window from now. `None` once that
+    /// instant has passed (or the window is empty): the caller must look.
     pub(crate) fn defer(&mut self, now: Instant) -> Option<Instant> {
-        let due = self.last?.checked_add(self.window)?;
+        let due = match self.due {
+            Some(due) => due,
+            None => self
+                .last
+                .and_then(|last| last.checked_add(self.window))
+                .filter(|&due| now < due)
+                .or_else(|| now.checked_add(self.window))?,
+        };
         if now >= due {
             return None;
         }
@@ -64,6 +73,14 @@ impl PublicationSchedule {
         self.due
     }
 
+    /// The end of the window the last delivery opened, while it is open
+    /// at `now`.
+    pub(crate) fn window_end(&self, now: Instant) -> Option<Instant> {
+        self.last
+            .and_then(|last| last.checked_add(self.window))
+            .filter(|&end| now < end)
+    }
+
     /// Hold a change until `at`, as if [`Self::defer`] had.
     pub(crate) fn hold(&mut self, at: Instant) {
         self.due = Some(at);
@@ -72,8 +89,13 @@ impl PublicationSchedule {
     /// Whether [`Self::defer`] would hold a change at `now`, without
     /// scheduling anything.
     pub(crate) fn would_defer(&self, now: Instant) -> bool {
-        self.last
-            .and_then(|last| last.checked_add(self.window))
-            .is_some_and(|due| now < due)
+        self.due
+            .map_or_else(|| !self.window.is_zero(), |due| now < due)
+    }
+
+    /// Whether a change held earlier is still waiting for its instant:
+    /// nothing is held, or its instant has not come.
+    pub(crate) fn nothing_due(&self, now: Instant) -> bool {
+        self.due.is_none_or(|due| now < due)
     }
 }

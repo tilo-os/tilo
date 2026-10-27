@@ -242,7 +242,6 @@ mod asynchronous {
 
     #[tokio::test]
     async fn async_framing_matches_blocking_framing_and_limits() {
-        // Phase `async_matches_blocking`.
         {
             for framing in [LE, BE] {
                 let mut wire = Vec::new();
@@ -259,7 +258,6 @@ mod asynchronous {
                 assert!(framing.read_async(&mut reader).await.unwrap().is_none());
             }
         }
-        // Phase `async_truncation_and_limits`.
         {
             assert!(matches!(
                 LE.read_async(&mut &[5_u8, 0][..]).await,
@@ -277,7 +275,6 @@ mod asynchronous {
             assert!(LE.write_async(&mut wire, &[0; 17]).await.is_err());
             assert!(wire.is_empty());
         }
-        // Phase `async_frame_reader_over_a_split_stream`.
         {
             let (mut client, server) = tokio::io::duplex(3);
             let writer = tokio::spawn(async move {
@@ -372,7 +369,6 @@ mod values {
 
     #[test]
     fn value_frames_are_prefixed_postcard_and_bounded() {
-        // Phase `value_frames_are_prefixed_postcard`.
         {
             let message = Message::Data {
                 id: 300,
@@ -408,7 +404,6 @@ mod values {
                 Some(Message::Ping)
             );
         }
-        // Phase `oversized_value_is_refused_and_bad_payload_is_decode_error`.
         {
             let big = Message::Data {
                 id: 0,

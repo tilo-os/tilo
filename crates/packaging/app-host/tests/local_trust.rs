@@ -1,4 +1,3 @@
-//! Real private host + canonical installer, with pre-existing scoped trust.
 use app_host::app_host_capnp::app_host as rpc;
 use app_host::local_package::LocalReview;
 use capnp_rpc::rpc_twoparty_capnp;
@@ -16,6 +15,10 @@ impl Drop for Host {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+fn host() -> PathBuf {
+    tilo_test_env::package_binary!("tilo-app-host")
 }
 
 fn installer() -> PathBuf {
@@ -46,13 +49,13 @@ fn isolated_command(binary: &Path, root: &Path) -> Command {
 
 async fn connect(socket: &Path) -> rpc::Client {
     use tokio::io::AsyncWriteExt;
-    let started = Instant::now();
+    let deadline = tilo_test_env::hang_deadline();
     let mut stream = loop {
         if let Ok(stream) = tokio::net::UnixStream::connect(socket).await {
             break stream;
         }
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            Instant::now() < deadline,
             "Private real host never became ready"
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -107,7 +110,7 @@ fn local_package_real_host_installs_full_cached_thin_and_refuses_stale_review_an
     std::fs::create_dir_all(&config).unwrap();
     trust.save(&config.join("trusted-attestors.toml")).unwrap();
     let socket = root.path().join("host.sock");
-    let mut command = isolated_command(Path::new(env!("CARGO_BIN_EXE_tilo-app-host")), root.path());
+    let mut command = isolated_command(&host(), root.path());
     command
         .arg("--socket")
         .arg(&socket)

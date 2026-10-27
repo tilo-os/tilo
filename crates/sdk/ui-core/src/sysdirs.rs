@@ -178,7 +178,6 @@ mod tests {
 
     #[test]
     fn content_places_use_localized_names_paths_and_english_fallbacks() {
-        // Case `content_places_use_localized_names_and_paths`.
         {
             let dirs = german();
             let places = dirs.content_places(Path::new("/home/u"));
@@ -192,7 +191,6 @@ mod tests {
             assert_eq!(path, &PathBuf::from("/home/u/Dokumente"));
         }
 
-        // Case `content_places_fall_back_to_english_when_unresolved`.
         {
             let places = UserDirs::default().content_places(Path::new("/home/u"));
             let labels: Vec<&str> = places.iter().map(|(_, l, _)| l.as_str()).collect();
@@ -202,7 +200,6 @@ mod tests {
             );
         }
 
-        // Case `classify_matches_localized_paths_by_kind`.
         {
             let dirs = german();
             assert_eq!(
@@ -217,7 +214,6 @@ mod tests {
             assert_eq!(dirs.classify(Path::new("/data/projects")), None);
         }
 
-        // Case `label_is_the_localized_folder_name`.
         {
             let dirs = german();
             assert_eq!(dirs.label(UserDir::Documents), "Dokumente");

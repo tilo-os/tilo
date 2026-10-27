@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use tilo_relay_session::rooms::private::{
+use tilo_relay_protocol::rooms::private::{
     PrivateContact, PrivateConversation, PrivateMessage, PrivateOperation, PrivateReply,
 };
 use tilo_user_identity::DeviceCert;
@@ -269,7 +269,12 @@ impl GovernedRoom {
         }
         Ok(person)
     }
+    /// The other current people of the room `own` may write to, each once,
+    /// by the name the room keeps for them unless that is only one of their
+    /// devices' labels ("Browser", "Primary device"): a device's label never
+    /// names a person.
     fn private_contacts(&self, own: &str, now: SystemTime) -> Result<Vec<PrivateContact>, String> {
+        let certificates = self.peer.certificates();
         Ok(self
             .peer
             .governance()
@@ -287,9 +292,33 @@ impl GovernedRoom {
             })
             .map(|m| PrivateContact {
                 public_key: hex::encode(m.user_public_key),
-                display_name: m.display_name,
+                display_name: m.display_name.filter(|name| {
+                    !certificates.iter().any(|cert| {
+                        cert.user_public_key == m.user_public_key
+                            && cert.device_label.trim() == name.trim()
+                    })
+                }),
+                conversation: false,
             })
             .collect())
+    }
+    /// [`Self::private_contacts`], each saying whether a conversation
+    /// between `own` and them holds messages.
+    fn private_contacts_listed(
+        &self,
+        own: &str,
+        now: SystemTime,
+    ) -> Result<Vec<PrivateContact>, String> {
+        let store = self.private_load()?;
+        let mut contacts = self.private_contacts(own, now)?;
+        for contact in &mut contacts {
+            contact.conversation = store.pairs.values().any(|pair| {
+                !pair.messages.is_empty()
+                    && pair.people.iter().any(|p| *p == contact.public_key)
+                    && pair.people.iter().any(|p| p == own)
+            });
+        }
+        Ok(contacts)
     }
     fn private_pair(
         &self,
@@ -319,7 +348,9 @@ impl GovernedRoom {
         let now = SystemTime::now();
         let own = self.private_caller(caller, now)?;
         if matches!(&operation, PrivateOperation::Contacts) {
-            return Ok(PrivateReply::Contacts(self.private_contacts(&own, now)?));
+            return Ok(PrivateReply::Contacts(
+                self.private_contacts_listed(&own, now)?,
+            ));
         }
         let (PrivateOperation::Open { peer }
         | PrivateOperation::Read { peer, .. }
@@ -784,7 +815,6 @@ mod tests {
                 .unwrap()
                 .contains("foreign devices")
         );
-        // The ordinary local Editor of the same person retains access.
         assert!(
             reopened
                 .private_command(

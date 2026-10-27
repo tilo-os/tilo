@@ -538,9 +538,6 @@ pub struct SpeakerFabricState {
 }
 
 impl SpeakerFabricState {
-    /// # Errors
-    ///
-    /// Returns the first violated bound, authorship or structural rule.
     pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if self.endpoints.len() > MAX_AUDIO_ENDPOINTS
             || self.groups.len() > MAX_SPEAKER_GROUPS

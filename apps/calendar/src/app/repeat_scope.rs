@@ -9,7 +9,6 @@
 //! the old one (its end, its remaining count, its later exceptions).
 
 use chrono::{Duration, NaiveDate, NaiveDateTime};
-use ui::tilo_resource::{Keyed, Set};
 use uuid::Uuid;
 use vello::kurbo::Rect;
 
@@ -199,7 +198,7 @@ impl CalendarApp {
         )) {
             Ok(insert) => insert,
             Err(error) => {
-                self.status = Some(failed(&error));
+                self.status.failed(failed(&error));
                 return;
             }
         };
@@ -211,7 +210,7 @@ impl CalendarApp {
             .collect();
         members.push(insert);
         if let Err(error) = self.try_submit(doc, ui::tilo_resource::Invoke::group(members)) {
-            self.status = Some(failed(&error.to_string()));
+            self.status.failed(failed(&error.to_string()));
             return;
         }
         if let Some(event) = self.model.event_mut(id) {
@@ -275,20 +274,9 @@ pub(super) fn split_series(
     }
     // How many occurrences the old series keeps, for a series bounded by a
     // count: the new one takes the rest.
-    let kept = before.recurrence_count.map(|_| {
-        let bare = Event {
-            occurrence_overrides: Keyed::default(),
-            recurrence_exdates: Set::default(),
-            recurrence_count: None,
-            recurrence_until: Some(original - Duration::days(1)),
-            ..before.clone()
-        };
-        u32::try_from(
-            bare.occurrences_in(seed, original - Duration::days(1))
-                .len(),
-        )
-        .unwrap_or(u32::MAX)
-    });
+    let kept = before
+        .recurrence_count
+        .map(|_| u32::try_from(before.occurrences_before(original)).unwrap_or(u32::MAX));
     let mut old = before.clone();
     // RFC 5545 allows UNTIL or COUNT, never both.
     old.recurrence_count = None;

@@ -23,7 +23,6 @@
 //! browser over HTTPS).
 
 #![deny(rust_2018_idioms)]
-#![warn(missing_docs)]
 
 #[cfg(feature = "iroh")]
 pub mod certify;

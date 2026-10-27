@@ -262,7 +262,6 @@ pub(super) fn grid_columns(tblgrid: &str) -> usize {
         .count()
 }
 
-/// The children of one element's verbatim XML.
 fn element_children(xml: &str) -> Vec<(Vec<u8>, String)> {
     let Some(open_end) = xml.find('>') else {
         return Vec::new();

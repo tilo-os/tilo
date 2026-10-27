@@ -1,4 +1,3 @@
-//! Actual public import, navigation, and refusal paths for detached evidence.
 use crate::tests::Parsed as _;
 use crate::{ChipDesignShell, VerificationRecord};
 use serde_json::{Value, json};

@@ -202,9 +202,6 @@ impl PeerSurfaceMetrics {
     }
 
     #[cfg(test)]
-    /// # Panics
-    ///
-    /// Panics if the metrics mutex is poisoned.
     pub fn reset(&self) {
         let mut inner = self.inner.lock().expect("metrics mutex");
         inner.frames_received = 0;
@@ -248,13 +245,11 @@ mod tests {
 
     #[test]
     fn metrics_record_arrivals_drops_and_a_wrapping_latency_ring() {
-        // Phase `fresh_metrics_snapshot_is_zero`.
         {
             let m = PeerSurfaceMetrics::new();
             let s = m.snapshot();
             assert_eq!(s, PeerSurfaceSnapshot::default());
         }
-        // Phase `record_received_increments_and_stores_latency`.
         {
             let m = PeerSurfaceMetrics::with_capacity(4);
             m.record_received(10_000_000);
@@ -266,7 +261,6 @@ mod tests {
             assert_eq!(s.latency_ns_mean, 15_000_000);
             assert_eq!(s.latency_ns_max, 20_000_000);
         }
-        // Phase `record_dropped_does_not_touch_latency`.
         {
             let m = PeerSurfaceMetrics::new();
             m.record_received(1_000);
@@ -278,7 +272,6 @@ mod tests {
             assert_eq!(s.latency_samples, 1);
             assert_eq!(s.latency_ns_mean, 1_000);
         }
-        // Phase `latency_ring_wraps_at_capacity`.
         {
             // Capacity 3 with 5 pushes: samples 3, 4, 5 remain (drop 1 + 2).
             let m = PeerSurfaceMetrics::with_capacity(3);
@@ -292,7 +285,6 @@ mod tests {
             assert_eq!(s.latency_ns_mean, 4_000_000);
             assert_eq!(s.latency_ns_max, 5_000_000);
         }
-        // Phase `clone_shares_inner_state`.
         {
             let m1 = PeerSurfaceMetrics::new();
             let m2 = m1.clone();
@@ -304,7 +296,6 @@ mod tests {
             // m2's view sees the same values.
             assert_eq!(m2.snapshot(), s);
         }
-        // Phase `keyframe_counter_increments`.
         {
             let m = PeerSurfaceMetrics::new();
             m.record_keyframe();
@@ -313,7 +304,6 @@ mod tests {
             let s = m.snapshot();
             assert_eq!(s.keyframes, 3);
         }
-        // Phase `chosen_encoder_and_capture_path_round_trip`.
         {
             let m = PeerSurfaceMetrics::new();
             m.set_chosen_encoder(EncoderKind::VaApi);
@@ -339,7 +329,6 @@ mod tests {
             assert_eq!(s.encode_wallclock_ms_p50, 6);
             assert_eq!(s.encode_wallclock_ms_p99, 10);
         }
-        // Phase `bitrate_ewma_smooths_samples`.
         {
             let m = PeerSurfaceMetrics::new();
             m.record_bitrate(1_000_000);
@@ -353,7 +342,6 @@ mod tests {
                 s.bitrate_bytes_per_sec_ewma
             );
         }
-        // Phase `percentile_helper_handles_edge_cases`.
         {
             assert_eq!(percentile_50_99(&[]), (0, 0));
             assert_eq!(percentile_50_99(&[42]), (42, 42));

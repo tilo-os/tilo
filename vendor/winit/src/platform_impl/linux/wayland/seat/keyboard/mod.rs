@@ -149,6 +149,11 @@ impl Dispatch<WlKeyboard, KeyboardData, WinitState> for WinitState {
             } => {
                 let key = key + 8;
 
+                let focused = *data.window_id.lock().unwrap();
+                if let Some(window) = focused.and_then(|id| state.windows.get_mut().get(&id)) {
+                    window.lock().unwrap().record_press(&data.seat, serial);
+                }
+
                 key_input(
                     keyboard_state,
                     &mut state.events_sink,

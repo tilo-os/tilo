@@ -176,10 +176,6 @@ pub fn open_bytes(
 /// Seal the same plaintext separately to each recipient (per-device
 /// envelopes). Every box uses a fresh ephemeral key; boxes are returned in
 /// recipient order, paired with the key they are addressed to.
-///
-/// # Errors
-///
-/// The first error from [`seal`].
 pub fn seal_for_each<'a>(
     recipients: impl IntoIterator<Item = &'a PublicKey>,
     label: Label,
@@ -198,7 +194,6 @@ mod tests {
 
     #[test]
     fn hpke_boxes_bind_label_aad_and_recipient_and_match_rfc9180() {
-        // Phase `round_trip_binds_label_aad_and_recipient`.
         {
             let alice = SecretKey::generate().unwrap();
             let bob = SecretKey::generate().unwrap();
@@ -243,11 +238,9 @@ mod tests {
             ));
             assert!(SealedBox::from_bytes(&bytes[..20]).is_err());
         }
-        // Phase `low_order_recipient_is_rejected`.
         {
             assert!(seal(&PublicKey::from_bytes([0; 32]), Label::KeyWrap, b"", b"x").is_err());
         }
-        // Phase `each_recipient_opens_only_its_own_box`.
         {
             let keys: Vec<SecretKey> = (0..3).map(|_| SecretKey::generate().unwrap()).collect();
             let publics: Vec<PublicKey> = keys.iter().map(|k| k.public_key().unwrap()).collect();

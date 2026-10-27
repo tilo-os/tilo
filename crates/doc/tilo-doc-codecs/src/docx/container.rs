@@ -84,7 +84,6 @@ mod tests {
 
     #[test]
     fn container_parts_roundtrip_and_replace_in_place() {
-        // Phase `container_roundtrips_parts`.
         {
             let docx = minimal_docx("<w:p><w:r><w:t>hi</w:t></w:r></w:p>");
             let c = ZipPackage::read(&docx).unwrap();
@@ -107,7 +106,6 @@ mod tests {
                 "body preserved verbatim"
             );
         }
-        // Phase `set_replaces_in_place_and_appends`.
         {
             let mut c = ZipPackage { parts: vec![] };
             c.set("a", b"1".to_vec());

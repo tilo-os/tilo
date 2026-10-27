@@ -9,8 +9,6 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 /// Write only the bounded typed worker reply.
-/// # Errors
-/// Fails on serialization or a closed pipe.
 pub fn reply(output: &mut impl Write, message: &SpeechReply) -> Result<(), SpeechError> {
     if let SpeechReply::Draft { text, .. } | SpeechReply::Done { text, .. } = message
         && text.len() > super::MAX_TEXT_BYTES

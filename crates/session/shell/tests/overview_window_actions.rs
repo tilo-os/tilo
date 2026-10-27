@@ -40,6 +40,7 @@ fn desktop() -> (WorkspaceTree, StripId, WorkspaceId) {
             label: kind.as_str().to_string(),
             kind,
         },
+        app_title: None,
     };
     let group = |id: GroupId, tab: Tab| WindowGroup {
         id,
@@ -68,6 +69,7 @@ fn desktop() -> (WorkspaceTree, StripId, WorkspaceId) {
                         app_id: CLIENT_APP.into(),
                         surface_id: CLIENT_SURFACE,
                     },
+                    app_title: None,
                 },
             ),
         ],

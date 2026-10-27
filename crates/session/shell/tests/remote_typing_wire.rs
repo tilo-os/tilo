@@ -16,6 +16,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
 use shell::network::{Denial, InputEvent, ShellView, StreamingShare};
+use shell::shell::input_policy::InputCapture;
 use vello::kurbo::Rect;
 use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
@@ -181,7 +182,7 @@ fn a_remote_participant_types_exactly_its_text_and_repeats_only_as_its_sender_do
     h.state.remote_input_firewall.publish_view(ShellView::new(
         vec![(window, Rect::new(0.0, 0.0, 800.0, 600.0))],
         Some(window),
-        false,
+        InputCapture::NONE,
         false,
     ));
     assert!(h.state.apply_remote_input(
@@ -277,7 +278,7 @@ fn headless_workspace_host_focus_reaches_the_requested_wayland_window() {
             (current, Rect::new(400.0, 0.0, 800.0, 600.0)),
         ],
         Some(old),
-        false,
+        InputCapture::NONE,
         false,
     ));
     assert!(h.state.apply_remote_input(
@@ -469,7 +470,7 @@ fn assert_host_focus_permissions(
             (current, Rect::new(400.0, 0.0, 800.0, 600.0)),
         ],
         Some(current),
-        true,
+        InputCapture::ALL,
         false,
     ));
     assert!(h.state.apply_remote_input(
@@ -536,6 +537,9 @@ delegate_noop!(Client: ignore wayland_client::protocol::wl_shm::WlShm);
 delegate_noop!(Client: ignore wayland_client::protocol::wl_shm_pool::WlShmPool);
 delegate_noop!(Client: ignore wayland_client::protocol::wl_buffer::WlBuffer);
 
+/// Paints `id` into the process's one foreign frame store, which hands what
+/// was painted to whichever test composes a frame next: tests that draw and
+/// compose hold `serial(foreign_presentation_frame)`.
 fn draw_presentation_pixels(id: u64) -> vello::Scene {
     use ui::widget::Widget;
     let theme = ui::Theme::dark();
@@ -578,9 +582,7 @@ fn presentation_output() -> smithay::output::Output {
 }
 
 fn wait_for_presentation_pixels(h: &mut Harness, id: u64) {
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(5))
-        .expect("capture observation deadline fits the monotonic clock");
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         h.pump();
         if shell::shell::foreign::store()
@@ -646,6 +648,7 @@ fn presentation_fixture() -> (
 }
 
 #[test]
+#[serial_test::serial(foreign_presentation_frame)]
 fn presentation_feedback_belongs_to_committed_pixels_and_exact_submitted_frames() {
     let (mut h, surface, presentation, old, new, id) = presentation_fixture();
     let qh = h.queue.handle();
@@ -708,6 +711,7 @@ fn presentation_feedback_belongs_to_committed_pixels_and_exact_submitted_frames(
 }
 
 #[test]
+#[serial_test::serial(foreign_presentation_frame)]
 fn presentation_failures_missing_output_and_timeouts_are_discarded_on_the_wire() {
     for mode in 0..4 {
         let (mut h, surface, presentation, buffer, _, id) = presentation_fixture();
@@ -788,7 +792,6 @@ fn seat_focus_metadata_tracks_actual_wayland_focus_and_clearing() {
     assert_eq!(metadata["routed_keyboard_surface"], window);
     assert!(!metadata.to_string().contains("private window content"));
 
-    // Read the actual text-input handle independently of keyboard routing.
     let protocol_surface = h.state.client_input.surface(window).unwrap().clone();
     h.state.seat.text_input().set_focus(Some(protocol_surface));
     assert_eq!(h.state.seat_focus_json()["text_input"]["surface"], window);
@@ -919,7 +922,16 @@ fn authenticated_window_harness() -> (Harness, shell::shell::state::RoomId, u32,
         .parse()
         .unwrap();
     let h = Harness::with_identity(|state| {
-        state.workspace_tree.write().workspaces[0].room = room;
+        {
+            let mut tree = state.workspace_tree.write();
+            let before = tree.workspaces[0].clone();
+            let mut workspace =
+                shell::shell::state::Workspace::in_room(before.id, room, before.name.clone());
+            workspace.strips = before.strips;
+            workspace.policy = before.policy;
+            workspace.policy.rehome(room.to_string());
+            tree.workspaces[0] = workspace;
+        }
         let mut client = shell::compositor::state::ClientState::default();
         client.package_id = Some("so.tilo.calculator".into());
         client.workspace_id = Some(room.to_string());
@@ -1025,7 +1037,7 @@ fn record_window_for_provenance(h: &Harness, id: u64, instance: u64) -> serde_js
     let (room, tab) = tree.workspaces.iter().find_map(|workspace| {
         workspace.strips.iter().flat_map(|strip| &strip.window_groups).flat_map(|group| &group.tabs)
             .find(|tab| matches!(&tab.tile, TileContent::Foreign {surface_id, ..} if *surface_id == id))
-            .map(|tab| (workspace.room, tab.id))
+            .map(|tab| (workspace.room(), tab.id))
     }).unwrap();
     drop(tree);
     h.state.workspace_tree.write().local_app_records.insert(

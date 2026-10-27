@@ -10,16 +10,16 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::num::u32_of_usize;
 
+use ui::fact::{Measure, Measured};
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{SpacingStep, TextRole};
 use ui::widget::data_table::{CellAlign, ColumnDef, ColumnWidth, DataTable, TableSort};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Actions, Badge, Button, ButtonRole, ChipStyle, Column, Container as Well, Element, EmptyState,
-    ListRow, ModelView, NavItem, NavList, NavSection, ProgressBar, Property, PropertyColumn,
-    PropertyList, Row, Scrollable, Section, SegmentedStyle, Spacer, Spinner, StatGroup, StatTile,
-    StatusLine, Text, ToggleGroup, Tone, Widget,
+    Badge, Button, ButtonRole, ChipStyle, Column, Container as Well, Element, EmptyState, ListRow,
+    ModelView, NavItem, NavList, NavSection, ProgressBar, Property, PropertyColumn, PropertyList,
+    Row, Scrollable, Section, Spacer, Spinner, StatGroup, StatTile, StatusLine, Text, Tone, Widget,
 };
 
 use crate::model::{
@@ -74,8 +74,6 @@ pub(crate) fn listed_containers(engine: &Engine) -> Vec<&Container> {
     list
 }
 
-// ---- sidebar ---------------------------------------------------------------
-
 fn place_id(place: Place) -> &'static str {
     place.as_str()
 }
@@ -125,14 +123,19 @@ pub(crate) fn sidebar(
 ) -> Element {
     // Only an engine that answered is connected; the bundled sample says
     // that it is one.
-    let status = if connected && engine.live {
-        StatusLine::active("Connected")
+    // The sample has no state to light: it says what it is, in words.
+    let status: Element = if connected && engine.live {
+        Box::new(StatusLine::active("Connected"))
     } else if connected {
-        StatusLine::idle("Sample data")
+        Box::new(
+            Text::new("Sample data")
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        )
     } else {
-        StatusLine::warning("Not connected")
+        Box::new(StatusLine::warning("Not connected"))
     };
-    let mut footer = Column::new().with_intrinsic_height().push(Box::new(status));
+    let mut footer = Column::new().with_intrinsic_height().push(status);
     // Which Podman answered is worth a line; why none did is the page's
     // to explain, with the error behind its "Details".
     if engine.live {
@@ -151,14 +154,6 @@ pub(crate) fn sidebar(
     )
 }
 
-// ---- header actions ------------------------------------------------------
-
-pub(crate) fn search_button() -> Element {
-    Box::new(ui::search::search_button(
-        ui::search::SearchRequest::this_app(),
-    ))
-}
-
 /// The one main action of a page: an inverted button with its icon.
 pub(crate) fn primary(
     id: &str,
@@ -174,8 +169,6 @@ pub(crate) fn primary(
             .on_view(intents.sender(intent)),
     )
 }
-
-// ---- status ----------------------------------------------------------------
 
 /// How a container's state reads: running is good news, a dead container
 /// needs attention, a paused or restarting one is in between.
@@ -228,8 +221,6 @@ fn verb(action: Action) -> &'static str {
         Action::Remove => "remove",
     }
 }
-
-// ---- containers ------------------------------------------------------------
 
 /// A row's status dot for a container state.
 fn with_status(row: ListRow, status: ContainerStatus) -> ListRow {
@@ -484,23 +475,24 @@ pub(crate) struct DetailModel<'a> {
 /// of detail.
 pub(crate) fn container_detail(model: &DetailModel<'_>, intents: &Intents) -> Element {
     let c = model.container;
-    let title = Stack::tight(vec![
-        Box::new(
-            Text::new(&c.name)
-                .with_role(TextRole::Title)
-                .with_kind(TextKind::Identifier),
-        ),
-        Box::new(
-            Text::new(&c.image)
+    // The container's name is the window bar's location and its verbs are
+    // the bar's actions ([`detail_commands`]); the page starts at its image
+    // and state.
+    let image = Text::new(&c.image)
+        .with_role(TextRole::Caption)
+        .with_kind(TextKind::Identifier)
+        .dimmed();
+    let state = Row::new()
+        .push(Box::new(status_badge(c.status)))
+        .push(Box::new(
+            Text::new(&c.status_detail)
                 .with_role(TextRole::Caption)
-                .with_kind(TextKind::Identifier)
                 .dimmed(),
-        ),
-    ]);
+        ));
     let mut page = Column::new()
         .with_intrinsic_height()
-        .push(Box::new(title))
-        .push(Box::new(detail_actions(model, intents)))
+        .push(Box::new(image))
+        .push(Box::new(state))
         .push(Box::new(tabs(model.tab, intents)));
     page = page.push(match model.tab {
         DetailTab::Logs => logs(c),
@@ -536,64 +528,49 @@ fn verb_button(
     }
 }
 
-fn detail_actions(model: &DetailModel<'_>, intents: &Intents) -> Row {
+/// The chosen container's verbs, the lifecycle ones first and Remove last.
+fn detail_verbs(model: &DetailModel<'_>, intents: &Intents) -> Vec<Button> {
     let c = model.container;
     let mut verbs = lifecycle(c.status);
     if !verbs.contains(&Action::Remove) {
         verbs.push(Action::Remove);
     }
-    let button = |action: Action| {
-        verb_button(
-            model,
-            verb(action),
-            action.label(),
-            action_icon(action),
-            Intent::Lifecycle {
-                id: c.id.clone(),
-                action,
-            },
-            intents,
-        )
-        .role(if action == Action::Remove {
-            ButtonRole::Destructive
-        } else {
-            ButtonRole::Secondary
+    verbs
+        .into_iter()
+        .map(|action| {
+            verb_button(
+                model,
+                verb(action),
+                action.label(),
+                action_icon(action),
+                Intent::Lifecycle {
+                    id: c.id.clone(),
+                    action,
+                },
+                intents,
+            )
+            .role(if action == Action::Remove {
+                ButtonRole::Destructive
+            } else {
+                ButtonRole::Secondary
+            })
         })
-    };
-    // The buttons are one group: in a narrow column they move under the
-    // state together instead of breaking apart.
-    let (last, rest) = verbs
-        .split_last()
-        .map_or((Action::Remove, &[][..]), |(l, r)| (*l, r));
-    let mut buttons = Actions::new(button(last));
-    for action in rest {
-        buttons = buttons.secondary(button(*action));
-    }
-    Row::new()
-        .push(Box::new(status_badge(c.status)))
-        .push(Box::new(
-            Text::new(&c.status_detail)
-                .with_role(TextRole::Caption)
-                .dimmed(),
-        ))
-        .push(Box::new(Spacer::new()))
-        .push(Box::new(buttons))
+        .collect()
 }
 
-fn tabs(selected: DetailTab, intents: &Intents) -> ToggleGroup {
+fn tabs(selected: DetailTab, intents: &Intents) -> ui::widget::ViewTabs {
     let intents = intents.clone();
     let index = DetailTab::ALL
         .iter()
         .position(|tab| *tab == selected)
         .unwrap_or(0);
-    ToggleGroup::new(
+    ui::widget::ViewTabs::new(
         DetailTab::ALL
             .iter()
             .map(|tab| Segment::new(tab.label()))
             .collect(),
         index,
     )
-    .with_style(SegmentedStyle::Tabs)
     .on_view("container-tabs", move |i| {
         if let Some(tab) = DetailTab::ALL.get(i) {
             intents.push(Intent::ShowTab(*tab));
@@ -634,6 +611,12 @@ fn log_line(line: &str) -> Element {
     })
 }
 
+/// A reading's wall-clock instant from the millisecond stamp the model
+/// stores, so a view can age it without the model naming `SystemTime`.
+fn as_of(unix_ms: Option<u64>) -> Option<ui::time::SystemTime> {
+    unix_ms.and_then(|ms| ui::time::UNIX_EPOCH.checked_add(ui::time::Duration::from_millis(ms)))
+}
+
 fn logs(c: &Container) -> Element {
     if let Some(error) = &c.logs_error {
         return note(&format!("Log output is unavailable: {error}"));
@@ -641,7 +624,31 @@ fn logs(c: &Container) -> Element {
     if c.logs.is_empty() {
         return note("The container hasn't written any log output.");
     }
-    output(c.logs.iter().map(String::as_str))
+    let now = ui::time::wall();
+    let fact = match as_of(c.logs_fetched_unix_ms) {
+        Some(at) => Measured::known(
+            Measure::new("Log lines"),
+            c.logs.len().to_string(),
+            "Podman logs",
+            at,
+            Some(ui::time::Duration::from_secs(60)),
+        ),
+        None => Measured::unknown(
+            Measure::new("Log lines"),
+            "this is a sample, not a reading from Podman",
+        ),
+    };
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(output(c.logs.iter().map(String::as_str)))
+            .push(Box::new(
+                Text::new(&fact.caption(now))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            )),
+    )
 }
 
 /// Output as the process wrote it, in a well: one entry per line, a line
@@ -714,13 +721,29 @@ fn stats(c: &Container) -> Element {
         bytes_tile("Read from disk", s.block_read_bytes),
         bytes_tile("Written to disk", s.block_write_bytes),
     ];
+    let now = ui::time::wall();
+    let fact = match as_of(s.fetched_unix_ms) {
+        Some(at) => Measured::known(
+            Measure::new("Container usage"),
+            "1 sample",
+            "Podman stats",
+            at,
+            Some(ui::time::Duration::from_secs(5)),
+        ),
+        None => Measured::unknown(Measure::new("Container usage"), "Podman returned no sample"),
+    };
     stack(vec![
         Section::titled(
             "Usage",
             vec![
                 usage("CPU", &cpu, s.cpu_percent),
-                usage("Memory", &memory, s.mem_fraction()),
+                usage("Memory (RSS)", &memory, s.mem_fraction()),
                 line("Processes", &s.pids.to_string()),
+                Box::new(
+                    Text::new(&fact.caption(now))
+                        .with_role(TextRole::Caption)
+                        .dimmed(),
+                ),
             ],
         ),
         Section::titled("Activity", vec![Box::new(StatGroup::new(tiles))]),
@@ -864,8 +887,6 @@ fn shell(model: &DetailModel<'_>, intents: &Intents) -> Element {
     )
 }
 
-// ---- images ----------------------------------------------------------------
-
 fn used_by(n: u32) -> String {
     match n {
         0 => "Not used by any container".into(),
@@ -948,8 +969,6 @@ pub(crate) fn images_page(engine: &Engine, controls: bool, intents: &Intents) ->
     page(Some(summary), rows)
 }
 
-// ---- volumes ---------------------------------------------------------------
-
 pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
     if engine.volumes.is_empty() {
         if !engine.live && !controls {
@@ -987,8 +1006,6 @@ pub(crate) fn volumes_page(engine: &Engine, controls: bool, intents: &Intents) -
     page(Some(summary), rows)
 }
 
-// ---- distrobox -------------------------------------------------------------
-
 pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents) -> Element {
     if engine.distroboxes.is_empty() {
         if !engine.live && !controls {
@@ -1025,8 +1042,6 @@ pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents)
     page(None, rows)
 }
 
-// ---- pull progress ---------------------------------------------------------
-
 /// The body of the pull sheet: the state of the pull and its latest output.
 pub(crate) fn pull_body(pull: &crate::app::PullProgress) -> Column {
     let state: Element = match &pull.failed {
@@ -1056,8 +1071,6 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress) -> Column {
         .push(state)
         .push(output(pull.lines.iter().skip(skip).map(String::as_str)))
 }
-
-// ---- the window ------------------------------------------------------------
 
 /// What the window shows, published by the app whenever the engine or the
 /// view changes. Each part of the window rebuilds only when the slice of
@@ -1125,6 +1138,8 @@ pub(crate) struct Parts {
     pub offsets: Offsets,
     /// The container table's order, which the table keeps here.
     pub sort: ui::LocalState<Option<TableSort>>,
+    /// The chosen container's name, the content's title.
+    pub detail_title: ui::LocalState<String>,
 }
 
 /// The window: a shell per section, its columns rebuilt from the model.
@@ -1151,7 +1166,7 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
             .content(page_view(parts))
             .content_header(section.label(), Vec::new());
     }
-    let mut actions = vec![search_button()];
+    let mut actions: Vec<Element> = Vec::new();
     if section == Place::Containers {
         if m.controls {
             // The list column is narrow; its one action is a glyph so the
@@ -1166,7 +1181,9 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
             .overview(list_view(parts))
             .content(detail_view(parts))
             .overview_header(section.label(), actions)
-            .content_header("", vec![close_detail(parts)]);
+            // The chosen container names the content: the window bar's
+            // location while it is in front.
+            .content_header_bound(&parts.detail_title, vec![detail_commands(parts)]);
     }
     let main = match section {
         Place::Images => Some((
@@ -1188,21 +1205,36 @@ fn window_shell(m: &Model, parts: &Parts) -> ui::widget::NavShell {
         .content_header(section.label(), actions)
 }
 
-/// The detail's close control, while a container is chosen.
-fn close_detail(parts: &Parts) -> Element {
+/// The chosen container's verbs and the detail's close control: the
+/// window bar's actions while a container is chosen, and nothing else.
+/// Closing shows the pane's glyph, as the bar's other pane toggles do; a
+/// cross beside the bar's search would read as closing it.
+fn detail_commands(parts: &Parts) -> Element {
     let intents = parts.intents.clone();
     Box::new(ModelView::from_state_by(
         &parts.model,
-        |m: &Model| m.view.selected.is_some(),
+        |m: &Model| (m.detail_digest, m.controls),
         move |m: &Model| -> Element {
-            if m.view.selected.is_some() {
-                Box::new(
-                    Button::icon_only("detail-close", Icon::X, "Close details")
-                        .on_view(intents.sender(Intent::Select(None))),
-                )
-            } else {
-                Box::new(Spacer::token(SpacingStep::S0))
+            let chosen = m.view.selected.as_deref().and_then(|id| m.engine.find(id));
+            let Some(container) = chosen else {
+                return Box::new(Spacer::token(SpacingStep::S0));
+            };
+            let model = DetailModel {
+                container,
+                tab: m.view.tab,
+                controls: m.controls,
+                live_engine: m.engine.live,
+            };
+            let mut row = Row::new();
+            for verb in detail_verbs(&model, &intents) {
+                row = row.push(Box::new(verb));
             }
+            Box::new(
+                row.push(Box::new(
+                    Button::icon_only("detail-close", Icon::PanelRight, "Close details")
+                        .on_view(intents.sender(Intent::Select(None))),
+                )),
+            )
         },
     ))
 }

@@ -49,7 +49,6 @@ fn assert_on_centre_line(targets: &HashMap<String, Rect>, ids: &[&str]) {
     }
 }
 
-/// Toolbar control alignment and responsive tiers.
 #[test]
 fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
     const ROW: [&str; 6] = [
@@ -147,7 +146,6 @@ fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
     }
 }
 
-/// The find bar's controls share the find field's centre line.
 #[test]
 fn find_bar_controls_share_the_find_fields_centre_line() {
     {

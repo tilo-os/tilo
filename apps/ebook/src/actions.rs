@@ -3,7 +3,7 @@
 //!
 //! The library's own tree (its books, their annotations, the fonts and
 //! schemes, every verb and field edit) is published by
-//! [`Ebook`](crate::resource::Ebook). The reader adds the page it shows:
+//! [`Ebook`]. The reader adds the page it shows:
 //! turning pages, the contents and notes panels, selecting a passage
 //! (all view effects), and the library's verbs with the page or the
 //! selection filled in — bookmark this page, note this page, highlight or
@@ -60,7 +60,6 @@ pub(crate) fn bound(effect: &BooksEffect, label: &str) -> ActionSpec {
     spec
 }
 
-/// The passage at `chapter` and `block` of `book`, opened.
 pub(crate) fn open_at(book: &str, chapter: usize, block: Option<usize>, label: &str) -> ActionSpec {
     bound(
         &BooksEffect::Open {

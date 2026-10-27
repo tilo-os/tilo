@@ -114,7 +114,7 @@ operator's private mask; state/evidence directories remain explicitly0700.
 Privileged driver imports disable bytecode writes into the operator's staged
 inputs, so root-owned cache files cannot prevent their retirement. Public archives and every inventory leaf are hash-verified before admitting
 mount coordinates and verified again while staging. Besides the existing input
-namespaces, only descendants of `/srv/rcargo/tasks/` are allowed as durable
+namespaces, only descendants of `/srv/tilo/tasks/` are allowed as durable
 builder coordinates; sibling prefixes and the source/build stores are refused.
 Original candidates, source inputs and signatures are rechecked after
 execution. Failed or uncertain cases never issue a successful receipt.

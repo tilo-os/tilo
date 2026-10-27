@@ -206,6 +206,17 @@ pub fn describe(binding: &Binding, steps: &[Step]) -> String {
         Binding::Var(name) => format!("variable {name}"),
         Binding::StepOutput { step, pointer } => describe_result(step, pointer, steps),
         Binding::Template(text) => describe_template(text, steps),
+        Binding::Object(members) => {
+            let members: Vec<String> = members
+                .iter()
+                .map(|(name, member)| format!("{name}: {}", describe(member, steps)))
+                .collect();
+            format!("{{{}}}", members.join(", "))
+        }
+        Binding::List(items) => {
+            let items: Vec<String> = items.iter().map(|item| describe(item, steps)).collect();
+            format!("[{}]", items.join(", "))
+        }
     }
 }
 
@@ -325,7 +336,6 @@ pub fn literal(text: &str, param: &ActionParam) -> Value {
     }
 }
 
-/// The text a literal is edited as.
 #[must_use]
 pub fn literal_text(value: &Value) -> String {
     match value {
@@ -517,7 +527,6 @@ pub struct KindGroup {
 pub struct Offer {
     pub app_id: String,
     pub resource: String,
-    /// The kind of the resource that offers it.
     pub kind: String,
     pub resource_label: String,
     pub action: String,

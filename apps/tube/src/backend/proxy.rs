@@ -19,7 +19,6 @@ const KNOWN_MUXED_ITAGS: &[(u32, &str, &str)] = &[
 /// boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedVideo {
-    /// The video id this resolves.
     pub video_id: String,
     /// Directly-playable, fully-rangeable media URL (an Invidious `local=true`
     /// proxy of a progressive muxed format).
@@ -36,11 +35,33 @@ pub struct ResolvedVideo {
 }
 
 /// Resolve a video id to a **fully-rangeable** proxied muxed video+audio
-/// stream. `None` when no instance's proxy answers within the budget (the
+/// stream no larger than `wanted` (a height in pixels; `None` for the best
+/// available). `None` when no instance's proxy answers within the budget (the
 /// caller then falls back to the direct, possibly-truncating, URL).
-pub async fn resolve_rangeable(video_id: &str) -> Option<ResolvedVideo> {
+pub async fn resolve_rangeable(video_id: &str, wanted: Option<u32>) -> Option<ResolvedVideo> {
+    let wanted = wanted.unwrap_or(u32::MAX);
+    // The formats this app can play, largest first: the one a person asked
+    // for is the largest that fits, so choosing 480p on a metered connection
+    // spends 360p of data rather than 720p.
+    let candidates: Vec<(u32, &str, &str)> = KNOWN_MUXED_ITAGS
+        .iter()
+        .copied()
+        .filter(|(_, _, quality)| {
+            crate::util::quality_height(quality).is_none_or(|height| height <= wanted)
+        })
+        .collect();
+    let candidates = if candidates.is_empty() {
+        KNOWN_MUXED_ITAGS
+            .iter()
+            .copied()
+            .min_by_key(|(_, _, quality)| crate::util::quality_height(quality).unwrap_or(u32::MAX))
+            .into_iter()
+            .collect()
+    } else {
+        candidates
+    };
     let (url, &(itag, mime, quality)) =
-        tilo_invidious::first_serving(video_id, KNOWN_MUXED_ITAGS, |f| f.0).await?;
+        tilo_invidious::first_serving(video_id, &candidates, |f| f.0).await?;
     Some(ResolvedVideo {
         video_id: video_id.to_string(),
         url,

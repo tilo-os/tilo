@@ -12,7 +12,6 @@ use crate::tls::HostIdentity;
 use crate::{Service, serve};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use tilo_relay_protocol::room_operator::{OperatorCommand, RoomEvent};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -79,12 +78,17 @@ struct Answer {
 
 impl Answer {
     /// Reads on until the answer holds `needle`; false when the server
-    /// closed the connection or went quiet first.
+    /// closed the connection first.
     async fn until(&mut self, needle: &str) -> bool {
         let mut chunk = [0u8; 4096];
         while !self.text.contains(needle) {
-            match tokio::time::timeout(Duration::from_secs(5), self.socket.read(&mut chunk)).await {
-                Ok(Ok(read)) if read > 0 => {
+            match tilo_test_env::within(
+                format!("{needle:?} in the answer"),
+                self.socket.read(&mut chunk),
+            )
+            .await
+            {
+                Ok(read) if read > 0 => {
                     self.text
                         .push_str(&String::from_utf8_lossy(chunk.get(..read).unwrap()));
                 }
@@ -94,13 +98,19 @@ impl Answer {
         true
     }
 
-    /// The rest of an answer to a request sent with `Connection: close`: up
-    /// to the server closing the connection, or for an answer that never
-    /// ends (an event stream) until it goes quiet.
+    /// The rest of an answer to a request sent with `Connection: close`, up
+    /// to the server closing the connection. An event stream never ends, so
+    /// its answer is left at its head.
     async fn finish(mut self) -> Self {
+        if self.is_event_stream() {
+            return self;
+        }
         let mut chunk = [0u8; 4096];
-        while let Ok(Ok(read @ 1..)) =
-            tokio::time::timeout(Duration::from_secs(2), self.socket.read(&mut chunk)).await
+        while let Ok(read @ 1..) = tilo_test_env::within(
+            "the server to close the answer",
+            self.socket.read(&mut chunk),
+        )
+        .await
         {
             self.text
                 .push_str(&String::from_utf8_lossy(chunk.get(..read).unwrap()));

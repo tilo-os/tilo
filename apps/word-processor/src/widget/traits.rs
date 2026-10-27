@@ -10,17 +10,19 @@ use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use tilo_doc::model::Region;
+use ui::paint::clipped;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::TaffyTreeExt;
 use ui::widget::Widget;
+use ui::widget::paint_damage::PaintParts;
 use ui::widget::{AppModel, ModelPath};
 use ui::{PresenceCtx, PresenceKey};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use super::accessibility::{review_action_target, tool_action_id};
+use super::accessibility::review_action_target;
 use super::{
     ChromeColors, Edges, LayoutMode, PageContentInput, PaginationResult, PanelHit,
     WordProcessorWidget, block_presence_key,
@@ -32,12 +34,10 @@ impl Widget for WordProcessorWidget {
         dyn ui::undo::LocalUndo,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::semantic_document_read::SemanticReaders,
+        dyn ui::widget::Findable
     );
-
-    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
-        &crate::semantic_read::action::READERS
-    }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         if self.styles_panel_full_window() {
@@ -67,7 +67,7 @@ impl Widget for WordProcessorWidget {
             if doc.styles_panel_full_window() {
                 doc.panel_scroll = next;
             } else {
-                doc.scroll_y = next;
+                doc.scroll_y = next - doc.find_inset;
             }
             doc.lifecycle.dirty = true;
         })
@@ -104,11 +104,10 @@ impl Widget for WordProcessorWidget {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        // The toolbar is painted inside the document's authored chrome rather
-        // than exposed as another accessibility child. Its deferred native
-        // View requests still need the shared retained lifecycle.
-        self.tool_bar.sync(state, root);
         let (state, root) = ui::doc::document_ref(state, root);
+        // A transient cue says so in the window's bar while it lasts.
+        self.toast.expire();
+        self.toast.publish();
         #[cfg(test)]
         if self.source.is_none() && self.dispatch.is_some() {
             self.source = ui::framework::testing::detached_live(state).ok();
@@ -156,21 +155,20 @@ impl Widget for WordProcessorWidget {
                 left: l,
             };
         }
-        self.sync_toolbar();
         self.lifecycle.dirty = true;
     }
 
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
-        self.tool_bar.settle(&mut edits.reborrow(), path);
-        if let Some(action) = self.tool_fired.take() {
-            self.tool_clicked(edits, action);
-        }
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
         self.drain_image_choice(edits);
         if let Some(scenario) = self.staged_scenario.take() {
             self.run_staged_scenario(edits, &scenario);
         }
         self.refresh_blocks(edits.doc());
-        self.sync_toolbar();
+        self.apply_find_replacements(edits);
+        // The editor's commands are the window bar's slots: what the person
+        // did there runs with the document in hand, then the slots follow
+        // the selection.
+        self.apply_window_toolbar(edits);
     }
 
     fn build_layout(
@@ -179,46 +177,7 @@ impl Widget for WordProcessorWidget {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.window_history.tree_rebuilt();
         taffy.fill_leaf(node_map, self)
-    }
-
-    /// Authored chrome keeps its retained toolkit children available to the
-    /// host's normal resource, custody and invocation traversal.
-    fn children(&self) -> Vec<&dyn Widget> {
-        if self.styles_panel_full_window() {
-            return Vec::new();
-        }
-        let mut children: Vec<&dyn Widget> = vec![&self.tool_bar];
-        if let Some(button) = self.window_history.button() {
-            children.push(button);
-        }
-        children
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.styles_panel_full_window() {
-            return Vec::new();
-        }
-        let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.tool_bar];
-        if let Some(button) = self.window_history.button_mut() {
-            children.push(button);
-        }
-        children
-    }
-
-    fn accessibility_represents_child(&self, child_index: usize) -> bool {
-        // The formatting toolbar is already authored into the document's
-        // synthetic semantics; History remains its own retained control.
-        child_index == 0
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let mut changed = std::mem::take(&mut self.retained_tree_stale);
-        for child in self.children_mut() {
-            changed |= child.take_structure_dirty();
-        }
-        changed
     }
 
     ui::rect_geometry!();
@@ -232,8 +191,7 @@ impl Widget for WordProcessorWidget {
     fn modal_capture(&self) -> Option<Rect> {
         if self.context_menu.is_open()
             || self.style_menu.is_open()
-            || self.template_picker.is_open()
-            || self.tool_bar.is_overflow_open()
+            || self.file_menu.is_open()
             || self.line_spacing.is_open()
             || self.style_pick.is_open()
         {
@@ -268,7 +226,18 @@ impl Widget for WordProcessorWidget {
         // larger UI grows the controls while the writing stays small.
         self.text_scale = f64::from(theme.text_scale.clamp(0.75, 2.0) * theme.ui_scale);
         let full = self.rect;
-        let fg = self.draw_frame_chrome(scene, transform, text_renderer, theme, full);
+        // Each region is a part of its own, so the frame reports as damage
+        // the regions whose drawing changed: a typed character repaints its
+        // paragraph, not the window. What the canvas clips (scrolled content
+        // never paints over the bars) is clipped in each part.
+        let mut parts = PaintParts::new(scene);
+        let fg = parts.draw_bounded(scene, "word-bars", |scene| {
+            let fg = self.draw_frame_chrome(scene, transform, text_renderer, theme, full);
+            let bars = Rect::new(full.x0, full.y0, full.x1, fg.canvas.y0);
+            let reach = ui::widget::focus_ring_reach(theme);
+            (bars.inflate(reach, reach), fg)
+        });
+        let canvas = fg.canvas;
 
         // Pass 1: shape + paginate every block, then resolve scroll against the
         // resulting extent and shift `laid` into screen space.
@@ -281,17 +250,18 @@ impl Widget for WordProcessorWidget {
         } = self.paginate_blocks(text_renderer, &fg);
         let (num_pages, sy) = self.finish_scroll(&fg, &mut laid, cur_page, y);
 
-        // `draw_page_sheets` pushes the canvas clip (so scrolled content never
-        // paints over the toolbar/status bar) before drawing the sheets; popped
-        // once every page-space pass below — sheets, pass 2, review cards,
-        // footnotes, placeholder, overlays — has run.
-        let page = self.draw_page_sheets(scene, transform, text_renderer, &fg, num_pages, sy);
+        let sheets = parts.draw(scene, "word-sheets", canvas, |scene| {
+            clipped(scene, transform, canvas, |scene| {
+                self.draw_page_sheets(scene, text_renderer, &fg, num_pages, sy)
+            })
+        });
 
         let (multi_sel, note_nums, spell_by_block) = self.prepare_pass2_inputs(blocks, &laid, &fg);
 
         let markers = self.draw_page_content(
+            &mut parts,
             scene,
-            &fg,
+            (transform, &fg),
             text_renderer,
             &PageContentInput {
                 laid: &laid,
@@ -301,67 +271,62 @@ impl Widget for WordProcessorWidget {
                 note_numbers: &note_nums,
             },
         );
-        self.review.draw_pips(
-            &mut ui::paint::PaintCtx::new(scene, fg.ctf, text_renderer, theme),
-            self.chrome.paper,
-            &markers.comment_markers,
-        );
-        self.draw_footnotes(
-            scene,
-            &fg,
-            text_renderer,
-            &markers.page_notes,
-            &note_nums,
-            sy,
-        );
-
-        self.draw_empty_placeholder(scene, fg.ctf, text_renderer, laid.first());
-
-        // Layout-edit overlay: draggable guides + live value labels for the
-        // active mode (drawn over the content, still inside the page clip).
-        if self.layout_mode != LayoutMode::None {
-            self.draw_layout_overlay(scene, fg.ctf, text_renderer, page);
-        }
-        // Header/footer edit mode: veil the body + draw the band caret (checks
-        // `self.inner.in_running_region()` itself). Drawn last so the veil
-        // covers the body but the band + its caret stay crisp on top.
-        self.draw_running_region_veil(scene, &fg, num_pages, sy);
-
-        self.draw_review_column(
-            scene,
-            (transform, &fg),
-            text_renderer,
-            theme,
-            presence,
-            &markers,
-        );
-
-        scene.pop_layer();
-
-        self.draw_scrollbar(scene, transform, fg.canvas);
+        // The page-space passes over the content, each clipped to the canvas.
+        parts.draw(scene, "word-notes", canvas, |scene| {
+            clipped(scene, transform, canvas, |scene| {
+                self.review.draw_pips(
+                    &mut ui::paint::PaintCtx::new(scene, fg.ctf, text_renderer, theme),
+                    self.chrome.paper,
+                    &markers.comment_markers,
+                );
+                self.draw_footnotes(
+                    scene,
+                    &fg,
+                    text_renderer,
+                    &markers.page_notes,
+                    &note_nums,
+                    sy,
+                );
+                self.draw_empty_placeholder(scene, fg.ctf, text_renderer, laid.first());
+                // Layout-edit overlay: draggable guides + live value labels
+                // for the active mode, over the content.
+                if self.layout_mode != LayoutMode::None {
+                    self.draw_layout_overlay(scene, fg.ctf, text_renderer, sheets);
+                }
+                // Header/footer edit mode: veil the body + draw the band caret
+                // (checks `self.inner.in_running_region()` itself). Drawn last
+                // so the veil covers the body but the band + its caret stay
+                // crisp on top.
+                self.draw_running_region_veil(scene, &fg, num_pages, sy);
+            });
+        });
+        parts.draw(scene, "word-review", canvas, |scene| {
+            clipped(scene, transform, canvas, |scene| {
+                self.draw_review_column(
+                    scene,
+                    (transform, &fg),
+                    text_renderer,
+                    theme,
+                    presence,
+                    &markers,
+                );
+            });
+        });
 
         self.laid = laid;
         // Adopt this frame's cache (dropping the pruned entries for blocks that
         // no longer exist) so the next frame can reuse it.
         self.layout_cache = new_cache;
-
-        self.draw_remote_overlays(
+        self.draw_outside_page(
+            &mut parts,
             scene,
-            fg.ctf,
-            fg.canvas_clip,
+            (transform, &fg),
             text_renderer,
             theme,
             presence,
         );
-
-        let lbar = Rect::new(
-            fg.canvas_left,
-            fg.layout_bar_top,
-            fg.canvas_right,
-            fg.content_bottom,
-        );
-        self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
-        self.draw_drawers(scene, transform, text_renderer, theme);
+        self.paint_damage
+            .record(full, parts.finish(scene, vec![full], transform, theme));
     }
 
     // Where the caret and selection end up is what the edits bound to them
@@ -372,7 +337,7 @@ impl Widget for WordProcessorWidget {
     }
 
     /// Top-layer pass: paint the right-click context menu (when open) so it
-    /// floats above the page + chrome. Delegates to the shared [`ContextMenu`].
+    /// floats above the page + chrome. Delegates to the shared [`ContextMenu`](ui::widget::context_menu::ContextMenu).
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -381,32 +346,10 @@ impl Widget for WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.staged.template_picker {
-            self.staged.template_picker = false;
-            self.open_template_picker();
-        }
-        if self.staged.toolbar_overflow {
-            self.staged.toolbar_overflow = false;
-            self.open_toolbar_overflow();
-        }
-        // Toast first, so an open menu stacks above it.
-        self.draw_toast(scene, transform, text_renderer, theme);
-        let toolbar_presence = PresenceCtx::empty();
-        toolbar_presence
-            .viewport
-            .set(Some(self.floating_viewport()));
-        Widget::draw_overlay(
-            &mut self.tool_bar,
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &toolbar_presence,
-        );
         let viewport = self.floating_viewport();
         for menu in [
             &mut self.context_menu,
-            self.template_picker.menu_mut(),
+            self.file_menu.menu_mut(),
             self.style_menu.menu_mut(),
         ] {
             if menu.is_open() {
@@ -448,14 +391,10 @@ impl Widget for WordProcessorWidget {
         }
         self.compact_swatch_palette
             .draw(scene, transform, text_renderer, theme, presence);
-        self.template_picker
+        self.file_menu
             .draw(scene, transform, text_renderer, theme, presence);
         self.style_menu
             .draw(scene, transform, text_renderer, theme, presence);
-        if self.find.is_open() {
-            self.find
-                .draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
         self.color_picker.draw(
             crate::style_color_picker::DrawArgs {
                 scene,
@@ -488,9 +427,7 @@ impl Widget for WordProcessorWidget {
         if !self.styles_panel_full_window() {
             tree.node = tree.node.with_name(t("a11y-document-editor"));
         }
-        let mut node = tree.into_access_node();
-        node.children.extend(self.toast.access_node());
-        Some(node)
+        Some(tree.into_access_node())
     }
 
     fn perform_semantic_action(
@@ -588,21 +525,7 @@ impl Widget for WordProcessorWidget {
             self.apply_panel_hit(state, panel_hit);
             return true;
         }
-        let Some(tool) = self.toolbar.iter().find_map(|(tool, _)| {
-            let id = format!("word-processor.toolbar:{}", tool_action_id(*tool));
-            (ui::a11y::hash_key(&id) == target).then_some(*tool)
-        }) else {
-            return false;
-        };
-
-        // The AT route joins the exact same typed document-action/view path as
-        // pointer activation. It must also establish the same history/autosave
-        // boundary for mutations; otherwise screen-reader edits would silently
-        // be second-class collaboration events.
-        self.apply_tool(state, tool);
-        self.refresh_blocks(state);
-        self.lifecycle.dirty = true;
-        true
+        false
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -624,7 +547,6 @@ impl Widget for WordProcessorWidget {
     }
     fn set_focus(&mut self, focused: bool) {
         self.lifecycle.focused = focused;
-        self.find.set_host_focused(focused);
         if !focused {
             // Blur any in-progress numeric edit; the next sync reloads the
             // persisted style values.
@@ -644,8 +566,6 @@ impl Widget for WordProcessorWidget {
                         && self.visible_styles_rect(slot.rect).is_some()
                 })
                 .and_then(|slot| Widget::ime_cursor_rect(&slot.input))
-        } else if self.find.is_open() {
-            self.find.ime_cursor_rect()
         } else {
             self.ime_rect
         }
@@ -659,8 +579,6 @@ impl Widget for WordProcessorWidget {
                         && self.visible_styles_rect(slot.rect).is_some()
                 })
                 .and_then(|slot| Widget::ime_content(&slot.input))
-        } else if self.find.is_open() {
-            self.find.ime_content()
         } else {
             Some(ui::ime::InputContent::TEXT)
         }
@@ -671,8 +589,27 @@ impl Widget for WordProcessorWidget {
     fn needs_redraw(&self) -> bool {
         self.lifecycle.dirty
     }
+    /// A toast wakes the document to leave.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.toast.deadline()
+    }
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() || self.paint_damage.is_recorded() {
+            self.paint_damage.collect(self.rect, regions);
+        }
+    }
+    fn damage_covers_own_box(&self) -> bool {
+        self.paint_damage.covers_own_bounds()
+    }
+    fn release_scene_cache(&mut self) {
+        self.paint_damage.release_scene_cache();
+        for child in self.children_mut() {
+            child.release_scene_cache();
+        }
+    }
     fn mark_drawn(&mut self) {
         self.lifecycle.dirty = false;
+        self.paint_damage.mark_drawn();
     }
     /// One self-drawn taffy leaf filling its tile: its size follows the
     /// parent alone, so only the first layout is a size change. Pages,
@@ -791,18 +728,6 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
     }
 }
 
-/// The toolbar band is the window's header row: it holds the History control
-/// the host offers, so the window draws no History bar above the editor.
-impl ui::widget::WindowHeader for WordProcessorWidget {
-    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
-        if self.window_history.control() != control {
-            self.window_history.set_control(control);
-            self.lifecycle.dirty = true;
-        }
-        self.retained_tree_stale |= self.window_history.take_rebuilt();
-    }
-}
-
 impl ui::widget::controls::ActionControls for WordProcessorWidget {
     fn install_control_custody(
         &mut self,
@@ -832,6 +757,12 @@ impl ui::widget::controls::ActionControls for WordProcessorWidget {
         for child in self.children_mut() {
             ui::widget::controls::refresh_control_action_availability(child, allowed);
         }
+    }
+}
+
+impl ui::semantic_document_read::SemanticReaders for WordProcessorWidget {
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::semantic_read::action::READERS
     }
 }
 
@@ -886,5 +817,55 @@ impl ui::widget::AppWidget for WordProcessorWidget {
 
     fn permission_hint(&self) -> Option<ui::widget::AppKind> {
         Some(ui::widget::AppKind::Editor)
+    }
+}
+
+impl WordProcessorWidget {
+    /// The passes outside the page clip, each its own part: the scroll bar,
+    /// collaborators' marks (clipped to the canvas themselves), the layout bar
+    /// and the drawers.
+    fn draw_outside_page(
+        &mut self,
+        parts: &mut PaintParts,
+        scene: &mut Scene,
+        (transform, fg): (Affine, &super::FrameGeometry),
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let canvas = fg.canvas;
+        let reach = ui::widget::focus_ring_reach(theme);
+        let gutter = f64::from(self.desk_theme.tokens.metrics.scrollbar_gutter);
+        let track = Rect::new(canvas.x1 - gutter, canvas.y0, canvas.x1, canvas.y1);
+        parts.draw(
+            scene,
+            "word-scrollbar",
+            track.inflate(reach, reach),
+            |scene| {
+                self.draw_scrollbar(scene, transform, canvas);
+            },
+        );
+
+        parts.draw(scene, "word-peers", canvas, |scene| {
+            self.draw_remote_overlays(scene, fg.ctf, fg.canvas_clip, tr, theme, presence);
+        });
+
+        let lbar = Rect::new(
+            fg.canvas_left,
+            fg.layout_bar_top,
+            fg.canvas_right,
+            fg.content_bottom,
+        );
+        parts.draw(
+            scene,
+            "word-layout-bar",
+            lbar.inflate(reach, reach),
+            |scene| {
+                self.draw_layout_bar(scene, transform, tr, theme, lbar);
+            },
+        );
+        parts.draw(scene, "word-drawers", self.rect, |scene| {
+            self.draw_drawers(scene, transform, tr, theme);
+        });
     }
 }

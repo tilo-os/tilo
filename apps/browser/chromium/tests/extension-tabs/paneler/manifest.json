@@ -1,0 +1,8 @@
+{"manifest_version": 3, "name": "Paneler", "version": "1.0",
+ "action": {"default_title": "Notes beside the page"},
+ "side_panel": {"default_path": "panel.html"},
+ "permissions": ["sidePanel", "tabs"],
+ "background": {"service_worker": "worker.js"},
+ "commands": {
+   "open-panel": {"suggested_key": {"default": "Alt+Shift+P", "mac": "Alt+Shift+P"}, "description": "Open the panel"}
+ }}

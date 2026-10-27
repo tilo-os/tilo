@@ -189,6 +189,9 @@ pub struct Text {
     /// per-frame translate so the cache follows its widget without
     /// re-encoding.
     cache_rect: vello::kurbo::Rect,
+    /// Whether the label is a message of the app's catalogue, as of the
+    /// catalogue revision it was looked up at.
+    interface: std::cell::Cell<Option<(u64, bool)>>,
 }
 
 /// How assistive technology meets a [`Text`].
@@ -241,7 +244,26 @@ impl Text {
             dirty: true,
             layout_dirty: false,
             cache_rect: vello::kurbo::Rect::ZERO,
+            interface: std::cell::Cell::new(None),
         }
+    }
+
+    /// Whether this text is the app's own copy: a message of its catalogue
+    /// with nothing of the moment in it. A bound value, an argument or a
+    /// literal string is content.
+    fn interface_copy(&self) -> bool {
+        if self.spoken.is_some() || self.source.is_some() || !self.args.is_empty() {
+            return false;
+        }
+        let revision = crate::i18n::I18nManager::revision();
+        if let Some((seen, interface)) = self.interface.get()
+            && seen == revision
+        {
+            return interface;
+        }
+        let interface = crate::i18n::I18nManager::has_message(&self.label);
+        self.interface.set(Some((revision, interface)));
+        interface
     }
 
     /// Give this retained text node a stable address for inspection and
@@ -380,12 +402,32 @@ impl Text {
 
     fn observe_i18n_revision(&mut self) {
         let revision = crate::i18n::I18nManager::revision();
-        if revision != self.i18n_revision {
-            self.i18n_revision = revision;
+        if revision == self.i18n_revision {
+            return;
+        }
+        let stale = self.shows_stale_copy();
+        self.i18n_revision = revision;
+        if stale {
             self.dirty = true;
             self.layout_dirty = true;
             self.prepared_input = None;
         }
+    }
+
+    /// Whether the language, its catalogue or the formats moved since this
+    /// text last looked and it now reads differently. Most text reads the
+    /// same after a formats change (only numbers and dates in its message
+    /// move), so what it shaped and drew stays: every label redrawn and
+    /// relaid on that change repainted every view that showed one.
+    fn shows_stale_copy(&self) -> bool {
+        if self.i18n_revision == crate::i18n::I18nManager::revision() {
+            return false;
+        }
+        let shown = self
+            .prepared_input
+            .as_ref()
+            .filter(|_| self.layout_engine.is_none());
+        shown.is_none_or(|shown| shown.text() != self.resolved_label())
     }
 
     /// Say what this text is. The role picks face, size, weight and leading
@@ -1085,7 +1127,7 @@ impl Widget for Text {
     /// invalidated by a rect change. The App's redraw gate uses this to
     /// skip frames where no Text widget changed.
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.i18n_revision != crate::i18n::I18nManager::revision()
+        self.dirty || self.shows_stale_copy()
     }
 
     /// Clears the cache-stale flag after the App consumes the scene.
@@ -1101,7 +1143,7 @@ impl Widget for Text {
     fn is_layout_dirty(&self) -> bool {
         (self.rect == vello::kurbo::Rect::ZERO && !self.collapsed())
             || self.layout_dirty
-            || self.i18n_revision != crate::i18n::I18nManager::revision()
+            || self.shows_stale_copy()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1110,6 +1152,12 @@ impl Widget for Text {
 
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
+    }
+
+    /// The node below never sets `hidden`: answered without resolving the
+    /// text, for every text of a list on every focus walk.
+    fn accessibility_hidden(&self) -> bool {
+        false
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -1126,7 +1174,9 @@ impl Widget for Text {
             self.accessible_heading_level()
                 .map_or(Role::StaticText, |level| Role::Heading { level })
         };
-        let mut node = AccessNode::new(role).with_name(label);
+        let mut node = AccessNode::new(role)
+            .with_name(label)
+            .with_interface_name(self.interface_copy());
         if let Some(politeness) = self.live {
             node = node.with_live(politeness);
         }
@@ -1152,17 +1202,14 @@ mod tests {
 
     #[test]
     fn centered_text_top_splits_measured_slack() {
-        // Case `centered_text_top_splits_the_slack_evenly`.
         {
             // 18 px band, 15 px measured line: 1.5 px above and below.
             assert!((centered_text_top(100.0, 18.0, 15.0) - 101.5).abs() < f64::EPSILON);
-            // Zero slack sits flush with the band.
             assert!((centered_text_top(7.0, 15.0, 15.0) - 7.0).abs() < f64::EPSILON);
             // A line taller than its band overhangs symmetrically instead of pinning to the top.
             assert!((centered_text_top(0.0, 10.0, 14.0) - (-2.0)).abs() < f64::EPSILON);
         }
 
-        // Case `centered_text_top_uses_the_measured_line_not_the_font_size`.
         {
             // The defect this helper retires: centring on the 12 px font size
             // instead of the 15 px line the renderer actually lays out puts the
@@ -1311,7 +1358,6 @@ mod tests {
 
     #[test]
     fn pluggable_layout_engines_keep_lifecycle_and_size_ownership() {
-        // Case `custom_layout_engine_keeps_text_widget_lifecycle`.
         {
             let measures = std::rc::Rc::new(std::cell::Cell::new(0));
             let draws = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -1363,7 +1409,6 @@ mod tests {
             assert!(Widget::is_layout_dirty(&text));
         }
 
-        // Case `pluggable_engine_receives_the_resolved_role_and_delegates_real_runs`.
         {
             for (theme_scale, renderer_scale) in [(1.0, 2.0), (1.25, 1.5), (1.5, 1.25), (2.0, 1.0)]
             {
@@ -1395,7 +1440,6 @@ mod tests {
 
     #[test]
     fn roles_are_scaled_exactly_once_whatever_the_renderer_scale() {
-        // Case `theme_roles_reach_draw_exactly_once`.
         {
             for (theme_scale, renderer_scale) in [
                 (1.0, 1.0),
@@ -1416,7 +1460,6 @@ mod tests {
             }
         }
 
-        // Case `text_without_a_role_is_body`.
         {
             let theme = Theme::dark().with_ui_scale(1.25).with_text_scale(1.5);
             let mut renderer = crate::font_catalog::fixture_renderer();
@@ -1427,7 +1470,6 @@ mod tests {
             assert_eq!(plain.text_style(), &theme.text(TextRole::Body));
         }
 
-        // Case `text_role_matches_theme_text_at_every_scale`.
         {
             let theme = Theme::dark().with_ui_scale(1.25).with_text_scale(1.5);
             for role in TextRole::ALL {
@@ -1440,7 +1482,6 @@ mod tests {
             }
         }
 
-        // Case `modifiers_keep_the_role_size`.
         {
             let theme = Theme::dark().with_ui_scale(1.25).with_text_scale(1.5);
             let mut renderer = crate::font_catalog::fixture_renderer();
@@ -1473,7 +1514,6 @@ mod tests {
             );
         }
 
-        // Case `content_size_ignores_every_accessibility_scale`.
         {
             for (theme_scale, renderer_scale) in [(1.0, 2.0), (1.25, 1.5), (2.0, 1.0)] {
                 let theme = Theme::dark().with_text_scale(theme_scale);
@@ -1492,7 +1532,6 @@ mod tests {
 
     #[test]
     fn text_caches_invalidate_only_when_inputs_change() {
-        // Case `observed_theme_scale_invalidates_the_role_cache`.
         {
             let initial = Theme::dark();
             let scaled = Theme::dark().with_text_scale(2.0);
@@ -1510,7 +1549,6 @@ mod tests {
             assert_scene_font_size(&role_scene, 28.0, "role cache redraw");
         }
 
-        // Case `an_unchanged_theme_keeps_the_cache`.
         {
             let theme = Theme::dark();
             let mut renderer = crate::font_catalog::fixture_renderer();
@@ -1521,7 +1559,6 @@ mod tests {
             assert!(!Widget::needs_redraw(&text));
         }
 
-        // Case `local_state_binding_invalidates_text_only_after_a_change`.
         {
             let state = crate::LocalState::new(String::from("Ada"));
             let mut text = Text::from_state(&state, |name| format!("Hello, {name}"));
@@ -1549,7 +1586,6 @@ mod tests {
             );
         }
 
-        // Case `dynamic_text_compares_output_before_invalidating`.
         {
             let calls = std::rc::Rc::new(std::cell::Cell::new(0_u32));
             let captured = std::rc::Rc::clone(&calls);
@@ -1567,7 +1603,6 @@ mod tests {
             assert!(!Widget::is_layout_dirty(&text));
         }
 
-        // Case `document_text_keeps_multiple_views_in_sync_through_undo`.
         {
             use automerge::{ReadDoc, ScalarValue, Value, transaction::Transactable};
 
@@ -1633,7 +1668,6 @@ mod tests {
 
     #[test]
     fn typography_follows_semantic_roles_and_layers_modifiers() {
-        // Case `semantic_role_uses_active_theme_typography`.
         {
             let theme = Theme::dark().with_text_scale(1.5);
             let mut text = Text::new("Readable").with_role(TextRole::Reading);
@@ -1643,7 +1677,6 @@ mod tests {
             assert_eq!(text.text_style(), &theme.text(TextRole::Reading));
         }
 
-        // Case `semantic_role_follows_theme_changes_without_rebuilding_widget`.
         {
             let mut text = Text::new("Readable")
                 .with_role(TextRole::Reading)
@@ -1670,7 +1703,6 @@ mod tests {
             ));
         }
 
-        // Case `modifier_order_does_not_matter`.
         {
             let a = Text::new("Order")
                 .with_weight(TextWeight::Bold)
@@ -1723,7 +1755,6 @@ mod tests {
             let (hits, _m, _ns) = tr.take_shape_stats();
             assert_eq!(hits, 1, "the label shaped its text in the named family");
 
-            // The role's own face of the same string is a separate shape entry.
             tr.draw_style(
                 &mut scene,
                 "Reading",
@@ -1744,7 +1775,6 @@ mod tests {
 
     #[test]
     fn accessibility_exposes_names_headings_live_text_and_hides_empty_text() {
-        // Case `accessibility_reports_static_text_with_label_as_name`.
         {
             let t = Text::new("Hello world");
             let node = Widget::accessibility(&t).expect("non-empty text is not presentational");
@@ -1754,7 +1784,6 @@ mod tests {
             assert!(!node.state.focusable, "static text is not focusable");
         }
 
-        // Case `semantic_title_and_heading_roles_create_navigable_headings`.
         {
             for (role, level) in [
                 (TextRole::LargeTitle, Some(1)),
@@ -1773,7 +1802,6 @@ mod tests {
             }
         }
 
-        // Case `heading_level_override_keeps_the_role_typography`.
         {
             let text = Text::new("Details")
                 .with_role(TextRole::Heading)
@@ -1783,7 +1811,6 @@ mod tests {
             assert_eq!(text.text_style(), &Theme::dark().text(TextRole::Heading));
         }
 
-        // Case `accessibility_empty_text_is_presentational`.
         {
             let t = Text::new("");
             assert!(
@@ -1792,7 +1819,6 @@ mod tests {
             );
         }
 
-        // Case `accessibility_exposes_opt_in_live_text_without_changing_its_role`.
         {
             use crate::a11y::Politeness;
 
@@ -1809,9 +1835,41 @@ mod tests {
     // The i18n manager is a thread-local, so these tests are isolated per test
     // thread; each re-inits a fresh bundle and asserts only on its own keys.
 
+    /// A catalogue change redraws and relays out the text it rewords, and
+    /// leaves the text that reads the same as it was drawn.
+    #[test]
+    fn a_revision_that_does_not_reword_a_text_keeps_what_it_drew() {
+        I18nManager::init("en-US");
+        let theme = Theme::light();
+        let mut renderer = TextRenderer::new();
+        let mut plain = Text::new("Row 7: the quick brown fox");
+        let mut reworded = Text::new("tilo-test-greeting");
+        for text in [&mut plain, &mut reworded] {
+            let _ = build_measure_draw(text, &theme, &mut renderer);
+            Widget::mark_drawn(text);
+            assert!(!Widget::needs_redraw(text) && !Widget::is_layout_dirty(text));
+        }
+        I18nManager::add_resource("en-US", "tilo-test-greeting = Good morning".to_string());
+        assert!(
+            !Widget::needs_redraw(&plain),
+            "the plain label reads the same"
+        );
+        assert!(!Widget::is_layout_dirty(&plain));
+        assert!(Widget::needs_redraw(&reworded), "the greeting now resolves");
+        assert!(Widget::is_layout_dirty(&reworded));
+        let (_, scene) = build_measure_draw(&mut plain, &theme, &mut renderer);
+        assert!(
+            !Widget::needs_redraw(&plain),
+            "drawing it again kept it drawn"
+        );
+        assert!(!scene.encoding().resources.glyph_runs.is_empty());
+        let _ = build_measure_draw(&mut reworded, &theme, &mut renderer);
+        let node = Widget::accessibility(&reworded).expect("resolved");
+        assert_eq!(node.name.as_deref(), Some("Good morning"));
+    }
+
     #[test]
     fn fluent_text_interpolates_degrades_and_follows_locale() {
-        // Case `with_arg_interpolates_fluent_variable`.
         {
             I18nManager::init("en-US");
             I18nManager::add_resource("en-US", "counter = Count is { $count }".to_string());
@@ -1823,7 +1881,6 @@ mod tests {
             assert!(!node.name.unwrap().contains("$count"));
         }
 
-        // Case `with_args_accepts_strings_and_numbers`.
         {
             I18nManager::init("en-US");
             I18nManager::add_resource(
@@ -1836,7 +1893,6 @@ mod tests {
             assert_eq!(node.name.as_deref(), Some("Hi Ada, you have 3 messages"));
         }
 
-        // Case `missing_arg_degrades_without_panic`.
         {
             I18nManager::init("en-US");
             I18nManager::add_resource("en-US", "counter = Count is { $count }".to_string());
@@ -1849,7 +1905,6 @@ mod tests {
             assert!(name.contains("Count is"), "got {name:?}");
         }
 
-        // Case `unknown_key_falls_back_to_key`.
         {
             I18nManager::init("en-US");
             // No resource for this key at all.
@@ -1858,7 +1913,6 @@ mod tests {
             assert_eq!(node.name.as_deref(), Some("totally-unknown-key"));
         }
 
-        // Case `locale_switch_remeasures_and_repaints_retained_text_and_button`.
         {
             fn locale_switch_remeasures_and_repaints_retained_text_and_button() {
                 fn named<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {

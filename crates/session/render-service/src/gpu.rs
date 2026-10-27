@@ -35,10 +35,6 @@ impl Gpu {
     /// Open the device the compositor composites on, whose render node is
     /// `render_node`, build every vello pipeline now (the service exists to
     /// have them warm), and open a GBM allocator on the same node.
-    ///
-    /// # Errors
-    ///
-    /// When no adapter, renderer or allocator can be had.
     pub fn open(render_node: Option<&std::path::Path>) -> Result<Self, GpuError> {
         let mut context = ui::gpu::RenderContext::new();
         let index = pollster::block_on(context.device(None)).ok_or(GpuError::NoAdapter)?;
@@ -87,6 +83,24 @@ impl Gpu {
         self.loss.reason()
     }
 
+    /// Wait until everything submitted finished, and say whether it did. A GPU that finishes
+    /// nothing for [`ui::gpu::NOT_PROGRESSING_AFTER`] has stopped, and nothing else would ever
+    /// say so: its device is declared lost ([`Self::lost`]).
+    pub fn finish(&self) -> bool {
+        let waited = ui::gpu::NOT_PROGRESSING_AFTER;
+        match self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(waited),
+        }) {
+            Ok(_) => true,
+            Err(wgpu::PollError::Timeout) => {
+                ui::gpu::LossWatch::new(self.loss.clone()).stopped(self.queue.clone(), waited);
+                false
+            }
+            Err(_) => self.lost().is_none(),
+        }
+    }
+
     /// A new renderer on the same device, after the old one's state stopped
     /// being trustworthy.
     ///
@@ -124,4 +138,32 @@ fn new_renderer(device: &wgpu::Device) -> Result<Renderer, GpuError> {
         },
     )
     .map_err(|error| GpuError::Renderer(error.to_string()))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    /// A GPU whose firmware stopped answering finishes nothing and reports
+    /// nothing: the service used to wait for it for ever, and every app it
+    /// drew for froze with it. Tests run on lavapipe, never a real GPU.
+    #[test]
+    fn a_gpu_that_stops_finishing_work_ends_the_wait_as_a_lost_device() {
+        let gpu = Gpu::open(None).expect("a wgpu adapter");
+        assert!(gpu.finish(), "a working GPU finishes");
+        // SAFETY: the hal device is only flagged; no raw handle leaves this block.
+        unsafe { gpu.device.as_hal::<wgpu::hal::api::Vulkan>() }
+            .expect("tests render through Vulkan")
+            .simulate_hang();
+        let encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        gpu.queue.submit([encoder.finish()]);
+        assert!(!gpu.finish(), "work that never finishes ends the wait");
+        assert!(
+            gpu.lost()
+                .is_some_and(|reason| reason.contains("stopped finishing work")),
+            "the device is lost, so the service ends and is started again"
+        );
+    }
 }
