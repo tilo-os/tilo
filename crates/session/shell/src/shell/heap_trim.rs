@@ -22,6 +22,14 @@
 //! until something punches it out; a renderer on lavapipe registers its
 //! device with [`register_device`], and each trim hands the device's free
 //! ranges back to the kernel (`tilo_output_passes::software_gpu_memory`).
+//!
+//! Between closes the session's memory can still run short: a software GPU
+//! keeps every page it touched while it works (the compositor's device memory
+//! has peaked at 552 MiB, 350 of it free), and on a small machine that is
+//! what the kernel kills the session for. So the same trim is asked for when
+//! the session's cgroup reports memory pressure ([`watch_pressure`], a PSI
+//! trigger the thread blocks on, never a timer) and when a renderer frees a
+//! lot at once ([`LARGE_FREE`]).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -154,6 +162,95 @@ pub fn register_device(
     Some(DeviceRegistration(id))
 }
 
+/// A drop in a renderer's own allocations this large between two frames is a
+/// large free worth a trim ([`freed_a_lot`]).
+pub const LARGE_FREE: u64 = 32 << 20;
+
+/// Whether a renderer's allocations went from `before` to `now` bytes by a
+/// [`LARGE_FREE`] or more.
+pub const fn freed_a_lot(before: u64, now: u64) -> bool {
+    before.saturating_sub(now) >= LARGE_FREE
+}
+
+/// The PSI trigger asked of the session's cgroup: some task stalled on memory
+/// for 200 ms within a 2 s window (an unprivileged trigger's window is a
+/// multiple of 2 s).
+const PRESSURE_TRIGGER: &str = "some 200000 2000000";
+
+/// The cgroup v2 path in `/proc/self/cgroup`'s text (`0::/user.slice/...`).
+fn own_cgroup(text: &str) -> Option<&str> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .map(str::trim)
+        .filter(|path| path.starts_with('/'))
+}
+
+/// Ask for a trim whenever the session's cgroup reports memory pressure: a
+/// thread that blocks on a PSI trigger of the cgroup's `memory.pressure`
+/// and wakes only when the kernel says tasks stall on memory. Without PSI
+/// (or a cgroup that refuses the trigger) nothing is watched.
+fn watch_pressure() {
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write as _;
+        use std::os::fd::AsRawFd as _;
+
+        let Some(path) = std::fs::read_to_string("/proc/self/cgroup")
+            .ok()
+            .as_deref()
+            .and_then(own_cgroup)
+            .map(|cgroup| format!("/sys/fs/cgroup{cgroup}/memory.pressure"))
+        else {
+            return;
+        };
+        let mut file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                tracing::debug!(%error, path, "no memory pressure trigger; trims follow closes only");
+                return;
+            }
+        };
+        if let Err(error) = file.write_all(PRESSURE_TRIGGER.as_bytes()) {
+            tracing::debug!(%error, path, "memory pressure trigger refused; trims follow closes only");
+            return;
+        }
+        let spawned = std::thread::Builder::new()
+            .name("tilo-mem-pressure".into())
+            .spawn(move || {
+                let mut poll = libc::pollfd {
+                    fd: file.as_raw_fd(),
+                    events: libc::POLLPRI,
+                    revents: 0,
+                };
+                loop {
+                    // SAFETY: one valid pollfd that `file` keeps open for the loop.
+                    let ready = unsafe { libc::poll(&raw mut poll, 1, -1) };
+                    if ready < 0 {
+                        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+                        {
+                            continue;
+                        }
+                        return;
+                    }
+                    if poll.revents & libc::POLLERR != 0 {
+                        return; // the cgroup went away
+                    }
+                    if poll.revents & libc::POLLPRI != 0 {
+                        log_milestone("memory-pressure");
+                        request();
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "memory pressure watch did not start");
+        }
+    }
+}
+
 /// Ask for freed heap to be returned soon: a window closed, or something
 /// else released a lot at once. Cheap and non-blocking on the caller's
 /// thread; any number of requests within a few seconds make one trim.
@@ -264,7 +361,10 @@ fn trimmer() -> Option<&'static Trimmer> {
             .name("tilo-heap-trim".into())
             .spawn(move || serve(trimmer))
         {
-            Ok(_) => Some(trimmer),
+            Ok(_) => {
+                watch_pressure();
+                Some(trimmer)
+            }
             Err(error) => {
                 tracing::warn!(%error, "heap trim thread did not start; freed heap stays in glibc");
                 None
@@ -396,6 +496,27 @@ fn rss_anon_kib() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_large_drop_in_a_renderers_allocations_asks_for_a_trim() {
+        assert!(freed_a_lot(200 << 20, 150 << 20));
+        assert!(freed_a_lot(LARGE_FREE, 0));
+        assert!(
+            !freed_a_lot(200 << 20, 190 << 20),
+            "a small free waits for a close"
+        );
+        assert!(!freed_a_lot(100 << 20, 300 << 20), "growth is no free");
+    }
+
+    #[test]
+    fn the_pressure_watch_reads_its_own_cgroup() {
+        assert_eq!(
+            own_cgroup("0::/user.slice/user-1001.slice/session-9.scope\n"),
+            Some("/user.slice/user-1001.slice/session-9.scope")
+        );
+        assert_eq!(own_cgroup("1:name=systemd:/x\n"), None);
+        assert_eq!(own_cgroup(""), None);
+    }
 
     fn at(start: Instant, millis: u64) -> Instant {
         after(start, Duration::from_millis(millis))
