@@ -72,8 +72,8 @@ agent-add-provider-placeholder = Choose a provider
 agent-preset-unknown = That provider can't be added here.
 agent-test-connection = Test connection
 agent-test-connected = { $count ->
-        [one] Connected. The provider offers one model.
-       *[other] Connected. The provider offers { $count } models.
+        [one] Connected to { $provider }. The provider offers one model.
+       *[other] Connected to { $provider }. The provider offers { $count } models.
     }
 agent-test-no-models = Connected, but the provider lists no models. Type the model ID above.
 agent-test-no-list = This provider doesn't list its models. Check the URL, or type the model ID above.
@@ -95,10 +95,8 @@ agent-model-gone = That model is no longer offered; the list was read again.
 agent-model-busy = That model cannot do this right now.
 agent-provider-not-default = Only an enabled provider with a model can be the default.
 agent-provider-details-required = A provider needs a name and an endpoint.
-agent-provider-saved = Provider change saved by the backend.
-agent-provider-ready = Provider settings loaded from the backend.
 agent-provider-offline = Model provider administration is unavailable right now. Names and notes you edit here are kept on this device; keys and connections stay as they are.
-agent-provider-offline-saved = Offline metadata saved locally. Backend settings are unchanged.
+agent-provider-offline-saved = Kept on this device. The shared provider settings are unchanged.
 agent-provider-pending = Waiting for provider administration…
 agent-provider-busy = A provider operation is still running. Wait before making another change.
 agent-provider-conflict = Provider settings changed elsewhere. The latest settings were reloaded. Review your draft and save again.

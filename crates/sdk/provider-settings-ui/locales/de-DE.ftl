@@ -74,8 +74,8 @@ agent-add-provider-placeholder = Anbieter wählen
 agent-preset-unknown = Dieser Anbieter kann hier nicht hinzugefügt werden.
 agent-test-connection = Verbindung testen
 agent-test-connected = { $count ->
-        [one] Verbunden. Der Anbieter bietet ein Modell an.
-       *[other] Verbunden. Der Anbieter bietet { $count } Modelle an.
+        [one] Verbunden mit { $provider }. Der Anbieter bietet ein Modell.
+       *[other] Verbunden mit { $provider }. Der Anbieter bietet { $count } Modelle.
     }
 agent-test-no-models = Verbunden, aber der Anbieter nennt keine Modelle. Gib die Modell-ID oben ein.
 agent-test-no-list = Dieser Anbieter nennt seine Modelle nicht. Prüfe die URL oder gib die Modell-ID oben ein.
@@ -97,10 +97,8 @@ agent-model-gone = Dieses Modell wird nicht mehr angeboten; die Liste wurde neu 
 agent-model-busy = Das ist mit diesem Modell gerade nicht möglich.
 agent-provider-not-default = Nur ein aktivierter Anbieter mit Modell kann Standard sein.
 agent-provider-details-required = Ein Anbieter braucht einen Namen und einen Endpunkt.
-agent-provider-saved = Anbieteränderung im Backend gespeichert.
-agent-provider-ready = Anbietereinstellungen vom Backend geladen.
 agent-provider-offline = Die Verwaltung der Modellanbieter ist gerade nicht verfügbar. Namen und Notizen, die du hier bearbeitest, bleiben auf diesem Gerät; Schlüssel und Verbindungen bleiben, wie sie sind.
-agent-provider-offline-saved = Offline-Metadaten lokal gespeichert. Backend-Einstellungen bleiben unverändert.
+agent-provider-offline-saved = Auf diesem Gerät behalten. Die gemeinsamen Anbietereinstellungen bleiben unverändert.
 agent-provider-pending = Warten auf die Anbieterverwaltung…
 agent-provider-busy = Ein Anbietervorgang läuft noch. Warte vor der nächsten Änderung.
 agent-provider-conflict = Die Anbietereinstellungen wurden andernorts geändert und neu geladen. Prüfe deinen Entwurf und speichere erneut.
