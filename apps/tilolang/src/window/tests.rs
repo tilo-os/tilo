@@ -1689,8 +1689,13 @@ fn shows_text(node: &UiNode, text: &str) -> bool {
 #[test]
 fn a_later_build_takes_over_in_place_keeping_window_state_selection_and_detail() {
     let mut room = Room::seeded("notes");
-    let notes = room.rows().len();
-    let (key, _) = room.rows().remove(1);
+    let all = room.rows().len();
+    // A place of the sidebar narrows the list: the person's filter.
+    let pinned = room.key_of("ui.NavItem", "label", "Pinned");
+    room.fire(&pinned, "select", None);
+    let filtered = room.rows().len();
+    assert!(filtered < all, "{filtered} of {all}");
+    let (key, _) = room.rows().remove(0);
     room.activate(&key);
     let shown = room
         .window
@@ -1711,7 +1716,12 @@ fn a_later_build_takes_over_in_place_keeping_window_state_selection_and_detail()
         "the new build renders it: {detail:#?}"
     );
     assert_eq!(room.window.detail_target(), Some(&shown), "the same note");
-    assert_eq!(room.rows().len(), notes, "the list is the one it was");
+    assert_eq!(
+        room.composed().props.get("overview_title"),
+        Some(&Value::text("Pinned")),
+        "the same place of the sidebar is chosen"
+    );
+    assert_eq!(room.rows().len(), filtered, "the list is still filtered");
     let selected: Vec<String> = room
         .list()
         .list()
