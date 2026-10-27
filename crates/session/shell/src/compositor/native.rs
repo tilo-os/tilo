@@ -841,14 +841,6 @@ mod lock_view;
 use lock_media::{LOCK_MEDIA_REFRESH, lock_media_changed, lock_now_playing, send_lock_transport};
 use lock_view::{LockClock, publish_accessibility_tree, retain_session_redraw};
 
-/// A widget poll already ran in this tick's pump. Its deadline waking the
-/// loop is not a present: the tree, the layout, and any animation are the
-/// pump's result and the animation bit. Painting because the deadline
-/// merely came due kept idle apps submitting frames.
-fn present_for_app_poll(pump_changed: bool, _deadline_due: bool) -> bool {
-    pump_changed
-}
-
 /// App-side scheduling for one native tick. Keep the pump's redraw decision
 /// and the post-paint park together: a poll is work, not necessarily pixels,
 /// and its answered deadline must not schedule that same work again.
@@ -858,13 +850,16 @@ struct NativeAppTick {
 }
 
 impl NativeAppTick {
-    fn after_pump(frame: &FrameBuilder, changed: bool, tick_started: Instant) -> Self {
-        let deadline_due = frame
-            .next_wake_deadline()
-            .is_some_and(|at| at <= tick_started);
+    /// A widget poll already ran in this tick's pump. Its deadline waking
+    /// the loop is not a present: the tree, the layout, and any animation
+    /// are the pump's result and the animation bit. Painting because the
+    /// deadline merely came due kept idle apps submitting frames, so the
+    /// tree's deadlines are not asked here, only once the tick has painted
+    /// ([`Self::park_deadline`]).
+    fn after_pump(changed: bool, tick_started: Instant) -> Self {
         Self {
             tick_started,
-            redraw: present_for_app_poll(changed, deadline_due),
+            redraw: changed,
         }
     }
 
@@ -964,7 +959,7 @@ mod idle_work_tests;
 
 /// A widget deadline wakes the loop once. A widget may keep an overdue
 /// deadline until a paint consumes it, while a due deadline alone does not
-/// paint (`present_for_app_poll`): a deadline that was already due when
+/// paint ([`NativeAppTick::after_pump`]): a deadline that was already due when
 /// this tick started was answered by it, and waking for it again would run
 /// the loop flat out without painting until something unrelated paints.
 fn widget_park_deadline(tick_started: Instant, deadline: Option<Instant>) -> Option<Instant> {
@@ -14094,7 +14089,7 @@ pub fn run() {
         let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
         let still_moving = animation_demand.any() || transition_run;
         let animating = animation_settle.due(still_moving);
-        let app_tick = NativeAppTick::after_pump(&frame_builder, apps_changed, iter_t0);
+        let app_tick = NativeAppTick::after_pump(apps_changed, iter_t0);
         let output_presentation_count = state.output_presentation_surfaces.len();
         let presentation_frame_changed = update_output_presentation_repaint_pending(
             &mut output_presentation_repaint_pending,
@@ -16049,11 +16044,10 @@ mod tests {
             "an unchanged desktop releases a waiting callback without presenting"
         );
         assert!(
-            !present_for_app_poll(false, true),
+            !NativeAppTick::after_pump(false, now).redraw,
             "a poll whose tree, layout, and animations did not change must not present"
         );
-        assert!(present_for_app_poll(true, true));
-        assert!(!present_for_app_poll(false, false));
+        assert!(NativeAppTick::after_pump(true, now).redraw);
         assert_eq!(
             client_followup_deadline(client_followup_needed(true, false), now),
             None,
