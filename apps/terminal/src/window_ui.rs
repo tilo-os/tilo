@@ -46,6 +46,9 @@ pub(crate) struct WindowLife {
     close_asked: bool,
     /// The retry while the shell could not start, as last drawn.
     retry_rect: Rect,
+    /// Restart shell, in the ended session's banner or empty state, as
+    /// last drawn.
+    restart_action: std::cell::Cell<Rect>,
 }
 
 /// How a session ended, as far as the tab can tell.
@@ -485,6 +488,88 @@ impl TerminalWidget {
             TerminalWindow::Own => ui::shell_tabs::close_this(),
             TerminalWindow::Hosted(window) => window.close(),
         }
+    }
+
+    /// Whether the shell can start again in place: it ended (or its
+    /// terminal failed) and this terminal knows what to start — the target
+    /// the session ran on, or the command it was made to run. Not for a
+    /// window closing for its exited shell, a tab reconnecting to its
+    /// remote shell, or a terminal with no process of its own.
+    pub(crate) fn can_restart(&self) -> bool {
+        self.is_disconnected()
+            && !self.closing_for_exit()
+            && self.life.reconnect.is_none()
+            && !matches!(
+                self.session_end(),
+                Some(SessionEnd::Lost(_) | SessionEnd::Superseded)
+            )
+            && match self.sessions.state {
+                crate::sessions::OpenState::Open => self.sessions.target.is_some(),
+                crate::sessions::OpenState::Fixed => self.respawn.is_some(),
+                _ => false,
+            }
+    }
+
+    /// Start the shell again in place: a new session on the target the
+    /// ended one ran on, or the command again. The window, its history and
+    /// its record stay; the screen starts clean.
+    pub(crate) fn restart_session(&mut self) -> Result<(), String> {
+        if !self.can_restart() {
+            return Err(if self.is_disconnected() {
+                "this terminal cannot start its shell again".into()
+            } else {
+                "the shell is still running".into()
+            });
+        }
+        if let Some(command) = self.respawn.clone() {
+            let backend = TerminalBackend::with_command(command).map_err(|e| e.to_string())?;
+            self.attach_backend(backend);
+            self.resize_pty_to_grid();
+        } else if let Some(target) = self.sessions.target.clone() {
+            self.open_session(&target, Requester::current());
+        }
+        request_terminal_wake(&self.waker);
+        Ok(())
+    }
+
+    fn restart_target(&self) -> String {
+        format!("terminal.restart:{}", self.pane_id)
+    }
+
+    /// A press on Restart shell asks for the restart, as the action.
+    /// Returns whether the event was taken.
+    fn route_restart(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+        let target = self.life.restart_action.get();
+        if target.is_zero_area() || !self.can_restart() {
+            return false;
+        }
+        let pressed = match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => target.contains(self.last_cursor_pos),
+            WindowEvent::Touch(touch) if touch.phase == winit::event::TouchPhase::Started => {
+                target.contains(ctx.logical(touch.location))
+            }
+            _ => false,
+        };
+        if pressed {
+            self.submit_effect(crate::resource::TerminalEffect::Restart);
+            *ctx.handled = true;
+        }
+        pressed
+    }
+
+    /// Whether the grid gives way to the empty state: no shell behind it
+    /// (or one that has already ended) and nothing ever printed. A live
+    /// shell that has not drawn its prompt yet shows its blank grid; a
+    /// window closing for its exited shell shows nothing new.
+    fn shows_empty_state(&self) -> bool {
+        !self.alt_active
+            && !self.ever_nonblank
+            && !self.closing_for_exit()
+            && (self.headless || self.is_disconnected())
     }
 
     /// Why the shell could not start, while the tab shows that: a target
