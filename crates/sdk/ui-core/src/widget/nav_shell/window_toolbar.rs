@@ -307,6 +307,12 @@ pub(super) struct ShellBar {
     /// Another part of the window declares the slots: the shell keeps its
     /// header row and declares nothing from then on.
     yielded: bool,
+    /// The shell declared the window's slots itself, whether or not they
+    /// held what it could show: while they are its own, the bar's own
+    /// buttons are its own, so Back still goes where the shell goes
+    /// (covering a drawer, the sidebar's first screen) even where they
+    /// declare nothing.
+    declared: bool,
 }
 
 /// The shell that declares a window's slots, and what it declared.
@@ -359,6 +365,7 @@ impl Default for ShellBar {
             id,
             hosted: false,
             yielded: false,
+            declared: false,
         }
     }
 }
@@ -421,6 +428,12 @@ impl Drop for ShellBar {
 }
 
 impl NavShell {
+    /// Whether the bar's own buttons are the shell's: it declares the
+    /// window's slots, under its name.
+    pub(super) fn wants_bar_events(&self) -> bool {
+        self.inputs.borrow().shell_bar && self.shell_bar.declared
+    }
+
     /// Whether the shell declares the slots from its headers now: not for
     /// an app that runs the sidebar toggle in slots of its own
     /// ([`Self::with_window_toolbar`], [`Self::set_sidebar_toggle_in_window_bar`]).
@@ -552,11 +565,13 @@ impl NavShell {
             self.slots_changed();
             if !hosted {
                 self.shell_bar.yielded = false;
+                self.shell_bar.declared = false;
             }
         }
         if ShellBar::declared_by_another_part() {
             if !self.shell_bar.yielded {
                 self.shell_bar.yielded = true;
+                self.shell_bar.declared = false;
                 if self.shell_bar.owns() {
                     set_owner(None);
                 }
@@ -576,11 +591,23 @@ impl NavShell {
             None
         };
         let Some(slots) = slots else {
+            // Nothing of the headers to show: the shell still owns the
+            // slots, so the bar's own buttons (Back to the first screen)
+            // stay the shell's.
+            let ours = self.shell_bar.owns() || self.shell_bar.may_declare();
+            if ours && !self.shell_bar.declared {
+                self.shell_bar.declared = true;
+                self.slots_changed();
+            }
             if self.shell_bar.owns() {
                 self.shell_bar.declare(None);
             }
             return;
         };
+        if !self.shell_bar.declared {
+            self.shell_bar.declared = true;
+            self.slots_changed();
+        }
         let mut toolbar = self.window_toolbar();
         toolbar.location = self.shell_location();
         Self::push_window_actions(&mut toolbar, slots.into_iter().map(|(action, ..)| action));
@@ -595,7 +622,7 @@ impl NavShell {
         edits: &mut crate::widget::Edits<'_>,
         path_root: &automerge::ObjId,
     ) {
-        if !self.inputs.borrow().shell_bar {
+        if !self.wants_bar_events() {
             return;
         }
         let events = crate::window_toolbar::take_events();
