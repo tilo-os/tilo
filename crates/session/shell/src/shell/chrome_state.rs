@@ -1676,14 +1676,7 @@ impl ChromeState {
     /// The active workspace's focused strip, or its first.
     #[must_use]
     pub fn active_strip_id(&self) -> Option<crate::shell::state::StripId> {
-        let tree = self.tree();
-        let ws = tree.desktop.active_workspace()?;
-        tree.desktop
-            .active_strip
-            .get(&ws.id)
-            .copied()
-            .filter(|id| ws.strips.iter().any(|s| s.id == *id))
-            .or_else(|| ws.strips.first().map(|s| s.id))
+        self.tree().desktop.active_strip_id()
     }
 
     /// Idempotent, so cheap to call every frame from the compositor's
