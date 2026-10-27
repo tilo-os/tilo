@@ -135,7 +135,7 @@ impl Tracker {
         let mut limits = Vec::new();
         let mut at = Some(issue.clone());
         for _ in 0..=self.issues.len() {
-            let Some(id) = at else { break };
+            let Some(id) = at.clone() else { break };
             let Some(found) = self.issues.get(&id) else {
                 break;
             };
