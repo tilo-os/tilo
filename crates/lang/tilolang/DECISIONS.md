@@ -227,3 +227,33 @@ package-level `root` and `default view` of workspace-model.md. The README has th
   without `else`, E065 a bare word where a dot literal is expected, E066 view state, E067
   `open`.
 - **Removed from the compiler's import table:** `is_error` (the runtime still provides it).
+
+## Outcomes and deltas
+
+Convergence design section 1.1.
+
+- **Parameter defaults.** An action parameter may have a default, `done: Bool = not item.done`.
+  It reads only the parameters before it (E028 otherwise), in the discipline of a `fn`: no
+  actions, no `invoker`, no `now`. Only an action's parameters take one (E028 for a fn, flow,
+  view or variant field). Each default is a function of its own, exported as
+  `d_<action id>_<param>` and taking the parameters before it; metadata lists it on the
+  parameter (`default`: the export and the default as written, for descriptions).
+- **When it is computed.** When the action is invoked without the argument, on the invoker's
+  state, and the value is recorded as the argument: the runtime completes an invocation's
+  arguments before it decides, journals or runs it (`Runtime::complete_args`), so the change
+  note, a suggestion and the platform's recorded invocation all carry it. An application from a
+  view, a flow or a block may leave out only its last parameters (E028 for a gap), which the
+  runtime computes when the application is invoked: a button computes the default when it is
+  pressed, not when the view renders. An action inlined into another action computes it at the
+  call. An explicit argument always wins.
+- **Presentation.** A `label:`, `icon:` or `on:` may read a defaulted parameter whose default
+  follows from the subject: the presentation view binds it from the subject first. The static
+  label (and icon) of an `if` is the branch a subject at rest takes, every Bool field at its
+  default and every parameter at its default (`if done` with `done: Bool = not item.done` is
+  the `then` branch); when that cannot be told, the `else` branch, as before.
+- **E039.** A write of a register whose value is `not` of that same register, or that register
+  plus or minus an amount, is refused: it is computed again wherever the change is applied.
+  `let`s are followed (a variable reassigned anywhere is no longer followed). The message names
+  both fixes: an outcome, a parameter with a default; a delta, a counter. Other computations from
+  the same register (`t.tag = tidy(t.tag)`, `t.n = t.n * 2`) are legitimate replays. E030's
+  advice no longer suggests writing the read and the write out.

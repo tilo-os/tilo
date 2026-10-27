@@ -166,6 +166,12 @@ fn prec_of(e: &Expr) -> u8 {
     }
 }
 
+/// An expression in its canonical text, on one line where it fits: how a description quotes
+/// what the source wrote (an action parameter's default).
+pub(crate) fn expr_source(e: &Expr) -> String {
+    expr_text(e, 0, 0)
+}
+
 fn expr_text(e: &Expr, min: u8, level: usize) -> String {
     let body = match &e.kind {
         ExprKind::Int(v) => v.to_string(),
@@ -321,7 +327,14 @@ impl Printer {
     fn params(params: &[Param]) -> String {
         let inner: Vec<String> = params
             .iter()
-            .map(|p| format!("{}: {}", p.name.name, print_type(&p.ty)))
+            .map(|p| {
+                let default = p
+                    .default
+                    .as_ref()
+                    .map(|d| format!(" = {}", expr_text(d, 0, 0)))
+                    .unwrap_or_default();
+                format!("{}: {}{default}", p.name.name, print_type(&p.ty))
+            })
             .collect();
         format!("({})", inner.join(", "))
     }

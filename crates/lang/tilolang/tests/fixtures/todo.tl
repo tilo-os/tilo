@@ -16,8 +16,8 @@ action add(list: TodoList, title: Text) -> Todo {
     return list.items.insert(Todo(title: title))
 }
 
-action toggle(item: Todo) {
-    item.done = not item.done
+action toggle(item: Todo, done: Bool = not item.done) {
+    item.done = done
 }
 
 action remove(list: TodoList, item: Todo) {

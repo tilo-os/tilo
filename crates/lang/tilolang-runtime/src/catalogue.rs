@@ -47,7 +47,15 @@ fn src(ty: &str) -> String {
 
 fn params(ps: &[ParamMeta]) -> String {
     ps.iter()
-        .map(|p| format!("{}: {}", p.name, src(&p.ty)))
+        .map(|p| {
+            // A default is what an invocation that leaves the argument out gets.
+            let default = p
+                .default
+                .as_ref()
+                .map(|d| format!(" = {}", d.text))
+                .unwrap_or_default();
+            format!("{}: {}{default}", p.name, src(&p.ty))
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }

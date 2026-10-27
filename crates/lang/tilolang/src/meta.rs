@@ -125,6 +125,19 @@ pub struct ParamMeta {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: String,
+    /// An action parameter's invocation-time default: an invocation that leaves the argument
+    /// out gets it, computed then over the arguments before it and recorded as the argument.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<DefaultMeta>,
+}
+
+/// How an action parameter's default is computed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DefaultMeta {
+    /// The module export computing it, which takes the parameters before this one.
+    pub export: String,
+    /// The default as written (`not item.done`), for descriptions.
+    pub text: String,
 }
 
 /// An action or flow that code can reach, with its effect class. `own` is relative to the

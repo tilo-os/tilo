@@ -141,7 +141,7 @@ fn verb(meta: &Meta, action: &ActionMeta) -> VerbSurface {
             .iter()
             .map(|param| ParamSurface {
                 name: param.name.clone(),
-                required: !is_optional(&param.ty),
+                required: !is_optional(&param.ty) && param.default.is_none(),
                 schema: schema_of_type(meta, &param.ty),
             })
             .collect(),

@@ -3,8 +3,8 @@
 //! type become a [`FieldKind`], and how a type travels through wasm.
 
 pub use tilolang::meta::{
-    ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta, PackageMeta,
-    ParamMeta, ProposalMeta, Reach, StateMeta, TypeMeta, VariantMeta, ViewMeta,
+    ActionMeta, AnchorMeta, DefaultMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta,
+    PackageMeta, ParamMeta, ProposalMeta, Reach, StateMeta, TypeMeta, VariantMeta, ViewMeta,
 };
 pub use tilolang::types::{EffectClass, MergeKind, Ty, TypeKey};
 

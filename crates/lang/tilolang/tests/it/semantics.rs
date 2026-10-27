@@ -14,9 +14,14 @@ fn counter_takes_plus_equals_and_register_does_not() {
     assert_eq!(codes(bad), vec!["E030"]);
 }
 
+// A register written from itself recomputes wherever the change is applied, so the read and the
+// write written out are refused as `+=` is (convergence design 1.1); `outcomes.rs` has the rest.
 #[test]
-fn writing_the_read_and_write_out_is_allowed_on_a_register() {
-    assert!(codes("type C {\n    n: Int\n}\naction a(c: C) {\n    c.n = c.n + 1\n}").is_empty());
+fn writing_the_read_and_write_out_is_refused_on_a_register() {
+    assert_eq!(
+        codes("type C {\n    n: Int\n}\naction a(c: C) {\n    c.n = c.n + 1\n}"),
+        vec!["E039"]
+    );
 }
 
 #[test]

@@ -59,9 +59,9 @@ mod cases {
         let n = Notes::new();
         let first = n.new_note();
         let second = n.new_note();
-        n.call("toggle_pin", vec![Value::resource(&first)]);
+        n.call("pin", vec![Value::resource(&first)]);
         assert_eq!(n.rt.read(&first, "pinned").unwrap(), Value::Bool(true));
-        n.call("toggle_pin", vec![Value::resource(&first)]);
+        n.call("pin", vec![Value::resource(&first)]);
         assert_eq!(n.rt.read(&first, "pinned").unwrap(), Value::Bool(false));
 
         n.call("tag", vec![Value::resource(&first), Value::text("work")]);
@@ -165,7 +165,7 @@ mod cases {
         list.poll_patches().unwrap();
         assert_eq!(titles(&list), ["Plans"]);
 
-        n.call("toggle_pin", vec![Value::resource(&note)]);
+        n.call("pin", vec![Value::resource(&note)]);
         list.poll_patches().unwrap();
         let row = of_kind(list.tree(), "list_row")[0];
         assert_eq!(text_prop(row, "mark"), "pin", "{}", dump(row));
@@ -211,7 +211,7 @@ mod cases {
             let note = n.new_note();
             n.call("retitle", vec![Value::resource(&note), Value::text(title)]);
             if title == "a" {
-                n.call("toggle_pin", vec![Value::resource(&note)]);
+                n.call("pin", vec![Value::resource(&note)]);
             }
         }
         let mut view =

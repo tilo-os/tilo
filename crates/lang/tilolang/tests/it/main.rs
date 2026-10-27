@@ -14,6 +14,7 @@ mod ids_lock;
 mod layout;
 mod multifile;
 mod native;
+mod outcomes;
 mod principal;
 mod roundtrip;
 mod semantics;
