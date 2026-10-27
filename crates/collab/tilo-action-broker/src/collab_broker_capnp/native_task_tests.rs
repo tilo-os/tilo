@@ -34,6 +34,9 @@ struct Native {
     runs: Mutex<Vec<TrackerRun>>,
     /// The grants recorded as given by the person, while they may grant.
     granted: Mutex<Option<Vec<tilo_action_policy::Grant>>>,
+    /// The room's governor records no effect receipt: one it is asked for
+    /// is refused, as a governor out of reach refuses it.
+    receipts_refused: std::sync::atomic::AtomicBool,
 }
 
 /// The issue the fixture's agent runs.
@@ -125,11 +128,17 @@ impl OwnerCommitService for Native {
         let owner = self.owner.clone();
         let key = self.key.clone();
         let cert = self.certificate.clone();
+        let receipts_refused = self
+            .receipts_refused
+            .load(std::sync::atomic::Ordering::SeqCst);
         Box::pin(async move {
             // A real owner commits asynchronously: let other requests run
             // first, as they do while a commit is on its way.
             tokio::task::yield_now().await;
             let receipt = match request.operation {
+                CommitOperation::EffectReceipt { .. } if receipts_refused => {
+                    Err("the room's governor records no receipt".into())
+                }
                 CommitOperation::EffectReceipt { .. } => {
                     owner.commit_effect_receipt(&request, &cert, &key, std::time::SystemTime::now())
                 }
@@ -274,6 +283,7 @@ impl Fixture {
             spent_grants: Mutex::new(Vec::new()),
             runs: Mutex::new(Vec::new()),
             granted: Mutex::new(None),
+            receipts_refused: std::sync::atomic::AtomicBool::new(false),
         });
         let membership = OwnerCommitRequest {
             room: room().to_string(),
@@ -1423,6 +1433,59 @@ async fn a_held_native_reask_ends_when_the_run_is_cancelled() {
                     .is_err(),
                 "nothing new starts in a cancelled run"
             );
+            drop(f);
+        })
+        .await;
+}
+
+/// A membership change whose outcome the broker cannot record (its effect
+/// receipt is refused) does not leave whoever asked for it waiting, as an
+/// opening app's authorship was left: the room's membership service stops,
+/// and the asker hears at once that no outcome comes from it. The receipt
+/// prepared for the change admits only the owner's own terminal, so the
+/// journal keeps the change for recovery to answer.
+#[tokio::test(flavor = "current_thread")]
+async fn a_membership_change_whose_receipt_is_refused_does_not_leave_its_asker_waiting() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let f = Fixture::new();
+            f.native
+                .receipts_refused
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let room = room().to_string();
+            f.state.refresh_workspace_membership_services().unwrap();
+            assert!(
+                f.state.membership_published(&room),
+                "the room's membership actions are offered"
+            );
+            let job = f
+                .state
+                .invoke_workspace_membership(
+                    &room,
+                    &WorkspaceMembershipCommand::GrantAppAuthorship {
+                        app: "so.tilo.terminal".into(),
+                    },
+                    &f.native.certificate,
+                )
+                .unwrap();
+            let deadline = tilo_test_env::hang_deadline();
+            let heard = loop {
+                match job.completion.try_recv() {
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    heard => break heard,
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the asker was left waiting on a membership service that stopped"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            if let Ok(completed) = heard {
+                assert!(
+                    !completed.code.is_empty(),
+                    "a change whose outcome was not recorded never reads as done"
+                );
+            }
             drop(f);
         })
         .await;
