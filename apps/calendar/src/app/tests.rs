@@ -4052,6 +4052,27 @@ fn the_card_puts_away_without_writing_when_it_is_told_to() {
 }
 
 #[test]
+fn the_keys_this_window_answers_to_are_listed_and_put_away() {
+    let mut h = pinned_afternoon();
+    h.type_char("?");
+    h.relayout();
+    assert!(h.app.shortcuts.is_open(), "? shows the keys");
+    let card = h.app.shortcuts.card();
+    assert!(
+        card.width() > 0.0 && card.height() > 0.0 && h.app.rect.contains(card.center()),
+        "the card is drawn inside the window: {card:?}"
+    );
+    assert!(
+        ui::spell_shortcut("N") == "N" && ui::spell_shortcut("{shift:N}").contains('N'),
+        "the sheet lists real chords"
+    );
+    h.press_named(winit::keyboard::NamedKey::Escape);
+    h.relayout();
+    assert!(!h.app.shortcuts.is_open(), "Escape puts the sheet away");
+    assert_eq!(h.app.view, View::Month, "and it did not act on the view");
+}
+
+#[test]
 fn a_new_event_starts_at_the_next_quarter_hour_not_at_noon() {
     let mut h = pinned_afternoon();
     h.type_char("n");
