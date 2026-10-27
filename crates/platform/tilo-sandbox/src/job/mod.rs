@@ -52,6 +52,17 @@ pub fn init_if_started_as_one() {
     linux::runner::init_if_started_as_one();
 }
 
+/// From now on, start every job in this process with `clone`, as where
+/// `clone3` answers `ENOSYS`; and whether `clone3` already did here. For the
+/// tests that compare a job started each way: nothing else calls it.
+#[doc(hidden)]
+#[cfg(target_os = "linux")]
+pub fn start_with_clone_from_now() -> bool {
+    let already = linux::sys::clone3_known_missing();
+    linux::sys::clone3_missing();
+    already
+}
+
 /// Make this program able to be a job's init, which every program that
 /// starts jobs must be: a job's init is the program that started it, run
 /// again as `tilo-job-init` (a new, small process rather than a copy of the

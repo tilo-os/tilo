@@ -13,7 +13,7 @@ use crate::support::pipe;
 
 /// A `Direct` provider in a sub-cgroup of this process's own, or why the
 /// host won't allow one.
-fn provider() -> Result<(Direct, tempfile::TempDir), String> {
+pub fn provider() -> Result<(Direct, tempfile::TempDir), String> {
     let mount = std::path::Path::new("/sys/fs/cgroup");
     let own = tilo_sandbox::job::cgroup::cgroup_of("self", mount).map_err(|e| e.to_string())?;
     // A private sub-tree so the test doesn't disturb its own cgroup.
@@ -52,7 +52,7 @@ thread_local! {
 }
 
 /// Remove the cgroup subtrees a test made.
-fn cleanup() {
+pub fn cleanup() {
     CLEANUP.with(|c| {
         for path in c.borrow_mut().drain(..) {
             for leaf in ["jobs", "runner"] {
