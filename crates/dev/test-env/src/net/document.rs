@@ -195,7 +195,7 @@ impl FakeDocumentNet {
                     continue;
                 }
                 if !self.missing(document, author).is_empty() {
-                    disagreements.push(format!("{peer} has not taken in what {author} published",));
+                    disagreements.push(format!("{peer} has not taken in what {author} published"));
                 }
             }
         }
