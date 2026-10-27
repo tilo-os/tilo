@@ -2712,7 +2712,7 @@ failure mode F2 records for old captures.
 | word-processor | **2 fixed, 2 open** | `APP-word-processor-01/02` in `d454bae25d` (paging keys, "Page N of M" that survives the footer). `03` open: `lifecycle.dirty` is a *repaint* flag — `mark_drawn` clears it — so wiring it to `ToolbarLocation::edited` would be a false marker; the honest fix needs an unsaved-work signal the document does not carry yet. `04` open: the app's own Ctrl+= still claims the chord, so window text zoom has no key here; the honest fix is a `ContentZoom` impl, not deleting the page zoom. |
 | sheets | **2 fixed, 1 open** | `APP-sheets-01/02` in `bc7a75fceb` (cell context menu; workbook find/replace through the bar's search). `03` open: the grid still has no motion — structural edits cut, and `ui::motion` appears nowhere in the crate. |
 | slides | **fixed** | `APP-slides-01/02/03` in `6fec2e1fce`, `499101ef12` (pinned zoom with pan and a bar readout; chords guarded behind `if ctrl`; tagged element clipboard). Residual: an image on the clipboard still cannot be pasted, and slides copy only as duplicates. |
-| canvas | **fixed** (`APP-canvas-01` open) | `CHROME-03` in `b608dd3055` — the artwork's commands are the bar's slots. `APP-canvas-01` open: `surface.rs` excludes Alt but still lets Shift ride with `=`/`+`, so the chord fires wider than the system's. |
+| canvas | **fixed** | `CHROME-03` in `b608dd3055` — the artwork's commands are the bar's slots; `APP-canvas-01` in `3394a3c2bc`, where only the bare zoom keys and the command key on its own still zoom. |
 | typst-editor | **fixed** | `APP-typst-02` and `CHROME-02` in `2bf3c8c1ab`; `APP-typst-01` in `5b1e10af3e` — the source's `Findable` existed since `18fa75428a` but the editor is not a widget in the tree, so nothing offered it and Ctrl+F still left the app. The app now offers it, as the PDF viewer does. |
 | code-editor | **fixed** | `APP-code-editor-01` in `9e0bc47ba8` — per-person text zoom through `ContentZoom`, so Ctrl+±/0, Ctrl+scroll and pinch all reach it. |
 | pdf-viewer | **fixed** | `APP-pdf-viewer-01` in `0fb352d8c7` — `reading_position` (page, fraction, zoom) on the record, written on settle and taken up after open. |
@@ -2724,7 +2724,7 @@ failure mode F2 records for old captures.
 | App | Verdict | Evidence |
 |---|---|---|
 | chat | **not checked** | Owned elsewhere. `APP-chat-*` untouched by this pass; `087a40ab47`/`b3b4a554e5` (dividers, paging back) and the conversation substrate bear on them. |
-| mail | **open** | All four stand. `01`: the 10 s send hold is still undone by a notice that dies at 4 s. `02`: the outbox is a real resource with reasons and a `cancel-send` verb, but no surface renders it and `Folder` has no Outbox row. `03`: select-all still walks the loaded page only. `04`: still no search facets. |
+| mail | **1 fixed, 3 open** | `APP-mail-01` in `99ccd69a0e` — the notice offering Undo is put back up for as long as a send can still be taken back. `02` open: the outbox is a real resource with reasons and a `cancel-send` verb, but no surface renders it and `Folder` has no Outbox row. `03` open: select-all still walks the loaded page only. `04` open: still no search facets. |
 | contacts | **1 open, 1 fixed** | `APP-contacts-02` in `abd2637249` (the "Save changes?" dialog has Keep editing). `APP-contacts-01` open: a contact still offers Copy and Edit only — no call, text or email. |
 | calendar | **open** | `APP-calendar-01` (no quick-add; every event starts at 12:00 with a full form) and `APP-calendar-02` (single-key map, no shortcut sheet) both stand. |
 | messages | **3 fixed, 1 open** | `APP-messages-01/02/03` in `abd2637249` — day dividers and times, Enter to send, drafts on the person's record. `04` open: history is still one fixed page of 128 with no cursor, and the "Showing recent messages" caption was removed, so older SMS now ends with no indication at all. |
@@ -2738,13 +2738,13 @@ failure mode F2 records for old captures.
 |---|---|---|
 | browser | **not checked** | Owned elsewhere; `APP-browser-*` untouched by this pass. |
 | tube | **fixed** | `APP-tube-01..04` in `41c7b8ea0f` — per-video resume positions and a "Resume at" line, quality that reaches the stream, playback speed, WebVTT captions with honest "not offered"/"could not be loaded". Residual: the history card has no progress bar (`watched_fraction` has no caller). |
-| maps | **2 fixed, 1 partial, 1 open** | `APP-maps-01` and `-03` in `8915fb6573` (alternatives requested and cycled; StopDownload kills the tile fetch). `APP-maps-02` partial: four of five paths translate failures, the endpoint suggestion still prints `Search failed: {e}` verbatim. `APP-maps-04` open: no `de-DE` and roughly three dozen inline English strings, mostly the accessibility labels. |
+| maps | **3 fixed, 1 open** | `APP-maps-01` and `-03` in `8915fb6573` (alternatives requested and cycled; StopDownload kills the tile fetch); `APP-maps-02` in `3394a3c2bc`, which takes the last raw transport message — the endpoint suggestion — through the same sentence as the other four paths, logging the raw error. `APP-maps-04` open: no `de-DE` and roughly three dozen inline English strings, mostly the accessibility labels. |
 | weather | **fixed** | `APP-weather-01/02/03` in `41c7b8ea0f` — a precipitation unit that follows Imperial, a row per hourly and daily reading, and a "5 min ago"/"out of date" staleness line. |
 | photos | **1 fixed, 1 open** | `APP-photos-01` in `41c7b8ea0f` (presentation and slide show through `FullscreenProvider`). `APP-photos-02` open: `thumbnail`'s batch is still all-or-nothing and still fails with a deduplicated index. |
 | camera | **fixed, one **wrong** | `APP-camera-01` in `41c7b8ea0f` — the notice carries its `ToastKind`. `APP-camera-02` **wrong**: the app has always declared Photo/Video/Codes/Documents and the page actions as window-bar slots (`d169193ce8`, two days before the audit); there is no `WindowHeader` in the crate. |
 | music | **no finding** | The audit's "good" reading still holds; `DUP-07` is tracked separately. |
 | video-player | **fixed** | `APP-video-player-01` in `41c7b8ea0f` — volume and rate are settings, each item keeps a `position_ms`, and opening seeks. |
-| video-editor | **open** | `APP-video-editor-01`: the shortcut sheet still prints `Ctrl+O`/`Ctrl+S`/`Ctrl+Shift+S` as literals, so macOS is taught the wrong modifier. |
+| video-editor | **fixed** | `APP-video-editor-01` in `3394a3c2bc` — the sheet's keys go through `ui::spell_shortcut`, which is Notes' own speller moved into the toolkit, so a Mac reads ⌘ where a PC reads Ctrl. |
 | web-search | **1 open, 1 fixed** | `APP-web-search-02` in `41c7b8ea0f` (offset declared and paged uniformly, though no engine is asked deeper than its first page). `APP-web-search-01` open: Google still sends `safe=off`, and asking for strict is refused rather than honoured, so a household profile cannot get filtered results. |
 | thumbnails | **open** | Same finding as `APP-photos-02`; unchanged since before the audit. |
 
@@ -2784,7 +2784,7 @@ failure mode F2 records for old captures.
 |---|---|---|
 | git-client | **not checked** | Owned elsewhere; `feat(diffmerge,git-client)` reports the branch/conflict half (`APP-git-client-01/04`) landed in this window. |
 | diffmerge | **fixed** | `APP-diffmerge-01/02/03` in `0e9ca1d9a2` — Save merged (to the last place or a chosen one) with the manifest now saying what it writes, `o`/`t`/`b` to accept a side, and a bounded folder comparison. |
-| db-client | **3 fixed, 2 open** | `APP-db-client-01/02/04` in `81b8fa7d6d` — Cancel in the bar and on Escape, a cut-result note that names the limit and the remedy, and row/result copy through the bar. `03` open: CSV export is still palette-only. `05` mostly fixed by the 149-key `en-US`/`de-DE` catalogue; a few strings remain literal (the connect modal's "This runs on …", the export statuses, palette subtitles). |
+| db-client | **4 fixed, 1 open** | `APP-db-client-01/02/04` in `81b8fa7d6d` — Cancel in the bar and on Escape, a cut-result note that names the limit and the remedy, and row/result copy through the bar; `03` in `5568b8cd41`, where export sits in the bar's result menu beside them. `05` mostly fixed by the 149-key `en-US`/`de-DE` catalogue; a few strings remain literal (the connect modal's "This runs on …", the export statuses, palette subtitles). |
 | api-tester | **3 fixed, 1 open** | `APP-api-tester-01/02/03` in `713f3a9661` — a cancellable send with a 30 s timeout, a history snapshot that replays headers/body/params/auth, and a response whose body, headers or request can be copied. `04` open: history rows still offer no actions while saved requests get rename and delete. |
 | chip-design | **fixed** | `APP-chip-design-01/02` in `66722138f2` — the graph is a zoomable, pannable viewport that fits on open, and an Operators list makes every node reachable without hunting the canvas. |
 | poker | **fixed** | `APP-poker-01` in `cf63ab6703` — the fold is offered only while someone is to act, captioned with the seconds left, and disabled until the 30 s is up. |
@@ -2793,13 +2793,17 @@ failure mode F2 records for old captures.
 
 **What this pass fixed itself**, in this table's terms: `APP-backups-03/04/05/06`
 (`a52433df4f`), `APP-containers-01..04` (`47c1d813df`), `APP-notes-03` and
-`APP-typst-01` (`5b1e10af3e`), `APP-store-01`'s honesty half (`e0a0ed245d`) and
-`APP-logs-01` (`1a0c3ec83e`). Everything else marked **fixed** came from the work
-that landed in the two days before this check, and everything marked **open** is
-still to do — the notable ones being mail's undo and outbox, activity's one-click
-undo, contacts' missing verbs, ebook's header, print-centre's form, remote's file
-transfer, and the shared causes behind them (`APP-activity-02` needs the action
-contract to ask, `APP-mail-01` needs a notice that outlives its timer).
+`APP-typst-01` (`5b1e10af3e`), `APP-store-01`'s honesty half (`e0a0ed245d`),
+`APP-logs-01` (`1a0c3ec83e`), `APP-canvas-01`, `APP-maps-02` and
+`APP-video-editor-01` (`3394a3c2bc`), `APP-mail-01` (`99ccd69a0e`) and
+`APP-db-client-03` (`5568b8cd41`). Everything else marked **fixed** came from the
+work that landed in the two days before this check. What is marked **open** is
+still to do — the notable ones being mail's outbox and facets, activity's
+one-click undo, contacts' missing verbs, ebook's header, print-centre's form,
+remote's file transfer, and the shared causes behind them: `APP-activity-02`
+needs the action contract to ask before an undoable action runs, `APP-word-
+processor-03` needs an unsaved-work signal the document does not carry, and
+`APP-file-explorer-02` needs the table to report the end of a resize drag.
 
 # Part H — Prioritised backlog
 
