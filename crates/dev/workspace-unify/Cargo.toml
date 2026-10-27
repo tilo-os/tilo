@@ -3596,7 +3596,7 @@ doc = false
 "tilo-subject" = { path = "../../../crates/platform/tilo-subject", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../../crates/platform/tilo-system-info", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = ["udisks"] }
-"tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = [] }
+"tilo-test-env" = { path = "../../../crates/dev/test-env", default-features = false, features = ["document"] }
 "tilo-thumbnail" = { path = "../../../crates/media/thumbnail", default-features = false, features = ["default", "video"] }
 "tilo-tray-host" = { path = "../../../crates/session/tray-host", default-features = false, features = [] }
 "tilo-tts" = { path = "../../../crates/system/tts", default-features = false, features = [] }
@@ -3604,6 +3604,7 @@ doc = false
 "tilo-ui" = { path = "../../../crates/sdk/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "mpris", "native", "portal", "priority-contacts", "realtime-video", "syntax-definitions", "test-support", "ux-bench", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../../crates/sdk/ui-paint", default-features = false, features = [] }
+"tilo-unicode-emoji" = { path = "../../../crates/platform/tilo-unicode-emoji", default-features = false, features = [] }
 "tilo-unlock-protocol" = { path = "../../../crates/collab/tilo-unlock-protocol", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../../crates/collab/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
