@@ -1123,43 +1123,48 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // lists as running a moment before) must not hide an older instance
         // that has: an agent saw an app's actions, and the next call found
         // none.
-        let older: Vec<String> = self
-            .instances()
-            .await?
-            .1
-            .iter()
-            .rev()
-            .filter(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-            .map(|(peer, _)| peer.to_string())
-            .filter(|peer| *peer != newest)
-            .collect();
-        let providers = std::iter::once(newest).chain(older);
-        let mut found = None;
-        let mut first_error = None;
-        for provider in providers {
-            let mut levels = Levels::new();
-            match self
-                .resolve_segments(&provider, &app, &parsed.segments, &mut levels)
-                .await
-            {
-                Ok((chain, here)) => {
-                    let published =
-                        !chain.is_empty() || !here.own.is_empty() || !here.children.is_empty();
-                    if found.is_none() || published {
-                        found = Some((provider, levels, chain, here));
-                    }
-                    if published {
+        let published = |chain: &Vec<Node>, here: &Level| {
+            !chain.is_empty() || !here.own.is_empty() || !here.children.is_empty()
+        };
+        let mut levels = Levels::new();
+        let first = self
+            .resolve_segments(&newest, &app, &parsed.segments, &mut levels)
+            .await
+            .map(|(chain, here)| (newest.clone(), levels, chain, here));
+        let found = match first {
+            Ok(found) if published(&found.2, &found.3) => found,
+            first => {
+                // Only then are the running apps asked again, for the older
+                // instances; the first that has published answers.
+                let older: Vec<String> = self
+                    .instances()
+                    .await?
+                    .1
+                    .iter()
+                    .rev()
+                    .filter(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
+                    .map(|(peer, _)| peer.to_string())
+                    .filter(|peer| *peer != newest)
+                    .collect();
+                let mut answer = None;
+                for provider in older {
+                    let mut levels = Levels::new();
+                    if let Ok((chain, here)) = self
+                        .resolve_segments(&provider, &app, &parsed.segments, &mut levels)
+                        .await
+                        && published(&chain, &here)
+                    {
+                        answer = Some((provider, levels, chain, here));
                         break;
                     }
                 }
-                Err(error) => {
-                    first_error.get_or_insert(error);
+                match answer {
+                    Some(found) => found,
+                    None => first?,
                 }
             }
-        }
-        let Some((provider, mut levels, chain, here)) = found else {
-            return Err(first_error.unwrap_or_else(|| format!("{app} answers nothing")));
         };
+        let (provider, mut levels, chain, here) = found;
         let mut written = app;
         let mut here = here;
         if let Some(owner) = chain.last() {
