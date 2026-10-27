@@ -3630,6 +3630,11 @@ doc = false
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../../crates/platform/zone-globe", default-features = false, features = [] }
+"tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
+"tilolang-app" = { path = "../../../apps/tilolang", default-features = false, features = [] }
+"tilolang-cli" = { path = "../../../crates/lang/tilolang-cli", default-features = false, features = [] }
+"tilolang-runtime" = { path = "../../../crates/lang/tilolang-runtime", default-features = false, features = [] }
+"tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false, features = [] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
 "time-core-0_1_8" = { package = "time-core", version = "^0.1.8", default-features = false, features = [] }
 "tinker" = { path = "../../../crates/system/tinker", default-features = false, features = [] }
@@ -3745,12 +3750,13 @@ doc = false
 "walkdir-2_5_0" = { package = "walkdir", version = "^2.5.0", default-features = false, features = [] }
 "want-0_3_1" = { package = "want", version = "^0.3.1", default-features = false, features = [] }
 "waproto-0_7_0" = { package = "waproto", version = "^0.7.0", default-features = false, features = ["default"] }
-"wasm-encoder-0_252_0" = { package = "wasm-encoder", version = "^0.252.0", default-features = false, features = ["component-model", "std"] }
+"wasm-encoder-0_252_0" = { package = "wasm-encoder", version = "^0.252.0", default-features = false, features = ["component-model", "default", "std"] }
 "wasmi-1_1_0" = { package = "wasmi", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_collections-1_1_0" = { package = "wasmi_collections", version = "^1.1.0", default-features = false, features = ["std"] }
 "wasmi_core-1_1_0" = { package = "wasmi_core", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_ir-1_1_0" = { package = "wasmi_ir", version = "^1.1.0", default-features = false, features = ["simd"] }
 "wasmparser-0_239_0" = { package = "wasmparser", version = "^0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
+"wasmparser-0_252_0" = { package = "wasmparser", version = "^0.252.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 "wast-252_0_0" = { package = "wast", version = "^252.0.0", default-features = false, features = ["component-model", "wasm-module"] }
 "wat-1_252_0" = { package = "wat", version = "^1.252.0", default-features = false, features = ["component-model", "default"] }
 "wayland-backend-0_3_15" = { package = "wayland-backend", path = "../../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
@@ -4219,6 +4225,7 @@ doc = false
 "launcher" = { path = "../../../crates/packaging/launcher", default-features = false, features = [] }
 "lazy_static-1_5_0" = { package = "lazy_static", version = "^1.5.0", default-features = false, features = ["spin", "spin_no_std"] }
 "leb128-0_2_5" = { package = "leb128", version = "^0.2.5", default-features = false, features = [] }
+"leb128fmt-0_1_0" = { package = "leb128fmt", version = "^0.1.0", default-features = false, features = [] }
 "levenshtein_automata-0_2_1" = { package = "levenshtein_automata", version = "^0.2.1", default-features = false, features = [] }
 "libc-0_2_189" = { package = "libc", version = "^0.2.189", default-features = false, features = ["default", "extra_traits", "std"] }
 "libcrux-intrinsics-0_0_8" = { package = "libcrux-intrinsics", version = "^0.0.8", default-features = false, features = [] }
@@ -4584,6 +4591,7 @@ doc = false
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../../crates/system/system-stats", default-features = false, features = [] }
 "tilo-ui-graph" = { path = "../../../crates/dev/ui-graph", default-features = false, features = [] }
+"tilo-ui-macros" = { path = "../../../crates/sdk/ui-macros", default-features = false, features = [] }
 "tilo-user-identity" = { path = "../../../crates/collab/tilo-user-identity", default-features = false, features = [] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
@@ -4671,6 +4679,7 @@ doc = false
 "wacore-derive-0_7_0" = { package = "wacore-derive", version = "^0.7.0", default-features = false, features = [] }
 "walkdir-2_5_0" = { package = "walkdir", version = "^2.5.0", default-features = false, features = [] }
 "want-0_3_1" = { package = "want", version = "^0.3.1", default-features = false, features = [] }
+"wasm-encoder-0_252_0" = { package = "wasm-encoder", version = "^0.252.0", default-features = false, features = ["component-model", "default", "std"] }
 "wasmi-1_1_0" = { package = "wasmi", version = "^1.1.0", default-features = false, features = ["simd", "std"] }
 "wasmi_collections-1_1_0" = { package = "wasmi_collections", version = "^1.1.0", default-features = false, features = ["std"] }
 "wasmi_core-1_1_0" = { package = "wasmi_core", version = "^1.1.0", default-features = false, features = ["simd", "std"] }

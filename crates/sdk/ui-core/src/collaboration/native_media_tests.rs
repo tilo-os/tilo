@@ -136,8 +136,7 @@ fn native_media_full_normal_lane_still_dispatches_reserved_leave() {
         ..FakeBroker::default()
     });
     let cluster_id = Uuid::new_v4();
-    let mut manager =
-        CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", cluster_id);
+    let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.chat", cluster_id);
     let routes = (0..8)
         .map(|index| RouteSpec {
             app_id: "so.tilo.chat".into(),
