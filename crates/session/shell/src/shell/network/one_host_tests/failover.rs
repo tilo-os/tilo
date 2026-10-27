@@ -18,7 +18,7 @@ use crate::shell::state::{GovernanceRequest, RoomId};
 
 /// The hosts besides its governor that `room`'s governance names, as
 /// `device` holds it.
-fn hosts_on(device: &Device, room: RoomId) -> usize {
+pub(super) fn hosts_on(device: &Device, room: RoomId) -> usize {
     device
         .net()
         .native_owner()
