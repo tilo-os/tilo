@@ -1,0 +1,4 @@
+[ratchets.closure_control]
+"apps/feeds/src/app.rs" = 1
+"apps/feeds/src/chrome.rs" = 2
+"apps/feeds/src/sidebar.rs" = 3

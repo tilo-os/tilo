@@ -26,6 +26,9 @@
 //! AI steps are not a second execution path: an [`Ai`](StepKind::Ai) step is
 //! an invocation of the agent's transform actions ([`AGENT_APP_ID`],
 //! [`AGENT_TRANSFORM_KIND`]), granted, confirmed and recorded like any other.
+//! What the agent may run inside a [`Task`](StepKind::Task) step is the
+//! shortcut's own grant, narrowed to the step's own [`allow`](StepKind::Task::allow),
+//! and nothing a run can widen.
 //!
 //! - [`scenario`] — a test as the same kind of program: a [`Scenario`] holds
 //!   the Shortcut's own action [`Invocation`]s, the surface presses only a
@@ -73,7 +76,6 @@ pub use shortcut::{
     FOCUS_SCHEDULE, FocusTransition, Schedule, ScheduleClaim, Selector, Shortcut, Step, StepKind,
     TimeOfDay, TriggerSpec, Weekday,
 };
-
 /// Application that publishes shortcuts as runnable actions.
 pub const SHORTCUTS_APP_ID: &str = "so.tilo.shortcuts";
 /// Resource kind of one saved shortcut; its id is
@@ -95,6 +97,9 @@ pub const AGENT_EXTRACT_ACTION: &str = "extract";
 pub const AGENT_CLASSIFY_ACTION: &str = "classify";
 /// Answer a free-form prompt about the input.
 pub const AGENT_FREEFORM_ACTION: &str = "freeform";
+/// Start a task — a model-driven run of the actions the person is offered —
+/// and wait for its typed summary.
+pub const AGENT_TASK_ACTION: &str = "task";
 /// Take a person's request to their agent: answer it when it asks for
 /// information, or name the work when it asks for something to be done.
 pub const AGENT_RESPOND_ACTION: &str = "respond";

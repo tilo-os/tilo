@@ -416,6 +416,18 @@ impl ShellNetwork {
         }
     }
 
+    /// Ask `room`'s hosts for `app`'s on-demand `record`
+    /// (`neighbour_wire::record_sync`), which they replay a joining device
+    /// only once it asks: an app here reads one, such as an earlier part of
+    /// a chain. Its history reaches this device's room as every document
+    /// does. Asking again is harmless: the room's hosts are asked once.
+    pub(crate) fn open_record(&self, room: RoomId, app: &str, record: &str) {
+        let _ = self.cmd_tx.try_send(NetCmd::OpenRecord {
+            ws: room_topic_id(room),
+            channel: neighbour_wire::app_document_channel(app, record),
+        });
+    }
+
     /// Ask `room`'s host to replay what it retains, for app messages this
     /// device let go before what they waited for arrived.
     pub(super) fn request_native_replay(&self, room: RoomId) {
