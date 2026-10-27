@@ -3051,22 +3051,32 @@ impl AppHandler {
             damage_regions.extend(
                 spinner_damage.map(|slot| slot.scale_from_origin(1.0 / f64::from(scale_factor))),
             );
-            // Moved geometry repaints the window unless every move is a
-            // scroll's content moving with it; rows a long list mounted or
-            // let go of in it are damage beside the copy.
+            // Moved geometry with no scroll copying repaints what moved,
+            // where it was and where it is, as far as a widget's paint reaches
+            // past its box (a row mounted again in place, a field that grew).
+            // With a scroll copying, every move must be a scroll's content
+            // moving with it, and rows a long list mounted or let go of in
+            // it are damage beside the copy; anything else repaints the
+            // window.
             if let Some(before) = &moved_from {
-                let moves = (!offers.is_empty()).then(|| {
-                    crate::scroll_copy::moves_besides(
-                        before,
-                        &crate::damage::widget_boxes(root),
-                        &offers,
-                    )
-                });
-                match moves {
-                    Some(moves) if moves.besides.is_empty() => {
-                        damage_regions.extend(moves.carried);
-                    }
-                    _ => full_redraw_required = repaint_why.note("moves", true),
+                let moves = crate::scroll_copy::moves_besides(
+                    before,
+                    &crate::damage::widget_boxes(root),
+                    &offers,
+                );
+                if offers.is_empty() {
+                    let reach = crate::scroll_copy::EFFECT_REACH;
+                    damage_regions.extend(
+                        moves
+                            .besides
+                            .iter()
+                            .map(|rect| rect.inflate(reach, reach))
+                            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0),
+                    );
+                } else if moves.besides.is_empty() {
+                    damage_regions.extend(moves.carried);
+                } else {
+                    full_redraw_required = repaint_why.note("moves", true);
                 }
             }
             // Peer marks and a header bar paint over the content without
