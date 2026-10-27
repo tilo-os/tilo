@@ -7559,7 +7559,7 @@ image = { check = "os-assembler-aarch64", path = "/target/os/aarch64/assembler/o
 run = "bash tools/ci/publish/os-image.sh board {board} /target/publish/os-dev/aarch64 /target/publish/os-board/{board}"
 inputs = ["os/Containerfile.board", "os/Containerfile.bootc-helper", "os/external-assets/**", "os/dev/**", "os/scripts/build-initramfs.sh", "os/scripts/verify-board-initramfs.py", "os/hardware/**", "os/usr/**", "os/etc/NetworkManager/**", "os/base-snapshot.env", "os/publication.env", "os/account.env", "os/tests/board_audio_contract.sh", ".containerignore", "tools/ci/publish/build-lib.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/os-image.sh"]
 needs = ["image-rpms-aarch64", "os-dev-image-aarch64", "os-assets", "signing-tools"]
-outputs = ["/target/publish/os-board/{board}/image.oci.tar", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board", "/target/publish/os-board/{board}/disk/disk.qcow2"]
+outputs = ["/target/publish/os-board/{board}/oci/**", "/target/publish/os-board/{board}/digest", "/target/publish/os-board/{board}/revision", "/target/publish/os-board/{board}/board", "/target/publish/os-board/{board}/disk/disk.qcow2"]
 git = true
 requires = ["arch=arm64", "disk-100g"]
 isolation = "vm"
@@ -7580,7 +7580,7 @@ board = [{ arch = "aarch64", board = "lenovo-83ed" }, { arch = "aarch64", board 
 [[check]]
 name = "os-board-size-{board}"
 image = "registry.tilo.so/tilo/ci-fast@sha256:ee8b038d30e14a6a7722f419fdca240956065df8f64bf44cb6bfc0a9d1dfe3a8"
-run = "bash tools/ci/os/image-size.sh board-{board} /target/publish/os-board/{board}/image.oci.tar /target/publish/os-board-size/{board}"
+run = "bash tools/ci/os/image-size.sh board-{board} /target/publish/os-board/{board}/oci /target/publish/os-board-size/{board}"
 inputs = ["tools/ci/os/image-size.sh", "tools/perf/image_size.py", "os/tests/image_size_budget.py", "os/image-size-budget.toml"]
 needs = ["os-board-{board}"]
 outputs = ["/target/publish/os-board-size/{board}/**"]
