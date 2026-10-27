@@ -637,6 +637,7 @@ impl ShellOverlayHost {
             live_shares: live_shares::NativeLiveShares::default(),
             hosted_windows_revision: None,
             desktop_control: desktop_control_chips::DesktopControlMarks::default(),
+            window_share_controls: window_share_controls::WindowShareControls::default(),
             bar_tooltip: ui::widget::tooltip::TooltipHost::new(),
             shared_desk: None,
             capture_studio: ui::widget::CaptureStudio::default(),
