@@ -39,7 +39,7 @@ fn every_old_name_runs_its_help_through_the_alias() {
         std::fs::write(&program, "#!/bin/sh\nprintf '%s|%s\\n' \"$0\" \"$*\"\n").unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let alias = bin.join(name);
-        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tilo"), &alias).unwrap();
+        std::os::unix::fs::symlink(tilo_test_env::package_binary!("tilo"), &alias).unwrap();
         let out = Command::new(&alias)
             .args(["--help", "x y"])
             .env("TILO_LIBEXEC_DIR", &libexec)
