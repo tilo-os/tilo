@@ -350,14 +350,20 @@ pub fn stage(
                         3,
                         "morning-digest",
                         "Morning digest",
-                        RunStatus::Completed(Some(json!("Three new notes, one needs a reply"))),
+                        RunStatus::Completed {
+                            value: Some(json!("Three new notes, one needs a reply")),
+                            degraded: None,
+                        },
                         "10:31",
                     ),
                     run(
                         2,
                         "quick-note",
                         "Quick note",
-                        RunStatus::Completed(None),
+                        RunStatus::Completed {
+                            value: None,
+                            degraded: None,
+                        },
                         "09:58",
                     ),
                     run(

@@ -19,7 +19,9 @@ use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
 use serde_json::{Value, json};
-use tilo_automation::{ActionCatalog, Binding, Condition, Shortcut, Step, StepKind, values_at};
+use tilo_automation::{
+    ActionCatalog, Binding, Condition, Shortcut, Step, StepKind, StepPolicy, values_at,
+};
 use ui::framework::{Actions, Live};
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -835,8 +837,17 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
     for run in door.runs.iter().take(20) {
         let secondary = match &run.status {
             RunStatus::Running => String::from("Running…"),
-            RunStatus::Completed(Some(value)) => editor::literal_text(value),
-            RunStatus::Completed(None) => String::from("Finished"),
+            // A run that finished with steps that fell short says so after
+            // what it produced, and one that produced nothing says so alone.
+            RunStatus::Completed { value, degraded } => {
+                let produced = value.as_ref().map(editor::literal_text);
+                match (produced, degraded) {
+                    (Some(produced), Some(degraded)) => format!("{produced} ({degraded})"),
+                    (Some(produced), None) => produced,
+                    (None, Some(degraded)) => format!("Finished: {degraded}"),
+                    (None, None) => String::from("Finished"),
+                }
+            }
             RunStatus::Failed(reason) => format!("Stopped: {reason}"),
         };
         let open = {
@@ -851,8 +862,13 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
         item = match &run.status {
             RunStatus::Running => item.active(),
             RunStatus::Failed(_) => item.error(),
+            // A degraded run reads as a warning, not as an error: it did what
+            // it could and said where it fell short.
+            RunStatus::Completed {
+                degraded: Some(_), ..
+            } => item.warning(),
             // Every row carries a dot, so the times line up down the list.
-            RunStatus::Completed(_) => item.idle(),
+            RunStatus::Completed { .. } => item.idle(),
         };
         rows.push(Box::new(item));
     }
@@ -866,7 +882,14 @@ fn last_run_text(door: &DoorState, shortcut: &str) -> String {
     };
     match &run.status {
         RunStatus::Running => format!("Running since {}", run.started),
-        RunStatus::Completed(_) => format!("Finished at {}", run.started),
+        RunStatus::Completed {
+            degraded: Some(degraded),
+            ..
+        } => format!(
+            "Finished at {}, with steps that fell short: {degraded}",
+            run.started
+        ),
+        RunStatus::Completed { .. } => format!("Finished at {}", run.started),
         RunStatus::Failed(reason) => format!("Stopped at {}: {reason}", run.started),
     }
 }
@@ -1991,6 +2014,89 @@ fn value_row(
     Box::new(row)
 }
 
+/// The policies a step can name, as the picker stores them: what the
+/// shortcut keeps, not what it shows.
+const POLICY_STOP: &str = "stop";
+const POLICY_RETRY: &str = "retry";
+const POLICY_FALLBACK: &str = "fallback";
+const POLICY_DEFAULT: &str = "default";
+
+/// What a run does when the step fails: stop, try again, do something
+/// else, or go on with a value the shortcut names.
+fn policy_row(at: &StepEditor<'_>, step: &Step) -> Element {
+    let StepEditor {
+        ui, draft_id, path, ..
+    } = *at;
+    let label = ui::i18n!("shortcuts-when-it-fails");
+    let selected = match &step.on_error {
+        StepPolicy::Fail => POLICY_STOP,
+        StepPolicy::Retry { .. } => POLICY_RETRY,
+        StepPolicy::Fallback { .. } => POLICY_FALLBACK,
+        StepPolicy::Default { .. } => POLICY_DEFAULT,
+    };
+    let values = vec![
+        (
+            POLICY_STOP.to_owned(),
+            ui::i18n!("shortcuts-stop-the-shortcut"),
+        ),
+        (POLICY_RETRY.to_owned(), ui::i18n!("shortcuts-try-again")),
+        (
+            POLICY_FALLBACK.to_owned(),
+            ui::i18n!("shortcuts-do-these-instead"),
+        ),
+        (
+            POLICY_DEFAULT.to_owned(),
+            ui::i18n!("shortcuts-go-on-with-a-value"),
+        ),
+    ];
+    let labels = values.iter().map(|(_, label)| label.clone()).collect();
+    let state = LocalState::new(selected.to_owned());
+    let mut picker = Dropdown::from_state(labels, &state)
+        .with_id(&format!("step-policy-{path}"))
+        .with_accessible_name(&label)
+        .control_size(FIELD_HEIGHT);
+    picker.set_value_options(values);
+    // Trying again a few times is the policy a person picks most: three
+    // tries, a minute apart, and nothing new to name.
+    let steps = step.on_error.clone();
+    let picker = ui.bind(
+        picker,
+        Workbench::SET_STEP_POLICY.map({
+            let draft = draft_id.clone();
+            let path = path.to_owned();
+            move |choice: String| {
+                let policy = match choice.as_str() {
+                    POLICY_RETRY => serde_json::to_string(&StepPolicy::Retry {
+                        attempts: DEFAULT_RETRY_ATTEMPTS,
+                        backoff_ms: tilo_automation::DEFAULT_BACKOFF_MS,
+                    }),
+                    POLICY_FALLBACK => {
+                        serde_json::to_string(&StepPolicy::Fallback { steps: Vec::new() })
+                    }
+                    POLICY_DEFAULT => serde_json::to_string(&StepPolicy::Default {
+                        value: Binding::Literal(Value::Null),
+                    }),
+                    _ => Ok(String::new()),
+                }
+                .unwrap_or_default();
+                (draft.clone(), path.clone(), policy)
+            }
+        }),
+    );
+    let mut row = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .push(Box::new(labeled_field(&label, picker)));
+    if let StepPolicy::Fallback { steps } = steps
+        && steps.is_empty()
+    {
+        row = row.push(Box::new(caption("shortcuts-add-the-steps-to-do-instead")));
+    }
+    Box::new(row)
+}
+
+const DEFAULT_RETRY_ATTEMPTS: u32 = 3;
+
 /// One parameter of an action step: where its value comes from and, for a
 /// typed value, the control that edits it.
 fn argument_row(
@@ -2262,6 +2368,11 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
     // rebuilt when that changes, so a step with nothing to report has none.
     for reason in input.problems.get(path).into_iter().flatten() {
         body = body.push(Box::new(Banner::warning(reason.clone())));
+    }
+    // A question nobody can answer and a person's refusal end a run
+    // whatever the step says, so only a step that can fail quietly offers it.
+    if !matches!(step.kind, StepKind::Ask { .. }) {
+        body = body.push(policy_row(at, step));
     }
     let mut nested: Vec<Element> = Vec::new();
     match &step.kind {

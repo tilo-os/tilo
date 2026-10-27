@@ -83,8 +83,32 @@ const LIBRARY_RESOURCE: &str = "shortcuts";
 #[derive(Clone, Debug, PartialEq)]
 pub enum RunStatus {
     Running,
-    Completed(Option<Value>),
+    /// It finished: what it reported, and the steps that fell short when
+    /// any did (`RunReport::degraded_summary`).
+    Completed {
+        value: Option<Value>,
+        degraded: Option<String>,
+    },
     Failed(String),
+}
+
+impl RunStatus {
+    /// The status of a run that finished with `value`: a degraded run's
+    /// value carries the note saying which steps fell short.
+    #[must_use]
+    fn completed(value: Option<Value>) -> Self {
+        let (value, degraded) = match value {
+            Some(Value::Object(mut reported)) if reported.contains_key("degraded") => {
+                let degraded = match reported.remove("degraded") {
+                    Some(Value::String(summary)) => Some(summary),
+                    _ => None,
+                };
+                (reported.remove("output"), degraded)
+            }
+            other => (other, None),
+        };
+        Self::Completed { value, degraded }
+    }
 }
 
 /// One run started from this app, newest first in [`DoorState::runs`].
@@ -619,7 +643,7 @@ impl DoorCore {
             }
             (Purpose::Run { serial }, result) => {
                 let status = match result {
-                    Ok(output) => RunStatus::Completed(
+                    Ok(output) => RunStatus::completed(
                         output.as_ref().and_then(|output| output.value.clone()),
                     ),
                     Err(reason) => RunStatus::Failed(reason.clone()),
@@ -799,5 +823,41 @@ pub(crate) fn catalogue_refusal(error: &ui::tilo_actions::remote::ActionHostErro
                 .to_owned()
         }
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_degraded_runs_status_keeps_what_it_produced_and_the_note() {
+        // What the broker reports for a run whose step fell short: the
+        // value the shortcut produced, and which step did not deliver.
+        let reported = json!({
+            "output": "Three notes",
+            "degraded": "1 step did not finish as intended: the app was unavailable"
+        });
+        let status = RunStatus::completed(Some(reported));
+        let RunStatus::Completed { value, degraded } = status else {
+            panic!("a finished run");
+        };
+        assert_eq!(value, Some(json!("Three notes")));
+        assert!(
+            degraded
+                .as_deref()
+                .is_some_and(|note| note.contains("unavailable")),
+            "{degraded:?}"
+        );
+
+        // A run that finished as intended reports its value as it is, even
+        // when the value is an object with keys of its own.
+        let plain = json!({"done": true});
+        let RunStatus::Completed { value, degraded } = RunStatus::completed(Some(plain.clone()))
+        else {
+            panic!("a finished run");
+        };
+        assert_eq!(value, Some(plain));
+        assert_eq!(degraded, None);
     }
 }

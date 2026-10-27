@@ -321,10 +321,9 @@ impl StepFailure {
     #[must_use]
     pub fn transient(&self) -> bool {
         match self {
-            Self::Unavailable { .. } => true,
+            Self::Unavailable { .. } | Self::TimedOut { .. } => true,
             Self::Host { error } => matches!(**error, ActionHostError::Unavailable { .. }),
             Self::Action { error } => error.retryable,
-            Self::TimedOut { .. } => true,
             _ => false,
         }
     }
@@ -380,13 +379,19 @@ const fn one() -> u32 {
     1
 }
 
+/// `serde`'s predicate for a field it may leave out, so it takes the field
+/// by reference; one attempt is the value an absent field reads as.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde calls a skip predicate with the field by reference"
+)]
 fn is_first_attempt(attempt: &u32) -> bool {
     *attempt == 1
 }
 
 /// What the run did about a step that failed. Only [`Recovered::Stopped`]
 /// leaves the run to end there.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "recovered", rename_all = "snake_case")]
 pub enum Recovered {
     /// The run stopped at the step.
@@ -536,6 +541,24 @@ pub struct RunReport {
 }
 
 impl RunReport {
+    /// What the run reports, with a note saying which of its steps fell
+    /// short when any did. A degraded run really did finish, so its caller
+    /// needs both: the value it produced and the fact that value may rest on
+    /// something a step did not deliver. A run that finished as intended
+    /// reports its value as it is.
+    #[must_use]
+    pub fn reported_value(&self) -> Option<Value> {
+        let Some(summary) = self.degraded_summary() else {
+            return self.output.clone();
+        };
+        let mut reported = serde_json::Map::new();
+        if let Some(output) = &self.output {
+            reported.insert("output".to_string(), output.clone());
+        }
+        reported.insert("degraded".to_string(), Value::String(summary));
+        Some(Value::Object(reported))
+    }
+
     /// Every invocation id the run used, in order.
     #[must_use]
     pub fn invocations(&self) -> Vec<InvocationId> {
@@ -805,9 +828,8 @@ fn reads(step: &Step) -> Vec<String> {
             }
         }
         StepKind::SetVar { value, .. } => binding(value),
-        StepKind::Ask { .. } => {}
         StepKind::Ai { input, .. } => input.as_ref().into_iter().for_each(&mut binding),
-        StepKind::Task { .. } => {}
+        StepKind::Ask { .. } | StepKind::Task { .. } => {}
     }
     if let StepPolicy::Fallback { steps } = &step.on_error {
         for inner in steps {
@@ -1024,8 +1046,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 break;
             }
             let policy = step.on_error.clone();
-            self.wait_before(&policy, made + 1).await;
-            made += 1;
+            let made_next = made.saturating_add(1);
+            if !self.wait_before(&policy, made_next, path).await {
+                break;
+            }
+            made = made_next;
             let (sent, again) = self.step(step, path).await?;
             done.attempts.extend(sent);
             done.result = again.result;
@@ -1035,18 +1060,29 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     }
 
     /// Wait before trying a step again, unless the run was told to stop
-    /// first.
-    async fn wait_before(&mut self, policy: &StepPolicy, attempt: u32) {
+    /// first. Returns whether it is still going.
+    async fn wait_before(&self, policy: &StepPolicy, attempt: u32, path: &StepPath) -> bool {
         let wait = policy.wait_before(attempt);
-        let mut waited = std::time::Duration::ZERO;
-        while waited < wait {
-            let slice = (wait - waited).min(POLL_INTERVAL);
-            std::thread::sleep(slice);
-            waited += slice;
-            if let Err(_stopped) = self.stopped(&StepPath::root()).await {
-                return;
-            }
+        if wait.is_zero() {
+            return self.stopped(path).await.is_ok();
         }
+        // Nobody moves this wait: only the clock ends it, and a stop ends it
+        // sooner. The timer belongs to whoever awaits, so the interpreter
+        // needs none of its own.
+        let stopped = self.hooks.stopped(StopWatch {
+            path,
+            since: std::time::Instant::now(),
+        });
+        matches!(
+            wait_for(
+                std::future::pending::<Result<(), StepFailure>>(),
+                stopped,
+                wait,
+                false,
+            )
+            .await,
+            Wait::Moved(Ok(())) | Wait::TimedOut
+        )
     }
 
     /// Remember a step that did not succeed, so a later step reading it can
@@ -1086,9 +1122,8 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
 
     /// Append the record of a finished block step and always carry on: an
     /// `if` and a loop have no effect of their own to have failed with.
-    fn record_block(&mut self, step: &Step, path: &StepPath, done: Done) -> Result<(), Stop> {
+    fn record_block(&mut self, step: &Step, path: &StepPath, done: Done) {
         self.push_record(step, path, done, Recovered::Stopped);
-        Ok(())
     }
 
     /// Append a step's record, with what the run did about it when it did
@@ -1124,13 +1159,13 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 )
             }
             Err(failure) => {
-                let degraded = StepOutcome::degraded(failure.clone(), attempt, recovered.clone());
+                let degraded = StepOutcome::degraded(failure.clone(), attempt, recovered);
                 let window = StepStatus::Failed {
                     failure: failure.clone(),
                     attempt,
-                    recovered: recovered.clone(),
+                    recovered,
                 };
-                let halt = recovered.is_stopped().then(|| failure);
+                let halt = recovered.is_stopped().then_some(failure);
                 (window, degraded, halt)
             }
         };
@@ -1202,10 +1237,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             let Some(failed) = self.failed.get(&name) else {
                 continue;
             };
-            if failed.recovered == Recovered::Default && !failed.output_is_none {
-                return Some(failed.failure.clone());
-            }
-            if self.outputs.contains_key(&name) {
+            // A step that was passed over with its default stands in for
+            // itself: a later step reads that value, and the reason it is
+            // there at all is the run's degraded note, not a second failure.
+            let stands_in = failed.recovered == Recovered::Default && !failed.output_is_none;
+            if stands_in && self.outputs.contains_key(&name) {
                 continue;
             }
             return Some(failed.failure.clone());
@@ -1283,7 +1319,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 let holds = self.condition(cond);
                 let taken = holds.as_ref().ok().copied();
                 let done = Done::local(holds.map(|b| Some(Value::Bool(b))));
-                self.record_block(step, path, done)?;
+                self.record_block(step, path, done);
                 match taken {
                     Some(true) => self.block(then, path.then_branch()).await,
                     Some(false) => self.block(otherwise, path.else_branch()).await,
@@ -1337,7 +1373,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         };
         let count = elements.as_ref().map(|e| Some(Value::from(e.len())));
         let done = Done::local(count.map_err(Clone::clone));
-        self.record_block(step, &path, done)?;
+        self.record_block(step, &path, done);
         let elements = elements.unwrap_or_default();
         let shadowed = self.vars.get(item).cloned();
         let shadowed_secret = self.secret_vars.contains(item);

@@ -968,7 +968,7 @@ pub fn completion(invocation: InvocationId, report: &RunReport) -> InvocationUpd
         RunOutcome::Completed | RunOutcome::Cancelled { .. } => InvocationUpdate::Succeeded {
             invocation,
             output: ActionOutput {
-                value: report.output.clone(),
+                value: report.reported_value(),
                 resources: Vec::new(),
             },
         },

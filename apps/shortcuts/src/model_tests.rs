@@ -1,5 +1,5 @@
 use serde_json::json;
-use tilo_automation::{Binding, StepKind};
+use tilo_automation::{Binding, StepKind, StepPolicy};
 use ui::prelude::Replica;
 
 use super::*;
@@ -620,4 +620,55 @@ fn a_draft_or_a_saved_shortcut_duplicates_into_a_new_unsaved_variant() {
         .expect("a duplicate of the saved shortcut");
     assert_eq!(duplicated.program(), original.program());
     assert_ne!(duplicated.shortcut_id, saved.id);
+}
+
+#[test]
+fn a_steps_policy_is_stored_where_the_run_reads_it_and_cleared_by_stopping() {
+    let (mut replica, id) = with_draft();
+    replica
+        .apply(Workbench::ADD_STEP.with((id.clone(), String::new(), invoke("create"))))
+        .unwrap();
+
+    replica
+        .apply(Workbench::SET_STEP_POLICY.with((
+            id.clone(),
+            "0".to_string(),
+            json!({"on_error": "retry", "attempts": 3, "backoff_ms": 60000}).to_string(),
+        )))
+        .unwrap();
+    assert_eq!(
+        program(&replica).steps[0].on_error,
+        StepPolicy::Retry {
+            attempts: 3,
+            backoff_ms: 60_000
+        }
+    );
+
+    // Rewriting what a step does keeps what the shortcut said about its
+    // failing: the policy is not part of the step's head.
+    replica
+        .apply(Workbench::REPLACE_STEP.with((id.clone(), "0".to_string(), invoke("list"))))
+        .unwrap();
+    let program_after = program(&replica);
+    assert!(matches!(
+        program_after.steps[0].kind,
+        StepKind::Invoke { .. }
+    ));
+    assert_eq!(
+        program_after.steps[0].on_error,
+        StepPolicy::Retry {
+            attempts: 3,
+            backoff_ms: 60_000
+        }
+    );
+
+    // An empty policy is "stop", and a saved shortcut with no policy writes
+    // nothing about it: today's shortcuts keep their JSON.
+    replica
+        .apply(Workbench::SET_STEP_POLICY.with((id, "0".to_string(), String::new())))
+        .unwrap();
+    let final_step = &program(&replica).steps[0];
+    assert_eq!(final_step.on_error, StepPolicy::Fail);
+    let json = serde_json::to_string(&program(&replica)).unwrap();
+    assert!(!json.contains("on_error"), "{json}");
 }
