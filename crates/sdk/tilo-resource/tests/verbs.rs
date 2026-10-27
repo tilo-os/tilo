@@ -64,7 +64,7 @@ impl Shelf {
     }
 
     /// Archive a card.
-    #[action(item = cards)]
+    #[action(item = cards, icon = "archive")]
     pub fn archive_card(&mut self, card: &Id) -> Result<(), Refusal> {
         let taken = self.cards.remove(card).ok_or("no such card")?;
         self.archive.push(card.clone(), taken);
@@ -262,7 +262,16 @@ fn item_verbs_are_offered_on_the_items_of_their_collection() {
         .find(|child| child.id.as_str() == format!("test.shelf/cards/{id}"))
         .unwrap();
     assert_eq!(card.label, "Tea");
-    assert!(card.actions.iter().any(|spec| spec.id == "archive-card"));
+    let archive = card
+        .actions
+        .iter()
+        .find(|spec| spec.id == "archive-card")
+        .expect("the card offers its archiving");
+    assert_eq!(
+        archive.icon.as_deref(),
+        Some("archive"),
+        "on its item the verb wears its own icon"
+    );
     assert!(card.actions.iter().all(|spec| spec.id != "restore"));
     shelf.apply(Shelf::ARCHIVE_CARD.with(id.clone())).unwrap();
     let tree = published(&shelf);
