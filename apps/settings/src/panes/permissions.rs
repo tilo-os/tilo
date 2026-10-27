@@ -208,6 +208,7 @@ impl PermissionsReader for SystemPermissions {
     }
 
     fn desktop_control(&self) -> Vec<TabGrantEntry> {
+        crate::device_read::off_ui_thread();
         settings_store::desktop_control::DesktopControlSnapshot::load()
             .map(|snapshot| snapshot.tabs)
             .unwrap_or_default()
@@ -220,6 +221,7 @@ impl PermissionsReader for SystemPermissions {
     }
 
     fn workspace_state(&self) -> Option<String> {
+        crate::device_read::off_ui_thread();
         load_text()
     }
 }
@@ -321,6 +323,7 @@ impl PermissionsReader for SamplePermissions {
     }
 
     fn desktop_control(&self) -> Vec<TabGrantEntry> {
+        crate::device_read::off_ui_thread();
         self.desktop_control
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -347,6 +350,7 @@ impl PermissionsReader for SamplePermissions {
     /// A workspace whose Terminal may always control the desktop, beside
     /// the camera an app was let use.
     fn workspace_state(&self) -> Option<String> {
+        crate::device_read::off_ui_thread();
         let caps = [
             (
                 "so.tilo.terminal",
@@ -367,14 +371,16 @@ impl PermissionsReader for SamplePermissions {
     }
 }
 
-/// What Privacy & Security last read: everything it shows but the
-/// workspace grants, which are one small file read when the pane opens.
+/// What Privacy & Security last read.
 #[derive(Clone)]
 struct PermissionsReading {
     privacy: os_actions::PrivacyStatus,
     security: DeviceSecurity,
     secrets: Result<Vec<SecretApp>, String>,
     desktop_control: Vec<TabGrantEntry>,
+    /// The workspace grants the desktop's `state.json` holds; `None` when
+    /// it could not be read or parsed.
+    workspace_access: Option<Vec<WsGrants>>,
 }
 
 impl PermissionsReading {
@@ -384,6 +390,7 @@ impl PermissionsReading {
             security: reader.device_security(),
             secrets: reader.secret_apps(),
             desktop_control: reader.desktop_control(),
+            workspace_access: workspace_access(reader.workspace_state().as_deref()),
         }
     }
 }
@@ -734,6 +741,7 @@ impl Tint {
 }
 
 /// One capability an app holds, projected into display terms.
+#[derive(Clone)]
 struct CapView {
     kind: &'static str,
     detail: String,
@@ -742,12 +750,14 @@ struct CapView {
 }
 
 /// One app's grants within a workspace.
+#[derive(Clone)]
 struct AppGrants {
     app: String,
     caps: Vec<CapView>,
 }
 
 /// One workspace and the app grants it holds.
+#[derive(Clone)]
 struct WsGrants {
     name: String,
     apps: Vec<AppGrants>,
@@ -977,9 +987,6 @@ pub struct PermissionsPane {
     reading_seen: u64,
     /// What the device reported; `None` while it is first read.
     shown: Option<PermissionsReading>,
-    /// The workspace grants `state.json` holds; `None` when it could not
-    /// be read or parsed.
-    workspace_access: Option<Vec<WsGrants>>,
     /// The watch on the desktop's live "this tab" grants, so one that
     /// starts or ends shows at once; `None` for a capture's sample device.
     desktop_control_watch: Option<crate::watch::Watched>,
@@ -1005,18 +1012,16 @@ impl PermissionsPane {
             reading_seen: area.reading.revision(),
             shown: area.reading.get(),
             reading: area.reading.clone(),
-            workspace_access: workspace_access(area.reader.workspace_state().as_deref()),
             desktop_control_watch,
             composed: ui::widget::Composed::default(),
         }
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        panel(
-            &self.cx,
-            self.workspace_access.as_deref(),
-            self.shown.as_ref(),
-        )
+        let workspace_access = self.shown.as_ref().map_or(Grants::Reading, |reading| {
+            Grants::Read(reading.workspace_access.as_deref())
+        });
+        panel(&self.cx, workspace_access, self.shown.as_ref())
     }
 }
 
@@ -1199,7 +1204,11 @@ fn workspace_access(state_json: Option<&str>) -> Option<Vec<WsGrants>> {
 /// document, so tests exercise it without touching the real config dir.
 #[cfg(test)]
 fn build_view(cx: &PaneCx, state_json: Option<&str>) -> Box<dyn Widget> {
-    panel(cx, workspace_access(state_json).as_deref(), None)
+    panel(
+        cx,
+        Grants::Read(workspace_access(state_json).as_deref()),
+        None,
+    )
 }
 
 /// A device card whose reading has not landed yet.
@@ -1207,11 +1216,20 @@ fn reading_card(title: &str) -> SettingsSection {
     section(&t(title), rows(vec![note(&t("perm-reading"))]))
 }
 
+/// The workspace grants as the pane shows them.
+#[derive(Clone, Copy)]
+enum Grants<'a> {
+    /// Still being read.
+    Reading,
+    /// Read: `None` when `state.json` could not be read or parsed.
+    Read(Option<&'a [WsGrants]>),
+}
+
 /// Every card of the pane, from the workspace grants and what the device
 /// last reported (`None`: it is still being read).
 fn panel(
     cx: &PaneCx,
-    workspace_access: Option<&[WsGrants]>,
+    workspace_access: Grants<'_>,
     reading: Option<&PermissionsReading>,
 ) -> Box<dyn Widget> {
     let mut panel: Vec<SettingsSection> = vec![scope_card()];
@@ -1231,12 +1249,14 @@ fn panel(
     panel.push(workspace_grants_intro_card(cx));
 
     match workspace_access {
-        Some([]) => panel.push(no_workspace_grants_card()),
-        Some(all) => {
+        Grants::Read(Some([])) => panel.push(no_workspace_grants_card()),
+        Grants::Read(Some(all)) => {
             let total = grant_count(all);
             push_workspace_grant_cards(&mut panel, all, total);
         }
-        None => panel.push(workspace_grants_unavailable_card()),
+        Grants::Read(None) => panel.push(workspace_grants_unavailable_card()),
+        // The intro card above stands alone until they are read.
+        Grants::Reading => {}
     }
 
     panel.push(enforcement_card());
@@ -1390,8 +1410,8 @@ mod tests {
             self.wait();
             SamplePermissions::default().stop_desktop_control(grant)
         }
-        // One small file, read as the pane opens, as it always was.
         fn workspace_state(&self) -> Option<String> {
+            self.wait();
             SamplePermissions::default().workspace_state()
         }
     }
@@ -1420,6 +1440,9 @@ mod tests {
         assert!(frame.contains(&t("perm-reading")), "{frame}");
         assert!(!frame.contains(&t("perm-firewall-firewalld")), "{frame}");
         assert!(!frame.contains("binary:/usr/bin/chromium"), "{frame}");
+        // The workspace grants are read with the rest, not as the pane opens.
+        assert!(!frame.contains(&t("perm-unavailable-title")), "{frame}");
+        assert!(!frame.contains(&t("perm-desktop-control")), "{frame}");
 
         gate.release();
         assert!(
@@ -1428,6 +1451,7 @@ mod tests {
                     .inspection_json()
                     .is_ok_and(|frame| frame.contains(&t("perm-firewall-firewalld"))
                         && frame.contains("binary:/usr/bin/chromium")
+                        && frame.contains(&t("perm-desktop-control"))
                         && !frame.contains(&t("perm-reading")))),
             "what the device reports is shown"
         );

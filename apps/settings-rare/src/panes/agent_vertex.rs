@@ -19,9 +19,7 @@
 use std::sync::Arc;
 
 use account_custody::cloud_projects::{self, CloudProject};
-use account_custody::{
-    Capability, Custodian, CustodyError, GrantState, LoopbackCancel, OAuthIssuer, OAuthUse,
-};
+use account_custody::{Capability, Custodian, CustodyError, LoopbackCancel, OAuthIssuer, OAuthUse};
 use accounts::AccountId;
 use agent_provider_config::{
     ModelDescriptor, ProviderConfig, ProviderProfile, SignInCredential, VERTEX_DEFAULT_LOCATION,
@@ -683,11 +681,11 @@ pub(crate) fn apply_gemini(
     Ok(())
 }
 
-/// Whether `custodian` holds a usable grant for `profile_id`: a new
-/// provider is saved only after its sign-in.
+/// Whether `custodian` holds a usable grant for `profile_id`.
+#[cfg(test)]
 pub(crate) fn signed_in(custodian: &Custodian, profile_id: &str) -> bool {
     matches!(
         custodian.oauth_grant_state(&grant_id(profile_id)),
-        Ok(GrantState::Usable)
+        Ok(account_custody::GrantState::Usable)
     )
 }
