@@ -622,7 +622,7 @@ fn the_task_is_published_with_its_verbs_and_its_changes_carry_the_task() {
     let mut agent = person.fork().as_agent_for(AGENT, "ada");
     agent
         .apply(Tracker::RECORD_SPEND.with(tracker::RecordSpend {
-            issue: issue.clone(),
+            issue,
             spent: 1_200,
         }))
         .unwrap();
