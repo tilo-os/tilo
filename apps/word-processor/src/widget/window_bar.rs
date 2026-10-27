@@ -231,6 +231,13 @@ impl WordProcessorWidget {
             sidebar: Some(self.outline.is_open()),
             location: Some(ToolbarLocation {
                 label: self.document_title(),
+                // The document says whether the work in it is in its file:
+                // a marker taken from anything that clears itself when the
+                // frame is drawn (a repaint flag) would say "Edited" at
+                // random, and say nothing the moment after a save.
+                edited: self
+                    .with_live(|document| document.unsaved())
+                    .unwrap_or(false),
                 ..ToolbarLocation::default()
             }),
             actions: vec![
