@@ -17,17 +17,14 @@ use crate::widget::{Button, ButtonRole, Column, Text};
 /// A proposal on screen: its title, the model's note, the change as a diff
 /// (or a value's before and after), which model answered and where it ran,
 /// exactly what is sent, and Accept and Reject.
-pub struct ActionProposalView<R: Clone> {
+pub struct ActionProposalView<R: tilo_resource::Resource> {
     proposal: ActionProposal,
     target: ProposalTarget<R>,
     sheet: Column,
     decision: Option<ProposalDecision>,
 }
 
-impl<R> ActionProposalView<R>
-where
-    R: tilo_resource::Fields + Clone,
-{
+impl<R: tilo_resource::Resource> ActionProposalView<R> {
     /// The proposal `proposal` in front of the person, which accepting
     /// writes at `target`.
     #[must_use]
@@ -57,7 +54,10 @@ where
                 sheet,
                 Text::with_args(
                     "proposal-diff-more",
-                    &[("count", ArgValue::from(left_out as i64))],
+                    &[(
+                        "count",
+                        ArgValue::from(i64::try_from(left_out).unwrap_or(i64::MAX)),
+                    )],
                 ),
                 &mut index,
             );
@@ -116,18 +116,18 @@ where
             .then(|| self.proposal.accept_action(self.target.clone()))
     }
 
-    /// Write the accepted change into `doc`: one typed field edit, which
-    /// commits once — one undo step.
+    /// The action that writes what the person accepted, to submit through
+    /// the app's own door — `cx.dispatcher().submit(...)` — as the record's
+    /// one field edit: one change, one History row, one undo step. `Ok(None)`
+    /// when nothing was accepted, so rejecting submits nothing at all.
     ///
     /// # Errors
     ///
-    /// [`tilo_actions::ActionError::Refused`] when the field moved on since
-    /// the model was shown it.
-    pub fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
-        use tilo_actions::Action as _;
+    /// Why the answer cannot be written, when it cannot.
+    pub fn invoke(&self) -> Result<Option<tilo_resource::Invoke<R>>, String> {
         match self.accepted() {
-            Some(accept) => accept.apply(doc),
-            None => Ok(()),
+            Some(accept) => accept.invoke().map(Some),
+            None => Ok(None),
         }
     }
 
@@ -162,7 +162,7 @@ where
 
     /// The laid-out sheet itself, for a dialog or a page to hold.
     pub fn into_widget(mut self) -> Box<dyn crate::widget::Widget> {
-        let sheet = std::mem::replace(&mut self.sheet, Column::new());
+        let sheet = std::mem::take(&mut self.sheet);
         Box::new(sheet)
     }
 }
