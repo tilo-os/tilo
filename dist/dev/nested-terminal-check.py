@@ -83,10 +83,12 @@ def terminal(session: Session, operation: str, args: dict | None = None, timeout
         return None if value is PAIR.Stale else (value,)
     try:
         return wait_for(f"Terminal's {operation}", done, timeout)[0]
-    except Failed:
+    except Failed as failure:
         offered = sorted({str(row.get("operation")) for row in session.catalogue()
                           if row.get("application") == TERMINAL})
-        raise Failed(f"Terminal offers no {operation} in room {session.room}; it offers {offered}")
+        if operation in offered:
+            raise Failed(f"Terminal's {operation} in room {session.room}: {failure}") from failure
+        raise Failed(f"Terminal offers no {operation} in room {session.room}; it offers {offered}") from failure
 
 
 def native(state: pathlib.Path) -> bool:
