@@ -2841,6 +2841,12 @@ impl Widget for Window {
         self.body.draw(scene, transform, text, theme, presence);
     }
 
+    /// The window paints nothing of its own: what changed is what its body
+    /// repaints, not the whole window whenever anything in it changed.
+    fn collect_damage(&self, regions: &mut Vec<ui::kurbo::Rect>) {
+        self.body.collect_damage(regions);
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         let dirty = std::mem::take(&mut self.structure_dirty);
         self.body.take_structure_dirty() || dirty
