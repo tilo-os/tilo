@@ -25,4 +25,4 @@ mod reference;
 
 pub mod link;
 
-pub use reference::{Referent, ResourceRef, Span, SpanUnit};
+pub use reference::{Referent, ResourceAt, ResourceRef, Span, SpanUnit};

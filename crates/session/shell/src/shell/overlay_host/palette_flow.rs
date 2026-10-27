@@ -513,6 +513,30 @@ mod tests {
         };
         assert_eq!(rows, [ada]);
 
+        let note = ActionParam::required("note", ParamType::Object, "The note").picking(
+            tilo_actions::Pick::Resource {
+                kind: "notes.notebook.pages".into(),
+            },
+        );
+        let plan = Choice::plain(
+            serde_json::json!({ "app": "so.tilo.notes", "kind": "notes.notebook.pages",
+                "id": "notes.notebook/pages/a", "label": "Plan" }),
+            "Plan".into(),
+        );
+        let notes = |pick| {
+            assert_eq!(
+                pick,
+                tilo_actions::Pick::Resource {
+                    kind: "notes.notebook.pages".into()
+                }
+            );
+            vec![plan.clone()]
+        };
+        let Step::Choices(rows) = step_for(&note, "Link a note", &notes) else {
+            panic!("an existing note is picked by its title, never typed as an id");
+        };
+        assert_eq!(rows, [plan]);
+
         let kinds = ActionParam::required("kinds", ParamType::Array, "Which kinds").with_schema(
             serde_json::json!({
                 "type": "array",

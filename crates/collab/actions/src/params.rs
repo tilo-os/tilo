@@ -119,7 +119,7 @@ pub const PICK_ANNOTATION: &str = "pick";
 
 /// What a parameter's value names in the workspace, so a person picks it
 /// from what is there instead of typing its encoding ([`PICK_ANNOTATION`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pick {
     /// Who: a person, an agent or an app of the workspace, as a
     /// `tilo_action_policy::Subject`.
@@ -128,18 +128,59 @@ pub enum Pick {
     Node,
     /// One of the workspace's grants, by its id.
     Grant,
+    /// An existing resource of the workspace of kind `kind` (a note, a
+    /// file, an issue), found by the title its app publishes for it, as a
+    /// reference ([`resource_reference_schema`]). An agent passes the same
+    /// reference; nobody types an id.
+    Resource { kind: String },
 }
 
 impl Pick {
-    const ALL: [Self; 3] = [Self::Subject, Self::Node, Self::Grant];
+    const TAGGED: [Self; 3] = [Self::Subject, Self::Node, Self::Grant];
+    const RESOURCE_TAG: &str = "resource";
 
-    const fn tag(self) -> &'static str {
+    const fn tag(&self) -> &'static str {
         match self {
             Self::Subject => "subject",
             Self::Node => "node",
             Self::Grant => "grant",
+            Self::Resource { .. } => Self::RESOURCE_TAG,
         }
     }
+}
+
+/// The schema of a reference to an existing resource of the workspace, as
+/// a parameter that picks one takes it ([`Pick::Resource`]): the app that
+/// keeps it, the record it keeps it in when not its record of the
+/// workspace, its kind, its id in that app and how it reads. The label is
+/// presentation only; the app, kind and id are the address.
+#[must_use]
+pub fn resource_reference_schema() -> serde_json::Value {
+    let text = || serde_json::json!({ "type": "string", "minLength": 1 });
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "app": text(),
+            "record": text(),
+            "kind": text(),
+            "id": text(),
+            "label": { "type": "string" },
+        },
+        "required": ["app", "kind", "id", "label"],
+    })
+}
+
+/// The schema of a parameter that picks an existing resource of kind
+/// `kind` ([`Pick::Resource`]): a reference
+/// ([`resource_reference_schema`]), annotated with what it picks.
+#[must_use]
+pub fn picked_resource_schema(kind: &str) -> serde_json::Value {
+    let mut schema = resource_reference_schema();
+    if let serde_json::Value::Object(fields) = &mut schema {
+        fields.insert(PICK_ANNOTATION.into(), Pick::RESOURCE_TAG.into());
+        fields.insert(RESOURCE_KIND_ANNOTATION.into(), kind.into());
+    }
+    schema
 }
 
 /// The schema of a place inside a resource ([`ActionParam::as_place`]).
@@ -328,21 +369,30 @@ impl ActionParam {
 
     /// Have a person pick this parameter's value from the workspace's
     /// `pick`s ([`PICK_ANNOTATION`]); callers that know the value still give
-    /// it as the parameter's type says.
+    /// it as the parameter's type says. A resource is picked as a reference
+    /// ([`resource_reference_schema`]), whatever schema the parameter had.
     #[must_use]
     pub fn picking(self, pick: Pick) -> Self {
-        self.annotate(
-            PICK_ANNOTATION,
-            serde_json::Value::String(pick.tag().into()),
-        )
+        match pick {
+            Pick::Resource { kind } => self.with_schema(picked_resource_schema(&kind)),
+            tagged => self.annotate(
+                PICK_ANNOTATION,
+                serde_json::Value::String(tagged.tag().into()),
+            ),
+        }
     }
 
     /// What this parameter's value picks from the workspace
     /// ([`Self::picking`]).
     #[must_use]
     pub fn pick(&self) -> Option<Pick> {
-        let tag = self.schema.as_ref()?.get(PICK_ANNOTATION)?.as_str()?;
-        Pick::ALL.into_iter().find(|pick| pick.tag() == tag)
+        let schema = self.schema.as_ref()?;
+        let tag = schema.get(PICK_ANNOTATION)?.as_str()?;
+        if tag == Pick::RESOURCE_TAG {
+            let kind = schema.get(RESOURCE_KIND_ANNOTATION)?.as_str()?;
+            return Some(Pick::Resource { kind: kind.into() });
+        }
+        Pick::TAGGED.into_iter().find(|pick| pick.tag() == tag)
     }
 
     /// How `choice` reads to a person ([`Self::with_labelled_choices`]).
@@ -1909,6 +1959,40 @@ mod rich_schema_tests {
                 .get(RESOURCE_KIND_ANNOTATION),
             None
         );
+    }
+
+    #[test]
+    fn a_picked_resource_is_a_reference_of_its_kind() {
+        let note =
+            ActionParam::required("note", ParamType::Object, "The note").picking(Pick::Resource {
+                kind: "notes.notebook.pages".into(),
+            });
+        assert!(
+            note.validate_declaration().is_empty(),
+            "{:?}",
+            note.validate_declaration()
+        );
+        assert_eq!(
+            note.pick(),
+            Some(Pick::Resource {
+                kind: "notes.notebook.pages".into()
+            })
+        );
+        let params = [note];
+        let reference = serde_json::json!({ "note": {
+            "app": "so.tilo.notes",
+            "kind": "notes.notebook.pages",
+            "id": "notes.notebook/pages/p1",
+            "label": "Plan",
+        }});
+        assert!(ActionArgs::bind_json(&params, reference.as_object().unwrap()).is_ok());
+        let typed_id = serde_json::json!({ "note": { "id": "notes.notebook/pages/p1" } });
+        assert!(
+            ActionArgs::bind_json(&params, typed_id.as_object().unwrap()).is_err(),
+            "a reference names its app and kind"
+        );
+        let subject = ActionParam::required("who", ParamType::Object, "Who").picking(Pick::Subject);
+        assert_eq!(subject.pick(), Some(Pick::Subject));
     }
 
     #[test]
