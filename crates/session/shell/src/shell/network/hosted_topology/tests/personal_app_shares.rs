@@ -389,3 +389,235 @@ fn a_shared_tilo_app_window_opens_the_same_note_on_the_others_with_the_sharers_p
         "B's kept window is untouched"
     );
 }
+
+/// The governor records that `person`'s Tilo app window `tab` now shows
+/// `shows`, as the room's host writes a share made again under the same
+/// share id: over the one before.
+fn move_app_window(governor: &mut AutoCommit, person: &str, tab: u64, shows: &WindowShows) {
+    let mut policy = room_policy_of(governor, ROOM);
+    let id = window_shows_share_id(tab);
+    policy
+        .grants
+        .retain(|grant| !tilo_action_policy::share::is_of_share(grant, &id));
+    policy.grants.extend(
+        share_grants(
+            ROOM,
+            person,
+            &id,
+            &shows_node(ROOM, NOTES, tab, NOTEBOOK, shows),
+            ShareAccess::View,
+        )
+        .expect("one resource of the room"),
+    );
+    project_room_policy(governor, &policy).expect("the room's authority");
+    governor.commit();
+}
+
+/// What A's Notes window shows at the note `page`.
+fn at_note(page: &str) -> WindowShows {
+    WindowShows {
+        record: String::new(),
+        item: Some(page.to_owned()),
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one journey across two devices, their governor and a restart, told in order"
+)]
+fn a_shared_tilo_app_window_follows_its_sharers_note_reads_as_theirs_and_stays_used_across_a_restart()
+ {
+    let room = RoomId::parse(ROOM).expect("a room id");
+    let (salt, b_salt) = (0x0A51, 0x0B52);
+    let own = |counter: u64| (u64::from(salt) << 48) | counter;
+    let (chat, notes) = (own(3), own(4));
+    let (a_device, a_person) = (device_key(5), [0x22; 32]);
+    let ana = hex::encode(a_person);
+    let host = [0xa0; 32];
+    let host_key = hex::encode(host);
+    let mut governor = governed_room(ROOM, host, a_person, (salt, a_device));
+    governor
+        .put(automerge::ROOT, ROOM_LAYOUT_KEY, RoomLayout::Personal.id())
+        .expect("the governor makes the layout personal");
+    governor.commit();
+    let mut net = FakeDocumentNet::new();
+    let gov = net.peer("governor");
+    let mut a = Member {
+        peer: net.peer("a"),
+        admitted: None,
+    };
+    let mut b = Member {
+        peer: net.peer("b"),
+        admitted: None,
+    };
+    net.publish(&gov, &mut governor);
+    a.take_in(&mut net, &host_key);
+    b.take_in(&mut net, &host_key);
+    let mut a_tree = a_tree(room, salt, chat, notes);
+    a_tree.project_room_document_for_test(room, a.admitted());
+    let mut b_tree = WorkspaceTree::bootstrap_default_with_salt(b_salt);
+    let b_workspace = b_tree
+        .join_native_room("Lounge", room)
+        .expect("B's workspace of the room");
+    b_tree.desktop.active = b_workspace;
+    b_tree.project_room_document_for_test(room, b.admitted());
+    let (agenda, minutes, budget) = (
+        notes::model::PageId::from_u128(0x7e57).to_string(),
+        notes::model::PageId::from_u128(0x7e58).to_string(),
+        notes::model::PageId::from_u128(0x7e59).to_string(),
+    );
+
+    // A shares Notes at the agenda, and B's Notes opens into A's tab.
+    share_app_window(&mut governor, &ana, notes, &at_note(&agenda));
+    net.publish(&gov, &mut governor);
+    a.take_in(&mut net, &host_key);
+    b.take_in(&mut net, &host_key);
+    a_tree.project_room_document_for_test(room, a.admitted());
+    b_tree.project_room_document_for_test(room, b.admitted());
+    let surface = 0xB0_0001;
+    crate::shell::tab_binding::adopt_toplevel_at(
+        &mut b_tree,
+        surface,
+        Some(NOTES.into()),
+        crate::shell::tab_binding::Placement::IntoTab(notes),
+    );
+    b_tree.remember_package_launch(notes, NOTES.into());
+    assert!(b_tree.follows_shared_window(notes));
+    assert!(
+        !a_tree.follows_shared_window(notes),
+        "A's own window follows nobody"
+    );
+
+    // B's Notes opens at A's note, through its own `open`, once.
+    assert_eq!(
+        b_tree.shared_window_opening(notes, None),
+        Some(agenda.clone()),
+        "B's Notes opens at the note A has open"
+    );
+    assert_eq!(
+        b_tree.shared_window_opening(notes, None),
+        Some(agenda.clone()),
+        "asked again until it was opened there"
+    );
+    b_tree.shared_window_opened(notes, &agenda);
+    assert_eq!(b_tree.shared_window_opening(notes, None), None);
+    assert_eq!(
+        b_tree.shared_window_opening(notes, Some(&agenda)),
+        None,
+        "it is there"
+    );
+
+    // A moves to the minutes: B follows.
+    move_app_window(&mut governor, &ana, notes, &at_note(&minutes));
+    net.publish(&gov, &mut governor);
+    b.take_in(&mut net, &host_key);
+    b_tree.project_room_document_for_test(room, b.admitted());
+    assert_eq!(
+        b_tree
+            .shared_windows(room, tilo_clock::unix_now_ms())
+            .find(|share| share.tab == notes)
+            .and_then(|share| share.shows.clone()),
+        Some(at_note(&minutes)),
+        "the share says where A's window is now"
+    );
+    assert_eq!(
+        b_tree.shared_window_opening(notes, Some(&agenda)),
+        Some(minutes.clone()),
+        "B's window follows A to the minutes"
+    );
+    b_tree.shared_window_opened(notes, &minutes);
+    assert_eq!(
+        b_tree.shared_window_opening(notes, Some(&agenda)),
+        None,
+        "still on its way there: not moved by B"
+    );
+    assert_eq!(b_tree.shared_window_opening(notes, Some(&minutes)), None);
+    assert!(b_tree.follows_shared_window(notes));
+
+    // The tab reads as A's: her name and face, while she is here.
+    let a_session = crate::shell::state::host_handle(&hex::encode(a_device))
+        .expect("A's device is an endpoint");
+    assert!(b_tree.admit_collaborator_in_room(
+        room,
+        crate::shell::state::Collaborator::new("ana", "Ana").with_session(a_session),
+    ));
+    let marks =
+        crate::shell::overlay_host::windows_shared_by_others(&b_tree, tilo_clock::unix_now_ms());
+    assert_eq!(
+        marks.get(&notes),
+        Some(&ui::widget::SharedBy {
+            sharer: (ui::permissions::UserId("ana".into()), "Ana".into()),
+        }),
+        "B's tab of A's window says it is Ana's"
+    );
+    assert!(
+        crate::shell::overlay_host::windows_shared_by_others(&a_tree, tilo_clock::unix_now_ms(),)
+            .is_empty(),
+        "A's own window is not marked as someone else's"
+    );
+
+    // B moves the window to the budget itself: from then on it stays there,
+    // whatever A opens.
+    assert_eq!(b_tree.shared_window_opening(notes, Some(&budget)), None);
+    assert!(
+        !b_tree.follows_shared_window(notes),
+        "B moved it: it no longer follows A"
+    );
+    move_app_window(&mut governor, &ana, notes, &at_note(&agenda));
+    net.publish(&gov, &mut governor);
+    b.take_in(&mut net, &host_key);
+    b_tree.project_room_document_for_test(room, b.admitted());
+    assert_eq!(
+        b_tree.shared_window_opening(notes, Some(&budget)),
+        None,
+        "B's window stays where B put it"
+    );
+
+    // B types into it, and the device restarts while the share lasts: the
+    // window is still B's to keep, and still stays where B put it.
+    assert!(b_tree.note_used_and_take_ended(&[surface]).is_empty());
+    let dir = tempfile::tempdir().expect("a state directory");
+    let path = dir.path().join("state.json");
+    crate::shell::persist::save_tree_to(&b_tree, &path).expect("B's layout is saved");
+    let mut restored =
+        crate::shell::persist::load_device_tree_from(&path, b_salt).expect("B's layout restored");
+    restored.project_room_document_for_test(room, b.admitted());
+    assert!(
+        restored.desktop.workspaces.iter().any(|workspace| workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .any(|tab| tab.id == notes)),
+        "A's window is still in B's layout"
+    );
+    assert!(
+        !restored.follows_shared_window(notes),
+        "and still stays where B put it"
+    );
+    stop(&mut governor, notes);
+    net.publish(&gov, &mut governor);
+    b.take_in(&mut net, &host_key);
+    assert!(restored.project_room_document_for_test(room, b.admitted()));
+    let kept: Vec<u64> = b_tabs(&restored, room)
+        .into_iter()
+        .map(|(id, _)| id)
+        .filter(|id| restored.package_launches.get(id).map(String::as_str) == Some(NOTES))
+        .collect();
+    assert_eq!(
+        kept.len(),
+        1,
+        "the used window stays after the restart: {:?}",
+        b_tabs(&restored, room)
+    );
+    assert_eq!(
+        tilo_desktop_model::peer_salt_of(kept[0]),
+        b_salt,
+        "as B's own window"
+    );
+    assert!(
+        restored.note_used_and_take_ended(&[]).is_empty(),
+        "nothing to close"
+    );
+}

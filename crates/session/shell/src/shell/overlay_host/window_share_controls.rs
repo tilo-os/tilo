@@ -8,7 +8,9 @@
 //!   in its bar's menu.
 //! - **The mark.** While shared, the window's bar says "Shared with
 //!   <workspace>", with the faces of the people there who see it
-//!   ([`ui::widget::SharedWith`]).
+//!   ([`ui::widget::SharedWith`]). On every other device, the window it
+//!   opens for the share reads as the sharer's: "Ana's window", with her
+//!   face ([`ui::widget::SharedBy`]).
 //! - **The end.** A share whose window this device no longer shows in that
 //!   workspace (closed, or moved to another one) is stopped, through the
 //!   room's outbox, which asks again on the host's next event until the
@@ -22,7 +24,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ui::widget::{GroupRow, SharedWith};
+use ui::widget::{GroupRow, SharedBy, SharedWith};
 use ui::window_toolbar::ToolbarAction;
 
 use super::ShellOverlayHost;
@@ -46,6 +48,9 @@ pub(crate) struct WindowShareControls {
     shown: HashMap<TabId, Shown>,
     /// The windows a share item stands in the bar menu of.
     offered: HashSet<TabId>,
+    /// The windows others shared that this device shows, each with whose
+    /// it is, as last read.
+    theirs: HashMap<TabId, SharedBy>,
 }
 
 /// One shareable window, as its bar shows it.
@@ -126,7 +131,46 @@ fn shareable_windows(
     shown
 }
 
+/// Every window others shared that this device shows in `tree`, with whose
+/// it is: the member who shared it, while they are here.
+pub(crate) fn windows_shared_by_others(
+    tree: &WorkspaceTree,
+    now_ms: u64,
+) -> HashMap<TabId, SharedBy> {
+    let local = tree.local_salt();
+    let mut theirs = HashMap::new();
+    for workspace in &tree.desktop.workspaces {
+        for (tab, sharer) in crate::shell::shared_window_people(tree, workspace, now_ms) {
+            if local != 0 && tilo_desktop_model::peer_salt_of(tab) == local {
+                continue;
+            }
+            theirs.insert(
+                tab,
+                SharedBy {
+                    sharer: (
+                        ui::permissions::UserId(sharer.id.clone()),
+                        sharer.name.clone(),
+                    ),
+                },
+            );
+        }
+    }
+    theirs
+}
+
 impl ShellOverlayHost {
+    /// Whose the bar of the window `tab` says it is, while someone else
+    /// shares it here. For tests, the `shots` renderer and the bench.
+    pub fn tab_shared_by(&self, tab: TabId) -> Option<SharedBy> {
+        self.group_row_ptrs.values().find_map(|&ptr| {
+            // SAFETY: read-only use under the field's stable-row contract.
+            let row: &GroupRow = unsafe { &*ptr };
+            row.groups
+                .iter()
+                .find_map(|group| group.tab_shared_by(tab).cloned())
+        })
+    }
+
     /// Who the bar of the window `tab` says sees it, while it is marked
     /// shared. For tests, the `shots` renderer and the bench.
     pub fn tab_shared_with(&self, tab: TabId) -> Option<SharedWith> {
@@ -215,6 +259,7 @@ impl ShellOverlayHost {
                     state.local_user_for_room(&workspace.room())
                 };
                 self.window_share_controls.shown = shareable_windows(&tree, &local, now_ms);
+                self.window_share_controls.theirs = windows_shared_by_others(&tree, now_ms);
                 Some(tree.outlived_window_shares(now_ms))
             }
         };
@@ -224,6 +269,7 @@ impl ShellOverlayHost {
         self.offer_window_share_items();
         let mut changed = false;
         let shown = &self.window_share_controls.shown;
+        let theirs = &self.window_share_controls.theirs;
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
@@ -232,6 +278,7 @@ impl ShellOverlayHost {
                 for id in ids {
                     let mark = shown.get(&id).and_then(|shown| shown.mark.clone());
                     changed |= group.set_tab_shared(id, mark);
+                    changed |= group.set_tab_shared_by(id, theirs.get(&id).cloned());
                 }
             }
         }
