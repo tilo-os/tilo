@@ -21,7 +21,7 @@
 "apps/imager/src/setup/journey/mod.rs" = 12000
 "apps/imager/src/setup/journey/prepared_media.rs" = 4000
 "apps/imager/src/setup/view.rs" = 6500
-"apps/mail/src/app.rs" = 8500
+"apps/mail/src/app.rs" = 6000
 "apps/mail/src/compose.rs" = 3500
 "apps/maps/src/app/tests.rs" = 3500
 "apps/music/src/app.rs" = 6000
