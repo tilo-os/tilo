@@ -1,72 +1,538 @@
-//! [`VirtualList`] as a described component: a list of [`ListRow`]s, each built from its props
-//! when it scrolls into view.
+//! [`VirtualList`] as a described component: a list of items, each built into its row when it
+//! scrolls into view, with what the row offers on its item (a context menu, a swipe) and who
+//! else is at it.
+//!
+//! Its rows are [`ListItemProps`]: each holds the row itself (a [`ListRow`], or any view) and
+//! what the list does with it. A host that renders its rows only as they are shown hands them
+//! over as a [`SharedRows`] ([`Source::rows`]): a list of ten thousand items costs the rows on
+//! screen, and the host queues what changed for the list to take. Rows given as components are
+//! held whole.
 
-use crate::component::{Accepts, Component, Described, Event, SlotType, Source, Value};
+use std::cell::{Cell, RefCell};
+use std::ops::Range;
+use std::rc::Rc;
+
+use vello::kurbo::Point;
+
+use crate::component::{
+    Accepts, Component, Described, Event, Person, ResourceId, SharedRows, SlotType, Source, Value,
+};
 use crate::selection::KeySelection;
-use crate::widget::{ListRow, ListRowProps};
+use crate::widget::arrange::{Page, PageRowEdges, Slot};
+use crate::widget::{
+    ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry, MenuItemProps,
+    SwipeActionProps, Widget,
+};
 
-use super::{VecListModel, VirtualList};
-
-/// The list a described [`VirtualList`] is: its rows' props by key.
-pub type DescribedList = VirtualList<VecListModel<ListRowProps, String>>;
+use super::{ListModel, ListModelChange, VirtualList};
 
 /// The height a row is reckoned at before it is laid out: a row with a secondary line.
 const ROW_ESTIMATE: f32 = 56.0;
 
+/// The height a message of a transcript is reckoned at before it is measured.
+const MESSAGE_ESTIMATE: f32 = 64.0;
+
+/// One item of a virtual list: the resource its row shows, the row, and what the row offers on
+/// the item.
+#[derive(Component, Default)]
+#[component(name = "ListItem", role = "ListItem", presents = "item")]
+pub struct ListItemProps {
+    /// The item's stable key: selection, focus and motion follow it.
+    #[component(key)]
+    pub key: String,
+    /// The resource the row shows: what selecting or activating the row reports.
+    pub item: Option<ResourceId>,
+    /// Who else is at the item now (a collaborator's or an agent's lens on it), shown on the
+    /// row.
+    pub presence: Option<Person>,
+    /// The commands of the row's context menu: a right-click, the Menu key or a long press
+    /// opens it, and selects the row.
+    #[component(slot)]
+    pub menu: Vec<MenuItemProps>,
+    /// What swiping the row across does.
+    #[component(slot)]
+    pub swipe: Option<SwipeActionProps>,
+    /// The row: a `ui.ListRow`, or any view.
+    #[component(slot(default))]
+    pub row: ItemRow,
+}
+
+/// The row of a [`ListItemProps`].
+#[derive(Default)]
+pub enum ItemRow {
+    /// None given: the row shows nothing.
+    #[default]
+    None,
+    /// A list row, built from its props each time it scrolls into view.
+    Row(Box<ListRowProps>),
+    /// Any other view, built.
+    View(Element),
+}
+
+/// The row of an item: one list row, or one view of any kind.
+impl SlotType for ItemRow {
+    const MANY: bool = false;
+
+    fn accepts() -> Accepts {
+        Accepts::View
+    }
+
+    fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
+        let kinds = source.slot_kinds(slot);
+        if kinds.len() > 1 {
+            return Err(format!("holds one row, not {}", kinds.len()));
+        }
+        if matches!(kinds.as_slice(), [Some(kind)] if kind == ListRowProps::NAME) {
+            let mut row = None;
+            source.components(slot, &mut |child| {
+                row = Some(ListRowProps::from_source(child).map_err(|error| error.to_string())?);
+                Ok(())
+            })?;
+            *self = row.map_or(Self::None, |row| Self::Row(Box::new(row)));
+            return Ok(());
+        }
+        *self = source
+            .children(slot)
+            .into_iter()
+            .next()
+            .map_or(Self::None, Self::View);
+        Ok(())
+    }
+}
+
 /// A long list of rows that costs only the rows on screen: each is built when it scrolls into
-/// view. Selection follows the person's choice and is reported; the list is one focus stop.
+/// view. Selection follows the person's choice and is reported with the item it shows; the list
+/// is one focus stop.
 #[derive(Component, Default)]
 #[component(name = "VirtualList", role = "List", label = "name")]
 pub struct VirtualListProps {
     /// What the list is, for assistive technology.
     pub name: Option<String>,
     /// Moving through the rows with the keyboard selects them, as a list whose selection shows
-    /// beside it does.
+    /// beside it does; a click or a tap on a row then activates it, as choosing an entry of an
+    /// overview does.
     pub selection_follows_focus: bool,
-    /// The rows, in order.
+    /// The list is a column's whole body: its rows' text starts where the column's header
+    /// starts its title.
+    pub in_column: bool,
+    /// A conversation: each row stands in the page column, the list opens at its newest row
+    /// and follows it.
+    pub transcript: bool,
+    /// The items, in order.
     #[component(slot(default))]
-    pub rows: Vec<ListRowProps>,
+    pub rows: DescribedRows,
     /// The selected rows, by key.
     #[component(state)]
     pub selection: Option<Vec<String>>,
     /// How far the list is scrolled, in logical pixels.
     #[component(state)]
     pub scroll: Option<f64>,
-    /// A row was selected or deselected; carries its key.
-    #[component(event(value = String))]
+    /// A row was selected: carries the item it shows.
+    #[component(event(value = ResourceId))]
     pub select: Event,
-    /// A row was activated (a click, Enter, an assistive technology); carries its key.
-    #[component(event(value = String))]
+    /// A row was activated (a click, Enter, an assistive technology): carries the item it
+    /// shows.
+    #[component(event(value = ResourceId))]
     pub activate: Event,
 }
 
-/// The rows of a virtual list: [`ListRow`]s only, each built anew as it scrolls into view.
-impl SlotType for Vec<ListRowProps> {
+/// The items of a described list: read from a host that renders them as they are shown, or
+/// given whole.
+#[derive(Default)]
+pub struct DescribedRows {
+    held: Held,
+    /// Whether a row the list built shows an avatar: the rows without one then keep its room.
+    /// Once on it stays on, so rows do not shift as others scroll in and out.
+    avatars: Cell<bool>,
+    /// The rows built keeping no room for an avatar, before one came in.
+    spaced: RefCell<Vec<String>>,
+    /// The rows to build again: the avatar column came in after they were built.
+    restyled: RefCell<Vec<String>>,
+}
+
+#[derive(Clone, Default)]
+enum Held {
+    #[default]
+    Nothing,
+    /// Rows a host renders as they are shown.
+    Rendered(SharedRows),
+    /// Rows given whole, with their keys.
+    Given(Rc<Vec<ListItemProps>>),
+}
+
+/// The items of a list: [`ListItemProps`] only.
+impl SlotType for DescribedRows {
     const MANY: bool = true;
 
     fn accepts() -> Accepts {
-        Accepts::Component(ListRowProps::NAME.into())
+        Accepts::Component(ListItemProps::NAME.into())
     }
 
     fn fill(&mut self, source: &mut dyn Source, slot: &str) -> Result<(), String> {
-        let mut rows: Vec<ListRowProps> = Vec::new();
+        if let Some(rows) = source.rows(slot) {
+            self.held = Held::Rendered(rows);
+            return Ok(());
+        }
+        let mut items: Vec<ListItemProps> = Vec::new();
         source.components(slot, &mut |child| {
-            let row = ListRowProps::from_source(child).map_err(|error| error.to_string())?;
-            if row.trailing.is_some() {
-                return Err(
-                    "a row of a virtual list is built again each time it scrolls into view, so it takes no trailing control"
-                        .to_owned(),
-                );
+            let item = ListItemProps::from_source(child).map_err(|error| error.to_string())?;
+            match &item.row {
+                ItemRow::Row(row) if row.trailing.is_some() => {
+                    return Err(
+                        "a row of a virtual list is built again each time it scrolls into view, so it takes no trailing control"
+                            .to_owned(),
+                    );
+                }
+                ItemRow::View(_) => {
+                    return Err(
+                        "a list given its items whole holds list rows; a list of other views renders them as they are shown"
+                            .to_owned(),
+                    );
+                }
+                _ => {}
             }
-            if rows.iter().any(|other| other.key == row.key) {
-                return Err(format!("has two rows of the key {}", row.key));
+            if items.iter().any(|other| other.key == item.key) {
+                return Err(format!("has two items of the key {}", item.key));
             }
-            rows.push(row);
+            items.push(item);
             Ok(())
         })?;
-        *self = rows;
+        self.held = Held::Given(Rc::new(items));
         Ok(())
     }
+}
+
+impl DescribedRows {
+    /// The same items, to read from elsewhere (what an event of the list reports).
+    fn reader(&self) -> Self {
+        Self {
+            held: self.held.clone(),
+            ..Self::default()
+        }
+    }
+
+    /// Read the item `key` with `read`: `None` when there is no such item, or it is not
+    /// rendered.
+    fn with_item<R>(&self, key: &str, read: impl FnOnce(ListItemProps) -> R) -> Option<R> {
+        match &self.held {
+            Held::Nothing => None,
+            Held::Given(items) => {
+                let item = items.iter().find(|item| item.key == key)?;
+                Some(read(reusable(item)?))
+            }
+            Held::Rendered(rows) => {
+                let mut found = None;
+                let read_one = &mut |source: &mut dyn Source| {
+                    found = Some(
+                        ListItemProps::from_source(source).map_err(|error| error.to_string())?,
+                    );
+                    Ok(())
+                };
+                let shown = rows.try_borrow_mut().ok()?.read(key, read_one);
+                match shown {
+                    Ok(true) => found.map(read),
+                    Ok(false) => None,
+                    Err(error) => {
+                        tracing::warn!(%error, key, "an item of the list did not read");
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    /// The row of `key` to build: its props, with the room for an avatar kept while the list
+    /// shows avatars.
+    fn row_props(&self, row: &mut ListRowProps, key: &str) {
+        if row.avatar.is_some() {
+            if !self.avatars.replace(true) {
+                self.restyled
+                    .borrow_mut()
+                    .append(&mut self.spaced.borrow_mut());
+            }
+        } else if row.avatar_space && !self.avatars.get() {
+            row.avatar_space = false;
+            self.spaced.borrow_mut().push(key.to_owned());
+        }
+    }
+
+    /// The key of the item showing the resource `id`.
+    fn key_presenting(&self, id: &str) -> Option<String> {
+        match &self.held {
+            Held::Nothing => None,
+            Held::Given(items) => items
+                .iter()
+                .find(|item| item.item.as_ref().is_some_and(|shown| shown.0 == id))
+                .map(|item| item.key.clone()),
+            Held::Rendered(rows) => rows.try_borrow().ok()?.key_presenting(id),
+        }
+    }
+}
+
+/// An item given whole, again: its row's props are built anew each time it scrolls in.
+fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
+    let row = match &item.row {
+        ItemRow::None => ItemRow::None,
+        ItemRow::Row(row) => ItemRow::Row(Box::new(row.reusable()?)),
+        ItemRow::View(_) => return None,
+    };
+    Some(ListItemProps {
+        key: item.key.clone(),
+        item: item.item.clone(),
+        presence: item.presence.clone(),
+        menu: item
+            .menu
+            .iter()
+            .map(|entry| MenuItemProps {
+                label: entry.label.clone(),
+                icon: entry.icon,
+                destructive: entry.destructive,
+                checked: entry.checked,
+                choose: entry.choose.clone(),
+            })
+            .collect(),
+        swipe: item.swipe.as_ref().map(|swipe| SwipeActionProps {
+            label: swipe.label.clone(),
+            icon: swipe.icon,
+            destructive: swipe.destructive,
+            swipe: swipe.swipe.clone(),
+        }),
+        row,
+    })
+}
+
+impl ListModel for DescribedRows {
+    type Key = String;
+
+    fn len(&self) -> usize {
+        match &self.held {
+            Held::Nothing => 0,
+            Held::Given(items) => items.len(),
+            Held::Rendered(rows) => rows.try_borrow().map_or(0, |rows| rows.len()),
+        }
+    }
+
+    fn key_at(&self, index: usize) -> Option<String> {
+        match &self.held {
+            Held::Nothing => None,
+            Held::Given(items) => items.get(index).map(|item| item.key.clone()),
+            Held::Rendered(rows) => rows.try_borrow().ok()?.key_at(index),
+        }
+    }
+
+    fn index_of(&self, key: &String) -> Option<usize> {
+        match &self.held {
+            Held::Nothing => None,
+            Held::Given(items) => items.iter().position(|item| item.key == *key),
+            Held::Rendered(rows) => rows.try_borrow().ok()?.index_of(key),
+        }
+    }
+
+    fn request_range(&mut self, range: Range<usize>) {
+        if let Held::Rendered(rows) = &self.held
+            && let Ok(mut rows) = rows.try_borrow_mut()
+        {
+            rows.request_range(range);
+        }
+    }
+
+    fn poll_changes(&mut self) -> Vec<ListModelChange<String>> {
+        let mut changes = match &self.held {
+            Held::Rendered(rows) => rows
+                .try_borrow_mut()
+                .map(|mut rows| rows.take_changes())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let restyled = std::mem::take(&mut *self.restyled.borrow_mut());
+        if !restyled.is_empty() {
+            changes.push(ListModelChange::RowsChanged { keys: restyled });
+        }
+        changes
+    }
+
+    fn needs_poll(&self) -> bool {
+        let waiting = match &self.held {
+            Held::Rendered(rows) => rows.try_borrow().is_ok_and(|rows| rows.has_changes()),
+            _ => false,
+        };
+        waiting || !self.restyled.borrow().is_empty()
+    }
+
+    fn label(&self, index: usize) -> Option<String> {
+        let key = self.key_at(index)?;
+        self.with_item(&key, |item| match item.row {
+            ItemRow::Row(row) if !row.title.is_empty() => Some(row.title),
+            _ => None,
+        })
+        .flatten()
+    }
+}
+
+/// The list a described [`VirtualList`] is: over its items, under the one context menu its
+/// rows share.
+pub struct DescribedList {
+    body: ListBody,
+    /// What the list was made with, but its items: the same again is taken in place.
+    face: Face,
+}
+
+/// The props of a described list that decide the widget, its items aside.
+#[derive(Clone, Debug, PartialEq)]
+struct Face {
+    name: Option<String>,
+    selection_follows_focus: bool,
+    in_column: bool,
+    transcript: bool,
+    /// The rows the host renders as they are shown, by identity: they then change through
+    /// the host, never through the props. `None` for items given whole.
+    rendered: Option<usize>,
+}
+
+/// The identity of the rows a host renders, when it renders them.
+fn rendered(rows: &DescribedRows) -> Option<usize> {
+    match &rows.held {
+        Held::Rendered(rows) => Some(Rc::as_ptr(rows).cast::<()>() as usize),
+        _ => None,
+    }
+}
+
+enum ListBody {
+    /// The list under the menu every row shares.
+    Menus(Box<ContextMenuArea>),
+    /// A transcript, whose rows offer no menu.
+    Plain(Box<VirtualList<DescribedRows>>),
+}
+
+impl DescribedList {
+    /// The list.
+    #[must_use]
+    pub fn list(&self) -> Option<&VirtualList<DescribedRows>> {
+        match &self.body {
+            ListBody::Menus(area) => area.content().as_any()?.downcast_ref(),
+            ListBody::Plain(list) => Some(list),
+        }
+    }
+
+    /// The list, to change.
+    pub fn list_mut(&mut self) -> Option<&mut VirtualList<DescribedRows>> {
+        match &mut self.body {
+            ListBody::Menus(area) => area.content_mut().as_any_mut()?.downcast_mut(),
+            ListBody::Plain(list) => Some(list),
+        }
+    }
+
+    /// The menu over the list, for a test of what it offers.
+    pub fn menu_area_mut(&mut self) -> Option<&mut ContextMenuArea> {
+        match &mut self.body {
+            ListBody::Menus(area) => Some(area),
+            ListBody::Plain(_) => None,
+        }
+    }
+
+    /// Select the row that shows the resource `id`, and only it: the item the next column
+    /// shows. `None` selects nothing. Whether the selection changed.
+    pub fn select_presenting(&mut self, id: Option<&str>) -> bool {
+        let Some(list) = self.list_mut() else {
+            return false;
+        };
+        let key = id.and_then(|id| list.model().key_presenting(id));
+        let selection = list.selection_mut();
+        let now: Vec<String> = selection.stored_keys().cloned().collect();
+        let want: Vec<String> = key.iter().cloned().collect();
+        if now == want {
+            return false;
+        }
+        selection.clear();
+        if let Some(key) = key {
+            selection.select_only(key);
+        }
+        true
+    }
+}
+
+/// Whether the selection being made comes from a click or a tap the person just made, rather
+/// than the keyboard or an assistive technology.
+fn by_hand() -> bool {
+    matches!(
+        crate::motion::recent_input(crate::time::now()),
+        Some(crate::tokens::MotionSource::Pointer | crate::tokens::MotionSource::Gesture)
+    )
+}
+
+/// The resource the item `key` shows, as an event carries it.
+fn item_of(rows: &DescribedRows, key: &str) -> Option<Value> {
+    rows.with_item(key, |item| item.item.map(|id| Value::Resource(id.0)))
+        .flatten()
+}
+
+/// The row of an item: its list row, with the item's swipe and presence, or its view.
+fn row_of(rows: &DescribedRows, key: &str) -> Element {
+    let built = rows.with_item(key, |item| {
+        let ListItemProps {
+            presence,
+            swipe,
+            row,
+            ..
+        } = item;
+        match row {
+            ItemRow::Row(mut props) => {
+                rows.row_props(&mut props, key);
+                // The list activates its rows itself, by key: a row of it is not a target of
+                // its own.
+                props.activate = Event::None;
+                let mut row = ListRow::from_props(key, *props);
+                if let Some(person) = presence {
+                    row = row.presence(person.identity);
+                }
+                if let Some(swipe) = swipe {
+                    row = row.with_swipe(swipe);
+                }
+                Box::new(row) as Element
+            }
+            ItemRow::View(view) => view,
+            ItemRow::None => Box::new(ListRow::new(key.to_owned(), "")),
+        }
+    });
+    built.unwrap_or_else(|| Box::new(ListRow::new(key.to_owned(), "")))
+}
+
+/// The menu of the row under `at` (its focused row when the keyboard opened it): what its
+/// item offers. Opening it selects the row.
+fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEntry> {
+    let Some(list) = list
+        .as_any()
+        .and_then(|list| list.downcast_ref::<VirtualList<DescribedRows>>())
+    else {
+        return Vec::new();
+    };
+    let key = match at {
+        Some(point) => list.key_at_point(point),
+        None => list.focused_key().cloned(),
+    };
+    let Some(key) = key else {
+        return Vec::new();
+    };
+    let rows = list.model();
+    let entries = rows
+        .with_item(&key, |item| {
+            let shown = item.item.clone();
+            let entries: Vec<MenuEntry> = item
+                .menu
+                .into_iter()
+                .map(MenuItemProps::into_entry)
+                .collect();
+            (shown, entries)
+        })
+        .unwrap_or_default();
+    let (shown, entries) = entries;
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    if let Some(id) = shown {
+        select.fire(Some(Value::Resource(id.0)));
+    }
+    entries
 }
 
 impl Described for DescribedList {
@@ -76,38 +542,50 @@ impl Described for DescribedList {
         let VirtualListProps {
             name,
             selection_follows_focus,
+            in_column,
+            transcript,
             rows,
             selection,
             scroll,
             select,
             activate,
         } = props;
-        // `fill` refused rows of one key, so only rows made in Rust can collide; they keep the
-        // first of each key.
-        let model =
-            VecListModel::new(rows, |row| row.key.clone()).unwrap_or_else(|_| VecListModel {
-                items: Vec::new(),
-                keys: Vec::new(),
-                index: std::collections::HashMap::new(),
-            });
-        let mut list =
-            Self::with_selection_delegate(model, ROW_ESTIMATE, |model, index, key, _| {
-                let row = model
-                    .item(index)
-                    .and_then(ListRowProps::reusable)
-                    .map_or_else(
-                        || ListRow::new(key.clone(), ""),
-                        |props| ListRow::from_props(key, props),
-                    );
-                Box::new(row)
+        let face = Face {
+            name: name.clone(),
+            selection_follows_focus,
+            in_column,
+            transcript,
+            rendered: rendered(&rows),
+        };
+        if transcript {
+            let list = VirtualList::new(rows, MESSAGE_ESTIMATE, |rows, _, key| {
+                Box::new(Page::full().row().push_slot(Slot::new(row_of(rows, key))))
             })
-            .with_id(key)
-            .with_semantic_key(Clone::clone);
-        if let Some(name) = name {
-            list = list.with_accessible_name(name);
+            .flush()
+            .with_edges(PageRowEdges::new())
+            .filling()
+            .following_end()
+            .with_id(key);
+            return Self {
+                body: ListBody::Plain(Box::new(list)),
+                face,
+            };
+        }
+        let reader = rows.reader();
+        let mut list =
+            VirtualList::with_selection_delegate(rows, ROW_ESTIMATE, |rows, _, key, _| {
+                row_of(rows, key)
+            })
+            .filling();
+        if in_column {
+            list = list.in_column();
         }
         if selection_follows_focus {
             list = list.selection_follows_focus();
+        }
+        list = list.with_id(key).with_semantic_key(Clone::clone);
+        if let Some(name) = name {
+            list = list.with_accessible_name(name);
         }
         if let Some(keys) = selection {
             let mut chosen = KeySelection::new();
@@ -116,19 +594,68 @@ impl Described for DescribedList {
             }
             list = list.with_selection(chosen);
         }
-        if !select.is_none() {
-            list = list.on_select(move |key, selected| {
-                if selected {
-                    select.fire(Some(Value::Text(key)));
-                }
-            });
-        }
-        if !activate.is_none() {
-            list = list.on_activate(move |key| activate.fire(Some(Value::Text(key))));
+        // Each event carries the item its row shows, read from the list's items.
+        if !select.is_none() || !activate.is_none() {
+            let (on_select, on_pick) = (select.clone(), activate.clone());
+            let (selecting, picking) = (reader.reader(), reader.reader());
+            list = list
+                .on_select(move |key, selected| {
+                    if !selected {
+                        return;
+                    }
+                    let item = item_of(&selecting, &key);
+                    if selection_follows_focus && by_hand() {
+                        on_pick.fire(item);
+                    } else {
+                        on_select.fire(item);
+                    }
+                })
+                .on_activate(move |key| activate.fire(item_of(&picking, &key)));
         }
         if let Some(offset) = scroll {
             list.set_scroll_offset(offset);
         }
-        list
+        let area = ContextMenuArea::over_content(Box::new(list), move |list, at| {
+            row_menu(list, at, &select)
+        });
+        Self {
+            body: ListBody::Menus(Box::new(area)),
+            face,
+        }
+    }
+
+    /// The same list over items its host renders: it stays, and its items change through
+    /// the host. Anything else builds it again.
+    fn set_props(&mut self, props: VirtualListProps) -> bool {
+        let face = Face {
+            name: props.name.clone(),
+            selection_follows_focus: props.selection_follows_focus,
+            in_column: props.in_column,
+            transcript: props.transcript,
+            rendered: rendered(&props.rows),
+        };
+        face.rendered.is_some() && face == self.face
+    }
+}
+
+impl Decorator for DescribedList {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        match &self.body {
+            ListBody::Menus(area) => area.as_ref(),
+            ListBody::Plain(list) => list.as_ref(),
+        }
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        match &mut self.body {
+            ListBody::Menus(area) => area.as_mut(),
+            ListBody::Plain(list) => list.as_mut(),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "DescribedList"
     }
 }

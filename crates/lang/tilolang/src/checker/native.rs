@@ -1,6 +1,7 @@
-//! The native vocabulary (native-apps.md section 3): frames and where their columns stand,
-//! lists and their rows, view state as native controls, facts, and buttons for declared
-//! actions. Each lowers to the same `ui_*` host calls as every other node.
+//! The native vocabulary (native-apps.md section 3): lists and their rows, view state as
+//! native controls, facts, and buttons for declared actions. Each lowers to the same `ui_*`
+//! host calls as every other node. A window's frame is no part of it: the standard library
+//! (`std.list`, `std.document`, `std.page`) composes frames from the toolkit's components.
 
 use super::enums::Shape;
 use super::expr::dotted;
@@ -51,18 +52,6 @@ impl Checker<'_> {
                 }
                 Some(self.dead_node())
             }
-            "page"
-                if args.iter().any(|a| {
-                    a.name.is_none() && matches!(&a.value.kind, ExprKind::Ident(n) if n == "full")
-                }) =>
-            {
-                self.err(
-                    "E095",
-                    c.call.span,
-                    "`page(full)` is now `canvas { }`: free content without a readable width",
-                );
-                Some(self.dead_node())
-            }
             _ => None,
         }
     }
@@ -72,19 +61,6 @@ impl Checker<'_> {
     fn titled(&self, args: &[ast::Arg]) -> bool {
         args.iter()
             .any(|a| a.name.is_none() && !self.is_flag(None, &a.value))
-    }
-
-    /// Checks that a primitive stands where it may: a frame's columns and its composer
-    /// directly in a frame.
-    pub(super) fn placement(&mut self, prim: &str, span: Span) {
-        if prims::FRAMES.contains(&self.st.ui.parent) {
-            return;
-        }
-        if matches!(prim, "sidebar" | "inspector") {
-            self.err("E095", span, format!("`{prim}` is a column of the window's frame, so it stands directly in `document {{ }}`, `page {{ }}` or `canvas {{ }}`"));
-        } else if prim == "composer" {
-            self.err("E095", span, "`composer` is the entry bar along the foot of the window's frame, so it stands directly in `document { }`, `page { }` or `canvas { }`");
-        }
     }
 
     /// The arguments of primitives that take a value of one type; `true` when handled.
@@ -110,7 +86,7 @@ impl Checker<'_> {
                 }
                 return true;
             }
-            ("inspector" | "card", "item") => {
+            ("card", "item") => {
                 let v = self.expr(value, None);
                 if !matches!(v.ty, Ty::Record(_) | Ty::Error) {
                     let t = self.show(&v.ty);
@@ -132,33 +108,6 @@ impl Checker<'_> {
         let v = self.expr_as(value, &want);
         self.prop(node, name, v, value.span);
         true
-    }
-
-    // ---- frames ---------------------------------------------------------------------------
-
-    /// A window's view is one frame, after its view state and `let`s.
-    pub(super) fn window_frame(&mut self, view: &str, ty: &str, rest: &[UiStmt], span: Span) {
-        let framed = match rest.split_last() {
-            Some((
-                UiStmt {
-                    kind: UiKind::Call(c),
-                    ..
-                },
-                lets,
-            )) => lets.iter().all(|s| matches!(s.kind, UiKind::Let { .. })) && self.is_frame(c),
-            _ => false,
-        };
-        if !framed {
-            self.err("E095", span, format!("`{view}` is the window of a {ty}, so its view is one frame: `list(...) {{ x -> ... }}`, `document {{ }}`, `page {{ }}` or `canvas {{ }}`, after any `window`, `lens` and `let`. Put the content inside the frame"));
-        }
-    }
-
-    fn is_frame(&self, c: &UiCall) -> bool {
-        let callee = match &c.call.kind {
-            ExprKind::Call { callee, .. } => callee,
-            _ => &c.call,
-        };
-        matches!(&callee.kind, ExprKind::Ident(n) if prims::FRAMES.contains(&n.as_str()) && self.lookup(n).is_none())
     }
 
     /// A row view's body is one list row, after any `let`s it reads.
@@ -197,6 +146,9 @@ impl Checker<'_> {
 
     /// `list(items, sort: s, filter: f, empty: "...") { x -> ... }`: a `list` node with one
     /// `item` child per resource, each holding the item block's nodes or the type's row view.
+    /// `list(items) { x -> ... }`: a list of rows in the content (a card's summary, the rows of
+    /// a page): a `list` node with one `item` child per resource, each holding the item
+    /// block's nodes or the type's row view. A window's own list is `std.list`.
     fn list_frame(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let key = self.node_key(c);
         let list_key = self.fresh(Ty::Text);
@@ -204,27 +156,34 @@ impl Checker<'_> {
         let n = self.new_node("list", Ex::local(list_key, Ty::Text));
         let node = Ex::local(n, Ty::View);
         let mut items = None;
-        let mut sort = None;
-        let mut filter = None;
         for a in args {
             match a.name.as_ref().map(|i| i.name.as_str()) {
                 None if self.is_flag(None, &a.value) => self.flag_arg(n, &a.value),
                 None | Some("items") if items.is_none() => items = Some(&a.value),
                 None => {
-                    self.err("E022", a.value.span, "`list` takes one positional argument, its items; name the others: `sort:`, `filter:`, `empty:`");
+                    self.err(
+                        "E022",
+                        a.value.span,
+                        "`list` takes one positional argument, its items",
+                    );
                     let _ = self.expr(&a.value, None);
                 }
-                Some("sort") => sort = Some(&a.value),
-                Some("filter") => filter = Some(&a.value),
-                Some("empty") => {
-                    let v = self.expr_as(&a.value, &Ty::Text);
-                    self.prop(node.clone(), "empty", v, a.value.span);
+                Some(name @ ("sort" | "filter" | "empty")) => {
+                    self.err("E096", a.value.span, format!("`list` in a view's content takes no `{name}:`; a window that lists resources is `std.list(of, items, {name}: ...)`"));
+                    let _ = self.expr(&a.value, None);
                 }
                 Some(name) if prims::NODE_ARGS.contains(&name) => {
                     self.apply_arg(n, "list", name, &a.value);
                 }
                 Some(name) => {
-                    self.err("E063", a.value.span, format!("`list` has no argument `{name}`; arguments: items, sort, filter, empty, {}", prims::NODE_ARGS.join(", ")));
+                    self.err(
+                        "E063",
+                        a.value.span,
+                        format!(
+                            "`list` has no argument `{name}`; arguments: items, {}",
+                            prims::NODE_ARGS.join(", ")
+                        ),
+                    );
                     let _ = self.expr(&a.value, None);
                 }
             }
@@ -237,9 +196,7 @@ impl Checker<'_> {
             );
             return n;
         };
-        let before = self.diags.len();
         let list = self.expr(items, None);
-        let clean = self.diags.len() == before;
         let Some(Ty::Record(key)) = list.ty.element().cloned() else {
             if !list.ty.is_error() {
                 let t = self.show(&list.ty);
@@ -247,15 +204,6 @@ impl Checker<'_> {
             }
             return n;
         };
-        let type_id = self
-            .env
-            .type_info(&key)
-            .map(|t| t.id.clone())
-            .unwrap_or_default();
-        self.emit(host(
-            Imp::UiPropH,
-            vec![node.clone(), Ex::str("item_type"), Ex::str(&type_id)],
-        ));
         // A list in a card is the card's summary: it shows its first rows, and the card opens
         // the resource for the rest.
         if self.st.ui.in_card {
@@ -267,19 +215,6 @@ impl Checker<'_> {
                     Ex::new(Ek::Int(prims::PREVIEW_ROWS), Ty::Int),
                 ],
             ));
-        }
-        if let Some(v) = sort
-            && let Some((state, info)) = self.enum_state("sort", v)
-        {
-            self.state_control(n, ("sort.", "sort."), &state, &info, v.span);
-        }
-        if let Some(v) = filter
-            && let Some((state, info)) = self.enum_state("filter", v)
-        {
-            self.state_control(n, ("filter.", "filter."), &state, &info, v.span);
-            if clean {
-                self.filter_counts(n, items, &state, &info);
-            }
         }
         let has_rows = match (&c.block, &c.item) {
             (Some(_), Some(_)) => true,
@@ -452,30 +387,6 @@ impl Checker<'_> {
             span,
         };
         self.construct_variant(&shape, &state.ty, &ident, None, span)
-    }
-
-    /// `filter.count.<variant>`: how many items the list would show with the filter on that
-    /// variant. The items are evaluated once per variant with the state's local set to it, then
-    /// the local is restored.
-    fn filter_counts(&mut self, n: LocalId, items: &ast::Expr, state: &StateRef, info: &EnumInfo) {
-        let ty = state.ty.clone();
-        for v in &info.variants {
-            let saved = self.fresh(ty.clone());
-            self.emit(Stmt::Set(saved, Ex::local(state.local, ty.clone())));
-            let value = self.variant_value(state, &v.name, items.span);
-            self.emit(Stmt::Set(state.local, value));
-            let list = self.expr(items, None);
-            let len = Ex::host(Imp::ListLen, vec![list], Ty::Int);
-            self.emit(host(
-                Imp::UiPropI,
-                vec![
-                    Ex::local(n, Ty::View),
-                    Ex::str(&format!("filter.count.{}", v.name)),
-                    len,
-                ],
-            ));
-            self.emit(Stmt::Set(state.local, Ex::local(saved, ty.clone())));
-        }
     }
 
     /// `row(title, secondary: ..., ...)`: a `list_row`.
@@ -676,7 +587,33 @@ impl Checker<'_> {
     fn row_subject(&mut self, node: &Ex, value: &ast::Expr) -> Option<LocalId> {
         let v = self.expr(value, Some(&Ty::Text));
         if matches!(v.ty, Ty::Record(_)) {
-            self.prop(node.clone(), "item", v, value.span);
+            // The resource itself: its row shows its title and its app's icon, as a native
+            // row of a resource does.
+            let r = self.fresh(v.ty.clone());
+            self.emit(Stmt::Set(r, v.clone()));
+            let item = Ex::local(r, v.ty);
+            self.prop(node.clone(), "item", item.clone(), value.span);
+            let meta_ty = super::platform::host_ty("Meta");
+            let m = self.fresh(meta_ty.clone());
+            self.emit(Stmt::Set(
+                m,
+                Ex::host(Imp::MetaOf, vec![item], meta_ty.clone()),
+            ));
+            let field = |at: i32, ty: Ty| {
+                Ex::host(
+                    Imp::TupleGetH,
+                    vec![
+                        Ex::local(m, meta_ty.clone()),
+                        Ex::new(Ek::I32(at), Ty::Bool),
+                    ],
+                    ty,
+                )
+            };
+            let title = field(0, Ty::Text);
+            self.prop(node.clone(), "title", title, value.span);
+            let icon_ty = Ty::Option(Box::new(Ty::Text));
+            let icon = field(3, icon_ty);
+            self.set_when_some(node, "icon", icon, &Ty::Text, value.span);
             return None;
         }
         if v.ty != Ty::Text {
@@ -725,6 +662,40 @@ impl Checker<'_> {
         self.prop(node.clone(), name, v, span);
     }
 
+    /// The icon name `e` computes, when the platform names it: the `icon` of a host value (an
+    /// action, a type's metadata) or of an enum case. Text an app writes is no icon; `std`'s
+    /// own parameters carry the platform's.
+    fn platform_icon(&mut self, e: &ast::Expr) -> Option<Ex> {
+        match &e.kind {
+            ExprKind::Field { base, name } if name.name == "icon" => {
+                let b = self.expr(base, None);
+                match b.ty.clone() {
+                    Ty::Record(key) if crate::host::is_value(&key) => {
+                        self.value_field(b, &key, name)
+                    }
+                    Ty::Error => Some(Ex::error()),
+                    _ => None,
+                }
+            }
+            ExprKind::Call { callee, args } if args.is_empty() => {
+                let ExprKind::Field { base, name } = &callee.kind else {
+                    return None;
+                };
+                if name.name != "icon" {
+                    return None;
+                }
+                let b = self.expr(base, None);
+                match b.ty.clone() {
+                    Ty::Enum(key) => self.enum_method(b, &key, "icon"),
+                    Ty::Error => Some(Ex::error()),
+                    _ => None,
+                }
+            }
+            _ if self.in_std() => Some(self.expr(e, None)),
+            _ => None,
+        }
+    }
+
     /// `mark: .pin` or `mark: if cond { .pin }`: the prop holds the icon's kebab-case name, set
     /// only on the branches that name one.
     pub(super) fn icon_value(&mut self, n: LocalId, prop: &str, e: &ast::Expr) {
@@ -751,12 +722,29 @@ impl Checker<'_> {
             }
             ExprKind::Block(b) => self.icon_block(n, prop, b),
             _ => {
-                self.err(
-                    "E097",
-                    e.span,
-                    format!("`{prop}:` takes an icon such as `.pin`, or `if cond {{ .pin }}`"),
-                );
-                let _ = self.expr(e, None);
+                // An icon the platform names at run time: an action's, a type's or an enum
+                // case's (`a.icon`, `meta(T).icon`, `c.icon()`); `std` passes such names on.
+                let Some(v) = self.platform_icon(e) else {
+                    self.err(
+                        "E097",
+                        e.span,
+                        format!("`{prop}:` takes an icon such as `.pin`, `if cond {{ .pin }}`, or one the platform names (`a.icon`, `c.icon()`)"),
+                    );
+                    return;
+                };
+                let node = Ex::local(n, Ty::View);
+                match &v.ty {
+                    Ty::Text => self.prop(node, prop, v, e.span),
+                    Ty::Option(inner) if **inner == Ty::Text => {
+                        self.set_when_some(&node, prop, v, &Ty::Text, e.span);
+                    }
+                    Ty::Error => {}
+                    _ => self.err(
+                        "E097",
+                        e.span,
+                        format!("`{prop}:` takes an icon such as `.pin`, `if cond {{ .pin }}`, or the name of one"),
+                    ),
+                }
             }
         }
     }
@@ -845,7 +833,7 @@ impl Checker<'_> {
             return None;
         };
         let found = match &callee.kind {
-            ExprKind::Ident(name) if self.lookup(name).is_none() => self.env.own_callable(name),
+            ExprKind::Ident(name) if self.lookup(name).is_none() => self.own_callable(name),
             ExprKind::Field { base, name } if self.names_import(base) => {
                 let path = dotted(base)?.join(".");
                 let import = self.env.find_import(&path)?;
@@ -876,9 +864,10 @@ impl Checker<'_> {
                     if let Some(icon) = &p.icon {
                         self.prop(node.clone(), "icon", Ex::str(icon), span);
                     }
-                    if let Some(role) = &p.role {
-                        self.prop(node.clone(), "role", Ex::str(role), span);
-                    }
+                    // A button in content stands on its own: `secondary` unless the action says
+                    // (an icon-only toolkit button is `plain`, as a header's are).
+                    let role = p.role.as_deref().unwrap_or("secondary");
+                    self.prop(node.clone(), "role", Ex::str(role), span);
                     if !act.ty.is_error() {
                         self.emit(host(Imp::UiOn, vec![node.clone(), Ex::str("press"), act]));
                     }
@@ -894,11 +883,17 @@ impl Checker<'_> {
                     }
                     if name == "on" {
                         self.err("E098", value.span, format!("this button already applies `{}`; remove `on:`. A button for `set(...)` or `open(...)` is written `button(\"Label\", on: ...)`", callee.name));
+                    } else if name == "icon_only" {
+                        // Only the action's icon shows, its label naming the button to
+                        // assistive technology: a composer's Send.
+                        let v = self.expr_as(value, &Ty::Bool);
+                        self.prop(node.clone(), "icon_only", v, value.span);
+                        continue;
                     } else if name == "enabled" || prims::NODE_ARGS.contains(&name) {
                         self.apply_arg(n, "button", name, value);
                         continue;
                     } else {
-                        self.err("E063", value.span, format!("`button` has no argument `{name}`; a button for an action takes `enabled:` and the sizing arguments"));
+                        self.err("E063", value.span, format!("`button` has no argument `{name}`; a button for an action takes `enabled:`, `icon_only:` and the sizing arguments"));
                     }
                     let _ = self.expr(value, None);
                 }

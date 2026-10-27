@@ -228,6 +228,16 @@ impl Callable {
     }
 }
 
+/// A view expanded where it is called ([`crate::checker`]'s templates): generic, or taking
+/// view state, functions or views of an item. It has no function of its own.
+#[derive(Clone, Debug)]
+pub struct Template {
+    /// The package whose names its body sees: `None` for the module's own, `std` for the
+    /// standard library's.
+    pub ns: Option<String>,
+    pub decl: ast::ViewDecl,
+}
+
 #[derive(Clone, Debug)]
 pub struct Import {
     pub alias: String,
@@ -258,6 +268,8 @@ pub struct Env {
     pub defaults: Vec<DefaultFn>,
     /// The toolkit's components, the package `ui`.
     pub toolkit: Option<&'static crate::toolkit::Catalogue>,
+    /// The views expanded where they are called: the module's and the standard library's.
+    pub templates: Vec<Template>,
 }
 
 impl Env {
@@ -300,6 +312,27 @@ impl Env {
         self.callables
             .iter()
             .find(|c| c.app == key.app && !c.scenario && c.kind == CKind::View && &c.name == name)
+    }
+
+    /// The template `name` of the package `ns` (`None`: the module's own).
+    pub fn template(&self, ns: Option<&str>, name: &str) -> Option<&Template> {
+        self.templates
+            .iter()
+            .find(|t| t.ns.as_deref() == ns && t.decl.name.name == name)
+    }
+
+    /// Adds the standard library, `std`: its views, expanded where a package calls them.
+    pub fn add_std(&mut self) {
+        self.imports.push(Import {
+            alias: crate::stdlib::NS.to_string(),
+            app: crate::stdlib::NS.to_string(),
+            roots: Vec::new(),
+        });
+        self.templates
+            .extend(crate::stdlib::views().iter().map(|decl| Template {
+                ns: Some(crate::stdlib::NS.to_string()),
+                decl: decl.clone(),
+            }));
     }
 
     pub fn foreign_callable(&self, app: &str, name: &str) -> Option<&Callable> {
@@ -559,6 +592,7 @@ pub fn resolve(
     };
     r.env.add_import("host", &crate::host::host_meta());
     r.env.add_toolkit();
+    r.env.add_std();
     r.imports(module, imports);
     r.types(module, lock);
     r.callables(module, lock);
@@ -1120,6 +1154,10 @@ impl Resolver<'_> {
                 ty
             }
             TypeExprKind::Named(path) => self.named_type(path, te.span),
+            TypeExprKind::Fn(..) => {
+                self.err("E013", te.span, "a function type `(T) -> R` is the type of a parameter of a view only: such a view is expanded where it is called");
+                Ty::Error
+            }
         }
     }
 
@@ -1235,6 +1273,12 @@ impl Resolver<'_> {
                 let index = func;
                 func += 1;
                 self.scenario(sc, lock, index);
+                continue;
+            }
+            if let Item::View(v) = item
+                && crate::checker::is_template(v)
+            {
+                self.template(v);
                 continue;
             }
             let (kind, name, params, result) = match item {
@@ -1396,6 +1440,33 @@ impl Resolver<'_> {
             func += 1;
         }
         self.one_primary(module);
+    }
+
+    /// A view of the module expanded where it is called: its name taken, its body checked at
+    /// each call.
+    fn template(&mut self, v: &ast::ViewDecl) {
+        if self.env.own_callable(&v.name.name).is_some()
+            || self.env.template(None, &v.name.name).is_some()
+        {
+            self.err(
+                "E011",
+                v.name.span,
+                format!(
+                    "`{}` is declared twice; actions, flows, views and fns share one namespace",
+                    v.name.name
+                ),
+            );
+            return;
+        }
+        for s in &v.body {
+            if let ast::UiKind::State(d) = &s.kind {
+                self.err("E066", d.span, format!("`{}` is expanded where it is called, so it keeps no `{}` state of its own; take the caller's as a `State<T>` parameter", v.name.name, d.layer.word()));
+            }
+        }
+        self.env.templates.push(Template {
+            ns: None,
+            decl: v.clone(),
+        });
     }
 
     /// A scenario's hidden action: no parameters, named by the scenario, returning what it

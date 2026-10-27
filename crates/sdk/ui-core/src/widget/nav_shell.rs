@@ -1739,6 +1739,11 @@ pub struct NavShell {
     /// Buttons replaced since the host last built its tree, which may still
     /// point at them.
     retired_status_actions: Vec<Button>,
+    /// Whether Back goes back now, for a shell made from its description with a `back`
+    /// event: taken in place as the description changes.
+    can_back: Option<Rc<std::cell::Cell<bool>>>,
+    /// The slot a host is changing through [`crate::component::Described::slot_views`].
+    slot_edit: Option<component::SlotEdit>,
 }
 
 impl Default for NavShell {
@@ -1837,6 +1842,8 @@ impl NavShell {
             band: None,
             status_action_spec: None,
             retired_status_actions: Vec::new(),
+            can_back: None,
+            slot_edit: None,
         }
     }
 
@@ -4041,6 +4048,7 @@ impl Widget for NavShell {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.finish_slot_edit();
         let mut changed = self.take_requests();
         self.for_each_owned_mut(|child| changed |= child.update(state, path));
         changed |= self.follow_navigation();
@@ -4056,6 +4064,7 @@ impl Widget for NavShell {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The host is building a new tree: what waited for it goes in now.
+        self.finish_slot_edit();
         self.apply_pending();
         self.slots_changed();
         self.layout_theme = theme.clone();

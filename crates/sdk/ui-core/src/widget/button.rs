@@ -472,6 +472,12 @@ impl Button {
         self
     }
 
+    /// What the button does, which decides its whole look.
+    #[must_use]
+    pub const fn role_of(&self) -> ButtonRole {
+        self.role
+    }
+
     pub fn set_role(&mut self, role: ButtonRole) {
         if self.role != role {
             self.role = role;

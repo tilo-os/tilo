@@ -4380,3 +4380,6 @@ mod lane_tests;
 #[cfg(test)]
 #[path = "scrollable_thumb_tests.rs"]
 mod thumb_tests;
+
+mod component;
+pub use component::ScrollProps;

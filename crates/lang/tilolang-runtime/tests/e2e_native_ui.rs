@@ -295,14 +295,15 @@ action add(l: Tasks, title: Text) {
         let Value::List(items) = rt.read(&l, "items").unwrap() else {
             panic!("a collection reads as a list");
         };
-        for (row, item) in rows.iter().zip(&items) {
+        for ((row, item), title) in rows.iter().zip(&items).zip(["Plan", "Build", "Ship"]) {
             let (Some(Value::Ref(shown)), Value::Ref(item)) = (row.props.get("item"), item) else {
                 panic!("a resource row holds its resource: {}", dump(row));
             };
             assert_eq!(shown.target, item.target);
-            assert!(
-                !row.props.contains_key("title"),
-                "a resource row has no title"
+            assert_eq!(
+                text_prop(row, "title"),
+                title,
+                "a resource row is titled as its resource is"
             );
             // A time not yet set (`.none`) leaves the row without its meta.
             assert!(!row.props.contains_key("meta"), "{}", dump(row));

@@ -70,18 +70,27 @@
         },
         {
           "name": "role",
-          "doc": "What kind of action it is: `secondary` unless said.",
+          "doc": "What kind of action it is: `secondary` unless said, `plain` for an icon-only one.",
           "type": {
-            "choice": {
-              "name": "ButtonRole",
-              "cases": [
-                "primary",
-                "secondary",
-                "destructive",
-                "plain",
-                "key"
-              ]
+            "option": {
+              "choice": {
+                "name": "ButtonRole",
+                "cases": [
+                  "primary",
+                  "secondary",
+                  "destructive",
+                  "plain",
+                  "key"
+                ]
+              }
             }
+          }
+        },
+        {
+          "name": "toggled",
+          "doc": "A toggle button, and whether it is on: on, it stands on a lift of its ground and is announced as pressed.",
+          "type": {
+            "option": "bool"
           }
         },
         {
@@ -113,6 +122,113 @@
       "semantics": {
         "role": "Button",
         "label": "label"
+      }
+    },
+    {
+      "name": "MenuButton",
+      "doc": "A button that opens a menu of commands under it: a header's More button, a sort menu.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the menu holds, in a word or two. An icon-only button is still named by it.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before the label, or instead of it when `icon_only`.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "icon_only",
+          "doc": "Show only the icon, the label naming the button to assistive technology.",
+          "type": "bool"
+        },
+        {
+          "name": "role",
+          "doc": "What kind of button it is: `secondary` unless said, `plain` for an icon-only one.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "ButtonRole",
+                "cases": [
+                  "primary",
+                  "secondary",
+                  "destructive",
+                  "plain",
+                  "key"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "items",
+          "doc": "The commands, in order.",
+          "accepts": {
+            "component": "MenuItem"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
+      "name": "SearchButton",
+      "doc": "The one search affordance an app puts in its chrome: an icon button that opens the platform search over the whole app. It never draws a field, and a window bar that searches for the window takes its place.",
+      "semantics": {
+        "role": "Button"
+      }
+    },
+    {
+      "name": "Scroll",
+      "doc": "A body that scrolls under its column's fixed header: its content as tall as it is, the part of it the column has room for shown.",
+      "props": [
+        {
+          "name": "follow_end",
+          "doc": "Open at the end of the content and stay there while it grows, unless the person scrolled away from the end: a conversation's transcript, whose newest line is last.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "content",
+          "doc": "What scrolls.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "ScrollView"
+      }
+    },
+    {
+      "name": "Docked",
+      "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer.",
+      "slots": [
+        {
+          "name": "content",
+          "doc": "What fills the column; it scrolls itself.",
+          "accepts": "view",
+          "default": true
+        },
+        {
+          "name": "foot",
+          "doc": "The bar at the foot, as tall as it needs.",
+          "accepts": "view"
+        }
+      ],
+      "semantics": {
+        "role": "Group"
       }
     },
     {
@@ -263,7 +379,7 @@
     },
     {
       "name": "VirtualList",
-      "doc": "A long list of rows that costs only the rows on screen: each is built when it scrolls into view. Selection follows the person's choice and is reported; the list is one focus stop.",
+      "doc": "A long list of rows that costs only the rows on screen: each is built when it scrolls into view. Selection follows the person's choice and is reported with the item it shows; the list is one focus stop.",
       "props": [
         {
           "name": "name",
@@ -274,16 +390,26 @@
         },
         {
           "name": "selection_follows_focus",
-          "doc": "Moving through the rows with the keyboard selects them, as a list whose selection shows beside it does.",
+          "doc": "Moving through the rows with the keyboard selects them, as a list whose selection shows beside it does; a click or a tap on a row then activates it, as choosing an entry of an overview does.",
+          "type": "bool"
+        },
+        {
+          "name": "in_column",
+          "doc": "The list is a column's whole body: its rows' text starts where the column's header starts its title.",
+          "type": "bool"
+        },
+        {
+          "name": "transcript",
+          "doc": "A conversation: each row stands in the page column, the list opens at its newest row and follows it.",
           "type": "bool"
         }
       ],
       "slots": [
         {
           "name": "rows",
-          "doc": "The rows, in order.",
+          "doc": "The items, in order.",
           "accepts": {
-            "component": "ListRow"
+            "component": "ListItem"
           },
           "many": true,
           "default": true
@@ -292,13 +418,13 @@
       "events": [
         {
           "name": "select",
-          "doc": "A row was selected or deselected; carries its key.",
-          "value": "text"
+          "doc": "A row was selected: carries the item it shows.",
+          "value": "resource"
         },
         {
           "name": "activate",
-          "doc": "A row was activated (a click, Enter, an assistive technology); carries its key.",
-          "value": "text"
+          "doc": "A row was activated (a click, Enter, an assistive technology): carries the item it shows.",
+          "value": "resource"
         }
       ],
       "state": [
@@ -374,6 +500,13 @@
           }
         },
         {
+          "name": "sidebar_title",
+          "doc": "The sidebar's title: what the places are of, the app's root.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "can_go_back",
           "doc": "Whether the content's Back goes back now (a drill-down the app keeps).",
           "type": "bool"
@@ -404,6 +537,12 @@
         {
           "name": "actions",
           "doc": "The content's actions, in its header.",
+          "accepts": "view",
+          "many": true
+        },
+        {
+          "name": "overview_actions",
+          "doc": "The overview's actions, in its header: what the list's owner offers.",
           "accepts": "view",
           "many": true
         }
@@ -758,9 +897,139 @@
           }
         }
       ],
+      "events": [
+        {
+          "name": "select",
+          "doc": "The place was chosen: what choosing it does, beside the list's own `select`."
+        }
+      ],
       "semantics": {
         "role": "TreeItem",
         "label": "label"
+      }
+    },
+    {
+      "name": "MenuItem",
+      "doc": "One command of a menu: what it shows, and what choosing it does.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What choosing it does, in a word or two.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before the label, for recognition; the label stays its name.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "destructive",
+          "doc": "It takes something away: drawn as destructive, and undone rather than confirmed.",
+          "type": "bool"
+        },
+        {
+          "name": "checked",
+          "doc": "Whether it is the one chosen now, in a menu of choices (a sort order).",
+          "type": {
+            "option": "bool"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "choose",
+          "doc": "It was chosen."
+        }
+      ],
+      "semantics": {
+        "role": "MenuItem",
+        "label": "label"
+      }
+    },
+    {
+      "name": "SwipeAction",
+      "doc": "What swiping a row across does: one command on its item, uncovered under the row as it moves.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What it does, in a word or two.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "The glyph the swipe uncovers: a bin for a destructive command and a check for another, unless said.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "destructive",
+          "doc": "It takes something away: drawn as destructive, and undone rather than confirmed.",
+          "type": "bool"
+        }
+      ],
+      "events": [
+        {
+          "name": "swipe",
+          "doc": "The swipe completed."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
+      "name": "ListItem",
+      "doc": "One item of a virtual list: the resource its row shows, the row, and what the row offers on the item.",
+      "props": [
+        {
+          "name": "item",
+          "doc": "The resource the row shows: what selecting or activating the row reports.",
+          "type": {
+            "option": "resource"
+          }
+        },
+        {
+          "name": "presence",
+          "doc": "Who else is at the item now (a collaborator's or an agent's lens on it), shown on the row.",
+          "type": {
+            "option": "principal"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "menu",
+          "doc": "The commands of the row's context menu: a right-click, the Menu key or a long press opens it, and selects the row.",
+          "accepts": {
+            "component": "MenuItem"
+          },
+          "many": true
+        },
+        {
+          "name": "swipe",
+          "doc": "What swiping the row across does.",
+          "accepts": {
+            "component": "SwipeAction"
+          }
+        },
+        {
+          "name": "row",
+          "doc": "The row: a `ui.ListRow`, or any view.",
+          "accepts": "view",
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "ListItem",
+        "presents": "item"
       }
     }
   ]

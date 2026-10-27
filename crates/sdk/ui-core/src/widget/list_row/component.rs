@@ -213,3 +213,45 @@ impl ListRow {
         self.activation.set_event(activate, &label);
     }
 }
+
+/// What swiping a row across does: one command on its item, uncovered under the row as it
+/// moves.
+#[derive(Component, Default)]
+#[component(name = "SwipeAction", role = "Button", label = "label")]
+pub struct SwipeActionProps {
+    /// What it does, in a word or two.
+    #[component(required, positional)]
+    pub label: String,
+    /// The glyph the swipe uncovers: a bin for a destructive command and a check for another,
+    /// unless said.
+    pub icon: Option<Icon>,
+    /// It takes something away: drawn as destructive, and undone rather than confirmed.
+    pub destructive: bool,
+    /// The swipe completed.
+    #[component(event)]
+    pub swipe: Event,
+}
+
+impl ListRow {
+    /// The row with `props` as what swiping it across does.
+    #[must_use]
+    pub fn with_swipe(self, props: SwipeActionProps) -> Self {
+        let SwipeActionProps {
+            label,
+            icon,
+            destructive,
+            swipe,
+        } = props;
+        let icon = icon.unwrap_or(if destructive {
+            Icon::Trash
+        } else {
+            Icon::Check
+        });
+        let mut run = swipe.handler();
+        self.swipe_action(icon, label, destructive, move || {
+            if let Some(run) = run.as_mut() {
+                run();
+            }
+        })
+    }
+}

@@ -79,7 +79,7 @@ fn listed(nb: Notebook, order: NoteOrder, filter: NoteFilter) -> List<Note> {
 view notebook(nb: Notebook) {
     window order: NoteOrder = .created
     window filter: NoteFilter = .all
-    list(listed(nb, order, filter), sort: order, filter: filter, empty: "No notes yet")
+    std.list(nb, listed(nb, order, filter), sort: order, filter: filter, count: f -> listed(nb, order, f).len(), empty: "No notes yet")
 }
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.
@@ -89,7 +89,7 @@ view note_row(n: Note) {
 
 /// A note's window.
 view note_editor(n: Note) {
-    document {
+    std.document(n) {
         ui.TextInput(value: n.title, placeholder: "Title")
         ui.TextInput(value: n.body, placeholder: "Write something", lines: 8)
     }

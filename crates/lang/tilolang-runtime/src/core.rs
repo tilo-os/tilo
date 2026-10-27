@@ -64,6 +64,9 @@ pub struct Core {
     /// What names principals; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     pub sink: RefCell<Option<Box<dyn OutsideSink>>>,
+    /// The platform's phrases in the person's language (`phrase(...)`); the id itself until
+    /// the host says.
+    pub phrases: RefCell<Option<crate::platform::Phrases>>,
     /// Compiled embedded blocks.
     pub embeds: RefCell<crate::embed::EmbedState>,
     /// The `window` and `lens` state of every view.
@@ -165,6 +168,7 @@ impl Core {
             models: RefCell::new(None),
             names: RefCell::new(None),
             sink: RefCell::new(None),
+            phrases: RefCell::new(None),
             embeds: RefCell::new(crate::embed::EmbedState::default()),
             view_states: RefCell::new(crate::view_state::ViewStates::default()),
             clock: RefCell::new(None),
@@ -231,17 +235,18 @@ impl Host for Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, CollInsert, CollMove, CollRemove, CollWhere, EnumGetF,
-            EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, FloatToStr,
-            IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, ListEnd, ListGetF,
-            ListGetH, ListGetI, ListLen, ListNew, ListPushF, ListPushH, ListPushI, ListSortByKey,
-            MapGetH, MapKeys, MapPut, MapRemove, ModelCall, NoneV, Now, Outside, PrincipalEq,
-            PrincipalName, PrincipalNamed, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
-            RefId, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI,
-            ResTextSet, SetAdd, SetRemove, SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp,
-            StrConcat, StrEq, StrLen, StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew,
-            TupleSetF, TupleSetH, TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
-            UiPropF, UiPropH, UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            Abort, ActOpen, ActRef, ActSet, Actions, CollInsert, CollMove, CollRemove, CollWhere,
+            EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI,
+            EventValue, FloatToStr, IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError,
+            IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI, ListLen, ListNew, ListPushF,
+            ListPushH, ListPushI, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MetaOf,
+            ModelCall, NoneV, Now, Outside, Phrase, PrincipalEq, PrincipalName, PrincipalNamed,
+            QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefLit, ResAddF, ResAddI,
+            ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, SetAdd, SetRemove,
+            SomeF, SomeH, SomeI, SpaceF, SpaceI, StateGet, StrCmp, StrConcat, StrEq, StrLen,
+            StrLit, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
+            TupleSetI, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
+            UiPropI, UnwrapF, UnwrapH, UnwrapI, ValueEq,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | FloatToStr | StrCmp => {
@@ -267,6 +272,7 @@ impl Core {
             }
             UiNode | UiPropH | UiPropI | UiPropF | UiChild | UiBind | UiOn | UiAnchor | SpaceI
             | SpaceF | UiBindState | StateGet | ActSet | ActOpen => self.ui_import(imp, a),
+            EventValue | Actions | Lenses | MetaOf | Phrase => self.platform_import(imp, a),
             Abort => {
                 let msg = self.text(a.h(0)?)?;
                 trap(format!("abort: {msg}"))

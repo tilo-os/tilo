@@ -120,7 +120,15 @@ pub const APP_CATEGORIES: &[&str] = &[
     "system",
 ];
 const ITEM_KWS: &[&str] = &["use", "type", "enum", "action", "flow", "view", "fn"];
-const TYPE_ARGS: &[&str] = &["List", "Set", "Map", "Collection", "Option", "Result"];
+const TYPE_ARGS: &[&str] = &[
+    "List",
+    "Set",
+    "Map",
+    "Collection",
+    "Option",
+    "Result",
+    "State",
+];
 const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `default view`, `row view`, `action`, `flow`, `view`, `fn` or `scenario`";
 
 impl<'a> Parser<'a> {
@@ -816,6 +824,15 @@ impl<'a> Parser<'a> {
                 items.push(self.type_expr()?);
             }
             self.expect(&Tok::RParen)?;
+            // `(T) -> View`: a function of the items in parentheses.
+            if self.eat(&Tok::Arrow) {
+                let result = self.type_expr()?;
+                let span = start.to(Span::new(self.prev_end(), self.prev_end()));
+                return Ok(TypeExpr {
+                    kind: TypeExprKind::Fn(items, Box::new(result)),
+                    span,
+                });
+            }
             let span = start.to(Span::new(self.prev_end(), self.prev_end()));
             return Ok(TypeExpr {
                 kind: TypeExprKind::Tuple(items),
@@ -991,6 +1008,16 @@ impl<'a> Parser<'a> {
         self.expect_kw("view")?;
         let node = self.node();
         let name = self.ident("a view name")?;
+        let mut type_params = Vec::new();
+        if self.eat(&Tok::Lt) {
+            loop {
+                type_params.push(self.ident("a type parameter, such as `T`")?);
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+            }
+            self.expect(&Tok::Gt)?;
+        }
         let params = self.params()?;
         let body_start = self.span();
         let body = self.ui_block()?;
@@ -999,6 +1026,7 @@ impl<'a> Parser<'a> {
             node,
             doc,
             name,
+            type_params,
             params,
             body,
             body_span: body_start.to(end),
@@ -1684,13 +1712,30 @@ impl<'a> Parser<'a> {
             Tok::Ident(word)
                 if word == "on"
                     && matches!(self.peek_at(1), Tok::Ident(_))
-                    && matches!(self.peek_at(2), Tok::Colon) =>
+                    && matches!(self.peek_at(2), Tok::Colon | Tok::LParen) =>
             {
                 self.bump();
                 let event = self.ident("an event name")?;
+                // `on select(x: Note): ...`: the value the event carries, named.
+                let param = if self.eat(&Tok::LParen) {
+                    let name = self.ident("the name of the value the event carries")?;
+                    let ty = if self.eat(&Tok::Colon) {
+                        Some(self.type_expr()?)
+                    } else {
+                        None
+                    };
+                    self.expect(&Tok::RParen)?;
+                    Some(crate::ast::EventParam { name, ty })
+                } else {
+                    None
+                };
                 self.expect(&Tok::Colon)?;
                 let action = self.expr()?;
-                UiKind::On { event, action }
+                UiKind::On {
+                    event,
+                    param,
+                    action,
+                }
             }
             Tok::Ident(_)
                 if matches!(self.peek_at(1), Tok::Colon)
@@ -1744,15 +1789,8 @@ impl<'a> Parser<'a> {
         let mut item = None;
         if self.is(&Tok::LBrace) {
             if matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Arrow) {
-                let is_list = match &call.kind {
-                    ExprKind::Call { callee, .. } => {
-                        matches!(&callee.kind, ExprKind::Ident(n) if n == "list")
-                    }
-                    _ => false,
-                };
-                if !is_list {
-                    return self.fail(call.span, "`name { x -> ... }` is only available as `list(items) { x -> ... }`; write `for x in items { ... }` instead");
-                }
+                // `list(items) { x -> ... }`, or a view that takes a view of an item:
+                // `std.list(nb, nb.notes) { n -> row(n.title) }`.
                 self.bump();
                 item = Some(self.ident("the item's name")?);
                 self.expect(&Tok::Arrow)?;

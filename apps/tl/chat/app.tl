@@ -77,7 +77,7 @@ action send_draft(c: Conversation) (icon: .send, label: "Send") {
 
 /// The chat's window: its conversations, each opening in a window of its own.
 view chats(chat: Chat) {
-    list(chat.conversations, empty: "No conversations yet")
+    std.list(chat, chat.conversations, empty: "No conversations yet")
 }
 
 /// What a message says in a line: its text, or that it holds a block.
@@ -120,14 +120,11 @@ fn last_author(c: Conversation) -> Option<Principal> {
 
 /// A conversation's window: its messages, the latest at the foot, above the composer.
 view thread(c: Conversation) {
-    page {
-        list(c.messages) { m ->
-            message(m)
-        }
-        composer {
+    std.transcript(c, c.messages, row: message) {
+        composer: {
             row {
                 input(bind: c.draft, placeholder: "Message", fill)
-                button(send_draft(c)) as send
+                button(send_draft(c), icon_only: true) as send
             }
         }
     }

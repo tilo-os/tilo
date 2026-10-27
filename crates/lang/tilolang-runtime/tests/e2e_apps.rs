@@ -232,7 +232,7 @@ mod cases {
 
     /// The resource of the list item whose row has this title: what activating the row opens.
     fn item_titled(tree: &UiNode, title: &str) -> ResourceRef {
-        of_kind(tree, "item")
+        of_kind(tree, "ui.ListItem")
             .into_iter()
             .find(|item| {
                 of_kind(item, "ui.ListRow")
@@ -253,12 +253,30 @@ mod cases {
             .collect()
     }
 
-    fn list_key(tree: &UiNode) -> String {
-        of_kind(tree, "list")
-            .first()
-            .unwrap_or_else(|| panic!("no list in\n{}", dump(tree)))
+    /// The node of `kind` whose `prop` is `value`.
+    fn node_with<'a>(tree: &'a UiNode, kind: &str, prop: &str, value: &str) -> &'a UiNode {
+        of_kind(tree, kind)
+            .into_iter()
+            .find(|node| node.props.get(prop) == Some(&Value::text(value)))
+            .unwrap_or_else(|| panic!("no {kind} with {prop} {value} in\n{}", dump(tree)))
+    }
+
+    /// What the content column of a window's shell holds.
+    fn content(tree: &UiNode) -> &UiNode {
+        tree.children
+            .iter()
+            .find(|child| {
+                child.kind == "slot" && child.props.get("name") == Some(&Value::text("content"))
+            })
+            .unwrap_or_else(|| panic!("no content in\n{}", dump(tree)))
+    }
+
+    /// Choose the place `name` of a window's filter, in its sidebar.
+    fn choose(view: &ViewInstance, name: &str) {
+        let place = node_with(view.tree(), "ui.NavItem", "key", name)
             .key
-            .clone()
+            .clone();
+        view.fire(&place, "select").unwrap();
     }
 
     fn button_labelled<'a>(tree: &'a UiNode, label: &str) -> &'a UiNode {
@@ -963,8 +981,10 @@ mod cases {
         assert_eq!(row_titles(va.tree()), ["b", "a"]);
 
         // Window state: Ada sorts the window, and Bo's view of it sorts too.
-        let key = list_key(va.tree());
-        va.fire(&key, "sort.title").unwrap();
+        let by_title = node_with(va.tree(), "ui.MenuItem", "label", "Title")
+            .key
+            .clone();
+        va.fire(&by_title, "choose").unwrap();
         assert!(
             va.is_stale() && vb.is_stale(),
             "both read the window's order"
@@ -1001,14 +1021,19 @@ mod cases {
         let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
         assert_eq!(row_titles(v.tree()), ["milk", "eggs"]);
         let before = w.rt.history(&list.doc).unwrap().len();
-        let key = list_key(v.tree());
-        v.fire(&key, "filter.open").unwrap();
+        choose(&v, "open");
         v.poll_patches().unwrap();
         assert_eq!(row_titles(v.tree()), ["eggs"]);
-        let l = of_kind(v.tree(), "list")[0];
-        assert_eq!(text_prop(l, "filter.selected"), "open");
+        let tree = v.tree();
         assert_eq!(
-            (&l.props["filter.count.all"], &l.props["filter.count.done"]),
+            text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
+            "open"
+        );
+        assert_eq!(
+            (
+                &node_with(tree, "ui.NavItem", "key", "all").props["count"],
+                &node_with(tree, "ui.NavItem", "key", "done").props["count"]
+            ),
             (&Value::Int(2), &Value::Int(1))
         );
         assert_eq!(
@@ -1065,7 +1090,13 @@ mod cases {
         m.w.call(&apps.notes, "new_note", vec![res(&m.notebook)]);
         let view = m.w.view(&apps.board, "board", vec![res(&m.board)]);
         let tree = view.tree();
-        assert_eq!(tree.kind, "canvas", "{}", dump(tree));
+        assert_eq!(tree.kind, "ui.NavShell", "{}", dump(tree));
+        assert_eq!(
+            of_kind(tree, "page")[0].props["full"],
+            Value::Int(1),
+            "the board is a canvas the window's width: {}",
+            dump(tree)
+        );
         let cards = of_kind(tree, "ui.Card");
         let shown: Vec<&ResourceRef> = cards
             .iter()
@@ -1188,7 +1219,8 @@ mod cases {
         let mut v = w.view(&apps.counter, "counter", vec![res(&c)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
-            assert_eq!(tree.kind, "page");
+            assert_eq!(tree.kind, "ui.NavShell");
+            let tree = content(tree);
             let shown = of_kind(tree, "ui.Text")[0];
             // A number that changes: a title in tabular figures.
             assert_eq!(shown.props["role"], Value::text("title"));
@@ -1201,11 +1233,14 @@ mod cases {
                 Value::text("minus")
             );
         }
-        let plus = button_labelled(&wide, "Increment").key.clone();
+        let plus = button_labelled(content(&wide), "Increment").key.clone();
         v.press(&plus).unwrap();
         v.poll_patches().unwrap();
         assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(1));
-        assert_eq!(text_prop(of_kind(v.tree(), "ui.Text")[0], "value"), "1");
+        assert_eq!(
+            text_prop(of_kind(content(v.tree()), "ui.Text")[0], "value"),
+            "1"
+        );
     }
 
     #[test]
@@ -1236,12 +1271,15 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.create("TodoList");
         let mut v = w.view(&apps.todo, "todo_list", vec![res(&list)]);
-        assert_eq!(text_prop(v.tree(), "empty"), "Nothing to do");
+        assert_eq!(
+            text_prop(of_kind(v.tree(), "ui.EmptyState")[0], "title"),
+            "Nothing to do"
+        );
         let item = returned_ref(w.call(&apps.todo, "new_item", vec![res(&list)]));
         v.poll_patches().unwrap();
         assert_eq!(item_titled(v.tree(), ""), item);
         let editor = w.rt.open_resource(&me(), &item, None).unwrap();
-        assert_eq!(editor.tree().kind, "document");
+        assert_eq!(text_prop(editor.tree(), "content_kind"), "document");
         let title = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
         editor.edit(&title, &Value::text("bread")).unwrap();
         v.poll_patches().unwrap();

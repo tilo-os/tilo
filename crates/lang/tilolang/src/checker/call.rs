@@ -39,6 +39,12 @@ impl Checker<'_> {
 
     fn call_named(&mut self, name: &str, name_span: Span, args: &[ast::Arg], span: Span) -> Ex {
         let env = self.env;
+        if matches!(
+            self.st.macros.get(name),
+            Some(super::template::Macro::Lambda(_))
+        ) {
+            return self.apply_lambda(name, args, span);
+        }
         if self.lookup(name).is_some() {
             self.err(
                 "E026",
@@ -49,11 +55,11 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        if let Some(c) = env.own_callable(name) {
+        if let Some(c) = self.own_callable(name) {
             let c = c.clone();
             return self.call_callable(&c, args, span);
         }
-        if let Some(t) = env.own_type(name) {
+        if let Some(t) = env.own_type(name).filter(|_| !self.in_std()) {
             let key = t.key.clone();
             return self.construct(&key, args);
         }
@@ -73,6 +79,11 @@ impl Checker<'_> {
             "set" => return self.builtin_set(args, span),
             "open" => return self.builtin_open(args, span),
             "person" => return self.builtin_person(args, span),
+            "actions" => return self.builtin_actions(args, span),
+            "lenses" => return self.builtin_lenses(args, span),
+            "meta" => return self.builtin_meta(args, span),
+            "cases" => return self.builtin_cases(args, span),
+            "phrase" => return self.builtin_phrase(args, span),
             _ => {}
         }
         if prims::prim(name).is_some() {
@@ -647,13 +658,20 @@ impl Checker<'_> {
             return Ex::error();
         };
         let mut view_id = String::new();
+        let mut front = Ex::new(Ek::I32(1), Ty::Bool);
         for a in args.iter().skip(1) {
+            if a.name.as_ref().is_some_and(|n| n.name == "front") {
+                // `front: false`: shown in the next column, not brought in front of a narrow
+                // window (a selection the keyboard moves).
+                front = self.expr_as(&a.value, &Ty::Bool);
+                continue;
+            }
             let named_view = a.name.as_ref().is_some_and(|n| n.name == "view");
             if !named_view {
                 self.err(
                     "E022",
                     a.value.span,
-                    "`open` takes the resource and, optionally, `view: <view>`",
+                    "`open` takes the resource and, optionally, `view: <view>` and `front: false`",
                 );
                 continue;
             }
@@ -671,14 +689,14 @@ impl Checker<'_> {
                 }
             }
         }
-        Ex::host(Imp::ActOpen, vec![r, Ex::str(&view_id)], Ty::Action)
+        Ex::host(Imp::ActOpen, vec![r, Ex::str(&view_id), front], Ty::Action)
     }
 
     /// The id of the view `e` names (`editor` or `notes.editor`), when it shows a `key` alone.
     fn view_for(&self, e: &ast::Expr, key: &TypeKey) -> Option<String> {
         let path = dotted(e)?;
         let c = match path.as_slice() {
-            [one] => self.env.own_callable(one)?,
+            [one] => self.own_callable(one)?,
             [prefix @ .., last] => {
                 let import = self.env.find_import(&prefix.join("."))?;
                 self.env.foreign_callable(&import.app, last)?
@@ -947,6 +965,10 @@ impl Checker<'_> {
             }
             (Ty::Int | Ty::Float | Ty::Bool, "to_text") if args.is_empty() => self.text_of(r, span),
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
+            (Ty::Enum(key), "label" | "icon" | "name") if args.is_empty() => {
+                let key = key.clone();
+                self.enum_method(r, &key, m).unwrap_or_else(Ex::error)
+            }
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "len") if args.is_empty() => {
                 Ex::host(Imp::ListLen, vec![r], Ty::Int)
             }

@@ -150,6 +150,9 @@ pub enum TypeExprKind {
     /// `List<T>`, `Collection<T>`, ...
     Generic(Ident, Vec<TypeExpr>),
     Tuple(Vec<TypeExpr>),
+    /// `(T) -> View`: what a parameter of a view takes when it is given a lambda or a block
+    /// with an item.
+    Fn(Vec<TypeExpr>, Box<TypeExpr>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -238,6 +241,9 @@ pub struct ViewDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
     pub name: Ident,
+    /// `view list<T>(...)`: the types its parameters are written over, each taken from what a
+    /// call passes.
+    pub type_params: Vec<Ident>,
     pub params: Vec<Param>,
     pub body: Vec<UiStmt>,
     pub body_span: Span,
@@ -511,11 +517,22 @@ pub enum UiKind {
         name: Ident,
         body: Vec<UiStmt>,
     },
-    /// `on activate: open(c)`: what the event `activate` of a `ui.*` component does.
+    /// `on activate: open(c)`: what the event `activate` of a `ui.*` component does. An event
+    /// that carries a value names it, `on select(x: Note): open(x)`, and passes it on as an
+    /// argument of the action.
     On {
         event: Ident,
+        param: Option<EventParam>,
         action: Expr,
     },
+}
+
+/// The value an event carries, as `on select(x: Note): ...` names it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventParam {
+    pub name: Ident,
+    /// Its type, when written; else the type the component's description gives.
+    pub ty: Option<TypeExpr>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

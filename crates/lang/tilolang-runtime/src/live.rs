@@ -1251,12 +1251,14 @@ impl Live {
     /// The list with key `list`. A host asks for its rows one by one as they scroll into
     /// view, so the list's place is kept rather than searched for in the whole tree each time.
     fn list_node(&self, list: &str) -> Option<&UiNode> {
-        let is_it = |n: &&UiNode| n.key == list && n.kind == "list";
+        let is_it = |n: &&UiNode| n.key == list && crate::view::is_virtual(&n.kind);
         let cached = self.list_paths.borrow().get(list).cloned();
         if let Some(node) = cached.and_then(|path| self.node_at(&path)).filter(is_it) {
             return Some(node);
         }
-        let node = self.find(list).filter(|n| n.kind == "list")?;
+        let node = self
+            .find(list)
+            .filter(|n| crate::view::is_virtual(&n.kind))?;
         if let Some(path) = path_to(&self.tree, node) {
             self.list_paths.borrow_mut().insert(list.to_owned(), path);
         }

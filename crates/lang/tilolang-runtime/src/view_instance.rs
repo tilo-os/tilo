@@ -33,6 +33,9 @@ pub enum ViewEvent {
     Open {
         target: ResourceRef,
         view: Option<String>,
+        /// Whether a narrow window brings it in front (`open(r)`), or shows it in the next
+        /// column only (`open(r, front: false)`, a selection the keyboard moves).
+        front: bool,
     },
 }
 
@@ -270,18 +273,46 @@ impl ViewInstance {
     ///
     /// `NotFound` when the node or its event does not exist; otherwise as an invocation.
     pub fn fire(&self, key: &str, event: &str) -> Result<InvokeOutcome, RuntimeError> {
-        let node = self
-            .live
-            .find(key)
-            .ok_or_else(|| RuntimeError::NotFound(format!("a unique node `{key}`")))?;
-        let retained = node
-            .events
-            .get(event)
-            .ok_or_else(|| RuntimeError::NotFound(format!("event `{event}` on `{key}`")))?;
-        let value = self.core.frames.borrow().retained(*retained).cloned();
-        let Some(Value::Action(aref)) = value else {
-            return Err(RuntimeError::NotFound(format!("action of `{key}`")));
+        self.fire_with(key, event, None)
+    }
+
+    /// The action reference the event `event` of the node `key` applies, as the view attached
+    /// it.
+    #[must_use]
+    pub fn event_action(&self, key: &str, event: &str) -> Option<ActionRef> {
+        let node = self.live.find(key)?;
+        let retained = node.events.get(event)?;
+        match self.core.frames.borrow().retained(*retained) {
+            Some(Value::Action(aref)) => Some(aref.clone()),
+            _ => None,
+        }
+    }
+
+    /// Fire the event `event` of the node with `key`, carrying `value`: the action reference
+    /// takes it where it holds the event's value (`open(x)` on `select(x)`).
+    ///
+    /// # Errors
+    ///
+    /// `NotFound` when the node or its event does not exist, `BadArgs` when the action takes
+    /// the event's value and the event carries none; otherwise as an invocation.
+    pub fn fire_with(
+        &self,
+        key: &str,
+        event: &str,
+        value: Option<&Value>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let Some(mut aref) = self.event_action(key, event) else {
+            return Err(RuntimeError::NotFound(format!(
+                "the action of event `{event}` on `{key}`"
+            )));
         };
+        for arg in &mut aref.args {
+            if matches!(arg, Value::Event) {
+                *arg = value.cloned().ok_or_else(|| {
+                    RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
+                })?;
+            }
+        }
         match aref.action.as_str() {
             SET_ACTION => self.platform_set(&aref),
             OPEN_ACTION => self.platform_open(&aref),
@@ -316,9 +347,11 @@ impl ViewInstance {
             return Err(RuntimeError::BadArgs("a malformed `open`".into()));
         };
         let view = view.as_text().filter(|v| !v.is_empty()).map(str::to_owned);
+        let front = !matches!(aref.args.get(2), Some(Value::Bool(false)));
         self.events.borrow_mut().push(ViewEvent::Open {
             target: ResourceRef::clone(&r.target),
             view,
+            front,
         });
         Ok(InvokeOutcome::Done(Value::Unit))
     }
@@ -489,7 +522,7 @@ impl Drop for ViewInstance {
 }
 
 fn collect_lists(node: &UiNode, out: &mut Vec<String>) {
-    if node.kind == "list" {
+    if crate::view::is_virtual(&node.kind) {
         out.push(node.key.clone());
     }
     for child in &node.children {
