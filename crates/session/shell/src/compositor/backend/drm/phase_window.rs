@@ -1,9 +1,12 @@
 //! Frame pacing: the phase window a presenter reports its timing through, and
 //! the flush that emits it.
 
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::Instant;
 
 /// How often the presenter reports its frame timing.
+#[cfg(test)]
 const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]

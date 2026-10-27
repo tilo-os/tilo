@@ -675,7 +675,7 @@ fn direct_reason(scanouts: &[ScanoutEntry]) -> &str {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct DirectEligibility<'a> {
+pub(super) struct DirectEligibility<'a> {
     hardware_cursor: bool,
     event_pageflips: bool,
     renderer_pci: &'a str,
