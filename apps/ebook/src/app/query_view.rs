@@ -744,21 +744,10 @@ impl BooksApp {
     pub(super) fn draw_query_view(&mut self, ctx: &mut PaintCtx<'_>) {
         self.query.rows.clear();
         let theme = ctx.theme;
-        let band = self.draw_page_header(ctx);
-        let height = ButtonFace::height(ControlSize::Regular, theme);
-        let inset = f64::from(theme.tokens.spacing.s3);
-        let back = Rect::new(
-            band.x0 + inset,
-            band.center().y - height / 2.0,
-            band.x0 + inset + height,
-            band.center().y + height / 2.0,
-        );
-        self.button(
-            ctx,
-            ButtonFace::icon_only(back, Icon::ArrowLeft, "Back"),
-            Action::CloseSearch,
-        );
-        let body = Rect::new(self.rect.x0, band.y1, self.rect.x1, self.rect.y1);
+        // Back to where the search was opened is the window bar's navigation
+        // and the words searched for are its location
+        // ([`crate::window_bar`]); the results begin under the bar.
+        let body = self.rect;
         self.query.viewport = body;
         let rhythm = &theme.tokens.spacing.rhythm;
         let (gutter, section) = (f64::from(rhythm.group), f64::from(rhythm.section));

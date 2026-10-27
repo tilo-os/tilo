@@ -850,7 +850,9 @@ impl Widget for SheetsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.dock_scroll.needs_animation_frame(&self.chrome_theme)
+        // A row or column arriving moves until it rests.
+        self.grid.is_animating()
+            || self.dock_scroll.needs_animation_frame(&self.chrome_theme)
             || self.children().iter().any(|c| c.needs_animation_frame())
     }
 

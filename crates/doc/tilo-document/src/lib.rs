@@ -321,6 +321,8 @@ pub struct RichTextState {
     /// The content address of the file the document was last read from or
     /// written to ([`action::FILE_DIGEST`]).
     file_digest: Option<Rc<str>>,
+    /// The document holds work its file does not ([`action::UNSAVED`]).
+    unsaved: bool,
     /// Which body paragraphs changed, for views presenting only those.
     log: ChangeLog,
 }
@@ -339,6 +341,7 @@ impl PartialEq for RichTextState {
             && self.styles == other.styles
             && self.content == other.content
             && self.file_digest == other.file_digest
+            && self.unsaved == other.unsaved
     }
 }
 
@@ -350,6 +353,11 @@ const GENESIS_IDS: &str = "genesis";
 /// from or written to.
 fn file_digest(doc: &Doc, c: &Containers) -> Option<Rc<str>> {
     model::meta_str(doc, c, action::FILE_DIGEST).map(Rc::from)
+}
+
+/// Whether the document under `c` holds work its file does not.
+fn unsaved(doc: &Doc, c: &Containers) -> bool {
+    model::meta_flag(doc, c, action::UNSAVED)
 }
 
 impl RichTextState {
@@ -376,6 +384,13 @@ impl RichTextState {
     /// written to, so an open can tell that the file changed elsewhere.
     pub fn file_digest(&self) -> Option<&str> {
         self.file_digest.as_deref()
+    }
+
+    /// Whether the document holds work its file does not: an edit or a verb
+    /// since the file last took it. What a window's bar says "Edited" about,
+    /// and what closing asks before the work is lost.
+    pub fn unsaved(&self) -> bool {
+        self.unsaved
     }
 
     /// The body's paragraph order. Shared: hold it across frames freely.
@@ -1062,6 +1077,7 @@ impl RichText {
             styles: Rc::new(model::all_styles(doc, &c)),
             content: Rc::new(model::referenced_content(doc, &c)),
             file_digest: file_digest(doc, &c),
+            unsaved: unsaved(doc, &c),
             root_path: (c.root == automerge::ROOT).then(Vec::new),
             containers: c,
             log: ChangeLog::fresh(),
@@ -1133,6 +1149,7 @@ impl RichText {
         }
         if root.key(KEY_META) != Touch::Untouched {
             state.file_digest = file_digest(doc, c);
+            state.unsaved = unsaved(doc, c);
         }
     }
 

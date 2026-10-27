@@ -74,7 +74,7 @@ use crate::reader::MessageReader;
 use crate::resource::{Mail, mailbox, read_mail};
 use crate::shortcuts_overlay::MailShortcutsOverlay;
 use crate::sidebar;
-use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, Shared};
+use crate::state::{BulkAction, Command, CtxAction, Intent, MailState, QueuedMessage, Shared};
 use crate::util::format_absolute;
 use crate::window_bar::BarItem;
 
@@ -758,6 +758,64 @@ impl MailApp {
         }
     }
 
+    /// Two messages waiting to leave, one of them refused by a server, in
+    /// the outbox: what the page shows, and the one place the verb that
+    /// takes a message back is.
+    fn stage_outbox(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        for (to, subject, body) in [
+            (
+                "ada@analytical.example",
+                "Notes on the second engine",
+                "Sent from the platform on the train. Tell me if the numbers hold.",
+            ),
+            (
+                "grace@navy.example",
+                "Dinner on Friday",
+                "Seven, if that suits. I will bring the almanac.",
+            ),
+        ] {
+            self.compose.open_with_draft(&crate::model::Draft {
+                to: to.into(),
+                subject: subject.into(),
+                body: body.into(),
+                ..Default::default()
+            });
+            self.send_compose(doc);
+        }
+        // The first one's server refused it, in its own words: it stays
+        // where it is, with the reason, until it is taken back.
+        let refused = crate::resource::read_mail(doc.doc())
+            .map(|mail| mail.outgoing())
+            .unwrap_or_default()
+            .first()
+            .map(|(outgoing, _)| outgoing.id.clone());
+        if let Some(id) = refused {
+            self.shared.borrow().submit(
+                doc,
+                crate::resource::Mail::paths().outbox.settle(
+                    &ui::prelude::Id::from_raw(&id),
+                    &ui::tilo_resource::Settled::failed(
+                        "550 5.7.1 This message was refused as spam".to_owned(),
+                    ),
+                ),
+            );
+        }
+        // The sends staged here are held for undo as a person's are; the
+        // capture is of the outbox, not of that notice, so it comes down.
+        self.nav.dismiss_toast();
+        self.send_notice = false;
+        self.sending_notice_next = false;
+        self.held_sends.clear();
+        self.sends_to_hold = 0;
+        {
+            let mut st = self.shared.borrow_mut();
+            st.status = None;
+            st.status_undo = false;
+        }
+        let account = self.shared.borrow().accounts.active;
+        self.shared.borrow_mut().open_outbox(account);
+    }
+
     /// Stage the view state screenshot `scenario` shows over the fixture
     /// mailbox. Runs in the sync after the framework asked for it, with the
     /// document, so a scenario that changes mail (moving messages to Trash
@@ -785,6 +843,7 @@ impl MailApp {
                 .search
                 .open(SearchRequest::this_app().with_query("launch")),
             "preview" => self.stage_preview(),
+            "outbox" => self.stage_outbox(doc),
             "bulk" => self.stage_bulk(),
             "bulk_purge_confirmation" => self.stage_bulk_purge_confirmation(doc),
             "reply" => self.stage_reply(),
@@ -969,6 +1028,138 @@ impl MailApp {
         self.pending_engine_requests.insert(request_id, pending);
         self.awaiting_engine = true;
         Some(request_id)
+    }
+
+    /// Select all reads the whole folder: the rows held now, and, while the
+    /// folder has pages on its server this device has not read, one after
+    /// another, each joining the selection until the folder is whole.
+    fn select_all_in_folder(&mut self) {
+        let (account, folder, all_inboxes) = self.open_listing();
+        if self.shared.borrow().outbox_open {
+            return;
+        }
+        let more = self.folder_has_more(&account, folder, all_inboxes);
+        let mut st = self.shared.borrow_mut();
+        st.select_all_visible();
+        st.more_older = more;
+        st.selecting_all = more;
+        if more {
+            st.status = Some("Reading the rest of this folder…".into());
+            st.status_undo = false;
+            drop(st);
+            self.load_older();
+        } else {
+            let noun = Self::folder_noun(folder, all_inboxes);
+            st.finish_selection(&noun);
+        }
+        self.dirty = true;
+    }
+
+    /// The account, folder and both-inboxes state the list shows.
+    fn open_listing(&self) -> (AccountConfig, Folder, bool) {
+        let st = self.shared.borrow();
+        (st.accounts.active_config(), st.folder, st.all_inboxes)
+    }
+
+    /// What "all of it" is called: the folder's own name, or both inboxes'.
+    fn folder_noun(folder: Folder, all_inboxes: bool) -> String {
+        if all_inboxes {
+            "these folders".to_owned()
+        } else {
+            folder.title().to_owned()
+        }
+    }
+
+    /// Select all reads the whole folder, not the page of it this device
+    /// happens to hold: while pages are still on their way it asks for the
+    /// next one and lets the rows that arrive join the selection, and when
+    /// there are none left it says how many it took.
+    fn follow_select_all(&mut self) {
+        if !self.shared.borrow().selecting_all {
+            return;
+        }
+        let (account, folder, all_inboxes) = self.open_listing();
+        let more = self.folder_has_more(&account, folder, all_inboxes);
+        {
+            let mut st = self.shared.borrow_mut();
+            st.more_older = more;
+            st.extend_selection();
+        }
+        if more {
+            self.load_older();
+        } else {
+            let noun = Self::folder_noun(folder, all_inboxes);
+            self.shared.borrow_mut().finish_selection(&noun);
+        }
+        self.dirty = true;
+    }
+
+    /// Whether the open folder has pages on its server this device has not
+    /// read. Without a server, or before the folder's numbering is known,
+    /// what the device holds is the whole of it.
+    fn folder_has_more(&self, account: &AccountConfig, folder: Folder, all_inboxes: bool) -> bool {
+        if self.engine.is_none() {
+            return false;
+        }
+        let st = self.shared.borrow();
+        let accounts: Vec<String> = if all_inboxes {
+            st.accounts
+                .accounts
+                .iter()
+                .map(|account| account.config.email.clone())
+                .filter(|email| !email.is_empty())
+                .collect()
+        } else {
+            vec![account.email.clone()]
+        };
+        drop(st);
+        accounts.into_iter().any(|email| {
+            let known =
+                crate::sync::Window::of(&self.shared.borrow().mailbox, &email, folder).is_some();
+            known && self.has_older.get(&(email, folder)) != Some(&false)
+        })
+    }
+
+    /// What the document's outbox holds now: the messages every account
+    /// still has to send, with a server's refusal where one refused them.
+    /// The outbox page and the sidebar's count both read this.
+    fn read_outbox(&mut self, doc: &ui::tilo_resource::Doc) {
+        let waiting = crate::resource::read_mail(doc)
+            .map(|mail| mail.outgoing())
+            .unwrap_or_default();
+        let queued: Vec<QueuedMessage> = waiting
+            .into_iter()
+            .map(|(outgoing, reason)| QueuedMessage {
+                id: outgoing.id.clone(),
+                account: outgoing.account.clone(),
+                to: recipient_line(&outgoing.draft),
+                subject: if outgoing.draft.subject.trim().is_empty() {
+                    "No subject".to_owned()
+                } else {
+                    outgoing.draft.subject.clone()
+                },
+                body: outgoing.draft.body.clone(),
+                reason,
+            })
+            .collect();
+        let mut st = self.shared.borrow_mut();
+        if st.outbox != queued {
+            st.outbox = queued;
+            st.dirty = true;
+        }
+        // The page always has a message open, and never one that left the
+        // outbox (sent, taken back): the newest that a server stopped, since
+        // that is the one waiting on the person, else the newest.
+        if st.outbox_open && st.open_queued().is_none() {
+            let queued = st.queued();
+            st.outbox_selected = queued
+                .iter()
+                .rev()
+                .find(|queued| queued.reason.is_some())
+                .or_else(|| queued.last())
+                .map(|queued| queued.id.clone());
+            st.dirty = true;
+        }
     }
 
     /// Accept only events that match a request still pending in this app. A
@@ -1260,6 +1451,10 @@ impl MailApp {
                     state.set_active_account(account);
                     state.select_folder(doc, folder);
                 }
+                Command::OpenOutbox(account) => self.shared.borrow_mut().open_outbox(account),
+                Command::CancelSend(id) => {
+                    self.shared.borrow_mut().cancel_send(doc, &id);
+                }
                 Command::OpenAllInboxes => self.shared.borrow_mut().open_all_inboxes(),
                 Command::AccountSettings => self.open_account_settings(),
                 Command::Compose => {
@@ -1284,7 +1479,7 @@ impl MailApp {
                     let selecting = self.shared.borrow().bulk_selecting;
                     self.shared.borrow_mut().set_bulk_selecting(!selecting);
                 }
-                Command::SelectAllVisible => self.shared.borrow_mut().select_all_visible(),
+                Command::SelectAllVisible => self.select_all_in_folder(),
                 Command::Bulk(BulkAction::Purge) => {
                     self.shared
                         .borrow_mut()
@@ -2793,6 +2988,9 @@ impl MailApp {
             }
             state.dirty = true;
         }
+        // A page Select all was reading has landed: it joins the selection,
+        // and the next one is asked for if the folder has more.
+        self.follow_select_all();
         for account in std::mem::take(&mut self.pending_watch_fetches) {
             self.post_engine(EngineRequest::fetch(account, Folder::Inbox));
         }
@@ -3553,6 +3751,9 @@ impl MailApp {
     fn overview_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
+        if state.outbox_open {
+            return Self::outbox_accessibility_node(state);
+        }
         let rows = state.list_rows();
         let total = rows.len();
         let messages = rows
@@ -3643,6 +3844,56 @@ impl MailApp {
             .with_children(children);
         if total == 0 {
             list = list.with_description(format!("No messages in {}", state.folder.title()));
+        }
+        list
+    }
+
+    /// The outbox page: a row per message still to leave, each saying why it
+    /// has not, and the verb that takes it back unsent.
+    fn outbox_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let queued = state.queued();
+        let total = queued.len();
+        let rows: Vec<AccessNode> =
+            queued
+                .iter()
+                .enumerate()
+                .map(|(index, message)| {
+                    AccessNode::new(Role::ListItem)
+                        .with_name(format!("To {}: {}", message.to, message.subject))
+                        .with_description(message.state_line())
+                        .with_action_target(format!("mail.outbox:{}", message.id))
+                        .with_position(index + 1, total)
+                        .with_state(AccessState::new().focusable(true).selected(
+                            state.outbox_selected.as_deref() == Some(message.id.as_str()),
+                        ))
+                })
+                .collect();
+        let mut children = Vec::new();
+        if let Some(message) = state.open_queued() {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(format!("Cancel sending to {}", message.to))
+                    .with_action_target(format!("mail.outbox-cancel:{}", message.id))
+                    .with_state(AccessState::new().focusable(true)),
+            );
+            children.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Queued message")
+                    .with_description(match &message.reason {
+                        Some(reason) => format!("The server refused this message: {reason}"),
+                        None => "This message has not been sent yet.".to_owned(),
+                    })
+                    .with_value(message.body.clone()),
+            );
+        }
+        children.extend(rows);
+        let mut list = AccessNode::new(Role::List)
+            .with_name("Outbox")
+            .with_children(children);
+        if total == 0 {
+            list = list.with_description("Nothing is waiting to be sent");
         }
         list
     }
@@ -3775,6 +4026,7 @@ impl Widget for MailApp {
         }
         self.compose.sync(state, path);
         self.show_status();
+        self.read_outbox(state);
 
         let mem_seeded = self.shared.borrow().seeded;
         if !mem_seeded {
@@ -4190,6 +4442,18 @@ impl Widget for MailApp {
         if let Some(raw) = target.strip_prefix("mail.bulk:") {
             return self.perform_bulk_semantic_action(raw, action, state);
         }
+        if let Some(raw) = target.strip_prefix("mail.outbox-cancel:") {
+            let mut mail = self.shared.borrow_mut();
+            mail.cancel_send(state, raw);
+            drop(mail);
+            self.dirty = true;
+            return true;
+        }
+        if let Some(raw) = target.strip_prefix("mail.outbox:") {
+            self.shared.borrow_mut().select_queued(raw);
+            self.dirty = true;
+            return true;
+        }
 
         let Some(raw) = target.strip_prefix("mail.message:") else {
             return false;
@@ -4269,6 +4533,21 @@ impl Widget for MailApp {
         self.nav.mark_drawn();
         self.compose.mark_drawn();
         self.shortcuts.mark_drawn();
+    }
+}
+
+/// Who a queued message goes to, as one line: every recipient list it has.
+fn recipient_line(draft: &crate::actions::DraftData) -> String {
+    let mut to = Vec::new();
+    for field in [&draft.to, &draft.cc, &draft.bcc] {
+        for address in crate::transport::parse_addr_list(field) {
+            to.push(address.display());
+        }
+    }
+    if to.is_empty() {
+        "nobody yet".to_owned()
+    } else {
+        to.join(", ")
     }
 }
 
@@ -5189,7 +5468,12 @@ impl MailApp {
                 let selecting = mail.bulk_selecting;
                 mail.set_bulk_selecting(!selecting);
             }
-            "select-all" if mail.bulk_selecting => mail.select_all_visible(),
+            "select-all" if mail.bulk_selecting => {
+                drop(mail);
+                self.select_all_in_folder();
+                self.process_intents();
+                return true;
+            }
             "archive" if mail.bulk_selecting => {
                 let affected = mail.apply_bulk_action(state, BulkAction::Archive);
                 if affected == 0 {
@@ -6390,6 +6674,248 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             in_drafts(&app).is_empty(),
             "the sent message no longer shows in Drafts"
         );
+    }
+
+    /// Select all acts on the whole folder: without a server to read the
+    /// rest from, what the device holds is the whole of it, and the status
+    /// says how many it took rather than leaving the person to count.
+    #[test]
+    fn select_all_takes_the_whole_folder_and_says_how_many() {
+        let (mut app, mut doc) = app();
+        app.shared.borrow_mut().set_bulk_selecting(true);
+        app.shared
+            .borrow_mut()
+            .push_command(Command::SelectAllVisible);
+        app.apply_commands(&mut ui::widget::Edits::lend(&mut doc));
+        let (rows, selected, status) = {
+            let st = app.shared.borrow();
+            (
+                st.list_rows().len(),
+                st.selected_bulk_ids().len(),
+                st.status.clone(),
+            )
+        };
+        assert!(rows > 0, "the sample inbox holds rows");
+        assert!(
+            !app.shared.borrow().selecting_all,
+            "there is nothing more to read"
+        );
+        assert_eq!(selected, rows, "every row is chosen");
+        assert_eq!(
+            status.as_deref(),
+            Some(format!("Selected all {rows} messages in Inbox").as_str())
+        );
+    }
+
+    /// Select all on a folder whose server holds pages this device has not
+    /// read asks for them, and acts on none of them until the folder is
+    /// whole — the old "Marked 50 read" over a wall of unread mail was a
+    /// whole-folder command applied to one page.
+    #[test]
+    fn select_all_reads_the_pages_the_server_still_holds() {
+        let (mut app, mut doc) = app();
+        let (outgoing, requests) = std::sync::mpsc::channel();
+        let (incoming, incoming_rx) = std::sync::mpsc::channel();
+        app.engine = Some(EngineHandle {
+            tx: outgoing,
+            rx: incoming_rx,
+        });
+        let account = app.shared.borrow().accounts.active_config().email;
+        let first_page = |app: &mut MailApp, doc: &mut AutoCommit| {
+            let config = app.shared.borrow().accounts.active_config();
+            let request = app
+                .post_engine(EngineRequest::fetch(config, Folder::Inbox))
+                .unwrap();
+            let _ = requests.try_recv().unwrap();
+            incoming
+                .send(EngineEvent::Fetched {
+                    request_id: request,
+                    account_id: account.clone(),
+                    folder: Folder::Inbox,
+                    synced: crate::sync::Synced {
+                        uid_validity: 9,
+                        reset: true,
+                        messages: vec![fetched(&account, 1, 9, 100), fetched(&account, 2, 9, 200)],
+                        has_older: Some(true),
+                        ..Default::default()
+                    },
+                })
+                .unwrap();
+            incoming
+                .send(EngineEvent::Completed {
+                    request_id: request,
+                    kind: EngineRequestKind::Fetch,
+                })
+                .unwrap();
+            app.drain_engine(&mut ui::widget::Edits::lend(doc));
+            app.hydrate_domain_state(&mut ui::widget::Edits::lend(doc));
+        };
+        first_page(&mut app, &mut doc);
+        assert_eq!(
+            app.has_older.get(&(account.clone(), Folder::Inbox)),
+            Some(&true)
+        );
+
+        // Select all: the page held is chosen, and the page before is asked
+        // for rather than "all" being reported over what this device has.
+        app.shared.borrow_mut().set_bulk_selecting(true);
+        app.shared
+            .borrow_mut()
+            .push_command(Command::SelectAllVisible);
+        app.apply_commands(&mut ui::widget::Edits::lend(&mut doc));
+        let posted: Vec<EngineRequest> = requests.try_iter().collect();
+        assert!(
+            posted.iter().any(|request| matches!(
+                request,
+                EngineRequest::Fetch {
+                    want: crate::sync::Want::Older { .. },
+                    ..
+                }
+            )),
+            "the page before is asked for: {posted:?}"
+        );
+        assert!(app.shared.borrow().selecting_all);
+        let chose = app.shared.borrow().selected_bulk_ids().len();
+        assert_eq!(
+            app.shared.borrow().status.as_deref(),
+            Some("Reading the rest of this folder…")
+        );
+
+        // The last page arrives: the folder is whole, and the selection is
+        // every message in it.
+        let config = app.shared.borrow().accounts.active_config();
+        let request = app
+            .post_engine(EngineRequest::fetch(config, Folder::Inbox))
+            .unwrap();
+        let _ = requests.try_recv().unwrap();
+        incoming
+            .send(EngineEvent::Fetched {
+                request_id: request,
+                account_id: account.clone(),
+                folder: Folder::Inbox,
+                synced: crate::sync::Synced {
+                    uid_validity: 9,
+                    messages: vec![fetched(&account, 3, 9, 300)],
+                    has_older: Some(false),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        incoming
+            .send(EngineEvent::Completed {
+                request_id: request,
+                kind: EngineRequestKind::Fetch,
+            })
+            .unwrap();
+        app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
+        app.hydrate_domain_state(&mut ui::widget::Edits::lend(&mut doc));
+        let st = app.shared.borrow();
+        assert!(!st.selecting_all, "there is nothing left to read");
+        let held = st.list_rows().len();
+        assert!(held > chose, "the page that arrived joined it");
+        assert_eq!(st.selected_bulk_ids().len(), held);
+        assert_eq!(
+            st.status.as_deref(),
+            Some(format!("Selected all {held} messages in Inbox").as_str())
+        );
+    }
+
+    /// The outbox is a place: a row in the sidebar, a page of what waits to
+    /// leave with the reason a server refused it, and the verb that takes a
+    /// message back unsent.
+    #[test]
+    fn the_outbox_shows_what_waits_and_why_and_takes_a_message_back() {
+        let (mut app, mut doc) = app();
+        TestMail::store_draft(
+            &mut doc,
+            &crate::model::Draft {
+                to: "dest@there.example".into(),
+                subject: "Ready to go".into(),
+                body: "See you at noon".into(),
+                ..Default::default()
+            },
+        );
+        app.hydrate_domain_state_now(&mut ui::widget::Edits::lend(&mut doc));
+        let id = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages_in(Folder::Drafts)
+            .first()
+            .map(|message| message.id)
+            .expect("the draft shows in Drafts");
+        app.open_draft(id);
+        app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+        let waiting = TestMail::outbox(&doc);
+        let [(queued, None)] = waiting.as_slice() else {
+            panic!("one message waits: {waiting:?}");
+        };
+        let queued_id = queued.id.clone();
+
+        // A device that holds the account refuses it, in its own words.
+        TestMail::settle_delivery(
+            &mut doc,
+            &queued_id,
+            &ui::tilo_resource::Settled::failed("550 mailbox unavailable".to_owned()),
+        );
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+
+        let account = app.shared.borrow().accounts.active;
+        app.shared.borrow_mut().open_outbox(account);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        {
+            let state = app.shared.borrow();
+            assert_eq!(state.queued_count(account), 1, "the sidebar counts it");
+            let [row] = state.queued()[..] else {
+                panic!("the outbox holds the message that never left");
+            };
+            assert_eq!(row.to, "dest@there.example");
+            assert_eq!(row.subject, "Ready to go");
+            assert_eq!(
+                row.state_line(),
+                "550 mailbox unavailable",
+                "the server's refusal is the row's own words"
+            );
+            assert_eq!(
+                crate::sidebar::selected_row(&state).as_deref(),
+                Some("0/outbox"),
+                "the sidebar shows where the person is"
+            );
+        }
+        assert_eq!(
+            crate::window_bar::location(&app.shared.borrow(), None),
+            "Outbox"
+        );
+        // The page says the same: what waits, and the verb that takes it back.
+        let tree = MailApp::overview_accessibility_node(&app.shared.borrow());
+        let said = format!("{tree:?}");
+        assert!(
+            said.contains("To dest@there.example: Ready to go"),
+            "{said}"
+        );
+        assert!(said.contains("550 mailbox unavailable"), "{said}");
+        app.perform_semantic_action(
+            &format!("mail.outbox-cancel:{queued_id}"),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        );
+        assert!(
+            TestMail::outbox(&doc).is_empty(),
+            "taken out of the outbox unsent: {:?}",
+            TestMail::outbox(&doc)
+        );
+        assert_eq!(
+            app.shared.borrow().status.as_deref(),
+            Some("Taken out of the outbox; nothing was sent"),
+            "the page says what it did"
+        );
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(app.shared.borrow().queued_count(account), 0, "and gone");
     }
 
     impl MailApp {

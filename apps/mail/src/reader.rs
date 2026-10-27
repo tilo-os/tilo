@@ -513,6 +513,9 @@ pub struct MessageReader {
     quotes_open: HashSet<MessageId>,
     /// The "show the quote" button under each folded message, as painted.
     quote_buttons: Vec<(Rect, MessageId)>,
+    /// The outbox page's "Cancel sending" button, as painted, and the queued
+    /// message it takes back.
+    cancel_button: Option<(Rect, String)>,
     /// What find matched in the messages' text, in reading order, and the
     /// current one.
     text_matches: Vec<TextMatch>,
@@ -547,6 +550,7 @@ impl MessageReader {
             headers: Vec::new(),
             quotes_open: HashSet::new(),
             quote_buttons: Vec::new(),
+            cancel_button: None,
             text_matches: Vec::new(),
             text_current: None,
             html_query: None,
@@ -600,6 +604,133 @@ impl MessageReader {
     #[cfg(test)]
     pub(crate) fn remote_button(&self) -> Option<Rect> {
         self.remote_buttons.load
+    }
+
+    /// The open queued message, or, with none open, how the outbox works.
+    /// Nothing here sends or edits: the words are the words that will go,
+    /// and the server's refusal is why they have not.
+    fn paint_outbox(&mut self, ctx: &mut PaintCtx<'_>, state: &MailState) {
+        let theme = ctx.theme;
+        let r = self.rect;
+        let Some(queued) = state.open_queued() else {
+            self.cancel_button = None;
+            EmptyState::paint(
+                ctx,
+                r,
+                &EmptyStateContent {
+                    icon: Some(Icon::Send),
+                    message: Some("A message leaves when its account can send it."),
+                    ..EmptyStateContent::new("No queued message selected")
+                },
+                Point::new(-1.0, -1.0),
+            );
+            return;
+        };
+        let spacing = &theme.tokens.spacing;
+        let gutter = f64::from(spacing.rhythm.group);
+        let x0 = r.x0 + gutter;
+        let x1 = r.x1 - gutter;
+        let mut y = r.y0 + f64::from(spacing.rhythm.section);
+        // What it is: the subject, then who it goes to and from which
+        // account.
+        let subject = if queued.subject.trim().is_empty() {
+            "No subject".to_owned()
+        } else {
+            queued.subject.clone()
+        };
+        let wide = ui::num::f32_of_f64(x1 - x0);
+        ctx.text_role(
+            &subject,
+            TextRole::Heading,
+            theme.text_primary,
+            Point::new(x0, y),
+            Some(wide),
+        );
+        y += ctx.line_box(TextRole::Heading) + f64::from(spacing.rhythm.related);
+        let to = format!("To {}", queued.to);
+        ctx.text_role(
+            &to,
+            TextRole::Body,
+            theme.text_dim,
+            Point::new(x0, y),
+            Some(wide),
+        );
+        y += ctx.line_box(TextRole::Body);
+        let from = format!("From {}", queued.account);
+        ctx.text_role(
+            &from,
+            TextRole::Body,
+            theme.text_tertiary,
+            Point::new(x0, y),
+            Some(wide),
+        );
+        y += ctx.line_box(TextRole::Body) + f64::from(spacing.rhythm.section);
+        // Why it has not gone: the server's refusal, or that it waits.
+        let why = match &queued.reason {
+            Some(reason) => format!("The server refused this message: {reason}"),
+            None => "This message has not been sent yet.".to_owned(),
+        };
+        let banner = Rect::new(
+            x0,
+            y,
+            x1,
+            y + 2.0 * f64::from(spacing.s3) + ctx.line_box(TextRole::Body),
+        );
+        let hit = Banner::paint(
+            ctx,
+            banner,
+            &BannerContent {
+                // The one verb the outbox has, where the reason is: a message
+                // that will not go is taken back from beside the words saying
+                // so.
+                action: Some("Cancel sending"),
+                ..BannerContent::new(
+                    if queued.reason.is_some() {
+                        BannerKind::Error
+                    } else {
+                        BannerKind::Info
+                    },
+                    &why,
+                )
+            },
+            self.pointer,
+        );
+        self.cancel_button = hit.action.map(|rect| (rect, queued.id.clone()));
+        y = banner.y1 + f64::from(spacing.rhythm.section);
+        // The words that will go.
+        let body_h = (r.y1
+            - y
+            - ButtonFace::height(ControlSize::Regular, theme)
+            - 2.0 * f64::from(spacing.rhythm.section))
+        .max(0.0);
+        let body = Rect::new(x0, y, x1, y + body_h);
+        if body.height() > 0.0 && !queued.body.trim().is_empty() {
+            ctx.scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                ctx.transform,
+                &body,
+            );
+            let style = theme.text(TextRole::Body);
+            let mut line_y = body.y0;
+            let line_h =
+                ctx.line_box(TextRole::Body) + f64::from(theme.tokens.spacing.rhythm.tight);
+            for line in queued.body.lines() {
+                if line_y + line_h > body.y1 {
+                    break;
+                }
+                ctx.text(
+                    line,
+                    &style,
+                    theme.text_primary,
+                    Point::new(body.x0, line_y),
+                    Some(ui::num::f32_of_f64(body.width())),
+                );
+                line_y += line_h;
+            }
+            ctx.scene.pop_layer();
+        }
     }
 
     fn paint_empty(&self, ctx: &mut PaintCtx<'_>, state: &MailState) {
@@ -1047,7 +1178,19 @@ impl MessageReader {
         }
     }
 
-    fn press(&mut self, point: Point) -> bool {
+    fn press(&mut self, point: Point, doc: &mut ui::widget::Edits<'_>) -> bool {
+        if let Some((_, id)) = self
+            .cancel_button
+            .as_ref()
+            .filter(|(rect, _)| rect.contains(point))
+        {
+            let id = id.clone();
+            // The same verb an agent and the palette invoke; the page is a
+            // surface of it, not a second path.
+            self.shared.borrow_mut().cancel_send(doc, &id);
+            self.dirty = true;
+            return true;
+        }
         if let Some(choice) = self.remote_buttons.at(point)
             && let Some(id) = self.html_message
         {
@@ -1439,6 +1582,19 @@ impl Widget for MessageReader {
         }
         self.theme = theme.clone();
         self.region.set_viewport(self.rect, theme);
+        if self.shared.borrow().outbox_open {
+            // The outbox page: what waits to leave, why it has not, and the
+            // one thing that can be done about it here.
+            self.attachments.clear();
+            self.attachment_saves.clear();
+            self.headers.clear();
+            self.quote_buttons.clear();
+            let shared = self.shared.clone();
+            let state = shared.borrow();
+            self.paint_outbox(&mut PaintCtx::new(scene, t, tr, theme), &state);
+            return;
+        }
+        self.cancel_button = None;
         self.paint_thread(scene, t, tr, theme, presence);
     }
 
@@ -1497,7 +1653,7 @@ impl Widget for MessageReader {
             ..
         } = event
             && self.rect.contains(self.pointer)
-            && self.press(self.pointer)
+            && self.press(self.pointer, &mut ctx.state)
         {
             *ctx.handled = true;
         }
@@ -2022,7 +2178,10 @@ mod tests {
 
         // "Load images" loads this message's, and only this message's.
         let button = reader.remote_button().expect("the Load images button");
-        assert!(reader.press(button.center()));
+        assert!(reader.press(
+            button.center(),
+            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+        ));
         draw(&mut reader);
         assert_eq!(loaded(&reader), Some((id, true)));
         assert!(shown_document(&engine).contains("track.fieldnotes.example"));
@@ -2061,7 +2220,10 @@ mod tests {
         draw(&mut reader);
         assert_eq!(loaded(&reader), Some((id, false)));
         let always = reader.remote_buttons.always.expect("the always button");
-        assert!(reader.press(always.center()));
+        assert!(reader.press(
+            always.center(),
+            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+        ));
         assert!(
             shared
                 .borrow()
@@ -2072,7 +2234,10 @@ mod tests {
         draw(&mut reader);
         assert_eq!(loaded(&reader), Some((id, true)));
         let stop = reader.remote_buttons.stop.expect("a way to stop it again");
-        assert!(reader.press(stop.center()));
+        assert!(reader.press(
+            stop.center(),
+            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+        ));
         draw(&mut reader);
         assert_eq!(loaded(&reader), Some((id, false)));
     }
@@ -2270,7 +2435,13 @@ mod tests {
             .first()
             .expect("the attachment is a chip");
         assert_eq!(message, id);
-        assert!(reader.press(rect.center()), "chip press consumed");
+        assert!(
+            reader.press(
+                rect.center(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+            ),
+            "chip press consumed"
+        );
         assert!(
             shared.borrow_mut().take_intents().iter().any(|intent| matches!(
                 intent,
@@ -2282,7 +2453,10 @@ mod tests {
             .attachment_saves
             .first()
             .expect("a downloaded attachment can be saved");
-        assert!(reader.press(save.center()));
+        assert!(reader.press(
+            save.center(),
+            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+        ));
         assert!(
             shared.borrow_mut().take_intents().iter().any(|intent| matches!(
                 intent,
@@ -2384,7 +2558,10 @@ Message-ID: <{id}>\r\n{reply}\r\n{body}\r\n"
             .find(|(_, id)| *id == first_id)
             .map(|(rect, _)| *rect)
             .expect("the earlier message's header can be clicked");
-        assert!(reader.press(header.center()));
+        assert!(reader.press(
+            header.center(),
+            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+        ));
         draw(&mut reader);
         assert!(
             reader.bodies.contains_key(&first_id),
@@ -2396,7 +2573,10 @@ Message-ID: <{id}>\r\n{reply}\r\n{body}\r\n"
             .find(|(_, id)| *id == first_id)
             .map(|(rect, _)| *rect)
             .expect("an open earlier message keeps its header");
-        assert!(reader.press(header.center()));
+        assert!(reader.press(
+            header.center(),
+            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+        ));
         assert!(
             !reader.expanded.contains(&first_id),
             "a second click closes it"
@@ -2446,7 +2626,10 @@ Message-ID: <{id}>\r\n{reply}\r\n{body}\r\n"
         };
         assert!(!text(&reader).contains("Lunch at noon"), "the quote waits");
         let (button, _) = *reader.quote_buttons.first().expect("a button unfolds it");
-        assert!(reader.press(button.center()));
+        assert!(reader.press(
+            button.center(),
+            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new())
+        ));
         draw(&mut reader);
         assert!(
             text(&reader).contains("Lunch at noon"),
