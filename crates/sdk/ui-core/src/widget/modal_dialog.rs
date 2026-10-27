@@ -2159,6 +2159,14 @@ impl Widget for ModalDialog<dyn Widget> {
         self.content.sync(state, path);
     }
 
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // A move the top layer found (a new window, a scroll) is laid out.
+        if self.open && (self.stale || self.remeasure) {
+            crate::widget::note_layout_moved();
+        }
+        super::defaults::update(self.children_mut(), state, path)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2755,6 +2763,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.as_dyn_mut().sync(state, path);
+    }
+
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.as_dyn_mut().update(state, path)
     }
 
     fn build_layout(

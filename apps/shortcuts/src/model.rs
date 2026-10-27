@@ -9,9 +9,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use tilo_automation::{
-    AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec,
-};
+use tilo_automation::{Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec};
 use ui::prelude::*;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
 
@@ -114,8 +112,26 @@ pub enum Head {
         param: ActionParam,
     },
     Ai {
-        transform: AiTransform,
-        input: Binding,
+        /// What to do, in the person's words.
+        prompt: String,
+        /// The step's own input; the step before it when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<Binding>,
+        /// The shape the answer must have, as a JSON Schema; text when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
+    },
+    Task {
+        /// What the task is to do, in the person's words.
+        instruction: String,
+        /// What it may use, as the grant node of each action. It narrows the
+        /// shortcut's own grant and never widens it. Held as the values the
+        /// policy layer reads, the shape the agent's task action takes them in.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allow: Vec<serde_json::Value>,
+        /// The shape the summary must have, as a JSON Schema; text when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output: Option<serde_json::Value>,
     },
 }
 
@@ -176,10 +192,31 @@ impl Head {
                 BTreeMap::new(),
                 Vec::new(),
             ),
-            StepKind::Ai { transform, input } => (
+            StepKind::Ai {
+                prompt,
+                output,
+                input,
+            } => (
                 Self::Ai {
-                    transform: transform.clone(),
+                    prompt: prompt.clone(),
+                    output: output.clone(),
                     input: input.clone(),
+                },
+                BTreeMap::new(),
+                Vec::new(),
+            ),
+            StepKind::Task {
+                instruction,
+                allow,
+                output,
+            } => (
+                Self::Task {
+                    instruction: instruction.clone(),
+                    allow: allow
+                        .iter()
+                        .filter_map(|rule| serde_json::to_value(rule).ok())
+                        .collect(),
+                    output: output.clone(),
                 },
                 BTreeMap::new(),
                 Vec::new(),
@@ -217,7 +254,27 @@ impl Head {
             },
             Self::SetVar { name, value } => StepKind::SetVar { name, value },
             Self::Ask { param } => StepKind::Ask { param },
-            Self::Ai { transform, input } => StepKind::Ai { transform, input },
+            Self::Ai {
+                prompt,
+                output,
+                input,
+            } => StepKind::Ai {
+                prompt,
+                output,
+                input,
+            },
+            Self::Task {
+                instruction,
+                allow,
+                output,
+            } => StepKind::Task {
+                instruction,
+                allow: allow
+                    .iter()
+                    .filter_map(|rule| serde_json::from_value(rule.clone()).ok())
+                    .collect(),
+                output,
+            },
         }
     }
 }
@@ -846,6 +903,7 @@ fn fresh_step_id(steps: &[Step], kind: &StepKind) -> String {
         StepKind::SetVar { .. } => "set".into(),
         StepKind::Ask { .. } => "ask".into(),
         StepKind::Ai { .. } => "ai".into(),
+        StepKind::Task { .. } => "task".into(),
     };
     let base = if base.is_empty() { "step".into() } else { base };
     let mut taken = Vec::new();
@@ -873,7 +931,8 @@ fn collect_ids(steps: &[Step], out: &mut Vec<String>) {
             StepKind::Invoke { .. }
             | StepKind::SetVar { .. }
             | StepKind::Ask { .. }
-            | StepKind::Ai { .. } => {}
+            | StepKind::Ai { .. }
+            | StepKind::Task { .. } => {}
         }
     }
 }

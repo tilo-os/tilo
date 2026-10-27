@@ -152,7 +152,7 @@ impl ShortcutsWindow {
             }
             (DELETE, Open::Saved(id)) => ui.dispatcher.effect(&DoorEffect::Delete { shortcut: id }),
             (DUPLICATE, Open::Draft(id)) => {
-                ui.dispatcher.submit(Workbench::DUPLICATE_DRAFT.with(id))
+                ui.dispatcher.submit(Workbench::DUPLICATE_DRAFT.with(id));
             }
             (DUPLICATE, Open::Saved(id)) => {
                 let shortcut = ui.door.with(|door| {

@@ -15,6 +15,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::rc::Rc;
 
 use ui::LocalState;
@@ -900,14 +901,13 @@ impl ApiTesterApp {
             // The same verb the click runs: the entry's whole request comes
             // back through the record, so a collaborator sees the builder
             // change too. The local copy only saves a frame.
-            self.request = match entry.replay.as_ref() {
-                Some(replay) => replay.to_request(),
-                None => {
-                    let mut request = crate::seed::blank_request();
-                    request.method = entry.method;
-                    request.url = entry.url;
-                    request
-                }
+            self.request = if let Some(replay) = entry.replay.as_ref() {
+                replay.to_request()
+            } else {
+                let mut request = crate::seed::blank_request();
+                request.method = entry.method;
+                request.url = entry.url;
+                request
             };
             self.selected = None;
             self.error = None;
@@ -1503,6 +1503,41 @@ impl ApiTesterApp {
         ))
     }
 
+    /// Seal `secret` as the open request's credential, keeping only its
+    /// reference in the document.
+    fn set_credential(&self, secret: String, cx: &mut EffectCx<Workspace, Self>) -> EffectAnswer {
+        let id = self.request.id.clone();
+        let before = self.workspace.request.auth.clone();
+        let auth = self.request.auth.with_secret(&secret);
+        let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
+        // Build storage futures on their owning runtime thread: browser
+        // storage handles must never move between threads.
+        let stored = ui::rt::app().spawn_pinned(move || async move {
+            crate::credentials::seal_async(&auth, &secrets)
+                .await
+                .map_err(str::to_owned)
+        });
+        Ok(cx.spawn(
+            move |_| async move {
+                stored
+                    .await
+                    .map_err(|_| "credential storage task failed".to_string())?
+            },
+            move |app: &mut Self, sealed, cx| {
+                let Auth::SecretRef { id: reference, .. } = sealed? else {
+                    return Err("choose an authentication scheme first".into());
+                };
+                if app.request.id != id || app.workspace.request.auth != before {
+                    return Err("request changed while saving authentication; try again".into());
+                }
+                cx.submit(Workspace::paths().request.auth.reference.replace(reference));
+                app.request.auth = app.request.auth.with_secret(&secret);
+                app.dirty = true;
+                Ok(Effected::done())
+            },
+        ))
+    }
+
     pub(crate) fn answer_effect(
         &mut self,
         effect: ApiTesterEffect,
@@ -1552,40 +1587,7 @@ impl ApiTesterApp {
                 };
                 copied.map(|()| Effected::done())
             }
-            ApiTesterEffect::SetCredential { secret } => {
-                let id = self.request.id.clone();
-                let before = self.workspace.request.auth.clone();
-                let auth = self.request.auth.with_secret(&secret);
-                let secrets = self.secrets.clone().ok_or("this window keeps no secrets")?;
-                // Build storage futures on their owning runtime thread: browser
-                // storage handles must never move between threads.
-                let stored = ui::rt::app().spawn_pinned(move || async move {
-                    crate::credentials::seal_async(&auth, &secrets)
-                        .await
-                        .map_err(str::to_owned)
-                });
-                Ok(cx.spawn(
-                    move |_| async move {
-                        stored
-                            .await
-                            .map_err(|_| "credential storage task failed".to_string())?
-                    },
-                    move |app: &mut Self, sealed, cx| {
-                        let Auth::SecretRef { id: reference, .. } = sealed? else {
-                            return Err("choose an authentication scheme first".into());
-                        };
-                        if app.request.id != id || app.workspace.request.auth != before {
-                            return Err(
-                                "request changed while saving authentication; try again".into()
-                            );
-                        }
-                        cx.submit(Workspace::paths().request.auth.reference.replace(reference));
-                        app.request.auth = app.request.auth.with_secret(&secret);
-                        app.dirty = true;
-                        Ok(Effected::done())
-                    },
-                ))
-            }
+            ApiTesterEffect::SetCredential { secret } => self.set_credential(secret, cx),
             ApiTesterEffect::SetSecretValue { variable, value } => {
                 let secret = self
                     .environments
@@ -1637,27 +1639,18 @@ impl ApiTesterApp {
     /// Copy the response body exactly as the pane shows it — the text a bug
     /// report or a colleague needs.
     fn copy_body(&mut self) -> Result<(), String> {
-        match &self.response {
-            Some(response) => self.copy_to_clipboard(response.body.clone(), "api-copied-body"),
-            None => {
-                let reason = "There is no response to copy yet.";
-                self.error = Some(reason.to_owned());
-                self.dirty = true;
-                self.stale.response = true;
-                Err(reason.to_owned())
-            }
-        }
+        let Some(response) = &self.response else {
+            return self.no_response_to_copy();
+        };
+        let body = response.body.clone();
+        self.copy_to_clipboard(&body, "api-copied-body")
     }
 
     /// Copy every response header, one `Name: value` per line, so a token in
     /// one of them can be taken without retyping it.
     fn copy_headers(&mut self) -> Result<(), String> {
         let Some(response) = &self.response else {
-            let reason = "There is no response to copy yet.";
-            self.error = Some(reason.to_owned());
-            self.dirty = true;
-            self.stale.response = true;
-            return Err(reason.to_owned());
+            return self.no_response_to_copy();
         };
         let text = response
             .headers
@@ -1668,7 +1661,15 @@ impl ApiTesterApp {
                 "
 ",
             );
-        self.copy_to_clipboard(text, "api-copied-headers")
+        self.copy_to_clipboard(&text, "api-copied-headers")
+    }
+
+    fn no_response_to_copy(&mut self) -> Result<(), String> {
+        let reason = "There is no response to copy yet.";
+        self.error = Some(reason.to_owned());
+        self.dirty = true;
+        self.stale.response = true;
+        Err(reason.to_owned())
     }
 
     /// Copy the request as it was authored (**with its `{{variables}}`, and
@@ -1678,7 +1679,7 @@ impl ApiTesterApp {
         let request = &self.request;
         let mut text = format!("{} {}", request.method.as_str(), request.url);
         for row in request.headers.iter().filter(|row| row.enabled) {
-            text.push_str(&format!("\n{}: {}", row.key, row.value));
+            let _ = write!(text, "\n{}: {}", row.key, row.value);
         }
         text.push('\n');
         if !request.body_text.trim().is_empty() {
@@ -1686,12 +1687,12 @@ impl ApiTesterApp {
             text.push_str(&request.body_text);
             text.push('\n');
         }
-        self.copy_to_clipboard(text, "api-copied-request")
+        self.copy_to_clipboard(&text, "api-copied-request")
     }
 
     /// Put `text` on the clipboard and say so, or say it did not take.
-    fn copy_to_clipboard(&mut self, text: String, done: &str) -> Result<(), String> {
-        let copied = self.copy.watch(ui::try_clipboard_copy(&text));
+    fn copy_to_clipboard(&mut self, text: &str, done: &str) -> Result<(), String> {
+        let copied = self.copy.watch(ui::try_clipboard_copy(text));
         if copied {
             self.error = None;
             self.notice = Some(ui::i18n::I18nManager::format(done, &[]));

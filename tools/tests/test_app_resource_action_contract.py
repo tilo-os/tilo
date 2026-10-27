@@ -1057,7 +1057,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "fn view() { Button::new().on_click(|| mutate_domain()); }\n"
             )
             violations, _ = contract.audit(root)
-            self.assertTrue(any("raw on_click closure" in item.reason for item in violations))
+            self.assertTrue(any("closure-activated control" in item.reason for item in violations))
         with self.subTest(phase='audited callback ceiling is reduce only'):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
@@ -1069,7 +1069,7 @@ class AppResourceActionContractTests(unittest.TestCase):
             baseline = root / contract.BASELINE / "sample.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
-                '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+                '[ratchets.closure_control]\n"apps/sample/src/lib.rs"=1\n',
                 encoding="utf-8",
             )
             violations, _ = contract.audit(root)
@@ -1093,11 +1093,11 @@ class AppResourceActionContractTests(unittest.TestCase):
             baseline = root / contract.BASELINE / "sample.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
-                '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+                '[ratchets.closure_control]\n"apps/sample/src/lib.rs"=1\n',
                 encoding="utf-8",
             )
             violations, _ = contract.audit(root)
-            self.assertTrue(any("stale raw_on_click_closure ceiling" in item.reason for item in violations))
+            self.assertTrue(any("stale closure_control ceiling" in item.reason for item in violations))
         with self.subTest(phase="each ceiling lives in its app's baseline file"):
             root = self.fixture(
                 "use tilo_actions::ActionSpec;\n"
@@ -1109,11 +1109,91 @@ class AppResourceActionContractTests(unittest.TestCase):
             baseline = root / contract.BASELINE / "other.toml"
             baseline.parent.mkdir(parents=True)
             baseline.write_text(
-                '[ratchets.raw_on_click_closure]\n"apps/sample/src/lib.rs"=1\n',
+                '[ratchets.closure_control]\n"apps/sample/src/lib.rs"=1\n',
                 encoding="utf-8",
             )
             violations, _ = contract.audit(root)
             self.assertTrue(any("belongs in" in item.reason for item in violations))
+
+    def test_closure_controls_count_any_argument_but_an_action_binding(self):
+        header = (
+            "use tilo_actions::ActionSpec;\n"
+            "impl Widget for App { fn resources(&self, _: &Doc) -> Vec<Resource> {\n"
+            " vec![Resource::new(\"app\", \"app\", \"App\").with_action(\n"
+            " ActionSpec::immediate(\"go\", \"Go\", \"app.go\", &()).unwrap())] } }\n"
+        )
+        root = self.fixture(
+            header
+            + "fn view(ui: &Ui) {\n"
+            " Button::new().on_click(ui.push(Action::Open));\n"
+            " List::new().on_activate(open);\n"
+            " Input::new()\n   .on_change(move |text| set(text))\n   .on_submit(submit_handler);\n"
+            " Dialog::new().on_dismiss({ let c = c.clone(); move || c.set(true) });\n"
+            " Button::new().on_action(binding);\n"
+            " Button::new().on_effect(effect);\n"
+            " Row::new().on_context_menu(menu);\n"
+            "}\n"
+            "impl Pager { fn key(&mut self) { self.on_back(); self.on_select(1); } }\n"
+            "#[cfg(test)]\nmod tests { fn t() { Button::new().on_click(|| ()); } }\n"
+        )
+        (root / "apps/sample/src/tests.rs").write_text(
+            "fn t() { Button::new().on_click(|| ()); }\n", encoding="utf-8"
+        )
+        counts: dict[tuple[str, str], int] = {}
+        violations, _ = contract.audit(root, counts)
+        self.assertEqual(counts[("closure_control", "apps/sample/src/lib.rs")], 5)
+        self.assertEqual(counts[("closure_control", "apps/sample/src/tests.rs")], 0)
+        self.assertTrue(any("5 found, audited ceiling 0" in item.reason for item in violations))
+
+    def test_write_baseline_only_lowers_ceilings_unless_seeding_a_new_ratchet(self):
+        root = self.fixture("")
+        baseline = root / contract.BASELINE
+        baseline.mkdir(parents=True)
+        (baseline / "sample.toml").write_text(
+            '[ratchets.closure_control]\n"apps/sample/src/lib.rs" = 3\n"apps/sample/src/gone.rs" = 2\n'
+            '"apps/sample/src/up.rs" = 1\n',
+            encoding="utf-8",
+        )
+        (baseline / "other.toml").write_text(
+            '[ratchets.closure_control]\n"apps/other/src/lib.rs" = 1\n', encoding="utf-8"
+        )
+        counts = {
+            ("closure_control", "apps/sample/src/lib.rs"): 2,
+            ("closure_control", "apps/sample/src/gone.rs"): 0,
+            ("closure_control", "apps/sample/src/up.rs"): 4,
+            ("closure_control", "apps/sample/src/new.rs"): 5,
+            ("closure_control", "apps/other/src/lib.rs"): 0,
+            ("bespoke_command_entry", "apps/sample/src/lib.rs"): 2,
+        }
+        current = contract.load_ratchet_baseline(root)
+        contract.write_baseline(root, counts, current, set())
+        self.assertFalse((baseline / "other.toml").exists())
+        self.assertEqual(
+            (baseline / "sample.toml").read_text(encoding="utf-8"),
+            '[ratchets.closure_control]\n"apps/sample/src/lib.rs" = 2\n"apps/sample/src/up.rs" = 1\n',
+        )
+        contract.write_baseline(root, counts, {}, {"bespoke_command_entry"})
+        self.assertEqual(
+            (baseline / "sample.toml").read_text(encoding="utf-8"),
+            '[ratchets.bespoke_command_entry]\n"apps/sample/src/lib.rs" = 2\n',
+        )
+
+    def test_every_closure_taking_toolkit_callback_is_classified(self):
+        root = self.fixture("")
+        widget = root / "crates/sdk/ui-core/src/widget/knob.rs"
+        widget.parent.mkdir(parents=True)
+        widget.write_text(
+            "impl Knob {\n"
+            " pub fn on_click(mut self, f: impl FnMut() + 'static) -> Self { self }\n"
+            " pub fn on_motion(&mut self, p: Point) {}\n"
+            " pub fn on_twist<F>(mut self, f: F) -> Self\n where F: FnMut(f64) + 'static { self }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        violations = contract.unclassified_control_callbacks(root)
+        self.assertEqual(len(violations), 1)
+        self.assertIn("`on_twist` is unclassified", violations[0].reason)
+        self.assertEqual(violations[0].line, 4)
 
     def test_bespoke_automation_palette_and_search_activation_paths_fail(self):
         with self.subTest(phase='new bespoke automation entry point fails'):

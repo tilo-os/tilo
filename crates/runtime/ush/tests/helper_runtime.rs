@@ -30,6 +30,7 @@ fn plan(root: &Path) -> std::io::Result<ush::guest::GuestPlan> {
         env: Vec::new(),
         resolver: None,
         editor: None,
+        terminal: None,
     })
 }
 

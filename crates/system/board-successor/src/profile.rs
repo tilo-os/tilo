@@ -33,7 +33,7 @@ const FIELDS: [&str; 5] = [
     "devicetree",
     "firmware",
 ];
-const OPTIONAL_V2: [&str; 8] = [
+const OPTIONAL_V2: [&str; 9] = [
     "boot_modules",
     "always_on",
     "kernel_args",
@@ -42,6 +42,14 @@ const OPTIONAL_V2: [&str; 8] = [
     "firmware_exclude",
     "crash_record",
     "dmi",
+    "hardening_defaults",
+];
+/// The hardening actions `tilo harden` offers as `--accept` values, each with
+/// the kernel options that have to be built in for the feature it removes to be
+/// unusable on the board, which is the only reason a board may default one on.
+const HARDENING_ACTIONS: [(&str, &[&str]); 2] = [
+    ("camera", &["CONFIG_MEDIA_SUPPORT"]),
+    ("microphone", &["CONFIG_SND", "CONFIG_MEDIA_SUPPORT"]),
 ];
 /// The DMI system identity of a board whose firmware describes its devices,
 /// which has no device tree for a model-bound quirk to match on.
@@ -153,6 +161,7 @@ pattern!(COMPATIBLE, r"[a-z0-9][a-z0-9._-]*,[a-z0-9][a-z0-9._-]*");
 pattern!(DMI_VALUE, r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,63}");
 pattern!(KERNEL_VERSION, r"[A-Za-z0-9][A-Za-z0-9._+-]*");
 pattern!(DTB_DIGEST, r"[0-9a-f]{64}");
+pattern!(KERNEL_CONFIG, r"CONFIG_[A-Z0-9_]+");
 pattern!(
     KERNEL_ARG,
     r"[A-Za-z0-9_.-]{1,64}(?:=[A-Za-z0-9_.,:/-]{1,128})*"
@@ -479,6 +488,7 @@ pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
     }
     validate_dmi(&data)?;
     validate_internal_keyboards(&data)?;
+    validate_hardening_defaults(&data)?;
     let kernel_args = optional_list(
         &data,
         "kernel_args",
@@ -498,6 +508,50 @@ pub fn validate_definition(data: Value) -> Result<Map<String, Value>> {
     )?;
     validate_crash_record(&data, &seen_args, schema_number == Some(2))?;
     Ok(data)
+}
+
+/// `validate_hardening_defaults`: a board may default a hardening action on only
+/// when its kernel carries the driver behind the feature that action removes.
+fn validate_hardening_defaults(data: &Map<String, Value>) -> Result<()> {
+    let entries = optional_list(
+        data,
+        "hardening_defaults",
+        HARDENING_ACTIONS.len(),
+        "hardware definition hardening defaults must be a bounded action list",
+    )?;
+    let mut seen = BTreeSet::new();
+    for entry in entries {
+        let Value::Object(entry) = entry else {
+            return Err(Error::value(
+                "hardware definition hardening default has missing or unknown fields",
+            ));
+        };
+        require(
+            keys(entry) == ["action", "driver"].into_iter().collect(),
+            "hardware definition hardening default has missing or unknown fields",
+        )?;
+        let action = as_str(entry.get("action").unwrap_or(&Value::Null))
+            .and_then(|name| HARDENING_ACTIONS.iter().find(|(a, _)| *a == name));
+        let action = action.ok_or_else(|| {
+            Error::value("hardware definition hardening default names an unsupported action")
+        })?;
+        let driver = as_str(entry.get("driver").unwrap_or(&Value::Null))
+            .filter(|driver| KERNEL_CONFIG.is_match(driver))
+            .ok_or_else(|| {
+                Error::value(
+                    "hardware definition hardening default driver must name a kernel option",
+                )
+            })?;
+        require(
+            action.1.contains(&driver),
+            "hardware definition hardening default names a driver its action does not cover",
+        )?;
+        require(
+            seen.insert(action.0),
+            "hardware definition hardening defaults must be unique",
+        )?;
+    }
+    Ok(())
 }
 
 /// `validate_crash_record`: the board says where its crash record goes, what

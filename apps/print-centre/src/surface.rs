@@ -403,6 +403,44 @@ fn scanned_document_pdf(pages: &[ScannedPage]) -> Vec<u8> {
         .collect::<Vec<_>>();
     tilo_doc_pdf::render_scanned_pdf(&pages)
 }
+/// Off the window's thread: wait for where the person chose to save, and
+/// write the scanned page there, or every page as one PDF (`document`).
+fn write_scan(
+    chooser: &ui::portal::PortalChannel,
+    document: bool,
+    pages: &[ScannedPage],
+) -> ScanSaved {
+    let mut path = match chooser.recv() {
+        Ok(ui::portal::PortalOutcome::Opened(path)) => path,
+        Ok(ui::portal::PortalOutcome::Cancelled) => return ScanSaved::Cancelled,
+        Ok(ui::portal::PortalOutcome::Failed(_)) | Err(_) => {
+            return ScanSaved::NoPicker;
+        }
+    };
+    if path.extension().is_none() {
+        path.set_extension(if document { "pdf" } else { "png" });
+    }
+    let bytes = if document {
+        Arc::<[u8]>::from(scanned_document_pdf(pages))
+    } else {
+        pages
+            .first()
+            .map_or_else(|| Arc::from(Vec::new()), |page| page.png.clone())
+    };
+    if bytes.is_empty() {
+        return ScanSaved::Cancelled;
+    }
+    match save_scanned_page(&path, bytes.as_ref()) {
+        Ok(()) => ScanSaved::Saved(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("the page")
+                .to_owned(),
+        ),
+        Err(_) => ScanSaved::Failed,
+    }
+}
+
 fn save_scanned_page(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -1847,37 +1885,7 @@ impl PrintCentre {
         // Asked here, on the window's thread, from the desktop's chooser.
         let chooser = request.send();
         Ok(cx.thread(
-            move |_| {
-                let mut path = match chooser.recv() {
-                    Ok(ui::portal::PortalOutcome::Opened(path)) => path,
-                    Ok(ui::portal::PortalOutcome::Cancelled) => return ScanSaved::Cancelled,
-                    Ok(ui::portal::PortalOutcome::Failed(_)) | Err(_) => {
-                        return ScanSaved::NoPicker;
-                    }
-                };
-                if path.extension().is_none() {
-                    path.set_extension(if document { "pdf" } else { "png" });
-                }
-                let bytes = if document {
-                    Arc::<[u8]>::from(scanned_document_pdf(&pages))
-                } else {
-                    pages
-                        .first()
-                        .map_or_else(|| Arc::from(Vec::new()), |page| page.png.clone())
-                };
-                if bytes.is_empty() {
-                    return ScanSaved::Cancelled;
-                }
-                match save_scanned_page(&path, bytes.as_ref()) {
-                    Ok(()) => ScanSaved::Saved(
-                        path.file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or("the page")
-                            .to_owned(),
-                    ),
-                    Err(_) => ScanSaved::Failed,
-                }
-            },
+            move |_| write_scan(&chooser, document, &pages),
             move |app: &mut Self, saved: ScanSaved, _cx| {
                 app.scan_saving = false;
                 match &saved {

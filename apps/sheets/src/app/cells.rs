@@ -1,6 +1,10 @@
 //! What an edit does to the sheet: reloading the presented view, applying the grid's commands and formats, the clipboard's copy and paste, and the fills that extend a selection.
 
-use super::*;
+use super::{
+    Addr, CellFormat, CellValue, ClipboardGrid, Edits, Grid, GridCmd, Id, Rc, ReloadCache,
+    SheetsApp, delta, explain_formula_error, fill, format_value, formula, infer_entry, offset_addr,
+    span, tile_count, tsv_cell,
+};
 
 impl SheetsApp {
     /// Read the active sheet, recalculate, propagate formats onto computed

@@ -393,17 +393,14 @@ fn a_cell_right_click_opens_the_edit_menu_and_inserts_the_range_as_one_verb() {
         .sheets
         .values()
         .next()
-        .map(|sheet| sheet.cells.rows().len())
-        .unwrap_or(0);
+        .map_or(0, |sheet| sheet.cells.rows().len());
     let mut edits = Edits::lend(&mut doc);
     app.run_cell_menu_row(&mut edits, CellMenuRow::InsertRowsAbove);
-    drop(edits);
     let after = doc_workbook(&doc)
         .sheets
         .values()
         .next()
-        .map(|sheet| sheet.cells.rows().len())
-        .unwrap_or(0);
+        .map_or(0, |sheet| sheet.cells.rows().len());
     assert_eq!(
         after,
         before + 2,

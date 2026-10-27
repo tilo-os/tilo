@@ -24,6 +24,7 @@
 #include "devtools_bridge.h"
 #include "extension_tabs.h"
 #include "page_clipboard.h"
+#include "text_composition_script.h"
 #if defined(OS_MAC)
 #include "credentials_mac.h"
 #endif
@@ -711,36 +712,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         [this] { if(native_closing_)return;StringEvent("error","message","Private composition observer registration failed");CloseHost(); },
         "tilo-private-text-input");
     composition_scripts_->Attach();
-    composition_scripts_->Configure(R"JS(globalThis.__tiloTextComposition = (() => {
-      let trusted = false, synthetic = false, unknown = false;
-      let root = null;
-      // An initial about:blank iframe can retain its Window when it navigates.
-      // Observe the native load on that Window, then bind its current Document.
-      // A late context or a document.open-removed listener remains unknown.
-      const observer = new MutationObserver(records => {
-        for (const record of records) {
-          for (const node of record.removedNodes) if (node === root) unknown = true;
-        }
-        if (root !== document.documentElement) unknown = true;
-        if (unknown) { root = null; observer.disconnect(); }
-      });
-      const loaded = event => {
-        if (!event.isTrusted || unknown || !['http:', 'https:'].includes(location.protocol)) return;
-        root = document.documentElement;
-        if (!root) return;
-        observer.observe(document, {childList: true});
-        removeEventListener('DOMContentLoaded', loaded);
-      };
-      addEventListener('DOMContentLoaded', loaded);
-      addEventListener('compositionstart', event => {
-        if (event.isTrusted) trusted = true; else synthetic = true;
-      }, true);
-      addEventListener('compositionend', event => {
-        // Page-generated end events cannot clear actual native composition.
-        if (event.isTrusted) trusted = false; else synthetic = false;
-      }, true);
-      return Object.freeze({active: () => unknown || !root || root !== document.documentElement || trusted || synthetic});
-    })())JS");
+    composition_scripts_->Configure(tilo::kTextComposition);
     navigation_history_=new tilo::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     page_automation_=new tilo::PageAutomation(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);},
         [this](double x,double y){PageClick(x,y);},[this](CefRefPtr<CefDictionaryValue> key){PageKey(key);},
