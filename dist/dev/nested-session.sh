@@ -146,7 +146,7 @@ if ((build)); then
         || die "the nested-session build failed (t log $check shows why)"
 fi
 for name in shell tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle \
-            tilo-model-gateway tilo-ush tilo-control examples/packaged_native_governor; do
+            tilo-model-gateway tilo-ush tilo-control; do
     [[ -f $bin/$name ]] || die "missing $bin/$name (run without --no-build)"
     chmod +x "$bin/$name"
 done
@@ -394,38 +394,14 @@ if [[ ! -f $marker ]]; then
 fi
 
 # --- Native workspace ---------------------------------------------------------
-# Agent tasks act with a workspace's native authority: a task may open a
-# closed app only in a room this device's native owner holds, and a room is
-# native once a governor admitted the device through a signed invitation.
-# The throwaway person has no other device to govern a room, so the first
-# start runs the repository's packaged-desktop governor fixture: it signs an
-# invitation with this session's own device custody, and the shell redeems it
-# at startup into the Home workspace (TILO_SHELL_JOIN_INVITATION_FILE, the
-# ordinary boot join). The device then governs that room itself, and every
-# later start restores it from the saved desktop.
+# Agent tasks act with a workspace's native authority, and an app opens in a
+# room only once the room lets it author there. The Home workspace becomes
+# native as on any device: the shell places it on this device's own room
+# host before it lets apps start, and the device's native owner is enrolled
+# in it there. The session notes when it is (the marker below), so a check
+# waits for it rather than for a guess.
 native_marker=$state/native-workspace
-[[ -f $XDG_CONFIG_HOME/tilo/state.json ]] || rm -f "$native_marker"
-join_file=
-if [[ ! -f $native_marker ]]; then
-    say "enrolling the Home workspace into a native room"
-    invitation=$state/native-invitation.json
-    rm -f "$invitation"
-    setsid "$bin/examples/packaged_native_governor" "$state" "$invitation" \
-        > "$logs/governor.log" 2>&1 &
-    governor_pid=$!
-    children+=("$governor_pid")
-    tries=300
-    until [[ -s $invitation ]]; do
-        ((tries--)) && kill -0 "$governor_pid" 2>/dev/null \
-            || die "the governor fixture issued no invitation (see $logs/governor.log)"
-        sleep 0.1
-    done
-    # The invitation is a capability: it stays in owner-only files and is
-    # removed once redeemed.
-    join_file=$runtime/join-invitation
-    (umask 077 && jq -er .invitation "$invitation" > "$join_file")
-    rm -f "$invitation"
-fi
+rm -f "$native_marker"
 
 mkdir -p "$runtime/tilo/services"
 chmod 700 "$runtime/tilo" "$runtime/tilo/services"
@@ -494,14 +470,12 @@ fi
 cat >&2 <<EOF
     drive it:  XDG_RUNTIME_DIR=$runtime TILO_TEST_CONTROL=$control $bin/tilo-control actions list
 EOF
-join_env=()
-[[ -n $join_file ]] && join_env=("TILO_SHELL_JOIN_INVITATION_FILE=$join_file")
-env "${display_env[@]}" TILO_TEST_CONTROL="$control" "${join_env[@]}" setsid "$session_bus" "$dbus_daemon" \
+env "${display_env[@]}" TILO_TEST_CONTROL="$control" setsid "$session_bus" "$dbus_daemon" \
     "${host_client[@]}" "$bin/shell" "${backend[@]}" "${shell_args[@]}" > "$logs/shell.log" 2>&1 &
 shell_pid=$!
 children+=("$shell_pid")
 
-# Note once the boot join committed the Home workspace's native room.
+# Note once the Home workspace is in a room this device's native owner holds.
 confirm_native() {
     local dump tries=600
     while ((tries--)); do
@@ -509,19 +483,16 @@ confirm_native() {
         dump=$("$bin/tilo-control" state-dump 2>/dev/null) || dump='{}'
         if jq -e '.workspace_tree as $t | (($t.workspaces // [])[] | select(.id == $t.active) | .room | tostring)
                 as $room | ($t.native_authority.rooms // {}) | has($room)' <<<"$dump" >/dev/null; then
-            rm -f "$join_file"
             touch "$native_marker"
             echo "the Home workspace is native"
             return 0
         fi
         sleep 0.2
     done
-    echo "the Home workspace did not become native; see governor.log and shell.log"
+    echo "the Home workspace did not become native; see shell.log"
     return 1
 }
-if [[ -n $join_file ]]; then
-    TILO_TEST_CONTROL=$control confirm_native > "$logs/native.log" 2>&1 &
-fi
+TILO_TEST_CONTROL=$control confirm_native > "$logs/native.log" 2>&1 &
 status=0
 wait "$shell_pid" || status=$?
 exit "$status"
