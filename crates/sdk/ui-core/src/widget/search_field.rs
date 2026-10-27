@@ -365,6 +365,13 @@ impl SearchField {
         self.input.set_focus(on);
     }
 
+    /// Whether the field holds the keyboard. Reads the text core directly:
+    /// callers that only ask where focus is (a container reporting its own
+    /// published state) do not pay for building an accessibility node.
+    pub fn is_focused(&self) -> bool {
+        self.input.is_focused()
+    }
+
     /// The field's selection, when a chrome surface owning it outside the
     /// retained tree needs to mirror pointer placement back into its own
     /// query model.
