@@ -171,6 +171,26 @@ fn shape_of(steps: &[Step], out: &mut String) {
             StepKind::SetVar { value, .. } => {
                 let _ = write!(out, "set {}", shape_of_binding(value));
             }
+            StepKind::Compute { expr } => {
+                let _ = write!(out, "work out {expr:?}");
+            }
+            StepKind::Repeat { count, index, body } => {
+                let _ = write!(out, "repeat {} as {index} [", shape_of_binding(count));
+                shape_of(body, out);
+                out.push(']');
+            }
+            StepKind::While { cond, max, body } => {
+                let _ = write!(out, "while {cond:?} at most {max} [");
+                shape_of(body, out);
+                out.push(']');
+            }
+            StepKind::Return { value } => {
+                let _ = write!(
+                    out,
+                    "finish {}",
+                    value.as_ref().map_or_else(String::new, shape_of_binding)
+                );
+            }
             StepKind::Ask { param } => {
                 let _ = write!(out, "ask {:?}", param.ty);
             }
@@ -461,8 +481,11 @@ fn step_count(steps: &[Step]) -> usize {
                     then, otherwise, ..
                 } => step_count(then) + step_count(otherwise),
                 StepKind::ForEach { body, .. } => step_count(body),
+                StepKind::Repeat { body, .. } | StepKind::While { body, .. } => step_count(body),
                 StepKind::Invoke { .. }
                 | StepKind::SetVar { .. }
+                | StepKind::Compute { .. }
+                | StepKind::Return { .. }
                 | StepKind::Ask { .. }
                 | StepKind::Ai { .. }
                 | StepKind::Task { .. } => 0,
@@ -2445,6 +2468,82 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
                 let name = name.clone();
                 move |binding| json!({"step": "set_var", "name": name, "value": binding})
             }));
+        }
+        StepKind::Compute { expr } => {
+            body = body.push(value_row(at, "work-out", "shortcuts-work-out", None, {
+                let expr = expr.clone();
+                move |binding| json!({"step": "compute", "expr": expr, "value": binding})
+            }));
+        }
+        StepKind::Repeat {
+            count,
+            index,
+            body: repeated,
+        } => {
+            body = body.push(step_text(
+                at,
+                "repeat-name",
+                "shortcuts-repeat-count",
+                index,
+                {
+                    let count = count.clone();
+                    let repeated = repeated.clone();
+                    move |text| json!({"step": "repeat", "count": count, "index": text, "body": repeated})
+                },
+            ));
+            body = body.push(value_row(
+                at,
+                "repeat-count",
+                "shortcuts-repeat-count",
+                Some(count),
+                {
+                    let index = index.clone();
+                    let repeated = repeated.clone();
+                    move |binding| json!({"step": "repeat", "count": binding, "index": index, "body": repeated})
+                },
+            ));
+            nested.push(branch(
+                ui::i18n!("shortcuts-repeat"),
+                block(ui, input, draft_id, draft, &format!("{path}.body"), 1),
+            ));
+        }
+        StepKind::While {
+            cond,
+            max,
+            body: repeated,
+        } => {
+            let current = match cond {
+                Condition::Truthy(binding) => Some(binding),
+                _ => None,
+            };
+            body = body.push(value_row(at, "while", "shortcuts-condition", current, {
+                let max = *max;
+                let repeated = repeated.clone();
+                move |binding| {
+                    json!({
+                        "step": "while",
+                        "cond": {"truthy": binding},
+                        "max": max,
+                        "body": repeated,
+                    })
+                }
+            }));
+            nested.push(branch(
+                ui::i18n!("shortcuts-repeat"),
+                block(ui, input, draft_id, draft, &format!("{path}.body"), 1),
+            ));
+        }
+        StepKind::Return { value } => {
+            body = body.push(value_row(
+                at,
+                "finish",
+                "shortcuts-result",
+                value.as_ref(),
+                {
+                    let _source = value.clone();
+                    move |binding| json!({"step": "return", "value": binding})
+                },
+            ));
         }
         StepKind::Ask { param } => {
             body = body.push(step_text(

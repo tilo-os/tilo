@@ -11,8 +11,8 @@ use std::fmt::Write as _;
 
 use serde_json::Value;
 use tilo_automation::{
-    ActionCatalog, Binding, BindingOption, CheckError, CheckErrorKind, Condition, ResourceTarget,
-    Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
+    ActionCatalog, Binding, BindingOption, CheckError, CheckErrorKind, Condition, Expr,
+    ResourceTarget, Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
 };
 use ui::tilo_actions::remote::CatalogueRow;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
@@ -124,6 +124,13 @@ pub fn explain(error: &CheckError, steps: &[Step], catalog: &ActionCatalog) -> S
             format!("Text cannot include {what}, which is secret")
         }
         CheckErrorKind::NotIterable(what) => format!("Repeat needs a list, not {what}"),
+        CheckErrorKind::NotCountable(what) => {
+            format!("Repeat needs a whole number to count to, not {what}")
+        }
+        CheckErrorKind::UnboundedLoop => {
+            String::from("A loop has to stop at a limit this program sets")
+        }
+        CheckErrorKind::Expression(reason) => capitalised(reason),
         CheckErrorKind::OutsideGrant { app_id, .. } => {
             format!(
                 "This shortcut is not allowed to act in {}",
@@ -218,6 +225,52 @@ pub fn describe(binding: &Binding, steps: &[Step]) -> String {
             let items: Vec<String> = items.iter().map(|item| describe(item, steps)).collect();
             format!("[{}]", items.join(", "))
         }
+        Binding::Expression(expr) => describe_expression(expr, steps),
+    }
+}
+
+/// How an expression reads in the editor: its operation in words, with the
+/// values it is applied to described the way a binding is.
+#[must_use]
+pub fn describe_expression(expr: &Expr, steps: &[Step]) -> String {
+    let say = |inner: &Expr| describe_expression(inner, steps);
+    match expr {
+        Expr::Value { binding } => describe(binding, steps),
+        Expr::Compare { op, left, right } => {
+            format!("{} {} {}", say(left), op.as_str(), say(right))
+        }
+        Expr::Logic { op, left, right } => format!("{} {} {}", say(left), op.as_str(), say(right)),
+        Expr::Math { op, left, right } => format!("{} {} {}", say(left), op.as_str(), say(right)),
+        Expr::Negate { value } => format!("-{}", say(value)),
+        Expr::Truthy { value } => format!("{} is set", say(value)),
+        Expr::Not { value } => format!("not ({})", say(value)),
+        Expr::Length { value } => format!("how many in {}", say(value)),
+        Expr::Replace {
+            text,
+            find,
+            replace,
+        } => format!("{} with {} as {}", say(text), say(find), say(replace)),
+        Expr::Split { text, separator } => match separator {
+            Some(separator) => format!("{} split at {}", say(text), say(separator)),
+            None => format!("{} split at breaks", say(text)),
+        },
+        Expr::Take { items, count } => format!("first {} of {}", say(count), say(items)),
+        Expr::Field { value, field } => format!("{field} of {}", say(value)),
+        Expr::Object { members } => {
+            let members: Vec<String> = members
+                .iter()
+                .map(|member| format!("{}: {}", member.name, say(&member.value)))
+                .collect();
+            format!("{{{}}}", members.join(", "))
+        }
+        Expr::Filter { items, test } => {
+            format!("what holds {} in {}", say(test), say(items))
+        }
+        Expr::Map { items, field } => {
+            format!("{field} from each of {}", say(items))
+        }
+        Expr::Sort { items } => format!("{} in order", say(items)),
+        Expr::First { items } => format!("the first of {}", say(items)),
     }
 }
 
@@ -236,8 +289,13 @@ pub fn step_number(steps: &[Step], id: &str) -> Option<usize> {
                     then, otherwise, ..
                 } => walk(then, id, seen).or_else(|| walk(otherwise, id, seen)),
                 StepKind::ForEach { body, .. } => walk(body, id, seen),
+                StepKind::Repeat { body, .. } | StepKind::While { body, .. } => {
+                    walk(body, id, seen)
+                }
                 StepKind::Invoke { .. }
                 | StepKind::SetVar { .. }
+                | StepKind::Compute { .. }
+                | StepKind::Return { .. }
                 | StepKind::Ask { .. }
                 | StepKind::Ai { .. }
                 | StepKind::Task { .. } => None,
@@ -390,6 +448,18 @@ pub fn title(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
             format!("Repeat with each {item} in {}", say(items))
         }
         StepKind::SetVar { name, value } => format!("Set {name} to {}", say(value)),
+        StepKind::Compute { expr } => format!("Work out {}", describe_expression(expr, steps)),
+        StepKind::Repeat { count, index, .. } => {
+            format!("Repeat {} times, counting {index}", say(count))
+        }
+        StepKind::While { cond, max, .. } => format!(
+            "While {} holds, at most {max} times",
+            describe_condition(cond, steps)
+        ),
+        StepKind::Return { value } => match value {
+            Some(value) => format!("Finish with {}", say(value)),
+            None => String::from("Finish here"),
+        },
         StepKind::Ask { param } => format!("Ask for {}", param.description),
         StepKind::Ai { prompt, input, .. } => match input {
             Some(input) => format!("{prompt} {}", say(input)),
@@ -433,6 +503,24 @@ pub fn substance(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String
         StepKind::ForEach { items, item, .. } => {
             let _ = write!(line, " ({item} in {})", describe(items, steps));
         }
+        StepKind::Compute { expr } => {
+            let _ = write!(line, " ({})", describe_expression(expr, steps));
+        }
+        StepKind::Repeat { count, .. } => {
+            let _ = write!(line, " ({})", describe(count, steps));
+        }
+        StepKind::While { cond, max, .. } => {
+            let _ = write!(line, " ({} at most {max})", describe_condition(cond, steps));
+        }
+        StepKind::Return { value } => {
+            let _ = write!(
+                line,
+                " ({})",
+                value
+                    .as_ref()
+                    .map_or_else(|| String::from("here"), |value| describe(value, steps))
+            );
+        }
         StepKind::Ai { prompt, input, .. } => {
             let _ = write!(
                 line,
@@ -469,8 +557,15 @@ pub fn outline(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> Vec<Stri
                     walk(inner, catalog, steps, out);
                 }
             }
+            StepKind::Repeat { body, .. } | StepKind::While { body, .. } => {
+                for inner in body {
+                    walk(inner, catalog, steps, out);
+                }
+            }
             StepKind::Invoke { .. }
             | StepKind::SetVar { .. }
+            | StepKind::Compute { .. }
+            | StepKind::Return { .. }
             | StepKind::Ask { .. }
             | StepKind::Ai { .. }
             | StepKind::Task { .. } => {}
@@ -510,6 +605,7 @@ fn describe_condition(condition: &Condition, steps: &[Step]) -> String {
         Condition::Equals { left, right } => {
             format!("{} is {}", describe(left, steps), describe(right, steps))
         }
+        Condition::Holds(expr) => describe_expression(expr, steps),
         Condition::Not(inner) => format!("not ({})", describe_condition(inner, steps)),
         Condition::All(all) => join(all, " and "),
         Condition::Any(any) => join(any, " or "),

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use tilo_automation::{
-    Binding, Condition, Selector, Shortcut, Step, StepKind, StepPolicy, TriggerSpec,
+    Binding, Condition, Expr, Selector, Shortcut, Step, StepKind, StepPolicy, TriggerSpec,
 };
 use ui::prelude::*;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
@@ -113,6 +113,22 @@ pub enum Head {
         name: String,
         value: Binding,
     },
+    Compute {
+        expr: Expr,
+    },
+    Repeat {
+        count: Binding,
+        #[serde(default)]
+        index: String,
+    },
+    While {
+        cond: Condition,
+        max: u64,
+    },
+    Return {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<Binding>,
+    },
     Ask {
         param: ActionParam,
     },
@@ -143,6 +159,7 @@ pub enum Head {
 const THEN: &str = "then";
 const ELSE: &str = "else";
 const EACH: &str = "each";
+const BODY: &str = "body";
 
 /// The blocks of a step, by branch name.
 type Blocks<'a> = Vec<(&'static str, &'a [Step])>;
@@ -185,6 +202,34 @@ impl Head {
             StepKind::SetVar { name, value } => (
                 Self::SetVar {
                     name: name.clone(),
+                    value: value.clone(),
+                },
+                BTreeMap::new(),
+                Vec::new(),
+            ),
+            StepKind::Compute { expr } => (
+                Self::Compute { expr: expr.clone() },
+                BTreeMap::new(),
+                Vec::new(),
+            ),
+            StepKind::Repeat { count, index, body } => (
+                Self::Repeat {
+                    count: count.clone(),
+                    index: index.clone(),
+                },
+                BTreeMap::new(),
+                vec![(BODY, body.as_slice())],
+            ),
+            StepKind::While { cond, max, body } => (
+                Self::While {
+                    cond: cond.clone(),
+                    max: *max,
+                },
+                BTreeMap::new(),
+                vec![(BODY, body.as_slice())],
+            ),
+            StepKind::Return { value } => (
+                Self::Return {
                     value: value.clone(),
                 },
                 BTreeMap::new(),
@@ -258,6 +303,18 @@ impl Head {
                 body: block(EACH),
             },
             Self::SetVar { name, value } => StepKind::SetVar { name, value },
+            Self::Compute { expr } => StepKind::Compute { expr },
+            Self::Repeat { count, index } => StepKind::Repeat {
+                count,
+                index,
+                body: block(BODY),
+            },
+            Self::While { cond, max } => StepKind::While {
+                cond,
+                max,
+                body: block(BODY),
+            },
+            Self::Return { value } => StepKind::Return { value },
             Self::Ask { param } => StepKind::Ask { param },
             Self::Ai {
                 prompt,
@@ -998,6 +1055,10 @@ fn fresh_step_id(steps: &[Step], kind: &StepKind) -> String {
         StepKind::If { .. } => "if".into(),
         StepKind::ForEach { .. } => "each".into(),
         StepKind::SetVar { .. } => "set".into(),
+        StepKind::Compute { .. } => "work-out".into(),
+        StepKind::Repeat { .. } => "repeat".into(),
+        StepKind::While { .. } => "while".into(),
+        StepKind::Return { .. } => "finish".into(),
         StepKind::Ask { .. } => "ask".into(),
         StepKind::Ai { .. } => "ai".into(),
         StepKind::Task { .. } => "task".into(),
@@ -1047,8 +1108,13 @@ fn collect_ids(steps: &[Step], out: &mut Vec<String>) {
                 collect_ids(otherwise, out);
             }
             StepKind::ForEach { body, .. } => collect_ids(body, out),
+            StepKind::Repeat { body, .. } | StepKind::While { body, .. } => {
+                collect_ids(body, out);
+            }
             StepKind::Invoke { .. }
             | StepKind::SetVar { .. }
+            | StepKind::Compute { .. }
+            | StepKind::Return { .. }
             | StepKind::Ask { .. }
             | StepKind::Ai { .. }
             | StepKind::Task { .. } => {}
@@ -1078,6 +1144,7 @@ pub fn block_mut<'a>(steps: &'a mut Vec<Step>, block: &str) -> Option<&'a mut Ve
         (StepKind::If { then, .. }, "then") => Some(then),
         (StepKind::If { otherwise, .. }, "else") => Some(otherwise),
         (StepKind::ForEach { body, .. }, "each") => Some(body),
+        (StepKind::Repeat { body, .. } | StepKind::While { body, .. }, "body") => Some(body),
         _ => None,
     }
 }
