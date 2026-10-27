@@ -1188,6 +1188,8 @@ readers = [
   # The SDK's current interfaces are the image's declaration from the same commit.
   "crates/dev/tilo-app-cli/src/interface_versions.rs",
   "crates/dev/tilo-app-cli/src/guide.rs",
+  # Messages' history is checked against the app's own surface (`apps/` above).
+  "crates/dev/tilo-app-cli/src/surface.rs",
   # Focused source lookup verifies the embedded shared-checklist test bytes.
   "crates/dev/tilo-app-cli/tests/json_output.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
@@ -1256,10 +1258,14 @@ inputs = [
   "crates/system/cloud-source-gdrive/tests/fixtures/pptx.rs",
   "crates/sdk/provider-settings-ui/src/fake_backend.rs",
   "crates/sdk/provider-settings-ui/src/mounted_tests.rs",
+  # The Updates pane's tests read this image's own Windows support offer, so
+  # the sizes they disclose are the ones the image ships.
+  "os/usr/share/tilo/system-extensions/sysext.d/windows-compat.json",
 ]
 readers = [
   "apps/settings-rare/src/panes/accounts/cloud_import_acceptance.rs",
   "apps/settings-rare/src/panes/agent_models/admin_tests.rs",
+  "apps/settings-rare/src/panes/updates/tests.rs",
 ]
 
 [[cargo]]

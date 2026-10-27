@@ -66,6 +66,7 @@ pub mod backend;
 pub mod control;
 pub mod disk_row;
 pub mod disks;
+pub mod hardware_report;
 mod i18n;
 pub mod install;
 pub mod installer_app;

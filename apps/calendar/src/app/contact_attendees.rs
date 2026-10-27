@@ -1,8 +1,8 @@
 //! The person's shared Contacts as attendee choices for one event, in the
 //! system picker. A choice is bound to the calendar's own `invite` verb, so
-//! adding someone is checked, confirmed, recorded and undone as typing their
-//! address is. Only the reviewed name and address enter the calendar; which
-//! contact they came from stays on this device.
+//! adding someone is checked, recorded and undone as typing their address is.
+//! Only the reviewed name and address enter the calendar; which contact they
+//! came from stays on this device.
 
 use tilo_contact_directory::{ContactDirectory, EmailHint};
 use ui::framework::LiveRow;
@@ -24,7 +24,7 @@ struct Choice {
 
 impl Choice {
     /// The reviewed facts themselves, so a changed contact or event names
-    /// another row and an earlier confirmation cannot rebind to it.
+    /// another row and an earlier choice cannot rebind to it.
     fn id(&self) -> String {
         serde_json::to_vec(self).map_or_else(
             |_| String::new(),
@@ -49,9 +49,11 @@ impl Choice {
             .and(params.email, self.hint.email.clone())
             .and(params.name, self.hint.label.clone())
             .declaration(Calendar::INVITE.id, t("calendar-contact-add"))?;
-        // A name and an address from a private address book become visible
-        // to everyone the calendar is shared with: the person agrees first.
-        Some(declaration.describe(self.label()).destructive())
+        // Offering a contact here takes nothing away: the address book stays
+        // in Contacts, and the event gains this person only once the invite
+        // is taken, through the calendar's own verb. Nobody is asked to
+        // answer whether to show what the picker is already showing.
+        Some(declaration.describe(self.label()))
     }
 }
 
@@ -245,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn a_confirmed_contact_choice_invites_through_the_calendars_own_verb() {
+    fn a_contact_choice_invites_through_the_calendars_own_verb() {
         let (owner, mut calendar, event) = fixture();
         assert!(
             calendar
@@ -276,15 +278,11 @@ mod tests {
                 .any(|entry| entry.title == "Alex"),
             "the picker finds the contact by name"
         );
-        assert!(
-            calendar
-                .call_on(&chosen.id(), Calendar::INVITE.id, serde_json::json!({}))
-                .is_err(),
-            "adding a contact needs the person's confirmation"
-        );
-        assert!(calendar.state().event(event).unwrap().attendees.is_empty());
+        // Inviting from the picker is the person choosing this contact, and
+        // it takes nothing away: the calendar's own verb adds them, and Undo
+        // takes the attendee back.
         calendar
-            .call_confirmed_on(&chosen.id(), Calendar::INVITE.id, serde_json::json!({}))
+            .call_on(&chosen.id(), Calendar::INVITE.id, serde_json::json!({}))
             .unwrap();
         calendar.settle();
         let attendees = calendar.state().event(event).unwrap().attendees.clone();
@@ -302,7 +300,7 @@ mod tests {
         );
         assert!(
             calendar
-                .call_confirmed_on(&choices[0].id(), Calendar::INVITE.id, serde_json::json!({}))
+                .call_on(&choices[0].id(), Calendar::INVITE.id, serde_json::json!({}))
                 .is_err(),
             "an address already invited is not invited twice"
         );
@@ -323,7 +321,7 @@ mod tests {
         calendar.settle();
         assert!(
             calendar
-                .call_confirmed_on(&chosen.id(), Calendar::INVITE.id, serde_json::json!({}))
+                .call_on(&chosen.id(), Calendar::INVITE.id, serde_json::json!({}))
                 .is_err(),
             "a renamed contact is chosen again, under its new name"
         );
@@ -340,7 +338,7 @@ mod tests {
         calendar.settle();
         assert!(
             calendar
-                .call_confirmed_on(&chosen.id(), Calendar::INVITE.id, serde_json::json!({}))
+                .call_on(&chosen.id(), Calendar::INVITE.id, serde_json::json!({}))
                 .is_err()
         );
         assert!(calendar.state().event(event).unwrap().attendees.is_empty());

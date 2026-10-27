@@ -142,6 +142,20 @@ notes-markdown-files = Markdown
 notes-import-not-utf8 = Die Datei ist kein UTF-8-Text
 notes-imported = { $title } importiert
 notes-import-failed = Nicht importiert: { $error }
+notes-notion-import-title = Notion-Export importieren
+notes-notion-menu-import = Aus Notion importieren
+notes-notion-files = Notion-Export
+notes-notion-json-files = Notion-Seitenliste
+notes-notion-imported =
+    { $pages ->
+        [one] Eine Seite importiert
+       *[other] { $pages } Seiten importiert
+    }
+notes-notion-empty = In dieser Datei ist keine Seite zum Importieren
+notes-notion-too-big = Der Export ist zu groß zum Importieren
+notes-notion-too-many-pages = Der Export enthält mehr als { $limit } Seiten
+notes-notion-archive-invalid = Das Export-Archiv lässt sich nicht lesen
+notes-notion-unreadable = Diese Datei ist kein Notion-Export
 notes-export-title = Markdown exportieren
 notes-export-accept = Exportieren
 notes-insert-image-title = Bild einfügen

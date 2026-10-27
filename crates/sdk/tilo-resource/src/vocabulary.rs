@@ -241,6 +241,8 @@ impl Declaration {
 pub struct Vocabulary {
     /// [`Resource::KIND`].
     pub kind: &'static str,
+    /// [`Resource::APP_ID`].
+    pub app: &'static str,
     /// [`Resource::LABEL`].
     pub label: &'static str,
     /// [`Resource::ACTION_TYPE`].
@@ -339,6 +341,7 @@ struct VocabularyOf<R>(std::marker::PhantomData<R>);
 impl<R: Resource> VocabularyOf<R> {
     const VOCABULARY: Vocabulary = Vocabulary {
         kind: R::KIND,
+        app: R::APP_ID,
         label: R::LABEL,
         action_type: R::ACTION_TYPE,
         edits: R::EDITS,

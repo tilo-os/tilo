@@ -1,6 +1,9 @@
 //! What a press, a key or an assistive action does: the one `Hit` path they share, the confirmation and sheet answers, the screen switch and the branch switch.
 
-use super::*;
+use super::{
+    BranchAction, ChangesHit, Confirm, ConfirmChoice, DiffHit, Field, GitClientApp, Hit,
+    HunkAction, PanelHit, Rect, Target, change_list, t, t_args,
+};
 
 impl GitClientApp {
     /// Apply a branch action (checkout / create / delete) or a stash apply

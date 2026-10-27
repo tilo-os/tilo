@@ -650,7 +650,6 @@ RUN --network=none --mount=type=bind,source=os/dev/windows_provider.py,target=/t
 COPY --from=windows-compat-artifacts /out/bin/umu-run /usr/libexec/tilo-umu-run
 COPY --from=windows-compat-artifacts /out/bin/umu_run.py /usr/libexec/umu_run.py
 COPY --from=windows-compat-artifacts /out/catalogues/ /usr/share/tilo/windows/catalogues/
-COPY os/usr/share/tilo/windows/fex-emulator.json os/usr/share/tilo/windows/fex-graphics-provider.json /usr/share/tilo/windows/
 # The VM is defined only after an owner supplies installation media. These
 # immutable host/guest contracts deliberately ship no Windows image or key.
 COPY \

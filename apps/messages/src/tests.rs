@@ -915,3 +915,49 @@ fn without_the_messaging_service_setup_says_why_and_offers_nothing_dead() {
     assert!(tree.contains("isn't running here"), "{tree}");
     assert!(tree.contains("a browser has none"), "{tree}");
 }
+
+/// Every verb and field the app publishes reads in its own words in History,
+/// never in the framework's generic fallback: the sentences a person scrolls
+/// back through are the app's.
+#[test]
+fn every_published_change_reads_in_the_apps_own_words() {
+    let mut app = live_messages_with_sender();
+    app.call_confirmed_on(
+        "tilo.messages",
+        "send-message",
+        serde_json::json!({"to": "Ada Lovelace", "body": "Lunch at noon?"}),
+    )
+    .expect("queue a message");
+    let conversations = app
+        .call_confirmed_on("tilo.messages", "read", serde_json::json!({}))
+        .expect("read the conversations")
+        .unwrap_or_default();
+    let id = conversations["conversations"][0]["id"]
+        .as_str()
+        .expect("the queued message's conversation")
+        .to_owned();
+    app.call_confirmed_on(
+        "tilo.messages",
+        "reply",
+        serde_json::json!({"conversation": id, "body": "See you there"}),
+    )
+    .expect("queue a reply");
+    app.call_confirmed_on(
+        "tilo.messages",
+        "deliver-message",
+        serde_json::json!({"from": "Grace Hopper", "body": "Received"}),
+    )
+    .expect("deliver a message");
+
+    let entries = app.history();
+    assert!(entries.len() >= 3, "the three verbs: {entries:#?}");
+    let sentences = app.sentences(&entries);
+    assert_eq!(
+        sentences,
+        [
+            "Queued a message to Ada Lovelace",
+            "Queued a reply",
+            "Delivered a message from Grace Hopper",
+        ]
+    );
+}

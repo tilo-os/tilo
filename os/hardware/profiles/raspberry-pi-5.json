@@ -1,0 +1,46 @@
+{
+  "schema_version": 2,
+  "id": "raspberry-pi-5",
+  "architecture": "aarch64",
+  "devicetree": "broadcom/bcm2712-rpi-5-b.dtb",
+  "system_firmware": [],
+  "firmware_exclude": [
+    "nvidia-gpu-firmware",
+    "amd-gpu-firmware",
+    "intel-gpu-firmware",
+    "intel-audio-firmware",
+    "intel-npu-firmware",
+    "amd-ucode-firmware",
+    "mt7xxx-firmware",
+    "nxpwireless-firmware",
+    "tiwilink-firmware"
+  ],
+  "always_on": false,
+  "crash_record": {
+    "storage": "none",
+    "watchdog": "module",
+    "lockup": "none"
+  },
+  "kernel_args": [
+    "systemd.watchdog_sec=30"
+  ],
+  "boot_modules": [
+    "sdhci-iproc",
+    "mmc_block",
+    "mmc_core",
+    "pwrseq_simple",
+    "bcm2835_wdt",
+    "nvme",
+    "nvme-core",
+    "pcie-brcmstb",
+    "rp1",
+    "pinctrl-rp1",
+    "clk-rp1",
+    "brcmfmac",
+    "brcmutil",
+    "cfg80211",
+    "vc4",
+    "v3d"
+  ],
+  "firmware": {}
+}

@@ -236,7 +236,9 @@ become the same `WindowEvent::Ime` and key events as on every other platform
 (`app/android_text_input.rs`), so text fields need nothing Android-specific.
 The keyboard is given the focused field's text around the caret (up to 2048
 bytes each side, nothing for a password field) for suggestions and
-auto-capitalisation.
+auto-capitalisation. A field typed from its own on-screen keys (the
+calculator's keypad) sets `InputHints::own_keys`, which keeps the soft keyboard
+down while hardware keys still type.
 
 **Accessibility.** The AccessKit tree reaches TalkBack through
 `accesskit_android`'s injecting adapter on the window's decor view

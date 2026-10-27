@@ -216,7 +216,8 @@ fn logout_contract() -> tilo_actions::ActionContract {
 /// What a tier earns for a session row. Lock, restart and shut down end
 /// what the person is doing, so they come up only for their name, or for a
 /// word they are known by typed from its start: never because a keyword is
-/// misspelt into something else, or holds the query in the middle.
+/// misspelt into something else, or holds the query in the middle. A word
+/// typed whole ranks as an action's does ([`ui::search::system::action_ranks`]).
 fn session_ranks(tier: ui::search::MatchTier, weight: FieldWeight) -> Option<i32> {
     use ui::search::MatchTier;
     if weight == FieldWeight::KEYWORD
@@ -227,7 +228,7 @@ fn session_ranks(tier: ui::search::MatchTier, weight: FieldWeight) -> Option<i32
     {
         return None;
     }
-    tier.rank_in(weight)
+    ui::search::system::action_ranks(tier, weight)
 }
 
 pub struct SessionActionsProvider {
@@ -440,6 +441,7 @@ impl SessionActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 
@@ -466,6 +468,7 @@ impl SessionActionsProvider {
             }),
             on_invoke: None,
             on_begin_invoke: None,
+            resource: None,
         }
     }
 }
@@ -531,6 +534,7 @@ fn retirement_result() -> SearchResult {
             })
         })),
         on_begin_invoke: None,
+        resource: None,
     }
 }
 

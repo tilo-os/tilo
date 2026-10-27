@@ -1314,6 +1314,7 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
         label,
         presentation,
         semantic_identity,
+        app_id,
         children: _,
         actions,
         views,
@@ -1324,6 +1325,7 @@ fn without_children(resource: &tilo_actions::Resource) -> tilo_actions::Resource
         label: label.clone(),
         presentation: presentation.clone(),
         semantic_identity: semantic_identity.clone(),
+        app_id: app_id.clone(),
         children: Vec::new(),
         actions: actions.clone(),
         views: views.clone(),
@@ -2231,6 +2233,16 @@ impl RootModel for ResourceRoot {
         doc: &mut ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+        // A view of a resource the system asked for: show that item first, so
+        // the picture is of the item and not of whatever the window happened
+        // to show. `render` is the app's answer to "show me this resource".
+        if let Some(request) = op.unscoped()
+            && request.type_id == crate::runner::RENDER_TYPE
+            && !request.payload.is_empty()
+            && let Some(anchor) = crate::runner::rendered_anchor(request.payload)
+        {
+            self.stages.open(&anchor)?;
+        }
         if let Some(output) = with_app_view_mut(&mut self.content, |view| {
             self.native_presentation.start_operation(op, doc, view)
         })? {

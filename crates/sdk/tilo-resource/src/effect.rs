@@ -125,6 +125,15 @@ pub trait Effect: Sized + 'static {
     /// unique per vocabulary, like a resource's kind.
     const OPERATION: &'static str;
 
+    /// The app whose resource offers the vocabulary's effects, which an
+    /// effect's typed reference names its action by: defaults to none of its
+    /// own, for a vocabulary that is not an app's (a test's, a host's).
+    const APP_ID: &'static str = crate::kind::DEFAULT_APP;
+
+    /// The vocabulary's name, as its effects are labelled when they are
+    /// offered on their own.
+    const LABEL: &'static str = Self::OPERATION;
+
     /// One declaration per effect, in order.
     fn declarations() -> Vec<EffectDecl>;
 
@@ -137,6 +146,25 @@ pub trait Effect: Sized + 'static {
 
     /// This effect's id among the declarations.
     fn id(&self) -> &'static str;
+
+    /// The kind the vocabulary's effects are published under, which a typed
+    /// reference to one names: the operation they travel as, the vocabulary's
+    /// name, and the app that offers it.
+    fn kind() -> crate::kind::ResourceKind {
+        crate::kind::ResourceKind::of_effect::<Self>(Self::OPERATION, Self::LABEL, Self::APP_ID)
+    }
+
+    /// The key this effect is offered under: the app that offers the
+    /// vocabulary, the operation its effects travel as, and this effect's id.
+    fn key(&self) -> tilo_actions::ActionKey {
+        tilo_actions::ActionKey::new(Self::APP_ID, Self::OPERATION, self.id())
+    }
+
+    /// The spec `id` declares: what a control binding it reads, so binding one
+    /// effect costs one declaration rather than the vocabulary's.
+    fn spec(id: &str) -> Option<tilo_actions::ActionSpec> {
+        Self::declaration(id).map(|decl| decl.spec(Self::OPERATION))
+    }
 
     /// This effect's arguments, named as its declaration's parameters.
     fn arguments(&self) -> serde_json::Map<String, serde_json::Value>;

@@ -70,6 +70,80 @@ impl std::fmt::Debug for ResourceKind {
     }
 }
 
+/// The app a resource kind names when the type declares no app of its own: a
+/// test's, a tool's, a host's.
+pub const DEFAULT_APP: &str = "so.tilo.app";
+
+// What a kind declared from a type's name alone answers: it publishes no
+// state of its own, since the record it names is published where it lives.
+
+fn unavailable(_doc: &Doc) -> Result<Box<dyn Any>, ModelError> {
+    Err(ModelError::Refused(
+        "a kind declared by name alone holds no record".to_owned(),
+    ))
+}
+
+fn no_name(_state: &dyn Any) -> Option<String> {
+    None
+}
+
+fn no_publish(_id: &str, _label: &str, _state: &dyn Any) -> Option<tilo_actions::Resource> {
+    None
+}
+
+fn no_search(_state: &dyn Any) -> Option<Vec<SearchEntry>> {
+    None
+}
+
+fn no_child(_state: &dyn Any, _doc: &Doc, _id: &str) -> Option<tilo_actions::Resource> {
+    None
+}
+
+fn no_register(_registry: &mut ActionRegistry) {}
+
+fn no_initialize(_doc: &mut Doc) -> Result<(), ModelError> {
+    Err(ModelError::Refused(
+        "a kind declared by name alone initialises no record".to_owned(),
+    ))
+}
+
+fn no_encode(_action: serde_json::Value) -> Result<EncodedAction, String> {
+    Err("a kind declared by name alone has no action type of its own".to_owned())
+}
+
+fn no_lands(_doc: &Doc, _action: &EncodedAction) -> Option<Place> {
+    None
+}
+
+/// `a == b` as a `const fn`, which `str` comparison is not.
+#[allow(
+    clippy::indexing_slicing,
+    reason = "both sides are walked to the shorter one's length"
+)]
+const fn app_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i = i.saturating_add(1);
+    }
+    true
+}
+
+/// [`Resource::LABEL`], for a kind declared from a type's name alone.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "a kind names its records through a `Resource` method, whatever its state"
+)]
+fn naming<R: Resource>(_state: &dyn Any) -> Option<String> {
+    Some(R::LABEL.to_owned())
+}
+
 fn read<R: Resource>(doc: &Doc) -> Result<Box<dyn Any>, ModelError> {
     R::read(doc).map(|state| Box::new(state) as Box<dyn Any>)
 }
@@ -132,14 +206,16 @@ fn encode_in(
 }
 
 impl ResourceKind {
-    /// `R`, by its kind.
+    /// `R`, by its kind, published by the app it declares
+    /// ([`Resource::APP_ID`]) unless the caller hosts it for another
+    /// ([`Self::hosted_by`]).
     #[must_use]
     pub const fn of<R: Resource>() -> Self {
         Self {
             kind: R::KIND,
             label: R::LABEL,
             action_type: R::ACTION_TYPE,
-            app: None,
+            app: Some((R::APP_ID, R::LABEL)),
             version: R::VERSION,
             read: read::<R>,
             name: resource_label::<R>,
@@ -159,6 +235,83 @@ impl ResourceKind {
     pub const fn hosted_by(mut self, app_id: &'static str, title: &'static str) -> Self {
         self.app = Some((app_id, title));
         self
+    }
+
+    /// A kind for an effect vocabulary, which publishes no record of its own
+    /// and reaches state through the record an effect addresses: `kind` is the
+    /// operation its effects travel under and `app` the app that offers them.
+    /// What an effect's [`ActionRef`](crate::ActionRef) carries.
+    #[must_use]
+    pub const fn of_effect<V: crate::Effect>(
+        kind: &'static str,
+        label: &'static str,
+        app: &'static str,
+    ) -> Self {
+        Self {
+            kind,
+            label,
+            action_type: kind,
+            app: Some((app, label)),
+            version: 0,
+            read: unavailable,
+            name: no_name,
+            publish: no_publish,
+            search: no_search,
+            child: no_child,
+            register: no_register,
+            initialize: no_initialize,
+            encode: no_encode,
+            lands: no_lands,
+        }
+    }
+
+    /// `R`'s kind as the app `app` declares it: hosted by it, naming its
+    /// records as the resource itself does, and built from the type's name
+    /// alone — so a typed [`ActionRef`](crate::ActionRef) carries it as a
+    /// constant and [`ActionRef::key`](crate::ActionRef::key) names the app,
+    /// kind and action a control is bound against. Nothing is registered,
+    /// so it costs an app no initialisation.
+    #[must_use]
+    pub const fn declaring<R>(app: &'static str, title: &'static str) -> Self
+    where
+        R: Resource,
+    {
+        Self::of::<R>().hosted_by(app, title).named(naming::<R>)
+    }
+
+    /// [`Self::declaring`] for a kind built where `R` may still be defined:
+    /// the `kind`, `label` and `app` the declaration wrote. A resource
+    /// publishes its own kind from [`Self::of`], so a control bound by key
+    /// reads the same kind either way.
+    #[must_use]
+    pub const fn declared<R>(kind: &'static str, label: &'static str, app: &'static str) -> Self
+    where
+        R: Resource,
+    {
+        let mut declared = Self::of::<R>().hosted_by(app, label);
+        declared.kind = kind;
+        declared
+    }
+
+    /// The app this kind names its actions by: the one hosting it, else
+    /// [`DEFAULT_APP`] for a resource type that declares no app of its own.
+    #[must_use]
+    pub fn declaring_app(&self) -> &'static str {
+        self.app.map_or(DEFAULT_APP, |(id, _)| id)
+    }
+
+    /// Whether `app` is the app `declared` names, or the type declared none
+    /// and `app` is the [default](DEFAULT_APP). What a generated
+    /// [`ActionRef`](crate::ActionRef) asks at compile time before it carries
+    /// `app`, so a constant naming another app than its type's fails where it
+    /// is written rather than at the control that binds it.
+    #[must_use]
+    pub const fn declares(app: &str, declared: &str) -> bool {
+        if app_eq(declared, DEFAULT_APP) {
+            app_eq(app, DEFAULT_APP)
+        } else {
+            app_eq(app, declared)
+        }
     }
 
     /// What an open resource of this kind is called, read from its state

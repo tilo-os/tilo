@@ -64,16 +64,27 @@ mod without_runner {
 #[cfg(all(not(feature = "native"), not(target_family = "wasm")))]
 pub use without_runner::{run, run_or_exit};
 
-#[cfg(not(target_family = "wasm"))]
+/// The `render` operation: the app's answer to "show me this resource". A
+/// wasm build publishes none, so it answers no request with one (see
+/// [`rendered_anchor`]); the id is named on every target so the framework's
+/// request path reads the same everywhere.
 pub(crate) const RENDER_TYPE: &str = "tilo.app.render";
 
 #[cfg(not(target_family = "wasm"))]
 mod presentation;
 #[cfg(not(target_family = "wasm"))]
-pub(crate) use presentation::{DrawPast, Presentation, operation_types, with_native_presentations};
+pub(crate) use presentation::{
+    DrawPast, Presentation, operation_types, rendered_anchor, with_native_presentations,
+};
 
 #[cfg(target_family = "wasm")]
 pub(crate) struct Presentation;
+
+/// A wasm build publishes no `render`, so it answers no request with one.
+#[cfg(target_family = "wasm")]
+pub(crate) fn rendered_anchor(_: &[u8]) -> Option<String> {
+    None
+}
 
 #[cfg(target_family = "wasm")]
 #[expect(

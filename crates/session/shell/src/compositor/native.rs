@@ -7841,27 +7841,6 @@ fn spatial_departure_edge(
 #[cfg(test)]
 mod spatial_edge_tests;
 
-/// Tell the person where "Send…" put their screenshot, or why it did not.
-fn notify_screenshot_sent(
-    frame_builder: &mut FrameBuilder,
-    sent: Result<crate::shell::screenshot_send::SendReceipt, String>,
-) {
-    match sent {
-        Ok(receipt) => frame_builder.with_chrome(|chrome| {
-            chrome.push_notification(
-                crate::shell::i18n::t("capture-screenshot-sent"),
-                receipt.message(),
-            );
-        }),
-        Err(error) => frame_builder.with_chrome(|chrome| {
-            chrome.push_error_notification(
-                crate::shell::i18n::t("capture-screenshot-not-sent"),
-                error,
-            );
-        }),
-    }
-}
-
 fn finish_nearby_drop(
     event: &WindowEvent,
     network: &crate::shell::network::ShellNetwork,
@@ -10633,6 +10612,9 @@ pub fn run() {
     let mut last_lock_clock_refresh = Instant::now();
     let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
     let mut lock_pointer: Option<vello::kurbo::Point> = None;
+    // The now-playing transport Tab or the arrows reached on the lock screen;
+    // `None` is its password field.
+    let mut lock_media_focus: Option<crate::shell::quick_settings::now_playing::Transport> = None;
     // The keyboard the lock screen draws for unlocking by touch: shown from
     // the first touch, gone at the next physical key. No input method runs
     // while locked; the passcode never leaves the lock screen.
@@ -11454,15 +11436,77 @@ pub fn run() {
                             }
                             _ => {}
                         }
-                        match key {
-                            Some(key) => {
-                                lock.handle_key(key);
+                        // The now-playing card's transport is reachable
+                        // from the keyboard as it is from a reader and the
+                        // pointer: Tab reaches its buttons, the arrows move
+                        // between them, Enter and Space act, Escape goes
+                        // back to the field.
+                        let media_available = lock_player.as_ref().is_some_and(|player| {
+                            crate::shell::quick_settings::now_playing::Transport::ALL
+                                .into_iter()
+                                .any(|transport| transport.enabled(player))
+                        });
+                        let media_handled = if let WindowEvent::KeyboardInput { event, .. } = wev
+                            && event.state == ElementState::Pressed
+                            && !event.repeat
+                            && !lock.is_verifying()
+                            && media_available
+                        {
+                            use winit::keyboard::NamedKey as K;
+                            match &event.logical_key {
+                                Key::Named(K::Tab) => {
+                                    lock_media_focus = lock_screen::media_focus_step(
+                                        lock_media_focus,
+                                        lock_player.as_ref(),
+                                        !test_control_ctx.modifiers.state().shift_key(),
+                                    );
+                                    true
+                                }
+                                Key::Named(K::ArrowLeft | K::ArrowRight)
+                                    if lock_media_focus.is_some() =>
+                                {
+                                    lock_media_focus = lock_screen::media_focus_step(
+                                        lock_media_focus,
+                                        lock_player.as_ref(),
+                                        matches!(&event.logical_key, Key::Named(K::ArrowRight)),
+                                    );
+                                    true
+                                }
+                                Key::Named(K::Enter | K::Space) if lock_media_focus.is_some() => {
+                                    if let Some(transport) = lock_screen::media_focused_transport(
+                                        lock_media_focus,
+                                        lock_player.as_ref(),
+                                    ) {
+                                        send_lock_transport(lock_player.as_ref(), transport);
+                                    }
+                                    true
+                                }
+                                Key::Named(K::Escape) if lock_media_focus.is_some() => {
+                                    lock_media_focus = None;
+                                    true
+                                }
+                                _ => {
+                                    // Typing belongs to the password field:
+                                    // taking a key there returns focus to it.
+                                    lock_media_focus = None;
+                                    false
+                                }
                             }
-                            None => {
-                                lock.handle_event(wev, &test_control_ctx.modifiers);
+                        } else {
+                            false
+                        };
+                        if !media_handled {
+                            match key {
+                                Some(key) => {
+                                    lock.handle_key(key);
+                                }
+                                None => {
+                                    lock.handle_event(wev, &test_control_ctx.modifiers);
+                                }
                             }
                         }
-                        // Any keystroke changes the masked field / error, so force a repaint this tick.
+                        // Any keystroke changes the masked field, the media
+                        // focus or an error, so force a repaint this tick.
                         session_changed = true;
                     } else if route == PriorityRoute::PowerKey {
                         // The hardware power key always does something visible, locked or
@@ -12342,6 +12386,7 @@ pub fn run() {
             if followed == Some(crate::shell::owner_session::Follow::Unlock) {
                 // As after the person's own unlock: the next lock starts bare.
                 lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                lock_media_focus = None;
                 frame_builder.set_lock_keyboard_keys(Vec::new());
                 frame_builder.set_lock_surfaces(Vec::new());
             }
@@ -12542,6 +12587,7 @@ pub fn run() {
             if outcome == UnlockOutcome::Unlocked {
                 // The next lock starts without the keyboard and its layer.
                 lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                lock_media_focus = None;
                 frame_builder.set_lock_keyboard_keys(Vec::new());
                 frame_builder.set_lock_surfaces(Vec::new());
                 apply_session_transitions!(session.request_unlock(Instant::now()));
@@ -12565,6 +12611,7 @@ pub fn run() {
             backend.cancel_touch();
             frame_builder.host_mut().cancel_direct_touch_gestures();
             lock.reset();
+            lock_media_focus = None;
         }
         if session.is_locked() != prev_locked {
             retained_lock.clear();
@@ -12594,6 +12641,7 @@ pub fn run() {
             end_spatial_control(network, &mut spatial_control);
         }
         prev_locked = session.is_locked();
+        screen_dimmer.keep_session_truthful(&mut session);
         // The dimming overlay is part of the scene, so switching it needs a frame.
         if screen_dimmer.overlay_alpha() != prev_dim_overlay {
             prev_dim_overlay = screen_dimmer.overlay_alpha();
@@ -14007,6 +14055,7 @@ pub fn run() {
         } else {
             lock_player = None;
             lock_pointer = None;
+            lock_media_focus = None;
         }
         deliver_held_key_releases!();
         let pump_done = Instant::now();
@@ -14296,6 +14345,7 @@ pub fn run() {
                     &lock,
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_media_focus,
                     lock_keyboard.shown(),
                     alert.as_deref(),
                 );
@@ -14354,6 +14404,7 @@ pub fn run() {
                     // Count-only summary on the lock screen — no bodies leak.
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_media_focus,
                     lock_keyboard.shown(),
                     alert.as_deref(),
                 );
@@ -14508,19 +14559,10 @@ pub fn run() {
                                 screenshot.take(),
                                 &mut bridge,
                             );
-                            notify_screenshot_sent(&mut frame_builder, sent);
-                        }
-                        CaptureOutcome::ScreenshotSent(sent) => {
-                            notify_screenshot_sent(&mut frame_builder, sent);
-                        }
-                        CaptureOutcome::Copied { width, height } => {
-                            tracing::info!(width, height, "screenshot copied");
-                        }
-                        CaptureOutcome::Floated { id } => {
-                            tracing::debug!(%id, "live capture mirror created");
-                        }
-                        CaptureOutcome::Pinned { id } => {
-                            tracing::debug!(%id, "screenshot pinned as a frozen reference");
+                            crate::compositor::capture::tell_outcome(
+                                &mut frame_builder,
+                                CaptureOutcome::ScreenshotSent(sent),
+                            );
                         }
                         CaptureOutcome::FloatingClosed { id } => {
                             if let Some((connection, public_id)) = external_floating_parts(&id) {
@@ -14538,115 +14580,8 @@ pub fn run() {
                             }
                             tracing::debug!(%id, "live capture mirror closed");
                         }
-                        CaptureOutcome::RecordingStarted(path) => {
-                            // The compositor-owned pill supplies immediate,
-                            // spatial confirmation and then settles into the
-                            // top bar. A toast here would duplicate it and
-                            // unnecessarily cover application content.
-                            tracing::debug!(path = %path.display(), "recording started");
-                        }
-                        CaptureOutcome::RecordingPaused { path, paused } => {
-                            tracing::debug!(
-                                path = %path.display(),
-                                paused,
-                                "recording state changed"
-                            );
-                        }
-                        CaptureOutcome::RecordingAudioLost { path, reason } => {
-                            frame_builder.with_chrome(|chrome| {
-                                chrome.push_notification(
-                                    crate::shell::i18n::t("capture-recording-audio-lost"),
-                                    crate::shell::i18n::t_args(
-                                        "capture-recording-audio-lost-body",
-                                        &[
-                                            ("path", path.display().to_string().into()),
-                                            ("reason", reason.into()),
-                                        ],
-                                    ),
-                                );
-                            });
-                        }
-                        CaptureOutcome::RecordingStopped { path, frames } => {
-                            // The recording pill morphs in-place into a
-                            // clickable saved receipt. Avoid a second surface
-                            // competing for attention in the top-right corner.
-                            tracing::info!(path = %path.display(), frames, "recording saved");
-                        }
-                        CaptureOutcome::RecordingOpened(path) => {
-                            tracing::debug!(path = %path.display(), "recording opened");
-                        }
-                        CaptureOutcome::RecordingRevealed(path) => {
-                            tracing::debug!(path = %path.display(), "recording folder opened");
-                        }
-                        CaptureOutcome::ReplayStarted => {
-                            tracing::info!("recent capture enabled");
-                        }
-                        CaptureOutcome::ReplaySaved { path, seconds } => {
-                            tracing::info!(path = %path.display(), seconds, "recent capture saved");
-                        }
-                        CaptureOutcome::ReplayStopped => {
-                            tracing::info!("recent capture disabled");
-                        }
-                        CaptureOutcome::ReplayAudioLost(reason) => {
-                            frame_builder.with_chrome(|chrome| {
-                                chrome.push_warning_notification(
-                                    crate::shell::i18n::t("capture-recent-audio-lost"),
-                                    reason,
-                                );
-                            });
-                        }
-                        CaptureOutcome::ScreenshotOpened(path) => {
-                            tracing::debug!(path = %path.display(), "screenshot opened");
-                        }
-                        CaptureOutcome::ScreenshotMarkupOpened(path) => {
-                            tracing::debug!(path = %path.display(), "screenshot markup opened");
-                        }
-                        CaptureOutcome::ScreenshotMarkupClosed => {
-                            tracing::debug!("screenshot markup closed");
-                        }
-                        CaptureOutcome::ScreenshotRevealed(path) => {
-                            tracing::debug!(path = %path.display(), "screenshot folder opened");
-                        }
-                        CaptureOutcome::PortalScreenshotSaved(path) => {
-                            tracing::warn!(path = %path.display(), "portal screenshot completed after its request expired");
-                        }
-                        CaptureOutcome::PortalScreenshotCancelled => {
-                            tracing::debug!(
-                                "portal screenshot selector cancelled after its request expired"
-                            );
-                        }
-                        CaptureOutcome::Uncapturable(source) => {
-                            tracing::warn!(?source, "capture found nothing to read");
-                            frame_builder.with_chrome(|chrome| {
-                                chrome.push_error_notification(
-                                    crate::shell::i18n::t("capture-failed"),
-                                    crate::shell::i18n::t(match source {
-                                        ui::widget::SourceMode::Window => {
-                                            "capture-uncapturable-window"
-                                        }
-                                        ui::widget::SourceMode::Region => {
-                                            "capture-uncapturable-selection"
-                                        }
-                                        ui::widget::SourceMode::Strip => {
-                                            "capture-uncapturable-strip"
-                                        }
-                                        ui::widget::SourceMode::Display => {
-                                            "capture-uncapturable-screen"
-                                        }
-                                    }),
-                                );
-                            });
-                        }
-                        CaptureOutcome::Failed(error) => {
-                            // The reason is for the log; the person is told
-                            // the outcome and what to try.
-                            tracing::warn!(%error, "capture failed");
-                            frame_builder.with_chrome(|chrome| {
-                                chrome.push_error_notification(
-                                    crate::shell::i18n::t("capture-failed"),
-                                    crate::shell::i18n::t("capture-failed-body"),
-                                );
-                            });
+                        outcome => {
+                            crate::compositor::capture::tell_outcome(&mut frame_builder, outcome);
                         }
                     }
                 }
@@ -14921,6 +14856,7 @@ pub fn run() {
                         &lock,
                         frame_builder.chrome().notification_count(),
                         lock_player.as_ref(),
+                        lock_media_focus,
                         lock_keyboard.shown(),
                         alert.as_deref(),
                     )

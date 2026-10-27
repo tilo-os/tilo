@@ -555,6 +555,17 @@ fn a_tilo_vm_origin_needs_the_dev_flavour_and_its_repository_policy() {
     );
     image.write("usr/share/tilo/cosign.pub", b"key\n");
     assert!(read_profile(&image.root).unwrap().is_some());
+    // What a dev image carries (os/scripts/finalize-dev-image.py): the dev channel signed
+    // with the development key.
+    let dev_signed = json!({"transports": {"docker": {"registry.tilo.so/tilo/tilo-vm": [{"type": "sigstoreSigned",
+        "keyPath": "/usr/share/tilo/cosign-dev.pub", "signedIdentity": {"type": "matchRepository"}}]}}});
+    image.json("etc/containers/policy.json", &dev_signed);
+    assert!(
+        read_profile(&image.root).is_err(),
+        "dev-signed admission needs the development key"
+    );
+    image.write("usr/share/tilo/cosign-dev.pub", b"dev key\n");
+    assert!(read_profile(&image.root).unwrap().is_some());
     image.json(
         "etc/containers/policy.json",
         &json!({"transports": {"docker": {}}}),

@@ -614,6 +614,56 @@ fn grant_and_revoke_parameters_pick_from_the_workspace() {
     assert!(!firefox.label.contains(allows), "{}", firefox.label);
 }
 
+/// An existing resource is picked from the workspace's resources of its
+/// kind, by the titles their apps publish, as a reference to it: never by
+/// an id typed in.
+#[test]
+fn an_existing_resource_is_picked_by_its_title_as_a_reference() {
+    use tilo_actions::Pick;
+    struct Notes;
+    impl AppDirectory for Notes {
+        fn app_display_name(&self, app_id: &str) -> Option<String> {
+            (app_id == "so.tilo.notes").then(|| "Notes".into())
+        }
+        fn titled_resources(&self) -> Vec<TitledResource> {
+            let titled = |kind: &str, resource: &str, title: &str| TitledResource {
+                app: "so.tilo.notes".into(),
+                kind: kind.into(),
+                resource: resource.into(),
+                title: title.into(),
+            };
+            vec![
+                titled("notes.notebook.pages", "notes.notebook/pages/b", "Roadmap"),
+                titled("notes.notebook", "notes.notebook", "Notebook"),
+                titled("notes.notebook.pages", "notes.notebook/pages/a", "Plan"),
+            ]
+        }
+    }
+    let ws = ws_with_grants();
+    let notes = picks(
+        &ws,
+        VIEWER,
+        &Notes,
+        Pick::Resource {
+            kind: "notes.notebook.pages".into(),
+        },
+    );
+    let labels: Vec<_> = notes.iter().map(|picked| picked.label.as_str()).collect();
+    assert_eq!(labels, ["Plan", "Roadmap"], "the kind's resources by title");
+    assert_eq!(notes[0].detail.as_deref(), Some("Notes"));
+    let note = tilo_actions::ActionParam::required("note", tilo_actions::ParamType::Object, "Note")
+        .picking(Pick::Resource {
+            kind: "notes.notebook.pages".into(),
+        });
+    let picked = serde_json::json!({ "note": notes[0].value });
+    assert!(
+        tilo_actions::ActionArgs::bind_json(&[note], picked.as_object().unwrap()).is_ok(),
+        "the picked value binds as a reference"
+    );
+    assert_eq!(notes[0].value["id"], "notes.notebook/pages/a");
+    assert_eq!(notes[0].value["app"], "so.tilo.notes");
+}
+
 /// A grant to the work on a resource is listed with every other grant,
 /// the resource named as it publishes itself, and revoked like any.
 #[test]
