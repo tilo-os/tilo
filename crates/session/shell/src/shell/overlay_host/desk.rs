@@ -1013,7 +1013,36 @@ impl ShellOverlayHost {
         let now = ui::time::now();
         self.desk.motion = theme.motion();
         self.register_desk_targets();
+        let content = self.desk_content(now, presence);
+        // The strip switcher's labels are where the person is looking: a
+        // widget glance under them steps aside while they are open.
+        let switcher_card = self
+            .strip_navigator
+            .is_open()
+            .then(|| self.strip_navigator.switcher().layout().bounds);
         let mut painted = Vec::new();
+        let mut pass = DeskPass {
+            scene,
+            transform,
+            text,
+            theme,
+            content: &content,
+        };
+        for slot in self.desk.slots.clone() {
+            self.paint_slot(&mut pass, slot, now, switcher_card, &mut painted);
+        }
+        self.desk.targets.paint_focus(
+            scene,
+            transform,
+            f64::from(theme.tokens.radii.control),
+            theme,
+        );
+        painted
+    }
+
+    /// What the widgets show this pass: who is on the team, the music the
+    /// player has, the month on view and the monitor's reading.
+    fn desk_content(&mut self, now: Instant, presence: &PresenceCtx) -> DeskContent<'_> {
         let team_showing = self.desk.board.form(WidgetId::Team) != Form::Away
             || self
                 .desk
@@ -1025,99 +1054,102 @@ impl ShellOverlayHost {
         } else {
             Vec::new()
         };
-        let music = self.music_view(now);
-        let month = self.calendar_month();
-        let reading = self.desk.monitor.reading();
+        DeskContent {
+            music: self.music_view(now),
+            month: self.calendar_month(),
+            reading: self.desk.monitor.reading(),
+            members,
+        }
+    }
+
+    /// One widget: its glance while it is folded, its open card while it is
+    /// open, haloed by the present cursor's colour. Returns the bounds it
+    /// painted.
+    fn paint_slot(
+        &mut self,
+        pass: &mut DeskPass<'_, '_>,
+        slot: Slot,
+        now: Instant,
+        switcher_card: Option<Rect>,
+        painted: &mut Vec<Rect>,
+    ) {
+        let (transform, content) = (pass.transform, &*pass.content);
+        let (scene, text, theme) = (&mut *pass.scene, &mut *pass.text, &*pass.theme);
+        let shown = self
+            .desk
+            .shown
+            .get(&slot.id)
+            .map_or(0.0, |t| shown_opacity(t.progress(now)));
+        if shown <= f32::EPSILON || switcher_card.is_some_and(|card| card.overlaps(slot.glance)) {
+            return;
+        }
+        let open = self
+            .desk
+            .opened
+            .get(&slot.id)
+            .map_or(0.0, |t| ui::motion::unit_opacity(t.progress(now)));
+        let edge = self
+            .desk
+            .edges
+            .get(&slot.id)
+            .copied()
+            .unwrap_or_else(|| slot.id.default_edge());
         let drag = self
             .desk
             .press
             .zip(self.last_cursor)
             .and_then(|(press, p)| Some((press.id, press.shift(p)?)));
-        // The strip switcher's labels are where the person is looking: a
-        // widget glance under them steps aside while they are open.
-        let switcher_card = self
-            .strip_navigator
-            .is_open()
-            .then(|| self.strip_navigator.switcher().layout().bounds);
-        for slot in self.desk.slots.clone() {
-            let shown = self
-                .desk
-                .shown
-                .get(&slot.id)
-                .map_or(0.0, |t| shown_opacity(t.progress(now)));
-            if shown <= f32::EPSILON || switcher_card.is_some_and(|card| card.overlaps(slot.glance))
-            {
-                continue;
-            }
-            let open = self
-                .desk
-                .opened
-                .get(&slot.id)
-                .map_or(0.0, |t| ui::motion::unit_opacity(t.progress(now)));
-            let edge = self
-                .desk
-                .edges
-                .get(&slot.id)
-                .copied()
-                .unwrap_or_else(|| slot.id.default_edge());
-            // Opacity only: a widget fades in place, and only a drag moves
-            // it.
-            let shift = drag
-                .filter(|(id, _)| *id == slot.id)
-                .map_or(vello::kurbo::Vec2::ZERO, |(_, delta)| delta);
-            let at = transform.pre_translate(shift);
-            let glance_alpha = shown * (1.0 - open);
-            if glance_alpha > f32::EPSILON {
-                with_alpha(
-                    scene,
-                    at,
-                    slot.glance.inflate(24.0, 24.0),
-                    glance_alpha,
-                    |scene| match slot.id {
-                        WidgetId::Music => {
-                            if let Some(view) = music.as_ref() {
-                                paint_music_glance(
-                                    scene,
-                                    at,
-                                    text,
-                                    theme,
-                                    slot.glance,
-                                    view.player(),
-                                );
-                            }
+        // Opacity only: a widget fades in place, and only a drag moves
+        // it.
+        let shift = drag
+            .filter(|(id, _)| *id == slot.id)
+            .map_or(vello::kurbo::Vec2::ZERO, |(_, delta)| delta);
+        let at = transform.pre_translate(shift);
+        let glance_alpha = shown * (1.0 - open);
+        if glance_alpha > f32::EPSILON {
+            with_alpha(
+                scene,
+                at,
+                slot.glance.inflate(24.0, 24.0),
+                glance_alpha,
+                |scene| match slot.id {
+                    WidgetId::Music => {
+                        if let Some(view) = content.music.as_ref() {
+                            paint_music_glance(scene, at, text, theme, slot.glance, view.player());
                         }
-                        WidgetId::Team => {
-                            paint_team_glance(scene, at, text, theme, slot.glance, edge, &members);
-                        }
-                        WidgetId::Calendar => {
-                            paint_calendar_glance(scene, at, text, theme, slot.glance, &month);
-                        }
-                        WidgetId::SystemMonitor => {
-                            paint_monitor_glance(scene, at, text, theme, slot.glance, reading);
-                        }
-                    },
-                );
-                painted.push(at.transform_rect_bbox(slot.glance.inflate(24.0, 32.0)));
-            }
-            let open_alpha = shown * open;
-            if open_alpha > f32::EPSILON {
-                let content = OpenContent {
-                    music: music.as_ref(),
-                    members: &members,
-                    month: &month,
-                    reading,
-                };
-                self.paint_open_card(scene, (at, open_alpha), text, theme, slot, content);
-                painted.push(at.transform_rect_bbox(slot.open.inflate(24.0, 32.0)));
-            }
+                    }
+                    WidgetId::Team => {
+                        paint_team_glance(
+                            scene,
+                            at,
+                            text,
+                            theme,
+                            slot.glance,
+                            edge,
+                            &content.members,
+                        );
+                    }
+                    WidgetId::Calendar => {
+                        paint_calendar_glance(scene, at, text, theme, slot.glance, &content.month);
+                    }
+                    WidgetId::SystemMonitor => {
+                        paint_monitor_glance(scene, at, text, theme, slot.glance, content.reading);
+                    }
+                },
+            );
+            painted.push(at.transform_rect_bbox(slot.glance.inflate(24.0, 32.0)));
         }
-        self.desk.targets.paint_focus(
-            scene,
-            transform,
-            f64::from(theme.tokens.radii.control),
-            theme,
-        );
-        painted
+        let open_alpha = shown * open;
+        if open_alpha > f32::EPSILON {
+            let open_content = OpenContent {
+                music: content.music.as_ref(),
+                members: &content.members,
+                month: &content.month,
+                reading: content.reading,
+            };
+            self.paint_open_card(scene, (at, open_alpha), text, theme, slot, open_content);
+            painted.push(at.transform_rect_bbox(slot.open.inflate(24.0, 32.0)));
+        }
     }
 
     /// `slot`'s open card, pin band included, at `alpha`.
@@ -1240,6 +1272,26 @@ impl ShellOverlayHost {
 
 /// What an open card shows, read once per frame.
 #[derive(Clone, Copy)]
+/// One painting pass of the desk: where it draws (`scene`, `transform`) and
+/// what it draws with (`text`, `theme`) and from (`content`).
+struct DeskPass<'a, 'b> {
+    scene: &'a mut Scene,
+    transform: Affine,
+    text: &'a mut TextRenderer,
+    theme: &'a Theme,
+    content: &'a DeskContent<'b>,
+}
+
+/// What every widget of a pass shows, gathered once so a repeated paint of
+/// the same widget reads the same.
+struct DeskContent<'a> {
+    music: Option<NowPlayingView>,
+    month: Month,
+    reading: Reading,
+    members: Vec<TeamMember>,
+}
+
+/// What one open card shows, borrowed from [`DeskContent`].
 struct OpenContent<'a> {
     music: Option<&'a NowPlayingView>,
     members: &'a [TeamMember],
