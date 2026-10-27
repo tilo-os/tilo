@@ -9,6 +9,20 @@ use tilo_relay_session::RelayCoeditSession;
 use super::{ActorState, WorkspaceId};
 
 impl ActorState {
+    /// Ask `ws`'s hosts for the on-demand record on `channel`
+    /// ([`super::NetCmd::OpenRecord`]), once.
+    pub(super) fn open_record(&mut self, ws: WorkspaceId, channel: [u8; 32]) {
+        if self.opened_records.entry(ws).or_default().insert(channel) {
+            for ((session_ws, _), runtime) in &self.host_sessions {
+                if *session_ws == ws
+                    && let Err(error) = runtime.session.open_record(channel)
+                {
+                    tracing::debug!(ws, %error, "the room's host was not asked for a record");
+                }
+            }
+        }
+    }
+
     /// Ask a host session of `ws` that just started for every on-demand
     /// record this device opened in the room ([`NetCmd::OpenRecord`]).
     pub(super) fn reopen_records(&self, ws: WorkspaceId, session: &RelayCoeditSession) {

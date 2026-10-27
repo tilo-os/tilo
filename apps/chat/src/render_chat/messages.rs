@@ -14,7 +14,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::conversation::{ConversationClock, DayBreaks, DayDividerFace, UnreadDividerFace};
+use ui::widget::conversation::{
+    ConversationClock, DayBreaks, DayDividerFace, EarlierUnavailableFace, UnreadDividerFace,
+};
 use ui::widget::{ArrivalFace, SkeletonFace, SkeletonShape};
 use ui::widget::{
     AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ControlSize,
@@ -279,7 +281,7 @@ impl ChatApp {
             .flatten();
         // Reading within a view of the earlier messages' place opens the
         // part before.
-        if reads_back && y + earlier_h >= area.y0 - area.height() {
+        if reads_back && self.messages_read_current() && y + earlier_h >= area.y0 - area.height() {
             self.scrollback.reached_top();
         }
 
@@ -414,11 +416,23 @@ impl ChatApp {
         self.reveal_scroll_pending = false;
     }
 
+    /// Whether the messages shown are read from the parts the chain holds
+    /// now: a head taken up since the last sync is not empty or short.
+    fn messages_read_current(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| Some(chain.revision()) == self.chain_seen)
+    }
+
     /// A timeline with no message held: a channel's whose messages may all
     /// be in earlier parts reads back to them; else the empty state.
     fn draw_no_messages(&mut self, paint: PaintCtx<'_>, area: Rect, text_w: f32, reads_back: bool) {
         if reads_back {
-            self.scrollback.reached_top();
+            // Only once the messages shown are read from the parts held: a
+            // head taken up since the last sync is not empty for it.
+            if self.messages_read_current() {
+                self.scrollback.reached_top();
+            }
             self.scrollback.anchor = None;
             self.draw_earlier_only(paint, area, text_w);
         } else {
@@ -441,14 +455,19 @@ impl ChatApp {
     }
 
     /// The place of the earlier messages, above the oldest held, in `band`:
-    /// its ground until a part is asked for, then the part arriving.
+    /// its ground until a part is asked for, then the part arriving, or,
+    /// when the room's hosts have none of it, that they are not available.
     fn draw_earlier(&self, mut paint: PaintCtx<'_>, band: Rect, column: MessageColumn) {
-        let Some(asked) = self
-            .scrollback
-            .pager
-            .as_ref()
-            .and_then(ui::framework::ChainPager::asked)
-        else {
+        let Some(pager) = self.scrollback.pager.as_ref() else {
+            return;
+        };
+        if pager.unavailable() {
+            let leading = column.text_x;
+            let trailing = column.text_x + f64::from(column.text_width);
+            EarlierUnavailableFace::paint(&mut paint, band, leading, trailing);
+            return;
+        }
+        let Some(asked) = pager.asked() else {
             return;
         };
         let now = ui::motion::frame_now();

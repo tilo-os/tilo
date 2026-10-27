@@ -169,4 +169,47 @@ async fn a_later_device_opens_an_earlier_part_of_a_chain_at_the_host() {
         }
     })
     .await;
+    let opened = |record: &str| neighbour_wire::app_document_channel(app, record);
+    tilo_test_env::within("the host says it sent all it has of the part", async {
+        loop {
+            if let Some(NetEvent::RecordOpened {
+                ws,
+                channel,
+                frames,
+            }) = rx_b.recv().await
+                && channel == opened(&part(0))
+            {
+                assert_eq!((ws, frames), (42, 1));
+                break;
+            }
+        }
+    })
+    .await;
+
+    // A part the host never had: it says so, with nothing sent.
+    cmd_b
+        .send(NetCmd::OpenRecord {
+            ws: 42,
+            channel: opened(&part(7)),
+        })
+        .await
+        .unwrap();
+    tilo_test_env::within("the host says it has none of a part it never had", async {
+        loop {
+            match rx_b.recv().await {
+                Some(NetEvent::RecordOpened {
+                    channel, frames, ..
+                }) if channel == opened(&part(7)) => {
+                    assert_eq!(frames, 0);
+                    break;
+                }
+                Some(NetEvent::Msg {
+                    msg: NeighbourMsg::AppDocument { record_id, .. },
+                    ..
+                }) => assert_ne!(record_id, part(7)),
+                _ => {}
+            }
+        }
+    })
+    .await;
 }

@@ -997,6 +997,7 @@ conversation-delivery-read = Read
 conversation-delivery-failed = Not sent
 conversation-delivery-uncertain = Status uncertain
 conversation-new-messages = New messages
+conversation-earlier-unavailable = Earlier messages aren't available on this device's hosts
 conversation-attachment-open = Open
 conversation-attachment-open-full-size = Open full size
 conversation-attachment-save = Save

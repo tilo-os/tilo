@@ -1520,6 +1520,9 @@ pub(super) async fn install(
         return Ok(false);
     }
     let mut ready = inbound.state.document_reads.pending(&key)?;
+    // The room's hosts have none of this on-demand record: the app shows it
+    // unavailable, said once each time it becomes so.
+    let mut absent = false;
     let (initial, revision) = match first {
         Reply::Chunk { .. } | Reply::Created { .. } => {
             let (read, revision) = read_capture(channel, first)
@@ -1528,6 +1531,18 @@ pub(super) async fn install(
             (Some(read), Some(revision))
         }
         Reply::Unavailable => (None, None),
+        Reply::Absent => {
+            absent = true;
+            if !inbound
+                .send_durable(CollabEvent::RecordUnavailable {
+                    route: spec.clone(),
+                })
+                .await
+            {
+                return Err("committed read event queue closed".into());
+            }
+            (None, None)
+        }
         _ => return Err("invalid initial committed read mode".into()),
     };
     let mut channel = channel.clone();
@@ -1625,6 +1640,7 @@ pub(super) async fn install(
                         || (known.is_some() && matches!(reply, Reply::Changes { .. })) =>
                 {
                     set_read_ready(&inbound, &ready, false);
+                    absent = false;
                     match read_capture(&channel, reply).await {
                         Ok((read, next)) => {
                             current = Some(read);
@@ -1648,6 +1664,21 @@ pub(super) async fn install(
                 Ok(Ok(Reply::Unavailable)) => {
                     set_read_ready(&inbound, &ready, false);
                     revision = None;
+                    absent = false;
+                    false
+                }
+                Ok(Ok(Reply::Absent)) => {
+                    set_read_ready(&inbound, &ready, false);
+                    revision = None;
+                    if !std::mem::replace(&mut absent, true)
+                        && !inbound
+                            .send_durable(CollabEvent::RecordUnavailable {
+                                route: spec.clone(),
+                            })
+                            .await
+                    {
+                        break;
+                    }
                     false
                 }
                 Err(_) if !renewed => true,
