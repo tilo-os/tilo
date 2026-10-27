@@ -1660,6 +1660,10 @@ impl Widget for ChatApp {
         self.request_visible_images();
         self.sync_call_pictures();
         // Native capture/transport belongs to the shell's lease-bound service.
+        // The bar's slots follow the shell's every frame, also while a
+        // narrow window's sidebar covers the conversation and it is not
+        // drawn.
+        self.declare_window_toolbar();
     }
 
     fn composition_follows_allocation(&self) -> bool {

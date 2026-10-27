@@ -20,7 +20,11 @@ pub struct Board {
     pub cards: Vec<String>,
 }
 
-#[resource(kind = "test.room-arrival-board", label = "Board")]
+#[resource(
+    kind = "test.room-arrival-board",
+    label = "Board",
+    app = "so.tilo.test-room-arrival"
+)]
 impl Board {
     /// Add a card.
     #[action]

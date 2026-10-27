@@ -216,3 +216,13 @@ fn two_devices_changing_different_classes_keep_both() {
     assert_eq!((merged.daily, merged.hourly), (3, 48));
     assert_eq!(left.state().unwrap(), right.state().unwrap());
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(|| {
+        ui::framework::testing::TestApp::<BackupsShell>::drive("status")
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+}

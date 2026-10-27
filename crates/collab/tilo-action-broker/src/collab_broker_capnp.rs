@@ -275,6 +275,10 @@ pub struct BrokerActor {
     /// The issue whose run the agent works in, by its address: grants
     /// naming the issue decide for the run as the agent's own do.
     issue: Option<String>,
+    /// How far the invocation this actor's request continues was admitted
+    /// to reach: what goes further asks first
+    /// ([`tilo_action_policy::Reach`]).
+    ceiling: Option<tilo_action_policy::Reach>,
 }
 
 impl BrokerActor {
@@ -287,6 +291,7 @@ impl BrokerActor {
             for_person: None,
             session_delegated: false,
             issue: None,
+            ceiling: None,
         }
     }
 
@@ -299,6 +304,7 @@ impl BrokerActor {
             for_person: None,
             session_delegated: false,
             issue: None,
+            ceiling: None,
         }
     }
 
@@ -313,6 +319,7 @@ impl BrokerActor {
             for_person: Some(installer.into()),
             session_delegated: false,
             issue: None,
+            ceiling: None,
         }
     }
 
@@ -337,6 +344,22 @@ impl BrokerActor {
     pub fn session_delegated(mut self) -> Self {
         self.session_delegated = true;
         self
+    }
+
+    /// The same actor, asking as part of an invocation admitted to reach
+    /// `ceiling`, when it is one.
+    #[must_use]
+    pub fn within(mut self, ceiling: Option<tilo_action_policy::Reach>) -> Self {
+        self.ceiling = ceiling;
+        self
+    }
+
+    /// Whether an action of `kind`, privileged when `privileged`, reaches
+    /// further than the invocation this actor's request continues was
+    /// admitted for.
+    fn exceeds(&self, kind: ActionKind, privileged: bool) -> bool {
+        self.ceiling
+            .is_some_and(|ceiling| !ceiling.covers(kind, privileged))
     }
 
     /// The same agent, working in a run of the issue at `issue`.
@@ -423,9 +446,10 @@ impl BrokerActor {
     }
 
     /// Whether this actor is a person acting from their own device: the one
-    /// whose own gesture answers a grant that asks first.
+    /// whose own gesture answers a grant that asks first. What an effect asks
+    /// for while it continues their invocation is not their gesture.
     pub(crate) fn direct(&self) -> bool {
-        self.delegate().is_none() && !self.capped
+        self.delegate().is_none() && !self.capped && self.ceiling.is_none()
     }
 
     /// The person this actor is, when a person acts from their own device:
@@ -567,7 +591,13 @@ impl BrokerActor {
             if privileged {
                 verdict = verdict.privileged();
             }
-            (verdict.answer, verdict.spent())
+            // A child going further than the invocation it continues was
+            // admitted for is asked for as its own request.
+            let answer = match verdict.answer {
+                Answer::Allow if self.exceeds(kind, privileged) => Answer::Ask,
+                answer => answer,
+            };
+            (answer, verdict.spent())
         })
     }
 
@@ -1471,6 +1501,9 @@ struct PendingInvocation {
     /// Who it was admitted for, kept so an edit its effect submits is
     /// admitted for them too.
     caller: Option<ContinuingCaller>,
+    /// How far it was admitted to reach: what its effect asks for goes no
+    /// further without being asked for.
+    reach: tilo_action_policy::Reach,
     activity: Option<ActivityTarget>,
     owner: InvocationOwner,
     network_evidence: Option<tilo_relay_session::client::CertifiedAction>,
@@ -1631,14 +1664,12 @@ impl CallerInvocation {
 }
 
 impl CapnpBrokerState {
-    /// The caller of the invocation `running` that this broker delivered to
-    /// the connection `peer_id` and that still runs: who an edit its effect
-    /// submits is admitted for. `None` when the connection runs no such
-    /// invocation, or its caller was known only by certificate.
-    /// Who an invoke continuing a running invocation is admitted for: that
-    /// invocation's own caller, with their grants. `None` for any other
-    /// request; the refusal to answer with when the connection runs no such
-    /// invocation.
+    /// Who an invoke an agent's connection makes continuing a running
+    /// invocation is admitted for: that invocation's own caller, with their
+    /// grants, reaching no further than it ([`Self::child_caller`]). `None`
+    /// for any other request; the refusal to answer with when the connection
+    /// runs no such invocation. An application's connection is decided by
+    /// [`Self::app_request_caller`].
     fn continued_caller(
         &self,
         peer_id: u64,
@@ -1649,7 +1680,7 @@ impl CapnpBrokerState {
             return None;
         };
         let running = invoke.on_behalf_of?;
-        Some(self.continuing_caller(peer_id, running).ok_or_else(|| {
+        Some(self.child_caller(peer_id, running).ok_or_else(|| {
             Box::new(tilo_actions::remote::RemoteActionMessage::Receipt(
                 tilo_actions::remote::InvocationReceipt {
                     invocation: invoke.invocation,
@@ -1661,11 +1692,38 @@ impl CapnpBrokerState {
         }))
     }
 
+    /// The caller of the invocation `running` that this broker delivered to
+    /// the connection `peer_id` and that still runs. `None` when the
+    /// connection runs no such invocation, two callers share its id, or its
+    /// caller no longer stands.
     pub(crate) fn continuing_caller(
         &self,
         peer_id: u64,
         running: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::Caller> {
+        self.running_for(peer_id, running).map(|(caller, _)| caller)
+    }
+
+    /// Who a request continuing the invocation `running`, which this broker
+    /// delivered to the connection `peer_id` and that still runs, is decided
+    /// as: its caller, reaching no further than it was admitted to without
+    /// being asked for. `None` as [`Self::continuing_caller`].
+    pub(crate) fn child_caller(
+        &self,
+        peer_id: u64,
+        running: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::Caller> {
+        self.running_for(peer_id, running)
+            .map(|(caller, reach)| caller.within(reach))
+    }
+
+    /// The current caller of `running` on `peer_id`, and how far it was
+    /// admitted to reach.
+    fn running_for(
+        &self,
+        peer_id: u64,
+        running: tilo_actions::InvocationId,
+    ) -> Option<(tilo_actions::remote::Caller, tilo_action_policy::Reach)> {
         // Doors that take the caller's own invocation id can admit two
         // callers' invocations under one id; such an id names nobody.
         let mut matching = self
@@ -1674,13 +1732,14 @@ impl CapnpBrokerState {
             .ok()?
             .values()
             .filter(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
-            .map(|pending| pending.caller.clone())
+            .map(|pending| (pending.caller.clone(), pending.reach))
             .take(2)
             .collect::<Vec<_>>();
         if matching.len() != 1 {
             return None;
         }
-        matching.pop()??.current(self)
+        let (caller, reach) = matching.pop()?;
+        Some((caller?.current(self)?, reach))
     }
 }
 
@@ -5804,13 +5863,13 @@ impl CapnpBrokerState {
         // Where the room's grants ask first, the person's confirmation in
         // the host is the answer: the invocation needs a confirmation token
         // even when the action itself asks for none.
-        if asks
+        let confirmed = asks
             || requires_store_witness(&offered.0.app_id, &offered.1.action)
             || !matches!(
                 offered.1.contract.confirmation,
                 tilo_actions::ConfirmationPolicy::None
-            )
-        {
+            );
+        if confirmed {
             let token = confirmation_token.ok_or_else(|| {
                 "action_confirmation_required: request and present a one-use confirmation token"
                     .to_string()
@@ -6062,7 +6121,19 @@ impl CapnpBrokerState {
             &offered.1,
             argument,
         );
+        // What it was admitted to reach caps what its effect asks for: its
+        // own reach, narrowed by what it continues unless the person
+        // confirmed it.
+        let own = tilo_action_policy::Reach {
+            kind: offered.1.contract.kind,
+            privileged: offered.1.contract.need().privileged,
+        };
+        let reach = match actor.ceiling {
+            Some(ceiling) if !confirmed => own.narrowed(ceiling),
+            _ => own,
+        };
         let pending = PendingInvocation {
+            reach,
             caller: continuing,
             activity: ActivityTarget::new(
                 execution.clone(),
@@ -9194,25 +9265,28 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
-        // An app's open of an application is decided as the caller of the
-        // invocation it continues, under that invocation's custody, else as
-        // the person whose press it follows; an edit an effect submits while
-        // running for someone is theirs.
-        let (decided, continued_origin) = match current
-            .agent_id
-            .is_none()
-            .then(|| {
-                self.state
-                    .app_open_caller(self.peer_id, &route.app_id, &person, &request.message)
-            })
-            .flatten()
-        {
-            Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
-            Some(Err(refused)) => (Some(Err(refused)), None),
-            None => (
+        // An app's request continuing an invocation someone asked of it (an
+        // edit its effect submits, another app's action its effect calls) is
+        // decided as that invocation's caller, under its custody; its open
+        // of an application, else as the person whose press it follows.
+        // Anything else, including what continues an invocation the app made
+        // of itself, is the app's own door's to decide.
+        let (decided, continued_origin) = if current.agent_id.is_none() {
+            match self.state.app_request_caller(
+                self.peer_id,
+                &route.app_id,
+                &person,
+                &request.message,
+            ) {
+                Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
+                Some(Err(refused)) => (Some(Err(refused)), None),
+                None => (None, None),
+            }
+        } else {
+            (
                 self.state.continued_caller(self.peer_id, &request.message),
                 None,
-            ),
+            )
         };
         let caller = match decided {
             Some(Ok(caller)) => caller,
@@ -19574,6 +19648,10 @@ pub mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let invocation = tilo_actions::InvocationId::new();
         let pending = PendingInvocation {
+            reach: tilo_action_policy::Reach {
+                kind: tilo_actions::ActionKind::Outside,
+                privileged: false,
+            },
             caller: None,
             activity: None,
             owner: InvocationOwner::Local {

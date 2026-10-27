@@ -941,7 +941,6 @@ impl Performer {
             if !matches!(kind, "image/png" | "image/jpeg" | "image/webp") {
                 return Err(OpError::Refused(format!("not a picture: {kind}")));
             }
-            use base64::Engine as _;
             let data_url = format!(
                 "data:{kind};base64,{}",
                 base64::engine::general_purpose::STANDARD.encode(&bytes)

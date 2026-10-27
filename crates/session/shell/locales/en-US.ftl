@@ -32,6 +32,8 @@ workspace-deleted-undo = Undo
 workspace-left-toast = Left { $name }
 # The name of a workspace joined before its host told its name.
 workspace-joined-name = Shared workspace
+# The workspace made for Personal Settings when the person had no workspace only they are in.
+workspace-personal-name = Personal
 # A workspace whose host no longer lets this person in.
 workspace-needs-join-again = Join again to take part
 # A workspace that was being joined when Tilo last closed.
@@ -2349,6 +2351,7 @@ window-move-hosted-workspace = That workspace is run by its owner, and this devi
 window-move-not-permitted = That workspace doesn't let you open this app there.
 window-move-already-moving = This window is already being moved.
 window-move-nobody-to-confirm = Moving a window needs the person at this desktop to agree to what crosses, and nobody is here to ask.
+window-move-personal = Settings is yours alone, so it stays in your personal workspace.
 window-transfer-title = Move “{ $window }” to { $to }?
 window-transfer-carries = The document in “{ $window }” goes to { $to } with its full edit history, and the window reopens there where you left it.
 window-transfer-move-detail = Move: it leaves { $from }, whose history keeps a note that it moved to { $to }.

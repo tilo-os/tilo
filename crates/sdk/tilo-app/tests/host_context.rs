@@ -17,7 +17,7 @@ pub struct Runs {
     pub devices: Vec<String>,
 }
 
-#[resource(kind = "test.runs", label = "Runs")]
+#[resource(kind = "test.runs", label = "Runs", app = "so.tilo.test-runs")]
 impl Runs {
     /// Record a run on `device`.
     #[action]

@@ -30,7 +30,7 @@ impl PlayerApp {
                 VideoEffect::PICTURE_IN_PICTURE.id,
             ] {
                 statuses.push(EffectStatus::unavailable(
-                    ui::tilo_resource::ActionRef::<VideoEffect, ()>::new(effect, &[]),
+                    crate::actions::reference(effect),
                     "no_media",
                     "Open a video first",
                 ));

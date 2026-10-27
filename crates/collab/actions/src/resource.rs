@@ -617,6 +617,11 @@ pub struct Resource {
     pub presentation: Option<ResourcePresentation>,
     /// Exact original typed identity retained before host namespacing.
     pub semantic_identity: Option<ResourceSemanticIdentity>,
+    /// The app that publishes it, as the [`ActionKey`](crate::ActionKey)s
+    /// of its actions name it: the one whose resource this is, not the
+    /// provider keeping it in a room. `None` for a resource published
+    /// outside an app.
+    pub app_id: Option<String>,
     pub children: Vec<Resource>,
     pub actions: Vec<ActionSpec>,
     /// Explicit presentations of this resource. Actions remain invocation
@@ -632,10 +637,18 @@ impl Resource {
             label: label.into(),
             presentation: None,
             semantic_identity: None,
+            app_id: None,
             children: Vec::new(),
             actions: Vec::new(),
             views: Vec::new(),
         }
+    }
+
+    /// The app that publishes it, as an [`ActionKey`](crate::ActionKey) of
+    /// one of its actions names it ([`Self::app_id`]).
+    #[must_use]
+    pub fn app(&self) -> Option<&str> {
+        self.app_id.as_deref()
     }
 
     #[must_use]
@@ -2948,48 +2961,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod history_context_tests {
-    use super::*;
-
-    fn spec() -> ActionSpec {
-        ActionSpec::immediate_encoded(
-            "set-block-text",
-            "Set block text",
-            ExecutionLocus::default(),
-            EncodedAction {
-                type_id: "notes.notebook".into(),
-                payload: Vec::new(),
-            },
-        )
-    }
-
-    /// A nested resource's action is the enclosing record's field edit, so
-    /// its history names the record's kind, which the change's claim is
-    /// decided by, and keeps the body it was addressed through as a facet.
-    #[test]
-    fn a_nested_action_is_named_as_the_resource_whose_action_it_is() {
-        let id = "notes.notebook/pages/p1/body";
-        let own = spec().history_context(id, "tilo.rich-text", "Body");
-        let own_resource = own.resource.expect("a resource");
-        assert_eq!(own_resource.kind, "tilo.rich-text");
-        assert!(own.facets.is_empty());
-
-        let nested = spec()
-            .applied_as("notes.notebook", "Notebook")
-            .history_context(id, "tilo.rich-text", "Body");
-        let resource = nested.resource.expect("a resource");
-        assert_eq!(
-            resource.id, id,
-            "still the resource it was addressed through"
-        );
-        assert_eq!(resource.kind, "notes.notebook");
-        assert_eq!(resource.label, "Notebook");
-        assert_eq!(
-            nested.facets,
-            [crate::ActionFacet::new(NESTED_RESOURCE_FACET, "Body")]
-        );
-    }
-}
+#[path = "resource/history_tests.rs"]
+mod history_tests;
 
 #[cfg(test)]
 #[path = "resource/effective_invocation_tests.rs"]

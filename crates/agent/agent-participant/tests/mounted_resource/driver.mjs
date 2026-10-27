@@ -69,9 +69,12 @@ const pageState = () => Promise.race([
 ]);
 const deadline = setTimeout(async () => {
   const page = await pageState();
+  const since = marks.findLast(mark => mark.name === stages.at(-1))?.at;
   writeFileSync(join(evidence, 'failure.json'), JSON.stringify({phase:'timeout',
     lastStage:stages.at(-1) ?? null,
     lastMark: marks.at(-1)?.name ?? null,
+    lastMarkMs: marks.at(-1) ? Date.parse(marks.at(-1).at) - Date.parse(marks[0]?.at ?? marks.at(-1).at) : null,
+    sinceStageMs: marks.at(-1) && since ? Date.parse(marks.at(-1).at) - Date.parse(since) : null,
     pageStatus: String(page.status ?? '').slice(0, 500),
     arrival: page.arrival ?? null, card: page.card ?? null, entry: page.entry ?? null,
     gpuStep: page.gpuStep ?? null}, null, 2) + '\n');

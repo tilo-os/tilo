@@ -156,6 +156,9 @@ pub struct GuestPlan {
     pub resolver: Option<String>,
     /// Optional qualified native producer, never requested via a guest path.
     pub editor: Option<crate::editor::GuestEditor>,
+    /// A served session's terminal, handed to the guest's first process at
+    /// [`crate::setup::TERMINAL_FD`] ([`crate::setup`]).
+    pub terminal: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
 }
 
 impl GuestPlan {
@@ -750,10 +753,32 @@ pub fn spawn(
     };
     let mut cmd = std::process::Command::new(program);
     cmd.args(rest);
-    // Direct `ush -c` must expose its command output and startup errors;
-    // served sessions inherit the supervisor's already-attached pty here.
+    // Direct `ush -c` must expose its command output and startup errors. A
+    // served session's standard error is the supervisor's log until the
+    // guest's first process puts the terminal there (`crate::setup`).
     cmd.stdout(std::process::Stdio::inherit());
     cmd.stderr(std::process::Stdio::inherit());
+    if let Some(terminal) = &plan.terminal {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let fd = terminal.as_raw_fd();
+        // SAFETY: only dup2/fcntl on descriptors this process owns, between
+        // fork and exec.
+        unsafe {
+            cmd.pre_exec(move || {
+                let target = crate::setup::TERMINAL_FD;
+                let placed = if fd == target {
+                    libc::fcntl(fd, libc::F_SETFD, 0)
+                } else {
+                    libc::dup2(fd, target)
+                };
+                if placed < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
     if let Some(netns) = netns {
         netns.enter(&mut cmd);
     }
@@ -911,6 +936,7 @@ mod tests {
             env: Vec::new(),
             resolver: None,
             editor: None,
+            terminal: None,
         }
     }
 

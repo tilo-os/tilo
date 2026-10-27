@@ -579,6 +579,15 @@ impl Widget for FileToolbar {
         }
     }
 
+    /// What its buttons and the path bar changed: the toolbar paints
+    /// nothing of its own.
+    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        for child in &self.left {
+            child.collect_damage(regions);
+        }
+        self.path_bar.collect_damage(regions);
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = self.left.iter().map(std::convert::AsRef::as_ref).collect();
         v.push(&self.path_bar);

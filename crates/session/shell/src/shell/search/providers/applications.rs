@@ -780,9 +780,20 @@ fn launch_resolved_installed_app(
     let launched = {
         let st = chrome.borrow();
         let mut tree = st.tree_mut();
+        // The workspace the place was held in: for a personal app the
+        // personal workspace, whichever was shown.
         let native_room = tree
             .desktop
-            .active_workspace()
+            .workspaces
+            .iter()
+            .find(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .any(|group| group.tabs.iter().any(|tab| tab.id == held))
+            })
+            .or_else(|| tree.desktop.active_workspace())
             .map(crate::shell::state::Workspace::room)
             .filter(|room| tree.requires_native_owner(*room));
         if let Some(room) = native_room {

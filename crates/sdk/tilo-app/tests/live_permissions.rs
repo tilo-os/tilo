@@ -16,7 +16,7 @@ pub struct Memo {
     pub remarks: Collection<String>,
 }
 
-#[resource(kind = "test.memo", label = "Memo")]
+#[resource(kind = "test.memo", label = "Memo", app = "so.tilo.test-memo")]
 impl Memo {
     /// Retitle the memo.
     #[action]

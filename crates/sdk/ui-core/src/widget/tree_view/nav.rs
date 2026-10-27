@@ -349,11 +349,12 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         }
     }
 
-    /// The face of row `id` as it paints now.
+    /// The face of row `id` as it paints now at `row`, with the pointer at
+    /// `pointer` in the same coordinates as `row`.
     fn nav_item_face<'a>(
         &self,
         id: NodeId,
-        row: Rect,
+        (row, pointer): (Rect, Option<Point>),
         item: &'a NavItemSpec,
         label: &'a str,
         actions: &'a [Icon],
@@ -379,7 +380,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             face = face.disclosure(self.expanded.contains(&id));
         }
         if self.row_actions_visible(key) {
-            let hover = self.last_cursor.and_then(|point| {
+            let hover = pointer.and_then(|point| {
                 self.nav_action_rects(row, actions)
                     .iter()
                     .position(|rect| rect.contains(point))
@@ -392,7 +393,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     fn nav_section_face<'a>(
         &self,
         id: NodeId,
-        row: Rect,
+        (row, pointer): (Rect, Option<Point>),
         spec: &'a NavRowSpec,
     ) -> Option<NavSectionFace<'a>> {
         let NavRowSpec::Section {
@@ -423,15 +424,17 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
                 let layout = nav_section_layout(theme, &face);
                 face.action_hover = layout
                     .action
-                    .zip(self.last_cursor)
+                    .zip(pointer)
                     .is_some_and(|(rect, point)| rect.contains(point));
             }
         }
         Some(face)
     }
 
-    /// Paint one row of the navigation presentation. Returns `false` when
-    /// the row is not a navigation row (the regular painter then runs).
+    /// Paint one row of the navigation presentation at `row`, with the
+    /// pointer at `pointer` in the same coordinates (a tracked tree paints
+    /// its rows unscrolled). Returns `false` when the row is not a
+    /// navigation row (the regular painter then runs).
     pub(super) fn draw_nav_row(
         &self,
         scene: &mut Scene,
@@ -439,7 +442,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         id: NodeId,
-        row: Rect,
+        (row, pointer): (Rect, Option<Point>),
     ) -> bool {
         let Some(spec) = self.nav_spec(id) else {
             return false;
@@ -447,7 +450,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         let rail = self.nav.as_ref().is_some_and(|nav| nav.rail);
         match &spec {
             NavRowSpec::Section { .. } => {
-                if !rail && let Some(face) = self.nav_section_face(id, row, &spec) {
+                if !rail && let Some(face) = self.nav_section_face(id, (row, pointer), &spec) {
                     paint_nav_section(scene, transform, text_renderer, theme, &face);
                 }
             }
@@ -459,7 +462,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
                 };
                 let actions: Vec<Icon> =
                     self.row_actions.iter().map(|action| action.icon).collect();
-                if let Some(face) = self.nav_item_face(id, row, item, label, &actions) {
+                if let Some(face) = self.nav_item_face(id, (row, pointer), item, label, &actions) {
                     paint_nav_row(scene, transform, text_renderer, theme, &face);
                 }
             }
@@ -565,7 +568,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             _ => return,
         };
         let label = self.model.label(id).unwrap_or_default().to_owned();
-        let Some(face) = self.nav_item_face(id, row, &item, &label, &[]) else {
+        let Some(face) = self.nav_item_face(id, (row, self.last_cursor), &item, &label, &[]) else {
             return;
         };
         let Some(theme) = self.nav.as_ref().map(|nav| nav.theme.clone()) else {
@@ -589,7 +592,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         let Some(theme) = self.nav.as_ref().map(|nav| nav.theme.clone()) else {
             return;
         };
-        let Some(face) = self.nav_section_face(id, row, spec) else {
+        let Some(face) = self.nav_section_face(id, (row, self.last_cursor), spec) else {
             return;
         };
         let layout = nav_section_layout(&theme, &face);
@@ -679,7 +682,7 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         let Some(row) = self.row_rect(id) else {
             return false;
         };
-        let Some(face) = self.nav_section_face(id, row, &spec) else {
+        let Some(face) = self.nav_section_face(id, (row, self.last_cursor), &spec) else {
             return false;
         };
         let Some(theme) = self.nav.as_ref().map(|nav| &nav.theme) else {

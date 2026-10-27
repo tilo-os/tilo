@@ -4462,7 +4462,7 @@ fn confinement_routes_are_mandatory_for_hosted_terminals() {
 // ---------------------------------------------------------------
 
 #[cfg(unix)]
-fn private_ush_listener(runtime: &std::path::Path) -> std::os::unix::net::UnixListener {
+pub(crate) fn private_ush_listener(runtime: &std::path::Path) -> std::os::unix::net::UnixListener {
     use std::os::unix::fs::PermissionsExt;
 
     let tilo = runtime.join("tilo");

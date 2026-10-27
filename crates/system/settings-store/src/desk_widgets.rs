@@ -164,8 +164,10 @@ pub struct WidgetPrefs {
     /// Whether the person keeps this widget on their desk.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// When the widget shows itself.
     #[serde(default)]
     pub show: ShowMode,
+    /// The edge or corner of the screen it docks at.
     pub edge: DockEdge,
     /// The strips (by id) [`ShowMode::Always`] applies to; empty is every
     /// strip.

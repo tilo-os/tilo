@@ -11,6 +11,7 @@ mod capabilities;
 mod hosted;
 mod inspector_sheet;
 mod nothing_listed;
+mod sidebar_button;
 
 /// A pane that fills what it is given and counts the input it receives.
 struct Probe {
