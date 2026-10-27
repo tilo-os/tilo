@@ -101,20 +101,7 @@ pub fn tell_outcome(frame_builder: &mut FrameBuilder, outcome: CaptureOutcome) {
         CaptureOutcome::PortalScreenshotCancelled => {
             tracing::debug!("portal screenshot selector cancelled after its request expired");
         }
-        CaptureOutcome::Uncapturable(source) => {
-            tracing::warn!(?source, "capture found nothing to read");
-            frame_builder.with_chrome(|chrome| {
-                chrome.push_error_notification(
-                    crate::shell::i18n::t("capture-failed"),
-                    crate::shell::i18n::t(match source {
-                        ui::widget::SourceMode::Window => "capture-uncapturable-window",
-                        ui::widget::SourceMode::Region => "capture-uncapturable-selection",
-                        ui::widget::SourceMode::Strip => "capture-uncapturable-strip",
-                        ui::widget::SourceMode::Display => "capture-uncapturable-screen",
-                    }),
-                );
-            });
-        }
+        CaptureOutcome::Uncapturable(source) => tell_uncapturable(frame_builder, source),
         CaptureOutcome::Failed(error) => {
             // The reason is for the log; the person is told
             // the outcome and what to try.
@@ -127,6 +114,22 @@ pub fn tell_outcome(frame_builder: &mut FrameBuilder, outcome: CaptureOutcome) {
             });
         }
     }
+}
+
+/// What was chosen has nothing to capture now: tell the person plainly.
+fn tell_uncapturable(frame_builder: &mut FrameBuilder, source: ui::widget::SourceMode) {
+    tracing::warn!(?source, "capture found nothing to read");
+    frame_builder.with_chrome(|chrome| {
+        chrome.push_error_notification(
+            crate::shell::i18n::t("capture-failed"),
+            crate::shell::i18n::t(match source {
+                ui::widget::SourceMode::Window => "capture-uncapturable-window",
+                ui::widget::SourceMode::Region => "capture-uncapturable-selection",
+                ui::widget::SourceMode::Strip => "capture-uncapturable-strip",
+                ui::widget::SourceMode::Display => "capture-uncapturable-screen",
+            }),
+        );
+    });
 }
 
 /// Tell the person where "Send…" put their screenshot, or why it did not.
