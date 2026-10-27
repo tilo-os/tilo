@@ -783,9 +783,10 @@ fn initial_history_job2_does_not_wait_for_unowned_retained_native_route() {
         original.cluster_id,
         "retained-unowned",
     );
-    app.collaboration
-        .manager
-        .join_route(unowned.clone(), crate::record::RecordKind::new("tilo.rich-text"));
+    app.collaboration.manager.join_route(
+        unowned.clone(),
+        crate::record::RecordKind::new("tilo.rich-text"),
+    );
     while !app
         .committed_documents
         .iter()
@@ -1034,11 +1035,7 @@ impl crate::resources::PublishesResources for LateRowProbe {
         resources
     }
 
-    fn resource(
-        &self,
-        doc: &automerge::AutoCommit,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
+    fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         self.resources(doc)
             .into_iter()
             .find(|resource| resource.id.as_str() == id)
@@ -1088,7 +1085,10 @@ fn a_resolution_of_a_resource_still_being_read_is_answered_once_it_is_read() {
             reply,
         });
         app.answer_awaited_resolutions();
-        assert!(answered.try_recv().is_err(), "nothing is said while it is read");
+        assert!(
+            answered.try_recv().is_err(),
+            "nothing is said while it is read"
+        );
 
         read.set(Some(holds));
         app.publish_action_surface();
