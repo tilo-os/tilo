@@ -245,6 +245,10 @@ pub enum Value {
     Rec(RecordInit),
     /// The error a denied or failed invocation returns to a flow.
     Error(String),
+    /// The value an event of a control carries, before the event happens: an action reference
+    /// holds its place (`open(x)` on `select(x)`), and the host puts the value there when the
+    /// event fires (`ViewInstance::fire_with`).
+    Event,
 }
 
 impl Value {
@@ -302,6 +306,7 @@ impl Value {
             Self::Node(_) => "ui node",
             Self::Rec(_) => "record",
             Self::Error(_) => "error",
+            Self::Event => "event value",
         }
     }
 }
@@ -355,7 +360,7 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         }
         Value::Principal(p) => tagged("principal", Json::String(p.0.clone())),
         Value::Error(msg) => tagged("error", Json::String(msg.clone())),
-        Value::Node(_) | Value::Rec(_) | Value::Coll(_) => {
+        Value::Node(_) | Value::Rec(_) | Value::Coll(_) | Value::Event => {
             return Err(format!("a {} cannot be stored", v.kind_name()));
         }
     })

@@ -219,13 +219,13 @@ view note_row(n: Note) {
 
 view notebook(nb: Notebook) {
     window filter: NoteFilter = .all
-    list(nb.notes, filter: filter, empty: "No notes yet") { n ->
+    std.list(nb, nb.notes, filter: filter, empty: "No notes yet") { n ->
         row(n.title, checkbox: n.pinned)
     }
 }
 
 view note(n: Note) {
-    document {
+    std.document(n) {
         section("About") {
             facts {
                 "Title": n.title

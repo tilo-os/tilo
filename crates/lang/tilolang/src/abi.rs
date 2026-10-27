@@ -52,6 +52,9 @@ imports! {
     TupleSetI = "tuple_set_i" ([H, I32, I64] -> []);
     TupleSetF = "tuple_set_f" ([H, I32, F64] -> []);
     TupleSetH = "tuple_set_h" ([H, I32, H] -> []);
+    TupleGetI = "tuple_get_i" ([H, I32] -> [I64]);
+    TupleGetF = "tuple_get_f" ([H, I32] -> [F64]);
+    TupleGetH = "tuple_get_h" ([H, I32] -> [H]);
 
     SomeH = "some_h" ([H] -> [H]);
     SomeI = "some_i" ([I64] -> [H]);
@@ -126,7 +129,12 @@ imports! {
     UiBindState = "ui_bind_state" ([H, I32, H] -> []);
     StateGet = "state_get" ([I32, H, H] -> [H]);
     ActSet = "act_set" ([I32, H, H] -> [H]);
-    ActOpen = "act_open" ([H, H] -> [H]);
+    ActOpen = "act_open" ([H, H, I32] -> [H]);
+    EventValue = "event_value" ([] -> [H]);
+    Actions = "actions" ([H] -> [H]);
+    Lenses = "lenses" ([H] -> [H]);
+    MetaOf = "meta_of" ([H] -> [H]);
+    Phrase = "phrase" ([H, H] -> [H]);
 
     SpaceI = "space_i" ([H] -> [I64]);
     SpaceF = "space_f" ([H] -> [F64]);

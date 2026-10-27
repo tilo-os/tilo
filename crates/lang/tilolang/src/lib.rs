@@ -45,6 +45,7 @@ mod prims;
 pub mod print;
 pub mod resolve;
 pub mod source;
+pub mod stdlib;
 pub mod toolkit;
 pub mod types;
 

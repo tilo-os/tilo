@@ -120,6 +120,10 @@ pub fn print_type(t: &TypeExpr) -> String {
             let inner: Vec<String> = items.iter().map(print_type).collect();
             format!("({})", inner.join(", "))
         }
+        TypeExprKind::Fn(params, result) => {
+            let inner: Vec<String> = params.iter().map(print_type).collect();
+            format!("({}) -> {}", inner.join(", "), print_type(result))
+        }
     }
 }
 
@@ -444,8 +448,14 @@ impl Printer {
             }
             Item::View(v) => {
                 self.docs(&v.doc);
+                let types = if v.type_params.is_empty() {
+                    String::new()
+                } else {
+                    let names: Vec<&str> = v.type_params.iter().map(|t| t.name.as_str()).collect();
+                    format!("<{}>", names.join(", "))
+                };
                 self.line(&format!(
-                    "view {}{} {{",
+                    "view {}{types}{} {{",
                     v.name.name,
                     Self::params(&v.params)
                 ));
@@ -606,9 +616,20 @@ impl Printer {
                 self.level -= 1;
                 self.line("}");
             }
-            UiKind::On { event, action } => {
+            UiKind::On {
+                event,
+                param,
+                action,
+            } => {
                 let a = self.ex(action);
-                self.line(&format!("on {}: {a}", event.name));
+                let carried = match param {
+                    Some(crate::ast::EventParam { name, ty: Some(ty) }) => {
+                        format!("({}: {})", name.name, print_type(ty))
+                    }
+                    Some(crate::ast::EventParam { name, ty: None }) => format!("({})", name.name),
+                    None => String::new(),
+                };
+                self.line(&format!("on {}{carried}: {a}", event.name));
             }
             UiKind::Call(c) => self.ui_call(c),
         }

@@ -9,10 +9,14 @@ mod enums;
 mod expr;
 mod native;
 mod outcomes;
+mod platform;
 mod pred;
+mod template;
 #[cfg(test)]
 mod tests;
 mod ui;
+
+pub use template::is_template;
 
 use crate::abi::Imp;
 use crate::ast::{self, Item, StmtKind};
@@ -75,11 +79,22 @@ struct FnState {
     row_views: usize,
     /// What the locals bound by `let` hold, in terms of places (see [`outcomes::Sym`]).
     syms: HashMap<LocalId, outcomes::Sym>,
+    /// The parameters of the templates being expanded that are not values: view state,
+    /// lambdas and blocks of the caller ([`template::Macro`]).
+    macros: HashMap<String, template::Macro>,
+    /// The package whose names the code being checked sees: `None` for the module's own.
+    ns: Option<String>,
+    /// The type parameters of the templates being expanded, bound.
+    types: HashMap<String, Ty>,
+    /// What node keys start with after the view's id: the templates being expanded, by call.
+    prefix: String,
+    /// The templates being expanded, outermost first.
+    expanding: Vec<String>,
 }
 
 /// Where the UI being lowered stands, saved and restored around each block.
 #[derive(Clone, Copy, Default)]
-struct UiPlace {
+pub(crate) struct UiPlace {
     /// The primitive whose block is being lowered, empty at a view's top: `sidebar` and
     /// `inspector` sit directly in a frame, a fact directly in `facts`.
     parent: &'static str,
@@ -89,6 +104,9 @@ struct UiPlace {
     /// Whether it is inside a `card`: a list there is the card's preview
     /// ([`crate::prims::PREVIEW_ROWS`]).
     in_card: bool,
+    /// Whether it is in a named slot of a `ui.*` component: what a loop makes there are parts
+    /// of the component (a menu's commands), so the loop lowers in place.
+    parts: bool,
 }
 
 /// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.
@@ -145,6 +163,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             Item::Flow(f) => c.run_body(&callable, FuncKind::Flow, Ctx::Flow, &f.body),
             Item::Fn(f) => c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body),
             Item::Scenario(s) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &s.body),
+            Item::View(v) if is_template(v) => continue,
             Item::View(v) => c.run_view(&callable, v),
             Item::Use(_)
             | Item::Type(_)
@@ -377,9 +396,6 @@ impl Checker<'_> {
         self.begin(Ctx::View, &c.params, Ty::View, &c.id);
         let rest = self.view_state(&c.name, &v.body);
         let env = self.env;
-        if let Some((key, _)) = env.default_views.iter().find(|(_, view)| *view == c.name) {
-            self.window_frame(&c.name, &key.name, &rest, v.body_span);
-        }
         let row_of = env
             .row_views
             .iter()

@@ -87,7 +87,7 @@ mod cases {
     }
 
     fn list(view: &ViewInstance) -> &UiNode {
-        of_kind(view.tree(), "list")
+        of_kind(view.tree(), "ui.VirtualList")
             .into_iter()
             .next()
             .unwrap_or_else(|| panic!("no list in\n{}", dump(view.tree())))
@@ -102,7 +102,7 @@ mod cases {
 
     /// The resource of the list item whose row has this title.
     fn item_titled(view: &ViewInstance, title: &str) -> ResourceRef {
-        of_kind(list(view), "item")
+        of_kind(list(view), "ui.ListItem")
             .into_iter()
             .find(|item| {
                 of_kind(item, "ui.ListRow")
@@ -116,6 +116,20 @@ mod cases {
             .unwrap_or_else(|| panic!("no item {title} in\n{}", dump(view.tree())))
     }
 
+    /// The node of `kind` whose `prop` is `value`.
+    fn node_with<'a>(tree: &'a UiNode, kind: &str, prop: &str, value: &str) -> &'a UiNode {
+        of_kind(tree, kind)
+            .into_iter()
+            .find(|node| node.props.get(prop) == Some(&Value::text(value)))
+            .unwrap_or_else(|| panic!("no {kind} with {prop} {value} in\n{}", dump(tree)))
+    }
+
+    /// Fire `event` of the node of `kind` whose `prop` is `value`.
+    fn fire_on(view: &ViewInstance, kind: &str, prop: &str, value: &str, event: &str) {
+        let key = node_with(view.tree(), kind, prop, value).key.clone();
+        view.fire(&key, event).unwrap();
+    }
+
     #[test]
     fn the_notebook_lists_its_notes_and_opens_each_in_a_window_of_its_own() {
         let n = Notes::new();
@@ -126,14 +140,21 @@ mod cases {
         list.set_lazy_rows(false).unwrap();
         assert_eq!(
             list.tree().kind,
-            "list",
-            "the window is one list: {}",
+            "ui.NavShell",
+            "the window is a shell: {}",
             dump(list.tree())
         );
-        assert_eq!(text_prop(list.tree(), "empty"), "No notes yet");
-        assert!(
-            of_kind(list.tree(), "ui.Button").is_empty(),
-            "the header holds the actions"
+        assert_eq!(
+            text_prop(of_kind(list.tree(), "ui.EmptyState")[0], "title"),
+            "No notes yet"
+        );
+        assert_eq!(
+            text_prop(
+                node_with(list.tree(), "ui.Button", "label", "New note"),
+                "role"
+            ),
+            "primary",
+            "the header holds the primary action"
         );
 
         // The header's primary action, as the platform applies it.
@@ -152,7 +173,7 @@ mod cases {
         );
 
         let mut editor = n.rt.open_resource(&me(), &note, None).unwrap();
-        assert_eq!(editor.tree().kind, "document");
+        assert_eq!(text_prop(editor.tree(), "content_kind"), "document");
         let title = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
         assert_eq!(
             editor.edit(&title, &Value::text("Plans")).unwrap(),
@@ -219,17 +240,23 @@ mod cases {
                 .unwrap();
         // These checks read the whole tree, as a host that draws every row does.
         view.set_lazy_rows(false).unwrap();
-        let key = list(&view).key.clone();
         assert_eq!(titles(&view), ["b", "a"]);
-        assert_eq!(list(&view).props["filter.count.pinned"], Value::Int(1));
-        view.fire(&key, "filter.pinned").unwrap();
+        assert_eq!(
+            node_with(view.tree(), "ui.NavItem", "key", "pinned").props["count"],
+            Value::Int(1)
+        );
+        fire_on(&view, "ui.NavItem", "key", "pinned", "select");
         view.poll_patches().unwrap();
         assert_eq!(titles(&view), ["a"]);
-        view.fire(&key, "filter.all").unwrap();
-        view.fire(&key, "sort.title").unwrap();
+        fire_on(&view, "ui.NavItem", "key", "all", "select");
+        view.poll_patches().unwrap();
+        fire_on(&view, "ui.MenuItem", "label", "Title", "choose");
         view.poll_patches().unwrap();
         assert_eq!(titles(&view), ["a", "b"]);
-        assert_eq!(text_prop(list(&view), "sort.selected"), "title");
+        assert_eq!(
+            node_with(view.tree(), "ui.MenuItem", "label", "Title").props["checked"],
+            Value::Int(1)
+        );
     }
 
     #[test]

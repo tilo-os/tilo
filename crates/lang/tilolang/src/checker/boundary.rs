@@ -5,9 +5,11 @@
 //! it is shown (a row of a `list`) and again only when what that row read changed. Nobody has
 //! to factor a row out into a view to get there.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 
-use super::{Checker, Ctx, Ex, StateRef};
+use super::template::{Closure, Macro, Scope, UiClosure};
+use super::{Checker, Ctx, Ex, StateRef, UiPlace};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind, StmtKind, StrPart, UiCall, UiKind, UiStmt};
 use crate::ir::{self, FuncKind, LocalId, Stmt};
@@ -37,7 +39,9 @@ impl Checker<'_> {
         body: &[UiStmt],
         parent: LocalId,
     ) -> Option<Ex> {
-        if self.st.ctx != Ctx::View || !passable(elem) {
+        // A loop in a named slot of a component makes parts of it (the commands of a menu, the
+        // actions of a header): it lowers in place.
+        if self.st.ctx != Ctx::View || !passable(elem) || self.st.ui.parts {
             return Some(list);
         }
         let (body, hoisted) = self.hoist_layout(body, var);
@@ -45,7 +49,10 @@ impl Checker<'_> {
         let mut names = BTreeSet::new();
         names_in_ui(body, &mut names);
         names.remove(var);
-        if let Some(direct) = self.direct_row(var, elem, body) {
+        if let Some(direct) = self
+            .direct_row(var, elem, body)
+            .filter(|_| self.st.macros.is_empty())
+        {
             self.loop_node(
                 &direct.target,
                 list,
@@ -56,13 +63,51 @@ impl Checker<'_> {
             );
             return None;
         }
-        let Some(captures) = self.captures(names) else {
+        // The lambdas and blocks of a template's caller the body applies, and what they read.
+        let macros: Vec<(String, Macro)> = names
+            .iter()
+            .filter_map(|name| Some((name.clone(), self.st.macros.get(name)?.clone())))
+            .filter(|(name, m)| !matches!(m, Macro::State(_)) || self.lookup(name).is_none())
+            .collect();
+        let mut read: Vec<LocalId> = Vec::new();
+        for (_, m) in &macros {
+            macro_reads(m, &mut read);
+        }
+        read.sort_unstable();
+        read.dedup();
+        let Some(mut captures) = self.captures(names) else {
             return Some(list);
         };
+        let mut remap: Vec<(LocalId, String)> = Vec::new();
+        for local in read {
+            if captures.iter().any(|(_, held, _)| *held == local) {
+                if let Some((name, ..)) = captures.iter().find(|(_, held, _)| *held == local) {
+                    remap.push((local, name.clone()));
+                }
+                continue;
+            }
+            let Some(ty) = self.st.locals.get(local as usize).cloned() else {
+                continue;
+            };
+            if !passable(&ty) {
+                return Some(list);
+            }
+            let name = format!("$m{local}");
+            remap.push((local, name.clone()));
+            captures.push((name, local, ty));
+        }
         let id = format!("{}~row{}", self.st.view_id, self.st.row_views);
         self.st.row_views = self.st.row_views.saturating_add(1);
         let owner = self.view_name();
         let (params, states) = self.row_params(var, elem, &captures);
+        let inherited = Inherited {
+            ns: self.st.ns.clone(),
+            types: self.st.types.clone(),
+            prefix: self.st.prefix.clone(),
+            ui: self.st.ui,
+            macros,
+            remap,
+        };
         let func = self.row_view(
             RowView {
                 id: &id,
@@ -71,7 +116,10 @@ impl Checker<'_> {
                 params: &params,
                 states: &states,
             },
-            |this| this.view_body(body),
+            |this| {
+                this.inherit(inherited);
+                this.view_body(body);
+            },
         );
         self.st.facts.views.insert(func);
         let around = captures
@@ -80,6 +128,39 @@ impl Checker<'_> {
             .collect();
         self.loop_node(&id, list, var, &hoisted, around, parent);
         None
+    }
+
+    /// Take on, in a row view made of a loop body, what the loop saw of the template being
+    /// expanded: its package's names, its type parameters, its keys, and its caller's lambdas
+    /// and blocks, which now read the row view's parameters.
+    fn inherit(&mut self, inherited: Inherited) {
+        let Inherited {
+            ns,
+            types,
+            prefix,
+            ui,
+            macros,
+            remap,
+        } = inherited;
+        self.st.ns = ns;
+        self.st.types = types;
+        self.st.prefix = prefix;
+        self.st.ui = UiPlace {
+            parent: self.st.ui.parent,
+            ..ui
+        };
+        let map: HashMap<LocalId, LocalId> = remap
+            .into_iter()
+            .filter_map(|(old, name)| Some((old, self.lookup(&name)?.0)))
+            .collect();
+        for (name, m) in macros {
+            let m = remap_macro(&m, &map);
+            if let Macro::State(state) = &m {
+                self.bind_local(&name, state.local);
+                self.st.states.insert(name.clone(), state.clone());
+            }
+            self.st.macros.insert(name, m);
+        }
     }
 
     /// The rows of a `list` (`list(xs) { x -> row(x.title) }`, or the type's `row view`): one
@@ -103,6 +184,9 @@ impl Checker<'_> {
         let mut names = BTreeSet::new();
         names_in_ui(block, &mut names);
         names.remove(var);
+        if names.iter().any(|name| self.st.macros.contains_key(name)) {
+            return Some(list);
+        }
         let Some(captures) = self.captures(names) else {
             return Some(list);
         };
@@ -269,7 +353,7 @@ impl Checker<'_> {
         if prims::prim(name).is_some() || self.lookup(name).is_some() {
             return None;
         }
-        let view = self.env.own_callable(name)?.clone();
+        let view = self.own_callable(name)?.clone();
         let func = view.func?;
         if view.kind != crate::resolve::CKind::View
             || args.len() != view.params.len()
@@ -433,6 +517,115 @@ impl Checker<'_> {
             ),
             None => Ex::str(&base),
         }
+    }
+}
+
+/// What a row view made inside a template's expansion takes on from it.
+struct Inherited {
+    ns: Option<String>,
+    types: HashMap<String, Ty>,
+    prefix: String,
+    ui: UiPlace,
+    /// The caller's lambdas and blocks the body applies, by name.
+    macros: Vec<(String, Macro)>,
+    /// Each local they read, and the row view's parameter that holds it.
+    remap: Vec<(LocalId, String)>,
+}
+
+/// Every local a lambda or block of a template's caller reads, its nested ones included.
+fn macro_reads(m: &Macro, out: &mut Vec<LocalId>) {
+    match m {
+        Macro::State(state) => out.push(state.local),
+        Macro::Lambda(closure) => {
+            let mut names = BTreeSet::new();
+            names_in(&closure.body, &mut names);
+            for (param, _) in &closure.params {
+                names.remove(param);
+            }
+            scope_reads(&closure.scope, &names, out);
+        }
+        Macro::Block(block) => {
+            let mut names = BTreeSet::new();
+            names_in_ui(&block.body, &mut names);
+            if let Some((item, _)) = &block.item {
+                names.remove(item);
+            }
+            scope_reads(&block.scope, &names, out);
+        }
+        Macro::Some(inner) => macro_reads(inner, out),
+        Macro::View(_) | Macro::Absent => {}
+    }
+}
+
+/// The locals `names` read in `scope`: its variables, its view state and its own lambdas'.
+fn scope_reads(scope: &Scope, names: &BTreeSet<String>, out: &mut Vec<LocalId>) {
+    for name in names {
+        if let Some(local) = scope.names.get(name) {
+            out.push(*local);
+        }
+        if let Some(state) = scope.states.get(name) {
+            out.push(state.local);
+        }
+        if let Some(m) = scope.macros.get(name) {
+            macro_reads(m, out);
+        }
+    }
+}
+
+/// `m` reading the locals of another function: each old local the new one `map` gives.
+fn remap_macro(m: &Macro, map: &HashMap<LocalId, LocalId>) -> Macro {
+    match m {
+        Macro::State(state) => Macro::State(StateRef {
+            local: map.get(&state.local).copied().unwrap_or(state.local),
+            ..state.clone()
+        }),
+        Macro::Lambda(closure) => Macro::Lambda(Rc::new(Closure {
+            params: closure.params.clone(),
+            result: closure.result.clone(),
+            body: closure.body.clone(),
+            scope: remap_scope(&closure.scope, map),
+        })),
+        Macro::Block(block) => Macro::Block(Rc::new(UiClosure {
+            item: block.item.clone(),
+            body: block.body.clone(),
+            scope: remap_scope(&block.scope, map),
+        })),
+        Macro::View(v) => Macro::View(Rc::clone(v)),
+        Macro::Some(inner) => Macro::Some(Box::new(remap_macro(inner, map))),
+        Macro::Absent => Macro::Absent,
+    }
+}
+
+/// `scope` in another function: the locals it can still read, as `map` moves them.
+fn remap_scope(scope: &Scope, map: &HashMap<LocalId, LocalId>) -> Scope {
+    Scope {
+        names: scope
+            .names
+            .iter()
+            .filter_map(|(name, local)| Some((name.clone(), *map.get(local)?)))
+            .collect(),
+        states: scope
+            .states
+            .iter()
+            .filter_map(|(name, state)| {
+                Some((
+                    name.clone(),
+                    StateRef {
+                        local: *map.get(&state.local)?,
+                        ..state.clone()
+                    },
+                ))
+            })
+            .collect(),
+        macros: scope
+            .macros
+            .iter()
+            .map(|(name, m)| (name.clone(), remap_macro(m, map)))
+            .collect(),
+        ns: scope.ns.clone(),
+        types: scope.types.clone(),
+        prefix: scope.prefix.clone(),
+        ui: scope.ui,
     }
 }
 

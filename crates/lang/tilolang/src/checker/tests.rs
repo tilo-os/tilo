@@ -208,89 +208,7 @@ type Notebook {\n    notes: Collection<Note>\n}\n\
 enum NoteOrder {\n    created\n    title\n}\n\
 root Notebook\ndefault view notebook for Notebook\n\
 fn listed(nb: Notebook, order: NoteOrder, filter: NoteFilter) -> List<Note> {\n    return match filter {\n        .all => nb.notes.filter(n -> true),\n        .pinned => nb.notes.filter(n -> n.pinned),\n    }\n}\n\
-view notebook(nb: Notebook) {\n    window order: NoteOrder = .created\n    window filter: NoteFilter = .all\n    list(listed(nb, order, filter), sort: order, filter: filter, empty: \"No notes yet\") { n ->\n        row(n.title, secondary: n.body, mark: if n.pinned { .pin }, checkbox: n.pinned)\n    }\n}";
-
-#[test]
-fn a_list_is_a_list_node_with_an_item_per_resource_holding_its_row() {
-    let (m, ids) = lower(NOTES);
-    let calls = ui_calls(func(&m, "notebook"));
-    let at = |calls: &[String], want: &str| {
-        calls
-            .iter()
-            .position(|c| c == want || c.starts_with(&format!("{want}:")))
-            .unwrap_or_else(|| panic!("no {want} in {calls:#?}"))
-    };
-    // The list holds one loop node: each row a view of its own on one item, rendered when the
-    // host shows it.
-    assert!(at(&calls, "node list") < at(&calls, "prop item_type"));
-    assert!(at(&calls, "node list") < at(&calls, "node for"));
-    assert!(has(&calls, "prop items") && has(&calls, "prop each"));
-    assert!(!has(&calls, "node item"), "no row is built with the list");
-    let row = ui_calls(func(&m, "notebook for n"));
-    assert!(
-        at(&row, "node item") < at(&row, "prop item")
-            && at(&row, "prop item") < at(&row, "node ui.ListRow"),
-        "{row:#?}"
-    );
-    for want in ["prop title", "prop secondary", "prop mark", "bind"] {
-        assert!(has(&row, want), "{want} in {row:#?}");
-    }
-    assert!(has(&calls, "prop empty"));
-    let s = strings(func(&m, "notebook"));
-    assert!(
-        s.contains(&ids.get("Note").expect("id").to_string()),
-        "the item type's id"
-    );
-    assert!(s.contains(&"No notes yet".to_string()));
-    assert!(
-        strings(func(&m, "notebook for n")).contains(&"pin".to_string()),
-        "the mark's icon in kebab case"
-    );
-}
-
-#[test]
-fn sort_and_filter_become_the_enum_its_selection_and_one_event_per_variant() {
-    let (m, ids) = lower(NOTES);
-    let calls = ui_calls(func(&m, "notebook"));
-    for want in [
-        "prop sort.enum",
-        "prop sort.selected",
-        "on sort.created",
-        "on sort.title",
-        "prop filter.enum",
-        "prop filter.selected",
-        "on filter.all",
-        "on filter.pinned",
-    ] {
-        assert!(has(&calls, want), "{want} in {calls:#?}");
-    }
-    // Each event is exactly what `set(state, .variant)` lowers to.
-    assert_eq!(count(&calls, "set"), 4);
-    let s = strings(func(&m, "notebook"));
-    for id in ["NoteOrder", "NoteFilter"] {
-        assert!(
-            s.contains(&ids.get(id).expect("id").to_string()),
-            "{id}'s id"
-        );
-    }
-}
-
-#[test]
-fn a_filter_counts_the_items_under_each_of_its_variants() {
-    let (m, _) = lower(NOTES);
-    let calls = ui_calls(func(&m, "notebook"));
-    assert_eq!(count(&calls, "prop filter.count.all"), 1);
-    assert_eq!(count(&calls, "prop filter.count.pinned"), 1);
-    // The counts re-evaluate the items with the filter's local set to each variant and put it
-    // back: one evaluation of `listed` per variant, plus the list's own.
-    let f = func(&m, "notebook");
-    let listed = m
-        .funcs
-        .iter()
-        .position(|x| x.name == "listed")
-        .expect("listed");
-    assert_eq!(calls_of(f, listed), 3);
-}
+view notebook(nb: Notebook) {\n    window order: NoteOrder = .created\n    window filter: NoteFilter = .all\n    std.list(nb, listed(nb, order, filter), sort: order, filter: filter, count: f -> listed(nb, order, f).len(), empty: \"No notes yet\") { n ->\n        row(n.title, secondary: n.body, mark: if n.pinned { .pin }, checkbox: n.pinned)\n    }\n}";
 
 #[test]
 fn a_type_with_a_row_view_lists_without_an_item_block() {
@@ -314,45 +232,6 @@ fn a_type_with_a_row_view_lists_without_an_item_block() {
     assert_eq!(
         row,
         vec!["node ui.ListRow", "prop title", "prop badge", "prop value"]
-    );
-}
-
-#[test]
-fn frames_sections_facts_forms_and_controls_build_their_nodes() {
-    let (m, _) = lower(
-        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    let who = p.name\n    document {\n        sidebar {\n            choice(bind: tab)\n        }\n        inspector(p) {\n            avatar(p.owner)\n        }\n        section(\"About\") {\n            facts {\n                \"Name\": who\n                \"VIP\": p.vip\n            }\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            card(p) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
-    );
-    let calls = ui_calls(func(&m, "person"));
-    for want in [
-        "node document",
-        "node sidebar",
-        "node choice",
-        "prop enum",
-        "prop selected",
-        "on pick.about",
-        "on pick.notes",
-        "node inspector",
-        "node ui.Section",
-        "node ui.PropertyList",
-        "node ui.Property",
-        "prop label",
-        "prop value",
-        "node form",
-        "node field",
-        "node toggle",
-        "bind",
-        "node ui.Card",
-        "node ui.Avatar",
-        "prop who",
-        "prop role",
-    ] {
-        assert!(has(&calls, want), "{want} in {calls:#?}");
-    }
-    assert_eq!(count(&calls, "node ui.Property"), 2);
-    assert_eq!(
-        calls.first().map(String::as_str),
-        Some("node document"),
-        "the frame is the root"
     );
 }
 
@@ -396,20 +275,6 @@ fn a_scenario_is_a_hidden_action_that_reaches_its_root() {
     assert!(s.contains(&format!("root-{notebook}")), "{s:?}");
 }
 
-#[test]
-fn a_composer_is_a_node_of_the_frame() {
-    let (m, _) = lower(
-        "type Chat {\n    draft: Text (title)\n}\nview chat(c: Chat) {\n    page {\n        text(c.draft)\n        composer {\n            input(bind: c.draft)\n        }\n    }\n}",
-    );
-    let calls = ui_calls(func(&m, "chat"));
-    let at = |s: &str| calls.iter().position(|c| c == s).expect(s);
-    assert!(
-        at("node page") < at("node composer") && at("node composer") < at("node ui.TextInput"),
-        "{calls:#?}"
-    );
-}
-
-/// The predicates a function hands the store (`coll_where`), as their text.
 fn asked(f: &Func) -> Vec<String> {
     let mut out = Vec::new();
     visit(f, &mut |e| {
@@ -457,5 +322,212 @@ fn listed(b: Bag) -> Int {\n    let l = b.items.filter(i -> true)\n    return l.
         asked(func(&m, "listed")).len(),
         1,
         "the collection's filter alone"
+    );
+}
+
+/// The package `body` checked: its diagnostics.
+fn diagnostics(body: &str) -> Vec<crate::diag::Diagnostic> {
+    let src = format!("app t.x \"X\"\n{body}\n");
+    let (module, diags) = crate::parser::parse_module(&src);
+    assert!(diags.is_empty(), "{diags:#?}");
+    let module = module.expect("parses");
+    let mut lock = IdsLock::new();
+    lock.sync(&declared_names(&module), &mut SeededEntropy(3));
+    let mut diags = Vec::new();
+    let env = crate::resolve::resolve(&module, &lock, &[], &mut diags);
+    let _ = super::check_module(&env, &module, &mut diags);
+    diags
+}
+
+#[test]
+fn std_list_is_a_shell_over_a_virtual_list_whose_rows_render_as_shown() {
+    let (m, _) = lower(NOTES);
+    let calls = ui_calls(func(&m, "notebook"));
+    let at = |calls: &[String], want: &str| {
+        calls
+            .iter()
+            .position(|c| c == want || c.starts_with(&format!("{want}:")))
+            .unwrap_or_else(|| panic!("no {want} in {calls:#?}"))
+    };
+    // The library's frame, expanded in the view: a shell, its list one loop node whose rows are
+    // each a view of their own, rendered when the host shows them.
+    assert!(at(&calls, "node ui.NavShell") < at(&calls, "node ui.VirtualList"));
+    let list = at(&calls, "node ui.VirtualList");
+    assert!(
+        calls[list..]
+            .iter()
+            .any(|c| c == "node for" || c.starts_with("node for:")),
+        "the list holds its loop: {calls:#?}"
+    );
+    assert!(
+        !has(&calls, "node ui.ListItem"),
+        "no row is built with the list"
+    );
+    // The rows' view: the boundary of the list's loop (the header's More menu is one too).
+    let row = m
+        .funcs
+        .iter()
+        .filter(|f| f.name.starts_with("notebook for"))
+        .map(ui_calls)
+        .find(|calls| calls.iter().any(|c| c == "node ui.ListItem"))
+        .expect("the rows' view");
+    assert!(
+        at(&row, "node ui.ListItem") < at(&row, "node ui.ListRow"),
+        "{row:#?}"
+    );
+    for want in [
+        "prop title",
+        "prop secondary",
+        "prop mark",
+        "bind",
+        "node ui.MenuItem",
+        "node ui.SwipeAction",
+        "prop presence",
+    ] {
+        assert!(has(&row, want), "{want} in {row:#?}");
+    }
+    let s = strings(func(&m, "notebook"));
+    assert!(s.contains(&"No notes yet".to_string()));
+}
+
+#[test]
+fn sort_and_filter_become_a_sort_menu_and_the_sidebars_places_one_per_case() {
+    let (m, _) = lower(NOTES);
+    let calls = ui_calls(func(&m, "notebook"));
+    assert_eq!(
+        count(&calls, "node ui.NavItem"),
+        2,
+        "one place per filter case"
+    );
+    assert!(has(&calls, "node ui.MenuButton"), "the sort menu");
+    // Each place and each sort case sets its view state, as `set(state, .case)` lowers. The
+    // header is the list's column's, the overview's or the content's as the item type opens
+    // or not, so the sort menu is there in both, one of them shown.
+    assert_eq!(count(&calls, "set"), 2 + 2 * 2);
+    // The counts re-evaluate the items for each case through the view's lambda: one
+    // evaluation of `listed` per case, plus the list's own.
+    let listed = m
+        .funcs
+        .iter()
+        .position(|x| x.name == "listed")
+        .expect("listed");
+    assert_eq!(calls_of(func(&m, "notebook"), listed), 3);
+}
+
+#[test]
+fn a_document_page_and_transcript_are_shells_of_the_library() {
+    let (m, _) = lower(
+        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    let who = p.name\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts {\n                \"Name\": who\n                \"VIP\": p.vip\n            }\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            card(p) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
+    );
+    let calls = ui_calls(func(&m, "person"));
+    for want in [
+        "node ui.NavShell",
+        "node ui.Scroll",
+        "node page",
+        "node choice",
+        "on pick.about",
+        "node ui.Section",
+        "node ui.PropertyList",
+        "node form",
+        "node field",
+        "node toggle",
+        "node ui.Card",
+        "node ui.Avatar",
+        "prop field_role",
+    ] {
+        assert!(has(&calls, want), "{want} in {calls:#?}");
+    }
+    assert_eq!(
+        calls.first().map(String::as_str),
+        Some("node ui.NavShell"),
+        "the shell is the root"
+    );
+    let (m, _) = lower(
+        "type Chat {\n    draft: Text\n    lines: Collection<Line>\n}\ntype Line {\n    text: Text\n}\nview line(l: Line) {\n    text(l.text)\n}\nview chat(c: Chat) {\n    std.transcript(c, c.lines, row: line) {\n        composer: {\n            input(bind: c.draft)\n        }\n    }\n}",
+    );
+    let calls = ui_calls(func(&m, "chat"));
+    let at = |s: &str| calls.iter().position(|c| c == s).expect(s);
+    assert!(
+        at("node ui.Docked") < at("node ui.TextInput")
+            && at("node ui.Docked") < at("node ui.VirtualList"),
+        "{calls:#?}"
+    );
+}
+
+#[test]
+fn an_event_that_carries_its_value_passes_it_to_the_action_as_it_is() {
+    let (m, _) = lower(
+        "type Note {\n    title: Text (title)\n    done: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot Notebook\ndefault view notebook for Notebook\naction check(n: Note, done: Bool) {\n    n.done = done\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n, front: false)\n    }\n}\nview note(n: Note) {\n    ui.ListRow(title: n.title) {\n        on activate: open(n)\n    }\n}",
+    );
+    let mut placed = 0;
+    visit(func(&m, "notebook"), &mut |e| {
+        if matches!(e.kind, Ek::Host(Imp::EventValue, _)) {
+            placed += 1;
+        }
+    });
+    assert_eq!(placed, 1, "the action holds the event's value in its place");
+    let wrong = diagnostics(
+        "type Note {\n    title: Text (title)\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(nb.notes.first().unwrap_or(n))\n    }\n    ui.Button(\"Go\") {\n        on press(x: Note): open(x)\n    }\n}",
+    );
+    let codes: Vec<&str> = wrong.iter().map(|d| d.code.as_str()).collect();
+    assert!(
+        codes.iter().filter(|c| **c == "E063").count() >= 2,
+        "{wrong:#?}"
+    );
+}
+
+#[test]
+fn actions_lenses_and_meta_are_values_a_view_reads() {
+    let (m, _) = lower(
+        "type Note {\n    title: Text (title)\n}\n/// Pins it.\naction pin(n: Note) (icon: .pin) {\n    n.title = n.title\n}\nview note(n: Note) {\n    let offered = actions(n)\n    let here = lenses(n)\n    stack {\n        text(meta(n).title)\n        text(meta(Note).noun)\n        for a in offered {\n            ui.Button(a.label, icon: a.icon, role: .primary) {\n                on press: a.run\n            }\n        }\n        text(\"{here.len()}\")\n    }\n}",
+    );
+    let mut imports = Vec::new();
+    for f in &m.funcs {
+        visit(f, &mut |e| {
+            if let Ek::Host(imp, _) = &e.kind
+                && matches!(
+                    imp,
+                    Imp::Actions | Imp::Lenses | Imp::MetaOf | Imp::TupleGetH
+                )
+            {
+                imports.push(*imp);
+            }
+        });
+    }
+    for want in [Imp::Actions, Imp::Lenses, Imp::MetaOf, Imp::TupleGetH] {
+        assert!(imports.contains(&want), "{want:?} in {imports:?}");
+    }
+    let wrong = diagnostics(
+        "type Note {\n    title: Text\n}\nview note(n: Note) {\n    text(actions(n).first().unwrap().nothing)\n}",
+    );
+    assert!(!wrong.is_empty(), "a host value has the fields it declares");
+}
+
+#[test]
+fn a_generic_view_with_a_lambda_and_view_state_expands_where_it_is_called() {
+    let (m, _) = lower(
+        "type Item {\n    title: Text\n}\ntype Bag {\n    items: Collection<Item>\n}\nenum Size {\n    small\n    large\n}\nview shown<T, E>(things: List<T>, size: State<E>, label: (T) -> Text, extra: Option<View> = .none) {\n    stack {\n        for c in cases(E) {\n            button(c.label(), on: set(size, c))\n        }\n        for t in things {\n            text(label(t))\n        }\n        match extra {\n            .some(v) => v,\n            .none => text(\"none\"),\n        }\n    }\n}\nview bag(b: Bag) {\n    window size: Size = .small\n    shown(b.items, size: size, label: i -> i.title)\n}",
+    );
+    let calls = ui_calls(func(&m, "bag"));
+    assert_eq!(
+        count(&calls, "set"),
+        2,
+        "one per case, unrolled: {calls:#?}"
+    );
+    assert!(
+        m.funcs.iter().all(|f| f.name != "shown"),
+        "a template has no function of its own"
+    );
+    let strings = strings(func(&m, "bag"));
+    assert!(
+        strings.contains(&"none".to_string()),
+        "the static `.none` arm"
+    );
+    let wrong = diagnostics(
+        "type Bag {\n    n: Int\n}\nview shown<E>(size: State<E>) {\n    text(\"x\")\n}\nview bag(b: Bag) {\n    shown(size: b.n)\n}",
+    );
+    assert!(
+        wrong.iter().any(|d| d.code == "E066"),
+        "view state is passed by its name: {wrong:#?}"
     );
 }

@@ -124,7 +124,12 @@ imports! {
     (UiBindState, "ui_bind_state", "iii", ""),
     (StateGet, "state_get", "iii", "i"),
     (ActSet, "act_set", "iii", "i"),
-    (ActOpen, "act_open", "ii", "i"),
+    (ActOpen, "act_open", "iii", "i"),
+    (EventValue, "event_value", "", "i"),
+    (Actions, "actions", "i", "i"),
+    (Lenses, "lenses", "i", "i"),
+    (MetaOf, "meta_of", "i", "i"),
+    (Phrase, "phrase", "ii", "i"),
     (SpaceI, "space_i", "i", "l"),
     (SpaceF, "space_f", "i", "f"),
 
