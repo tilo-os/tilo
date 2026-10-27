@@ -10,6 +10,7 @@ mod room_binding;
 mod room_outbox;
 mod tree_handle;
 mod window_hosting;
+mod window_shares;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
@@ -22,6 +23,7 @@ pub use tree_handle::{
     WorkspaceTreeWriteGuard, next_policy_revision,
 };
 pub use window_hosting::WindowHosting;
+pub(crate) use window_shares::host_handle;
 
 pub use collab_types::caps::{
     Access, Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope,
@@ -802,6 +804,11 @@ pub struct WorkspaceTree {
     /// by that projection alone, never by this device's own edits.
     #[serde(skip, default)]
     pub room_docs: HashMap<RoomId, AutoCommit>,
+    /// The windows members share with each held room, by tab, read from its
+    /// admitted document whenever that changes ([`Self::shared_windows`]).
+    #[serde(skip, default)]
+    pub window_shares:
+        HashMap<RoomId, BTreeMap<TabId, tilo_desktop_model::window_share::WindowShare>>,
     /// Rooms of workspaces made here ([`Self::create_hosted_workspace`])
     /// whose room no host holds yet: each waits for the network to create it
     /// on the host it is placed on and to enroll this device's native owner
@@ -944,6 +951,7 @@ impl Default for WorkspaceTree {
             policy_revision: 0,
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
+            window_shares: HashMap::new(),
             pending_placements: BTreeSet::new(),
             room_outbox: Vec::new(),
             governance_refusals: Vec::new(),
@@ -1895,41 +1903,31 @@ impl WorkspaceTree {
     /// addresses it — see [`projection::merge_room_contents`]. Reports
     /// whether anything changed.
     fn merge_room_contents(&mut self, room: RoomId) -> bool {
+        let Some(doc) = self.room_docs.get(&room) else {
+            return false;
+        };
+        let now_ms = tilo_clock::unix_now_ms();
+        let shares = window_shares::window_shares_of(room, doc, now_ms);
+        let presets = projection::workspace_presets_of(doc);
+        let personal = projection::room_layout(doc)
+            .is_personal()
+            .then(|| projection::contents_owners_of(doc));
+        let contents = personal.is_none().then(|| projection::contents_of(doc));
+        self.take_window_shares(room, shares);
         let local_salt = self.local_salt();
         if local_salt == 0 {
             return false;
         }
-        let Some(doc) = self.room_docs.get(&room) else {
-            return false;
-        };
-        let changed = if projection::room_layout(doc).is_personal() {
-            // A room whose layout is personal shares no member's windows:
-            // nothing of its contents is taken in, and what this device
-            // mirrored of other people's windows while it shared them goes.
-            // Every window of this device's own stays where it is.
-            let owners = projection::contents_owners_of(doc);
-            let theirs = |tab: &Tab| {
-                let salt = peer_salt_of(tab.id);
-                salt != 0
-                    && salt != local_salt
-                    && salt != tilo_desktop_model::ids::RESERVED_SALT
-                    && (owners.is_empty()
-                        || owners.contains_key(&salt)
-                        || matches!(
-                            tab.tile,
-                            TileContent::PeerWindow { .. } | TileContent::HostedWindow { .. }
-                        ))
-            };
-            projection::drop_windows_of_others(&mut self.desktop, room, local_salt, &theirs)
+        let changed = if let Some(owners) = personal {
+            self.keep_personal_room(room, local_salt, &owners, now_ms)
         } else {
             projection::merge_room_contents(
                 &mut self.desktop,
                 room,
-                projection::contents_of(doc),
+                contents.unwrap_or_default(),
                 projection::Reader::Owner(local_salt),
             )
         };
-        let presets = projection::workspace_presets_of(doc);
         let mut reprofiled = false;
         if let Some(ws) = self
             .desktop
