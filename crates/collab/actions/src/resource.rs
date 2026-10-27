@@ -862,6 +862,12 @@ pub struct ActionSpec {
     /// Stable id within the resource (e.g. `"like"`, `"reply"`).
     pub id: String,
     pub label: String,
+    /// The other words people use for this action, in plain language
+    /// ("mkdir" and "make directory" for New folder): search finds the
+    /// action by them as it does by its label. Declared with the label, so
+    /// every surface that lists the action knows them; never a list kept
+    /// inside a search provider.
+    pub keywords: Vec<String>,
     pub description: Option<String>,
     /// Declared execution locus (mirrors the concrete action's
     /// [`Action::locus`]), so the palette can show/route it before the
@@ -937,6 +943,7 @@ impl Clone for ActionSpec {
         Self {
             id: self.id.clone(),
             label: self.label.clone(),
+            keywords: self.keywords.clone(),
             description: self.description.clone(),
             locus: self.locus,
             kind: self.kind,
@@ -1225,6 +1232,7 @@ impl ActionSpec {
         Self {
             id,
             label,
+            keywords: Vec::new(),
             description: None,
             locus,
             kind,
@@ -1275,6 +1283,7 @@ impl ActionSpec {
         Ok(Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1313,6 +1322,7 @@ impl ActionSpec {
         Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1361,6 +1371,7 @@ impl ActionSpec {
         Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus,
             kind: OperationKind::Document,
@@ -1438,6 +1449,7 @@ impl ActionSpec {
         Ok(Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind,
@@ -1477,6 +1489,7 @@ impl ActionSpec {
         Self {
             id: id.into(),
             label: label.into(),
+            keywords: Vec::new(),
             description: None,
             locus: ExecutionLocus::ClientLocal,
             kind,
@@ -1591,6 +1604,7 @@ impl ActionSpec {
         Self {
             id: seed.id,
             label: seed.label,
+            keywords: Vec::new(),
             description: None,
             locus: seed.locus,
             kind: seed.kind,
@@ -1665,6 +1679,15 @@ impl ActionSpec {
             *collects = Collects::Content;
         }
         spec
+    }
+
+    /// Declare the other words people use for this action
+    /// ([`Self::keywords`]): plain words, one phrase each, no repetition of
+    /// the label.
+    #[must_use]
+    pub fn with_keywords<S: Into<String>>(mut self, keywords: impl IntoIterator<Item = S>) -> Self {
+        self.keywords = keywords.into_iter().map(Into::into).collect();
+        self
     }
 
     #[must_use]

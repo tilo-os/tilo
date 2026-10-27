@@ -234,6 +234,7 @@ pub enum AppearanceEffect {
     InspectAppearance,
     /// Choose a picture and make it the wallpaper.
     #[effect(job)]
+    #[effect(keywords = "wallpaper, background, desktop picture, desktop background")]
     ChooseWallpaper,
 }
 

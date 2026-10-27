@@ -280,7 +280,7 @@ impl Terminal {
     }
 
     /// Run a run's command line again.
-    #[action(item = runs)]
+    #[action(keywords = "run again, repeat command", item = runs)]
     pub fn rerun(
         &mut self,
         cx: &mut ActionCx,
@@ -513,15 +513,18 @@ pub enum TerminalEffect {
     ///
     /// Writes reviewed text without pressing Enter.
     #[effect(destructive)]
+    #[effect(keywords = "type text, enter command")]
     Send {
         #[param("Text to send")]
         text: String,
     },
     /// Interrupt process
     #[effect(destructive)]
+    #[effect(keywords = "stop, cancel, kill process, ctrl c")]
     Interrupt,
     /// Clear screen
     #[effect(destructive)]
+    #[effect(keywords = "cls, clear terminal, reset screen")]
     Clear,
     /// Restart shell
     ///
@@ -564,6 +567,7 @@ pub enum TerminalEffect {
     ///
     /// Creates an environment on the default runtime with nothing added.
     #[effect(destructive)]
+    #[effect(keywords = "new container, new sandbox")]
     CreateEnvironment {
         #[param("What to call the new environment")]
         name: String,
@@ -588,6 +592,7 @@ pub enum TerminalEffect {
     },
     /// Copy visible output
     #[effect(destructive, kind = "read")]
+    #[effect(keywords = "copy output, copy screen")]
     CopyVisible,
     /// Copy selected output
     #[effect(destructive, kind = "read")]

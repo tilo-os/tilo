@@ -449,6 +449,9 @@ fn item_specs(
 pub struct EffectRow {
     pub id: &'static str,
     pub label: &'static str,
+    /// The other words people use for it (`keywords = "…"`), comma
+    /// separated: search finds it by them as by its label.
+    pub keywords: &'static [&'static str],
     pub description: &'static str,
     pub params: fn() -> Vec<ActionParam>,
     pub kind: OperationKind,
@@ -522,6 +525,9 @@ pub fn no_params() -> Vec<ActionParam> {
 pub struct EffectDecl {
     pub id: &'static str,
     pub label: &'static str,
+    /// The other words people use for it (`keywords = "…"`), comma
+    /// separated: search finds it by them as by its label.
+    pub keywords: &'static [&'static str],
     pub description: &'static str,
     pub params: Vec<ActionParam>,
     /// `View` for an effect that only changes what its caller sees, else
@@ -640,6 +646,7 @@ impl EffectDecl {
         Self {
             id: row.id,
             label: row.label,
+            keywords: row.keywords,
             description: row.description,
             params: (row.params)(),
             kind: row.kind,
@@ -701,6 +708,9 @@ impl EffectDecl {
         );
         if !self.description.is_empty() {
             spec = spec.with_description(self.description);
+        }
+        if !self.keywords.is_empty() {
+            spec = spec.with_keywords(self.keywords.iter().copied());
         }
         let base = if view {
             ActionContract::view()

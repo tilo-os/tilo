@@ -23,6 +23,7 @@ fn published(
         resource_kind: resource.into(),
         resource_label: resource.into(),
         action_label: action.into(),
+        keywords: Vec::new(),
         description: None,
         operation_kind: tilo_actions::OperationKind::Effect,
         params: Vec::new(),

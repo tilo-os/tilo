@@ -79,3 +79,6 @@ pub fn mounted_files_in(
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(FileExplorerShell)
 }
+
+#[cfg(test)]
+mod action_keywords_tests;

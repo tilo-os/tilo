@@ -3,7 +3,8 @@
 //! sends the panel's own changes through the same validated path.
 
 use super::QuickSettingsKey;
-use crate::shell::chrome_state::Chrome;
+use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::i18n::t_args;
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use std::rc::Rc;
 
@@ -413,5 +414,216 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
 
     fn set_keyboard_backlight(&self, level: u32) -> Result<(), String> {
         self.inner.set_keyboard_backlight(level)
+    }
+}
+
+/// A Quick Settings radio offered as a one-step toggle: the set-enabled
+/// action it drives, its own id, and the catalogue keys of its row's title
+/// and subtitle.
+pub(super) struct QsToggle {
+    pub(super) set_enabled: &'static str,
+    pub(super) id: &'static str,
+    /// The switch's name; its state is the row's pill.
+    pub(super) name: &'static str,
+    pub(super) subtitle: &'static str,
+    /// The message listing the other words people use for the switch.
+    pub(super) keywords: &'static str,
+}
+
+/// A step up or down a Quick Settings level: "louder", "dimmer". The row
+/// runs the level's own set action with the live level moved by `delta`
+/// percent, so it is one Enter (or one more) instead of typing a number.
+pub(super) struct LevelStep {
+    pub(super) id: &'static str,
+    /// The set action whose level it moves.
+    pub(super) level: &'static str,
+    pub(super) delta: f32,
+    pub(super) title: &'static str,
+    /// The message listing the other words people use for the step.
+    pub(super) keywords: &'static str,
+}
+
+pub(super) const LEVEL_STEPS: &[LevelStep] = &[
+    LevelStep {
+        id: "quick-settings.volume.up",
+        level: QS_VOLUME_ID,
+        delta: 5.0,
+        title: "search-step-volume-up",
+        keywords: "search-kw-quick-settings-volume-up",
+    },
+    LevelStep {
+        id: "quick-settings.volume.down",
+        level: QS_VOLUME_ID,
+        delta: -5.0,
+        title: "search-step-volume-down",
+        keywords: "search-kw-quick-settings-volume-down",
+    },
+    LevelStep {
+        id: "quick-settings.brightness.up",
+        level: QS_BRIGHTNESS_ID,
+        delta: 10.0,
+        title: "search-step-brightness-up",
+        keywords: "search-kw-quick-settings-brightness-up",
+    },
+    LevelStep {
+        id: "quick-settings.brightness.down",
+        level: QS_BRIGHTNESS_ID,
+        delta: -10.0,
+        title: "search-step-brightness-down",
+        keywords: "search-kw-quick-settings-brightness-down",
+    },
+];
+
+/// Muting is its own row: a step to zero would forget the level.
+pub(crate) const QS_MUTE_ID: &str = "quick-settings.volume.mute";
+
+/// The message listing the other words people use for muting.
+pub(super) const QS_MUTE_KEYWORDS: &str = "search-kw-quick-settings-volume-mute";
+
+/// One display's brightness row: `quick-settings.brightness.on.DP-2`.
+pub(super) const QS_DISPLAY_BRIGHTNESS_PREFIX: &str = "quick-settings.brightness.on.";
+
+/// How far ←/→ moves one display's brightness row: the brightness keys'
+/// step, as "brighter" and "dimmer" take.
+pub(super) const DISPLAY_BRIGHTNESS_STEP: f32 = ui::tokens::Layout::BASE.display_brightness_step;
+
+/// The connector a display's brightness row sets, from its id.
+pub(super) fn display_brightness_connector(id: &str) -> Option<&str> {
+    id.strip_prefix(QS_DISPLAY_BRIGHTNESS_PREFIX)
+        .filter(|connector| !connector.is_empty())
+}
+
+/// The display the person works on, when the desktop spans several and its
+/// brightness can be set: what "brighter" and "dimmer" adjust.
+pub(super) fn focused_brightness(
+    state: &ChromeState,
+) -> Option<&crate::shell::chrome_state::DisplayBrightness> {
+    let focused = state.quick_settings.focused_display.as_deref()?;
+    state
+        .quick_settings
+        .displays
+        .iter()
+        .find(|display| display.connector == focused)
+}
+
+/// The live level, in percent, of the Quick Settings set action `level`:
+/// for brightness, the level of the display the person works on.
+pub(super) fn level_percent(state: &ChromeState, level: &str) -> f32 {
+    let share = if level == QS_VOLUME_ID {
+        state.quick_settings.volume_level()
+    } else {
+        focused_brightness(state).map_or(state.quick_settings.brightness, |display| display.level)
+    };
+    (share * 100.0).round()
+}
+
+/// `"40 %"`: a level as its row's pill says it.
+pub(super) fn level_badge(state: &ChromeState, level: &str) -> String {
+    t_args(
+        "search-level-percent",
+        &[("percent", f64::from(level_percent(state, level)).into())],
+    )
+}
+
+/// The arguments that set `level` to its live value moved by `delta`.
+pub(super) fn stepped(
+    params: &[ActionParam],
+    chrome: &Chrome,
+    level: &str,
+    delta: f32,
+) -> Result<ActionArgs, ActionError> {
+    let mut arguments = serde_json::Map::new();
+    {
+        let state = chrome.borrow();
+        let percent = (level_percent(&state, level) + delta).clamp(0.0, 100.0);
+        arguments.insert("percent".into(), serde_json::json!(f64::from(percent)));
+        // "Brighter" acts on the display the person works on.
+        if level == QS_BRIGHTNESS_ID
+            && let Some(display) = focused_brightness(&state)
+        {
+            arguments.insert("display".into(), serde_json::json!(display.connector));
+        }
+    }
+    ActionArgs::bind_json(params, &arguments).map_err(ActionError::Arguments)
+}
+
+// Each Quick Settings action: its id, title, subtitle and the
+// message listing the other words people use for it.
+pub(super) const QUICK_SETTINGS_ACTIONS: &[(&str, &str, &str, &str)] = &[
+    (
+        QS_BRIGHTNESS_ID,
+        "search-action-quick-settings-brightness-set",
+        "search-action-quick-settings-brightness-set-subtitle",
+        "search-kw-quick-settings-brightness-set",
+    ),
+    (
+        QS_VOLUME_ID,
+        "search-action-quick-settings-volume-set",
+        "search-action-quick-settings-volume-set-subtitle",
+        "search-kw-quick-settings-volume-set",
+    ),
+    (
+        QS_WIFI_ID,
+        "search-action-quick-settings-wifi-set-enabled",
+        "search-action-quick-settings-wifi-set-enabled-subtitle",
+        "search-kw-quick-settings-wifi-set-enabled",
+    ),
+    (
+        QS_POWER_ID,
+        "search-action-quick-settings-power-profile-set",
+        "search-action-quick-settings-power-profile-set-subtitle",
+        "search-kw-quick-settings-power-profile-set",
+    ),
+    (
+        QS_VPN_ID,
+        "search-action-quick-settings-vpn-set-enabled",
+        "search-action-quick-settings-vpn-set-enabled-subtitle",
+        "search-kw-quick-settings-vpn-set-enabled",
+    ),
+    (
+        QS_BLUETOOTH_ID,
+        "search-action-quick-settings-bluetooth-set-enabled",
+        "search-action-quick-settings-bluetooth-set-enabled-subtitle",
+        "search-kw-quick-settings-bluetooth-set-enabled",
+    ),
+    (
+        QS_AIRPLANE_ID,
+        "search-action-quick-settings-airplane-mode-set-enabled",
+        "search-action-quick-settings-airplane-mode-set-enabled-subtitle",
+        "search-kw-quick-settings-airplane-mode-set-enabled",
+    ),
+];
+
+/// The Quick Settings radios offered as one-step toggles.
+pub(super) const QS_TOGGLES: &[QsToggle] = &[
+    QsToggle {
+        set_enabled: QS_WIFI_ID,
+        id: "quick-settings.wifi.toggle",
+        name: "search-toggle-wifi",
+        subtitle: "search-toggle-wifi-subtitle",
+        keywords: "search-kw-quick-settings-wifi-toggle",
+    },
+    QsToggle {
+        set_enabled: QS_BLUETOOTH_ID,
+        id: "quick-settings.bluetooth.toggle",
+        name: "search-toggle-bluetooth",
+        subtitle: "search-toggle-bluetooth-subtitle",
+        keywords: "search-kw-quick-settings-bluetooth-toggle",
+    },
+    QsToggle {
+        set_enabled: QS_AIRPLANE_ID,
+        id: "quick-settings.airplane-mode.toggle",
+        name: "search-toggle-airplane-mode",
+        subtitle: "search-toggle-airplane-mode-subtitle",
+        keywords: "search-kw-quick-settings-airplane-mode-toggle",
+    },
+];
+
+/// Whether the radio `set_enabled_id` drives is on now.
+pub(super) fn radio_is_on(state: &ChromeState, set_enabled_id: &str) -> bool {
+    match set_enabled_id {
+        QS_WIFI_ID => state.quick_settings.wifi,
+        QS_BLUETOOTH_ID => state.quick_settings.bluetooth,
+        _ => state.quick_settings.radios.airplane_mode,
     }
 }

@@ -1077,6 +1077,7 @@ mod tests {
             resource_kind: "document".into(),
             resource_label: "Document".into(),
             action_label: "Place image".into(),
+            keywords: Vec::new(),
             description: None,
             locus: tilo_actions::ExecutionLocus::ClientLocal,
             kind: tilo_actions::OperationKind::Document,

@@ -219,7 +219,7 @@ impl Notebook {
     ///
     /// A note titled `title`, after the notes already under `parent` (a
     /// top-level note when none).
-    #[action(answers)]
+    #[action(keywords = "new page, create note, add note, memo", answers)]
     pub fn new_note(
         &mut self,
         cx: &mut ActionCx,
@@ -240,7 +240,7 @@ impl Notebook {
     /// New note inside
     ///
     /// A note titled `title`, after the notes already under this one.
-    #[action(item = pages, answers)]
+    #[action(keywords = "sub page, subpage, child note, nested note", item = pages, answers)]
     pub fn new_child(
         &mut self,
         cx: &mut ActionCx,
@@ -257,7 +257,7 @@ impl Notebook {
     /// Rename note
     ///
     /// Give the note a new title; every link to it reads the new title.
-    #[action(item = pages)]
+    #[action(keywords = "change title, retitle", item = pages)]
     pub fn rename(
         &mut self,
         page: &Id,
@@ -280,7 +280,7 @@ impl Notebook {
     /// Delete note
     ///
     /// Delete the note and every note under it.
-    #[action(item = pages, destructive)]
+    #[action(keywords = "remove note, trash note, delete page", item = pages, destructive)]
     pub fn delete(&mut self, page: &Id) -> Result<(), Refusal> {
         self.pages.get(page).ok_or("no such note")?;
         for id in self.subtree(page) {
@@ -361,7 +361,7 @@ impl Notebook {
     ///
     /// Copy the note and every note under it, right after it. Links between
     /// the copied notes lead to the copies.
-    #[action(item = pages)]
+    #[action(keywords = "copy note, clone note", item = pages)]
     pub fn duplicate(&mut self, cx: &mut ActionCx, page: &Id) -> Result<(), Refusal> {
         let source = self.pages.get(page).ok_or("no such note")?.clone();
         let sources = self.subtree(page);
@@ -452,7 +452,7 @@ impl Notebook {
     /// Tag note
     ///
     /// Give the note the tag named `name`, made when the notebook has none.
-    #[action(item = pages)]
+    #[action(keywords = "label, add tag, categorize", item = pages)]
     pub fn tag(
         &mut self,
         cx: &mut ActionCx,

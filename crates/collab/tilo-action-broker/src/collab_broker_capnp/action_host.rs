@@ -354,6 +354,7 @@ pub(super) fn offered_action(
         resource_kind: offer.resource_kind().to_owned(),
         resource_label: app.display_name.clone(),
         action_label: offer.label.clone(),
+        keywords: Vec::new(),
         description: offer.description.clone(),
         operation_kind: match offer.operation {
             OfferOperation::Document => tilo_actions::OperationKind::Document,
@@ -396,6 +397,7 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
         resource_kind: resource_kind.into(),
         resource_label: display_name.clone(),
         action_label: format!("Open {display_name}"),
+        keywords: Vec::new(),
         description: Some(description.into()),
         locus: ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,
@@ -448,6 +450,7 @@ fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescripto
         resource_kind: APPLICATION_RESOURCE_KIND.into(),
         resource_label: display_name.to_string(),
         action_label: format!("Close {display_name}"),
+        keywords: Vec::new(),
         description: Some(
             "Close this application's windows in the current workspace; opening it again \
              starts it with the permissions it holds now"
@@ -3591,6 +3594,7 @@ mod device_pairing_tests {
                         resource_kind: device_pairing::RESOURCE.into(),
                         resource_label: "Nearby device pairing".into(),
                         action_label: step.into(),
+                        keywords: Vec::new(),
                         description: None,
                         locus: tilo_actions::ExecutionLocus::default(),
                         kind: tilo_actions::OperationKind::Effect,

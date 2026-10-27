@@ -327,6 +327,7 @@ mod tests {
                 resource_kind: format!("{app}.thing"),
                 resource_label: resource.rsplit(':').next().unwrap_or(resource).to_string(),
                 action_label: label.to_string(),
+                keywords: Vec::new(),
                 description: None,
                 locus: tilo_actions::ExecutionLocus::ClientLocal,
                 kind: tilo_actions::OperationKind::Document,
