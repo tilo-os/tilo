@@ -11,8 +11,9 @@
 //! author never saw, since its own dependencies are what that entry would
 //! have to be among.
 //!
-//! A write is admitted when every act on what its writer did not make is one
-//! the room lets them do ([`crate::ownership::act_node`]). Whoever holds the
+//! A write is admitted when every act on what its writer did not make, and
+//! every strip or window it adds in someone else's name, is one the room
+//! lets them do ([`crate::ownership::act_node`]). Whoever holds the
 //! record decides a write with it before taking it in: a relay at its door,
 //! a governor admitting it, and every device that receives it.
 
@@ -22,7 +23,9 @@ use automerge::{AutoCommit, ChangeHash};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
 
-use crate::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop, Touched, foreign_acts};
+use crate::ownership::{
+    DESKTOP_APP, DESKTOP_RECORD, SharedDesktop, Touched, claimed, foreign_acts,
+};
 
 /// Whether `(app, record)` is a room's shared desktop.
 #[must_use]
@@ -77,6 +80,7 @@ pub fn judge(
         let left = super::read(doc, Some(&[change.hash()])).unwrap_or_else(SharedDesktop::default);
         if let Some(act) = foreign_acts(&seen, &left, writer.person, writer.members)
             .into_iter()
+            .chain(claimed(&seen, &left, writer.person))
             .find(|act| !(writer.allows)(act))
         {
             return Err(DesktopRefusal::NotTheirs {

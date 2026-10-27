@@ -201,6 +201,27 @@ fn claiming_someone_elses_window_is_refused() {
     );
 }
 
+/// A window opened in someone else's name would be theirs to keep: Ada may
+/// not open one as Ben's.
+#[test]
+fn opening_a_window_in_someone_elses_name_is_refused() {
+    let mut guard = room();
+    let forged =
+        Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, BEN)]));
+    let refused = guard
+        .decide(&forged, &writer(ADA, None, &moderates(ADA)))
+        .unwrap_err();
+    assert!(
+        matches!(&refused, DesktopRefusal::NotTheirs { act, .. } if act.id == 3 && act.act == Act::Attribute)
+    );
+    let opened =
+        Page::of(&guard, 1).write(&desktop(&[(1, 100, ADA), (2, 200, BEN), (3, 300, ADA)]));
+    guard
+        .decide(&opened, &writer(ADA, None, &moderates(ADA)))
+        .unwrap();
+    assert_eq!(windows(&guard), vec![1, 2, 3]);
+}
+
 #[test]
 fn a_write_that_is_not_automerge_changes_nothing() {
     let mut guard = room();
