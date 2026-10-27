@@ -8135,6 +8135,7 @@ impl collab_service::Server for CapnpCollabService {
         let state = self.state.clone();
         let peer_id = self.peer_id;
         Promise::from_future(async move {
+            let mut phases = JoinPhases::start();
             let reader = params.get()?;
             let channel_id = reader
                 .get_channel_id()?
@@ -8159,6 +8160,7 @@ impl collab_service::Server for CapnpCollabService {
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
+            phases.mark("verify");
             if let Some(app) = self.lease.local_media.as_ref()
                 && verified_identity
                     .verified
@@ -8288,9 +8290,11 @@ impl collab_service::Server for CapnpCollabService {
             {
                 verified_identity.worker_registration = Some(registration);
             }
+            phases.mark("admit");
             let ensured = channel_id.clone();
             let retained = verified_identity.clone();
             let hold = self.holds.hold(&state, &self.directories, peer_id, &route);
+            phases.mark("hold");
             let hold_id = hold.id();
             let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
                 person_chat_views: RefCell::default(),
@@ -8307,10 +8311,14 @@ impl collab_service::Server for CapnpCollabService {
             });
             // Refused, the handle and its hold drop here and withdraw again.
             state.retain_host_worker(hold_id, &route, &retained)?;
+            phases.mark("retain-worker");
             state.ensure_channel(&ensured);
+            phases.mark("ensure-channel");
             state
                 .publisher()
                 .local_route(&crate::route::CrdtRoute::from_channel_key(&ensured));
+            phases.mark("publish-route");
+            phases.report(&ensured);
             results.get().set_handle(client);
             Ok(())
         })
@@ -8334,6 +8342,46 @@ fn route_record_kind(
             record.kind
         ))),
         _ => Ok(Some(record.kind.to_owned())),
+    }
+}
+
+/// Where one join's time went, logged with every join (`COLLAB-JOIN`): an app's
+/// cold start waits for its route's join, and its own startup line only sees the
+/// round trip. The time before `verify` is the request's decoding; a join slower on
+/// the app's side than here waited for the broker's thread.
+struct JoinPhases {
+    started: std::time::Instant,
+    last: std::time::Instant,
+    spans: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl JoinPhases {
+    fn start() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            last: now,
+            spans: Vec::with_capacity(6),
+        }
+    }
+
+    fn mark(&mut self, phase: &'static str) {
+        let now = std::time::Instant::now();
+        self.spans.push((phase, now.duration_since(self.last)));
+        self.last = now;
+    }
+
+    fn report(&self, channel: &str) {
+        let split = self
+            .spans
+            .iter()
+            .map(|(phase, took)| format!("{phase}={}us", took.as_micros()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        eprintln!(
+            "COLLAB-JOIN channel={channel} total={}us {split}",
+            self.started.elapsed().as_micros()
+        );
     }
 }
 
