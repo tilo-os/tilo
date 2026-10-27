@@ -7363,6 +7363,9 @@ impl FrameHarness {
             );
             tracing::error!("{message}");
             self.discard_layout_tree();
+            // What stays pending is answered, as failed: no action waits
+            // forever on a view that never settles, nor does closing it.
+            self.fail_pending_controls(&message);
             // A test fails on it; a release host skips the frame.
             debug_assert!(false, "{message}");
             return;
@@ -7387,6 +7390,30 @@ impl FrameHarness {
             self.focused =
                 unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
         }
+    }
+
+    /// Answer every control invocation still queued in the tree as failed
+    /// with `reason`, without running it: its caller, an effect waiting on
+    /// its edit, learns it did not happen.
+    fn fail_pending_controls(&mut self, reason: &str) {
+        let drained = crate::bound_dispatch::drain_control_invocations(self.root.as_mut());
+        for (target, intent, on_behalf_of, _) in drained.pending {
+            let result = Err(tilo_actions::DoorError::Failed(reason.to_owned()));
+            self.note_continuation(on_behalf_of, &result);
+            if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
+                self.root.as_mut(),
+                &target,
+                &result,
+                on_behalf_of,
+            ) {
+                tracing::warn!(?error, "headless: a failed control could not be told");
+            }
+            self.control_failures
+                .push(format!("{}: {reason}", intent.address.action));
+        }
+        while crate::widget::controls::take_attributed_control_invocation(self.root.as_mut())
+            .is_some()
+        {}
     }
 
     fn host_tick(&mut self) {
