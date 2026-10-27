@@ -2128,6 +2128,12 @@ impl FrameHarness {
         self.root.as_ref()
     }
 
+    /// The root widget, mutably, for a test that pokes what it mounted
+    /// between the events it sends.
+    pub fn root_widget_mut(&mut self) -> &mut dyn Widget {
+        self.root.as_mut()
+    }
+
     /// Deliver an authenticated transport answer through the native widget tree.
     pub fn handle_collaboration_event(&mut self, event: &crate::collaboration::CollabEvent) {
         self.invalidate_local();

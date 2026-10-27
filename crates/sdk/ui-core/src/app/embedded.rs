@@ -66,6 +66,11 @@ pub struct EmbeddedApp {
     painted_parts: RefCell<Option<crate::scene_parts::SectionParts>>,
     /// Background work not yet serviced by a model pump or frame.
     woken: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The app's next wake deadline as it stood after it last ran
+    /// ([`Self::wake_deadline`]), while `deadline_known`.
+    deadline: Cell<Option<crate::time::Instant>>,
+    /// The app has not run since `deadline` was asked for.
+    deadline_known: Cell<bool>,
     /// Tells this app's damage hints from every other source's.
     source: u64,
     /// Where the app's frames changed since `painted` was last replaced.
@@ -142,6 +147,8 @@ impl EmbeddedApp {
             painted: RefCell::new(Scene::new()),
             painted_parts: RefCell::new(None),
             woken,
+            deadline: Cell::new(None),
+            deadline_known: Cell::new(false),
             source: NEXT_SOURCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             damage: super::SurfaceDamage::default(),
             painted_damage: PaintedDamage::default(),
@@ -203,6 +210,7 @@ impl EmbeddedApp {
     /// with without a host's layout and focus.
     #[cfg(any(test, feature = "test-support"))]
     pub fn input_for_test(&mut self, event: WindowEvent) {
+        self.runs();
         self.app.surface_input(&self.region, event, false);
         self.wants_frame.set(true);
     }
@@ -214,6 +222,7 @@ impl EmbeddedApp {
     /// changed.
     #[cfg(feature = "test-support")]
     pub fn pump_shell_connection_for_test(&mut self) -> bool {
+        self.runs();
         let changed = self.app.test_pump_floating_service();
         if changed {
             self.app.layout.layout_dirty = true;
@@ -223,13 +232,34 @@ impl EmbeddedApp {
     }
 
     /// The app shown, to drive it.
+    /// When the app next wants to run with nothing waking it. Its widgets
+    /// change their deadlines only as the app runs (a pump, a frame, an
+    /// input), so the tree is asked once after each run, not on every
+    /// pump and frame of its host.
+    fn wake_deadline(&self) -> Option<crate::time::Instant> {
+        if self.deadline_known.get() {
+            return self.deadline.get();
+        }
+        let deadline = self.app.root_widget.next_wake_deadline();
+        self.deadline.set(deadline);
+        self.deadline_known.set(true);
+        deadline
+    }
+
+    /// The app runs: its deadlines may move.
+    fn runs(&self) {
+        self.deadline_known.set(false);
+    }
+
     pub fn app_mut(&mut self) -> &mut App {
+        self.runs();
         &mut self.app
     }
 
     /// The root widget of the app's component: what an app's own tests
     /// reach into, as they would in the app's window.
     pub fn component_root_mut(&mut self) -> Option<&mut dyn Widget> {
+        self.runs();
         // Whatever the caller does to it is no change the tracking sees.
         self.app.mark_semantic_tree_stale();
         let root = self
@@ -273,6 +303,7 @@ impl EmbeddedApp {
     }
 
     fn app_widget_mut(&mut self) -> Option<&mut dyn AppWidget> {
+        self.runs();
         self.app.mark_semantic_tree_stale();
         self.app
             .root_widget
@@ -284,6 +315,7 @@ impl EmbeddedApp {
 
 impl crate::widget::WindowHistory for EmbeddedApp {
     fn set_window_presents_history(&mut self, tab_presents: bool) {
+        self.runs();
         self.app.set_window_presents_history(tab_presents);
     }
 
@@ -295,6 +327,7 @@ impl crate::widget::WindowHistory for EmbeddedApp {
         &mut self,
         control: crate::widget::HistoryControl,
     ) -> Result<(), String> {
+        self.runs();
         self.app.invoke_window_history_control(control)?;
         self.wants_frame.set(true);
         Ok(())
@@ -303,6 +336,7 @@ impl crate::widget::WindowHistory for EmbeddedApp {
 
 impl crate::widget::SearchableWindow for EmbeddedApp {
     fn visit_search_root(&mut self, visit: &mut dyn FnMut(&mut dyn Widget) -> bool) -> bool {
+        self.runs();
         let changed = visit(self.app.root_widget.as_mut());
         if changed {
             // What the search found shows on the app's next frame: matches
@@ -332,6 +366,7 @@ impl Widget for EmbeddedApp {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.runs();
         // The app looks as the host does around it. A new palette must
         // replace its retained scene even when the region's size is unchanged.
         if self.app.accessibility.base_theme != *theme {
@@ -350,6 +385,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.runs();
         let rect = crate::widget::layout_rect(taffy, node, origin);
         if rect.size() != self.rect.size() {
             self.app.layout.layout_dirty = true;
@@ -380,9 +416,7 @@ impl Widget for EmbeddedApp {
         let mut painted = self.painted.borrow_mut();
         let mut painted_parts = self.painted_parts.borrow_mut();
         let due = self
-            .app
-            .root_widget
-            .next_wake_deadline()
+            .wake_deadline()
             .is_some_and(|deadline| deadline <= crate::time::now());
         let woken = self.woken.swap(false, std::sync::atomic::Ordering::AcqRel);
         // Drawn for a host that copies, the app hands out copies from now
@@ -408,6 +442,7 @@ impl Widget for EmbeddedApp {
             self.damage.set_copy_scale(copy_scale(placement));
         }
         if self.wants_frame.get() || woken || due || self.focused != self.painted_focus {
+            self.runs();
             // A frame whose sync or layout leaves more to settle runs again
             // at once, so what the host paints is the app at rest.
             let mut again = true;
@@ -512,9 +547,7 @@ impl Widget for EmbeddedApp {
         _path: &crate::widget::ModelPath,
     ) -> bool {
         let due = self
-            .app
-            .root_widget
-            .next_wake_deadline()
+            .wake_deadline()
             .is_some_and(|deadline| deadline <= crate::time::now());
         // A wake the app raised from another thread (a question put to its
         // action directory, an invocation, a collaborator's edit) is serviced
@@ -527,6 +560,7 @@ impl Widget for EmbeddedApp {
         if !due && !woken {
             return false;
         }
+        self.runs();
         let presentation_changed = self.app.pump_embedded_model();
         // A durability that changed in this pass left the layout dirty
         // (`App::sync_model`), so the next frame shows it; a structure change
@@ -544,6 +578,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.runs();
         self.entering_backwards = ctx.modifiers.state().shift_key();
         let local = self.local_event(event, ctx.scale_factor);
         self.app.set_surface_modifiers(*ctx.modifiers);
@@ -618,6 +653,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        self.runs();
         if focused == self.focused {
             return;
         }
@@ -683,6 +719,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        self.runs();
         self.app
             .mutate_node(self.app.focused_node?, |widget| {
                 widget.start_deferred_text()
@@ -692,6 +729,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        self.runs();
         self.app
             .mutate_node(self.app.focused_node?, |widget| {
                 widget.commit_deferred_text(text)
@@ -728,10 +766,12 @@ impl Widget for EmbeddedApp {
 
     /// The host's presentation preferences are the app's.
     fn set_motion_reduced(&mut self, reduced: bool) {
+        self.runs();
         self.app.set_reduce_motion(reduced);
     }
 
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        self.runs();
         self.app.set_platform_conventions(conventions);
     }
 
@@ -739,6 +779,7 @@ impl Widget for EmbeddedApp {
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
     ) {
+        self.runs();
         self.app.set_interaction_environment(environment);
     }
 
@@ -765,6 +806,7 @@ impl Widget for EmbeddedApp {
         _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
+        self.runs();
         let Some(id) = semantic_target(self.app.semantic_tree(), key_path) else {
             return false;
         };
@@ -795,7 +837,7 @@ impl Widget for EmbeddedApp {
     }
 
     fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
-        self.app.root_widget.next_wake_deadline()
+        self.wake_deadline()
     }
 }
 
@@ -807,16 +849,20 @@ impl crate::component_lifecycle::ComponentLifecycle for EmbeddedApp {
         crate::component_lifecycle::unsaved_documents(self.app.root_widget.as_ref(), doc)
     }
     fn checkpoint_components(&mut self) -> Vec<String> {
+        self.runs();
         crate::component_lifecycle::checkpoint_components(self.app.root_widget.as_mut())
     }
     fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.runs();
         crate::component_lifecycle::finish_admitted_close(self.app.root_widget.as_mut())
     }
     fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.runs();
         self.app.close_components();
         self.app.take_component_close_reports()
     }
     fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.runs();
         self.app.take_component_close_reports()
     }
 }
@@ -836,6 +882,7 @@ impl crate::widget::CompleteContentProvider for EmbeddedApp {
         _theme: &Theme,
         _presence: &PresenceCtx,
     ) -> bool {
+        self.runs();
         use crate::widget::CompleteContentWidgetExt as _;
         let app = &mut self.app;
         let local = bounds - vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0);
@@ -896,6 +943,7 @@ impl AppWidget for EmbeddedApp {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.runs();
         if !self.device_local {
             return Err(tilo_actions::DoorError::Unknown(address.clone()));
         }
@@ -921,6 +969,7 @@ impl AppWidget for EmbeddedApp {
         &mut self,
         operation: &crate::floating_surface::DeviceShellOperation,
     ) -> Result<serde_json::Value, String> {
+        self.runs();
         self.app_widget_mut()
             .ok_or("Terminal is not available")?
             .device_shell_operation(operation)
@@ -1410,3 +1459,83 @@ mod wake_tests;
 #[cfg(test)]
 #[path = "embedded_search_tests.rs"]
 mod search_tests;
+
+#[cfg(test)]
+mod wake_deadline_tests {
+    use super::theme_repaint_tests::{layout, paint};
+    use super::*;
+    use crate::widget::TaffyTreeExt as _;
+    use std::rc::Rc;
+
+    /// A leaf counting how often its deadline is asked for.
+    struct Asked {
+        asks: Rc<Cell<usize>>,
+        deadline: crate::time::Instant,
+        rect: KurboRect,
+    }
+
+    impl Widget for Asked {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.widget_leaf(taffy::Style::default(), node_map, self)
+        }
+        crate::rect_geometry!();
+        fn draw(
+            &mut self,
+            _: &mut Scene,
+            _: Affine,
+            _: &mut TextRenderer,
+            _: &Theme,
+            _: &PresenceCtx,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "Asked"
+        }
+        fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+            self.asks.set(self.asks.get() + 1);
+            Some(self.deadline)
+        }
+    }
+
+    /// An app hosted in a tile is asked for its next deadline once after it
+    /// ran, not on every pump and paint of its host: nothing but the app
+    /// running moves it.
+    #[test]
+    fn an_idle_embedded_app_is_asked_its_deadline_once_after_it_ran() {
+        let asks = Rc::new(Cell::new(0));
+        let deadline = crate::time::now() + crate::time::Duration::from_secs(3600);
+        let app = App::new_with_controlled_inputs(
+            crate::state::State::new(),
+            Box::new(Asked {
+                asks: Rc::clone(&asks),
+                deadline,
+                rect: KurboRect::ZERO,
+            }),
+        );
+        let mut tile = EmbeddedApp::new(app, |_| {}).unwrap();
+        let theme = Theme::light();
+        layout(&mut tile, &theme);
+        let _ = paint(&mut tile, &theme);
+        let doc = automerge::AutoCommit::new();
+        // The app ran in its first frame and pump.
+        let _ = Widget::update(&mut tile, &doc, &automerge::ROOT);
+        let _ = paint(&mut tile, &theme);
+        assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
+        let settled = asks.get();
+        for _ in 0..10 {
+            assert!(!Widget::update(&mut tile, &doc, &automerge::ROOT));
+            let _ = paint(&mut tile, &theme);
+            assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
+        }
+        assert_eq!(asks.get(), settled, "idle pumps and paints asked again");
+        // Whatever reaches into the app may move it: asked again.
+        let _ = tile.app_mut();
+        let _ = Widget::next_wake_deadline(&tile);
+        assert!(asks.get() > settled);
+    }
+}

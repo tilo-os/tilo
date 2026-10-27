@@ -42,8 +42,17 @@ pub enum FakeFault {
     /// The next GET sends half the body, declares no length and closes
     /// the connection.
     ClosedEarly,
+    /// The next `PROPFIND` or `REPORT` declares its full length but sends
+    /// half of its `multistatus` body.
+    TruncatedListing,
+    /// The next `PROPFIND` or `REPORT` sends half of its `multistatus` body,
+    /// declares no length and closes the connection.
+    ClosedListing,
     /// 401 once.
     ExpiredCredential,
+    /// The next `PROPFIND` or `REPORT` answers 200 with an HTML page instead
+    /// of a `multistatus`.
+    NotMultistatus,
 }
 
 /// Request counters.
@@ -146,7 +155,16 @@ impl FakeDav {
         let shared = Arc::clone(&state);
         let responder = Responder::handle(move |request| {
             let mut state = shared.lock().expect("fake state");
-            handle(&mut state, request)
+            // A server that went offline after the client connected: the
+            // socket is closed without a status, which is how a peer that is
+            // gone looks to a request already on its way.
+            if state.offline {
+                drop(state);
+                return None;
+            }
+            let reply = handle(&mut state, request);
+            drop(state);
+            reply
         });
         Self {
             responder,
@@ -255,6 +273,17 @@ impl FakeDav {
 
     pub fn inject(&self, fault: FakeFault) {
         self.lock().faults.push_back(fault);
+    }
+
+    /// Remove every file and folder, so the server lists an empty root and
+    /// the next listing is small. For a test that needs a body it can cut
+    /// sooner than any realistic listing.
+    pub fn clear(&self) {
+        let mut state = self.lock();
+        state.nodes.clear();
+        state.create("", true, Vec::new());
+        state.log.clear();
+        state.log_floor = state.seq.saturating_add(1);
     }
 
     /// Forget every issued sync token.
@@ -538,23 +567,56 @@ fn assembly_condition_holds(request: &Request, destination: Option<&Node>) -> bo
 }
 
 fn handle(state: &mut State, request: &Request) -> Option<Reply> {
-    if state.offline {
-        return None;
-    }
     let expected = format!("Basic {}", base64(format!("{USER}:{PASSWORD}").as_bytes()));
     if state.reject || request.header("authorization") != Some(expected.as_str()) {
         return Some(Reply::status(401).header("WWW-Authenticate", "Basic realm=\"fake\""));
     }
-    let cut = match state.faults.pop_front() {
+    let method = request.method.as_str();
+    let cut = match state.faults.front().copied() {
+        // A status fault is spent on the request it answers; the others
+        // below are kept for the request they can spoil.
         Some(FakeFault::RateLimited) => {
+            state.faults.pop_front();
             return Some(Reply::status(429).header("Retry-After", "1"));
         }
-        Some(FakeFault::ServerError) => return Some(Reply::status(503)),
-        Some(FakeFault::ExpiredCredential) => return Some(Reply::status(401)),
-        Some(FakeFault::TruncatedBody) => Some(true),
-        Some(FakeFault::ClosedEarly) => Some(false),
-        None => None,
+        Some(FakeFault::ServerError) => {
+            state.faults.pop_front();
+            return Some(Reply::status(503));
+        }
+        Some(FakeFault::ExpiredCredential) => {
+            state.faults.pop_front();
+            return Some(Reply::status(401));
+        }
+        // A body fault names the request it spoils and stays queued for it:
+        // one queued for a GET is not spent on the listing that comes first.
+        Some(fault @ (FakeFault::TruncatedBody | FakeFault::ClosedEarly)) if method == "GET" => {
+            state.faults.pop_front();
+            Some(Cut::Get(fault == FakeFault::TruncatedBody))
+        }
+        Some(
+            fault @ (FakeFault::TruncatedBody
+            | FakeFault::ClosedEarly
+            | FakeFault::TruncatedListing
+            | FakeFault::ClosedListing),
+        ) if method == "PROPFIND" || method == "REPORT" => {
+            state.faults.pop_front();
+            Some(Cut::Listing(matches!(
+                fault,
+                FakeFault::TruncatedBody | FakeFault::TruncatedListing
+            )))
+        }
+        // An answer that is not a listing appears wherever a server sends
+        // one, which is the listing a client asks for first, so either kind
+        // of request takes it.
+        Some(FakeFault::NotMultistatus)
+            if method == "GET" || method == "PROPFIND" || method == "REPORT" =>
+        {
+            state.faults.pop_front();
+            Some(Cut::NotMultistatus)
+        }
+        Some(_) | None => None,
     };
+
     let target = request.target.split('?').next().unwrap_or("");
     let (area, rest) = if state.nextcloud {
         if let Some(rest) = target.strip_prefix(FILES_PREFIX) {
@@ -603,9 +665,23 @@ fn destination(state: &State, request: &Request) -> Option<String> {
     clippy::too_many_lines,
     reason = "one match over the WebDAV methods reads best in one place"
 )]
-/// `cut` cuts the body of a GET short, declaring its full length when
-/// `Some(true)` ([`Reply::cut_short`]).
-fn files(state: &mut State, request: &Request, path: &str, cut: Option<bool>) -> Reply {
+/// How the queued fault spoils a response: a body cut short, declaring its
+/// full length when the flag is `true` ([`Reply::cut_short`]), or a 200 that
+/// is not a `multistatus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cut {
+    Get(bool),
+    Listing(bool),
+    NotMultistatus,
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match over the files methods reads best in one place"
+)]
+/// `cut` spoils the response of the request kind it names; each fault names
+/// its method, so the other kinds answer normally.
+fn files(state: &mut State, request: &Request, path: &str, cut: Option<Cut>) -> Reply {
     let prefix = files_prefix(state);
     match request.method.as_str() {
         "PROPFIND" => {
@@ -630,7 +706,15 @@ fn files(state: &mut State, request: &Request, path: &str, cut: Option<bool>) ->
                     body.push_str(&state.propstat(key, child, prefix));
                 }
             }
-            multistatus(&body, None)
+            match cut {
+                Some(Cut::Listing(declare_length)) => {
+                    multistatus(&body, None).cut_short(declare_length)
+                }
+                Some(Cut::NotMultistatus) => Reply::status(200)
+                    .header("Content-Type", "text/html")
+                    .body("<html><body>Welcome to the server</body></html>"),
+                _ => multistatus(&body, None),
+            }
         }
         "GET" => {
             let Some(node) = state.nodes.get(path) else {
@@ -691,8 +775,11 @@ fn files(state: &mut State, request: &Request, path: &str, cut: Option<bool>) ->
                 reply = reply.header("Content-Range", &range);
             }
             match cut {
-                Some(declare_length) => reply.body(slice).cut_short(declare_length),
-                None => reply.body(slice),
+                Some(Cut::Get(declare_length) | Cut::Listing(declare_length)) => {
+                    reply.body(slice).cut_short(declare_length)
+                }
+                // A GET answers with the file whatever a listing fault says.
+                Some(Cut::NotMultistatus) | None => reply.body(slice),
             }
         }
         "PUT" => {
@@ -763,7 +850,16 @@ fn files(state: &mut State, request: &Request, path: &str, cut: Option<bool>) ->
             state.remove_tree(path);
             Reply::status(204)
         }
-        "REPORT" => sync_collection(state, request),
+        "REPORT" => {
+            let reply = sync_collection(state, request);
+            match cut {
+                Some(Cut::Listing(declare_length)) => reply.cut_short(declare_length),
+                Some(Cut::NotMultistatus) => Reply::status(200)
+                    .header("Content-Type", "text/html")
+                    .body("<html><body>Welcome to the server</body></html>"),
+                _ => reply,
+            }
+        }
         // Nextcloud sets a file's mtime from `{DAV:}lastmodified`, and a
         // changed mtime gives the file a new ETag.
         "PROPPATCH" if state.nextcloud => {

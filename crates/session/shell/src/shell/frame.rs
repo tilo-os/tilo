@@ -919,6 +919,11 @@ pub struct FrameBuilder {
     enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
     /// Frames whose layout failed, skipped, and when that was last logged.
     skipped_frames: ui::widget::SkippedFrames,
+    /// Something the desktop lays out changed since it was last laid out
+    /// that the tree's revisions do not show ([`Self::relayout_if_owed`]).
+    layout_owed: bool,
+    /// The tree's revisions the desktop was last laid out at.
+    laid_out_at: Option<TreeRevisions>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1254,6 +1259,8 @@ impl FrameBuilder {
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             enrolled_actions: None,
             skipped_frames: ui::widget::SkippedFrames::default(),
+            layout_owed: true,
+            laid_out_at: None,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -1388,6 +1395,7 @@ impl FrameBuilder {
         }
         self.taffy = TaffyTree::new();
         self.node_map.clear();
+        self.layout_owed = true;
         // Push display geometry before the tree is built: the strips read it
         // to resolve each group's width fraction in this same pass.
         let outputs = self.effective_outputs();
@@ -1971,18 +1979,54 @@ impl FrameBuilder {
         true
     }
 
+    /// Something the desktop lays out changed in a way neither the tree's
+    /// revisions nor its widgets report (an input the desktop handled, a
+    /// change of the session): the next [`Self::relayout_if_owed`] lays it
+    /// out.
+    pub fn owe_layout(&mut self) {
+        self.layout_owed = true;
+    }
+
+    /// The tree's revisions now ([`TreeRevisions`]).
+    fn tree_revisions(&self) -> TreeRevisions {
+        let chrome = self.chrome.borrow();
+        let tree = chrome.tree();
+        TreeRevisions::read(&chrome, &tree)
+    }
+
+    /// Lay the desktop out for the frame about to be painted, when anything
+    /// it lays out changed since it was last laid out: its structure, the
+    /// tree (a window opened or closed, a strip or tab change, a display
+    /// added: [`TreeRevisions`]), what an input or the session changed
+    /// ([`Self::owe_layout`]), or what a widget's animation moved
+    /// ([`ui::widget::note_layout_moved`], in its update or as it was laid
+    /// out). A frame nothing of that changed for (a client's new buffer,
+    /// the cursor, an app drawing in its tile, a fade) is only painted, on
+    /// the layout it already has. Whether it laid out.
+    pub fn relayout_if_owed(&mut self) -> bool {
+        // Before anything is read: what the compositor's fullscreen state
+        // and the tree's pending topology change rebuild.
+        self.host.sync_fullscreen_from_chrome();
+        let structure = self.host.take_structure_dirty();
+        if structure {
+            self.rebuild_layout_tree();
+        }
+        let moved = ui::widget::take_layout_moved();
+        if !(std::mem::take(&mut self.layout_owed)
+            || moved
+            || self.laid_out_at != Some(self.tree_revisions()))
+        {
+            return false;
+        }
+        self.lay_out();
+        true
+    }
+
     /// Run `compute_layout` + `apply_layout` against the current tree. Animation
     /// state is preserved since the taffy tree isn't rebuilt — only layout
     /// re-runs, unless `take_structure_dirty()` says otherwise, in which
     /// case the taffy tree rebuilds first.
     pub fn relayout(&mut self) {
-        #[cfg(test)]
-        {
-            self.layout_passes = self
-                .layout_passes
-                .checked_add(1)
-                .expect("test layout pass counter exhausted");
-        }
         // Apply the compositor's live fullscreen state to the strip rows
         // first, flagging the owning row dirty so the structure-dirty check
         // below rebuilds and the collapse (or restore) takes this frame.
@@ -1990,12 +2034,38 @@ impl FrameBuilder {
         if self.host.take_structure_dirty() {
             self.rebuild_layout_tree();
         }
+        self.lay_out();
+    }
+
+    /// [`Self::relayout`] once the structure is settled. What the widgets'
+    /// animations note while they are laid out (one advancing as it is
+    /// placed) owes the next frame a layout too, until they come to rest.
+    fn lay_out(&mut self) {
+        #[cfg(test)]
+        {
+            self.layout_passes = self
+                .layout_passes
+                .checked_add(1)
+                .expect("test layout pass counter exhausted");
+        }
+        // What was noted before this layout is laid out by it.
+        let _ = ui::widget::take_layout_moved();
+        self.layout_owed = !self.solve_layout();
+        self.layout_owed |= ui::widget::take_layout_moved();
+        // Read after the layout: placing the strips can resync them from the
+        // tree, which bumps the chrome.
+        self.laid_out_at = Some(self.tree_revisions());
+    }
+
+    /// Whether the desktop was laid out (no tree to lay out, or a layout
+    /// that failed, leaves it owed).
+    fn solve_layout(&mut self) -> bool {
         let (w, h) = self.viewport;
         // `None` only in the narrow window where `rebuild_layout_tree` just
         // failed to build a tree (see its doc) — nothing to lay out until
         // the next successful rebuild.
         let (Some(outer), Some(child)) = (self.root_node, self.host_node) else {
-            return;
+            return false;
         };
         // Borrowed rather than cloned — the closure only needs read access
         // and the borrow is disjoint from `self.taffy`/`self.text_renderer`.
@@ -2040,7 +2110,7 @@ impl FrameBuilder {
             if let Some(line) = self.skipped_frames.skip(&err, ui::time::now()) {
                 tracing::error!("frame-builder: {line}");
             }
-            return;
+            return false;
         }
         let solved = std::time::Instant::now();
         crate::compositor::metrics::profile::record_phase(
@@ -2056,6 +2126,7 @@ impl FrameBuilder {
             self.settle_palette_focus(palette);
         }
         self.layout_osk_overlay();
+        true
     }
 
     /// Dock the keyboard at the bottom of the output it serves: the one
@@ -2192,6 +2263,9 @@ impl FrameBuilder {
                 update_done.duration_since(sync_done),
             );
         }
+        // What changed may be laid out differently; what an animation moved
+        // it noted (`ui::widget::note_layout_moved`).
+        self.layout_owed |= changed || settled;
         changed || settled
     }
 
@@ -3914,33 +3988,14 @@ impl FrameBuilder {
     }
 
     fn apply_color_filter(&self, scene: &mut Scene, bounds: Rect) {
-        let mut overlay = |mix: Mix, color: Color| {
-            scene.push_layer(
-                Fill::NonZero,
-                BlendMode::new(mix, Compose::SrcOver),
-                1.0,
-                Affine::IDENTITY,
-                &bounds,
-            );
-            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &bounds);
-            scene.pop_layer();
+        // The toolkit's filter, the same one Settings previews it with.
+        let filter = match self.visual_accessibility.color_filter {
+            ColorFilter::None => ui::widget::ColourFilter::None,
+            ColorFilter::Grayscale => ui::widget::ColourFilter::Grayscale,
+            ColorFilter::Inverted => ui::widget::ColourFilter::Inverted,
+            ColorFilter::GrayscaleInverted => ui::widget::ColourFilter::GrayscaleInverted,
         };
-        if matches!(
-            self.visual_accessibility.color_filter,
-            ColorFilter::Grayscale | ColorFilter::GrayscaleInverted
-        ) {
-            // W3C `color` blend with an achromatic source preserves the
-            // backdrop luminosity while replacing hue/saturation: true
-            // grayscale, not a translucent grey veil.
-            overlay(Mix::Color, Color::WHITE);
-        }
-        if matches!(
-            self.visual_accessibility.color_filter,
-            ColorFilter::Inverted | ColorFilter::GrayscaleInverted
-        ) {
-            // Difference against white is the exact per-channel inverse.
-            overlay(Mix::Difference, Color::WHITE);
-        }
+        filter.paint(scene, Affine::IDENTITY, bounds);
     }
 
     fn apply_visual_accessibility(&self, scene: &mut Scene) {
@@ -5973,6 +6028,22 @@ impl FrameBuilder {
     /// layout/paint core shared by both. Both `ShellDriver::dispatch` and
     /// the compositor's `pump_test_control_conn` route through this one method.
     pub fn dispatch_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+        state: &mut ui::widget::Edits<'_>,
+        root_obj: &ObjId,
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        let focus_before = *focus;
+        let handled = self.dispatch_to_desktop(event, modifiers, state, root_obj, focus);
+        // What the desktop handled, or a move of focus, may move what it
+        // lays out, as in an app's window.
+        self.layout_owed |= handled || *focus != focus_before;
+        handled
+    }
+
+    fn dispatch_to_desktop(
         &mut self,
         event: &WindowEvent,
         modifiers: &Modifiers,
@@ -9912,341 +9983,6 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn native_tabs_configure_before_first_buffer_and_fullscreen_restores() {
-        fn restored_native_tab_gets_a_configure_rect_before_its_first_buffer() {
-            use crate::shell::state::{Tab, TileContent};
-            use crate::shell::tab_binding::{self, Placement};
-
-            const SURFACE: u64 = 0xfedc_0011;
-            const APP: &str = "dev.tilo.calculator";
-            crate::shell::launcher::clear_pending_placements();
-            let store = crate::shell::foreign::store();
-            store.forget(SURFACE);
-            let mut tree = WorkspaceTree::bootstrap_default();
-            let room = tree.desktop.workspaces[0].room();
-            let tab = tab_binding::place_tab(
-                &mut tree,
-                Tab {
-                    id: crate::shell::state::next_id(),
-                    title: "Calculator".into(),
-                    tile: TileContent::LocalApp {
-                        app_id: APP.into(),
-                        label: "Calculator".into(),
-                        // Restore has already dispatched the app; do not start
-                        // a real process from this frame-builder regression.
-                        note: crate::shell::peer_windows::OPENING.into(),
-                    },
-                    app_title: None,
-                },
-                Placement::NewGroup,
-            );
-            let mut fb = FrameBuilder::with_tree(tree, (1280, 800));
-            let mut doc = AutoCommit::new();
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            assert!(fb.foreign_surface_rect(SURFACE).is_none());
-            // A real restored LocalApp notice has already appeared on screen.
-            // Its host visibility latch must not hide the new app's readiness.
-            let _ = fb.paint();
-            crate::shell::launcher::set_pending_placement(APP, Placement::IntoTab(tab));
-            {
-                let chrome = fb.chrome();
-                let mut tree = chrome.tree_mut();
-                assert_eq!(
-                    tab_binding::adopt_toplevel_in_room(&mut tree, SURFACE, Some(APP.into()), room),
-                    Some(tab),
-                );
-            }
-            store.note_adopted(SURFACE);
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            assert_eq!(store.frame_seq(SURFACE), 0);
-            let rect = fb
-                .foreign_surface_rect(SURFACE)
-                .expect("restored tab must publish its configure rect before the client can draw");
-            assert!(rect.width() > 0.0 && rect.height() > 0.0);
-            let (width, height) = store
-                .take_pending_configure(SURFACE)
-                .expect("layout must make the initial client configure available without input");
-            assert!(
-                fb.needs_animation_frame() || fb.next_wake_deadline().is_some(),
-                "the opening window must keep progressing"
-            );
-            assert!(!store.is_presented(SURFACE));
-            assert!(
-                fb.any_tile_arriving(),
-                "the visible notice must become the window's arrival, not an unresponsive-app error"
-            );
-            let _ = fb.paint();
-
-            let width = u32::try_from(width).expect("positive configured width");
-            let height = u32::try_from(height).expect("positive configured height");
-            let bytes = width
-                .checked_mul(height)
-                .and_then(|pixels| pixels.checked_mul(4))
-                .and_then(|bytes| usize::try_from(bytes).ok())
-                .expect("bounded test viewport");
-            store.publish_rgba(SURFACE, &vec![255; bytes], width, height);
-            let revision = fb.chrome_revision();
-            fb.pump_apps(&mut doc, &automerge::ROOT);
-            fb.relayout();
-            let _ = fb.paint();
-            assert!(
-                store.is_presented(SURFACE),
-                "the first sized buffer must replace the opening presentation"
-            );
-            assert_eq!(
-                fb.chrome_revision(),
-                revision,
-                "presentation must not need an unrelated tree mutation"
-            );
-            store.forget(SURFACE);
-            crate::shell::launcher::clear_pending_placements();
-        }
-
-        /// A group promoted to fullscreen absorbs the whole output (top bar
-        /// collapses, the strip's rect rises and spans the width), and clearing
-        /// it restores the exact prior layout — the compositor-scene half of the
-        /// fullscreen contract, driven through the
-        /// `FrameBuilder::set_fullscreen` → `ChromeState` → overlay-host path.
-        fn set_fullscreen_promotes_group_and_restores_on_exit() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-
-            // A group that actually exists in the rendered tree.
-            let gid = {
-                let chrome = fb.chrome();
-                let tree = chrome.tree();
-                tree.desktop
-                    .active_workspace()
-                    .expect("bootstrap tree has an active workspace")
-                    .strips[0]
-                    .window_groups[0]
-                    .id
-            };
-
-            let before = fb.widget_registry();
-            let topbar_before = rect_named(&before, "TopBarChrome");
-            let row_before = rect_named(&before, "GroupRow");
-            assert!(
-                topbar_before.height() > 10.0,
-                "top bar visible before fullscreen"
-            );
-
-            // Enter fullscreen on that group.
-            fb.set_fullscreen(Some(gid));
-            assert_eq!(fb.fullscreen_group(), Some(gid));
-            let _ = fb.paint_settled();
-            assert!(fb.chrome().is_fullscreen());
-
-            let during = fb.widget_registry();
-            let topbar_fs = rect_named(&during, "TopBarChrome");
-            let row_fs = rect_named(&during, "GroupRow");
-            assert!(
-                topbar_fs.height() <= 0.5,
-                "top bar collapses under fullscreen; got height {}",
-                topbar_fs.height(),
-            );
-            assert!(
-                row_fs.y0 < row_before.y0 - 20.0,
-                "the strip rises to the top once the bar is gone; before y0 {} during {}",
-                row_before.y0,
-                row_fs.y0,
-            );
-            assert!(
-                row_fs.width() >= fb.viewport().0 - 1.0,
-                "fullscreen strip spans the output width; got {} vs {}",
-                row_fs.width(),
-                fb.viewport().0,
-            );
-
-            // Exit — the layout restores exactly.
-            fb.set_fullscreen(None);
-            assert_eq!(fb.fullscreen_group(), None);
-            let _ = fb.paint_settled();
-            assert!(!fb.chrome().is_fullscreen());
-
-            let after = fb.widget_registry();
-            let topbar_after = rect_named(&after, "TopBarChrome");
-            let row_after = rect_named(&after, "GroupRow");
-            assert!(
-                (topbar_after.height() - topbar_before.height()).abs() < 0.5,
-                "top bar height restores: before {} after {}",
-                topbar_before.height(),
-                topbar_after.height(),
-            );
-            assert!(
-                (row_after.y0 - row_before.y0).abs() < 0.5
-                    && (row_after.x0 - row_before.x0).abs() < 0.5
-                    && (row_after.width() - row_before.width()).abs() < 0.5,
-                "strip row rect restores exactly: before {row_before:?} after {row_after:?}",
-            );
-        }
-
-        /// A fullscreen id the rendered tree does NOT host must be a safe
-        /// no-op — must not blank the shell by hiding every strip (the live
-        /// client tree and rendered tree aren't yet unified).
-        fn set_fullscreen_with_unknown_group_does_not_blank_shell() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            let before = fb.widget_registry();
-            let row_before = rect_named(&before, "GroupRow");
-
-            // An id that cannot exist in the tree.
-            fb.set_fullscreen(Some(u64::MAX));
-            let _ = fb.paint_settled();
-
-            let during = fb.widget_registry();
-            let row_during = rect_named(&during, "GroupRow");
-            let topbar_during = rect_named(&during, "TopBarChrome");
-            assert!(
-                row_during.width() > 0.0 && row_during.height() > 0.0,
-                "an unknown fullscreen id must not collapse the shell; got {row_during:?}",
-            );
-            // Geometry matches the normal (non-fullscreen) layout — no promotion,
-            // no chrome suppression.
-            assert!((row_during.width() - row_before.width()).abs() < 0.5);
-            assert!(
-                topbar_during.height() > 10.0,
-                "top bar stays visible for an unknown fullscreen id",
-            );
-        }
-
-        /// Expand keeps the top bar.
-        fn an_expanded_window_keeps_the_top_bar() {
-            let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
-            let first = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
-            first.maximized = true;
-            let group = first.id;
-            let mut fb = FrameBuilder::with_tree(tree, (1600, 900));
-            let _ = fb.paint_settled();
-            fb.with_chrome(|chrome| chrome.set_maximized_group(Some(group)));
-            let _ = fb.paint_settled();
-            assert!(
-                rect_named(&fb.widget_registry(), "TopBarChrome").height() > 10.0,
-                "Expand keeps the top bar"
-            );
-            fb.with_chrome(|chrome| chrome.set_maximized_group(None));
-            let _ = fb.paint_settled();
-            assert!(
-                rect_named(&fb.widget_registry(), "TopBarChrome").height() > 10.0,
-                "restoring keeps the top bar"
-            );
-        }
-
-        /// Super+F on a Tilo window covers the whole output. Hosted apps
-        /// are xdg clients; chrome fullscreen still wins so W07 sees
-        /// `fullscreen_group`.
-        fn super_f_on_a_tilo_group_covers_the_output() {
-            let mut fb = FrameBuilder::new((1600, 900));
-            let _ = fb.paint_settled();
-            assert!(fb.host_mut().toggle_focused_group_fullscreen());
-            // The native loop writes `set_fullscreen(None)` every tick so
-            // client xdg stays an overlay. Super+F must survive that wipe.
-            fb.set_fullscreen(None);
-            assert!(
-                fb.fullscreen_group().is_some(),
-                "compositor set_fullscreen(None) must not clear Super+F"
-            );
-            let _ = fb.paint_settled();
-            assert!(fb.chrome().is_fullscreen());
-            let during = fb.widget_registry();
-            let row = rect_named(&during, "GroupRow");
-            assert!(
-                row.width() >= fb.viewport().0 - 1.0,
-                "Super+F must cover the output; row width {} vs output {}",
-                row.width(),
-                fb.viewport().0,
-            );
-            assert!(
-                rect_named(&during, "TopBarChrome").height() <= 0.5,
-                "Super+F hides the top bar"
-            );
-            assert!(fb.host_mut().toggle_focused_group_fullscreen());
-            let _ = fb.paint_settled();
-            assert!(!fb.chrome().is_fullscreen());
-        }
-
-        /// Super+F on a foreign window of a desktop partitioned across two
-        /// outputs gives it that whole output, not its strip band under the
-        /// hidden top bar, and leaving fullscreen restores its tile.
-        fn super_f_foreign_window_covers_its_output_in_a_partitioned_desktop() {
-            use crate::shell::output_scene::OutputGeometry;
-            use crate::shell::tab_binding::{self, Placement};
-
-            const SURFACE: u64 = 0xfedc_0012;
-            const APP: &str = "tilo.test.fullscreen-partition";
-            let store = crate::shell::foreign::store();
-            store.forget(SURFACE);
-            crate::shell::launcher::clear_pending_placements();
-            let mut tree = WorkspaceTree::bootstrap_default();
-            let room = tree.desktop.workspaces[0].room();
-            crate::shell::launcher::set_pending_placement(APP, Placement::NewGroup);
-            assert!(
-                tab_binding::adopt_toplevel_in_room(&mut tree, SURFACE, Some(APP.into()), room)
-                    .is_some()
-            );
-            store.note_adopted(SURFACE);
-            // Frames on a pinned clock that advances a frame interval each,
-            // so the strip's springs run to rest in simulated time: every
-            // rect compared below is a settled layout, not a frame of motion.
-            let mut at = ui::time::now();
-            let settle = |fb: &mut FrameBuilder, at: &mut ui::time::Instant| {
-                for _ in 0..120 {
-                    *at += ui::time::Duration::from_millis(16);
-                    ui::time::testing::with_monotonic_time(*at, || {
-                        let _ = fb.paint_settled();
-                    });
-                }
-            };
-            let mut fb = FrameBuilder::with_tree(tree, (2944, 1080));
-            fb.set_output_geometry(vec![
-                OutputGeometry::unscaled(0.0, 0.0, 1920.0, 1080.0).with_id(0),
-                OutputGeometry::unscaled(1920.0, 0.0, 1024.0, 640.0).with_id(1),
-            ]);
-            settle(&mut fb, &mut at);
-            let before = fb
-                .foreign_surface_rect(SURFACE)
-                .expect("tiled foreign window");
-            assert!(before.y0 > 0.0);
-            assert!(fb.host_mut().toggle_focused_group_fullscreen());
-            fb.set_fullscreen(None);
-            settle(&mut fb, &mut at);
-            let fullscreen = fb
-                .foreign_surface_rect(SURFACE)
-                .expect("fullscreen foreign window");
-            assert!(
-                fullscreen.y0.abs() < 0.5 && (fullscreen.height() - 1080.0).abs() < 0.5,
-                "Super+F must give the client the whole output height: {fullscreen:?}"
-            );
-            assert!(
-                fullscreen.x0.abs() < 0.5 && (fullscreen.width() - 1920.0).abs() < 0.5,
-                "Super+F must give the client the whole output width: {fullscreen:?}"
-            );
-            assert!(fb.host_mut().toggle_focused_group_fullscreen());
-            settle(&mut fb, &mut at);
-            let restored = fb
-                .foreign_surface_rect(SURFACE)
-                .expect("restored foreign window");
-            assert_eq!(restored, before, "leaving fullscreen restores the tile");
-            store.forget(SURFACE);
-            crate::shell::launcher::clear_pending_placements();
-        }
-
-        restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
-        set_fullscreen_promotes_group_and_restores_on_exit();
-        set_fullscreen_with_unknown_group_does_not_blank_shell();
-        super_f_on_a_tilo_group_covers_the_output();
-        an_expanded_window_keeps_the_top_bar();
-        super_f_foreign_window_covers_its_output_in_a_partitioned_desktop();
-    }
-
-    #[test]
     fn overview_publishes_new_workspace_before_the_fade_paints() {
         use crate::shell::output_scene::OutputGeometry;
         use crate::shell::state::WorkspaceTree;
@@ -10358,31 +10094,46 @@ mod tests {
         );
     }
 
-    /// Look up a widget's rect by its *last* path segment
-    /// (`.../TopBarChrome[0]` → `TopBarChrome`) — registry keys are full
-    /// paths, so an exact-key lookup on a nested widget would miss. The
-    /// widgets asserted on here are unique in the rendered tree, so the
-    /// first match is deterministic.
-    #[cfg(test)]
-    fn rect_named(reg: &HashMap<String, vello::kurbo::Rect>, name: &str) -> vello::kurbo::Rect {
-        reg.iter()
-            .find(|(k, _)| {
-                let seg = k.rsplit('/').next().unwrap_or(k);
-                let leaf = match seg.find('[') {
-                    Some(i) => &seg[..i],
-                    None => seg,
-                };
-                leaf == name
-            })
-            .map_or_else(
-                || {
-                    panic!(
-                        "widget `{name}` not found in registry; keys: {:?}",
-                        reg.keys().collect::<Vec<_>>()
-                    )
-                },
-                |(_, r)| *r,
-            )
+    #[test]
+    fn a_saved_maximize_fills_the_work_area_on_the_first_frame() {
+        for forget_focus in [false, true] {
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            let (strip, group) = {
+                let workspace = tree.desktop.active_workspace_mut().expect("workspace");
+                let strip = workspace.strips.first_mut().expect("strip");
+                let group = strip.window_groups.first_mut().expect("group");
+                group.maximized = true;
+                (strip.id, group.id)
+            };
+            if forget_focus {
+                tree.desktop.active_strip.clear();
+                tree.desktop.active_group.clear();
+            } else {
+                let workspace = tree.desktop.active;
+                tree.desktop.active_strip.insert(workspace, strip);
+                tree.desktop.set_active_group(strip, group);
+            }
+            let mut frame = FrameBuilder::with_tree(tree, (1472, 920));
+            let _ = frame.paint_settled();
+            let bar = rect_named(&frame.widget_registry(), "TopBarChrome");
+            let rect = frame
+                .host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("restored group widget")
+                .get_rect();
+            assert_eq!(
+                frame.chrome().maximized_group(),
+                Some(group),
+                "forget_focus={forget_focus}"
+            );
+            assert!(bar.height() > 0.0, "a maximized window keeps the top bar");
+            assert!(
+                (rect.y0 - bar.y1).abs() < 0.5
+                    && (rect.y1 - 920.0).abs() < 0.5
+                    && (rect.x1 - 1472.0).abs() < 0.5,
+                "forget_focus={forget_focus}: restored maximize must fill the work area: {rect:?} vs bar {bar:?}"
+            );
+        }
     }
 
     #[test]
@@ -10807,12 +10558,31 @@ mod window_bar_keyboard_tests;
 mod quiet_pump_tests;
 
 #[cfg(test)]
+#[path = "frame_layout_owed_tests.rs"]
+mod layout_owed_tests;
+
+#[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
     reason = "test fixtures transitively own long-lived permits and lock guards by design"
 )]
 #[path = "frame_native_field_tests.rs"]
 mod native_field_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "each scenario is one function, kept whole so its fixture and its asserts read together"
+)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "each scenario's frame builder is its subject from its first paint to its last assertion"
+)]
+#[path = "frame_native_tab_scenarios.rs"]
+mod native_tab_scenarios;
+
+#[cfg(test)]
+pub(super) use native_tab_scenarios::rect_named;
 
 #[cfg(test)]
 #[allow(

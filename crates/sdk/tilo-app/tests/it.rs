@@ -86,6 +86,8 @@ pub mod references;
 pub mod render_anchor;
 #[path = "render_view.rs"]
 pub mod render_view;
+#[path = "replay.rs"]
+pub mod replay;
 #[path = "room_arrival.rs"]
 pub mod room_arrival;
 #[path = "scenarios.rs"]

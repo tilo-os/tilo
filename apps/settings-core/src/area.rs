@@ -164,34 +164,6 @@ pub struct AreaContext<'a> {
 /// What makes one area in a window's context, given the areas made before.
 pub type MakeArea = fn(&AreaContext<'_>, &Areas) -> Box<dyn PaneArea>;
 
-/// A section of the person's settings a pane owns: published as a record of
-/// their own and held for the pane's controls.
-pub struct SectionEntry {
-    /// Hold the section's published actions for the panes.
-    pub held: HoldSection,
-    pub record: fn(&mut ui::framework::Records<'_>),
-}
-
-/// [`SectionEntry::held`].
-pub type HoldSection = fn(
-    &ui::framework::SurfaceCx<crate::resource::Settings>,
-    &mut std::collections::HashMap<TypeId, Box<dyn Any>>,
-);
-
-/// The [`SectionEntry`] of section `$ty`.
-#[macro_export]
-macro_rules! section_entry {
-    ($ty:ty) => {
-        $crate::area::SectionEntry {
-            held: $crate::host::held::<$ty>,
-            record: |records| {
-                records.settings::<$ty>();
-            },
-        }
-    };
-}
-pub use crate::section_entry;
-
 /// One pane: the categories it shows and how it is built for the window.
 pub struct PaneEntry {
     pub categories: &'static [Category],
@@ -205,18 +177,17 @@ pub fn missing() -> String {
     "this part of Settings is not open".to_owned()
 }
 
-/// One crate's part of Settings: the areas, panes, effect families, live
-/// areas and settings sections it brings, each with the place it takes in
-/// the whole (areas are made, effects declared, rows published and sections
-/// recorded in that order, whichever crate brings them).
+/// One crate's part of Settings: the areas, panes, effect families and live
+/// areas it brings, each with the place it takes in the whole (areas are
+/// made, effects declared and rows published in that order, whichever crate
+/// brings them). The settings sections are the session's, kept whether or
+/// not Settings is open ([`settings_sections`]).
 pub struct Part {
     /// What makes each area, by place.
     pub areas: &'static [(u16, MakeArea)],
     pub panes: &'static [PaneEntry],
     pub families: &'static [(u16, &'static crate::effects::EffectFamily)],
     pub live_areas: &'static [(u16, crate::effects::LiveArea)],
-    /// Every settings section, by place.
-    pub sections: &'static [(u16, SectionEntry)],
     /// The rows of the settings its panes show, as search shows them too.
     pub settings: &'static [crate::setting::SettingEntry],
 }
@@ -229,8 +200,6 @@ pub struct Registry {
     pub panes: Vec<&'static PaneEntry>,
     pub families: Vec<&'static crate::effects::EffectFamily>,
     pub live_areas: Vec<&'static crate::effects::LiveArea>,
-    /// Every settings section.
-    pub sections: Vec<&'static SectionEntry>,
     /// Every setting's row.
     pub settings: Vec<&'static crate::setting::SettingEntry>,
 }
@@ -265,16 +234,6 @@ impl Registry {
                 parts
                     .iter()
                     .flat_map(|part| part.live_areas.iter().map(|(place, area)| (*place, area)))
-                    .collect(),
-            ),
-            sections: ordered(
-                parts
-                    .iter()
-                    .flat_map(|part| {
-                        part.sections
-                            .iter()
-                            .map(|(place, section)| (*place, section))
-                    })
                     .collect(),
             ),
             settings: parts.iter().flat_map(|part| part.settings.iter()).collect(),

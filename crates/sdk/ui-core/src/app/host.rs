@@ -658,16 +658,46 @@ fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOn
 /// `None` means taffy layout computation failed and the caller must abandon
 /// the frame; otherwise `(relayout_branch, compute_us, apply_us)` for the
 /// perf log line.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one bounded solve/recompose/focus/mount lifecycle keeps ownership and final-frame ordering explicit"
-)]
 #[cfg(feature = "native")]
 fn run_layout_pass(
     app: &mut App,
     root_node: NodeId,
     width: u32,
     height: u32,
+    scale_factor: f32,
+    structure_rebuilt: bool,
+    native_host: Option<&crate::widget::NativeViewHost<'_>>,
+) -> Option<(bool, u128, u128)> {
+    // What a motion noted as it was laid out (one that advances in its
+    // layout) is laid out in the next frame: it is this window's, not a
+    // host's around it (an app hosted in a tile is laid out as its host
+    // paints), whose own notes stand.
+    let outer = crate::widget::take_layout_moved();
+    let result = lay_out_window(
+        app,
+        root_node,
+        (width, height),
+        scale_factor,
+        structure_rebuilt,
+        native_host,
+    );
+    app.layout.layout_dirty |= crate::widget::take_layout_moved();
+    if outer {
+        crate::widget::note_layout_moved();
+    }
+    result
+}
+
+/// [`run_layout_pass`] of the window's own widgets.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one bounded solve/recompose/focus/mount lifecycle keeps ownership and final-frame ordering explicit"
+)]
+#[cfg(feature = "native")]
+fn lay_out_window(
+    app: &mut App,
+    root_node: NodeId,
+    (width, height): (u32, u32),
     scale_factor: f32,
     structure_rebuilt: bool,
     native_host: Option<&crate::widget::NativeViewHost<'_>>,

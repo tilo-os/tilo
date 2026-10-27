@@ -8,7 +8,10 @@
 
 pub mod accessibility;
 pub mod continuity;
+pub mod desktop;
+pub mod osk;
 pub mod prefs;
+pub mod providers;
 pub mod shortcuts;
 
 /// The app whose settings they are, whose controls change them and under
@@ -53,6 +56,13 @@ sections!(
     tilo_locale::Locale,
     continuity::ContinuityPrivacy,
     shortcuts::ShortcutPrefs,
+    desktop::DesktopControls,
+    providers::AgentProviders,
+    desktop::DefaultApps,
+    desktop::ClockPrefs,
+    desktop::SharedDisplayPrefs,
+    desktop::AutomaticDisplayPrefs,
+    osk::OskSourceSettings,
 );
 
 #[cfg(test)]

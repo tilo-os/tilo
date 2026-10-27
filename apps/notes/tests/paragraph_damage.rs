@@ -1,8 +1,12 @@
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "a test places its clock a whole number of seconds after the epoch"
+)]
+
 //! Damage from the outer, ordinarily mounted component after real note input.
 use crate::component_support::*;
 use notes::read;
 use std::{cell::RefCell, rc::Rc};
-use ui::lock::MutexRecover as _;
 use ui::{Widget, headless::FrameHarness};
 use vello::{Scene, kurbo::Rect, peniko::Color};
 
@@ -42,12 +46,6 @@ fn canonical_notes_timestamp_boundary_preserves_sparse_gpu_pixels() {
 }
 
 fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timestamp: bool) {
-    // The wall clock is pinned for the whole process, and the timestamp case
-    // moves it a minute on: another case still typing would see its
-    // edited-at caption change under it, which is not what typing damages.
-    static CLOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _clock = CLOCK.lock_recover();
-    pin_edit_clock(1_790_000_000);
     let f = NotebookFixture::rich();
     let body = (0..18)
         .map(|index| format!("Paragraph {index}: an ordinary document line."))
@@ -73,7 +71,12 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     )
     .unwrap();
     driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
+    // When the note says it was edited is the test's to choose, and the
+    // timestamp case moves it a minute on: the time is handed to the panel,
+    // not pinned process-wide, and no case reads another's.
+    let mut clock = 1_790_000_000;
     open_note(&mut driver, 11, f.child, None);
+    hold_edit_clock(&mut driver, clock);
     driver
         .perform_named("block_editor", &ui::a11y::Action::Focus)
         .unwrap();
@@ -109,7 +112,7 @@ fn paragraph_input(reduce_motion: bool, key: &str, prefix: &str, advance_timesta
     // A key interaction draws its press and release. Retain the union of
     // actual frame damage; the unchanged release must not erase the press.
     damage.borrow_mut().clear();
-    type_with_timestamp(&mut driver, key, advance_timestamp);
+    type_with_timestamp(&mut driver, key, advance_timestamp, &mut clock);
     let actual = f
         .records
         .read(&checkout.id, |doc| {
@@ -245,11 +248,12 @@ fn report_unsettled_scene(
     );
 }
 
-fn pin_edit_clock(seconds: u64) {
-    ui::time::freeze_wall(
-        ui::time::UNIX_EPOCH
-            .checked_add(ui::time::Duration::from_secs(seconds))
-            .unwrap(),
+/// Read the note's dates against the wall clock `seconds` after the epoch.
+fn hold_edit_clock(driver: &mut FrameHarness, seconds: u64) {
+    let at = ui::time::UNIX_EPOCH + ui::time::Duration::from_secs(seconds);
+    assert!(
+        notes::MainPanel::hold_clock_at(driver.root_widget_mut(), at),
+        "the fixture shows a note"
     );
 }
 
@@ -265,12 +269,18 @@ fn date_captions(driver: &FrameHarness) -> Vec<String> {
         .collect()
 }
 
-fn type_with_timestamp(driver: &mut FrameHarness, key: &str, advance_timestamp: bool) {
+fn type_with_timestamp(
+    driver: &mut FrameHarness,
+    key: &str,
+    advance_timestamp: bool,
+    clock: &mut u64,
+) {
     let before = advance_timestamp.then(|| date_captions(driver));
     if advance_timestamp {
         // Only wall time advances: the ordinary action stamps a new minute
         // while the production monotonic animation clock continues running.
-        pin_edit_clock(1_790_000_120);
+        *clock = 1_790_000_120;
+        hold_edit_clock(driver, *clock);
     }
     driver.key(key);
     if let Some(before) = before {

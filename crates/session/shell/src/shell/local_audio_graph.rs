@@ -359,10 +359,10 @@ mod tests {
             "the first look never waits"
         );
         tilo_test_env::wait_until("the first graph read", || !cache.graph().sinks.is_empty());
-        assert!(
-            repaints.load(Ordering::SeqCst) >= 1,
-            "the first read asks for a frame"
-        );
+        // The reader publishes the graph, then asks for a frame.
+        tilo_test_env::wait_until("the first read asks for a frame", || {
+            repaints.load(Ordering::SeqCst) >= 1
+        });
         assert_eq!(cache.revision(), 1, "a view built before the read is stale");
 
         assert!(

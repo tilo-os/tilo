@@ -6,6 +6,7 @@ import contextlib
 import datetime
 import io
 import re
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -325,12 +326,20 @@ class Lanes(unittest.TestCase):
         self.assertIn('["lanes"]["perf-scheduled"]["groups"]', compare_script)
         self.assertIn("T_NEEDS_FAILED", compare_script)
 
-    def test_vm_acceptance_owes_exactly_its_lanes_groups(self):
+    def test_vm_acceptance_owes_the_groups_of_the_checks_it_ran(self):
         budgets = compare.load_budgets(compare.BUDGETS)
         perf = t_checks()["vm-acceptance-perf"]
         self.assertEqual(perf["needs"], ["vm-acceptance"])
-        [groups] = re.findall(r"--lane vm-acceptance --groups ([a-z,]+) ", perf["run"])
-        self.assertEqual(set(groups.split(",")), budgets.lane_groups("vm-acceptance"))
+        # The selection the acceptance job ran, never a fixed list: a dispatch of
+        # --only A14 is owed A14's groups, not the boot and idle ones it skipped.
+        self.assertNotRegex(perf["run"], r"--groups [a-z]+,")
+        self.assertIn('--groups "$(python3 scripts/vm-acceptance/selected_groups.py ', perf["run"])
+        selected = (ROOT / "scripts/vm-acceptance/selected_groups.py").read_text()
+        # That helper names only groups of the lane, and only through its checks.
+        self.assertIn("CHECKS = HERE / \"acceptance\" / \"checks\"", selected)
+        self.assertIn('ctx\\.record', selected)
+        for group in budgets.lane_groups("vm-acceptance"):
+            self.assertIn(group, run_groups("vm-acceptance"))
 
     def test_each_workflows_render_records_satisfy_the_repository_budgets(self):
         # The nightly failure this fixes: both workflows select render, and
@@ -348,6 +357,61 @@ class Lanes(unittest.TestCase):
         self.assertEqual([row.kpi for row in nightly if row.failing], [])
         vm = run("vm-acceptance")
         self.assertEqual([(row.kpi, row.failing) for row in vm], [("render.frame_cpu_ms", False)])
+
+
+class VmAcceptanceSubset(unittest.TestCase):
+    """A dispatched subset is owed its own checks' measurements, and no others.
+
+    A budget of a group the run was not selected to produce is never owed. A budget of
+    a group it was selected for is owed by whoever measures it in that lane, as before:
+    A14 alone does not owe A15's warm opens, though a full run still fails on them."""
+
+    def test_a_check_that_measures_into_the_lane_owes_its_groups_budgets(self):
+        rows = self.compare([make(1216, 1, kpi="app.startup_ms.file-explorer.first_in_session")],
+                            run_groups("vm-acceptance", "A14"))
+        self.assertEqual({row.kpi for row in rows if row.status == "missing"},
+                         {"app.open.warm_ms.file-explorer", "app.open.warm_ms.notes",
+                          "app.open.warm_ms.settings"})
+
+    def compare(self, current: list[record.Record], groups: set[str]) -> list[compare.Row]:
+        budgets = compare.load_budgets(compare.BUDGETS)
+        return compare.compare(current, [], budgets, groups, set(), "vm-acceptance")
+
+    def test_a_subset_is_owed_no_group_it_was_not_selected_to_produce(self):
+        rows = self.compare([make(1216, 1, kpi="app.startup_ms.file-explorer.first_in_session")],
+                            run_groups("vm-acceptance", "A14"))
+        missing = {row.kpi for row in rows if row.status == "missing"}
+        self.assertFalse(missing & {"boot.*", "idle.*", "memory.*"}, missing)
+
+    def test_a_full_run_is_still_owed_every_budget_of_its_lane(self):
+        rows = self.compare([make(1216, 1, kpi="app.startup_ms.file-explorer.first_in_session")],
+                            run_groups("vm-acceptance"))
+        missing = {row.kpi for row in rows if row.status == "missing"}
+        self.assertIn("boot.*", missing)
+        self.assertIn("idle.*", missing)
+        self.assertIn("app.open.warm_ms.notes", missing)
+
+    def test_a_selected_group_must_still_report_every_budget_in_it(self):
+        # A15 selected: its warm opens are owed, and a silent one still fails.
+        rows = self.compare([make(1216, 1, kpi="app.startup_ms.file-explorer.first_in_session")],
+                            run_groups("vm-acceptance", "A14,A15"))
+        self.assertEqual([(row.kpi, row.status) for row in rows if row.failing],
+                         [("memory.*", "missing"),
+                          ("app.open.warm_ms.file-explorer", "missing"),
+                          ("app.open.warm_ms.notes", "missing"),
+                          ("app.open.warm_ms.settings", "missing")])
+
+    def test_a_subset_comparing_a_group_the_lane_does_not_produce_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "lane vm-acceptance produces no KPI of group fs"):
+            self.compare([make(1216, 1, kpi="app.startup_ms.file-explorer.first_in_session")], {"fs"})
+
+
+def run_groups(lane: str, only: str = "") -> set[str]:
+    """The groups vm-acceptance-perf compares for the acceptance run's `--only`."""
+    helper = ROOT / "scripts/vm-acceptance/selected_groups.py"
+    printed = subprocess.run([sys.executable, str(helper), only], check=True,
+                             capture_output=True, text=True).stdout.strip()
+    return set(printed.split(","))
 
 
 class EndToEnd(unittest.TestCase):

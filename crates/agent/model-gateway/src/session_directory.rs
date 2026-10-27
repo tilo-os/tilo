@@ -15,15 +15,27 @@ use std::{
 
 pub struct SessionDirectory {
     directory: PathBuf,
+    /// The wall clock a grant's expiry is judged against.
+    now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 impl SessionDirectory {
     /// # Errors
     /// Rejects missing, non-private or foreign-owned session directories.
     pub fn new(directory: PathBuf) -> Result<Self, String> {
+        Self::new_with_clock(directory, Arc::new(tilo_clock::unix_now_ms))
+    }
+    /// [`Self::new`] with the wall clock read by `now_ms`.
+    ///
+    /// # Errors
+    /// Rejects missing, non-private or foreign-owned session directories.
+    pub fn new_with_clock(
+        directory: PathBuf,
+        now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
+    ) -> Result<Self, String> {
         if !private_directory(&directory) {
             return Err("sessions require an owner-only directory".into());
         }
-        Ok(Self { directory })
+        Ok(Self { directory, now_ms })
     }
 }
 #[derive(Deserialize)]
@@ -47,6 +59,7 @@ struct DirectorySession {
     path: PathBuf,
     snapshot: Vec<u8>,
     grant: Grant,
+    now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 impl Session for DirectorySession {
     fn caller(&self) -> Caller {
@@ -61,7 +74,7 @@ impl Session for DirectorySession {
         self.grant.manage_credentials
     }
     fn active(&self) -> bool {
-        self.grant.expires_unix_ms > tilo_clock::unix_now_ms()
+        self.grant.expires_unix_ms > (self.now_ms)()
             && private_directory(&self.directory)
             && read_private(&self.path).is_some_and(|bytes| bytes == self.snapshot)
     }
@@ -93,6 +106,7 @@ impl SessionAuthorizer for SessionDirectory {
             path,
             snapshot,
             grant,
+            now_ms: Arc::clone(&self.now_ms),
         };
         session
             .active()
@@ -134,11 +148,13 @@ fn read_private(path: &Path) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
     #[test]
     fn trusted_chat_grant_preserves_narrow_identity() {
         // The grant expires a minute after this instant, however long the
-        // test takes.
-        tilo_clock::freeze_wall(tilo_clock::wall());
+        // test takes. The clock is handed to the directory, so no other test
+        // of this process reads it.
+        let at = tilo_clock::unix_now_ms();
         let dir = tempfile::tempdir().unwrap();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let token = "c".repeat(64);
@@ -147,14 +163,14 @@ mod tests {
             &path,
             format!(
                 r#"{{"caller":"chat","manage_credentials":true,"expires_unix_ms":{}}}"#,
-                tilo_clock::unix_now_ms().saturating_add(60_000)
+                at.saturating_add(60_000)
             ),
         )
         .unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         let mut headers = hyper::HeaderMap::new();
         headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
-        let session = SessionDirectory::new(dir.path().to_owned())
+        let session = SessionDirectory::new_with_clock(dir.path().to_owned(), Arc::new(move || at))
             .unwrap()
             .authorize(&headers)
             .unwrap();
@@ -170,18 +186,20 @@ mod tests {
     #[test]
     fn grants_are_private_expiring_and_revocable() {
         // The grant expires a minute after this instant, however long the
-        // test takes.
-        tilo_clock::freeze_wall(tilo_clock::wall());
+        // test takes. The clock is handed to the directory, so no other test
+        // of this process reads it.
+        let at = tilo_clock::unix_now_ms();
         let dir = tempfile::tempdir().unwrap();
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        let authorizer = SessionDirectory::new(dir.path().to_owned()).unwrap();
+        let authorizer =
+            SessionDirectory::new_with_clock(dir.path().to_owned(), Arc::new(move || at)).unwrap();
         let token = "a".repeat(64);
         let path = dir.path().join(session_name(&token));
         fs::write(
             &path,
             format!(
                 r#"{{"caller":"settings","manage_credentials":true,"expires_unix_ms":{}}}"#,
-                tilo_clock::unix_now_ms().saturating_add(60_000)
+                at.saturating_add(60_000)
             ),
         )
         .unwrap();

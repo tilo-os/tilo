@@ -1762,26 +1762,43 @@ mod tests {
 
     #[test]
     fn a_settled_copy_needs_no_look_until_another_process_writes_it() {
-        // "Within the clock tick" is judged against the wall clock; it stands
-        // still here, before the copy is written.
-        tilo_clock::freeze_wall(tilo_clock::wall());
-        let dir = crate::test_dir();
-        let session = open(dir.path());
-        assert!(
-            session.copy_may_have_changed(),
-            "a copy written within the file system's clock tick needs its contents read"
-        );
-        settle_copy(&session);
-        assert!(!session.copy_may_have_changed());
-        crate::update_section_at(
-            &session.paths.copy,
-            "appearance",
-            object(json!({"theme": "Light"})),
-        )
-        .unwrap();
-        assert!(session.copy_may_have_changed());
-        session.refresh();
-        assert_eq!(session.load()["appearance"]["theme"], json!("Light"));
+        // "Within the clock tick" is judged against the wall clock, so it is
+        // pinned here on this thread alone: the other tests of the process keep
+        // their own clock.
+        let at = tilo_clock::wall();
+        tilo_clock::testing::with_wall(at, || {
+            let dir = crate::test_dir();
+            let session = open(dir.path());
+            assert!(
+                session.copy_may_have_changed(),
+                "a copy written within the file system's clock tick needs its contents read"
+            );
+            settle_copy(&session);
+            assert!(!session.copy_may_have_changed());
+            crate::update_section_at(
+                &session.paths.copy,
+                "appearance",
+                object(json!({"theme": "Light"})),
+            )
+            .unwrap();
+            assert!(session.copy_may_have_changed());
+            session.refresh();
+            assert_eq!(session.load()["appearance"]["theme"], json!("Light"));
+        });
+    }
+
+    /// Let a fresh refresh worker finish whatever pass it started when it was
+    /// spawned, so that a count taken after it belongs to the caller.
+    fn wait_until_quiet(worker: &str) {
+        let mut settled = crate::tests::blocked_count(worker);
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let now = crate::tests::blocked_count(worker);
+            if now == settled {
+                return;
+            }
+            settled = now;
+        }
     }
 
     /// Reads of an unchanged copy leave the view's refresh worker asleep:
@@ -1798,6 +1815,10 @@ mod tests {
         let (view, worker) =
             tilo_test_env::idle::spawned_thread("tilo-settings-r", || session.host_view().unwrap());
         let (_listener, rings) = ringing_view(&view);
+        // The worker's own first pass is not one of the reads under test, so
+        // let it finish before counting: a pass still in flight when the reads
+        // start would be counted as a wake the reads caused.
+        wait_until_quiet(&worker);
         let before = crate::tests::blocked_count(&worker);
         for _ in 0..50 {
             let _ = (view.load(), view.revision());
@@ -1806,6 +1827,10 @@ mod tests {
         assert_eq!(
             woke, 0,
             "50 reads of an unchanged copy woke the worker {woke} times"
+        );
+        assert!(
+            rings.try_recv().is_err(),
+            "an unchanged copy's reads rang the view"
         );
         crate::update_section_at(
             &session.paths.copy,

@@ -756,7 +756,7 @@ impl AuthenticatorApp {
             CAPTURE_ELAPSED
         };
         if let Some(at) = ui::time::wall().checked_add(Duration::from_secs(elapsed)) {
-            ui::time::freeze_wall(at);
+            ui::time::pin_wall(at);
         }
     }
 

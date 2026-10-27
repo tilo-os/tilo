@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use cloud_source::conformance::{Fault, Fixture, SwitchableCredential};
-use cloud_source::{CloudSource, Credential, ItemId, StaticCredential};
+use cloud_source::{CloudSource, Credential, Error, ItemId, StaticCredential};
 use cloud_source_dav::fake::{FakeDav, FakeFault, PASSWORD, USER};
 use cloud_source_dav::{DavConfig, DavSource};
 use zeroize::Zeroizing;
@@ -101,6 +101,150 @@ cloud_source::conformance_suite!(
     FakeFixture::start(FakeDav::generic_with_sync_collection())
 );
 cloud_source::conformance_suite!(fake_nextcloud, FakeFixture::start(FakeDav::nextcloud()));
+
+/// A listing that fails names its cause instead of collapsing to `Offline`,
+/// so a failed conformance case says what the server did: it reset the
+/// connection, cut the body short, or answered something that is not a
+/// `multistatus`.
+#[test]
+fn listing_failures_name_their_cause() {
+    let fixture = FakeFixture::start(FakeDav::generic());
+    let source = fixture.source();
+    let root = source.root();
+    // The fake cuts a body in half, so leaving only the root behind makes
+    // each cut land inside the document rather than after it.
+    fixture.server.clear();
+    source.list(&root).expect("the fake lists the root");
+
+    // A body cut short after the head announced its full length.
+    fixture.server.inject(FakeFault::TruncatedListing);
+    let error = source.list(&root).expect_err("a truncated listing fails");
+    assert!(
+        matches!(&error, Error::InvalidResponse(detail) if detail.contains("cut short")),
+        "a truncated listing names its cause: {error:?}"
+    );
+    assert!(
+        error.is_transient(),
+        "a cut body is worth retrying: {error:?}"
+    );
+
+    // A body the server cut off by closing the connection, with no length
+    // to check it against: the document stops mid-way, which is what a
+    // reader sees. The listing still says why it could not be used.
+    fixture.server.inject(FakeFault::ClosedListing);
+    let error = source.list(&root).expect_err("a closed listing fails");
+    assert!(
+        matches!(&error, Error::InvalidResponse(detail) if detail.contains("malformed")),
+        "a closed body names its cause: {error:?}"
+    );
+
+    // A 200 that is an HTML page, not a listing.
+    fixture.server.inject(FakeFault::NotMultistatus);
+    let error = source
+        .list(&root)
+        .expect_err("a non-multistatus answer fails");
+    assert!(
+        matches!(&error, Error::InvalidResponse(detail) if detail.contains("not multistatus")),
+        "a non-multistatus answer names its cause: {error:?}"
+    );
+    assert!(
+        !error.is_transient(),
+        "a server that answers wrongly is not offline: {error:?}"
+    );
+
+    // A server that cannot be reached at all.
+    fixture.server.set_offline(true);
+    let error = source.list(&root).expect_err("an unreachable server fails");
+    fixture.server.set_offline(false);
+    assert!(
+        matches!(&error, Error::InvalidResponse("transport")),
+        "an unreachable server names the transport: {error:?}"
+    );
+    assert!(
+        error.is_transient(),
+        "an unreachable server is worth retrying: {error:?}"
+    );
+
+    source.list(&root).expect("the fake recovers");
+}
+
+/// A sync REPORT that fails names its cause too, and a server whose REPORT
+/// is answered but unusable has no change feed rather than being offline.
+#[test]
+fn change_feed_failures_name_their_cause() {
+    let fixture = FakeFixture::start(FakeDav::generic_with_sync_collection());
+    let source = fixture.source();
+    let page = source.changes(None).expect("the fake reports changes");
+    let cursor = page.cursor;
+
+    // A REPORT answered with an ordinary 200 and an HTML page: the cause is
+    // the status, not a body that was never a report.
+    fixture.server.inject(FakeFault::NotMultistatus);
+    let error = source
+        .changes(Some(&cursor))
+        .expect_err("a non-multistatus report fails");
+    assert!(
+        matches!(&error, Error::Status(200)),
+        "a non-multistatus answer names its cause: {error:?}"
+    );
+
+    // A 207 whose body is not a report: the body keeps its own cause.
+    fixture.server.inject(FakeFault::NotMultistatus);
+    let client = tilo_dav::DavClient::new(&tilo_dav::Options::default())
+        .expect("dav client")
+        .with_credentials(tilo_dav::Credentials::new(USER, PASSWORD));
+    let report = client
+        .report(
+            fixture.server.root_url(),
+            tilo_dav::Depth::Zero,
+            "<sync/>".to_owned(),
+        )
+        .expect("the fake answers");
+    assert_eq!(report.status(), tilo_dav::StatusCode::OK);
+    assert!(
+        matches!(
+            report.multistatus(&tilo_dav::Limits::default()),
+            Err(tilo_dav::Error::Xml(tilo_dav::XmlError::NotMultistatus))
+        ),
+        "a page that is not a report is not a multistatus"
+    );
+
+    // Probing asks the same REPORT: a server that answers it with something
+    // that is not a report offers no feed, and says so rather than failing.
+    // The source is built by hand, because the fixture probes at start-up.
+    let quiet = FakeDav::generic_with_sync_collection();
+    quiet.inject(FakeFault::NotMultistatus);
+    let quiet_source = DavSource::new(
+        quiet.config(),
+        Arc::new(StaticCredential(basic(USER, PASSWORD))),
+    )
+    .unwrap();
+    assert!(
+        !quiet_source
+            .probe()
+            .expect("a wrong answer is not an outage"),
+        "a server that answers an HTML page has no change feed"
+    );
+    quiet_source
+        .list(&quiet_source.root())
+        .expect("the server still lists");
+}
+
+/// A reset while probing is an outage, not a server without a change feed.
+#[test]
+fn probing_a_reset_server_fails() {
+    let fixture = FakeFixture::start(FakeDav::generic());
+    fixture.server.set_offline(true);
+    let error = fixture
+        .source
+        .probe()
+        .expect_err("an unreachable server fails");
+    fixture.server.set_offline(false);
+    assert!(
+        matches!(&error, Error::InvalidResponse("transport")),
+        "a reset names the transport: {error:?}"
+    );
+}
 
 /// A real server (a container in CI, or a live account), isolated in a
 /// fresh `conformance-<uuid>` folder that is deleted on drop.

@@ -290,6 +290,11 @@ impl App {
 
     pub(super) fn refresh_document_routes(&mut self) {
         self.restore_failed_document_publications();
+        self.reconcile_document_routes();
+    }
+
+    /// Follow the document owners the tree holds now with the routes.
+    pub(super) fn reconcile_document_routes(&mut self) {
         #[cfg(test)]
         DOCUMENT_ROUTE_REFRESHES.set(DOCUMENT_ROUTE_REFRESHES.get() + 1);
         let before = self

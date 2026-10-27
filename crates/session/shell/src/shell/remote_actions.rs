@@ -668,6 +668,8 @@ mod tests {
                     ("workspace", "update"),
                     ("workspace", "delete"),
                     ("workspace", "list"),
+                    ("workspace", "stop"),
+                    ("workspace", "stop-all"),
                 ],
                 "a remote device is not offered launching apps on this desktop"
             );

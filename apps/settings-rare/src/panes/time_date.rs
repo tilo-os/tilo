@@ -403,32 +403,7 @@ fn sample_now(formats: ui::format::Formats) -> (String, String) {
 /// is.
 pub const AUTOMATIC_ZONE: &str = "automatic";
 
-/// This device's clock settings: whether its time zone follows its
-/// location. The session's zone follower reads the same leaf
-/// ([`settings_store::clock::AUTOMATIC_ZONE`]).
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    serde::Serialize,
-    serde::Deserialize,
-    ui::tilo_resource::Model,
-)]
-#[model(defaults)]
-pub struct ClockPrefs {
-    /// The zone follows the device's location.
-    #[serde(default)]
-    pub automatic_zone: bool,
-}
-
-impl ui::storage::SettingsSchema for ClockPrefs {
-    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared(settings_store::clock::SECTION);
-}
-
-#[ui::tilo_resource::resource(kind = "settings.clock", label = "Clock")]
-impl ClockPrefs {}
+pub use crate::prefs::ClockPrefs;
 
 /// Automatic time and the time zone.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]

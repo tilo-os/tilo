@@ -739,11 +739,11 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
     {
         use collab_types::{Access, CapOverride, Effect, Expiry, Scope, Subject};
         let mut fixture = Fixture::new().await;
-        // The wall clock stands still until the test moves it past the
-        // expiry, so admission sees the grant live however slowly it runs.
-        let start = tilo_clock::wall();
-        tilo_clock::freeze_wall(start);
-        let expiry = tilo_clock::try_unix_now().unwrap() + 2;
+        // The capability checks read a time this test sets instead of the
+        // wall clock, so admission sees the grant live however slowly it
+        // runs and lapsed only when the test says so.
+        let start = tilo_clock::try_unix_now().unwrap();
+        let expiry = start + 2;
         let cap = CapOverride::new(
             Subject::User(Ed25519PublicKey([55; 32])),
             Scope::FsPath("/".into()),
@@ -751,12 +751,11 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
             Access::Write,
         )
         .expiring(Expiry::AtUnix(expiry));
-        let acl = AclHandle::new(crate::acl::WorkspaceAcl::from_capabilities(
-            [55; 32],
-            &[cap],
-            &[],
-            None,
-        ));
+        let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(start));
+        let acl = AclHandle::new(
+            crate::acl::WorkspaceAcl::from_capabilities([55; 32], &[cap], &[], None)
+                .checking_at(std::sync::Arc::clone(&clock)),
+        );
         fixture.fs.enforcement = Some((acl.clone(), [55; 32]));
         let request = fixture.request();
         let (entered, resume) = pause(request.intent_id, TestPause::Admission);
@@ -770,9 +769,10 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
             entered.recv_timeout(tilo_test_env::hang_bound()).unwrap();
             let (finished, wait) = std::sync::mpsc::channel();
             let (writer_tid, writer) = std::sync::mpsc::channel();
+            let writing = acl.clone();
             scope.spawn(move || {
                 writer_tid.send(thread_id()).unwrap();
-                acl.replace(crate::acl::WorkspaceAcl::new());
+                writing.replace(crate::acl::WorkspaceAcl::new());
                 finished.send(()).unwrap();
             });
             let writer = tilo_test_env::recv("the ACL writer's thread", &writer);
@@ -782,7 +782,7 @@ async fn checked_restore_expiry_and_storage_interleavings_complete_safely() {
                 through
             });
             assert!(!through, "ACL write must wait behind admission read lease");
-            tilo_clock::freeze_wall(start + std::time::Duration::from_secs(3));
+            acl.checking_at(start + 3);
             resume.send(()).unwrap();
             assert_eq!(worker.join().unwrap(), Outcome::NotVisible);
             wait.recv_timeout(tilo_test_env::hang_bound()).unwrap();

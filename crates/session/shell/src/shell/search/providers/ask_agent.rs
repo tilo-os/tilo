@@ -185,7 +185,7 @@ fn choose(query: &str, readiness: &Readiness, chrome: &Chrome) -> Result<(), Act
         Readiness::Ready { room, agent } => {
             let (title, body) = request(query);
             let mut state = chrome.borrow_mut();
-            state.ask_agent_and_show(*room, agent.clone(), (title, body));
+            state.ask_agent_question(*room, agent.clone(), (title, body));
             state.bump();
             Ok(())
         }

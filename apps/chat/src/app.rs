@@ -143,6 +143,9 @@ pub struct ChatApp {
     pub(crate) search_users: Vec<User>,
     /// The reviewed feedback reports filed here: each one's id and text.
     pub(crate) reports: Vec<(Id, String)>,
+    /// The recordings filed reports carry, by the report's message: each
+    /// replays in the app it recorded.
+    pub(crate) report_recordings: HashMap<Id, ui::feedback::RecordingRef>,
     /// The items a search hit or an agent's `open` asked to show, by their
     /// published ids, shown on the next sync.
     pub(crate) opened: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
@@ -658,6 +661,7 @@ impl ChatApp {
             search_messages: Vec::new(),
             search_users: Vec::new(),
             reports: Vec::new(),
+            report_recordings: HashMap::new(),
             opened: std::rc::Rc::default(),
             voice_members: HashMap::new(),
             draft_main: String::new(),
