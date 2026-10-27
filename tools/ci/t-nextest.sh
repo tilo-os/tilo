@@ -76,6 +76,14 @@ if tests imager && [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
         echo "t-nextest.sh: neither /var/tmp, the build directory nor TMPDIR is on ext4, XFS or Btrfs, which the imager's cache tests need" >&2
         exit 1
     fi
+    # The migration review's tests keep their homes and journals in plain
+    # temporary directories, and its inventory scratch below them refuses an
+    # overlay or tmpfs as the cache does: give them TMPDIR beside the cache.
+    if ! qualified "${TMPDIR:-/tmp}"; then
+        mkdir -p "$TILO_IMAGER_TEST_CACHE_ROOT/tmp"
+        chmod 700 "$TILO_IMAGER_TEST_CACHE_ROOT/tmp"
+        export TMPDIR=$TILO_IMAGER_TEST_CACHE_ROOT/tmp
+    fi
 fi
 
 # An agent's host answers video renders in the `tilo-video-render` helper, which no
