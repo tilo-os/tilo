@@ -1332,6 +1332,25 @@ impl WorkspaceTree {
         self.adopt_into_workspace(room, document, Vec::new());
     }
 
+    /// Take `document` as `room`'s admitted document and fold the room's
+    /// windows into its workspace, as a held replica's projection
+    /// ([`Self::project_native_room`]) does: for tests, which hold no
+    /// replica. Reports whether the workspace's windows changed.
+    #[cfg(test)]
+    pub(crate) fn project_room_document_for_test(
+        &mut self,
+        room: RoomId,
+        document: &AutoCommit,
+    ) -> bool {
+        self.joining_rooms.remove(&room);
+        self.room_docs.insert(room, document.clone());
+        self.settle_outbox(room);
+        self.queue_inbound_records(room, document);
+        let changed = self.merge_room_contents(room);
+        self.adopt_into_workspace(room, document, Vec::new());
+        changed
+    }
+
     /// The record the room document names for `tab` of `room`, if any.
     pub(crate) fn room_tab_record(&self, room: RoomId, tab: TabId) -> Option<String> {
         tilo_desktop_model::apps::record_routes(self.room_docs.get(&room)?).remove(&tab)

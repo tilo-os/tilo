@@ -503,6 +503,8 @@ fn windows_actor(device: [u8; 32], salt: u16) -> automerge::ActorId {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod peer_window_tabs;
     use crate::shell::state::{Tab, WindowGroup, WindowWidth};
 
     fn tab(id: u64, tile: TileContent) -> Tab {
