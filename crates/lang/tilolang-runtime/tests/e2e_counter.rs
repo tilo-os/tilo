@@ -47,7 +47,7 @@ mod cases {
             .open_view(&me, &app.view("counter"), vec![Value::resource(&c)])
             .unwrap();
         let shown = |v: &tilolang_runtime::ViewInstance| {
-            of_kind(v.tree(), "text")[0].props["value"].clone()
+            of_kind(v.tree(), "ui.Text")[0].props["value"].clone()
         };
         assert_eq!(shown(&view), Value::Int(0));
 
@@ -149,7 +149,7 @@ mod cases {
         let view = rt
             .open_view(&me, &v2.view("counter"), vec![Value::resource(&c)])
             .unwrap();
-        let labels: Vec<Value> = of_kind(view.tree(), "button")
+        let labels: Vec<Value> = of_kind(view.tree(), "ui.Button")
             .iter()
             .map(|b| b.props["label"].clone())
             .collect();

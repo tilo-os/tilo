@@ -9,6 +9,7 @@
 mod abi_additions;
 mod blocks;
 mod common;
+mod components;
 mod errors;
 mod ids_lock;
 mod layout;

@@ -224,7 +224,7 @@ fn planning_an_action_leaves_the_mirror_as_it_was() {
 #[test]
 fn a_new_version_of_a_package_keeps_the_room_and_its_views_run_the_new_code() {
     fn buttons(node: &tilolang_runtime::UiNode, out: &mut Vec<tilolang_runtime::UiNode>) {
-        if node.kind == "button" {
+        if node.kind == "ui.Button" {
             out.push(node.clone());
         }
         for child in &node.children {

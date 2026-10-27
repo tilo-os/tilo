@@ -167,7 +167,7 @@ mod cases {
                 vec![Value::resource(&w.list)],
             )
             .unwrap();
-        let button = of_kind(view.tree(), "button")[0].key.clone();
+        let button = of_kind(view.tree(), "ui.Button")[0].key.clone();
         let InvokeOutcome::Suggested(s) = view.press(&button).unwrap() else {
             panic!("the flow asks before it removes");
         };

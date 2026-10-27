@@ -256,6 +256,8 @@ pub struct Env {
     pub row_views: Vec<(TypeKey, String)>,
     /// The functions of action parameters' defaults, numbered after the presentation views.
     pub defaults: Vec<DefaultFn>,
+    /// The toolkit's components, the package `ui`.
+    pub toolkit: Option<&'static crate::toolkit::Catalogue>,
 }
 
 impl Env {
@@ -342,6 +344,29 @@ impl Env {
 
     pub fn imported_types(&self) -> impl Iterator<Item = &TypeInfo> {
         self.types.iter().filter(|t| t.key.app != self.app)
+    }
+
+    /// Adds the toolkit's package, `ui`: its components, described by the toolkit.
+    pub fn add_toolkit(&mut self) {
+        self.imports.push(Import {
+            alias: crate::toolkit::UI_ALIAS.to_string(),
+            app: crate::toolkit::UI_APP.to_string(),
+            roots: Vec::new(),
+        });
+        self.toolkit = Some(crate::toolkit::catalogue());
+    }
+
+    /// The component `name` of the toolkit, when `path` names the toolkit's package.
+    pub fn component(
+        &self,
+        path: &str,
+        name: &str,
+    ) -> Option<&'static crate::toolkit::Description> {
+        let import = self.find_import(path)?;
+        if import.app != crate::toolkit::UI_APP {
+            return None;
+        }
+        self.toolkit?.get(name)
     }
 
     /// Adds a compiled package's types and callables under `alias`.
@@ -533,6 +558,7 @@ pub fn resolve(
         own_enums: HashSet::new(),
     };
     r.env.add_import("host", &crate::host::host_meta());
+    r.env.add_toolkit();
     r.imports(module, imports);
     r.types(module, lock);
     r.callables(module, lock);
@@ -1889,7 +1915,7 @@ fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
                     collect(b, out);
                 }
             }
-            ast::UiKind::For { body, .. } => collect(body, out),
+            ast::UiKind::For { body, .. } | ast::UiKind::Slot { body, .. } => collect(body, out),
             ast::UiKind::If { then, els, .. } => {
                 collect(then, out);
                 if let Some(e) = els {
@@ -1901,7 +1927,10 @@ fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
                     collect(&arm.body, out);
                 }
             }
-            ast::UiKind::Let { .. } | ast::UiKind::State(_) | ast::UiKind::Fact { .. } => {}
+            ast::UiKind::Let { .. }
+            | ast::UiKind::State(_)
+            | ast::UiKind::Fact { .. }
+            | ast::UiKind::On { .. } => {}
         }
     }
 }

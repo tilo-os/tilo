@@ -214,7 +214,7 @@ mod cases {
 
     /// The values of the texts with the label role: the authors of a chat's messages.
     fn labels(tree: &UiNode) -> Vec<String> {
-        of_kind(tree, "text")
+        of_kind(tree, "ui.Text")
             .into_iter()
             .filter(|t| t.props.get("role") == Some(&Value::text("label")))
             .map(|t| text_prop(t, "value"))
@@ -223,7 +223,7 @@ mod cases {
 
     /// The values of the texts with the title role.
     fn title_texts(tree: &UiNode) -> Vec<String> {
-        of_kind(tree, "text")
+        of_kind(tree, "ui.Text")
             .into_iter()
             .filter(|t| t.props.get("role") == Some(&Value::text("title")))
             .map(|t| text_prop(t, "value"))
@@ -235,7 +235,7 @@ mod cases {
         of_kind(tree, "item")
             .into_iter()
             .find(|item| {
-                of_kind(item, "list_row")
+                of_kind(item, "ui.ListRow")
                     .iter()
                     .any(|r| text_prop(r, "title") == title)
             })
@@ -247,7 +247,7 @@ mod cases {
     }
 
     fn row_titles(tree: &UiNode) -> Vec<String> {
-        of_kind(tree, "list_row")
+        of_kind(tree, "ui.ListRow")
             .into_iter()
             .map(|row| text_prop(row, "title"))
             .collect()
@@ -262,7 +262,7 @@ mod cases {
     }
 
     fn button_labelled<'a>(tree: &'a UiNode, label: &str) -> &'a UiNode {
-        of_kind(tree, "button")
+        of_kind(tree, "ui.Button")
             .into_iter()
             .find(|b| b.props.get("label") == Some(&Value::text(label)))
             .unwrap_or_else(|| panic!("no button `{label}` in\n{}", dump(tree)))
@@ -350,7 +350,7 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
         let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let inputs = of_kind(view.tree(), "input");
+        let inputs = of_kind(view.tree(), "ui.TextInput");
         assert_eq!(
             inputs.len(),
             1,
@@ -392,7 +392,7 @@ mod cases {
         let found = embeds(view.tree());
         assert_eq!(found.len(), 1, "{}", dump(view.tree()));
         assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
-        let title = of_kind(found[0], "input")[0];
+        let title = of_kind(found[0], "ui.TextInput")[0];
         let binding = title.binding.clone().expect("the title input is bound");
         assert_eq!(binding.field().map(|(target, _)| target), Some(&note));
         assert_eq!(
@@ -411,7 +411,7 @@ mod cases {
         assert_eq!(w.rt.read(&note, "title").unwrap(), Value::text("Shopping"));
         view.poll_patches().unwrap();
         assert_eq!(
-            view.bound_value(&of_kind(embeds(view.tree())[0], "input")[0].key),
+            view.bound_value(&of_kind(embeds(view.tree())[0], "ui.TextInput")[0].key),
             Some(Value::text("Shopping"))
         );
     }
@@ -442,9 +442,9 @@ mod cases {
             found.iter().map(|e| state(e)).collect::<Vec<_>>(),
             ["data", "data"]
         );
-        assert_eq!(text_prop(of_kind(found[0], "text")[0], "value"), "3");
+        assert_eq!(text_prop(of_kind(found[0], "ui.Text")[0], "value"), "3");
         assert_eq!(
-            text_prop(of_kind(found[1], "heading")[0], "value"),
+            text_prop(of_kind(found[1], "ui.Text")[0], "value"),
             "Groceries"
         );
     }
@@ -502,7 +502,7 @@ mod cases {
         let desk = w.create("Desk");
         let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
         let mut editor = w.view(&apps.letters, "editor", vec![res(&draft)]);
-        let inputs: Vec<String> = of_kind(editor.tree(), "input")
+        let inputs: Vec<String> = of_kind(editor.tree(), "ui.TextInput")
             .iter()
             .map(|i| i.key.clone())
             .collect();
@@ -635,7 +635,7 @@ mod cases {
         let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(chat_view.tree());
         assert_eq!(state(found[0]), "view");
-        let button = of_kind(found[0], "button")[0].key.clone();
+        let button = of_kind(found[0], "ui.Button")[0].key.clone();
         let s = suggested(chat_view.press(&button).unwrap());
         assert_eq!(s.action, apps.todo.action("remove"));
         assert_eq!(
@@ -657,7 +657,7 @@ mod cases {
         post(&w, &apps, &conv, "person:stranger", "", &remove(&third));
         let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let found = embeds(chat_view.tree());
-        let button = of_kind(found[1], "button")[0].key.clone();
+        let button = of_kind(found[1], "ui.Button")[0].key.clone();
         assert!(matches!(
             chat_view.press(&button).unwrap(),
             InvokeOutcome::Done(_)
@@ -782,7 +782,7 @@ mod cases {
         let desk = wa.create("Desk");
         let draft = returned_ref(wa.call(&apps.letters, "new_draft", vec![res(&desk)]));
         let editor = wa.view(&apps.letters, "editor", vec![res(&draft)]);
-        let inputs: Vec<String> = of_kind(editor.tree(), "input")
+        let inputs: Vec<String> = of_kind(editor.tree(), "ui.TextInput")
             .iter()
             .map(|i| i.key.clone())
             .collect();
@@ -881,7 +881,7 @@ mod cases {
         let view =
             w.rt.open_view(&ada, &apps.chat.view("thread"), vec![res(&conv)])
                 .unwrap();
-        let draft = of_kind(view.tree(), "input")[0].key.clone();
+        let draft = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
         view.edit(&draft, &Value::text("hello")).unwrap();
         let send = button_labelled(view.tree(), "Send").key.clone();
         assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
@@ -923,7 +923,7 @@ mod cases {
 
         let editor = w.rt.open_resource(&me(), &note, None).unwrap();
         assert_eq!(editor.window(), note.id_string());
-        let title = of_kind(editor.tree(), "input")[0];
+        let title = of_kind(editor.tree(), "ui.TextInput")[0];
         assert_eq!(text_prop(title, "placeholder"), "Title");
         assert_eq!(
             w.rt.default_view(&note.ty).as_deref(),
@@ -1066,7 +1066,7 @@ mod cases {
         let view = m.w.view(&apps.board, "board", vec![res(&m.board)]);
         let tree = view.tree();
         assert_eq!(tree.kind, "canvas", "{}", dump(tree));
-        let cards = of_kind(tree, "card");
+        let cards = of_kind(tree, "ui.Card");
         let shown: Vec<&ResourceRef> = cards
             .iter()
             .map(|c| match &c.props["item"] {
@@ -1085,9 +1085,9 @@ mod cases {
             "the todo card counts the open items: {}",
             dump(tree)
         );
-        let rows: Vec<&UiNode> = of_kind(cards[0], "list_row");
+        let rows: Vec<&UiNode> = of_kind(cards[0], "ui.ListRow");
         assert_eq!(rows.len(), 1, "{}", dump(tree));
-        match rows[0].props.get("resource") {
+        match rows[0].props.get("item") {
             Some(Value::Ref(r)) => assert_eq!(r.target.doc, m.list.doc, "an item of the list"),
             other => panic!("a row of the todo card shows an item, not {other:?}"),
         }
@@ -1189,8 +1189,10 @@ mod cases {
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
             assert_eq!(tree.kind, "page");
-            let shown = of_kind(tree, "text")[0];
-            assert_eq!(shown.props["role"], Value::text("numeric"));
+            let shown = of_kind(tree, "ui.Text")[0];
+            // A number that changes: a title in tabular figures.
+            assert_eq!(shown.props["role"], Value::text("title"));
+            assert_eq!(shown.props["numeric"], Value::Int(1));
             let plus = button_labelled(tree, "Increment");
             assert_eq!(plus.props["role"], Value::text("primary"));
             assert_eq!(plus.props["icon"], Value::text("plus"));
@@ -1203,7 +1205,7 @@ mod cases {
         v.press(&plus).unwrap();
         v.poll_patches().unwrap();
         assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(1));
-        assert_eq!(text_prop(of_kind(v.tree(), "text")[0], "value"), "1");
+        assert_eq!(text_prop(of_kind(v.tree(), "ui.Text")[0], "value"), "1");
     }
 
     #[test]
@@ -1218,8 +1220,8 @@ mod cases {
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
             assert!(of_kind(tree, "grid").is_empty());
-            assert!(of_kind(tree, "input").is_empty());
-            let rows = of_kind(tree, "list_row");
+            assert!(of_kind(tree, "ui.TextInput").is_empty());
+            let rows = of_kind(tree, "ui.ListRow");
             assert_eq!(rows.len(), 2);
             assert!(
                 rows.iter().all(|r| r.binding.is_some()),
@@ -1240,7 +1242,7 @@ mod cases {
         assert_eq!(item_titled(v.tree(), ""), item);
         let editor = w.rt.open_resource(&me(), &item, None).unwrap();
         assert_eq!(editor.tree().kind, "document");
-        let title = of_kind(editor.tree(), "input")[0].key.clone();
+        let title = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
         editor.edit(&title, &Value::text("bread")).unwrap();
         v.poll_patches().unwrap();
         assert_eq!(row_titles(v.tree()), ["bread"]);
@@ -1275,7 +1277,7 @@ mod cases {
         let mut v = w.view(&apps.notes, "notebook", vec![res(&nb)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
-            let rows = of_kind(tree, "list_row");
+            let rows = of_kind(tree, "ui.ListRow");
             assert_eq!(rows.len(), 1);
             assert!(rows[0].props.contains_key("secondary"));
             assert!(
@@ -1292,12 +1294,12 @@ mod cases {
         let desk = w.create("Desk");
         let d = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&desk)]));
         let editor = w.view(&apps.letters, "editor", vec![res(&d)]);
-        let to = of_kind(editor.tree(), "input")[0].key.clone();
+        let to = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
         editor.edit(&to, &Value::text("bo@example.org")).unwrap();
         let mut v = w.view(&apps.letters, "desk", vec![res(&desk)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
-            let rows = of_kind(tree, "list_row");
+            let rows = of_kind(tree, "ui.ListRow");
             assert_eq!(rows.len(), 1);
             assert_eq!(text_prop(rows[0], "title"), "Untitled");
             assert_eq!(text_prop(rows[0], "secondary"), "bo@example.org");
@@ -1315,7 +1317,7 @@ mod cases {
         let mut v = w.view(&apps.chat, "thread", vec![res(&conv)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
         for tree in [&compact, &wide] {
-            let who: Vec<Value> = of_kind(tree, "avatar")
+            let who: Vec<Value> = of_kind(tree, "ui.Avatar")
                 .iter()
                 .map(|a| a.props["who"].clone())
                 .collect();
@@ -1340,7 +1342,7 @@ mod cases {
             let grid = of_kind(tree, "grid")[0];
             assert_eq!(grid.props["min.rem"], Value::Float(22.0));
             assert_eq!(grid.children.len(), 3, "one card per app");
-            assert!(grid.children.iter().all(|c| c.kind == "card"));
+            assert!(grid.children.iter().all(|c| c.kind == "ui.Card"));
         }
     }
 }

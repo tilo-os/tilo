@@ -505,6 +505,17 @@ pub enum UiKind {
         label: Expr,
         value: Expr,
     },
+    /// `trailing: { ... }`: the content of the slot `trailing` of a `ui.*` component.
+    Slot {
+        node: NodeId,
+        name: Ident,
+        body: Vec<UiStmt>,
+    },
+    /// `on activate: open(c)`: what the event `activate` of a `ui.*` component does.
+    On {
+        event: Ident,
+        action: Expr,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

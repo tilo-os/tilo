@@ -581,6 +581,7 @@ pub fn compile_block_for(
         ..Env::default()
     };
     env.add_import("host", &crate::host::host_meta());
+    env.add_toolkit();
     for m in visible.iter().filter(|m| m.app != crate::host::HOST_APP) {
         let alias = default_alias(&m.app);
         let alias = if env.imports.iter().any(|i| i.alias == alias) {

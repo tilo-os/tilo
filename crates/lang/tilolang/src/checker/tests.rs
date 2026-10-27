@@ -229,7 +229,7 @@ fn a_list_is_a_list_node_with_an_item_per_resource_holding_its_row() {
     let row = ui_calls(func(&m, "notebook for n"));
     assert!(
         at(&row, "node item") < at(&row, "prop item")
-            && at(&row, "prop item") < at(&row, "node list_row"),
+            && at(&row, "prop item") < at(&row, "node ui.ListRow"),
         "{row:#?}"
     );
     for want in ["prop title", "prop secondary", "prop mark", "bind"] {
@@ -313,7 +313,7 @@ fn a_type_with_a_row_view_lists_without_an_item_block() {
     let row = ui_calls(func(&m, "note_row"));
     assert_eq!(
         row,
-        vec!["node list_row", "prop title", "prop badge", "prop value"]
+        vec!["node ui.ListRow", "prop title", "prop badge", "prop value"]
     );
 }
 
@@ -332,23 +332,23 @@ fn frames_sections_facts_forms_and_controls_build_their_nodes() {
         "on pick.about",
         "on pick.notes",
         "node inspector",
-        "node section",
-        "node facts",
-        "node fact",
+        "node ui.Section",
+        "node ui.PropertyList",
+        "node ui.Property",
         "prop label",
         "prop value",
         "node form",
         "node field",
         "node toggle",
         "bind",
-        "node card",
-        "node avatar",
+        "node ui.Card",
+        "node ui.Avatar",
         "prop who",
         "prop role",
     ] {
         assert!(has(&calls, want), "{want} in {calls:#?}");
     }
-    assert_eq!(count(&calls, "node fact"), 2);
+    assert_eq!(count(&calls, "node ui.Property"), 2);
     assert_eq!(
         calls.first().map(String::as_str),
         Some("node document"),
@@ -364,7 +364,7 @@ fn a_button_for_a_declared_action_takes_its_label_icon_and_role() {
     let f = func(&m, "draft_bar");
     let calls = ui_calls(f);
     for want in [
-        "node button",
+        "node ui.Button",
         "prop label",
         "prop icon",
         "prop role",
@@ -404,7 +404,7 @@ fn a_composer_is_a_node_of_the_frame() {
     let calls = ui_calls(func(&m, "chat"));
     let at = |s: &str| calls.iter().position(|c| c == s).expect(s);
     assert!(
-        at("node page") < at("node composer") && at("node composer") < at("node input"),
+        at("node page") < at("node composer") && at("node composer") < at("node ui.TextInput"),
         "{calls:#?}"
     );
 }
