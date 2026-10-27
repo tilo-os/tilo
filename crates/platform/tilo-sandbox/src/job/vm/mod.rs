@@ -815,47 +815,79 @@ mod tests {
             .and_then(|f| f.split("\n}\n").next())
             .expect("the init has t_killed");
         assert!(
-            INIT.contains("\ncode=$?\nt_killed \"$code\"\n"),
-            "the init calls t_killed with the command's status"
+            INIT.contains(
+                "\necho \"$COMMAND_STARTS\" >/dev/kmsg 2>/dev/null\n(cd \"$T_CWD\" && t_command)"
+            ),
+            "the init marks the kernel's log as the command starts"
+        );
+        assert!(
+            INIT.contains(
+                "\ncommand=$!\nwait $command\ncode=$?\nt_killed \"$code\" \"$command\"\n"
+            ),
+            "the init calls t_killed with the command's status and pid"
         );
         let script = format!(
             "say() {{ echo \"t-vm: $*\"; }}\n\
              dmesg() {{ printf '%s\\n' \"$DMESG\"; }}\n\
              T_MEMORY_MIB=256\n\
+             {}\n\
              t_killed() {{\n{killed}\n}}\n\
-             t_killed \"$1\""
+             t_killed \"$1\" \"$2\"",
+            INIT.lines()
+                .find(|l| l.starts_with("COMMAND_STARTS="))
+                .expect("the init names its mark")
         );
-        let run = |code: &str, dmesg: &str| {
+        let run = |code: &str, dmesg: &[&str]| {
             let out = Command::new("sh")
                 .arg("-c")
                 .arg(&script)
                 .arg("sh")
                 .arg(code)
-                .env("DMESG", dmesg)
+                .arg("42")
+                .env("DMESG", dmesg.join("\n"))
                 .stdin(Stdio::null())
                 .output()
                 .unwrap();
             assert!(out.status.success(), "{out:?}");
             String::from_utf8(out.stdout).unwrap()
         };
-        let oom = "[    0.5] booted\n[   12.345678] Out of memory: Killed process 42 (awk) total-vm:300000kB, UID:0 oom_score_adj:0";
-        let said =
-            "Out of memory: Killed process 42 (awk) total-vm:300000kB, UID:0 oom_score_adj:0\n";
+        let starts = "[    1.0] t-vm: the command starts";
+        let command = "[   12.345678] Out of memory: Killed process 42 (awk) total-vm:300000kB, UID:0 oom_score_adj:0";
+        let child = "[   12.345678] Out of memory: Killed process 43 (cc1plus) total-vm:300000kB, UID:0 oom_score_adj:0";
+        let in_cgroup = "[   12.345678] Memory cgroup out of memory: Killed process 44 (podman) total-vm:300000kB, UID:0 oom_score_adj:0";
+        let mem = "in the guest, which has 256 MiB";
         assert_eq!(
-            run("137", oom),
+            run("137", &["[    0.5] booted", starts, command]),
             format!(
-                "t-vm: the command was killed for memory in the guest, which has 256 MiB: {said}"
+                "t-vm: the command was killed for memory {mem}: Out of memory: Killed process 42 (awk) total-vm:300000kB, UID:0 oom_score_adj:0\n"
             )
         );
+        // Another of its processes: the command went on, and ended as it did.
         assert_eq!(
-            run("2", oom),
+            run("2", &[starts, child]),
             format!(
-                "t-vm: a process of the command was killed for memory in the guest, which has 256 MiB, and it ended with status 2: {said}"
+                "t-vm: a process of the command was killed for memory {mem}, and it ended with status 2: Out of memory: Killed process 43 (cc1plus) total-vm:300000kB, UID:0 oom_score_adj:0\n"
             )
         );
+        // 137 the command's own, after one of its processes was killed: not said to be itself.
+        assert_eq!(
+            run("137", &[starts, child]),
+            format!(
+                "t-vm: a process of the command was killed for memory {mem}, and it ended with status 137: Out of memory: Killed process 43 (cc1plus) total-vm:300000kB, UID:0 oom_score_adj:0\n"
+            )
+        );
+        // A cgroup's limit within the guest (a container the command runs) kills alike.
+        assert_eq!(
+            run("125", &[starts, in_cgroup]),
+            format!(
+                "t-vm: a process of the command was killed for memory {mem}, and it ended with status 125: Memory cgroup out of memory: Killed process 44 (podman) total-vm:300000kB, UID:0 oom_score_adj:0\n"
+            )
+        );
+        // A kill from before the command started is none of its own.
+        assert_eq!(run("137", &[command, starts, "[   13.0] later"]), "");
         // A command that passed, or failed with no kill for memory, is left to say why itself.
-        assert_eq!(run("0", oom), "");
-        assert_eq!(run("137", "[    0.5] booted"), "");
+        assert_eq!(run("0", &[starts, command]), "");
+        assert_eq!(run("137", &[starts, "[   13.0] later"]), "");
     }
 
     #[test]
