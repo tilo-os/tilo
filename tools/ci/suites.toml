@@ -105,6 +105,7 @@ inputs = [
 ]
 suites = [
   "os/dev/test-assemble-app-runtime.py",
+  "os/dev/test-runtime-font-payload.py",
   "os/dev/test-export-sdk-compiler.py",
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
