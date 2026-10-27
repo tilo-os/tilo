@@ -102,6 +102,8 @@ pub mod share_links;
 pub mod surface_report;
 #[path = "surface_semantics.rs"]
 pub mod surface_semantics;
+#[path = "type_history.rs"]
+pub mod type_history;
 #[path = "typed_edit_labels.rs"]
 pub mod typed_edit_labels;
 #[path = "unreadable.rs"]

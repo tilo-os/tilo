@@ -90,7 +90,7 @@ impl Playback {
     }
 }
 
-struct BoardApp;
+pub(super) struct BoardApp;
 
 impl ResourceApp for BoardApp {
     type Resource = Board;
