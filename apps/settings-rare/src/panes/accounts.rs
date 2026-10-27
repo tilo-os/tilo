@@ -1372,7 +1372,11 @@ impl AccountsPane {
             account,
         )
         .with_action(spec);
-        let invocation = ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(effect.id(), &[]);
+        let invocation = ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(
+            effect.id(),
+            &[],
+            SettingsEffect::kind(),
+        );
         cx.row_binding(&resource, invocation)
     }
 

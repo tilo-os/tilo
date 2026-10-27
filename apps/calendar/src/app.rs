@@ -363,6 +363,10 @@ pub struct CalendarApp {
     /// pristine object; every other event follows normal autosave semantics.
     fresh_draft: Option<Event>,
     dirty: bool,
+    /// What the view painted, this frame and as the last presented frame
+    /// showed it: the frame damages the view's box only when it painted
+    /// differently, so a hover in the sidebar repaints none of it.
+    own: ui::own_paint::OwnPaint,
     /// The editor's switch and checkboxes, sliding and filling as a click
     /// turns them.
     faces: ui::widget::FaceMotions,
@@ -537,6 +541,7 @@ impl CalendarApp {
             status_actions: status::StatusActions::default(),
             fresh_draft: None,
             dirty: true,
+            own: ui::own_paint::OwnPaint::default(),
             faces: ui::widget::FaceMotions::default(),
             timeline: TimelineInteraction::new(),
             agenda: AgendaView::new(),
@@ -4128,72 +4133,13 @@ impl Widget for CalendarApp {
         // or a narrow window changed shows there this frame.
         self.declare_window_toolbar();
         // No ground of our own: the framework painted the window ground.
-        let mut hits = Vec::new();
-        if self.content_rect.area() > 0.0 {
-            let area = self.view_rect();
-            let mut ctx = PaintCtx::new(scene, t, text_renderer, theme);
-            match self.view {
-                View::Month => hits.extend(self.draw_month(&mut ctx, area)),
-                View::Week | View::Day => {
-                    let days = self.timeline_days();
-                    let events = self.timeline_render_events(&days);
-                    let now = self.now();
-                    let model = TimelineRenderModel {
-                        days: &days,
-                        events: &events,
-                        today: self.today,
-                        now: Some((
-                            self.today,
-                            i64::from(now.hour()) * 60 + i64::from(now.minute()),
-                        )),
-                        untitled: TITLE_PLACEHOLDER,
-                    };
-                    hits.extend(
-                        self.timeline
-                            .draw_timeline(&mut ctx, area, &model)
-                            .into_iter()
-                            .filter_map(|(rect, effect)| match effect {
-                                TimelineEffect::Select(id) => Some((rect, Action::OpenEvent(id))),
-                                TimelineEffect::OpenDay(day) => Some((rect, Action::OpenDay(day))),
-                                TimelineEffect::Create { .. }
-                                | TimelineEffect::Move { .. }
-                                | TimelineEffect::Resize { .. } => None,
-                            }),
-                    );
-                }
-                View::Agenda => {
-                    let hidden = self.hidden_calendar_ids();
-                    hits.extend(
-                        self.agenda
-                            .draw(
-                                &mut ctx,
-                                area,
-                                &AgendaSource {
-                                    model: &self.model,
-                                    anchor: self.anchor,
-                                    hidden_calendars: &hidden,
-                                    calendar_filter: self.calendar_filter.as_deref(),
-                                    viewer: self.viewer,
-                                },
-                                self.today,
-                                self.last_mouse,
-                            )
-                            .into_iter()
-                            .map(|(rect, action)| {
-                                let action = match action {
-                                    AgendaAction::OpenEvent(id) => Action::OpenEvent(id),
-                                    AgendaAction::OpenTask(id) => Action::OpenTask(id),
-                                    AgendaAction::ToggleTask(id) => Action::ToggleTask(id),
-                                };
-                                (rect, action)
-                            }),
-                    );
-                }
-                View::Tasks => hits.extend(self.draw_tasks(&mut ctx, area, presence)),
-            }
-        }
-
-        self.hits = hits;
+        let mut own = std::mem::take(&mut self.own);
+        let rect = self.rect;
+        own.record(scene, t, |scene| {
+            self.draw_view(scene, t, text_renderer, theme, presence);
+            rect
+        });
+        self.own = own;
     }
 
     /// The window's top layer: the editor sheet and its pickers, the
@@ -4462,8 +4408,16 @@ impl Widget for CalendarApp {
             || self.tasks.needs_redraw()
     }
 
+    /// Where the view painted differently from the last presented frame.
+    /// The sheet, its pickers and the menus are in the overlay, which the
+    /// host repaints whole.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.own.damage(regions);
+    }
+
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.own.present();
         self.notes_editor.mark_drawn();
         self.title_input.mark_drawn();
         self.location_input.mark_drawn();
@@ -4556,6 +4510,84 @@ impl Widget for CalendarApp {
 }
 
 impl CalendarApp {
+    /// Paint the view in view (month, week or day, agenda, tasks) and take
+    /// the places a click acts on.
+    fn draw_view(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let mut hits = Vec::new();
+        if self.content_rect.area() > 0.0 {
+            let area = self.view_rect();
+            let mut ctx = PaintCtx::new(scene, t, text_renderer, theme);
+            match self.view {
+                View::Month => hits.extend(self.draw_month(&mut ctx, area)),
+                View::Week | View::Day => {
+                    let days = self.timeline_days();
+                    let events = self.timeline_render_events(&days);
+                    let now = self.now();
+                    let model = TimelineRenderModel {
+                        days: &days,
+                        events: &events,
+                        today: self.today,
+                        now: Some((
+                            self.today,
+                            i64::from(now.hour()) * 60 + i64::from(now.minute()),
+                        )),
+                        untitled: TITLE_PLACEHOLDER,
+                    };
+                    hits.extend(
+                        self.timeline
+                            .draw_timeline(&mut ctx, area, &model)
+                            .into_iter()
+                            .filter_map(|(rect, effect)| match effect {
+                                TimelineEffect::Select(id) => Some((rect, Action::OpenEvent(id))),
+                                TimelineEffect::OpenDay(day) => Some((rect, Action::OpenDay(day))),
+                                TimelineEffect::Create { .. }
+                                | TimelineEffect::Move { .. }
+                                | TimelineEffect::Resize { .. } => None,
+                            }),
+                    );
+                }
+                View::Agenda => {
+                    let hidden = self.hidden_calendar_ids();
+                    hits.extend(
+                        self.agenda
+                            .draw(
+                                &mut ctx,
+                                area,
+                                &AgendaSource {
+                                    model: &self.model,
+                                    anchor: self.anchor,
+                                    hidden_calendars: &hidden,
+                                    calendar_filter: self.calendar_filter.as_deref(),
+                                    viewer: self.viewer,
+                                },
+                                self.today,
+                                self.last_mouse,
+                            )
+                            .into_iter()
+                            .map(|(rect, action)| {
+                                let action = match action {
+                                    AgendaAction::OpenEvent(id) => Action::OpenEvent(id),
+                                    AgendaAction::OpenTask(id) => Action::OpenTask(id),
+                                    AgendaAction::ToggleTask(id) => Action::ToggleTask(id),
+                                };
+                                (rect, action)
+                            }),
+                    );
+                }
+                View::Tasks => hits.extend(self.draw_tasks(&mut ctx, area, presence)),
+            }
+        }
+
+        self.hits = hits;
+    }
+
     /// Declare the window bar's slots ([`crate::window_bar`]).
     fn declare_window_toolbar(&self) {
         // The location names the task list only on the Tasks screen.

@@ -11,7 +11,7 @@ pub struct Queue {
     pub items: Vec<String>,
 }
 
-#[resource(kind = "test.queue", label = "Queue")]
+#[resource(kind = "test.queue", label = "Queue", app = "so.tilo.test-queue")]
 impl Queue {
     /// Queue a video.
     #[action]
@@ -26,7 +26,11 @@ pub struct Watched {
     pub videos: Collection<String>,
 }
 
-#[resource(kind = "test.watched", label = "Watch history")]
+#[resource(
+    kind = "test.watched",
+    label = "Watch history",
+    app = "so.tilo.test-queue"
+)]
 impl Watched {
     /// Remember that a video was watched.
     #[action]

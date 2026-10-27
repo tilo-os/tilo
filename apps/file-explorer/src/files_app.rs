@@ -728,7 +728,7 @@ pub struct FileExplorerWidget {
     rename_rect: Rc<Cell<Option<vello::kurbo::Rect>>>,
     /// What the rename editor painted, this frame and last: the window's
     /// own paint over the shell, which damages where it changed.
-    rename_paint: crate::own_paint::OwnPaint,
+    rename_paint: ui::own_paint::OwnPaint,
     /// Set on `begin_rename` so the first `sync` after the seed selects the
     /// whole name (typing then replaces it, Finder-style).
     rename_select_pending: bool,
@@ -1937,7 +1937,7 @@ impl FileExplorerWidget {
                 .with_id("files.rename_input")
                 .with_placeholder(t("files-new-name-placeholder")),
             rename_rect: Rc::new(Cell::new(None)),
-            rename_paint: crate::own_paint::OwnPaint::default(),
+            rename_paint: ui::own_paint::OwnPaint::default(),
             rename_select_pending: false,
             rect: vello::kurbo::Rect::ZERO,
             // Placeholder panes; the real places list + file view are swapped
