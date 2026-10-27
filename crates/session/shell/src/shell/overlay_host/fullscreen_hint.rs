@@ -143,7 +143,7 @@ impl ShellOverlayHost {
 
     /// Paint the way out over the display, if it is still up.
     pub(super) fn draw_fullscreen_hint(
-        &mut self,
+        &self,
         scene_sink: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
