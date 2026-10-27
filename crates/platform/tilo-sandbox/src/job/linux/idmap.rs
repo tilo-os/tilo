@@ -147,15 +147,36 @@ fn make_namespace(t: Translation) -> io::Result<OwnedFd> {
         exit_signal: bits(libc::SIGCHLD),
         ..sys::CloneArgs::default()
     };
-    // SAFETY: clone3 without CLONE_VM, like fork; the child only waits for
-    // its signal (pause is async-signal-safe) and never returns.
-    let ret = unsafe {
-        libc::syscall(
-            libc::SYS_clone3,
-            &raw const args,
-            std::mem::size_of::<sys::CloneArgs>(),
-        )
-    };
+    // Where `clone3` answers `ENOSYS` (an old kernel, or a seccomp filter
+    // that can't read its flags), `clone` with the same flags.
+    let mut ret: libc::c_long = -1;
+    let mut missing = sys::clone3_known_missing();
+    if !missing {
+        // SAFETY: clone3 without CLONE_VM, like fork; the child only waits
+        // for its signal (pause is async-signal-safe) and never returns.
+        ret = unsafe {
+            libc::syscall(
+                libc::SYS_clone3,
+                &raw const args,
+                std::mem::size_of::<sys::CloneArgs>(),
+            )
+        };
+        missing = ret < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ENOSYS);
+    }
+    if missing {
+        sys::clone3_missing();
+        // SAFETY: as above, with legacy `clone`.
+        ret = unsafe {
+            libc::syscall(
+                libc::SYS_clone,
+                args.flags | args.exit_signal,
+                0_usize,
+                0_usize,
+                0_usize,
+                0_usize,
+            )
+        };
+    }
     if ret == 0 {
         loop {
             // SAFETY: waits for SIGKILL from the parent.
@@ -165,7 +186,7 @@ fn make_namespace(t: Translation) -> io::Result<OwnedFd> {
     if ret < 0 {
         return Err(io::Error::last_os_error());
     }
-    let pid = libc::pid_t::try_from(ret).map_err(|_| io::Error::other("clone3: bad pid"))?;
+    let pid = libc::pid_t::try_from(ret).map_err(|_| io::Error::other("clone: bad pid"))?;
     let made = (|| {
         std::fs::write(
             format!("/proc/{pid}/uid_map"),

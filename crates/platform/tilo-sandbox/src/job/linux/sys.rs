@@ -1,5 +1,6 @@
-//! Kernel interfaces the `libc` crate does not wrap: `clone3`, `mount_setattr`,
-//! `open_tree`, `move_mount`, Landlock, and the few structures they take.
+//! Kernel interfaces the `libc` crate does not wrap: `clone3` (and `clone` in
+//! its place), `mount_setattr`, `open_tree`, `move_mount`, Landlock, and the
+//! few structures they take.
 
 use std::os::fd::{FromRawFd, OwnedFd, RawFd};
 
@@ -89,6 +90,95 @@ pub unsafe fn clone3_run(args: &CloneArgs, child: ChildFn, arg: *mut libc::c_voi
         );
     }
     ret
+}
+
+/// Legacy `clone` with the same calling convention as [`clone3_run`]: the
+/// child calls `child(arg)` with its stack pointer at `stack_top`, and the
+/// parent gets the child's pid or a negative errno. For where `clone3`
+/// answers `ENOSYS`: a kernel older than 5.3, or a seccomp filter that can't
+/// read `clone3`'s flags and so refuses the call (a container runtime's, or
+/// the job sandbox's own when jobs start jobs). `flags` carries the exit
+/// signal in its low byte; with `CLONE_PIDFD` the kernel stores the pidfd at
+/// `pidfd`. `CLONE_INTO_CGROUP` and `set_tid` have no equivalent here.
+///
+/// # Safety
+/// As [`clone3_run`]: `stack_top` is the 16-byte aligned top of a mapped,
+/// writable stack used by nothing else until the child has exited or
+/// called `execve`; `child` never returns.
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+pub unsafe fn clone_run(
+    flags: u64,
+    stack_top: *mut libc::c_void,
+    pidfd: *mut RawFd,
+    child: ChildFn,
+    arg: *mut libc::c_void,
+) -> libc::c_long {
+    let ret: libc::c_long;
+    // SAFETY: as in `clone3_run`. x86_64 takes (flags, stack, parent_tid,
+    // child_tid, tls); `CLONE_PIDFD` stores the pidfd at parent_tid.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        std::arch::asm!(
+            "syscall",
+            "test rax, rax",
+            "jnz 2f",
+            "xor ebp, ebp",
+            "mov rdi, r13",
+            "call r12",
+            "ud2",
+            "2:",
+            inlateout("rax") libc::SYS_clone => ret,
+            in("rdi") flags,
+            in("rsi") stack_top,
+            in("rdx") pidfd,
+            in("r10") 0_usize,
+            in("r8") 0_usize,
+            in("r12") child,
+            in("r13") arg,
+            lateout("rcx") _,
+            lateout("r11") _,
+            options(nostack),
+        );
+    }
+    // SAFETY: as above. aarch64 takes (flags, stack, parent_tid, tls,
+    // child_tid).
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        std::arch::asm!(
+            "svc #0",
+            "cbnz x0, 2f",
+            "mov x29, xzr",
+            "mov x30, xzr",
+            "mov x0, x10",
+            "blr x9",
+            "brk #0x1",
+            "2:",
+            inlateout("x0") flags => ret,
+            in("x1") stack_top,
+            in("x2") pidfd,
+            in("x3") 0_usize,
+            in("x4") 0_usize,
+            in("x8") libc::SYS_clone,
+            in("x9") child,
+            in("x10") arg,
+            options(nostack),
+        );
+    }
+    ret
+}
+
+/// Whether `clone3` was found to answer `ENOSYS` here, so that every later
+/// start goes straight to `clone`.
+static CLONE3_MISSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether `clone3` is known to be missing (see [`clone3_missing`]).
+pub fn clone3_known_missing() -> bool {
+    CLONE3_MISSING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Record that `clone3` answered `ENOSYS`.
+pub fn clone3_missing() {
+    CLONE3_MISSING.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// `struct mount_attr`.

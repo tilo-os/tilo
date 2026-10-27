@@ -1,6 +1,8 @@
 //! Starting a job: `clone3` into its cgroup and namespaces, where the child
 //! at once runs the job's init as a new program; the init reads the [`Plan`]
-//! the worker prepared and makes system calls only.
+//! the worker prepared and makes system calls only. Where `clone3` answers
+//! `ENOSYS`, `clone` with the same flags, the child joining its cgroup
+//! itself before it execs (see [`start_child`]).
 //!
 //! The child shares the worker's memory until its `execve` (`CLONE_VM` and
 //! `CLONE_VFORK`, as `posix_spawn` does), so the init never holds a copy of
@@ -43,13 +45,14 @@ enum Step {
     Ids,
     Init,
     Mounts,
+    Cgroup,
 }
 
 impl Step {
     fn from_u32(n: u32) -> Option<Self> {
         use Step::{
-            Caps, Cwd, Exec, Fork, Hostname, Ids, Init, Landlock, LandlockRule, Loopback, Mounts,
-            NoNewPrivs, Op, Pivot, PivotStage, Private, Seccomp, Stage,
+            Caps, Cgroup, Cwd, Exec, Fork, Hostname, Ids, Init, Landlock, LandlockRule, Loopback,
+            Mounts, NoNewPrivs, Op, Pivot, PivotStage, Private, Seccomp, Stage,
         };
         [
             Private,
@@ -70,6 +73,7 @@ impl Step {
             Ids,
             Init,
             Mounts,
+            Cgroup,
         ]
         .into_iter()
         .find(|s| *s as u32 == n)
@@ -122,6 +126,13 @@ struct PreExec<'a> {
     /// Descriptors at or above this are closed.
     keep_below: RawFd,
     report: RawFd,
+    /// The report pipe at its number in the parent, for a failure before
+    /// the descriptors are arranged.
+    report_before: RawFd,
+    /// The job cgroup's `cgroup.procs` (at its number in the parent) where
+    /// the child was started by `clone`, which can't start it in its
+    /// cgroup; -1 otherwise. See [`start_child`].
+    cgroup_procs: RawFd,
     /// The init program, at its number in the child.
     exe: RawFd,
     cap_last: u32,
@@ -162,6 +173,29 @@ impl PreExec<'_> {
         let first = u32::try_from(self.keep_below).unwrap_or(u32::MAX);
         // SAFETY: closes every descriptor from `keep_below` up.
         unsafe { libc::syscall(libc::SYS_close_range, first, u32::MAX, 0_u32) };
+    }
+
+    /// Where `clone` started the child: move into the job's cgroup, then
+    /// make the cgroup namespace `clone` was not asked for, so that its
+    /// root is the job's cgroup, as with `clone3`'s `CLONE_INTO_CGROUP`.
+    /// Before anything else, so the child execs nothing outside its cgroup.
+    /// The write is checked against whoever opened `cgroup.procs` (the
+    /// worker), as `CLONE_INTO_CGROUP` is.
+    fn join_cgroup(&self) {
+        if self.cgroup_procs < 0 {
+            return;
+        }
+        // SAFETY (this block): a one-byte write from a static, and unshare
+        // with a constant. "0" moves the writing process; the child holds
+        // every capability in its new user namespace, so may unshare.
+        unsafe {
+            if libc::write(self.cgroup_procs, b"0".as_ptr().cast(), 1) != 1 {
+                report_and_exit(self.report_before, Step::Cgroup, 0, errno());
+            }
+            if libc::unshare(libc::CLONE_NEWCGROUP) != 0 {
+                report_and_exit(self.report_before, Step::Cgroup, 1, errno());
+            }
+        }
     }
 
     /// Keep the namespace's capabilities across the `execve`: a process whose
@@ -206,7 +240,8 @@ impl PreExec<'_> {
     /// # Safety
     /// Only in the child of `clone3`, on its own stack.
     unsafe fn run(&mut self) -> ! {
-        // SAFETY: the first thing the child does.
+        self.join_cgroup();
+        // SAFETY: the first thing the child does after joining its cgroup.
         unsafe { self.arrange_fds() };
         // SAFETY: a descriptor at its number in this process.
         unsafe { libc::fcntl(self.exe, libc::F_SETFD, libc::FD_CLOEXEC) };
@@ -1134,6 +1169,8 @@ fn describe_failure(buf: [u8; 12], plan: &Plan) -> SpawnError {
             .get(index)
             .map_or_else(|| "building the root".to_owned(), Op::describe),
         Some(Step::Mounts) => "making the job's mount namespace".into(),
+        Some(Step::Cgroup) if index == 0 => "joining the job's cgroup (after clone)".into(),
+        Some(Step::Cgroup) => "making the job's cgroup namespace (after clone)".into(),
         Some(Step::Private) => "making the mount tree private".into(),
         Some(Step::Stage | Step::PivotStage) => "staging the new root".into(),
         Some(Step::Pivot) => "entering the new root".into(),
@@ -1291,15 +1328,18 @@ fn plan_layout(
     })
 }
 
-/// The clone3 flags and arguments, plus where the pidfd is stored. The
-/// child shares this process's memory, on `stack`, until its `execve`.
+fn bits(f: libc::c_int) -> u64 {
+    u64::from(f.unsigned_abs())
+}
+
+/// The clone flags every job starts with. The child shares this process's
+/// memory, on its own stack, until its `execve`.
 ///
 /// No new mount namespace: the init makes its own once it runs (see
 /// [`Child::own_mounts`]), so that the program and the libraries it maps
 /// come from the worker's mounts rather than from the job's copy of them.
-fn clone_args(cgroup: Option<RawFd>, pidfd: &mut RawFd, stack: &Stack) -> sys::CloneArgs {
-    let bits = |f: libc::c_int| u64::from(f.unsigned_abs());
-    let mut flags = bits(
+fn clone_flags() -> u64 {
+    bits(
         libc::CLONE_VM
             | libc::CLONE_VFORK
             | libc::CLONE_NEWUSER
@@ -1309,7 +1349,13 @@ fn clone_args(cgroup: Option<RawFd>, pidfd: &mut RawFd, stack: &Stack) -> sys::C
             | libc::CLONE_NEWUTS
             | libc::CLONE_NEWCGROUP
             | libc::CLONE_PIDFD,
-    );
+    )
+}
+
+/// The clone3 arguments: [`clone_flags`] on `stack`, born in `cgroup`,
+/// the pidfd stored at `pidfd`.
+fn clone_args(cgroup: Option<RawFd>, pidfd: &mut RawFd, stack: &Stack) -> sys::CloneArgs {
+    let mut flags = clone_flags();
     let mut args = sys::CloneArgs {
         exit_signal: bits(libc::SIGCHLD),
         pidfd: std::ptr::from_mut(pidfd) as u64,
@@ -1381,8 +1427,101 @@ impl Drop for Stack {
     }
 }
 
-/// The clone3 failure, with a hint at the usual cause.
-fn clone_error(e: &io::Error, has_cgroup: bool) -> SpawnError {
+/// Start the child, running `pre_exec(child)` until its `execve`, and
+/// return its pid.
+///
+/// `clone3`, or where it answers `ENOSYS`, `clone` with the same flags
+/// (as glibc and container runtimes fall back). `clone` can't start the
+/// child in its cgroup (`CLONE_INTO_CGROUP`), so then the child joins it
+/// itself through `cgroup.procs`, opened here, before it does anything
+/// else, and makes its cgroup namespace only once it is there (see
+/// [`PreExec::join_cgroup`]): it never runs the init outside its cgroup.
+/// `CLONE_PIDFD` is the same on both (`clone` has it from Linux 5.2);
+/// `set_tid` is not used.
+///
+/// # Safety
+/// `child` and `stack` outlive the child's use of them, which `CLONE_VFORK`
+/// ensures by suspending this thread until it has called `execve` or exited.
+unsafe fn start_child(
+    cgroup: Option<BorrowedFd<'_>>,
+    pidfd: &mut RawFd,
+    stack: &Stack,
+    child: &mut PreExec<'_>,
+) -> Result<libc::pid_t, SpawnError> {
+    let has_cgroup = cgroup.is_some();
+    let pid_of = |ret: libc::c_long, call: &str| {
+        if ret < 0 {
+            let errno = i32::try_from(ret.unsigned_abs()).unwrap_or(libc::EINVAL);
+            return Err(clone_error(
+                call,
+                &io::Error::from_raw_os_error(errno),
+                has_cgroup,
+            ));
+        }
+        libc::pid_t::try_from(ret).map_err(|_| SpawnError::Setup(format!("{call}: bad pid")))
+    };
+    if !sys::clone3_known_missing() {
+        let cfg = clone_args(cgroup.map(|c| c.as_raw_fd()), pidfd, stack);
+        let arg = std::ptr::from_mut(child).cast::<libc::c_void>();
+        // SAFETY: as this function's contract.
+        let ret = unsafe { signals_blocked(|| sys::clone3_run(&cfg, pre_exec, arg)) };
+        if ret != -libc::c_long::from(libc::ENOSYS) {
+            return pid_of(ret, "clone3");
+        }
+        sys::clone3_missing();
+    }
+    let procs = cgroup
+        .map(|dir| open_at(dir, c"cgroup.procs", libc::O_WRONLY))
+        .transpose()
+        .map_err(|e| SpawnError::Setup(format!("opening the job cgroup's cgroup.procs: {e}")))?;
+    let mut flags = clone_flags() | bits(libc::SIGCHLD);
+    if procs.is_some() {
+        flags &= !bits(libc::CLONE_NEWCGROUP);
+    }
+    child.cgroup_procs = procs.as_ref().map_or(-1, AsRawFd::as_raw_fd);
+    let top = stack.base.wrapping_byte_add(STACK_SIZE);
+    let pidfd = std::ptr::from_mut(pidfd);
+    let arg = std::ptr::from_mut(child).cast::<libc::c_void>();
+    // SAFETY: as this function's contract; `top` is the stack's 16-byte
+    // aligned top, and `procs` stays open until the child has exec'd.
+    let ret = unsafe { signals_blocked(|| sys::clone_run(flags, top, pidfd, pre_exec, arg)) };
+    drop(procs);
+    pid_of(ret, "clone (clone3 is unavailable here)")
+}
+
+/// Run `f` with every signal blocked on this thread: no signal handler of
+/// the worker's may run in the child, on its memory, until the init has
+/// reset them all.
+///
+/// # Safety
+/// As `f`'s.
+unsafe fn signals_blocked<T>(f: impl FnOnce() -> T) -> T {
+    // SAFETY: a full set and the old mask, on the stack.
+    unsafe {
+        let mut all: libc::sigset_t = std::mem::zeroed();
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::sigfillset(&raw mut all);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &raw const all, &raw mut old);
+        let ret = f();
+        libc::pthread_sigmask(libc::SIG_SETMASK, &raw const old, std::ptr::null_mut());
+        ret
+    }
+}
+
+/// `name` in the directory `dir`, opened with `flags` and `O_CLOEXEC`.
+fn open_at(dir: BorrowedFd<'_>, name: &std::ffi::CStr, flags: libc::c_int) -> io::Result<OwnedFd> {
+    // SAFETY: openat on a borrowed directory and a C string; the kernel
+    // returns a new descriptor or -1.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the descriptor is new and ours alone.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// A failed `call` (`clone3` or `clone`), with a hint at the usual cause.
+fn clone_error(call: &str, e: &io::Error, has_cgroup: bool) -> SpawnError {
     let hint = match e.raw_os_error() {
         Some(libc::EPERM | libc::ENOSPC | libc::EUSERS) => {
             " (user namespaces are disabled or exhausted here; in a container the \
@@ -1391,10 +1530,12 @@ fn clone_error(e: &io::Error, has_cgroup: bool) -> SpawnError {
         Some(libc::EACCES) if has_cgroup => {
             " (no write permission on the cgroup's common ancestor's cgroup.procs)"
         }
-        Some(libc::ENOSYS) => " (the kernel is older than 5.7)",
+        Some(libc::EINVAL) if call.starts_with("clone ") => {
+            " (the kernel's clone may lack CLONE_PIDFD, which needs Linux 5.2)"
+        }
         _ => "",
     };
-    SpawnError::Setup(format!("clone3: {e}{hint}"))
+    SpawnError::Setup(format!("{call}: {e}{hint}"))
 }
 
 /// Map the job's ids, run the caller's hook, release it, wait for the
@@ -1562,7 +1703,6 @@ pub fn spawn(
     let mut scratch = vec![-1; layout.moves.len()];
     let stack = Stack::new().map_err(|e| SpawnError::Setup(format!("the child's stack: {e}")))?;
     let mut pidfd: RawFd = -1;
-    let clone_cfg = clone_args(cgroup.map(|c| c.as_raw_fd()), &mut pidfd, &stack);
 
     let mut child = PreExec {
         moves: &layout.moves,
@@ -1570,38 +1710,22 @@ pub fn spawn(
         above: layout.above,
         keep_below: layout.keep_below,
         report: layout.report,
+        report_before: report_w.as_raw_fd(),
+        cgroup_procs: -1,
         exe: layout.exe,
         cap_last: plan.cap_last,
         argv: &argv,
         envp: &envp,
     };
-    // No signal handler of the worker's may run in the child, on its memory:
-    // every signal stays blocked until the init has reset them all.
-    // SAFETY (this block): a full set and the old mask, on the stack; then
-    // clone3 with CLONE_VM | CLONE_VFORK: the child runs `pre_exec` on
-    // `stack`, reading `child`, and this thread waits until it has called
-    // `execve` or exited, so `child` and `stack` outlive its use of them.
-    let ret = unsafe {
-        let mut all: libc::sigset_t = std::mem::zeroed();
-        let mut old: libc::sigset_t = std::mem::zeroed();
-        libc::sigfillset(&raw mut all);
-        libc::pthread_sigmask(libc::SIG_SETMASK, &raw const all, &raw mut old);
-        let ret = sys::clone3_run(&clone_cfg, pre_exec, (&raw mut child).cast());
-        libc::pthread_sigmask(libc::SIG_SETMASK, &raw const old, std::ptr::null_mut());
-        ret
-    };
+    // SAFETY: CLONE_VM | CLONE_VFORK: the child runs `pre_exec` on `stack`,
+    // reading `child`, and this thread waits until it has called `execve` or
+    // exited, so `child` and `stack` outlive its use of them.
+    let started = unsafe { start_child(cgroup, &mut pidfd, &stack, &mut child) };
     drop(stack);
-    if ret < 0 {
-        let errno = i32::try_from(ret.unsigned_abs()).unwrap_or(libc::EINVAL);
-        return Err(clone_error(
-            &io::Error::from_raw_os_error(errno),
-            cgroup.is_some(),
-        ));
-    }
-    let pid =
-        libc::pid_t::try_from(ret).map_err(|_| SpawnError::Setup("clone3: bad pid".into()))?;
+    let pid = started?;
     drop((sync_r, status_w, report_w, null, fds, exe, plan_file));
-    // SAFETY: CLONE_PIDFD stored a new descriptor here; nothing else owns it.
+    // SAFETY: CLONE_PIDFD stored a new descriptor here (with either call);
+    // nothing else owns it.
     let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd) };
     let job = Job {
         pid,
