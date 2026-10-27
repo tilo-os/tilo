@@ -162,6 +162,54 @@ impl FileExplorerWidget {
                 .any(|(op, _)| matches!(op, crate::file_ops::FileOp::CloudImport { .. }))
     }
 
+    /// The cloud import's effects that cannot run now, as the cloud view
+    /// shows them: more entries only while there are more, importing only
+    /// what is selected in the view, cancelling only a running import,
+    /// retrying only a failed one, showing only where one went.
+    pub(crate) fn cloud_statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        let mut statuses = Vec::new();
+        if !self.cloud.active || self.cloud.next.is_none() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::MORE_CLOUD,
+                "no_more_cloud",
+                "No further entries",
+            ));
+        }
+        if !self.cloud.active || self.cloud.selected.is_empty() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::IMPORT_CLOUD,
+                "selection_empty",
+                t("files-selection-empty"),
+            ));
+        }
+        let pending = self.cloud_import_pending();
+        if !pending {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::CANCEL_CLOUD,
+                "no_import",
+                "No import is running",
+            ));
+        }
+        if pending
+            || !matches!(self.cloud.progress.phase.as_str(), "failed" | "cancelled")
+            || self.cloud.retry.is_none()
+        {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::RETRY_CLOUD,
+                "nothing_failed",
+                "No import failed",
+            ));
+        }
+        if self.cloud.destination.is_none() {
+            statuses.push(ui::framework::EffectStatus::unavailable(
+                FilesEffect::REVEAL_CLOUD,
+                "no_import",
+                "Nothing was imported",
+            ));
+        }
+        statuses
+    }
+
     pub(super) fn cloud_effect(
         &mut self,
         effect: FilesEffect,

@@ -1799,6 +1799,30 @@ impl ActionSpec {
         self.contract.reaches_agents()
     }
 
+    /// Whether a row a person picks can supply what it asks for: nothing, or
+    /// the one line its prompt collects (a name, a number, a date). One that
+    /// needs several arguments, or a list, an object or another resource's
+    /// address, is taken by callers that name them (agents, scripts, the
+    /// controls bound to where the person is), never from a row.
+    pub fn takes_a_row_answer(&self) -> bool {
+        let mut required = self.params.iter().filter(|param| param.required);
+        match (required.next(), required.next()) {
+            (None, _) => true,
+            (Some(param), None) => {
+                matches!(self.input, ActionInput::Prompted { .. })
+                    && matches!(
+                        param.ty,
+                        ParamType::Text
+                            | ParamType::Integer
+                            | ParamType::Number
+                            | ParamType::DateTime
+                            | ParamType::Secret
+                    )
+            }
+            (Some(_), Some(_)) => false,
+        }
+    }
+
     /// Declare that this action carries the resource's other actions (a
     /// generic typed edit, a group of edits): history records the actions
     /// it carried, never this one.

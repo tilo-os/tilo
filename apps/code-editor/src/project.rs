@@ -134,6 +134,7 @@ fn minted(cx: &mut ActionCx) -> Id {
     label = "Code Editor",
     search = Project::search_entries,
     children = Project::places,
+    available = Project::available,
     load = Project::load_texts,
     read_content_in_doc = Project::content
 )]
@@ -243,8 +244,9 @@ impl Project {
     ///
     /// Replace the file's whole text with `text`, written as the smallest
     /// change to the text it has, so a collaborator's typing elsewhere in
-    /// the file stays.
-    #[action(keywords = "find and replace, search and replace, substitute", item = files, icon = "type")]
+    /// the file stays. An editing primitive for agents and scripts: a person
+    /// edits in the editor, and finds and replaces through "Replace in file".
+    #[action(item = files, icon = "type", audience = "agents")]
     pub fn replace_text(
         &mut self,
         file: &Id,
@@ -265,8 +267,9 @@ impl Project {
     ///
     /// Replace a range of one file's text with `text`, or insert `text` at a
     /// caret, counting characters; the rest of the file stays as it is. A
-    /// place a person selected is passed exactly as given.
-    #[action(icon = "type")]
+    /// place a person selected is passed exactly as given. An editing
+    /// primitive addressed by character offsets, for agents and scripts.
+    #[action(icon = "type", audience = "agents")]
     pub fn replace_range(
         &mut self,
         #[param(
@@ -447,31 +450,36 @@ impl Project {
 
     /// Rerun in terminal
     ///
-    /// Run one of the embedded terminal's runs again.
-    #[action(id = "rerun", icon = "repeat")]
+    /// Run one of the embedded terminal's runs again. The run is one of the
+    /// terminal's, named by its id, not an item of the project: the project
+    /// holds files, so this is never offered on one of them. A person reruns
+    /// a run from the terminal; this is how the terminal and agents ask the
+    /// project for it.
+    #[action(id = "rerun", icon = "repeat", audience = "agents")]
     pub fn rerun_in_terminal(
         &mut self,
         cx: &mut ActionCx,
         terminal_requests: &mut Outbox<RunRequest, RunAnswer>,
-        #[param("The run")] run: Id,
+        #[param("The run's id, as the terminal recorded it")] run: String,
     ) -> Result<(), Refusal> {
-        self.terminal()?.rerun(cx, terminal_requests, &run)
+        self.terminal()?
+            .rerun(cx, terminal_requests, &Id::from(run))
     }
 
     /// Rerun test in terminal
     ///
     /// Run one test of one of the embedded terminal's runs again, the way
-    /// its tool runs one test.
-    #[action(id = "rerun-test", icon = "repeat-1")]
+    /// its tool runs one test. Named by the run's id, as `rerun` is.
+    #[action(id = "rerun-test", icon = "repeat-1", audience = "agents")]
     pub fn rerun_test_in_terminal(
         &mut self,
         cx: &mut ActionCx,
         terminal_requests: &mut Outbox<RunRequest, RunAnswer>,
-        #[param("The run")] run: Id,
+        #[param("The run's id, as the terminal recorded it")] run: String,
         #[param("The test's name, as the run reported it")] test: String,
     ) -> Result<(), Refusal> {
         self.terminal()?
-            .rerun_test(cx, terminal_requests, &run, test)
+            .rerun_test(cx, terminal_requests, &Id::from(run), test)
     }
 
     /// Record terminal run
@@ -490,6 +498,39 @@ impl Project {
 }
 
 impl Project {
+    /// What runs in the embedded terminal needs a session running somewhere
+    /// (a process that claimed its pane), and a rerun a run to repeat: until
+    /// then they are not offered, rather than offered and refused.
+    fn available(&self, verb: project::Verb) -> ui::tilo_actions::Availability {
+        let unavailable = |code: &str, reason: &str| ui::tilo_actions::Availability::Unavailable {
+            code: code.into(),
+            reason: reason.into(),
+        };
+        let runs = matches!(
+            verb,
+            project::Verb::RunInTerminal
+                | project::Verb::RerunInTerminal
+                | project::Verb::RerunTestInTerminal
+        );
+        if !runs {
+            return ui::tilo_actions::Availability::Available;
+        }
+        let Some(session) = self
+            .terminal_panel
+            .as_ref()
+            .filter(|session| session.pane.is_some())
+        else {
+            return unavailable(
+                "code_editor.no_terminal",
+                "The project's terminal is not running",
+            );
+        };
+        if verb != project::Verb::RunInTerminal && session.runs.is_empty() {
+            return unavailable("code_editor.no_runs", "The terminal has run nothing yet");
+        }
+        ui::tilo_actions::Availability::Available
+    }
+
     /// The embedded terminal's session, once it has one.
     fn terminal(&mut self) -> Result<&mut Terminal, Refusal> {
         self.terminal_panel

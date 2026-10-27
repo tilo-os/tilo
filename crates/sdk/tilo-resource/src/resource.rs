@@ -1707,6 +1707,21 @@ impl<R: Resource> ActionDecl<R> {
         self
     }
 
+    /// Declare who listings offer it to ([`tilo_actions::Audience`]), as
+    /// `#[action(audience = ..)]` declares it for a verb: a bound edit that
+    /// names entries by path is for agents and scripts, not a row a person
+    /// picks.
+    #[must_use]
+    pub fn for_audience(mut self, audience: tilo_actions::Audience) -> Self {
+        self.decl.tags.retain(|tag| {
+            tag != tilo_actions::AGENTS_AUDIENCE_TAG && tag != tilo_actions::PEOPLE_AUDIENCE_TAG
+        });
+        if let Some(tag) = audience.tag() {
+            self.decl.tags.push(tag.to_owned());
+        }
+        self
+    }
+
     /// Tag the action's contract (`ContextRequirement::Caret.tag()`, an
     /// incremental-text declaration) for the callers that read it.
     #[must_use]

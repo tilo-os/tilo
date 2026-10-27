@@ -27,7 +27,7 @@ fn people_find_code_editor_actions_by_the_words_they_use() {
         ("find in files", "search-project"),
         ("jump to line", "go-to-line"),
         ("diagnostics", "go-to-problems"),
-        ("search and replace", "replace-text"),
+        ("search and replace", "replace"),
         ("save changes", "save"),
     ] {
         let found: Vec<&str> = ui::search::system::actions_found_by(query, &actions)

@@ -74,7 +74,9 @@ pub struct PlacesSearch {
 #[derive(Clone, Debug)]
 struct PlacesSnapshot {
     revision: Option<u64>,
-    favorites: BTreeMap<String, Favorite>,
+    /// Each place under its resource id, in the sidebar's order: the order
+    /// the person arranged them in is the order search lists them in.
+    favorites: Vec<(String, Favorite)>,
 }
 
 impl PlacesSearch {
@@ -82,7 +84,7 @@ impl PlacesSearch {
         let provider = Self {
             snapshot: Arc::new(RwLock::new(PlacesSnapshot {
                 revision: None,
-                favorites: BTreeMap::new(),
+                favorites: Vec::new(),
             })),
             kind: crate::i18n::t("files-a11y-places"),
         };
@@ -100,10 +102,14 @@ impl PlacesSearch {
                 return false;
             }
         }
-        let current = favorites
-            .iter()
-            .map(|favorite| (place_resource_id(&favorite.path), favorite.clone()))
-            .collect();
+        let mut current: Vec<(String, Favorite)> = Vec::with_capacity(favorites.len());
+        for favorite in favorites {
+            let id = place_resource_id(&favorite.path);
+            // A folder pinned twice is one place, where it was first pinned.
+            if !current.iter().any(|(place, _)| *place == id) {
+                current.push((id, favorite.clone()));
+            }
+        }
         let mut snapshot = self.snapshot.write_recover();
         snapshot.favorites = current;
         snapshot.revision = Some(revision);
@@ -111,7 +117,15 @@ impl PlacesSearch {
     }
 
     pub(crate) fn resource(&self, id: &str) -> Option<Resource> {
-        let favorite = self.snapshot.read().ok()?.favorites.get(id)?.clone();
+        let favorite = self
+            .snapshot
+            .read()
+            .ok()?
+            .favorites
+            .iter()
+            .find(|(place, _)| place == id)?
+            .1
+            .clone();
         Some(
             Resource::new(id, "files.place", favorite.label).with_action(
                 crate::effects::row_action(
@@ -132,8 +146,8 @@ impl PlacesSearch {
         };
         snapshot
             .favorites
-            .values()
-            .map(|favorite| {
+            .iter()
+            .map(|(_, favorite)| {
                 SearchEntry::new(favorite.label.clone(), String::new())
                     .anchored(place_resource_id(&favorite.path))
                     .grouped(self.kind.clone())
@@ -443,6 +457,22 @@ mod tests {
                     .any(|r| r.title == "Projects")
             );
             assert_eq!(provider.search("").len(), 3);
+        }
+
+        // --- phase: unasked_the_places_come_in_the_sidebars_order ---
+        {
+            let mut values = places();
+            values.reverse();
+            let titles: Vec<String> = source(PlacesSearch::new(&values).entries())
+                .search("")
+                .into_iter()
+                .map(|hit| hit.title)
+                .collect();
+            assert_eq!(
+                titles,
+                ["Projects", "Documents", "Home"],
+                "the places are listed as the person arranged them"
+            );
         }
 
         // --- phase: action_id_round_trips_to_the_destination_path ---

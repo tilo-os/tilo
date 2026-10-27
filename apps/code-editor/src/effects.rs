@@ -8,9 +8,10 @@ use ui::tilo_resource::{self, Effect};
 
 use crate::commands::Command;
 
-/// The contract tag of an effect that acts on the text the person selected:
-/// an app's search lists it before the other actions.
-const SELECTION: &str = ui::tilo_actions::ContextRequirement::Selection.tag();
+/// The contract tag of an effect that acts where the caret is: the caret's
+/// line, or every line of the selection when there is one. It needs an open
+/// file, not a selection.
+const CARET: &str = ui::tilo_actions::ContextRequirement::Caret.tag();
 
 /// Code's effect vocabulary. File ids are the UUIDs of the project's file
 /// records; paths are absolute filesystem paths.
@@ -18,7 +19,9 @@ const SELECTION: &str = ui::tilo_actions::ContextRequirement::Selection.tag();
 #[effect(operation = "code_editor.effect")]
 pub enum CodeEditorEffect {
     /// Open file.
-    #[effect(kind = "read")]
+    ///
+    /// Offered on the file it opens: its id is the file row's, never typed.
+    #[effect(row, kind = "read")]
     #[effect(icon = "file-code")]
     ShowFile {
         #[param("The file record's id")]
@@ -93,6 +96,7 @@ pub enum CodeEditorEffect {
     #[effect(icon = "search")]
     Find,
     /// Replace in file.
+    #[effect(keywords = "find and replace, search and replace, substitute")]
     #[effect(icon = "type")]
     Replace,
     /// Search project.
@@ -122,7 +126,7 @@ pub enum CodeEditorEffect {
     DeleteLine,
     /// Toggle line comment.
     #[effect(icon = "slash")]
-    #[effect(tag = SELECTION)]
+    #[effect(tag = CARET)]
     ToggleComment,
     /// Toggle bottom panel.
     #[effect(kind = "read")]
