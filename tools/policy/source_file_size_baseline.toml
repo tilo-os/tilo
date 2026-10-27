@@ -53,7 +53,7 @@
 "crates/agent/local-model-service/src/lib.rs" = 3500
 "crates/agent/model-gateway/src/service.rs" = 4000
 "crates/browser/tilo-browser-peer/src/session.rs" = 4000
-"crates/browser/tilo-browser-runtime/src/browser.rs" = 4000
+"crates/browser/tilo-browser-runtime/src/browser.rs" = 3500
 "crates/collab/tilo-action-broker/src/channel_encryption.rs" = 3500
 "crates/collab/tilo-action-broker/src/collab_broker_capnp.rs" = 21500
 "crates/collab/tilo-action-broker/src/collab_broker_capnp/action_host.rs" = 4000
