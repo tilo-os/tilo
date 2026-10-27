@@ -147,6 +147,21 @@ impl NativeDocumentReads for NativeOwnerCommitService {
         let room = super::super::state::RoomId::parse(&route.cluster_id)
             .ok_or("invalid committed document room")?;
         let owner = &self.opened_owner("native document owner unavailable")?;
+        // A record the room's hosts send a device only once it asks (an
+        // earlier part of a chain) is asked for, and read once it arrived:
+        // the reader asks again, as for a checkpoint still arriving.
+        if on_demand(&route.record_id)
+            && let Some(network) = &self.network
+            && !owner.with_current(room, |view| {
+                Ok(view
+                    .peer()
+                    .document(&route.app_id, &route.record_id)
+                    .is_some())
+            })?
+        {
+            network.open_record(room, &route.app_id, &route.record_id);
+            return Ok(NativeDocumentRead::Pending);
+        }
         let read = owner.with_current(room, |view| {
             view.read_document_with_history(
                 context.certificate().device_public_key,
@@ -428,21 +443,38 @@ async fn prepare_at_host(
         )
         .await
         .ok_or("no host governs the room")??;
+    // A record the host sends a device only once it asks (an earlier part
+    // of a chain) is asked for: the host found it, and replays it no one.
+    if on_demand(&route.record_id) {
+        network.open_record(room, &route.app_id, &route.record_id);
+    }
     // The host's answer is not this device's barrier: wait until the record
-    // it published is in this device's admitted room.
+    // it published is in this device's admitted room, which the room's
+    // owner announces when it publishes.
+    let arrived = Arc::new(tokio::sync::Notify::new());
+    let wake = Arc::clone(&arrived);
+    let watch = tilo_identity_host::policy_change::Watch::new(move || wake.notify_one());
     tokio::time::timeout(HOST_RECORD_ADMISSION_TIMEOUT, async {
         loop {
+            watch.arm();
             network.check_native_custody(owner, room)?;
             if holds()? {
                 return Ok::<(), String>(());
             }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            arrived.notified().await;
         }
     })
     .await
     .map_err(|_| "the host created the app's record but it did not reach this device in time")??;
     context.revalidate()?;
     Ok(created)
+}
+
+/// Whether `record` reaches a device only once it asks for it
+/// (`neighbour_wire::record_sync`): an on-demand record, or a part of a
+/// chain, whose earlier parts the room's hosts keep for who reads back.
+fn on_demand(record: &str) -> bool {
+    neighbour_wire::record_sync(record) != neighbour_wire::RecordSync::Eager
 }
 
 /// The bytes of one bounded capture, held until the broker has sent them.

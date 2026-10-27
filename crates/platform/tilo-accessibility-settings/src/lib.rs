@@ -59,6 +59,8 @@ macro_rules! accessibility_settings {
             pub cursor_size: u32,
             $(#[$readonly])*
             pub screen_reader: bool,
+            /// When the on-screen keyboard shows: with no hardware keyboard,
+            /// always, or never.
             pub on_screen_keyboard: OnScreenKeyboard,
             /// Latch modifier keys so chords can be typed one key at a time.
             pub sticky_keys: bool,

@@ -42,7 +42,10 @@ crate::effects::effect_family!(ShortcutEffect => answer);
 #[derive(
     Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, ui::tilo_resource::Model,
 )]
+#[model(defaults)]
 pub struct DesktopControls {
+    /// Add Super+Ctrl+h/j/k/l aliases for moving between windows and strips,
+    /// beside the arrow keys.
     #[serde(default)]
     pub vim_mode: bool,
     /// Hide the top bar until the pointer reaches for it; shown in the

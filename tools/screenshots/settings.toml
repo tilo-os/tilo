@@ -22,6 +22,55 @@ title = "Accessibility"
 invoke = { resource = "settings.root", action = "open-pane", args = { pane = "accessibility" } }
 
 [[situation]]
+name = "notifications"
+title = "Notifications"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "notifications" } }
+
+[[situation]]
+name = "sound"
+title = "Sound"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "sound" } }
+
+[[situation]]
+name = "displays"
+title = "Displays"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "displays" } }
+
+[[situation]]
+name = "pointing"
+title = "Mouse and touchpad"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "pointing" } }
+
+[[situation]]
+name = "power"
+title = "Power"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "power" } }
+
+[[situation]]
+name = "keyboard-shortcuts"
+title = "Keyboard shortcuts"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "keyboard_shortcuts" } }
+
+[[situation]]
+name = "spelling"
+title = "Spelling and text"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "spelling" } }
+
+[[situation]]
 name = "time-and-date"
 title = "Time and date"
 

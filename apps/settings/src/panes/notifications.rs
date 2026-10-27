@@ -267,6 +267,7 @@ impl NotificationsArea {
         sample: bool,
         per_app: &BTreeMap<String, AppNotificationRule>,
     ) -> Vec<InstalledNotificationApp> {
+        crate::device_read::off_ui_thread();
         if sample {
             sample_apps()
         } else {
@@ -288,6 +289,11 @@ impl NotificationsArea {
     /// Whether the read [`Self::start_read`] started has ended.
     pub(crate) fn read_finished(&self) -> bool {
         self.read.is_finished()
+    }
+
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
     }
 
     /// Whether the area has read what its rows show: its pane was shown,
@@ -544,14 +550,22 @@ impl NotificationsPane {
         section(&t("notif-dnd-title"), rows(content))
     }
 
+    /// Banners, and while they show, whether they show what a message
+    /// says.
     fn build_banners_card(&self) -> SettingsSection {
-        section(
-            &t("notif-banners-title"),
-            rows(vec![
-                banners(&self.cx, &self.prefs),
-                previews(&self.cx, &self.prefs),
-            ]),
-        )
+        let mut content = vec![banners(&self.cx, &self.prefs)];
+        if self.prefs().show_banners {
+            content.push(
+                self.cx
+                    .row(t("notif-previews"))
+                    .described(t("notif-previews-desc"))
+                    .id("notifications.previews")
+                    .nested()
+                    .of(&self.prefs, NotificationPrefs::paths().show_previews)
+                    .toggle(),
+            );
+        }
+        section(&t("notif-banners-title"), rows(content))
     }
 
     fn build_delivery_card(&self) -> SettingsSection {
@@ -588,16 +602,19 @@ impl NotificationsPane {
                 self.cx
                     .row(t("notif-focus-from"))
                     .id("notifications.focus.start")
+                    .nested()
                     .of(&self.prefs, focus.start_minute)
                     .among(times(), focus_time),
                 self.cx
                     .row(t("notif-focus-until"))
                     .id("notifications.focus.end")
+                    .nested()
                     .of(&self.prefs, focus.end_minute)
                     .among(times(), focus_time),
                 self.cx
                     .row(t("notif-focus-days"))
                     .id("notifications.focus.days")
+                    .nested()
                     .of(&self.prefs, focus.weekdays)
                     .among(FOCUS_DAYS.iter().map(|(_, days)| *days), |days: &u8| {
                         focus_days_label(*days)

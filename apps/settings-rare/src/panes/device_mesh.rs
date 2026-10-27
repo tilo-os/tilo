@@ -564,6 +564,11 @@ impl DeviceMeshArea {
         self.read.is_finished()
     }
 
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
+    }
+
     /// Take in finished background commands, if the model exists.
     pub(crate) fn poll(&self) {
         if let Some(model) = self.model.get() {

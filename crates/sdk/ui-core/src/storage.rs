@@ -270,6 +270,19 @@ impl SettingsDocument {
         }
     }
 
+    /// The configuration directory of the profile this document belongs to:
+    /// the person's config root for the session document, else the
+    /// directory holding the file. Per-profile stores beside the settings
+    /// (accounts, their credentials and sync health) live here, so a test,
+    /// capture or `--data-dir` profile never reads or writes the person's.
+    #[must_use]
+    pub fn config_root(&self) -> Option<PathBuf> {
+        match self {
+            Self::Session => settings_store::config_root(),
+            Self::File(path) => path.parent().map(Path::to_path_buf),
+        }
+    }
+
     /// The whole document, with the changes still on their way to it
     /// ([`flush_settings_writes`]).
     #[must_use]
@@ -938,6 +951,13 @@ impl AppStorage {
     #[must_use]
     pub fn settings_document(&self) -> &SettingsDocument {
         &self.settings
+    }
+
+    /// The configuration directory of the host's profile
+    /// ([`SettingsDocument::config_root`]).
+    #[must_use]
+    pub fn config_root(&self) -> Option<PathBuf> {
+        self.settings.config_root()
     }
 }
 

@@ -234,34 +234,34 @@ pub enum FilesEffect {
         access: Option<String>,
     },
     /// Browse a provider folder without mounting it.
-    #[effect(view)]
+    #[effect(label = "Browse account", view)]
     BrowseCloud {
         account: String,
         folder: Option<String>,
     },
     /// Load the next page of cloud entries.
-    #[effect(view)]
+    #[effect(label = "Show more", view)]
     MoreCloud,
     /// Toggle a cloud entry in the selection.
     #[effect(view)]
     SelectCloud { entry: String },
     /// Import selected files and folders to an explicit folder, or choose one.
-    #[effect(view)]
+    #[effect(label = "Import selection", view)]
     ImportCloud { folder: Option<String> },
     /// Observe enumeration, export and copy progress.
-    #[effect(kind = "read", returns)]
+    #[effect(label = "Import progress", kind = "read", returns)]
     CloudProgress,
     /// Cancel the current transfer, retaining completed independent copies.
-    #[effect(view)]
+    #[effect(label = "Cancel import", view)]
     CancelCloud,
     /// Retry only unsuccessful top-level entries.
-    #[effect(view)]
+    #[effect(label = "Retry failed", view)]
     RetryCloud,
     /// Show the destination folder.
-    #[effect(view)]
+    #[effect(label = "Show imported files", view)]
     RevealCloud,
     /// Create an independent editable copy of a converted native document.
-    #[effect(row)]
+    #[effect(label = "Make editable copy", row)]
     ImportConverted {
         #[param("The converted entry's published row id")]
         entry: String,

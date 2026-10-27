@@ -191,6 +191,8 @@ mod permission_prompt_pump;
 mod permissions_tab_test;
 #[path = "persisted_app_placeholders.rs"]
 mod persisted_app_placeholders;
+#[path = "personal_settings_home.rs"]
+mod personal_settings_home;
 #[path = "pointer_lands_where_drawn.rs"]
 mod pointer_lands_where_drawn;
 #[path = "pointer_lock_protocol.rs"]

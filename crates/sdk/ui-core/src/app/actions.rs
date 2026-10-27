@@ -680,6 +680,7 @@ impl App {
             self.refresh_document_routes();
         }
         self.publish_action_surface_after_refresh();
+        self.actions.published_stamp = self.publication_stamp();
     }
 
     /// Publish the surface a handled input left for the frame after its
@@ -1924,6 +1925,27 @@ impl App {
         ambient_context: Option<&tilo_actions::ActionContext>,
     ) {
         if self.action_publication_failure.is_some() {
+            return;
+        }
+        if !self.collaboration.manager.invocation_owner_current(id) {
+            // Accepted for a document this window has since reopened or
+            // replaced: nothing ran, and it must not run in the new one.
+            self.collaboration
+                .manager
+                .send(CollabRequest::UpdateInvocation {
+                    id,
+                    update: tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "action_document_replaced".into(),
+                            message: crate::i18n::I18nManager::lookup_plain(
+                                "action-document-replaced",
+                            ),
+                            details: None,
+                            retryable: false,
+                        },
+                    },
+                });
             return;
         }
         if !self.published_action_history_ready() {

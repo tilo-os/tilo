@@ -922,3 +922,83 @@ fn ordinary_native_pump_exports_admission_before_any_action() {
         );
     }
 }
+
+#[test]
+fn accepted_delivery_is_refused_after_its_document_is_replaced() {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut history = automerge::AutoCommit::new();
+    history
+        .put(ROOT, "original-owner-history", "retained")
+        .unwrap();
+    history.commit();
+    let fixture = CollaborationManager::native_history_invocation_fixture_for_test(history.save());
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(InitialHistoryProbe(
+            calls.clone(),
+            std::rc::Rc::new(std::cell::Cell::new(false)),
+        )),
+    );
+    app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
+    app.collaboration.manager = fixture.manager;
+    let deadline = tilo_test_env::hang_deadline();
+    while !app.published_action_history_ready() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    let invocation = uuid::Uuid::from_u128(21);
+    (fixture.invoke)(21, invocation);
+    // Take the delivered event before any handler sees it.
+    let queued = loop {
+        let events = app.collaboration.manager.poll();
+        if let Some(event) = events.into_iter().find(|event| {
+            matches!(
+                event,
+                crate::collaboration::CollabEvent::Invocation { id: 21, .. }
+            )
+        }) {
+            break event;
+        }
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    };
+    // The window moves to another document generation before dispatch.
+    app.advance_autosave_generation();
+    app.refresh_document_routes();
+    app.apply_collab_event_for_test(queued);
+    app.collaboration.manager.finish_event_batch();
+    assert_eq!(
+        calls.get(),
+        0,
+        "a job accepted for the replaced document must not run in its successor"
+    );
+    while (fixture.updates)().is_empty() {
+        app.pump_collab_presence();
+        assert!(crate::time::now() < deadline);
+        std::thread::yield_now();
+    }
+    let updates = (fixture.updates)();
+    assert_eq!(updates.len(), 1);
+    let (
+        21,
+        tilo_actions::InvocationUpdate::Failed {
+            invocation: actual,
+            error,
+        },
+    ) = &updates[0]
+    else {
+        panic!("expected a refusal, got {updates:?}");
+    };
+    assert_eq!(actual.0, invocation);
+    assert_eq!(error.code, "action_document_replaced");
+    assert_eq!(
+        error.message,
+        crate::i18n::I18nManager::lookup_plain("action-document-replaced")
+    );
+    assert_ne!(error.message, "action-document-replaced");
+    assert!(app.collaboration.manager.is_connected());
+    assert!(app.action_publication_failure.is_none());
+    drop(app);
+    fixture.thread.join().unwrap();
+}
