@@ -118,6 +118,7 @@ impl ShellDriver {
         "tab-rename",
         "window-share-menu",
         "window-shared",
+        "window-shared-app",
         "profile-card",
         "dictation-consent",
         "dictation-listening",
