@@ -32,6 +32,12 @@ pub enum OskToolbarAction {
     SelectionRight,
     /// Dismiss / hide the keyboard.
     Dismiss,
+    /// Put the keys away and keep the strip that brings them back: the panel
+    /// the keyboard lives in shrinks to it, so the app behind gets the screen
+    /// the keys were covering.
+    Park,
+    /// Bring the keys back on a parked keyboard.
+    Unpark,
     /// Escape hatch for app-specific toolbar items kept purely as data
     /// (emoji picker, voice toggle, settings, clipboard history, …).
     Custom(String),
@@ -197,6 +203,10 @@ impl OskToolbarItem {
                 &ui::i18n::I18nManager::lookup_plain("osk-toolbar-dismiss"),
                 OskToolbarAction::Dismiss,
             ),
+            // No park item: a terminal's row already spends its width on the
+            // keys that edit a command line, and a tenth item would put every
+            // one of them below the size of a letter. The keyboard is
+            // dismissed from here and parked from a prose field's row.
         ]
     }
 
@@ -207,6 +217,38 @@ impl OskToolbarItem {
         matches!(
             self.action,
             OskToolbarAction::Key(_) | OskToolbarAction::Modifier(_)
+        )
+    }
+
+    /// The strip a parked keyboard keeps: the way back to the keys, and the
+    /// way to put the keyboard away altogether.
+    pub fn park_set() -> Vec<Self> {
+        // Words, not glyphs: a strip a person meets once has to say what it
+        // is for.
+        vec![
+            Self::new(
+                "unpark",
+                None,
+                &crate::i18n::t("osk-toolbar-unpark"),
+                OskToolbarAction::Unpark,
+            ),
+            Self::new(
+                "dismiss",
+                None,
+                &crate::i18n::t("osk-toolbar-dismiss"),
+                OskToolbarAction::Dismiss,
+            ),
+        ]
+    }
+
+    /// The item that parks the keys, so the screen they cover is the app's
+    /// again while the keyboard stays one tap away.
+    pub fn park_item() -> Self {
+        Self::new(
+            "park",
+            Some(Icon::Minimize),
+            &crate::i18n::t("osk-toolbar-park"),
+            OskToolbarAction::Park,
         )
     }
 
@@ -239,6 +281,7 @@ impl OskToolbarItem {
                 &crate::i18n::t("osk-toolbar-hide"),
                 OskToolbarAction::Dismiss,
             ),
+            OskToolbarItem::park_item(),
         ]
     }
 }
@@ -272,18 +315,19 @@ mod tests {
         eprintln!("phase default_toolbar_has_four_items");
         {
             let t = OskToolbarItem::default_set();
-            assert_eq!(t.len(), 4);
+            assert_eq!(t.len(), 5, "and the way to park the keys");
             assert_eq!(t[0].action, OskToolbarAction::Paste);
             assert_eq!(t[3].action, OskToolbarAction::Dismiss);
+            assert_eq!(t[4].action, OskToolbarAction::Park);
         }
 
         eprintln!("phase toolbar_rects_split_evenly_and_fill_width");
         {
             let items = OskToolbarItem::default_set();
             let rects = toolbar_rects(&items, Rect::new(0.0, 0.0, 400.0, 50.0));
-            assert_eq!(rects.len(), 4);
+            assert_eq!(rects.len(), 5);
             for (_, r) in &rects {
-                assert!((r.width() - 100.0).abs() < 1e-6);
+                assert!((r.width() - 80.0).abs() < 1e-6);
             }
             assert!((rects.last().unwrap().1.x1 - 400.0).abs() < 1e-6);
         }
