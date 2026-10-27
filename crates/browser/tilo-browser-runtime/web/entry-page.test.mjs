@@ -21,11 +21,11 @@ class Element {
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures.
-async function fixture({boot, remembered = [], own = false} = {}) {
+async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
   const values = new Map();
   globalThis.localStorage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key)};
   globalThis.sessionStorage = {getItem: () => null, removeItem() {}};
-  globalThis.location = {href: 'https://web.example/#/room', search: '', pathname: '/', reload: () => calls.push('reload'), assign: () => calls.push('assign')};
+  globalThis.location = {href: 'https://web.example/#/room', search, pathname: '/', reload: () => calls.push('reload'), assign: () => calls.push('assign')};
   globalThis.history = {pushState: () => calls.push('history')};
   globalThis.document = {body: new Element('body'), documentElement: {dataset: {}}, createElement: tag => new Element(tag),
     getElementById: id => id === 'status' ? status : id === 'surface' ? new Element('canvas') : null};
@@ -185,4 +185,12 @@ test('the person’s own desktop writes as their root identity and shows them by
   assert.ok(own, 'the desktop is told who its person is');
   assert.equal(own[1].user, USER);
   assert.ok(own[1].label && own[1].label !== 'Guest', own[1].label);
+});
+
+test('an embedded room offers no Invite it could not carry out', async () => {
+  let deps;
+  await fixture({search: '?embed=1', boot: async (options, page) => { deps = options.deps; return page; }});
+  assert.equal(deps.onInvite, undefined);
+  await fixture({boot: async (options, page) => { deps = options.deps; return page; }});
+  assert.equal(typeof deps.onInvite, 'function');
 });
