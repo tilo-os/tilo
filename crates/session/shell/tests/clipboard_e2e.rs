@@ -449,6 +449,17 @@ impl Compositor {
                     std::env::join_paths(paths).expect("a joinable PATH"),
                 );
             }
+            // A fixture home may also carry installed apps (`apps/`, a
+            // registry with their manifests) and a stand-in `tilo-launcher`
+            // in `bin/` that records what the compositor launched.
+            let apps = home.join("apps");
+            if apps.join("registry.toml").is_file() {
+                command.env("TILO_APPS_DATA_DIR", &apps);
+            }
+            let launcher = home.join("bin").join("tilo-launcher");
+            if launcher.is_file() {
+                command.env("TILO_LAUNCHER_BIN", &launcher);
+            }
         }
         command.args(["--mode", "native", "--backend", "headless"]);
         if host_desktop {

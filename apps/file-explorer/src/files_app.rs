@@ -5780,15 +5780,19 @@ impl FileExplorerWidget {
     }
 
     /// Open what a launch names: a received share link (`tilo-file://…`) is
-    /// admitted through the recipient service, anything else is a folder,
-    /// resolved against the launcher's working directory. A folder that is
-    /// missing or unreadable shows the ordinary navigation error.
+    /// admitted through the recipient service; a path, resolved against the
+    /// launcher's working directory, is a folder to show, or a file to show
+    /// selected in its folder ("Show in Files"). A folder that is missing or
+    /// unreadable shows the ordinary navigation error.
     pub fn open_launch_argument(&mut self, argument: &str) {
         if argument.starts_with(crate::received_shares::LINK_SCHEME) {
             self.admit_received_share(argument.to_owned());
             return;
         }
         match std::path::absolute(argument) {
+            Ok(path) if path.is_file() => {
+                self.apply_reveal_in_folder(&path);
+            }
             Ok(path) => self.navigate(path),
             Err(error) => self.set_external_status(error.to_string()),
         }
@@ -10665,6 +10669,10 @@ mod tests;
 #[cfg(test)]
 #[path = "files_app/notice_action_tests.rs"]
 mod notice_action_tests;
+
+#[cfg(test)]
+#[path = "files_app/launch_argument_tests.rs"]
+mod launch_argument_tests;
 
 /// What the palette, agents and scripts reach of a Files window, for the
 /// tests that drive the widget without a framework host: the resource's
