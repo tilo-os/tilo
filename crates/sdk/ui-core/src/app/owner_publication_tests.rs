@@ -13,10 +13,10 @@ impl crate::collaboration::PeerTransport for PublicationTransport {
         vec![]
     }
     fn join_route(
-            &mut self,
-            _: crate::collaboration::RouteSpec,
-            _: crate::record::RecordKind,
-        ) -> Result<(), String> {
+        &mut self,
+        _: crate::collaboration::RouteSpec,
+        _: crate::record::RecordKind,
+    ) -> Result<(), String> {
         Ok(())
     }
     fn send_to_route(
