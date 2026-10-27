@@ -1,6 +1,9 @@
 //! What the selection becomes: the diff a row names, staging and unstaging a file or a hunk, the commit, discard, and the branch verbs.
 
-use super::*;
+use super::{
+    ChangeArea, DiffKey, Field, FileChange, GitClientApp, Invoke, RemoteAction, Screen, Widget,
+    first_change, graph,
+};
 
 impl GitClientApp {
     /// The diff-map key for the currently selected change, if any. Resolves

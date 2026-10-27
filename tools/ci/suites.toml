@@ -85,7 +85,7 @@ requirement = { cores = 1, memory = "1GiB" }
 # The container policy is generated from keys/ by tools/signing/release_trust.py;
 # the image recipes install what it names, and t's signing scripts sign the
 # repositories it verifies.
-inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/t_matrix.py"]
+inputs = ["os/etc/containers/", "os/Containerfile", "os/Containerfile.host", "os/dev/hardware_profile.py", "keys/", "tools/signing/", "tools/ci/publish/lib.sh", "tools/ci/publish/build-lib.sh", "tools/ci/products.py", "tools/ci/products.toml", "tools/ci/t_matrix.py"]
 suites = ["os/tests/test_container_signature_policy.py"]
 
 [[group]]
@@ -1188,6 +1188,8 @@ readers = [
   # The SDK's current interfaces are the image's declaration from the same commit.
   "crates/dev/tilo-app-cli/src/interface_versions.rs",
   "crates/dev/tilo-app-cli/src/guide.rs",
+  # Messages' history is checked against the app's own surface (`apps/` above).
+  "crates/dev/tilo-app-cli/src/surface.rs",
   # Focused source lookup verifies the embedded shared-checklist test bytes.
   "crates/dev/tilo-app-cli/tests/json_output.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
@@ -1988,6 +1990,10 @@ reason = "needs a container engine and builds images in it; run by hand where a 
 [[unrequired]]
 suite = "tools/ci/test-vendored-crates.sh"
 reason = "compiles each patched vendored crate's own tests; the vendored check in t.toml runs it"
+
+[[unrequired]]
+suite = "tools/ci/nightly-workspace-test.sh"
+reason = "the nightly workspace-test checks' runner (t.toml); it runs the workspace's tests, it is not a suite of its own"
 
 [[unrequired]]
 suite = "tools/test-env.sh"

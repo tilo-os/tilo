@@ -27,7 +27,9 @@ impl ToolbarRow {
                 })
         };
         let mut nodes = Vec::new();
-        if let Some(open) = toolbar.sidebar {
+        if let Some(open) = toolbar.sidebar
+            && !self.slots.sidebar_folded(toolbar)
+        {
             let mut toggle = button(
                 crate::i18n::I18nManager::lookup_plain(sidebar_key(toolbar)),
                 SIDEBAR_TARGET.into(),
@@ -45,12 +47,14 @@ impl ToolbarRow {
                 self.slots.back,
                 nav.back,
             ));
-            nodes.push(button(
-                crate::i18n::I18nManager::lookup_plain("window-toolbar-forward"),
-                FORWARD_TARGET.into(),
-                self.slots.forward,
-                nav.forward,
-            ));
+            if !self.slots.forward_folded(toolbar) {
+                nodes.push(button(
+                    crate::i18n::I18nManager::lookup_plain("window-toolbar-forward"),
+                    FORWARD_TARGET.into(),
+                    self.slots.forward,
+                    nav.forward,
+                ));
+            }
         }
         for (action, rect) in toolbar
             .leading
@@ -286,14 +290,15 @@ impl ToolbarRow {
         nodes
     }
 
-    /// What the overflow menu lists, in its order: the views the row has
+    /// What the overflow menu lists, in its order: the navigation the row
+    /// has no room for, the views the row has
     /// no room for, then the leading actions and the actions it does not
     /// show, a menu button's items in its place.
     pub(super) fn overflow_entries(&self) -> Vec<MenuEntry> {
         let Some(toolbar) = self.toolbar() else {
             return Vec::new();
         };
-        let mut entries = Vec::new();
+        let mut entries = self.folded_navigation();
         if self.views_in_overflow()
             && let Some(views) = toolbar.views.as_ref()
         {
@@ -384,7 +389,20 @@ impl ToolbarRow {
                 (action.toggles || action.on).then_some(action.on),
             )
         };
+        let lookup = crate::i18n::I18nManager::lookup_plain;
         match entry {
+            MenuEntry::Sidebar => Some((
+                lookup(sidebar_key(toolbar)),
+                SIDEBAR_TARGET.into(),
+                !toolbar.sidebar_unavailable,
+                Some(toolbar.sidebar == Some(true)),
+            )),
+            MenuEntry::Forward => Some((
+                lookup("window-toolbar-forward"),
+                FORWARD_TARGET.into(),
+                toolbar.navigation.is_some_and(|nav| nav.forward),
+                None,
+            )),
             MenuEntry::Action(i) => toolbar.actions.get(i).map(action),
             MenuEntry::Leading(i) => toolbar.leading.get(i).map(|leading| {
                 (

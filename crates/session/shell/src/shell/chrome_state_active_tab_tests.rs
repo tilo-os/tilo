@@ -62,153 +62,149 @@ fn tree_with(active_tab_id: u64) -> WorkspaceTree {
 }
 
 #[test]
-fn active_tab_and_strip_lookups_follow_the_live_pointers_or_return_none() {
-    fn active_app_title_follows_group_active_tab() {
-        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(200));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_app_title().as_deref(), Some("Second"));
-    }
+fn active_app_title_follows_group_active_tab() {
+    let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(200));
+    let chrome = ChromeState::new_with_handle(handle);
+    let st = chrome.borrow();
+    assert_eq!(st.active_app_title().as_deref(), Some("Second"));
+}
 
-    fn active_tab_id_matches_the_active_tab_pointer() {
-        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(100));
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_tab_id(), Some(100));
-    }
+#[test]
+fn active_tab_id_matches_the_active_tab_pointer() {
+    let handle = crate::shell::state::WorkspaceTreeHandle::new(tree_with(100));
+    let chrome = ChromeState::new_with_handle(handle);
+    let st = chrome.borrow();
+    assert_eq!(st.active_tab_id(), Some(100));
+}
 
-    fn no_active_returns_none_instead_of_first_group() {
-        let handle = crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_tab_id(), None);
-        assert!(st.active_app_title().is_none());
-    }
+#[test]
+fn no_active_returns_none_instead_of_first_group() {
+    let handle = crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
+    let chrome = ChromeState::new_with_handle(handle);
+    let st = chrome.borrow();
+    assert_eq!(st.active_tab_id(), None);
+    assert!(st.active_app_title().is_none());
+}
 
-    fn without_active_strip_returns_none_not_first_strip() {
-        let mut tree = tree_with(100);
-        tree.desktop.active_strip.clear();
-        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
-        let chrome = ChromeState::new_with_handle(handle);
-        let st = chrome.borrow();
-        assert_eq!(st.active_tab_id(), None);
-    }
+#[test]
+fn without_active_strip_returns_none_not_first_strip() {
+    let mut tree = tree_with(100);
+    tree.desktop.active_strip.clear();
+    let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+    let chrome = ChromeState::new_with_handle(handle);
+    let st = chrome.borrow();
+    assert_eq!(st.active_tab_id(), None);
+}
 
-    fn switching_strips_moves_focus_and_clamps_at_the_ends() {
-        let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let mut st = cell.borrow_mut();
-        {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().expect("a workspace");
-            let base = ws.strips.len();
-            for n in 0..3u64 {
-                let id = StripId(9000 + n);
-                ws.strips.push(Strip::new(id, format!("Extra {n}")));
-            }
-            drop(tree);
-            assert!(base + 3 >= 4, "fixture needs at least four strips");
+#[test]
+fn switching_strips_moves_focus_and_clamps_at_the_ends() {
+    let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+    let mut st = cell.borrow_mut();
+    {
+        let mut tree = st.tree_mut();
+        let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+        let base = ws.strips.len();
+        for n in 0..3u64 {
+            let id = StripId(9000 + n);
+            ws.strips.push(Strip::new(id, format!("Extra {n}")));
         }
-        st.bump();
-
-        let (count, focused) = st.strip_focus();
-        assert!(
-            count >= 4,
-            "fixture should hold at least four strips, saw {count}"
-        );
-        assert_eq!(focused, 0, "a fresh workspace focuses its first strip");
-
-        assert!(
-            st.switch_strip(1),
-            "moving down a strip should change focus"
-        );
-        assert_eq!(st.strip_focus().1, 1);
-
-        assert!(st.switch_strip(1));
-        assert_eq!(st.strip_focus().1, 2);
-
-        assert!(st.switch_strip(-1));
-        assert_eq!(st.strip_focus().1, 1);
-
-        // Clamps rather than wrapping, matching workspace switching —
-        // and a step past the end says where the person is instead of
-        // looking like a chord that reached nothing.
-        while st.switch_strip(-1) {}
-        assert_eq!(st.strip_focus().1, 0);
-        assert!(!st.switch_strip(-1), "focus wrapped past the first strip");
-        assert_eq!(
-            st.acknowledger
-                .current(std::time::Instant::now())
-                .map(|ack| ack.text().to_string()),
-            Some(crate::shell::i18n::t("strip-first-reached")),
-            "the refused step says it is the first strip"
-        );
-
-        while st.switch_strip(1) {}
-        assert_eq!(st.strip_focus().1, count - 1);
-        assert!(!st.switch_strip(1), "focus wrapped past the last strip");
-        assert_eq!(
-            st.acknowledger
-                .current(std::time::Instant::now())
-                .map(|ack| ack.text().to_string()),
-            Some(crate::shell::i18n::t("strip-last-reached"))
-        );
+        drop(tree);
+        assert!(base + 3 >= 4, "fixture needs at least four strips");
     }
+    st.bump();
 
-    /// A workspace step past either end is answered, not swallowed: the
-    /// person cannot otherwise tell "I am at the end" from "the chord
-    /// did not register", and on one workspace the chord is a permanent
-    /// no-op.
-    fn stepping_past_the_workspace_list_says_where_the_person_is() {
-        let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let mut st = cell.borrow_mut();
-        while st.switch_workspace(-1) {}
-        assert!(!st.switch_workspace(-1));
-        assert_eq!(
-            st.acknowledger
-                .current(std::time::Instant::now())
-                .map(|ack| ack.text().to_string()),
-            Some(crate::shell::i18n::t("workspace-first-reached"))
-        );
-        while st.switch_workspace(1) {}
-        assert!(!st.switch_workspace(1));
-        assert_eq!(
-            st.acknowledger
-                .current(std::time::Instant::now())
-                .map(|ack| ack.text().to_string()),
-            Some(crate::shell::i18n::t("workspace-last-reached"))
-        );
-    }
+    let (count, focused) = st.strip_focus();
+    assert!(
+        count >= 4,
+        "fixture should hold at least four strips, saw {count}"
+    );
+    assert_eq!(focused, 0, "a fresh workspace focuses its first strip");
 
-    fn focusing_a_strip_by_index_selects_that_strip() {
-        let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
-        let mut st = cell.borrow_mut();
-        {
-            let mut tree = st.tree_mut();
-            let ws = tree.desktop.active_workspace_mut().expect("a workspace");
-            for n in 0..3u64 {
-                ws.strips
-                    .push(Strip::new(StripId(9100 + n), format!("S{n}")));
-            }
-            drop(tree);
+    assert!(
+        st.switch_strip(1),
+        "moving down a strip should change focus"
+    );
+    assert_eq!(st.strip_focus().1, 1);
+
+    assert!(st.switch_strip(1));
+    assert_eq!(st.strip_focus().1, 2);
+
+    assert!(st.switch_strip(-1));
+    assert_eq!(st.strip_focus().1, 1);
+
+    // Clamps rather than wrapping, matching workspace switching —
+    // and a step past the end says where the person is instead of
+    // looking like a chord that reached nothing.
+    while st.switch_strip(-1) {}
+    assert_eq!(st.strip_focus().1, 0);
+    assert!(!st.switch_strip(-1), "focus wrapped past the first strip");
+    assert_eq!(
+        st.acknowledger
+            .current(std::time::Instant::now())
+            .map(|ack| ack.text().to_string()),
+        Some(crate::shell::i18n::t("strip-first-reached")),
+        "the refused step says it is the first strip"
+    );
+
+    while st.switch_strip(1) {}
+    assert_eq!(st.strip_focus().1, count - 1);
+    assert!(!st.switch_strip(1), "focus wrapped past the last strip");
+    assert_eq!(
+        st.acknowledger
+            .current(std::time::Instant::now())
+            .map(|ack| ack.text().to_string()),
+        Some(crate::shell::i18n::t("strip-last-reached"))
+    );
+}
+
+/// A workspace step past either end is answered, not swallowed: the
+/// person cannot otherwise tell "I am at the end" from "the chord
+/// did not register", and on one workspace the chord is a permanent
+/// no-op.
+#[test]
+fn stepping_past_the_workspace_list_says_where_the_person_is() {
+    let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+    let mut st = cell.borrow_mut();
+    while st.switch_workspace(-1) {}
+    assert!(!st.switch_workspace(-1));
+    assert_eq!(
+        st.acknowledger
+            .current(std::time::Instant::now())
+            .map(|ack| ack.text().to_string()),
+        Some(crate::shell::i18n::t("workspace-first-reached"))
+    );
+    while st.switch_workspace(1) {}
+    assert!(!st.switch_workspace(1));
+    assert_eq!(
+        st.acknowledger
+            .current(std::time::Instant::now())
+            .map(|ack| ack.text().to_string()),
+        Some(crate::shell::i18n::t("workspace-last-reached"))
+    );
+}
+
+#[test]
+fn focusing_a_strip_by_index_selects_that_strip() {
+    let cell = ChromeState::new(WorkspaceTree::bootstrap_demo());
+    let mut st = cell.borrow_mut();
+    {
+        let mut tree = st.tree_mut();
+        let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+        for n in 0..3u64 {
+            ws.strips
+                .push(Strip::new(StripId(9100 + n), format!("S{n}")));
         }
-        let (count, _) = st.strip_focus();
-        for i in 0..count {
-            st.focus_strip_index(i);
-            assert_eq!(st.strip_focus().1, i, "focusing index {i} landed elsewhere");
-        }
-        // Out of range is a no-op, not a panic and not a silent clamp.
-        let before = st.strip_focus().1;
-        assert!(!st.focus_strip_index(count + 5));
-        assert_eq!(st.strip_focus().1, before);
+        drop(tree);
     }
-
-    active_app_title_follows_group_active_tab();
-    active_tab_id_matches_the_active_tab_pointer();
-    no_active_returns_none_instead_of_first_group();
-    without_active_strip_returns_none_not_first_strip();
-    switching_strips_moves_focus_and_clamps_at_the_ends();
-    stepping_past_the_workspace_list_says_where_the_person_is();
-    focusing_a_strip_by_index_selects_that_strip();
+    let (count, _) = st.strip_focus();
+    for i in 0..count {
+        st.focus_strip_index(i);
+        assert_eq!(st.strip_focus().1, i, "focusing index {i} landed elsewhere");
+    }
+    // Out of range is a no-op, not a panic and not a silent clamp.
+    let before = st.strip_focus().1;
+    assert!(!st.focus_strip_index(count + 5));
+    assert_eq!(st.strip_focus().1, before);
 }
 
 #[test]

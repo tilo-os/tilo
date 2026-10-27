@@ -49,6 +49,7 @@ use fs_protocol::TransferPhase;
 use ui::SelectionModel;
 use ui::chrome::{SelectionState, paint_row_selection};
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
+use ui::own_paint::OwnPaint;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -202,6 +203,11 @@ pub struct FileView {
     bottom_inset: f64,
     /// A layout found the list's columns should change with its width.
     rebuild: bool,
+    /// What the view painted, this frame and last: what it paints follows
+    /// the pointer, the selection, focus, scrolling and previews landing,
+    /// and a frame that changed none of them (a hover in the sidebar beside
+    /// it) leaves it as it was.
+    own: OwnPaint,
 }
 
 /// Pointer travel (logical px) past which a held directory press becomes a
@@ -241,6 +247,7 @@ impl FileView {
             list: ListSlot::default(),
             bottom_inset: 0.0,
             rebuild: false,
+            own: OwnPaint::default(),
         }
     }
 
@@ -932,6 +939,55 @@ thread_local! {
     pub(crate) static ACCESSIBILITY_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+impl FileView {
+    /// Paint the list or the grid, and the focus ring.
+    fn paint(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        match self.mode {
+            ViewMode::List => {
+                // A folder with nothing in it has no columns to name: the
+                // window shows its empty state instead.
+                if !self.entries.is_empty() {
+                    self.list.draw(scene, transform, tr, theme, presence);
+                    self.publish_drop_targets(None);
+                }
+            }
+            ViewMode::Grid => {
+                // The enclosing `Scrollable` publishes its viewport rect here;
+                // cull cells outside it so a long directory only paints what's
+                // on screen. Remember it for the next event.
+                let vp = presence.viewport.get();
+                self.last_vp = vp;
+                self.publish_drop_targets(vp);
+                self.draw_grid(scene, transform, tr, theme, vp);
+            }
+        }
+        if self.is_focused
+            && let Some(i) = self.selection.primary()
+            && let Some(item) = self.item_rect(i)
+        {
+            let ring = match self.mode {
+                // The lift reaches past the row by one step on each side.
+                ViewMode::List => item.inflate(f64::from(theme.tokens.spacing.s2), 0.0),
+                ViewMode::Grid => item,
+            };
+            let visible = match self.mode {
+                ViewMode::List => item.y1 > self.list.rect().y0 + self.list.header_height(),
+                ViewMode::Grid => !cull(self.last_vp, item),
+            };
+            if visible {
+                ui::widget::paint_focus_ring(scene, transform, ring, self.geo.item_radius, theme);
+            }
+        }
+    }
+}
+
 impl Widget for FileView {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
@@ -1052,42 +1108,20 @@ impl Widget for FileView {
         if let Some(sink) = &self.rename_rect {
             sink.set(None);
         }
-        match self.mode {
-            ViewMode::List => {
-                // A folder with nothing in it has no columns to name: the
-                // window shows its empty state instead.
-                if !self.entries.is_empty() {
-                    self.list.draw(scene, transform, tr, theme, presence);
-                    self.publish_drop_targets(None);
-                }
-            }
-            ViewMode::Grid => {
-                // The enclosing `Scrollable` publishes its viewport rect here;
-                // cull cells outside it so a long directory only paints what's
-                // on screen. Remember it for the next event.
-                let vp = presence.viewport.get();
-                self.last_vp = vp;
-                self.publish_drop_targets(vp);
-                self.draw_grid(scene, transform, tr, theme, vp);
-            }
-        }
-        if self.is_focused
-            && let Some(i) = self.selection.primary()
-            && let Some(item) = self.item_rect(i)
-        {
-            let ring = match self.mode {
-                // The lift reaches past the row by one step on each side.
-                ViewMode::List => item.inflate(f64::from(theme.tokens.spacing.s2), 0.0),
-                ViewMode::Grid => item,
-            };
-            let visible = match self.mode {
-                ViewMode::List => item.y1 > self.list.rect().y0 + self.list.header_height(),
-                ViewMode::Grid => !cull(self.last_vp, item),
-            };
-            if visible {
-                ui::widget::paint_focus_ring(scene, transform, ring, self.geo.item_radius, theme);
-            }
-        }
+        let mut own = std::mem::take(&mut self.own);
+        own.record(scene, transform, |scene| {
+            self.paint(scene, transform, tr, theme, presence);
+            self.rect
+        });
+        self.own = own;
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.own.damage(regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.own.present();
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

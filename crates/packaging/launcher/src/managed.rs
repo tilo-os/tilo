@@ -248,7 +248,7 @@ impl InstalledManagedPackage {
 /// Where the managed agent's signed install evidence lives under its
 /// explicitly configured data root (the pre-content-store installer layout).
 fn managed_record_dir(data_root: &Path) -> PathBuf {
-    package_store::integrity::legacy_record_dir(data_root, WORKSPACE_AGENT_PACKAGE_ID)
+    package_store::integrity::detached_record_dir(data_root, WORKSPACE_AGENT_PACKAGE_ID)
 }
 
 /// The manifest copy the installer writes at the payload root.

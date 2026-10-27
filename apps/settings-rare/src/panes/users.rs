@@ -513,6 +513,11 @@ impl UsersArea {
         self.read.is_finished()
     }
 
+    /// What waits off the UI thread for the started read to end.
+    pub(crate) fn wait_read(&self) -> Option<crate::device_read::Wait> {
+        self.read.wait()
+    }
+
     /// Whether the area has read what its rows show: its pane was shown,
     /// an effect or a row lookup reached it, or the window read it after
     /// its first frame ([`crate::panes::LIVE_AREAS`]).
@@ -1637,6 +1642,65 @@ mod tests {
                     .is_ok_and(|frame| frame.contains("Barbara Liskov"))),
             "the accounts read again are shown"
         );
+    }
+
+    /// An effect that reaches the accounts before the window has read them
+    /// waits for that read off the UI thread: the window keeps drawing
+    /// while `AccountsService` has not answered, and the effect is answered
+    /// on what the read found once it lands.
+    #[test]
+    fn an_effect_before_the_first_read_never_holds_the_window() {
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let gate = crate::stall::Stall::new();
+        let stalled = Arc::clone(&gate);
+        // The accounts as a window has them before it has read them, their
+        // read waiting on AccountsService.
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            let held = crate::panes::users::area(settings).unwrap();
+            let area = UsersArea::new(&held.cx, held.remote.clone());
+            assert!(area.read.start(move || {
+                crate::device_read::off_ui_thread();
+                // The samples, once AccountsService answers.
+                let _ = stalled.wait();
+                None
+            }));
+            settings.replace_area(area);
+        })
+        .expect("the Settings window is mounted");
+
+        ui::rt::mark_ui_thread();
+        app.start_effect(&SettingsEffect::from(UsersEffect::CreateUser {
+            username: "cy".into(),
+            full_name: "Cy".into(),
+        }))
+        .expect("the change waits for the read as a job");
+        app.harness()
+            .poll_frame()
+            .expect("the window draws its next frame");
+        gate.assert_held("the change");
+        let open = app
+            .with_widget::<SettingsApp, _>(|settings| {
+                crate::panes::users::area(settings).unwrap().is_open()
+            })
+            .unwrap();
+        assert!(!open, "the model waits for the read");
+
+        gate.release();
+        tilo_test_env::wait_until("the change to be answered", || {
+            app.settle();
+            app.effect_progress().iter().any(|update| {
+                matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. })
+            })
+        });
+        let open = app
+            .with_widget::<SettingsApp, _>(|settings| {
+                crate::panes::users::area(settings).unwrap().is_open()
+            })
+            .unwrap();
+        assert!(open, "the change was answered on what the read found");
     }
 
     /// The password typed into the form is read once by the effect and

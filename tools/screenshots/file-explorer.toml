@@ -15,3 +15,8 @@ scenario = "grid"
 name = "selection"
 title = "Files selected, with their actions"
 scenario = "selection-actions"
+
+[[situation]]
+name = "deep-folder"
+title = "A folder five levels under the home"
+scenario = "deep-folder"

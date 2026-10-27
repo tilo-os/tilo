@@ -2527,9 +2527,12 @@ pub fn minted_items(
     if stored.is_empty() {
         return Vec::new();
     }
-    tilo_resource::minted_ids(envelope)
-        .map_while(|id| {
-            let obj = doc.import_obj(&stored.get(id.as_str())?.to_string()).ok()?;
+    tilo_resource::minted_keys(envelope)
+        .map_while(|keys| {
+            let (id, obj) = keys
+                .into_iter()
+                .find_map(|id| stored.get(id.as_str()).map(|obj| (id, obj.to_string())))?;
+            let obj = doc.import_obj(&obj).ok()?;
             automerge::ReadDoc::get(&*doc, &obj, id.as_str())
                 .ok()
                 .flatten()?;
@@ -3164,6 +3167,17 @@ pub(crate) fn invoke_resource_action(
                     } else {
                         None
                     };
+                    // The record's route names the app that owns it; a record
+                    // with no route is the component's own, published by the
+                    // app hosting the component, which its binding names.
+                    // Naming that app here is what keeps the change reading in
+                    // History as the app's own words, rather than as a guess
+                    // from the action type's stem.
+                    let owner_app = route
+                        .as_ref()
+                        .map_or(binding.app_id.as_str(), |route| route.app_id.as_str());
+                    let context = ambient.unwrap_or(&binding.operation_context).clone();
+                    let ambient = context.with_app(owner_app, owner_app);
                     let encoded = encode_resource_action(
                         &resources,
                         &target.address.address,
@@ -3188,7 +3202,7 @@ pub(crate) fn invoke_resource_action(
                                 broker_admitted,
                                 invocation,
                                 source_invocation,
-                                ambient: ambient.or(Some(&binding.operation_context)),
+                                ambient: Some(&ambient),
                                 scope,
                                 door: match door.as_mut() {
                                     Some(door) => Some(&mut **door as &mut dyn crate::session_door::SessionDoor),

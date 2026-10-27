@@ -1102,14 +1102,17 @@ struct DeviceNetwork {
 
 impl NetworkService for DeviceNetwork {
     fn networks(&self) -> NetworkSnapshot {
+        crate::device_read::off_ui_thread();
         NetworkSnapshot::networks_only(os_actions::list_wifi_networks())
     }
 
     fn snapshot(&self, initial: bool) -> NetworkSnapshot {
+        crate::device_read::off_ui_thread();
         NetworkSnapshot::read(initial)
     }
 
     fn status(&self) -> NetworkSnapshot {
+        crate::device_read::off_ui_thread();
         NetworkSnapshot {
             profile_list: Some(os_actions::list_saved_network_profiles()),
             ..NetworkSnapshot::status()
@@ -1127,21 +1130,25 @@ impl NetworkService for DeviceNetwork {
     }
 
     fn device_vpn(&self) -> Option<DeviceVpnStatus> {
+        crate::device_read::off_ui_thread();
         DeviceVpnStatus::load()
     }
 
     fn recheck_connectivity(&self) {
+        crate::device_read::off_ui_thread();
         // A refused or failed recheck still leaves the last verdict, which
         // the snapshot that follows reads and reports.
         let _ = os_actions::check_connectivity_now();
     }
 
     fn scan(&self) -> Result<(), String> {
+        crate::device_read::off_ui_thread();
         os_actions::scan_wifi()
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
         use os_actions::network_settings as nm;
+        crate::device_read::off_ui_thread();
         let dispatcher = &self.dispatcher;
         match change {
             NetworkChange::Wifi(on) => dispatcher.set_wifi(*on),
@@ -1186,6 +1193,7 @@ impl NetworkService for DeviceNetwork {
 
     fn create_vpn(&self, setup: &VpnSetup) -> Result<String, String> {
         use os_actions::network_settings as nm;
+        crate::device_read::off_ui_thread();
         match setup {
             VpnSetup::Text { kind, name, text } => nm::import_vpn_text(kind, name, text),
             VpnSetup::File { kind, path } => nm::import_path_finding_uuid(kind, path),
@@ -1198,26 +1206,32 @@ impl NetworkService for DeviceNetwork {
     }
 
     fn vpn_settings(&self, uuid: &str) -> Result<VpnProfileSettings, String> {
+        crate::device_read::off_ui_thread();
         os_actions::network_settings::vpn_profile_settings(uuid)
     }
 
     fn export_vpn(&self, uuid: &str) -> Result<Zeroizing<String>, String> {
+        crate::device_read::off_ui_thread();
         os_actions::network_settings::export_vpn(uuid)
     }
 
     fn wifi_password(&self, uuid: &str) -> Result<Zeroizing<String>, String> {
+        crate::device_read::off_ui_thread();
         os_actions::network_settings::wifi_profile_password(uuid)
     }
 
     fn continuity(&self, command: WifiContinuityCommand) -> Result<WifiContinuityReply, String> {
+        crate::device_read::off_ui_thread();
         ui::collaboration::wifi_continuity_command(command)
     }
 
     fn diagnostics(&self) -> Result<os_actions::ConnectionDiagnostics, String> {
+        crate::device_read::off_ui_thread();
         os_actions::connection_diagnostics()
     }
 
     fn sign_in_page(&self) -> Result<String, String> {
+        crate::device_read::off_ui_thread();
         os_actions::captive_portal_uri()
     }
 }
@@ -1680,7 +1694,7 @@ impl NetworkArea {
         let mut unavailable = |effects: &[&'static str], code: &str, reason: &str| {
             statuses.extend(effects.iter().map(|&id| {
                 EffectStatus::unavailable(
-                    ActionRef::<SettingsEffect, ()>::new(id, &[]),
+                    ActionRef::<SettingsEffect, ()>::new(id, &[], SettingsEffect::kind()),
                     code,
                     reason,
                 )

@@ -274,6 +274,10 @@ pub(super) struct ActionRuntime {
     /// A handled input left the surface to publish once the sync it asked
     /// for has run: the frame that runs it publishes.
     pub(super) action_surface_owed: bool,
+    /// What the last publication was derived from
+    /// ([`super::model_lifecycle::PublicationStamp`]); `None` when it cannot
+    /// be shown current.
+    pub(super) published_stamp: Option<super::model_lifecycle::PublicationStamp>,
     #[cfg(test)]
     pub(super) action_surface_publication_attempts: usize,
     /// Opaque, revision-bound continuation state for the broker directory.
@@ -362,6 +366,7 @@ impl ActionRuntime {
             last_published_actions: None,
             published_surface: None,
             action_surface_owed: false,
+            published_stamp: None,
             #[cfg(test)]
             action_surface_publication_attempts: 0,
             action_directory_cursors: std::collections::HashMap::new(),

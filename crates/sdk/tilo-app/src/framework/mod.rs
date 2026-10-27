@@ -388,6 +388,7 @@ pub use person::PersonRecord;
 pub use preview::PastVersion;
 pub use query::{Query, ReadFailure};
 pub use record::{Declare, OtherRecord, Records};
+pub use reference::Call;
 pub use root::{reserved_action_ids, with_surface};
 pub use rows::LiveRow;
 pub use saves::Saves;

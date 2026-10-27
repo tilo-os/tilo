@@ -80,6 +80,14 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(records["a"]["tests"], 1)
         self.assertAlmostEqual(records["a"]["wall_seconds"], 2.5)
 
+    def test_nextests_libtest_json_plus_names_the_binary_and_nests_its_own_object(self):
+        line = ('{"type":"test","event":"ok","name":"store::page_controls$tests::opens",'
+                '"exec_time":1.5,"nextest":{"crate":"store","test_binary":"page_controls"}}')
+        records, _ = self.records(line, '{"type":"test","event":"ok","name":"store$a","exec_time":0.5,"nextest":{}}')
+        self.assertEqual(records["store"]["tests"], 2)
+        self.assertAlmostEqual(records["store"]["wall_seconds"], 2.0)
+        self.assertEqual(records["store"]["slowest"][0]["test"], "tests::opens")
+
     def test_every_line_reaches_the_log_as_libtest_wrote_it(self):
         lines = [suite("it", 1.0, 0), "warning: something", passed("a::x", 1.0), "{not json}"]
         _, forwarded = self.records(*lines)
@@ -221,6 +229,14 @@ class PipelineTests(unittest.TestCase):
         self.assertIn('record --json "$timings"', wrapper)
         self.assertIn("--no-fail-fast", wrapper)
         self.assertIn('exit "$status"', wrapper)
+
+    def test_a_format_t_already_asked_for_is_not_asked_for_twice(self):
+        # t runs every nextest check with --message-format libtest-json-plus, and nextest refuses
+        # a second --message-format before running any test.
+        wrapper = (ROOT / "tools/ci/t-nextest.sh").read_text(encoding="utf-8")
+        self.assertIn('*" --message-format "*', wrapper)
+        self.assertIn('"${format[@]}"', wrapper)
+        self.assertNotIn('"${arguments[@]}" --message-format', wrapper)
 
     def test_the_committed_baseline_holds_the_workspace_only(self):
         baseline = test_timings.load(ROOT / "docs/measurements/test-timings.json")

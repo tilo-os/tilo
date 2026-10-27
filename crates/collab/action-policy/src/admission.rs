@@ -10,7 +10,41 @@
 //! a window checking its own and a page admitting its person's agree on
 //! every answer.
 
-use crate::Answer;
+use crate::{ActionKind, Answer};
+
+/// How far an invocation was admitted to reach: the kind of action it is,
+/// and whether it exercises authority over the room or others in it.
+///
+/// What an invocation's effect asks for while it runs (another resource's
+/// action, an edit of its own resource) continues it, and goes no further
+/// than it without being asked for: a reading invocation's child that
+/// edits, or a child that is privileged under one that was not, runs only
+/// once the person confirmed that child itself. The cap carries down a
+/// chain: what a child was admitted to reach is its own reach narrowed by
+/// its parent's, unless the person confirmed it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Reach {
+    pub kind: ActionKind,
+    pub privileged: bool,
+}
+
+impl Reach {
+    /// Whether an action of `kind`, privileged when `privileged`, stays
+    /// within this reach.
+    #[must_use]
+    pub fn covers(self, kind: ActionKind, privileged: bool) -> bool {
+        kind <= self.kind && (self.privileged || !privileged)
+    }
+
+    /// The part of this reach `other` covers too.
+    #[must_use]
+    pub fn narrowed(self, other: Self) -> Self {
+        Self {
+            kind: self.kind.min(other.kind),
+            privileged: self.privileged && other.privileged,
+        }
+    }
+}
 
 /// Who an invocation is admitted for, as admission weighs an ask.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +122,32 @@ mod tests {
             attended: false,
             record: None,
         }
+    }
+
+    #[test]
+    fn a_reach_covers_what_goes_no_further() {
+        let edit = Reach {
+            kind: ActionKind::Undoable,
+            privileged: false,
+        };
+        assert!(edit.covers(ActionKind::Read, false));
+        assert!(edit.covers(ActionKind::Undoable, false));
+        assert!(!edit.covers(ActionKind::Outside, false));
+        assert!(
+            !edit.covers(ActionKind::Undoable, true),
+            "privileged goes further"
+        );
+        let read = Reach {
+            kind: ActionKind::Read,
+            privileged: true,
+        };
+        assert_eq!(
+            edit.narrowed(read),
+            Reach {
+                kind: ActionKind::Read,
+                privileged: false
+            }
+        );
     }
 
     #[test]

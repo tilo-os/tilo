@@ -423,7 +423,7 @@ impl FrameHarness {
 
     /// The window's bar as the desktop draws it across a window `width`
     /// wide, at rest, its labels measured as painted.
-    fn painted_window_bar(&mut self, width: f64) -> TabBar {
+    pub(super) fn painted_window_bar(&mut self, width: f64) -> TabBar {
         let _settled = crate::motion::testing::settled();
         let mut bar = self.window_bar(width);
         bar.draw(
@@ -552,7 +552,7 @@ impl FrameHarness {
     }
 
     /// Hand the app what was done in `bar`'s slots.
-    fn deliver_bar_events(&mut self, bar: &mut TabBar) -> Result<(), String> {
+    pub(super) fn deliver_bar_events(&mut self, bar: &mut TabBar) -> Result<(), String> {
         let events = bar.take_toolbar_events();
         if events.is_empty() {
             return Err("the bar ran nothing".into());
@@ -732,6 +732,10 @@ fn place_search(bar: &TabBar, search: &mut WindowSearch) {
 }
 
 #[cfg(test)]
+#[path = "window_bar_layout_tests.rs"]
+mod layout_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -897,7 +901,7 @@ mod tests {
     }
 
     /// An app that is only its name.
-    struct NamedApp;
+    pub(super) struct NamedApp;
 
     impl Widget for NamedApp {
         fn name(&self) -> &str {
@@ -1897,7 +1901,7 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    struct HostedReset;
+    pub(super) struct HostedReset;
 
     impl Drop for HostedReset {
         fn drop(&mut self) {

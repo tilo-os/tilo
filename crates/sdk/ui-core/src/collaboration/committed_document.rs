@@ -13,9 +13,23 @@ pub(super) struct Reads(
     Arc<std::sync::Mutex<BTreeMap<String, CommittedDocument>>>,
     Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     Arc<std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>>,
-    Arc<std::sync::Mutex<Option<Vec<String>>>>,
+    Arc<std::sync::Mutex<Option<DocumentOwners>>>,
     Arc<Progress>,
 );
+/// The App's live document owner routes and the document generation they
+/// belong to. Reopening or replacing the document starts a new generation.
+#[derive(Clone)]
+pub(super) struct DocumentOwners {
+    routes: Vec<String>,
+    generation: u64,
+}
+/// The document owner an accepted invocation arrived for. It may run only
+/// while that exact owner is still current.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DeliveryOwner {
+    generation: Option<u64>,
+    route: Option<String>,
+}
 /// Counts changes a constructing owner waits for (a capture staged, a route
 /// becoming publishable), so its bounded wait ends at the change instead of
 /// at its next poll.
@@ -149,18 +163,47 @@ impl Reads {
             .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
             .clone())
     }
-    pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>) {
+    pub(super) fn set_document_owner_routes(&self, mut keys: Vec<String>, generation: u64) {
         keys.compact_sort();
         keys.dedup();
         if let Ok(mut owners) = self.4.lock() {
-            *owners = Some(keys);
+            *owners = Some(DocumentOwners {
+                routes: keys,
+                generation,
+            });
         }
     }
     pub(super) fn document_owner_routes(&self, original: &str) -> Result<Vec<String>, String> {
         self.4
             .lock()
             .map_err(|_| "document owner routes poisoned".into())
-            .map(|owners| owners.clone().unwrap_or_else(|| vec![original.into()]))
+            .map(|owners| {
+                owners
+                    .as_ref()
+                    .map_or_else(|| vec![original.into()], |owners| owners.routes.clone())
+            })
+    }
+    /// The owner an invocation arriving on `key` now belongs to.
+    pub(super) fn delivery_owner(&self, key: &str) -> DeliveryOwner {
+        let owners = self.4.lock_recover();
+        DeliveryOwner {
+            generation: owners.as_ref().map(|owners| owners.generation),
+            route: owners
+                .as_ref()
+                .filter(|owners| owners.routes.iter().any(|route| route == key))
+                .map(|_| key.into()),
+        }
+    }
+    /// Whether `owner` is still the current document owner: same document
+    /// generation, and its route is still one of the live owner routes.
+    pub(super) fn owns(&self, owner: &DeliveryOwner) -> bool {
+        let owners = self.4.lock_recover();
+        owners.as_ref().map(|owners| owners.generation) == owner.generation
+            && owner.route.as_ref().is_none_or(|key| {
+                owners
+                    .as_ref()
+                    .is_some_and(|owners| owners.routes.iter().any(|route| route == key))
+            })
     }
     #[cfg(test)]
     pub(super) fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {

@@ -279,6 +279,35 @@ impl AppContentIndex {
         resources
     }
 
+    /// Every resource `room`'s apps published an entry opening, with the
+    /// app and the title that entry gives it, once each: what a person picks
+    /// an existing resource from.
+    pub fn titled(&self, room: &str) -> Vec<(String, String, String)> {
+        let inner = self.inner.lock_recover();
+        let mut titled: Vec<(String, String, String)> = inner
+            .slots
+            .iter()
+            .filter(|(slot, _)| slot.room == room)
+            .flat_map(|(slot, entries)| {
+                let unlocked = inner.unlocked(&slot.app);
+                entries
+                    .values()
+                    .filter(move |entry| entry.action.is_none() && (!entry.secret || unlocked))
+                    .map(|entry| {
+                        (
+                            slot.app.clone(),
+                            entry.resource.clone(),
+                            entry.title.clone(),
+                        )
+                    })
+            })
+            .collect();
+        drop(inner);
+        titled.sort();
+        titled.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+        titled
+    }
+
     /// Whether `app` last said its secrets are unlocked.
     pub fn secrets_unlocked(&self, app: &str) -> bool {
         self.inner.lock_recover().unlocked(app)
@@ -544,6 +573,45 @@ mod tests {
         );
         assert_eq!(index.title("another-room", "tasks.tracker/issues/1"), None);
         assert_eq!(index.title(ROOM, "tasks.tracker/issues/2"), None);
+    }
+
+    #[test]
+    fn each_resource_is_listed_once_by_its_title_in_its_room() {
+        let index = AppContentIndex::in_memory();
+        index.apply(
+            &SlotKey::new("so.tilo.notes", ROOM, ""),
+            IndexDelta {
+                reset: true,
+                upsert: vec![
+                    entry("notes.notebook/pages/a", "Plan"),
+                    IndexEntry {
+                        action: Some(IndexAction {
+                            resource: "notes.notebook/pages/a".into(),
+                            action: "delete".into(),
+                        }),
+                        key: "notes.notebook/pages/a\u{1f}delete".into(),
+                        ..entry("notes.notebook/pages/a", "Delete Plan")
+                    },
+                ],
+                ..IndexDelta::default()
+            },
+        );
+        index.apply(
+            &SlotKey::new("so.tilo.notes", "another-room", ""),
+            IndexDelta {
+                reset: true,
+                upsert: vec![entry("notes.notebook/pages/b", "Elsewhere")],
+                ..IndexDelta::default()
+            },
+        );
+        assert_eq!(
+            index.titled(ROOM),
+            [(
+                "so.tilo.notes".to_owned(),
+                "notes.notebook/pages/a".to_owned(),
+                "Plan".to_owned()
+            )]
+        );
     }
 
     #[test]

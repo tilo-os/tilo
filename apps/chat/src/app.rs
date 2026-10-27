@@ -1660,6 +1660,10 @@ impl Widget for ChatApp {
         self.request_visible_images();
         self.sync_call_pictures();
         // Native capture/transport belongs to the shell's lease-bound service.
+        // The bar's slots follow the shell's every frame, also while a
+        // narrow window's sidebar covers the conversation and it is not
+        // drawn.
+        self.declare_window_toolbar();
     }
 
     fn composition_follows_allocation(&self) -> bool {
@@ -2265,6 +2269,14 @@ impl Widget for ChatApp {
         let model_changed = self.pump_model();
         let room_changed = self.take_room();
         self.settle_attachment_save();
+        // The call's video tile is the one child laid out: dragged, handed
+        // off or following the grid, it is placed again where it went.
+        if self
+            .laid_video
+            .is_some_and(|laid| laid != (self.call.expanded, self.call_video_rect()))
+        {
+            ui::widget::note_layout_moved();
+        }
         // Re-run `sync` once after the first layout so the channel already in
         // view acquires its read receipt on open.
         std::mem::take(&mut self.read_on_present) || model_changed || room_changed

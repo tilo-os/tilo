@@ -114,8 +114,8 @@ pub struct Record {
 }
 
 /// Where `package`'s record lives: the metadata directory the manifest
-/// sits in, or — for a package installed before payloads were content
-/// addressed — `<store>/integrity/<app id>`.
+/// sits in or, for a payload tree that carries no record of its own,
+/// [`detached_record_dir`].
 pub fn record_dir(package: &InstalledPackage) -> PathBuf {
     if let Some(dir) = package.manifest_path.parent()
         && dir.join(SIGNED_ROOT_FILE).is_file()
@@ -127,7 +127,7 @@ pub fn record_dir(package: &InstalledPackage) -> PathBuf {
         .parent()
         .and_then(Path::parent)
         .unwrap_or_else(|| Path::new("/"));
-    legacy_record_dir(store, &package.id)
+    detached_record_dir(store, &package.id)
 }
 
 /// Whether `package`'s signed record is at the package format this build
@@ -142,8 +142,10 @@ pub fn record_current(package: &InstalledPackage) -> bool {
         == Some(tilo_app_package::TAPP_FORMAT_VERSION)
 }
 
-/// The record directory the pre-content-store installer used.
-pub fn legacy_record_dir(store_root: &Path, app_id: &str) -> PathBuf {
+/// A record kept apart from its payload tree, at `<store>/integrity/<app id>`.
+/// The managed workspace agent keeps its signed root, manifest and collection
+/// here.
+pub fn detached_record_dir(store_root: &Path, app_id: &str) -> PathBuf {
     store_root.join("integrity").join(sanitise(app_id))
 }
 
@@ -480,17 +482,17 @@ mod tests {
                 verify(&package, &package.payload_root).expect_err("covered by the signature");
             assert!(matches!(err, IntegrityError::CollectionMismatch));
         }
-        // phase: a_legacy_install_keeps_its_record_under_integrity
+        // phase: a_detached_record_lives_under_integrity
         {
             let tmp = tempfile::tempdir().unwrap();
             let mut package = fixture(tmp.path());
-            let legacy = legacy_record_dir(tmp.path(), &package.id);
-            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-            std::fs::rename(record_dir(&package), &legacy).unwrap();
+            let detached = detached_record_dir(tmp.path(), &package.id);
+            std::fs::create_dir_all(detached.parent().unwrap()).unwrap();
+            std::fs::rename(record_dir(&package), &detached).unwrap();
             let payload = tmp.path().join("payloads/so.tilo.example");
             std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
             std::fs::rename(&package.payload_root, &payload).unwrap();
-            std::fs::copy(legacy.join(MANIFEST_FILE), payload.join(MANIFEST_FILE)).unwrap();
+            std::fs::copy(detached.join(MANIFEST_FILE), payload.join(MANIFEST_FILE)).unwrap();
             package.payload_root = payload.clone();
             package.manifest_path = payload.join(MANIFEST_FILE);
             let report = verify(&package, &payload).unwrap();

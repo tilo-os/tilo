@@ -693,6 +693,9 @@ fn plan(
     if source_ws.id == target {
         return Err(MoveTabError::SameWorkspace);
     }
+    if !tree.may_hold_app(target, &app_id) {
+        return Err(MoveTabError::Personal);
+    }
     let governed = |room: RoomId| {
         tree.requires_native_owner(room) || hosted.is_some_and(|hosted| hosted.hosts(room))
     };

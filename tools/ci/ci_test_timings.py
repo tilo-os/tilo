@@ -61,19 +61,21 @@ def events(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any] | None]]:
     test that did not start carry no time to record.
     """
     for line in lines:
-        if "{" not in line:
+        if "{" not in line or not line.rstrip().endswith("}"):
             yield line, None
             continue
-        start = line.rfind("{") if line.rstrip().endswith("}") else line.find("{")
-        try:
-            event = json.loads(line[start:])
-        except json.JSONDecodeError:
-            yield line, None
-            continue
-        if not isinstance(event, dict):
-            yield line, None
-            continue
-        yield line, event
+        # The event is the first `{` that opens an object running to the line's end: a
+        # prefix may hold braces of its own, and the event may nest objects (nextest's
+        # libtest-json-plus adds one), so neither the first nor the last brace will do.
+        event = None
+        start = line.find("{")
+        while start != -1:
+            try:
+                event = json.loads(line[start:])
+                break
+            except json.JSONDecodeError:
+                start = line.find("{", start + 1)
+        yield line, event if isinstance(event, dict) else None
 
 
 def record(record: dict[str, dict[str, Any]], event: dict[str, Any]) -> None:
@@ -84,7 +86,13 @@ def record(record: dict[str, dict[str, Any]], event: dict[str, Any]) -> None:
     duration = event.get("exec_time")
     if not isinstance(duration, (int, float)):
         return
-    package, _, test = name.partition("::")
+    # nextest's libtest-json-plus names a test `<binary id>$<test>`, and a binary id is its
+    # package, or the package and the binary (`store::page_controls`).
+    binary, dollar, test = name.partition("$")
+    if dollar:
+        package = binary.partition("::")[0]
+    else:
+        package, _, test = name.partition("::")
     entry = record.setdefault(
         package, {"tests": 0, "wall_seconds": 0.0, "test_seconds": 0.0, "slowest": []})
     entry["tests"] += 1
