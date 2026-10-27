@@ -53,9 +53,7 @@ db-identity-exhausted = Der Abfragezähler ist erschöpft; Database Client neu s
 ## Seitenleiste
 
 db-catalog = Katalog
-db-saved-queries = Gespeicherte Abfragen
 db-connections = Verbindungen
-
 
 ## Fenstertitel und Tabs
 
