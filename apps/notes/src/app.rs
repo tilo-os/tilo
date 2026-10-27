@@ -2176,6 +2176,7 @@ impl NotesApp {
         if let Some(transfer) = self.sidebar.take_transfer() {
             self.request(&match transfer {
                 SidebarTransfer::ImportMarkdown => NotesEffect::ImportMarkdownFile,
+                SidebarTransfer::ImportNotion => NotesEffect::ImportNotionExport,
                 SidebarTransfer::CopyLink(page) => NotesEffect::CopyLink { page },
                 SidebarTransfer::ExportMarkdown(page) => NotesEffect::ExportMarkdown { page },
                 SidebarTransfer::InsertImage(page) => NotesEffect::InsertImage { page },

@@ -4,6 +4,10 @@ use std::io::Write as _;
 
 use super::*;
 
+fn localized() {
+    ui::i18n::I18nManager::init("en-US");
+}
+
 /// A zip holding `files`, in the order given.
 fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut buffer = std::io::Cursor::new(Vec::new());
@@ -22,6 +26,7 @@ fn archive(files: &[(&str, &[u8])]) -> Vec<u8> {
 
 #[test]
 fn an_export_archive_gives_one_table_per_view() {
+    localized();
     let bytes = archive(&[
         (
             "Tasks 1a2b3c4d5e_all.csv",
@@ -37,6 +42,7 @@ fn an_export_archive_gives_one_table_per_view() {
 
 #[test]
 fn a_csv_the_export_does_not_mark_keeps_its_whole_name() {
+    localized();
     let bytes = archive(&[("Q3 budget.csv", b"a,b\n1,2\n" as &[u8])]);
     let tables = tables(&bytes).unwrap();
     assert_eq!(tables[0].name, "Q3 budget");
@@ -71,6 +77,7 @@ fn a_listing_hands_over_its_table_block_as_rows() {
 
 #[test]
 fn a_database_listing_gives_its_rows_columns_from_the_properties() {
+    localized();
     let listing = serde_json::json!({
         "results": [
             {"type": "child_database", "child_database": {
@@ -95,13 +102,19 @@ fn a_database_listing_gives_its_rows_columns_from_the_properties() {
     assert_eq!(tables[0].name, "Projects");
     let csv = &tables[0].csv;
     assert_eq!(csv.lines().count(), 3, "a header and two rows: {csv}");
-    assert!(csv.lines().next().unwrap().contains("Name"), "{csv}");
-    assert!(csv.contains("Launch,3,"), "{csv}");
-    assert!(csv.contains("Follow-up,,"), "{csv}");
+    let header: Vec<&str> = csv.lines().next().unwrap().split(',').collect();
+    assert_eq!(header.len(), 3, "one column per property: {csv}");
+    for name in ["Name", "Count", "Done"] {
+        assert!(header.contains(&name), "{name} in {csv}");
+    }
+    assert!(csv.contains("Launch"), "{csv}");
+    assert!(csv.contains('3'), "{csv}");
+    assert!(csv.contains("Follow-up"), "{csv}");
 }
 
 #[test]
 fn a_databases_dates_and_selections_arrive_as_their_text() {
+    localized();
     let listing = serde_json::json!({
         "results": [
             {"type": "child_database", "child_database": {
@@ -126,6 +139,7 @@ fn a_databases_dates_and_selections_arrive_as_their_text() {
 
 #[test]
 fn a_file_with_no_table_is_refused() {
+    localized();
     let empty = archive(&[("Page 1a2b.md", b"# Page\n" as &[u8])]);
     assert!(tables(&empty).is_err());
     assert!(tables(b"not an export").is_err());

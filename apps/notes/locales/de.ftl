@@ -143,6 +143,7 @@ notes-import-not-utf8 = Die Datei ist kein UTF-8-Text
 notes-imported = { $title } importiert
 notes-import-failed = Nicht importiert: { $error }
 notes-notion-import-title = Notion-Export importieren
+notes-notion-menu-import = Aus Notion importieren
 notes-notion-files = Notion-Export
 notes-notion-json-files = Notion-Seitenliste
 notes-notion-imported =
