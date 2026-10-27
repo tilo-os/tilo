@@ -48,6 +48,9 @@ pub struct RowAction {
     /// Whether the state the action toggles is on for the subject (a pinned note), when the
     /// action says (`on:`): its icon is drawn filled.
     pub on: Option<bool>,
+    /// The id of the subject's field whose state the action toggles (`on: n.pinned`): a control
+    /// bound to it in the window stands for the action.
+    pub toggles: Option<String>,
 }
 
 /// One row of a list: the item, and the `row(...)` the view made for it.
@@ -1191,6 +1194,7 @@ mod tests {
             destructive,
             args: Vec::new(),
             on: None,
+            toggles: None,
         }
     }
 

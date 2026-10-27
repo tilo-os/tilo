@@ -176,6 +176,11 @@ pub struct ActionMeta {
     /// above are what shows without evaluating it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub present: Option<String>,
+    /// The id of the subject's `Bool` field whose state the action toggles, when its `on:` is
+    /// that field (`on: n.pinned`). A control bound to the field stands for the action where
+    /// both would show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toggles: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

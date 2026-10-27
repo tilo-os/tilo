@@ -1352,6 +1352,12 @@ impl EmptyState {
         paint_empty_state(ctx, rect, content, hover, focused, false, None)
     }
 
+    /// Whether the action is the first of the accessibility node's children:
+    /// it is, unless a room that has not synced says so in its place.
+    fn lists_action(&self) -> bool {
+        self.resolved.2.is_some() && crate::room_sync::waiting().is_none()
+    }
+
     fn content(&self) -> EmptyStateContent<'_> {
         EmptyStateContent {
             icon: if self.busy {
@@ -1664,11 +1670,28 @@ impl Widget for EmptyState {
         // The empty state is a labelled group; the title is its accessible
         // name and the message its description so a screen reader announces
         // both without the caller wiring anything.
-        let mut node = AccessNode::new(Role::Group).with_name(self.resolved.0.clone());
-        if let Some(msg) = &self.resolved.1 {
-            node = node.with_description(msg.clone());
+        // A room that has not synced says what the screen says in its place,
+        // without the app's action (`crate::room_sync`).
+        let waiting = crate::room_sync::waiting();
+        let (title, message, busy) = waiting.as_ref().map_or(
+            (
+                &self.resolved.0,
+                self.resolved.1.as_ref(),
+                self.spinner.is_some(),
+            ),
+            |waiting| {
+                (
+                    &waiting.title,
+                    waiting.message.as_ref(),
+                    waiting.spinner_since.is_some(),
+                )
+            },
+        );
+        let mut node = AccessNode::new(Role::Group).with_name(title.clone());
+        if let Some(message) = message {
+            node = node.with_description(message.clone());
         }
-        if self.spinner.is_some() {
+        if busy {
             node = node.with_state(AccessState::new().busy(true));
         }
         // A failure is announced at once; a wait when the reader is free.
@@ -1678,7 +1701,7 @@ impl Widget for EmptyState {
             node = node.with_live(Politeness::Polite);
         }
         let mut children = Vec::new();
-        if let Some(action) = &self.resolved.2 {
+        if let Some(action) = self.resolved.2.as_ref().filter(|_| waiting.is_none()) {
             node = node.with_state(
                 AccessState::new()
                     .focusable(true)
@@ -1722,7 +1745,7 @@ impl Widget for EmptyState {
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        match (path, self.action_label.is_some()) {
+        match (path, self.lists_action()) {
             ([0], true) => Some(self.action_rect),
             ([0], false) | ([1], true) if self.details.is_some() => Some(self.details_rect),
             _ => None,
@@ -1730,10 +1753,11 @@ impl Widget for EmptyState {
     }
 
     fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        if matches!(path, [0]) && self.action_label.is_some() && self.is_enabled() {
+        let action = self.lists_action();
+        if matches!(path, [0]) && action && self.is_enabled() {
             self.action_focused = true;
             true
-        } else if matches!(path, [0]) && self.action_label.is_none() && self.details.is_some() {
+        } else if matches!(path, [0]) && !action && self.details.is_some() {
             self.details_focused = true;
             true
         } else {
@@ -2870,5 +2894,41 @@ mod tests {
             positional.children.iter().all(|child| child.key.is_none()),
             "beside position-addressed controls it is addressed by position"
         );
+    }
+
+    #[test]
+    fn a_screen_reader_hears_what_the_screen_says_before_the_room_synced() {
+        use crate::room_sync::{RoomSync, RoomSyncState};
+        let empty = EmptyState::new("No notes yet").with_action("New note");
+        let told = |state| {
+            Some(RoomSync {
+                state,
+                workspace: "Lounge".into(),
+                writable: None,
+            })
+        };
+
+        crate::room_sync::set(told(RoomSyncState::Connecting));
+        let waiting = Widget::accessibility(&empty).unwrap();
+        assert_eq!(
+            waiting.name.as_deref(),
+            Some(crate::room_sync::waiting().unwrap().title.as_str())
+        );
+        assert!(waiting.name.as_deref().unwrap().contains("Lounge"));
+        assert!(waiting.state.busy, "the connecting state is on its way");
+        assert!(waiting.children.is_empty(), "the app's action waits too");
+
+        crate::room_sync::set(told(RoomSyncState::Synced));
+        let empty_room = Widget::accessibility(&empty).unwrap();
+        assert_eq!(empty_room.name.as_deref(), Some("No notes yet"));
+        assert!(!empty_room.state.busy);
+        assert_eq!(
+            empty_room
+                .children
+                .first()
+                .and_then(|action| action.name.as_deref()),
+            Some("New note")
+        );
+        crate::room_sync::set(None);
     }
 }
