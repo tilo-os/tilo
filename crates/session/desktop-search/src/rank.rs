@@ -79,7 +79,7 @@ pub fn action_match_score(
     keywords: &[String],
     resource_label: &str,
 ) -> Option<i32> {
-    rank_fields(
+    ui::search::system::rank_action_fields(
         needle,
         &ui::search::system::action_search_fields(action_label, keywords, resource_label),
     )

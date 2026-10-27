@@ -3566,7 +3566,8 @@ fn index_actions(
     let mut index = SearchIndex::new(Matching {
         spanning: true,
         typos: false,
-    });
+    })
+    .with_ranks(ui::search::system::action_ranks);
     index.replace_all(
         entries
             .iter()

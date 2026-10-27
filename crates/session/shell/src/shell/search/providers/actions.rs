@@ -3624,7 +3624,7 @@ impl ActionsProvider {
                 Rc::new(crate::shell::quick_settings::actions::UnavailableQsActions),
                 crate::shell::quick_settings::actions::QsActionAvailability::default(),
             )),
-            ranker: ListIndex::default(),
+            ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
@@ -3640,7 +3640,7 @@ impl ActionsProvider {
             search_preferences: Some(search_preferences),
             provider_catalog: Some(provider_catalog),
             qs_actions,
-            ranker: ListIndex::default(),
+            ranker: ListIndex::default().with_ranks(ui::search::system::action_ranks),
             catalogue: std::cell::RefCell::default(),
             #[cfg(test)]
             builds: Rc::default(),
