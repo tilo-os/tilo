@@ -67,6 +67,9 @@ namespace {
 constexpr int kOffscreenFrameRate = 60;
 constexpr size_t kMaxMediaFrames = 64;
 constexpr size_t kMaxAudioPackets = 16;
+// The widest picture the page op paints, matching the app's own bound: a
+// wider request is a malformed command, never a larger answer.
+constexpr int CAPTURE_MAX_WIDTH = 1600;
 // Bounded, opt-in startup geometry evidence; never includes page content.
 void TraceGeometry(const char* stage,int tab,int width=0,int height=0,double scale=0) {
   static const bool enabled=[] {const char* value=std::getenv("TILO_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
@@ -2540,10 +2543,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(action!="outline" && action!="click" && action!="fill" && action!="select" && action!="fill_files" && action!="press" && action!="submit" &&
        action!="changes" && action!="at" && action!="settle" && action!="console" && action!="network" &&
        action!="reader" && action!="pointer" && action!="hover" && action!="drag" && action!="path" &&
-       action!="scroll" && action!="pointer_rest")return false;
+       action!="scroll" && action!="pointer_rest" && action!="capture")return false;
     const bool elementless=action=="outline" || action=="press" || action=="changes" || action=="at" || action=="settle" ||
       action=="console" || action=="network" || action=="reader" || action=="pointer" || action=="hover" ||
-      action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest";
+      action=="drag" || action=="path" || action=="scroll" || action=="pointer_rest" || action=="capture";
     if(action=="pointer") {
       if(!type("steps",VTYPE_LIST) || !type("button",VTYPE_STRING))return false;
       const auto button=d->GetString("button").ToString();
@@ -2570,6 +2573,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     if(action=="settle" && (!type("quiet_ms",VTYPE_INT) || !type("timeout_ms",VTYPE_INT) || d->GetInt("quiet_ms")<50 ||
        d->GetInt("timeout_ms")<d->GetInt("quiet_ms") || d->GetInt("timeout_ms")>20000))return false;
     if((action=="console" || action=="network") && (!number("since") || Number(d,"since")<0))return false;
+    // A picture is painted at most as wide as the app asks and no wider
+    // than the engine's own bound; a wider one is refused, not cut.
+    if(action=="capture" && d->HasKey("max_width") &&
+       (!type("max_width",VTYPE_INT) || d->GetInt("max_width")<1 || d->GetInt("max_width")>CAPTURE_MAX_WIDTH))return false;
     if(action=="fill" && (!type("text",VTYPE_STRING) || d->GetString("text").length()>65536))return false;
     if(action=="select") {
       if(!type("values",VTYPE_LIST))return false;auto values=d->GetList("values");

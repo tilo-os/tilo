@@ -3,6 +3,7 @@ use tilo_action_policy::{
     Level, Lifetime, Party, Preset, PresetError, Refusal, Role, RoomPolicy, Rule, Subject,
     TreePath, decide, describe, describe_node,
     roles::{self, governance},
+    sentences,
 };
 
 const NOW: u64 = 1_000_000;
@@ -610,6 +611,214 @@ fn role_presets_grant_what_the_table_says() {
         ];
         assert_eq!(got, expected, "{role}");
     }
+}
+
+/// The Editor preset grants the room's content and not the room's own
+/// resource, so a change that reaches outside asks, and changing who may do
+/// what is refused: the role is a preset of grants like any other.
+#[test]
+fn editor_preset_asks_for_outside() {
+    let room = room_with(&[(BOB, Role::Editor)]);
+    let bob = Authority::person(room.party(BOB));
+    assert_eq!(
+        bob.decide(&send(), ActionKind::Outside, &cx()).answer,
+        Answer::Ask
+    );
+    assert_eq!(
+        bob.decide(&archive(), ActionKind::Undoable, &cx()).answer,
+        Answer::Allow
+    );
+    let settings = roles::room_resource("r");
+    assert_eq!(
+        bob.decide(&settings, ActionKind::Undoable, &cx()).answer,
+        Answer::Deny,
+        "an editor does not change the room's own settings"
+    );
+    let grant_node = roles::governance_action("r", governance::GRANT);
+    assert_eq!(
+        bob.decide(&grant_node, roles::GOVERNANCE_KIND, &cx())
+            .answer,
+        Answer::Deny
+    );
+    assert_eq!(
+        room.clone().apply(
+            BOB,
+            &bob,
+            Change::SetRole {
+                person: BOB.into(),
+                role: Role::Editor,
+            },
+            &cx(),
+            false
+        ),
+        Err(Refusal::NotPermitted(
+            bob.decide(&grant_node, roles::GOVERNANCE_KIND, &cx())
+                .explain()
+        ))
+    );
+}
+
+/// Ownership is structural and sits outside the grants: no grant the room
+/// holds, not even one denying everything on the person, removes or demotes
+/// the owner.
+#[test]
+fn owner_cannot_be_removed_by_grant() {
+    let mut room = room_with(&[(BOB, Role::Editor)]);
+    // The roster says why the recorded owner was grandfathered in; the
+    // recorded owner is what counts, and no grant reaches over them.
+    assert!(room.is_owner(ALICE));
+    let deny = Grant::new(
+        "bob-no-mail",
+        Subject::person(BOB),
+        mail(),
+        KindSet::ALL,
+        Answer::Deny,
+        Subject::person(BOB),
+    );
+    room.grants.push(deny);
+    assert!(!room.is_member(BOB) || room.role_of(BOB) == Some(Role::Editor));
+    assert_eq!(room.role_of(ALICE), Some(Role::Owner));
+    for kind in ActionKind::ALL {
+        let verdict = Authority::person(room.party(ALICE)).decide(&send(), kind, &cx());
+        assert_eq!(verdict.answer, Answer::Allow, "{kind}");
+        assert_eq!(verdict.parts[0].basis, Basis::Owner);
+    }
+    for change in [
+        Change::RemoveMember {
+            person: ALICE.into(),
+        },
+        Change::SetRole {
+            person: ALICE.into(),
+            role: Role::Viewer,
+        },
+        Change::Ban {
+            person: ALICE.into(),
+        },
+        Change::Restrict {
+            person: ALICE.into(),
+            until_ms: cx().now_unix_ms + 60_000,
+        },
+    ] {
+        let owner = Authority::person(room.party(ALICE));
+        let refused = room
+            .clone()
+            .apply(ALICE, &owner, change.clone(), &cx(), false);
+        assert!(refused.is_err(), "{change:?} -> {refused:?}");
+        assert_eq!(room.role_of(ALICE), Some(Role::Owner), "{change:?}");
+        assert!(!room.is_banned(ALICE), "{change:?}");
+        assert_eq!(room.restricted_until(ALICE, &cx()), None, "{change:?}");
+    }
+    // Handing the room's own ownership out is not a governance action.
+    let owner = Authority::person(room.party(ALICE));
+    for change in [
+        Change::SetRole {
+            person: BOB.into(),
+            role: Role::Owner,
+        },
+        Change::AddMember {
+            person: CAROL.into(),
+            role: Role::Owner,
+        },
+    ] {
+        let refused = room
+            .clone()
+            .apply(ALICE, &owner, change.clone(), &cx(), false);
+        assert!(
+            matches!(refused, Err(Refusal::OwnerRole)),
+            "{change:?} -> {refused:?}"
+        );
+    }
+    // The owner's own grant set still bounds what acts for them.
+    let agent =
+        Authority::person(room.party(ALICE)).bounded_by(room.party_of(Subject::agent("ag")));
+    assert_eq!(
+        agent.decide(&send(), ActionKind::Read, &cx()).answer,
+        Answer::Deny
+    );
+}
+
+/// Granting is a governance action on the room's own resource: whoever is
+/// not granted it grants nothing, and whoever is may give no more than they
+/// hold.
+#[test]
+fn grant_requires_grant_action() {
+    let room = room_with(&[(BOB, Role::Editor)]);
+    let edit = Grant::new(
+        "carol-mail",
+        Subject::person(CAROL),
+        mail(),
+        KindSet::UNDOABLE,
+        Answer::Allow,
+        alice(),
+    );
+    let grant_node = roles::governance_action("r", governance::GRANT);
+    let bob = Authority::person(room.party(BOB));
+    assert_eq!(
+        bob.decide(&grant_node, roles::GOVERNANCE_KIND, &cx())
+            .answer,
+        Answer::Deny
+    );
+    let refused = room
+        .clone()
+        .apply(BOB, &bob, Change::Grant(edit.clone()), &cx(), false);
+    assert!(
+        matches!(refused, Err(Refusal::NotPermitted(_))),
+        "{refused:?}"
+    );
+    assert!(
+        room.grants.iter().all(|held| held.id != edit.id),
+        "a refused grant writes nothing"
+    );
+
+    // The owner may grant, and the grant is signed by whoever gave it.
+    let owner = Authority::person(room.party(ALICE));
+    let mut granted = room.clone();
+    granted
+        .apply(ALICE, &owner, Change::Grant(edit.clone()), &cx(), false)
+        .expect("the owner grants");
+    let recorded = granted
+        .grants
+        .iter()
+        .find(|held| held.id == edit.id)
+        .expect("recorded");
+    assert_eq!(recorded.granted_by, Subject::person(ALICE));
+    assert_eq!(
+        Authority::person(granted.party(CAROL))
+            .decide(&archive(), ActionKind::Undoable, &cx())
+            .answer,
+        Answer::Allow
+    );
+
+    // Granted the room's governance alone, a viewer still hands out no more
+    // than they hold: a governance grant is not a grant of the content.
+    let mut narrow = room_with(&[(BOB, Role::Viewer)]);
+    narrow
+        .grants
+        .push(roles::administrator_grant("r", BOB, alice()));
+    let bob = Authority::person(narrow.party(BOB));
+    assert_eq!(
+        bob.decide(&grant_node, roles::GOVERNANCE_KIND, &cx())
+            .answer,
+        Answer::Allow
+    );
+    let refused = narrow.clone().apply(
+        BOB,
+        &bob,
+        Change::Grant(Grant::new(
+            "bob-gives-edit",
+            Subject::person(CAROL),
+            mail(),
+            KindSet::UNDOABLE,
+            Answer::Allow,
+            alice(),
+        )),
+        &cx(),
+        false,
+    );
+    assert!(
+        matches!(refused, Err(Refusal::AboveActorGrant { .. })),
+        "{refused:?}"
+    );
 }
 
 #[test]
@@ -1275,6 +1484,53 @@ fn grant_sets_read_as_sentences() {
          room r › tilo.room: undoable changes and outside effects not allowed. \
          room r › anywhere › moderation: undoable changes and outside effects not allowed."
     );
+}
+
+#[test]
+fn a_grant_set_reads_as_a_sentence_a_person_can_check() {
+    let grants = [
+        grant(
+            "room-read",
+            TreePath::room("r"),
+            KindSet::READ,
+            Answer::Allow,
+        ),
+        grant("mail", mail(), KindSet::READ_UNDOABLE, Answer::Allow),
+        grant(
+            "mail-send",
+            mail().rest().action("send"),
+            KindSet::OUTSIDE,
+            Answer::Ask,
+        ),
+        grant(
+            "finance",
+            TreePath::room("r").app("finance"),
+            KindSet::ALL,
+            Answer::Deny,
+        ),
+    ];
+    assert_eq!(
+        sentences(&grants, &Names),
+        "Project room › Mail › anywhere › Send: outside effects ask first. \
+         Project room › Mail: reading and undoable changes allowed. \
+         Project room › finance: everything not allowed. \
+         Project room: reading allowed."
+    );
+    assert_eq!(sentences(&[], &Ids), "Nothing is granted.");
+    let viewer = roles::role_preset(Role::Viewer, "r").assign(
+        "v",
+        &Subject::role(Role::Viewer),
+        &alice(),
+        &Lifetime::UntilRevoked,
+    );
+    assert_eq!(sentences(&viewer, &Ids), "room r: reading allowed.");
+    let owner = roles::role_preset(Role::Owner, "r").assign(
+        "o",
+        &Subject::role(Role::Owner),
+        &alice(),
+        &Lifetime::UntilRevoked,
+    );
+    assert_eq!(sentences(&owner, &Ids), "room r: everything allowed.");
 }
 
 #[test]

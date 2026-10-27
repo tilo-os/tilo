@@ -18,7 +18,10 @@ use ui::widget::{EventCtx, Widget as _};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 
-use super::layers::{LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer};
+use super::layers::{
+    Anchor, LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Material, Modality, Role,
+    Routed, ShellLayer, Surface,
+};
 use crate::shell::i18n::t_args;
 use crate::shell::state::{GroupId, StripId};
 use crate::shell::window_menu::{WindowMenuAction, WindowMenuRow, build_window_menu};
@@ -242,6 +245,21 @@ impl TabMenuLayer {
 impl ShellLayer for TabMenuLayer {
     fn id(&self) -> LayerId {
         LayerId::TabContextMenu
+    }
+
+    /// A context menu beside the tab or thing it was opened on: a popup
+    /// that takes the pointer until it closes.
+    fn surface(&self) -> Option<Surface> {
+        Some(Surface::shell(
+            Role::Popup,
+            Anchor::Beside {
+                at: Rect::new(self.anchor.x, self.anchor.y, self.anchor.x, self.anchor.y),
+                gap: 0.0,
+            },
+            Modality::WindowModal,
+            Material::Floating,
+            self.menu.is_open() && self.target.is_some(),
+        ))
     }
 
     fn is_open(&self) -> bool {

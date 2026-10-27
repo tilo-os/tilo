@@ -46,7 +46,8 @@ pub use dir::DirBackend;
 pub use files::FilesBackend;
 pub use memory::MemoryBackend;
 pub use tilo_content_types::{
-    ContentMeta, ImageFormat, image_format, image_size, sniff, valid_hash,
+    ContentMeta, DocumentFormat, ImageFormat, document_format, image_format, image_size, opened_by,
+    sniff, valid_hash,
 };
 
 /// The app-files owner of a page's content store (see [`ContentStore::local_for_app`]).

@@ -659,6 +659,8 @@ fn model_from_env(keys: &Path) -> ModelChoice {
     };
     ModelChoice::parse(&spec, Some(&model), key)
         .unwrap_or_else(|error| panic!("the model {model} at {spec}: {error}"))
+        .with_items_from(&|name| std::env::var(name).ok())
+        .unwrap_or_else(|error| panic!("the item model: {error}"))
         .keeping_keys_in(keys.to_owned())
 }
 
@@ -1053,6 +1055,11 @@ fn log_owner_action(
 ///   `scripted` plans with no model and needs no key (written steps).
 /// - `TILO_AGENT_API_KEY_FILE`: the provider's key, read by the host's model
 ///   client before each call.
+/// - `TILO_AGENT_DECOMPOSE_ITEM_MODEL`, with `TILO_AGENT_DECOMPOSE=1`: the
+///   items of a coordinated task plan with this model, the coordinator with
+///   `TILO_BENCH_MODEL`; its key in `TILO_AGENT_DECOMPOSE_ITEM_API_KEY_FILE`
+///   and its preset in `TILO_AGENT_DECOMPOSE_ITEM_PRESET`
+///   ([`tilo_agent_participant::profile::DECOMPOSE_ITEM_MODEL_ENV`]).
 /// - `TILO_BENCH_TASK_SECS` (600): how long a step may run.
 /// - `TILO_AGENT_USAGE_LOG`, `TILO_AGENT_ACTION_LOG`, `TILO_AGENT_PLAN_LOG`
 ///   and any other `TILO_AGENT_*` setting reach the agents as they are.

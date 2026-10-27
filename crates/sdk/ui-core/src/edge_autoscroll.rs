@@ -27,6 +27,26 @@ pub fn velocity(pointer: f64, start: f64, end: f64) -> f64 {
     }
 }
 
+/// [`velocity`] for a drag that was pressed at `press`, over a band `band`
+/// deep: it scrolls toward an edge only once the pointer has gone further
+/// that way than where it was pressed. A press already inside the band
+/// does not scroll by itself, and a drag back inward never scrolls outward.
+#[must_use]
+pub fn velocity_past_press(pointer: f64, press: f64, start: f64, end: f64, band: f64) -> f64 {
+    if end - start <= band * 2.0 {
+        return 0.0;
+    }
+    let inner_start = (start + band).min(press);
+    let inner_end = (end - band).max(press);
+    if pointer < inner_start {
+        -EDGE_AUTOSCROLL_PX_PER_S * ((inner_start - pointer) / band).min(1.0)
+    } else if pointer > inner_end {
+        EDGE_AUTOSCROLL_PX_PER_S * ((pointer - inner_end) / band).min(1.0)
+    } else {
+        0.0
+    }
+}
+
 /// How far `velocity` scrolls over a frame of `elapsed`; a stalled frame
 /// counts as at most [`EDGE_AUTOSCROLL_MAX_STEP`], so it does not fling.
 #[must_use]
@@ -64,6 +84,26 @@ impl EdgeAutoscroll {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drag_pressed_in_a_band_scrolls_only_past_where_it_was_pressed() {
+        let band = 8.0;
+        assert_eq!(velocity_past_press(3.0, 3.0, 0.0, 1000.0, band), 0.0);
+        assert_eq!(velocity_past_press(6.0, 3.0, 0.0, 1000.0, band), 0.0);
+        let past = velocity_past_press(1.0, 3.0, 0.0, 1000.0, band);
+        assert!(
+            (past + EDGE_AUTOSCROLL_PX_PER_S / 4.0).abs() < 1e-9,
+            "{past}"
+        );
+        assert_eq!(velocity_past_press(997.0, 997.0, 0.0, 1000.0, band), 0.0);
+        assert!(velocity_past_press(999.0, 997.0, 0.0, 1000.0, band) > 0.0);
+        // Pressed well inside: the band is the usual one.
+        assert_eq!(velocity_past_press(10.0, 500.0, 0.0, 1000.0, band), 0.0);
+        assert_eq!(
+            velocity_past_press(0.0, 500.0, 0.0, 1000.0, band),
+            -EDGE_AUTOSCROLL_PX_PER_S
+        );
+    }
 
     #[test]
     fn speed_grows_through_the_band_and_holds_past_the_edge() {

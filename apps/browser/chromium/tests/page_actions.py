@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Page reading and operation through the host's `page` op, in real Chromium."""
+import base64
 import http.server
 import json
 import os
@@ -741,6 +742,56 @@ class PageActions(unittest.TestCase):
         self.assertEqual(self.main_world('drawn()'), len(points), drawn)
         self.ok('click', element=self.ref(self.outline(), 'button "Submit signature"'))
         self.assertIn('text "Signature received"', self.outline())
+
+    def test_a_capture_paints_what_the_page_only_shows(self):
+        # A page can say something in pixels that no outline can carry: a
+        # chart, a scanned letter, a code drawn rather than written. The
+        # capture is the engine painting the page itself, so what comes back
+        # is what a person would see there.
+        self.h.navigate(self.url + '/canvas')
+        view = self.ok('capture')
+        picture = base64.b64decode(view['data']['capture'], validate=True)
+        self.assertEqual(view['data']['format'], 'png')
+        self.assertTrue(picture.startswith(b'\x89PNG\r\n\x1a\n'), view['data'])
+        # The viewport, as the window was told it: the picture is the whole
+        # of what is on screen, and no wider than any capture may be.
+        self.assertEqual((view['data']['x'], view['data']['y']), (0, 0))
+        self.assertEqual(view['data']['width'], 1000)
+        self.assertEqual(view['data']['height'], 800)
+
+        # An element's own box, in the page's coordinates: what the outline
+        # named, painted where it sits, not the whole screen around it.
+        canvas = self.ref(self.outline(), 'canvas "Signature pad"')
+        box = self.ok('capture', element=canvas)
+        self.assertEqual(box['data']['format'], 'png')
+        # The pad's own 500x150 canvas, with the border a person sees around
+        # it: the box is the element's, borders and all.
+        self.assertEqual(box['data']['width'], 502)
+        self.assertEqual(box['data']['height'], 152)
+        painted = base64.b64decode(box['data']['capture'], validate=True)
+        self.assertTrue(painted.startswith(b'\x89PNG\r\n\x1a\n'), box['data'])
+        self.assertIn('Signature pad', box['message'])
+
+        # A caller who asks for a narrower picture gets one: the page is
+        # scaled, never cut, and never widened.
+        narrow = self.ok('capture', element=canvas, max_width=200)
+        self.assertEqual(narrow['data']['width'], 200)
+        self.assertEqual(narrow['data']['height'], round(152 * 200 / 502))
+
+        # A ref the outline never printed names nothing to picture, and is
+        # refused before the page is asked to paint anything.
+        refused = self.page('capture', element='not-a-ref')
+        self.assertFalse(refused['ok'], refused)
+        self.assertEqual(refused['code'], 'invalid_request')
+        self.assertNotIn('capture', refused)
+
+        # A click that lands on the pad is drawn ink: the capture is of the
+        # page as it is now, not as it was loaded.
+        points = [[40, 60], [90, 40], [140, 100]]
+        self.ok('path', element=canvas, points=points)
+        ink = self.ok('capture', element=canvas)
+        self.assertNotEqual(ink['data']['capture'], box['data']['capture'],
+                            'a picture is painted when it is asked for')
 
     def test_console_and_network_reach_the_agent_and_not_the_page(self):
         self.h.navigate(self.url + '/agent')

@@ -1793,22 +1793,22 @@ enforcement stay together.*
 
 ## 10. Truth: every value carries its measure and its as-of
 
-A number on screen is a claim. `ui::fact::Fact` keeps the claim and its
+A number on screen is a claim. `ui::fact::Measured` keeps the claim and its
 provenance together so a view cannot draw the number without answering
 "measured how?", "from where?" and "when?".
 
-- **Measure first.** A `Fact` has a `Measure` naming what the number counts
+- **Measure first.** A `Measured` has a `Measure` naming what the number counts
   (`Memory in use`, `Memory (RSS)`, `Packets dropped`) and its unit when it has
   one. Two values called "Memory" are two different claims; name them
   differently on screen as well as in the model.
 - **Provenance is the caption line under the value, always.** Use
-  `Fact::value_or_dash()` in the value position and `Fact::caption(now)` under
+  `Measured::value_or_dash()` in the value position and `Measured::caption(now)` under
   it. The caption carries the source and the age ("measured 2 s ago · this
   device"). It is never beside the value and never omitted.
-- **Age makes the claim honest.** `Fact::is_stale(now)` is true when the
+- **Age makes the claim honest.** `Measured::is_stale(now)` is true when the
   reading is older than the interval it was measured for. Dim the caption, not
   the value: dimming a good number teaches people to distrust good data.
-- **Unknown is a designed state.** `Fact::unknown(measure, reason)` renders an
+- **Unknown is a designed state.** `Measured::unknown(measure, reason)` renders an
   em dash (`—`) plus why, and the app offers the action that would resolve it.
   Zero is a measurement, not a stand-in for "we did not measure". Do not show
   a healthy state, a count or a rate you did not read.

@@ -14,6 +14,16 @@ use super::*;
 // The kept fixtures carry handles their phases inspect only where a phase
 // names them; the whole scenario runs as one test, as before the split.
 
+/// A page that says something only in pixels: a small PNG, as the engine
+/// paints a scanned letter. Its bytes are what a capture answers with.
+const SCANNED_LETTER_PNG: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 12, 0, 0, 0, 6, 8, 2, 0,
+    0, 0, 120, 140, 232, 214, 0, 0, 0, 50, 73, 68, 65, 84, 120, 156, 99, 96, 16, 209, 176, 9, 72,
+    169, 232, 89, 176, 229, 196, 157, 15, 44, 18, 58, 14, 33, 25, 53, 19, 150, 236, 56, 243, 224,
+    11, 135, 140, 129, 75, 68, 78, 195, 148, 21, 123, 24, 134, 170, 34, 0, 164, 221, 97, 81, 182,
+    196, 223, 57, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+
 /// Page actions, as an agent reaches them: published on `browser.page`,
 /// admitted through the resource operation lane, answered by the engine
 /// and reported through the invocation's terminal update.
@@ -96,6 +106,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             "wait-page-settled",
             "read-page-console",
             "read-page-network",
+            "capture-page",
         ] {
             let action = page_action(&widget, &doc, id);
             assert!(action.contract.validate_declaration().is_empty(), "{id}");
@@ -479,6 +490,133 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
         assert_eq!(answers[6]["data"]["next"], 0);
     }
 
+    // Phase `a_page_picture_is_the_actions_own_content`: what a page shows
+    // only as pixels reaches the reader who can see it, and nothing else
+    // carries it.
+    {
+        let (engine, mut widget, mut doc, root) = page_on("https://letters.test/scan");
+        let content = tilo_content::ContentStore::memory();
+        widget.attach_content(content.clone());
+        engine.set_page_capture(SCANNED_LETTER_PNG);
+
+        // The picture is the whole of a viewport capture: no ref, no width,
+        // so the engine decides both.
+        let invocation = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "capture-page",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        widget.sync(&doc, &root);
+        let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+            widget.poll_invocation(invocation)
+        else {
+            panic!("a picture of the page succeeds its invocation");
+        };
+        assert_eq!(
+            page_requests(&engine),
+            vec![PageRequest::Capture {
+                element: None,
+                max_width: None,
+                frame: None,
+            }],
+            "the page is asked for a picture of itself, nothing else"
+        );
+        // The picture travels as content, never as a finding: a reader that
+        // cannot see still reads the page's words, one that can sees this.
+        assert_eq!(output.resources.len(), 1);
+        let hash = ui::tilo_actions::content_hash(&output.resources[0])
+            .expect("a picture is content the answer names");
+        assert_eq!(
+            content.read(&hash).as_deref(),
+            Some(&SCANNED_LETTER_PNG[..])
+        );
+        let value = output.value.expect("the answer says what it pictured");
+        assert_eq!(value["provenance"], "web-content");
+        assert_eq!(value["url"], "https://letters.test/scan");
+        assert!(
+            value["data"].get("capture").is_none(),
+            "the pixels are the answer's content, not a base64 finding beside it"
+        );
+
+        // An element's own box, at the width the caller asked for.
+        let invocation = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "capture-page",
+            &serde_json::json!({"element": "d1e5", "max_width": 400}),
+        )
+        .unwrap();
+        widget.sync(&doc, &root);
+        let Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. }) =
+            widget.poll_invocation(invocation)
+        else {
+            panic!("a picture of an element succeeds its invocation");
+        };
+        assert_eq!(
+            page_requests(&engine).last(),
+            Some(&PageRequest::Capture {
+                element: Some("d1e5".into()),
+                max_width: Some(400),
+                frame: None,
+            })
+        );
+
+        // A ref the outline never printed is refused by the action's own
+        // text, before the page is asked to paint anything.
+        let before = page_requests(&engine).len();
+        let refused = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "capture-page",
+            &serde_json::json!({"element": "not-a-ref"}),
+        )
+        .unwrap_err();
+        assert!(refused.contains("element"), "{refused}");
+        assert_eq!(page_requests(&engine).len(), before);
+
+        // A width wider than any engine paints is refused rather than
+        // silently cut: the caller asked for something that cannot exist.
+        let refused = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "capture-page",
+            &serde_json::json!({"max_width": 4000}),
+        )
+        .unwrap_err();
+        assert!(
+            refused.contains("arguments the page cannot take"),
+            "a width no engine paints is refused before the page is asked: {refused}"
+        );
+        assert_eq!(page_requests(&engine).len(), before);
+
+        // A window with nowhere to keep a picture says so instead of
+        // answering as if the page had none.
+        let (engine, mut widget, mut doc, root) = page_on("https://letters.test/scan");
+        engine.set_page_capture(SCANNED_LETTER_PNG);
+        let invocation = start(
+            &mut widget,
+            &mut doc,
+            &root,
+            "capture-page",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+        widget.sync(&doc, &root);
+        let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+            widget.poll_invocation(invocation)
+        else {
+            panic!("the page is still read, even with nowhere to keep its picture");
+        };
+        assert!(output.resources.is_empty());
+        assert!(output.value.unwrap()["picture"].is_string());
+    }
+
     // Phase `an_action_that_navigates_completes_on_the_page_it_opened`.
     {
         let (engine, mut widget, mut doc, root) = page_on("https://shop.test/cart");
@@ -487,6 +625,7 @@ fn page_actions_read_and_operate_the_page_through_invocations() {
             message: "Clicked button \"Checkout\"".into(),
             outline: None,
             data: None,
+            image: None,
             navigation: ui::webview::PageNavigation::Started,
             loading: true,
         }));

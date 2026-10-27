@@ -487,6 +487,11 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             }
         }
         let invocation = cx.invocation().unwrap_or_default();
+        // A picture of the page is content: the store keeps its bytes, and the
+        // answer names them, so the reader who can see it does.
+        if let Some(content) = ui::tilo_resource::content::current() {
+            self.page_mut().attach_content(content);
+        }
         match self.page_mut().admit(invocation, effect.operation())? {
             Effected::Pending => {
                 let reply = cx.reply();

@@ -731,46 +731,17 @@ fn launch_resolved_installed_app(
     if reopen_focused_local_card(chrome, package_id) {
         return Ok(());
     }
-    // If the room already has this app open, focus it rather than starting
-    // a second copy. See `peer_windows::opened_for_the_room`. A Terminal
-    // asked for into a group (the tab strip's "+", Super+T) is the explicit
-    // request for another shell, so it always launches; so does an app whose
-    // process here opens more windows: asked for again, it opens one.
-    let wants_another_terminal = package_id == crate::shell::window_actions::TERMINAL_PACKAGE
-        && matches!(chrome.borrow().open_target, OpenTarget::Here(_));
-    let opens_another_window = chrome
-        .borrow()
-        .tree()
-        .desktop
-        .active_workspace()
-        .is_some_and(|workspace| launcher::opens_more_windows(package_id, workspace.room()));
-    let already = if wants_another_terminal || opens_another_window {
-        None
-    } else {
-        let st = chrome.borrow();
-        let tree = st.tree();
-        let salt = tree.local_salt();
-        tree.desktop
-            .active_workspace()
-            .and_then(|ws| {
-                crate::shell::peer_windows::opened_for_the_room(ws, package_id, salt)
-                    .or_else(|| {
-                        (package_id == "so.tilo.terminal")
-                            .then(|| {
-                                crate::shell::peer_windows::opened_locally_in_workspace(
-                                    ws, package_id, salt,
-                                )
-                            })
-                            .flatten()
-                    })
-                    .map(|(strip, group, tab)| (ws.id, strip, group, tab))
-            })
-            .or_else(|| {
-                (package_id == SETTINGS_PACKAGE_ID)
-                    .then(|| crate::shell::peer_windows::opened_here(&tree, package_id))
-                    .flatten()
-            })
-    };
+    // Asked for again, an app opens another window of it beside the focused
+    // one; switching to a window it already has is that window's own row.
+    // The device's control panel is the exception: one window per machine,
+    // so opening it again goes to that window.
+    let already = (package_id == SETTINGS_PACKAGE_ID)
+        .then(|| {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            crate::shell::peer_windows::opened_here(&tree, package_id)
+        })
+        .flatten();
     if let Some((ws_id, strip, group, tab)) = already {
         chrome.borrow_mut().select_tab(ws_id, strip, group, tab);
         return Ok(());
@@ -1288,65 +1259,91 @@ mod tests {
         }
     }
 
+    /// Notes has a window open and the person searches for Notes and picks
+    /// the app's row: a second Notes window opens beside the focused one.
+    /// Switching to the open window is that window's own row.
     #[test]
-    fn opening_a_live_local_terminal_focuses_without_another_record_writer() {
+    #[serial_test::serial]
+    fn picking_an_open_apps_row_opens_another_window_of_it_beside_the_focused_one() {
         use crate::shell::state::{
             Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
             next_id,
         };
-        let tab_id = next_id();
-        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
-        let mut strip = Strip::new(StripId::from(next_id()), "Main");
-        let group_id = next_id();
-        strip.window_groups.push(WindowGroup {
-            id: group_id,
-            tabs: vec![Tab {
-                id: tab_id,
-                title: "Terminal".into(),
-                tile: TileContent::Foreign {
-                    app_id: "so.tilo.terminal".into(),
-                    surface_id: 7,
-                },
-                app_title: None,
-            }],
-            active_tab: tab_id,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        });
-        workspace.strips.push(strip);
-        let mut tree = WorkspaceTree::default();
-        tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
-        tree.desktop.active = workspace.id;
-        tree.desktop.workspaces = vec![workspace];
-        let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
-        let chrome = ChromeState::new_with_handle(handle.clone());
-        let provider = ApplicationsProvider::new();
-        let rows = provider.results_for("terminal", vec![app("so.tilo.terminal", "Terminal")]);
-        let row = rows.first().expect("installed Terminal action");
-        let mut doc = AutoCommit::new();
-        (row.on_open)(
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT,
-            &chrome,
-            &ActionArgs::none(),
-        )
-        .expect("Open must focus the existing local Terminal");
-        assert_eq!(chrome.borrow().active_tab_id(), Some(tab_id));
-        assert!(
-            chrome.borrow().notifications().is_empty(),
-            "focus must not queue a second launcher or opening notice"
-        );
-        assert_eq!(
-            handle.read().desktop.workspaces[0].strips[0].window_groups[0]
-                .tabs
-                .len(),
-            1
-        );
+        // The Terminal too, outside a group's "+": a Terminal asked for is
+        // another shell.
+        for (package, name) in [("so.tilo.notes", "Notes"), ("so.tilo.terminal", "Terminal")] {
+            let tab_id = next_id();
+            let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+            let mut strip = Strip::new(StripId::from(next_id()), "Main");
+            let strip_id = strip.id;
+            let group_id = next_id();
+            strip.window_groups.push(WindowGroup {
+                id: group_id,
+                tabs: vec![Tab {
+                    id: tab_id,
+                    title: name.into(),
+                    tile: TileContent::Foreign {
+                        app_id: package.into(),
+                        surface_id: 7,
+                    },
+                    app_title: None,
+                }],
+                active_tab: tab_id,
+                width: WindowWidth::Normal,
+                maximized: false,
+                focus_history: Vec::new(),
+            });
+            workspace.strips.push(strip);
+            let mut tree = WorkspaceTree::default();
+            tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
+            tree.desktop.active = workspace.id;
+            tree.desktop.active_strip.insert(workspace.id, strip_id);
+            tree.desktop.workspaces = vec![workspace];
+            tree.desktop.active_group.insert(strip_id, group_id);
+            let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+            let chrome = ChromeState::new_with_handle(handle.clone());
+            let rows = ApplicationsProvider::new()
+                .results_for(&name.to_lowercase(), vec![app(package, name)]);
+            let row = rows.first().expect("the installed app's row");
+            let mut doc = AutoCommit::new();
+            let _ = (row.on_open)(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none(),
+            );
+            let opening = catalogue::take_pending_launch(package);
+            let groups: Vec<(crate::shell::state::GroupId, usize)> =
+                handle.read().desktop.workspaces[0].strips[0]
+                    .window_groups
+                    .iter()
+                    .map(|group| (group.id, group.tabs.len()))
+                    .collect();
+            launcher::clear_pending_placements();
+
+            assert!(
+                opening,
+                "picking {name}'s row starts another window of it, not a switch to the open one"
+            );
+            assert_eq!(
+                groups.len(),
+                2,
+                "two {name} windows: the open one and the new one: {groups:?}"
+            );
+            assert_eq!(
+                groups[0],
+                (group_id, 1),
+                "the open window keeps its place and its one tab: {groups:?}"
+            );
+            assert_eq!(
+                groups[1].1, 1,
+                "the new window is a window of its own: {groups:?}"
+            );
+        }
     }
 
     /// The group's "+" asks for a tab in that group: another Terminal opens
-    /// even while one is live, where the ordinary open only focuses it.
+    /// there as a tab even while one is live.
     #[test]
     #[serial_test::serial]
     fn opening_a_terminal_into_a_group_launches_another_instead_of_focusing() {
