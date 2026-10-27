@@ -230,7 +230,7 @@ impl MapControls {
         self.hovered = (!suppressed).then(|| self.hit_test(point)).flatten();
         let own_target = self
             .hovered
-            .map(|action| (self.layout().rect(action), action.label().to_string()));
+            .map(|action| (self.layout().rect(action), action.label()));
         let target = if suppressed {
             None
         } else {
@@ -238,7 +238,6 @@ impl MapControls {
                 extra_targets
                     .into_iter()
                     .find(|(rect, _)| rect.contains(point))
-                    .map(|(rect, label)| (rect, label))
             })
         };
         let tooltip_changed = self.tooltip.on_pointer(target, now);

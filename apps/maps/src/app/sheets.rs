@@ -525,7 +525,7 @@ impl MapsApp {
                         .and_then(draw::hex_color)
                         .unwrap_or_else(|| theme.tokens.colors.on_surface(col).ink);
                     let label = if leg.line.is_empty() {
-                        leg.mode.label().to_string()
+                        leg.mode.label()
                     } else {
                         leg.line.clone()
                     };

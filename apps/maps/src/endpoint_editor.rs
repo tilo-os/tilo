@@ -94,7 +94,7 @@ impl Field {
             .take(OVERLAY_MAX)
             .map(|place| {
                 let detail = if place.address.is_empty() {
-                    place.category.label().to_string()
+                    place.category.label()
                 } else {
                     place.address.clone()
                 };
