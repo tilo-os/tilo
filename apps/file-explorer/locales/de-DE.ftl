@@ -390,6 +390,7 @@ files-drive-gone = Dieses Laufwerk ist nicht mehr verbunden.
 files-drive-open-failed = Das Laufwerk konnte nicht geöffnet werden: { $error }
 files-trash-unavailable = Der Papierkorb ist auf diesem Gerät nicht verfügbar.
 files-place-workspace = Arbeitsbereich
+files-place-desktop = Schreibtisch
 files-place-documents = Dokumente
 files-place-downloads = Downloads
 files-place-pictures = Bilder

@@ -45,13 +45,31 @@ pub(crate) const MAX_MOVE_ENTRIES: usize = 256;
 pub(crate) const MAX_WRITE_BYTES: usize = 256 * 1024;
 
 /// One bookmarked place, stored as [`crate::places`] names it so it means
-/// the same folder on every device.
+/// the same folder on every device, and named as a person knows it.
 #[derive(Model, Default, Clone, Debug, PartialEq)]
+#[model(label = Bookmark::name)]
 pub struct Bookmark {
     /// Place
-    #[model(label)]
     #[model(readonly)]
     pub place: Atom,
+}
+
+impl FileExplorer {
+    /// What search finds of the document itself: nothing of its own. Its
+    /// places are found as the window lists them, each with its folder
+    /// ([`crate::search_provider::PlacesSearch`]), and the folder's entries
+    /// as the window shows them; a second row for each place would only
+    /// repeat them.
+    fn search(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        Vec::new()
+    }
+}
+
+impl Bookmark {
+    /// The folder's name, never its stored form ([`crate::places::name`]).
+    fn name(&self) -> String {
+        crate::places::name(&self.place.0)
+    }
 }
 
 tilo_resource::json_model!(FileOp);
@@ -259,7 +277,12 @@ fn record_native(
     }
 }
 
-#[resource(kind = "files.folder", label = "Folder", initialize = FileExplorer::with_default_places)]
+#[resource(
+    kind = "files.folder",
+    label = "Folder",
+    initialize = FileExplorer::with_default_places,
+    search = FileExplorer::search
+)]
 impl FileExplorer {
     /// Pin a folder to the Favorites in the sidebar.
     #[action(label = "Add to Favorites")]
@@ -301,7 +324,7 @@ impl FileExplorer {
     }
 
     /// Create a folder.
-    #[action(undo = Self::revert_queued)]
+    #[action(label = "New folder", undo = Self::revert_queued)]
     pub fn new_folder(
         &mut self,
         cx: &mut ActionCx,
@@ -318,7 +341,7 @@ impl FileExplorer {
     }
 
     /// Rename an entry.
-    #[action(undo = Self::revert_queued)]
+    #[action(label = "Rename", undo = Self::revert_queued)]
     pub fn rename(
         &mut self,
         cx: &mut ActionCx,
@@ -374,7 +397,7 @@ impl FileExplorer {
 
     /// Copy entries into a folder; a copy whose name is taken gets a free
     /// one.
-    #[action(undo = Self::revert_queued)]
+    #[action(label = "Copy entries to folder", undo = Self::revert_queued)]
     pub fn copy_into(
         &mut self,
         cx: &mut ActionCx,
@@ -392,7 +415,7 @@ impl FileExplorer {
     }
 
     /// Copy mounted representations into independent editable files.
-    #[action(undo = Self::revert_queued)]
+    #[action(label = "Make editable copies", undo = Self::revert_queued)]
     pub fn import_mounted(
         &mut self,
         cx: &mut ActionCx,
@@ -429,7 +452,7 @@ impl FileExplorer {
 
     /// Import independent local copies from a cloud account; undo removes
     /// only the local outputs recorded by the transfer.
-    #[action(undo = Self::revert_queued)]
+    #[action(label = "Import from account", undo = Self::revert_queued)]
     pub fn cloud_import(
         &mut self,
         cx: &mut ActionCx,
@@ -690,7 +713,7 @@ impl FileExplorer {
 
     /// Take back a filesystem change: the device that made it compensates
     /// what it recorded, in reverse order.
-    #[action(item = ops, undo = Self::revert_queued)]
+    #[action(item = ops, label = "Take back change", undo = Self::revert_queued)]
     pub fn revert(
         &mut self,
         cx: &mut ActionCx,

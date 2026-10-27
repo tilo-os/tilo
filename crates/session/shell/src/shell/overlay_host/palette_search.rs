@@ -522,10 +522,12 @@ impl ShellOverlayHost {
         let mut results: Vec<crate::shell::search::SearchResult> = Vec::new();
         let mut entries: Vec<CommandEntry> = Vec::new();
         self.more_rows.clear();
+        let searched_app = self.searched_app_name();
         for group in groups {
             let label = group.kind.localized_label();
             for r in &group.results {
                 let idx = results.len();
+                let r = &without_the_searched_app(r, searched_app.as_deref());
                 let e = self
                     .annotated_entry(r, format!("result:{idx}"), query)
                     .group(label.clone())
@@ -546,6 +548,17 @@ impl ShellOverlayHost {
             }
         }
         (results, entries)
+    }
+
+    /// The name of the app a search is scoped to, as its rows would name it.
+    fn searched_app_name(&self) -> Option<String> {
+        let chrome = self.chrome.as_ref()?;
+        let state = chrome.borrow();
+        if state.search_scope != crate::shell::chrome_state::SearchScope::ActiveApp {
+            return None;
+        }
+        let app = state.active_app_id()?;
+        crate::shell::launcher::display_name_for_app_id_without_waiting(&app)
     }
 
     /// `groups` cut to the rows the card has room for, noting which kinds
@@ -977,6 +990,25 @@ impl ShellOverlayHost {
 /// named group.
 /// The launcher's way to every app, under the apps it lists: the last
 /// section's last row. `None` when the launcher lists no apps.
+/// `row` as it reads in the search of the app named `app`: every row there
+/// is that app's, so a fact or a secondary line that only names it says
+/// nothing, and is left out.
+fn without_the_searched_app(
+    row: &crate::shell::search::SearchResult,
+    app: Option<&str>,
+) -> crate::shell::search::SearchResult {
+    let mut row = row.clone();
+    let Some(app) = app else {
+        return row;
+    };
+    let names_the_app = |text: &str| text.trim().eq_ignore_ascii_case(app.trim());
+    row.facts.retain(|fact| !names_the_app(fact));
+    if row.subtitle.as_deref().is_some_and(names_the_app) {
+        row.subtitle = None;
+    }
+    row
+}
+
 pub(super) fn all_apps_entry(entries: &[CommandEntry]) -> Option<CommandEntry> {
     let apps = crate::shell::search::launcher::LauncherSection::Apps.label();
     let last = entries.last()?;

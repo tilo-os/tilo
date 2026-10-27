@@ -1070,6 +1070,69 @@ fn a_search_scoped_to_an_app_shows_only_that_app_until_the_scope_is_cleared() {
     );
 }
 
+/// An app's search stands in that app's window, under its bar, where the
+/// app's own palette stands (`ui::action_palette::placement`), and its list
+/// ends inside the window; search over the desktop stands on the display.
+#[test]
+#[serial_test::serial(process_env)]
+fn an_apps_search_stands_in_its_window_under_its_bar() {
+    use crate::shell::chrome_state::SearchScope;
+    let config = tempfile::tempdir().expect("isolated settings");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", config.path());
+    let _settled = ui::motion::testing::settled();
+    let mut h = harness(2);
+    let workspace = h.chrome.borrow().tree().desktop.active;
+    h.chrome
+        .borrow_mut()
+        .focus_tab(workspace, h.strip, h.group, h.tabs[0]);
+    let lay_out = |h: &mut Harness| {
+        for _ in 0..3 {
+            let (taffy, root) = lay_out_host_with_theme(&mut h.host, VW, VH, &h.theme);
+            h.taffy = taffy;
+            h.root = root;
+        }
+    };
+    lay_out(&mut h);
+
+    h.host
+        .open_app_search(h.tabs[0], &ui::search::SearchRequest::this_app());
+    assert_eq!(h.chrome.borrow().search_scope, SearchScope::ActiveApp);
+    lay_out(&mut h);
+    let (window, bar) = {
+        let group = h
+            .host
+            .group_at_for_tests(h.strip, 0)
+            .expect("the fixture's window is live");
+        (group.get_rect(), group.bar_rect())
+    };
+    let searched = Rect::new(window.x0, bar.y1, window.x1, window.y1);
+    assert_eq!(h.host.searched_window(), Some(searched));
+    let (origin, width) = ui::action_palette::placement(searched, &h.theme);
+    let card = h.host.palette_rect_for_tests();
+    assert!(
+        (card.x0 - origin.x).abs() < 0.5
+            && (card.y0 - origin.y).abs() < 0.5
+            && (card.width() - width).abs() < 0.5,
+        "the card {card:?} stands where the app's own palette would: {origin:?}, {width}"
+    );
+    assert!(
+        card.y1 <= searched.y1,
+        "the card {card:?} ends inside the window {searched:?}"
+    );
+
+    // Widened to the desktop, it is the desktop's card again.
+    h.host.open_palette_with_scope(SearchScope::Workspace);
+    lay_out(&mut h);
+    assert_eq!(h.host.searched_window(), None);
+    let frame = h.host.palette_frame(h.theme.text_scale);
+    let card = h.host.palette_rect_for_tests();
+    assert!(
+        (card.x0 - frame.x0).abs() < 0.5 && (card.y0 - frame.y0).abs() < 0.5,
+        "search over the desktop stands on the display: {card:?} at {frame:?}"
+    );
+}
+
 /// The tab menu is reachable without positioning a pointer or cycling through
 /// destructive actions in the palette. It uses durable focus and the same
 /// bounded menu, target and split dispatcher as a right-click.

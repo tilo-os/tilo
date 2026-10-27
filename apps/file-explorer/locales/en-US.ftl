@@ -391,6 +391,7 @@ files-drive-gone = This drive is no longer connected.
 files-drive-open-failed = Could not open the drive: { $error }
 files-trash-unavailable = Trash is unavailable on this device.
 files-place-workspace = Workspace
+files-place-desktop = Desktop
 files-place-documents = Documents
 files-place-downloads = Downloads
 files-place-pictures = Pictures
