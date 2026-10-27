@@ -39,6 +39,7 @@ impl Session {
             .env("TILO_IDLE_BLANK_SECS", "0")
             .env("TILO_IDLE_SUSPEND_SECS", "0")
             .env("TILO_HEADLESS_SIZE", "640x480")
+            .env("HOME", crate::support::desktop::private_home(root))
             .env("XDG_RUNTIME_DIR", root)
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_DATA_HOME", root.join("data"))
