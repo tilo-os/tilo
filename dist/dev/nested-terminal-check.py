@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Terminal in a nested session runs a command in its shell.
 
-Starts a local site (site-door-acceptance.py's: the room service and relay
-from the nested session's build) and dist/dev/nested-session.sh headless with
-Chat and Terminal installed, joined to the site's Lounge, from the last build
-(TILO_NESTED_SESSION_BUILD on t). In the Lounge, through the session's
+Starts dist/dev/nested-session.sh headless with Terminal installed, from the
+last build (TILO_NESTED_SESSION_BUILD on t), and through the session's
 control socket and the actions people and agents use:
 
   open    Terminal opens from the launcher and its window stays: the ush
@@ -24,6 +22,7 @@ import json
 import os
 import pathlib
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -39,27 +38,22 @@ OPEN = 120.0
 RUN = 300.0
 
 
-def load(name: str, path: pathlib.Path):
-    spec = importlib.util.spec_from_file_location(name, path)
+def pair_check():
+    spec = importlib.util.spec_from_file_location("nested_pair_check", REPO / "dist/dev/nested-pair-check.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-sda = load("site_door_acceptance", REPO / "dist/dev/site-door-acceptance.py")
-PAIR = sda.PAIR
+PAIR = pair_check()
 Failed, Session, wait_for, ok = PAIR.Failed, PAIR.Session, PAIR.wait_for, PAIR.ok
 
 
-class Running(sda.Running):
-    """The session, with Chat (the Lounge's home app) and Terminal."""
-
-    def start(self, fresh: bool, build: bool):
-        command = [str(SESSION), "--state", str(self.state), "--headless", "--community", self.site,
-                   "--apps", "chat terminal", "--reset-identity", "--no-build"]
-        log = open(self.out / f"{self.name}.log", "a")
-        self.process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
-                                        start_new_session=True, env=dict(os.environ, XKB_DEFAULT_LAYOUT="us"))
+def control_of(state: pathlib.Path) -> str:
+    """The control socket nested-session.sh gives a state directory."""
+    import hashlib
+    digest = hashlib.sha256(str(state).encode()).hexdigest()[:12]
+    return f"{os.environ['XDG_RUNTIME_DIR']}/tilo-nested-{digest}/control.sock"
 
 
 def terminal_tabs(session: Session) -> set:
@@ -95,6 +89,13 @@ def terminal(session: Session, operation: str, args: dict | None = None, timeout
         raise Failed(f"Terminal offers no {operation} in room {session.room}; it offers {offered}")
 
 
+def native(session: Session) -> bool:
+    """Whether the session's Home workspace is in a room this device governs,
+    as nested-session.sh's native.log confirms it: apps open there then."""
+    tree = session.state()["workspace_tree"]
+    return session.room in (tree.get("native_authority") or {}).get("rooms", {})
+
+
 def tail(path: pathlib.Path, lines: int = 60):
     try:
         kept = path.read_text(errors="replace").splitlines()[-lines:]
@@ -123,16 +124,30 @@ def main() -> int:
             failed.append(name)
 
     began = time.monotonic()
-    site = sda.LocalSite(scratch, None)
-    running = None
+    log = open(out / "session.log", "a")
+    process = subprocess.Popen(
+        [str(SESSION), "--state", str(state), "--headless", "--apps", "terminal", "--reset-identity", "--no-build"],
+        stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+        env=dict(os.environ, XKB_DEFAULT_LAYOUT="us"))
     session = None
     try:
-        site.start()
-        url = site.site if site.site.endswith("/") else site.site + "/"
-        running = Running("session", state, url, out)
-        running.start(fresh=True, build=False)
-        session = running.joined()
-        print(f"the session holds the Lounge {session.room} {time.monotonic() - began:.0f} s in", flush=True)
+        control = control_of(state)
+
+        def up():
+            if process.poll() is not None:
+                raise Failed(f"the session exited with {process.returncode} (see {out / 'session.log'})")
+            if not os.path.exists(control):
+                return None
+            try:
+                tree = ok(control, {"op": "state_dump"})["state"]["workspace_tree"]
+            except (Failed, OSError, ValueError):
+                return None
+            active = next((w for w in tree.get("workspaces", []) if w.get("id") == tree.get("active")), None)
+            return Session("a", control, str(active["room"])) if active and active.get("room") else None
+        session = wait_for("the session to answer", up, START)
+        print(f"the session is up in {time.monotonic() - began:.0f} s, room {session.room}", flush=True)
+        wait_for("the Home workspace to be native", lambda: native(session), START)
+        print(f"the Home workspace is native {time.monotonic() - began:.0f} s in", flush=True)
 
         try:
             row = session.action(lambda row: row.get("provider") == "applications" and row.get("id") == TERMINAL,
@@ -175,14 +190,15 @@ def main() -> int:
                 (out / "windows.json").write_text(json.dumps(ok(session.control, {"op": "windows"}), indent=1))
             except (Failed, OSError, ValueError) as error:
                 print(f"   (no window list: {error})")
-        if running is not None:
-            running.stop()
-        site.stop()
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=90)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
         logs = state / "logs"
         if logs.is_dir():
             shutil.copytree(logs, out / "logs", dirs_exist_ok=True)
-        if (scratch / "site" / "site.log").is_file():
-            shutil.copy(scratch / "site" / "site.log", out / "site.log")
         if failed:
             tail(out / "session.log")
             for name in ("native.log", "ush.log", "shell.log"):
