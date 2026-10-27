@@ -95,7 +95,7 @@ impl NativeConstruction {
         let primary = if primary_read {
             bridge
                 .as_ref()
-                .map(|bridge| bridge.read(None))
+                .map(InitialReadBridge::read_primary)
                 .transpose()?
         } else {
             None
@@ -436,7 +436,7 @@ pub(crate) fn primary(
             .borrow_mut()
             .take()
             .map(Ok)
-            .unwrap_or_else(|| bridge.read(None))?;
+            .unwrap_or_else(|| bridge.read_primary())?;
         Ok((bridge.route.cluster_id.to_string(), read))
     })())
 }
@@ -661,6 +661,13 @@ impl InitialReadBridge {
         }
         Ok(Some(read))
     }
+    /// The committed read of the primary route. A bridge exists only for an
+    /// app whose primary route is read committed, so it is never answered by
+    /// the app's own channel.
+    fn read_primary(&self) -> Result<CommittedDocument, String> {
+        self.read(None)?
+            .ok_or_else(|| "the primary route is answered by the app's own channel".into())
+    }
     /// The committed read of the primary route, or of `checkout`'s record:
     /// `None` once the broker answered that the app's own channel serves it.
     fn read(
@@ -783,6 +790,9 @@ impl InitialReadBridge {
         &self,
         _record: Option<&crate::record::RecordId>,
     ) -> Result<Option<CommittedDocument>, String> {
+        match self.never {}
+    }
+    fn read_primary(&self) -> Result<CommittedDocument, String> {
         match self.never {}
     }
 }
