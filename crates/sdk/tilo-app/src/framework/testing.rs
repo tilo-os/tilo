@@ -36,6 +36,35 @@ pub use reach::unreachable_actions;
 /// The name tests use for [`HeadlessApp`].
 pub type TestApp<A> = HeadlessApp<A>;
 
+/// The windows [`check_window_sidebar_button`] opens an app in: one wide
+/// enough to dock a sidebar beside any content, and one so narrow the
+/// sidebar is a screen of its own or a drawer over the content.
+pub const SIDEBAR_BUTTON_WINDOWS: [(u32, u32); 2] = [(1280, 800), (400, 800)];
+
+/// Open the app with `open` in each of [`SIDEBAR_BUTTON_WINDOWS`], shown in
+/// the desktop's window bar, and click the bar's sidebar button three times
+/// there: every click flips the sidebar, on the bar, in the window's shell
+/// and on screen ([`FrameHarness::check_window_sidebar_button`]).
+///
+/// # Errors
+/// Which window failed, and how.
+pub fn check_window_sidebar_button<A: ResourceApp>(
+    mut open: impl FnMut() -> Result<HeadlessApp<A>, LaunchError>,
+) -> Result<(), String> {
+    for viewport in SIDEBAR_BUTTON_WINDOWS {
+        let mut app = open().map_err(|error| format!("{viewport:?}: the app opens: {error}"))?;
+        let harness = app.harness();
+        harness
+            .resize(viewport)
+            .map_err(|error| format!("{viewport:?}: {error}"))?;
+        harness.present_in_window_bar();
+        harness
+            .check_window_sidebar_button()
+            .map_err(|error| format!("{viewport:?}: {error}"))?;
+    }
+    Ok(())
+}
+
 /// Run `visit` on the custom surface of type `S` that `A`'s view hosts in
 /// `harness` (what [`ViewCx::surface`](super::ViewCx::surface) mounted), then
 /// the frames that follow; `None` when the view hosts no such surface at its
