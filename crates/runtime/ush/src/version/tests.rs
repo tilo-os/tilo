@@ -25,7 +25,7 @@ fn version(id: u128, parents: Vec<u128>, change: FileProvenance) -> FileVersionV
             .map(|parent| FileVersionId(uuid::Uuid::from_u128(parent)))
             .collect(),
         actor: actor(),
-        timestamp_ms: 1_000 * u64::try_from(id).unwrap_or(1),
+        timestamp_ms: u64::try_from(id).unwrap_or(1).saturating_mul(1_000),
         content_hash: Some(ContentHash([u8::try_from(id % 251).unwrap_or(1); 32])),
         metadata_hash: ContentHash([7; 32]),
         provenance: change,
@@ -152,37 +152,39 @@ fn a_line_this_command_cannot_read_is_refused_rather_than_guessed() {
 
 #[test]
 fn a_revision_name_finds_exactly_one_revision_or_says_why_not() {
-    let first = uuid::Uuid::from_u128(0xabc000_0000_0000_0000_0000_0000_0001);
-    let second = uuid::Uuid::from_u128(0xabc000_0000_0000_0000_0000_0000_0002);
-    let unique = uuid::Uuid::from_u128(0xdef000_0000_0000_0000_0000_0000_0003);
+    // Ids as the mount prints them. A prefix is matched against the bare hex
+    // form, so the first two share `abc` and the third shares nothing.
+    let first =
+        FileVersionId(uuid::Uuid::parse_str("abc00000-0000-4000-8000-000000000001").unwrap());
+    let second =
+        FileVersionId(uuid::Uuid::parse_str("abc00000-0000-4000-8000-000000000002").unwrap());
+    let unique =
+        FileVersionId(uuid::Uuid::parse_str("def00000-0000-4000-8000-000000000003").unwrap());
     let versions = vec![
         FileVersionV1 {
-            id: FileVersionId(first),
+            id: first,
             ..version(1, vec![], FileProvenance::Create)
         },
         FileVersionV1 {
-            id: FileVersionId(second),
+            id: second,
             ..version(2, vec![], FileProvenance::Edit)
         },
         FileVersionV1 {
-            id: FileVersionId(unique),
+            id: unique,
             ..version(3, vec![], FileProvenance::Edit)
         },
     ];
 
     assert_eq!(
         resolve(&Revision::Head, &versions),
-        Ok(FileVersionId(unique)),
+        Ok(unique),
         "HEAD is the newest revision the file has"
     );
     assert_eq!(
         resolve(&Revision::Prefix("def".into()), &versions),
-        Ok(FileVersionId(unique))
+        Ok(unique)
     );
-    assert_eq!(
-        resolve(&Revision::Id(FileVersionId(first)), &versions),
-        Ok(FileVersionId(first))
-    );
+    assert_eq!(resolve(&Revision::Id(first), &versions), Ok(first));
     assert_eq!(
         resolve(&Revision::Prefix("abc".into()), &versions),
         Err(ErrorCode::Usage),
@@ -233,7 +235,7 @@ fn a_diff_names_the_lines_that_changed_and_counts_them() {
 #[test]
 fn a_trailing_newline_is_a_terminator_not_an_empty_line() {
     assert_eq!(diff_text("a\n", "a\n").lines.len(), 1);
-    assert!(diff_text("a\n", "a\n").added == 0);
+    assert_eq!(diff_text("a\n", "a\n").added, 0);
     assert!(diff_text("", "").lines.is_empty());
     assert_eq!(
         diff_text("", "a\n").lines,
@@ -295,16 +297,15 @@ fn a_files_history_is_read_through_the_attributes_the_mount_serves() {
     let second = version(2, vec![1], FileProvenance::Edit);
     let frontier = [0xab; 32];
 
-    // The first page holds one revision and says there is another: a caller
-    // that stopped here would silently show a truncated log.
+    // The first page holds one revision and says where the next begins; a
+    // caller that stopped here would silently show a truncated log, so the
+    // second page must be followed.
     serve(
         &file.file,
         FileHistoryReadQueryV1::Page { cursor: None },
         FileHistoryReadValueV1::Page(page(frontier, vec![first.clone()], Some(first.id))),
     );
-    // `log()` re-reads the frontier before asking for page two, which is the
-    // same first page; serve the second page against that frontier for the
-    // cursor it will use.
+    // A cursor is only valid against the frontier of the page that issued it.
     serve(
         &file.file,
         FileHistoryReadQueryV1::Page {
@@ -313,14 +314,10 @@ fn a_files_history_is_read_through_the_attributes_the_mount_serves() {
         FileHistoryReadValueV1::Page(page(frontier, vec![second.clone()], None)),
     );
 
-    // The transport asks for the second page with the frontier the first page
-    // carried, so replace the first answer with one that also knows the
-    // cursor it will be asked about.
-    let history = file.log();
-    let history = history.unwrap_or_else(|error| panic!("log: {error:?}"));
+    let history = file.log().unwrap_or_else(|error| panic!("log: {error:?}"));
     assert_eq!(
         history.versions,
-        vec![first.clone(), second.clone()],
+        vec![first, second],
         "both pages are read, in order"
     );
     assert_eq!(history.lines().len(), 2);
@@ -363,11 +360,11 @@ fn a_refusal_from_the_mount_is_named_rather_than_printed_raw() {
         ErrorCode::Refused
     );
     assert_eq!(
-        outcome_refusal(CheckedHistoryOutcomeV1::ReviewRequired),
+        outcome_refusal(&CheckedHistoryOutcomeV1::ReviewRequired),
         ErrorCode::ReviewRequired
     );
     assert_eq!(
-        outcome_refusal(CheckedHistoryOutcomeV1::RecoveryPending {
+        outcome_refusal(&CheckedHistoryOutcomeV1::RecoveryPending {
             intent_id: uuid::Uuid::from_u128(1)
         }),
         ErrorCode::RecoveryPending

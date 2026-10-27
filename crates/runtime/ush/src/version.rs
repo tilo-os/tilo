@@ -432,7 +432,9 @@ impl MountedFile {
         if response.schema_version != 1 {
             return Err(ErrorCode::NoHistory);
         }
-        let review = response.result.map_err(outcome_refusal)?;
+        let review = response
+            .result
+            .map_err(|refused| outcome_refusal(&refused))?;
         review.validate().map_err(|_| ErrorCode::Usage)?;
         Ok(review)
     }
@@ -475,7 +477,7 @@ const fn read_error(error: FileHistoryReadErrorV1) -> ErrorCode {
     }
 }
 
-fn outcome_refusal(outcome: CheckedHistoryOutcomeV1) -> ErrorCode {
+fn outcome_refusal(outcome: &CheckedHistoryOutcomeV1) -> ErrorCode {
     match outcome {
         CheckedHistoryOutcomeV1::NotVisible
         | CheckedHistoryOutcomeV1::ReadOnly
@@ -536,9 +538,9 @@ pub struct DiffLine {
     /// The line, without its terminator.
     pub text: String,
     /// The line's number in the old revision, when it is in it.
-    pub old_line: Option<u64>,
+    pub old_line: Option<usize>,
     /// The line's number in the new revision, when it is in it.
-    pub new_line: Option<u64>,
+    pub new_line: Option<usize>,
 }
 
 /// A whole file's worth of change, with counts for a header line.
@@ -562,40 +564,36 @@ pub fn diff_text(old: &str, new: &str) -> Diff {
     let steps = tilo_resource::diff::align(&old_lines, &new_lines);
 
     let mut diff = Diff::default();
-    let (mut old_no, mut new_no) = (1u64, 1u64);
+    let (mut seen_old, mut seen_new) = (0usize, 0usize);
     for step in steps {
-        match step {
+        // Each line's number is how many lines of its own side precede it,
+        // plus one: a removed line still counts on the old side and an added
+        // one on the new, so numbers name the revision the line came from.
+        let old_no = seen_old.saturating_add(1);
+        let new_no = seen_new.saturating_add(1);
+        let (op, line, old_line, new_line) = match step {
             tilo_resource::diff::Step::Both(line) => {
-                diff.lines.push(DiffLine {
-                    op: ' ',
-                    text: (*line).to_string(),
-                    old_line: Some(old_no),
-                    new_line: Some(new_no),
-                });
-                old_no += 1;
-                new_no += 1;
+                seen_old = old_no;
+                seen_new = new_no;
+                (' ', line, Some(old_no), Some(new_no))
             }
             tilo_resource::diff::Step::OldOnly(line) => {
-                diff.lines.push(DiffLine {
-                    op: '-',
-                    text: (*line).to_string(),
-                    old_line: Some(old_no),
-                    new_line: None,
-                });
-                diff.removed += 1;
-                old_no += 1;
+                seen_old = old_no;
+                diff.removed = diff.removed.saturating_add(1);
+                ('-', line, Some(old_no), None)
             }
             tilo_resource::diff::Step::NewOnly(line) => {
-                diff.lines.push(DiffLine {
-                    op: '+',
-                    text: (*line).to_string(),
-                    old_line: None,
-                    new_line: Some(new_no),
-                });
-                diff.added += 1;
-                new_no += 1;
+                seen_new = new_no;
+                diff.added = diff.added.saturating_add(1);
+                ('+', line, None, Some(new_no))
             }
-        }
+        };
+        diff.lines.push(DiffLine {
+            op,
+            text: line.to_string(),
+            old_line,
+            new_line,
+        });
     }
     diff
 }
@@ -671,12 +669,15 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, ErrorCode> {
         Ok(revision)
     };
     let command = match verb.as_str() {
-        "status" => Command::Status {
-            paths: words
+        "status" => {
+            let paths = words
                 .iter()
                 .map(|word| PathBuf::from(word.as_str()))
-                .collect(),
-        },
+                .collect();
+            // Every word was a path, so there is nothing left over to refuse.
+            words.clear();
+            Command::Status { paths }
+        }
         "log" => Command::Log {
             path: path(&mut words)?,
         },
@@ -714,13 +715,15 @@ pub fn parse(args: &[String]) -> Result<Option<Invocation>, ErrorCode> {
 #[must_use]
 pub fn run(args: &[String]) -> i32 {
     let json = args.iter().any(|arg| arg == "--json");
-    match parse(args).and_then(|parsed| match parsed {
-        Some(invocation) => execute(&invocation),
-        None => {
-            println!("{USAGE}");
-            return Ok(());
+    let result = parse(args).and_then(|parsed| {
+        if let Some(invocation) = parsed {
+            return execute(&invocation);
         }
-    }) {
+        // No verb: the usage is the answer, and it is not a failure.
+        println!("{USAGE}");
+        Ok(())
+    });
+    match result {
         Ok(()) => 0,
         Err(error) => {
             refuse(error, json);
@@ -1038,7 +1041,7 @@ fn restore(path: &Path, revision: &Revision, json: bool) -> Result<(), ErrorCode
         }
         CheckedHistoryOutcomeV1::RecoveryPending { .. } => Err(ErrorCode::RecoveryPending),
         CheckedHistoryOutcomeV1::ReviewRequired => Err(ErrorCode::ReviewRequired),
-        other => Err(outcome_refusal(other)),
+        other => Err(outcome_refusal(&other)),
     }
 }
 

@@ -92,7 +92,7 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
         Some("quarantine") => guest::quarantine(rest),
         Some("undo") => guest::undo_file_action(rest),
         Some("history") => guest::file_history(rest),
-        Some("version") => guest::version(rest),
+        Some("version") => Ok(guest::version(rest)),
         Some(name) if ush::file_actions::cli::Tool::of(name).is_some() => {
             guest::file_action(name, rest)
         }
@@ -972,9 +972,10 @@ explain when the host does not offer them.\n";
     /// `version`: a file's own history, with the verbs an agent already
     /// knows. Nothing here keeps a store of its own — the mount's history is
     /// the history, which is the same one the file manager's History view
-    /// shows.
-    pub fn version(args: &[String]) -> anyhow::Result<i32> {
-        Ok(ush::version::run(args))
+    /// shows. It reports a refusal as an exit code, never as an error, because
+    /// a caller reads the answer either way.
+    pub fn version(args: &[String]) -> i32 {
+        ush::version::run(args)
     }
 
     /// `undo file-action ID` — the second half of what `rm` printed.
