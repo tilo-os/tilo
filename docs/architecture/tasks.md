@@ -26,8 +26,8 @@ kind `tasks.tracker`), written the one way every app is
 | `due_ms` | `Option<i64>`, a moment | `plan` |
 | `priority` | `Option<u8>`, 1 (most urgent) to 4 | `plan` |
 | `cost_budget` | `Option<u64>`, read-only: the most its work may cost | `plan` |
-| `spend` | `Option<u64>`, read-only: what its runs recorded using | `record-spend` |
-| `budget` | turn and total time ceilings | `set-execution-budget` |
+| `spend` | `Option<u64>`, read-only: what its runs settled, its sub-issues' work included, in millionths of the budget's currency | the tracker, from its ledger |
+| `budget` | turn and total time ceilings, and the spend limits | `set-execution-budget` |
 | `comments` | `Collection<Message>`, the thread | `comment`, `send-message`, the run's reports |
 | `run` | `Option<Run>`, read-only | the run verbs below |
 
@@ -125,7 +125,7 @@ system and an entry in its history:
 | `choose-model` | anyone who may edit | the model the issue's runs plan with, while no run is going |
 | `approve-run` | people | starts run *n*+1 for the assigned agent, acting for the approver |
 | `stop-run` | people | stops the run; what it already changed stays |
-| `set-execution-budget` | people | turn and total time ceilings while no run is active |
+| `set-execution-budget` | people | turn and total time ceilings, and the spend limits, while no run is active |
 | `send-message` | anyone who may comment | a message in the thread to the run going on |
 | `report-run` | the run's agent | its phase, and progress posted in the thread |
 | `incorporate` | the run's agent | the first *n* messages to the run, taken in |
@@ -133,7 +133,9 @@ system and an entry in its history:
 | `answer-confirmation` | people, on the host's sheet | confirm (with edits) or decline with a reason |
 | `settle-confirmation` | the run's agent | the answer is spent once the action started |
 | `run-on-device` | the run's agent | the device it works on, so its person sees where it runs |
-| `record-spend` | the run's agent | what its runs have spent, in the workspace's units |
+| `hold-spend` | the run's agent | the step it is about to take holds its estimated tokens and cost in the budget |
+| `settle-spend` | the run's agent | what the step spent, on which model and device; a refused step holds nothing |
+| `pause-run-for-budget` | the run's agent | the run waits for its person, saying the limit it reached |
 | `finish-run` | the run's agent | done goes to review, failed or stopped back to Todo |
 
 The broker reads the tracker (`TrackerRuns`, served by the shell from the
@@ -172,8 +174,22 @@ A run may act in an application nobody has open: the broker launches it
 through the workspace launcher under the run's own durable custody, bound to
 the run, its approver and the messages it took in, and admits the action
 against the freshly published contract only. Stop and a revoked grant fence
-both the launch and the action after it. A run's turn and total time
-ceilings are the issue's `set-execution-budget`.
+both the launch and the action after it. A run's turn and total
+time ceilings are the issue's `set-execution-budget`.
+
+## Budgets and spend
+
+An issue's budget is checked at the broker like a permission is: the run
+holds its step's estimate through `hold-spend` before it starts, settles it
+with `settle-spend` when it completes, and a step that would take the issue —
+or any issue above it, whose subtask's work it is — past a limit is refused
+with the limit named. A step that fails at the provider settles at zero, so
+only work that happened is paid for. Reaching a limit pauses the run in
+waiting-for-approval with `pause-run-for-budget`, and the reason reads on the
+issue, so the person who raises the limit sees what stopped it.
+
+A run on a local model records its model and device and no money: what it
+spent is time and tokens, which the ledger keeps all the same.
 
 ## The composer
 
