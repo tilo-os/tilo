@@ -164,6 +164,32 @@ impl Tracker {
         }
     }
 
+    fn no_area() -> Refusal {
+        Refusal::new("This project no longer exists")
+    }
+
+    fn area_mut(&mut self, area: &Id) -> Result<&mut TrackerArea, Refusal> {
+        self.areas.get_mut(area).ok_or_else(Self::no_area)
+    }
+
+    /// The project or area named `area`, when it is one of the tracker's.
+    #[must_use]
+    pub fn area(&self, area: &Id) -> Option<&TrackerArea> {
+        self.areas.get(area)
+    }
+
+    /// The issues that work towards `area`, in board order: the tasks the
+    /// project holds. Each works towards it through its own
+    /// [`area`](Issue::area), so it reads in the project and in its own
+    /// list alike.
+    pub fn in_area<'a>(&'a self, area: &'a Id) -> impl Iterator<Item = (&'a Id, &'a Issue)> {
+        self.issues.iter().filter(move |(_, issue)| {
+            issue.area.as_ref().is_some_and(|named| {
+                named.kind == crate::model::KIND && named.resource == area.as_str()
+            })
+        })
+    }
+
     fn next_number(&mut self) -> u64 {
         self.numbers.add(1);
         u64::try_from(self.numbers.get()).unwrap_or_default()
@@ -774,7 +800,7 @@ impl Tracker {
     /// # Errors
     /// Refuses anyone but the run's own agent, an ended or paused run, or a
     /// reason that names nothing.
-    #[action(audience = "agents", writes = issues)]
+    #[action(item = issues, audience = "agents", writes = issues)]
     pub fn pause_run_for_budget(
         &mut self,
         cx: &mut ActionCx,
@@ -1332,7 +1358,7 @@ impl Tracker {
     /// Refuses anyone but the run's own agent, an ended run, a receipt in
     /// another currency than the run's, or one that takes the issue's budget
     /// past a limit.
-    #[action(audience = "agents", writes = issues)]
+    #[action(item = issues, audience = "agents", writes = issues)]
     pub fn settle_spend(
         &mut self,
         cx: &mut ActionCx,
