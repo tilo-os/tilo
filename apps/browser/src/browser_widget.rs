@@ -436,7 +436,7 @@ pub struct BrowserWidget {
     /// Where a picture of the page is kept: content the agent's answer names
     /// by hash. `None` until a host attaches one, so a bare widget pictures
     /// nothing and says so.
-    content: Option<tilo_content::ContentStore>,
+    content: Option<ui::content::ContentStore>,
     /// The origins tracker protection is off for, as the document holds them.
     site_exceptions: std::collections::BTreeSet<String>,
     initial_url: String,
@@ -1272,7 +1272,7 @@ impl BrowserWidget {
     /// The content store a picture of the page is kept in: opaque bytes by
     /// hash, which the agent's answer names, so what a page shows as pixels
     /// reaches the reader who can see them.
-    pub(crate) fn attach_content(&mut self, content: tilo_content::ContentStore) {
+    pub(crate) fn attach_content(&mut self, content: ui::content::ContentStore) {
         self.content = Some(content);
     }
 
@@ -2337,7 +2337,7 @@ impl BrowserWidget {
     /// could not be kept.
     fn kept_picture(
         image: &[u8],
-        content: &tilo_content::ContentStore,
+        content: &ui::content::ContentStore,
     ) -> Result<String, &'static str> {
         let hash = content
             .put(image)
