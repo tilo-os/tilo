@@ -2,7 +2,10 @@
 //! paging a track, the wheel and its momentum, the keys that move the view, a
 //! pan, and the view those gestures are measured against.
 
-use super::*;
+use super::{
+    CursorMoveOutcome, FIT_EPS, HOLD_INITIAL_MS, LINE_STEP, PAGE_FRACTION, Scrollable, TrackHold,
+    deadline_after, f32_of_f64,
+};
 use crate::widget::scrollbar::PressOutcome;
 use vello::kurbo::Point;
 use winit::event::{MouseScrollDelta, TouchPhase};

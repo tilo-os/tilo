@@ -1,6 +1,11 @@
 //! The directions and departures sheets, with the picker that sets when a trip leaves.
 
-use super::*;
+use super::{
+    Affine, ButtonFace, ButtonRole, ChipStyle, ControlSize, EndpointFrame, Hit, Icon, ListRowFace,
+    MapsApp, NumberStepperFace, PaintCtx, Point, Rect, RowLeading, Scene, SegmentedFace,
+    SegmentedStyle, SelectionState, TextRenderer, TextRole, Theme, ToggleGroup, Tone, TransitMode,
+    TransitTimeMode, TravelMode, canvas, clock_label, draw, failure, geo,
+};
 
 impl MapsApp {
     /// The Directions view: the From/To fields, the travel mode, the
@@ -141,10 +146,10 @@ impl MapsApp {
                 .route
                 .as_ref()
                 .and_then(|current| {
-                    self.model.route_alternatives.iter().position(|offered| {
-                        offered.duration_s == current.duration_s
-                            && offered.distance_m == current.distance_m
-                    })
+                    self.model
+                        .route_alternatives
+                        .iter()
+                        .position(|offered| offered.is_same_trip(current))
                 })
                 .unwrap_or(0);
             let label = format!(

@@ -187,7 +187,7 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
         if let Some(scan) = cx.fixture::<ScanResult>() {
             self.set_result((*scan).clone());
             if self.immediate {
-                self.sample_job("Home");
+                crate::app::sample_job("Home");
             }
         }
     }

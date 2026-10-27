@@ -131,7 +131,7 @@ impl Seen {
             .fetch_add(bytes, Ordering::Relaxed)
             .saturating_add(bytes);
         let files = self.files.fetch_add(1, Ordering::Relaxed).saturating_add(1);
-        if files % REPORT_EVERY == 0 {
+        if files.is_multiple_of(REPORT_EVERY) {
             report(bytes_so_far, files);
         }
     }

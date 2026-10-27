@@ -1242,20 +1242,27 @@ pub(crate) fn take_view_only_pan() -> bool {
 }
 
 thread_local! {
-    static PLACEMENT_MOVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static LAYOUT_MOVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// From a widget's `update`: it moved what it lays out with no input asking
-/// (a glide, a jump in progress, a give springing back), so its children
-/// stand where the last layout put them. The host places its widgets again
-/// in the frame; it is no change of the model, and nothing syncs.
-pub fn note_placement_moved() {
-    PLACEMENT_MOVED.with(|moved| moved.set(true));
+/// From a widget's `update`: an animation of its own moved or resized what
+/// it lays out (a glide, a jump in progress, a give springing back, a pane
+/// gliding open, a reveal growing a pill), so the last layout no longer
+/// stands. The host lays the window out again in this frame; it is no
+/// change of the model, and nothing syncs.
+///
+/// A frame only an animation asked for is otherwise only drawn: an
+/// animation that moves nothing it lays out (a spinner, a fade, a pose
+/// applied as a draw transform) costs a paint, not a layout and a
+/// republication of the app's actions. A widget whose animation moves
+/// layout calls this on every frame it runs, including the one it lands on.
+pub fn note_layout_moved() {
+    LAYOUT_MOVED.with(|moved| moved.set(true));
 }
 
-/// Whether [`note_placement_moved`] ran since the last call, clearing it.
-pub(crate) fn take_placement_moved() -> bool {
-    PLACEMENT_MOVED.with(|moved| moved.replace(false))
+/// Whether [`note_layout_moved`] ran since the last call, clearing it.
+pub(crate) fn take_layout_moved() -> bool {
+    LAYOUT_MOVED.with(|moved| moved.replace(false))
 }
 
 /// Host services associated with one retained widget event dispatch.
@@ -3220,6 +3227,8 @@ pub use scrollable::{ScrollAxis, Scrollable};
 mod scroll_region;
 pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;
+mod overlay_scrollbar;
+pub use overlay_scrollbar::OverlayScrollbar;
 pub mod panic_scope;
 mod tile_host;
 pub use tile_host::{

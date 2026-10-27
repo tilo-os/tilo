@@ -993,6 +993,7 @@ conversation-delivery-delivered = Delivered
 conversation-delivery-read = Read
 conversation-delivery-failed = Not sent
 conversation-delivery-uncertain = Status uncertain
+conversation-new-messages = New messages
 conversation-attachment-open = Open
 conversation-attachment-open-full-size = Open full size
 conversation-attachment-save = Save

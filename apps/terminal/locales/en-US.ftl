@@ -6,6 +6,7 @@ terminal-target-manage = Manage environments…
 terminal-target-choose = Choose where this runs
 terminal-start-failed-title = The shell couldn’t start
 terminal-start-retry = Try again
+terminal-restart = Restart shell
 terminal-reconnecting = Reconnecting…
 terminal-reconnect-superseded = This session is open in another terminal
 terminal-run-on = Run on:

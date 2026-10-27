@@ -8,7 +8,8 @@ use crate::model::issue::{
     AgentRequest, Imported, Issue, Link, MAX_MESSAGE_CHARS, Message, MessageKind, Status,
 };
 use crate::model::run::{
-    Area, Budget, Confirmation, ConfirmationState, ModelChoice, Question, Run, RunOutcome, RunPhase,
+    Area, Budget, Confirmation, ConfirmationState, ModelChoice, PausedRun, Question, Run,
+    RunOutcome, RunPhase,
 };
 
 /// A workspace's issues.
@@ -144,6 +145,15 @@ fn own_run<'a>(cx: &ActionCx, issue: &'a mut Issue) -> Result<&'a mut Run, Refus
         return Err(Refusal::new("Only the run's own agent reports on it"));
     }
     Ok(run)
+}
+
+/// Refuse a step of a run a person paused: it takes none until they let it
+/// go on.
+fn at_boundary(run: &Run) -> Result<(), Refusal> {
+    if run.paused.is_some() {
+        return Err(Refusal::new("The run is paused: no step until it goes on"));
+    }
+    Ok(())
 }
 
 fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
@@ -293,6 +303,7 @@ impl Tracker {
                 started_ms: now,
                 updated_ms: now,
                 confirmation: None,
+                paused: None,
             }),
             ..Issue::default()
         };
@@ -452,8 +463,79 @@ impl Tracker {
             started_ms: now,
             updated_ms: now,
             confirmation: None,
+            paused: None,
         });
         target.status = Status::InProgress;
+        Ok(())
+    }
+
+    /// Pause the issue's run: it takes no new step until a person lets it
+    /// go on. The step it was in, and the message boundary it reached, are
+    /// recorded so that resuming continues from there. What it already
+    /// changed stays.
+    ///
+    /// # Errors
+    /// Refuses an issue with no run going, or an invoker who is not a
+    /// person.
+    #[action(audience = "people", writes = issues)]
+    pub fn pause_run(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
+        person(cx)?;
+        let now = cx.now_ms();
+        // The boundary is the messages to this run that exist when the
+        // person pauses it: it goes on after them and no further, so taking
+        // one in again never repeats a step it already planned on.
+        let target = self.issue_mut(issue)?;
+        let (epoch, phase) = target
+            .run
+            .as_ref()
+            .filter(|run| run.phase.active())
+            .map(|run| (run.epoch, run.phase))
+            .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        if target.run.as_ref().is_some_and(|run| run.paused.is_some()) {
+            return Err(Refusal::new("The run is paused already"));
+        }
+        let through = target
+            .comments
+            .values()
+            .filter(|message| message.kind == MessageKind::ToRun && message.run == epoch)
+            .count();
+        let paused = PausedRun::of(phase, u64::try_from(through).unwrap_or(u64::MAX), now)
+            .ok_or_else(|| Refusal::new("This step is not one a pause can hold"))?;
+        let run = target
+            .run
+            .as_mut()
+            .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        // Only the boundary is written: the run stays in the step it was in,
+        // so a step its agent reports meanwhile merges rather than being
+        // overwritten by a step a person never moved it out of.
+        run.paused = Some(paused);
+        Ok(())
+    }
+
+    /// Let the issue's paused run go on from where it stopped.
+    ///
+    /// # Errors
+    /// Refuses an issue whose run is not paused, or an invoker who is not a
+    /// person.
+    #[action(audience = "people", writes = issues)]
+    pub fn resume_run(&mut self, cx: &mut ActionCx, issue: &Id) -> Result<(), Refusal> {
+        person(cx)?;
+        let now = cx.now_ms();
+        let target = self.issue_mut(issue)?;
+        let run = target
+            .run
+            .as_mut()
+            .filter(|run| run.phase.active())
+            .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        let paused = run
+            .paused
+            .take()
+            .ok_or_else(|| Refusal::new("No run of this issue is paused"))?;
+        let phase = paused
+            .phase()
+            .ok_or_else(|| Refusal::new("The run does not name the step it stopped in"))?;
+        run.phase = phase;
+        run.updated_ms = now;
         Ok(())
     }
 
@@ -471,6 +553,44 @@ impl Tracker {
             .as_mut()
             .filter(|run| run.phase.active())
             .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        run.phase = RunPhase::Stopped;
+        run.paused = None;
+        run.updated_ms = now;
+        target.status = Status::Todo;
+        Ok(())
+    }
+
+    /// End a run that stopped showing a step longer than `after_ms` ago,
+    /// as idle: what it did stays, and the issue is left to be picked up
+    /// again.
+    ///
+    /// Any change of the run moves when it last showed one, so a run that
+    /// keeps reporting its step is never ended this way, and a paused one
+    /// waits as long as its person leaves it.
+    ///
+    /// # Errors
+    /// Refuses a run that is not going, or one that showed a step more
+    /// recently than `after_ms`.
+    #[action(housekeeping, writes = issues)]
+    pub fn end_idle_run(
+        &mut self,
+        cx: &mut ActionCx,
+        issue: &Id,
+        #[param("How long the run may go without a step, in milliseconds")] after_ms: i64,
+    ) -> Result<(), Refusal> {
+        if after_ms <= 0 {
+            return Err(Refusal::new("An idle run waits at least a moment"));
+        }
+        let now = cx.now_ms();
+        let target = self.issue_mut(issue)?;
+        let run = target
+            .run
+            .as_mut()
+            .filter(|run| run.phase.active() && run.paused.is_none())
+            .ok_or_else(|| Refusal::new("No run of this issue is going"))?;
+        if now.saturating_sub(run.updated_ms) < after_ms {
+            return Err(Refusal::new("The run showed a step that recently"));
+        }
         run.phase = RunPhase::Stopped;
         run.updated_ms = now;
         target.status = Status::Todo;
@@ -616,6 +736,7 @@ impl Tracker {
         let author = author(cx)?;
         let target = self.issue_mut(issue)?;
         let run = own_run(cx, target)?;
+        at_boundary(run)?;
         run.phase = phase;
         run.updated_ms = at_ms;
         let epoch = run.epoch;
@@ -684,6 +805,7 @@ impl Tracker {
         let now = cx.now_ms();
         let target = self.issue_mut(issue)?;
         let run = own_run(cx, target)?;
+        at_boundary(run)?;
         if run.phase == RunPhase::Waiting {
             return Err(Refusal::new("The run waits for an answer already"));
         }
@@ -782,11 +904,13 @@ impl Tracker {
         let author = author(cx)?;
         let target = self.issue_mut(issue)?;
         let run = own_run(cx, target)?;
+        at_boundary(run)?;
         run.phase = match outcome {
             RunOutcome::Done => RunPhase::Done,
             RunOutcome::Failed => RunPhase::Failed,
             RunOutcome::Stopped => RunPhase::Stopped,
         };
+        run.paused = None;
         run.updated_ms = at_ms;
         let epoch = run.epoch;
         target.status = match outcome {

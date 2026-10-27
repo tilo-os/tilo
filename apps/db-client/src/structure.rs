@@ -87,16 +87,16 @@ fn columns_table(info: &TableInfo) -> DataTable<ColumnRow> {
             })
             .with_kind(ui::text_render::TextKind::Identifier),
             column("nullable", &t("db-column-nullable"), |row: &ColumnRow| {
-                row.nullable.to_owned()
+                row.nullable.clone()
             }),
             column("key", &t("db-column-key"), |row: &ColumnRow| {
-                row.key.to_owned()
+                row.key.clone()
             }),
             column("default", &t("db-column-default"), |row: &ColumnRow| {
                 row.default.clone().unwrap_or_else(|| t("db-none"))
             })
             .with_kind(ui::text_render::TextKind::Code)
-            .with_optional_text(|row: &ColumnRow| row.default.clone(), &t("db-none")),
+            .with_optional_text(|row: &ColumnRow| row.default.clone(), t("db-none")),
         ],
         rows,
     )
@@ -131,7 +131,7 @@ fn keys_table(info: &TableInfo) -> Option<DataTable<KeyRow>> {
                     row.references.clone().unwrap_or_else(|| t("db-none"))
                 })
                 .with_kind(ui::text_render::TextKind::Identifier)
-                .with_optional_text(|row: &KeyRow| row.references.clone(), &t("db-none")),
+                .with_optional_text(|row: &KeyRow| row.references.clone(), t("db-none")),
             ],
             rows,
         )
@@ -181,18 +181,18 @@ fn page(info: &TableInfo) -> Element {
                 .with_kind(ui::text_render::TextKind::Identifier),
         ))
         .push(Box::new(Section::titled(
-            &t("db-column-columns"),
+            t("db-column-columns"),
             vec![Box::new(columns_table(info))],
         )));
     if let Some(keys) = keys_table(info) {
         column = column.push(Box::new(Section::titled(
-            &t("db-keys"),
+            t("db-keys"),
             vec![Box::new(keys)],
         )));
     }
     if let Some(indexes) = indexes_table(info) {
         column = column.push(Box::new(Section::titled(
-            &t("db-indexes"),
+            t("db-indexes"),
             vec![Box::new(indexes)],
         )));
     }

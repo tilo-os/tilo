@@ -1,6 +1,10 @@
 //! The map's frame: its layers and markers, the top row and footer, the overflow menu, what it says while no imagery shows, and the traffic status it reports.
 
-use super::*;
+use super::{
+    Affine, Button, ButtonFace, ButtonRole, ColumnMetrics, Congestion, Hit, Icon, MapMenu,
+    MapPalette, MapView, MapsApp, PaintCtx, Panel, Point, Rect, Scene, TextRenderer, TextRole,
+    Theme, TileStyle, Widget, canvas, draw, geo, imagery_hint, on_panel,
+};
 
 impl MapsApp {
     /// Whether the pointer rests on `rect` (and is not panning the map).

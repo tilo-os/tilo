@@ -117,14 +117,14 @@ fn connection_section(rows: &[ConnectionRow], open: Option<Uuid>) -> NavSection 
             })
             .collect(),
     )
-    .trailing_action(NavAction::new("new", Icon::Plus, &t("db-new-connection")))
+    .trailing_action(NavAction::new("new", Icon::Plus, t("db-new-connection")))
 }
 
 /// The open database's tables, under the connection's name; the one
 /// section the window's filter narrows.
 fn catalog_section(name: &str, schema: &DatabaseSchema) -> NavSection {
     NavSection::new(CATALOG, name, catalog_items(schema))
-        .empty_caption(&t("db-tables"))
+        .empty_caption(t("db-tables"))
         .filterable()
 }
 
@@ -155,7 +155,7 @@ impl Navigator {
         let opened = link.clone();
         let list = NavList::new(sections(&[], None))
             .with_id("db.sidebar")
-            .with_accessible_name(&t("db-navigator"))
+            .with_accessible_name(t("db-navigator"))
             .on_select(move |id| {
                 if let Some(id) = parse_connection(&id) {
                     // Choosing the connection that is already open keeps it open.
@@ -171,7 +171,7 @@ impl Navigator {
                 vec![NavAction::new(
                     "remove",
                     Icon::Trash2,
-                    &t("db-remove-connection"),
+                    t("db-remove-connection"),
                 )],
                 move |id, _action| {
                     if let Some(id) = parse_connection(id) {

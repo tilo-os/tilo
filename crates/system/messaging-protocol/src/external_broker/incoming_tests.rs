@@ -240,9 +240,9 @@ async fn actual_whatsapp_inbound_wakes_selected_messages_view_without_shared_pla
     assert!(
         app.harness()
             .wait_until(ui::time::Duration::from_secs(5), |h| {
-                h.a11y_nodes()
-                    .iter()
-                    .any(|(_, node)| node.label() == Some("new private WhatsApp arrival"))
+                h.a11y_nodes().iter().any(|(_, node)| {
+                    super::tests::speaks(node.label(), "new private WhatsApp arrival")
+                })
             }),
         "native inbound arrival must refresh the selected private view"
     );
@@ -498,7 +498,7 @@ async fn sdk_durability_hook_commits_batches_atomically_before_success() {
             .wait_until(ui::time::Duration::from_secs(5), |h| {
                 h.a11y_nodes()
                     .iter()
-                    .any(|(_, node)| node.label() == Some("durable second text"))
+                    .any(|(_, node)| super::tests::speaks(node.label(), "durable second text"))
             })
     );
     assert!(!app.harness().dump_json().contains("durable first text"));

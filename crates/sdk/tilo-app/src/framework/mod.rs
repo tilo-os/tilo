@@ -312,6 +312,7 @@ mod adopt_windows;
 mod app;
 mod attached;
 mod chain;
+mod chain_list;
 mod children;
 mod controls;
 // In-place reload swaps native code into a running process; a browser build
@@ -367,6 +368,7 @@ pub use app::run;
 pub use app::{FileHistory, ResourceApp, SURFACE_FLAG, SeedCx, definition, run_helper};
 pub use attached::{AttachedView, OpenView};
 pub use chain::{Chain, Chained};
+pub use chain_list::{ChainList, ChainPager, ChainRow, Paged};
 pub use children::{ChildRecord, Children, Listed, child_resource_id};
 pub use controls::{ActionControl, Actions};
 pub use delivery::HostDelivery;

@@ -999,6 +999,14 @@ impl Popover {
 }
 
 impl<C: Widget + 'static> Widget for Popover<C> {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // A move the top layer found (a new window, a scroll) is laid out.
+        if self.open && self.stale {
+            crate::widget::note_layout_moved();
+        }
+        super::defaults::update(self.children_mut(), state, path)
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // Even when closed, so reopening shows a current frame.
         self.content.sync(state, path);

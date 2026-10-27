@@ -312,6 +312,9 @@ pub struct TrackerRun {
     pub starter: String,
     /// Whether the run is still going.
     pub active: bool,
+    /// Where a person paused it: the messages to it its agent had taken in
+    /// then. Its agent takes no new step until a person lets it go on.
+    pub paused_through: Option<u64>,
     pub budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     /// What the issue is about, when it was asked about a selection: where
     /// to act, granting nothing.

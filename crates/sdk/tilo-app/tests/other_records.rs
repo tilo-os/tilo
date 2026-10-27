@@ -83,6 +83,11 @@ impl Playback {
     pub fn mute(&mut self, channel: String) {
         self.muted.insert(channel);
     }
+    /// Unmute every channel.
+    #[action(destructive)]
+    pub fn unmute_all(&mut self) {
+        self.muted = Set::default();
+    }
 }
 
 struct BoardApp;
@@ -312,6 +317,49 @@ fn the_persons_record_is_edited_by_path_as_the_person_whatever_their_role() {
     app.harness().click_named(&control).unwrap();
     assert!(playback.with(|state| state.autoplay));
     assert!(app.invoke(Board::RETITLE.with("not theirs")).is_err());
+}
+
+// A verb of the person's own record keeps what it does: a destructive one
+// Undo takes back is undoable, so it runs at once and asks nothing, while
+// what a grant must allow is reading, so the room's roles do not gate it.
+#[test]
+fn a_verb_of_the_persons_record_is_undoable_and_needs_only_reading() {
+    let mut app = TestApp::<BoardApp>::for_person(&ada()).unwrap();
+    let resources = app.harness().resources();
+    let descriptor = tilo_actions::door::survey(&resources)
+        .into_iter()
+        .find(|descriptor| {
+            descriptor.address.resource.as_str() == "person:test.playback"
+                && descriptor.address.action == "unmute-all"
+        })
+        .expect("the person's record publishes its verbs");
+    let contract = &descriptor.contract;
+    assert_eq!(contract.kind, tilo_actions::ActionKind::Undoable);
+    assert!(contract.can_be_undone());
+    assert_eq!(
+        contract.advertised_confirmation(),
+        tilo_actions::ConfirmationPolicy::None
+    );
+    assert_eq!(contract.validate_declaration(), Vec::<String>::new());
+    assert_eq!(contract.need().kind, tilo_actions::ActionKind::Read);
+
+    let playback = app.person::<Playback>().unwrap();
+    app.call_on(
+        "person:test.playback",
+        "mute",
+        serde_json::json!({ "channel": "news" }),
+    )
+    .unwrap();
+    // A viewer of the room runs it on their own record, unasked, and Undo
+    // takes it back.
+    app.set_role(Role::Viewer);
+    app.call_on("person:test.playback", "unmute-all", serde_json::json!({}))
+        .unwrap();
+    assert_eq!(app.asking(), None);
+    assert!(playback.with(|state| state.muted.is_empty()));
+    app.call_on("person:test.playback", "undo", serde_json::json!({}))
+        .unwrap();
+    assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
 }
 
 /// Keeps both records, though its view shows neither.

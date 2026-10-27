@@ -69,6 +69,7 @@ primitive! {
     usize => json!({"type": "integer", "minimum": 0}),
     serde_json::Value => json!({}),
     crate::Id => json!({"type": "string"}),
+    crate::Counter => json!({"type": "integer"}),
     uuid::Uuid => json!({"type": "string", "format": "uuid"}),
 }
 

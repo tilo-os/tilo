@@ -421,15 +421,19 @@ impl TypstApp {
     /// Say in the window's bar where the window is and what it holds, and
     /// take back what the person did there.
     fn declare_window_slots(&mut self) {
-        let name = self.current_name();
-        self.chrome.sync(
-            &name,
-            self.unsaved(),
-            self.err_count + self.warn_count,
-            self.show_diagnostics,
-            self.outline.visible(),
-            matches!(self.compact_view, CompactPane::Preview),
-        );
+        self.chrome.sync(crate::chrome::Held {
+            name: self.current_name(),
+            edited: self.unsaved(),
+            problems: self.err_count + self.warn_count,
+            panels: crate::chrome::Panels {
+                problems: self.show_diagnostics,
+                outline: self.outline.visible(),
+            },
+            pane: match self.compact_view {
+                CompactPane::Editor => crate::chrome::Pane::Editor,
+                CompactPane::Preview => crate::chrome::Pane::Preview,
+            },
+        });
         self.chrome.declare();
     }
 

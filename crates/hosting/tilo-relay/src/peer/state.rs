@@ -34,6 +34,25 @@ impl StateSession {
             lag: None,
         }
     }
+    /// A live delivery to room `workspace_id` did not fit this session's
+    /// queue or the live byte budget; its pending entry stays on disk and the
+    /// connection resumes the room from there once its queues drain. That
+    /// holds between a replay's final cut and its `Ready` too, where a busy
+    /// room fills the not yet written live queue. Only a session without a
+    /// lag to resume is fenced at that boundary, so its reconnect catches up.
+    pub(super) fn fall_behind(
+        &self,
+        sub: &crate::workspace::Subscriber,
+        replay_phase: Option<u8>,
+        workspace_id: u64,
+    ) {
+        if let Some(lag) = &self.lag {
+            lag.mark(workspace_id);
+        } else if replay_phase == Some(ReplayCatchup::BOUNDARY) {
+            self.live.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = sub.disconnect.try_send(());
+        }
+    }
     /// Everything fanned out to this session so far reached its wire: none
     /// of it is queued, left on disk while it lagged, or still replaying.
     pub(crate) fn caught_up(&self) -> bool {
