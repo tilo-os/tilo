@@ -76,12 +76,11 @@ fn browser_media_reply_enables_voice_without_native_attachment_access() {
             crate::i18n::t("chat-voice-unavailable"),
         ))
     );
+    // Attaching needs no paths: the browser's file chooser hands over the
+    // bytes, which go to the page's content store.
     assert!(
-        unavailable.contains(&ui::framework::EffectStatus::unavailable(
-            crate::effects::ChatEffect::ATTACH_FILE,
-            "no_services",
-            crate::i18n::t("chat-attachment-import-unavailable"),
-        ))
+        !format!("{unavailable:?}").contains("attach-file"),
+        "{unavailable:?}"
     );
     app.native_voice_command(
         &channel.id,

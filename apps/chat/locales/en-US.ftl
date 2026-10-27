@@ -184,7 +184,6 @@ chat-share-open = Open { $title }, shared by { $name }
 chat-share-pick = Share { $title }
 chat-voice-unavailable = Calls can't start here: no host carries this workspace's calls
 chat-call-not-joined = Join the call first.
-chat-attachment-import-unavailable = Attachment import is unavailable on this host.
 
 # "You" belongs to the current reader; shared/legacy names identify their person.
 chat-person-unnamed = Someone ({ $tag })
