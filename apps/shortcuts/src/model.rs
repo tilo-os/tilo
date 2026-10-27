@@ -9,7 +9,9 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use tilo_automation::{Binding, Condition, Selector, Shortcut, Step, StepKind, TriggerSpec};
+use tilo_automation::{
+    Binding, Condition, Selector, Shortcut, Step, StepKind, StepPolicy, TriggerSpec,
+};
 use ui::prelude::*;
 use ui::tilo_actions::{ActionKey, ActionParam, ParamType};
 
@@ -84,6 +86,9 @@ pub struct StepNode {
     pub head: Option<Head>,
     /// An action step's arguments, each bound on its own.
     pub args: BTreeMap<String, Binding>,
+    /// What the run does when the step fails; [`StepPolicy::Fail`], the
+    /// default, stops it.
+    pub on_error: StepPolicy,
 }
 
 /// A [`StepKind`] without the parts a [`StepNode`] stores apart: an action's
@@ -319,7 +324,7 @@ impl Draft {
                 let head = node.head.clone()?;
                 let args = node.args.clone();
                 let kind = head.join(args, |branch| self.block(key.as_str(), branch));
-                Some(Step::new(node.id.0.clone(), kind))
+                Some(Step::new(node.id.0.clone(), kind).with_policy(node.on_error.clone()))
             })
             .collect()
     }
@@ -391,6 +396,7 @@ impl Draft {
                 id: Atom(step.id.clone()),
                 head: Some(head),
                 args,
+                on_error: step.on_error.clone(),
             };
             match self.steps.get_mut(&key) {
                 Some(stored) => {
@@ -871,6 +877,31 @@ impl Workbench {
                 }
                 _ => Err(format!("step `{path}` cannot move that way")),
             }
+        })
+    }
+
+    /// Say what a run does when a step fails: stop (the default), try it
+    /// again a few times, do something else instead, or go on with a value
+    /// of the shortcut's own.
+    #[action]
+    pub fn set_step_policy(
+        &mut self,
+        cx: &mut ActionCx,
+        draft: &Id,
+        #[param("The step's position, like 0 or 2.then.1")] path: String,
+        #[param("What to do when it fails, as JSON; empty stops the run")] policy: String,
+    ) -> Result<(), Refusal> {
+        let policy: StepPolicy = if policy.trim().is_empty() {
+            StepPolicy::Fail
+        } else {
+            serde_json::from_str(&policy)
+                .map_err(|error| Refusal::new(format!("not a policy: {error}")))?
+        };
+        edit_program(self, cx, draft, |program| {
+            step_mut(&mut program.steps, &path)
+                .ok_or_else(|| format!("there is no step `{path}`"))?
+                .on_error = policy;
+            Ok(())
         })
     }
 

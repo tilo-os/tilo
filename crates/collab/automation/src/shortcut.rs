@@ -105,10 +105,11 @@ impl Step {
 /// Whatever the policy, a failure is recorded with the step and shown: a
 /// step that is retried, run into a fallback or passed over is never the
 /// same as one that worked.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "on_error", rename_all = "snake_case")]
 pub enum StepPolicy {
-    /// Stop the run here (the default).
+    /// Stop the run here.
+    #[default]
     Fail,
     /// Try the step again `attempts` times in all, waiting `backoff_ms`
     /// before the second attempt and doubling the wait each time after it,
@@ -128,12 +129,6 @@ pub enum StepPolicy {
     /// Carry on with `value` as the step's output, if nothing it changed
     /// can be taken back by simply not using it, and mark the run degraded.
     Default { value: Binding },
-}
-
-impl Default for StepPolicy {
-    fn default() -> Self {
-        Self::Fail
-    }
 }
 
 impl StepPolicy {
@@ -444,7 +439,14 @@ impl AiTransform {
 // scalars: a condition is made of conditions, which a derived model cannot
 // describe, and each is written whole by the editor.
 #[cfg(feature = "model")]
-tilo_resource::value_model!(Selector, Binding, Condition, AiTransform, TriggerSpec);
+tilo_resource::value_model!(
+    Selector,
+    Binding,
+    Condition,
+    AiTransform,
+    TriggerSpec,
+    StepPolicy
+);
 
 /// What may start a shortcut. Data only: the session decides how to watch
 /// for each and starts an unattended run when one fires.

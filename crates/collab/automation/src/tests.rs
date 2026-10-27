@@ -236,15 +236,21 @@ impl FakeHost {
 
     /// Spend one refusal of `action`, answering whether it is still flaky.
     fn refusing(&self, action: &str) -> bool {
-        let mut flaky = self.flaky.lock().unwrap();
-        let Some((_, left)) = flaky
+        self.flaky
+            .lock()
+            .unwrap()
             .iter_mut()
-            .find(|(name, left)| name == action && *left > 0)
-        else {
-            return false;
-        };
-        *left -= 1;
-        true
+            .find_map(|(name, left)| {
+                if name == action && *left > 0 {
+                    Some(left)
+                } else {
+                    None
+                }
+            })
+            .map(|left| {
+                *left = left.saturating_sub(1);
+            })
+            .is_some()
     }
 
     fn catalog(&self) -> ActionCatalog {
@@ -328,7 +334,7 @@ impl ActionHost for FakeHost {
         if !offered {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
-        let action = request.target.address.action.to_string();
+        let action = request.target.address.action.clone();
         if self.refusing(&action) {
             return Pending::ready(Err(ActionHostError::Unavailable {
                 reason: "the app is starting".into(),
@@ -393,15 +399,18 @@ impl RunHooks for Hooks {
     }
 }
 
-/// Drive a future whose every answer is already known.
+/// Drive a future to its answer: every host answer is already known, so only
+/// a wait on the clock (a step's backoff) can leave it pending, and that ends
+/// on its own.
 fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
-    match future
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("the fake host answers at once"),
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut cx) {
+            return value;
+        }
+        std::thread::yield_now();
     }
 }
 
@@ -573,22 +582,27 @@ fn a_retried_step_that_keeps_failing_stops_the_run_with_every_try_recorded() {
 }
 
 #[test]
-fn a_step_passed_over_with_its_default_is_degraded_in_the_run() {
+fn a_step_passed_over_with_its_default_carries_on_and_degrades_the_run() {
     let host = FakeHost::new();
-    // The count the default stands in for is one the list step never gave.
+    // The list the rest of the shortcut reads never comes back, so the
+    // default stands in for it: the run carries on with an empty count and
+    // says so, rather than reading nothing as though the list were empty.
+    host.flaky("list", 99);
     let tidy = shortcut(
         "tidy",
         vec![
-            Step::new(
-                "count",
-                StepKind::SetVar {
-                    name: "count".into(),
-                    value: Binding::Literal(json!(0)),
+            invoke("list", NOTES, Selector::Fixed(INBOX.into()), "list", &[]).with_policy(
+                StepPolicy::Default {
+                    value: Binding::Literal(json!({ "notes": [], "count": "none" })),
                 },
-            )
-            .with_policy(StepPolicy::Default {
-                value: Binding::Literal(json!(0)),
-            }),
+            ),
+            invoke(
+                "count-as-title",
+                NOTES,
+                Selector::Fixed(INBOX.into()),
+                "create",
+                &[("title", Binding::step("list", "/count"))],
+            ),
         ],
     );
     let report = run_with(
@@ -599,7 +613,45 @@ fn a_step_passed_over_with_its_default_is_degraded_in_the_run() {
         RunMode::Unattended,
     );
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
-    assert!(!report.is_degraded(), "nothing failed: {report:?}");
+    assert!(
+        report.is_degraded(),
+        "the default was a fallback: {report:?}"
+    );
+    let (defaulted, after) = (&report.steps[0], &report.steps[1]);
+    assert!(matches!(
+        defaulted.degraded,
+        StepOutcome::Degraded {
+            recovered: Recovered::Default,
+            ..
+        }
+    ));
+    assert!(after.status.succeeded(), "the later step read the default");
+    let summary = report.degraded_summary().expect("a summary");
+    assert!(summary.contains("1 step"), "{summary}");
+    // What the run answers with carries the degradation too, so the chip
+    // that started it can say the result fell short.
+    let value = report
+        .reported_value()
+        .expect("the run answers with its degradation");
+    assert_eq!(value["degraded"], json!(summary), "{value:?}");
+}
+
+#[test]
+fn a_run_that_finished_as_intended_answers_with_its_own_output() {
+    // Nothing fell short, so the run answers with the value itself: the
+    // degradation note is only there when there is something to say.
+    let report = RunReport {
+        run: RunId::new(),
+        shortcut: "tidy".into(),
+        version: None,
+        trigger: "manual".into(),
+        mode: RunMode::Unattended,
+        steps: Vec::new(),
+        output: Some(json!("draft:1")),
+        degraded: Vec::new(),
+        outcome: RunOutcome::Completed,
+    };
+    assert_eq!(report.reported_value(), Some(json!("draft:1")));
 }
 
 #[test]
