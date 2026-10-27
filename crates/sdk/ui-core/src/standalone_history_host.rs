@@ -1366,6 +1366,9 @@ fn open_at_operation() -> ActionSpec {
                 .expect("validated history entry serializes")
         },
     )
+    // Looking at a past state changes this viewer's view, not the record:
+    // a read, so a reader, a replay window and an agent can step History.
+    .of_kind(tilo_actions::ActionKind::Read)
     .for_audience(tilo_actions::Audience::Agents)
 }
 #[expect(
@@ -1378,7 +1381,8 @@ fn session_resource(session: uuid::Uuid) -> Resource {
         move |args| {
             let entries = args.array("entries").unwrap_or_default().iter().filter_map(serde_json::Value::as_str).map(str::to_owned).collect();
             EncodedAction::encode_operation(HISTORY_OPERATION, &HistoryCommand::Select { session, entries }).expect("validated history selection serializes")
-        });
+        })
+        .of_kind(tilo_actions::ActionKind::Read);
     Resource::new(
         format!("tilo.host.history:{session}"),
         "tilo.host.history.session",
@@ -2074,6 +2078,22 @@ mod tests {
             .unwrap();
         assert_eq!(cancel.kind, OperationKind::View);
         assert!(!cancel.contract.availability.is_available());
+    }
+
+    /// Looking at History is a read; only restoring writes. So a reader,
+    /// a replay window and an agent keep every door that looks.
+    #[test]
+    fn only_restoring_needs_more_than_reading() {
+        let session = session_resource(uuid::Uuid::from_u128(1));
+        let door = history_resource(true, true);
+        for action in door.actions.iter().chain(&session.actions) {
+            let expected = if matches!(action.id.as_str(), "review_restore" | "restore") {
+                tilo_actions::ActionKind::Undoable
+            } else {
+                tilo_actions::ActionKind::Read
+            };
+            assert_eq!(action.contract.kind, expected, "{}", action.id);
+        }
     }
 
     fn history_fixture() -> (AutoCommit, String, uuid::Uuid) {

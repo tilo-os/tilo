@@ -1309,13 +1309,13 @@ mod tests {
             assert_eq!(
                 history,
                 [
-                    ("history.close", Undoable),
-                    ("history.compare", Undoable),
+                    ("history.close", Read),
+                    ("history.compare", Read),
                     ("history.list", Read),
                     ("history.name", Undoable),
                     ("history.open", Read),
                     ("history.restore", Undoable),
-                    ("history.view_at", Undoable),
+                    ("history.view_at", Read),
                 ]
                 .into_iter()
                 .map(|(action, kind)| (action.to_owned(), kind))
