@@ -11,7 +11,7 @@ use crate::model::{AccountConfig, Folder, Message, MessageId};
 use crate::state::MailState;
 use crate::sync::Synced;
 
-fn server_changes(
+pub(super) fn server_changes(
     mailbox: &crate::model::Mailbox,
     account_id: &str,
     folder: Folder,
@@ -69,7 +69,7 @@ fn server_changes(
 
 /// What a server search found joins the mail this device holds, and so the
 /// search; nothing held is replaced.
-fn take_found(
+pub(super) fn take_found(
     doc: &mut ui::widget::Edits<'_>,
     st: &mut MailState,
     account_id: &str,
@@ -87,7 +87,7 @@ fn take_found(
 
 /// The timing of an account's first fetch, starting now: its mail comes
 /// from the account's server.
-fn first_fetch(config: &crate::model::AccountConfig) -> ui::arriving::ArrivalClock {
+pub(super) fn first_fetch(config: &crate::model::AccountConfig) -> ui::arriving::ArrivalClock {
     ui::arriving::ArrivalClock::new(
         ui::time::now(),
         ui::arriving::Source::host(config.imap_host.clone()),
