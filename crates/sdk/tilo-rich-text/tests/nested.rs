@@ -94,9 +94,8 @@ fn an_items_rich_text_is_published_beneath_the_item_as_rich_text() {
     let hello = letter(&app, "Hello");
     let body = format!("test.letters/letters/{hello}/body");
     let surface = app.agent_surface();
-    let rows: Vec<&serde_json::Value> = surface["actions"]
-        .as_array()
-        .unwrap()
+    let rows: Vec<&serde_json::Value> = surface
+        .rows()
         .iter()
         .filter(|row| row["resource"] == body.as_str())
         .collect();
@@ -114,9 +113,8 @@ fn an_items_rich_text_is_published_beneath_the_item_as_rich_text() {
     }
     // The record does not repeat them with a letter to name.
     assert!(
-        !surface["actions"]
-            .as_array()
-            .unwrap()
+        !surface
+            .rows()
             .iter()
             .any(|row| { row["resource"] == Letters::KIND && row["action"] == "append-paragraph" }),
         "{surface}"

@@ -174,7 +174,7 @@ fn a_viewers_keystrokes_change_nothing_and_the_field_shows_the_stored_text() {
 fn an_agent_addresses_the_child_by_its_own_actions() {
     let mut app = open(Role::Owner);
     let surface = app.agent_surface();
-    let rows = surface["actions"].as_array().unwrap();
+    let rows = surface.rows();
     assert!(
         rows.iter().any(|row| row["resource"] == sql_id().as_str()
             && row["action"] == "replace-text"

@@ -232,9 +232,8 @@ fn report_children_publish_inspection_removal_and_typed_reads_on_the_production_
     let surface = app.agent_surface();
     for action in ["inspect", "remove-report"] {
         assert!(
-            surface["actions"]
-                .as_array()
-                .unwrap()
+            surface
+                .rows()
                 .iter()
                 .any(|row| row["resource"] == child && row["action"] == action),
             "report child offers {action}: {surface}"

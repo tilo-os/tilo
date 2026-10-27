@@ -115,7 +115,8 @@ Besides the actions, the session's agent can use the window like a person:
 handles, types and Ctrl+scrolls in the window's pixels (a point of `render`
 plus its `window_origin`) and answers with a screenshot of the window.
 
-`tests/agent-surface.json` is what an agent sees of the app; a change to the
-vocabulary shows there as a diff (`tests/agent_surface.rs` explains updating
-it). Screenshots: `TILO_SHOTS_THEME=light ./target/debug/canvas --shots
+`tests/agent-surface.json` is what an agent sees of the app — one document of
+`format` `tilo.agent-surface`, at the `version` a reader checks
+(`tilo_actions::agent_surface`); a change to the vocabulary shows there as a
+diff (`tests/agent_surface.rs` explains updating it). Screenshots: `TILO_SHOTS_THEME=light ./target/debug/canvas --shots
 out.png --scenario landscape`.

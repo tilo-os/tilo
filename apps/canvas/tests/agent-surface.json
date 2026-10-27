@@ -1,4 +1,6 @@
 {
+  "format": "tilo.agent-surface",
+  "version": 1,
   "actions": [
     {
       "resource": "canvas.artwork",
@@ -3063,50 +3065,6 @@
     }
   ],
   "$defs": {
-    "crop": {
-      "type": [
-        "array",
-        "null"
-      ],
-      "items": {
-        "type": "number"
-      },
-      "minItems": 4,
-      "maxItems": 4
-    },
-    "op": {
-      "type": "string",
-      "enum": [
-        "set",
-        "splice",
-        "replace",
-        "add",
-        "insert",
-        "remove",
-        "insert-item",
-        "upsert-item",
-        "remove-item",
-        "move-to",
-        "remove-key",
-        "set-cell",
-        "insert-row",
-        "insert-column",
-        "remove-row",
-        "remove-column",
-        "settle",
-        "react",
-        "unreact",
-        "rich"
-      ]
-    },
-    "points": {
-      "type": "array",
-      "items": {
-        "type": "number"
-      },
-      "minItems": 2,
-      "maxItems": 2
-    },
     "action": {
       "type": "string",
       "enum": [
@@ -3133,13 +3091,34 @@
         "combine"
       ]
     },
-    "forks": {
+    "crop": {
       "type": [
-        "integer",
+        "array",
         "null"
       ],
-      "minimum": 0,
-      "maximum": 4294967295
+      "items": {
+        "type": "number"
+      },
+      "minItems": 4,
+      "maxItems": 4
+    },
+    "curve": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/points"
+      }
+    },
+    "dash": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "number"
+      }
     },
     "focal": {
       "type": [
@@ -3152,19 +3131,43 @@
       "minItems": 2,
       "maxItems": 2
     },
-    "shared": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "curve": {
+    "forks": {
       "type": [
-        "array",
+        "integer",
         "null"
       ],
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "op": {
+      "type": "string",
+      "enum": [
+        "set",
+        "splice",
+        "replace",
+        "add",
+        "insert",
+        "remove",
+        "insert-item",
+        "upsert-item",
+        "remove-item",
+        "move-to",
+        "remove-key",
+        "set-cell",
+        "insert-row",
+        "insert-column",
+        "remove-row",
+        "remove-column",
+        "settle",
+        "react",
+        "unreact",
+        "rich"
+      ]
+    },
+    "path": {
+      "type": "array",
       "items": {
-        "$ref": "#/$defs/points"
+        "type": "object"
       }
     },
     "paths": {
@@ -3176,22 +3179,24 @@
         "maxLength": 1024
       }
     },
-    "dash": {
-      "type": [
-        "array",
-        "null"
-      ],
+    "points": {
+      "type": "array",
+      "items": {
+        "type": "number"
+      },
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "points2": {
+      "type": "array",
       "items": {
         "type": "number"
       }
     },
-    "target_heads": {
+    "shared": {
       "type": "array",
-      "minItems": 1,
-      "maxItems": 64,
       "items": {
-        "type": "string",
-        "pattern": "^[0-9a-fA-F]{64}$"
+        "type": "string"
       }
     },
     "shared2": {
@@ -3203,10 +3208,13 @@
         "type": "string"
       }
     },
-    "points2": {
+    "target_heads": {
       "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
       "items": {
-        "type": "number"
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{64}$"
       }
     },
     "transform": {
@@ -3219,12 +3227,6 @@
       },
       "minItems": 6,
       "maxItems": 6
-    },
-    "path": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
     }
   }
 }

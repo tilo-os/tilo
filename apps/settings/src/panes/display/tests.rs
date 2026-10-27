@@ -206,9 +206,8 @@ fn peer_drag_uses_the_mounted_app_semantic_door_and_fixed_revision() {
     app.settle();
     let address = "settings.device-display:semantic-peer/eDP-1";
     let surface = app.agent_surface();
-    let row = surface["actions"]
-        .as_array()
-        .unwrap()
+    let row = surface
+        .rows()
         .iter()
         .find(|row| row["resource"] == address && row["action"] == "move-device-display")
         .expect("discovered screen exports its move action");
@@ -262,7 +261,7 @@ fn connected_display_controls_publish_their_parameter_actions() {
     .expect("Displays opens through its declared operation");
     app.settle();
     let surface = app.agent_surface();
-    let rows = surface["actions"].as_array().expect("published actions");
+    let rows = surface.rows();
     for (action, field) in [
         ("set-display-mode", "mode"),
         ("set-output-scale", "scale"),
@@ -322,9 +321,8 @@ fn display_inspection_and_staging_share_the_production_door() {
     let mode = before["observed_outputs"][0]["supported_modes"][0].clone();
     // Read the declared choices instead of inventing a refresh-rate spelling.
     let surface = app.agent_surface();
-    let row = surface["actions"]
-        .as_array()
-        .unwrap()
+    let row = surface
+        .rows()
         .iter()
         .find(|row| {
             row["resource"] == "settings.display-output:eDP-1"

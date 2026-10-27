@@ -812,9 +812,8 @@ fn refreshing_and_opml_are_effects_of_the_reader() {
     let mut app = TestApp::<FeedsShell>::new().unwrap();
     let surface = app.agent_surface();
     let action = |id: &str| {
-        surface["actions"]
-            .as_array()
-            .unwrap()
+        surface
+            .rows()
             .iter()
             .find(|row| row["resource"] == <Library as Resource>::KIND && row["action"] == id)
             .cloned()

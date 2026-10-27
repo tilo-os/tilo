@@ -46,7 +46,7 @@ fn field_edit(app: &mut TestApp<SlidesShell>, edit: &Edit<Deck>) -> Result<(), D
 fn the_deck_publishes_its_verbs_on_the_deck_and_on_each_slide() {
     let mut app = seeded();
     let surface = app.agent_surface();
-    let rows = surface["actions"].as_array().unwrap();
+    let rows = surface.rows();
     let row = |resource: &str, action: &str| {
         rows.iter()
             .find(|row| row["resource"] == resource && row["action"] == action)

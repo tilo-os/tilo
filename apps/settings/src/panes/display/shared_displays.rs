@@ -712,9 +712,8 @@ mod tests {
         app.settle();
         let address = "settings.shared-display:offline-peer:edid:panel-1";
         let surface = app.agent_surface();
-        let row = surface["actions"]
-            .as_array()
-            .unwrap()
+        let row = surface
+            .rows()
             .iter()
             .find(|row| row["resource"] == address && row["action"] == "include-shared-display")
             .expect("observed output exports the actual operation");
@@ -785,9 +784,8 @@ mod tests {
         let address = "settings.shared-display:offline-peer:edid:panel-1";
         let offered = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
                        action: &str| {
-            app.agent_surface()["actions"]
-                .as_array()
-                .unwrap()
+            app.agent_surface()
+                .rows()
                 .iter()
                 .any(|row| row["resource"] == address && row["action"] == action)
         };

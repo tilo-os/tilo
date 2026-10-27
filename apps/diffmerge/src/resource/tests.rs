@@ -384,9 +384,8 @@ fn an_agent_merges_one_call_each() {
     .unwrap();
     app.settle();
     let surface = app.agent_surface();
-    let change = surface["actions"]
-        .as_array()
-        .unwrap()
+    let change = surface
+        .rows()
         .iter()
         .find(|row| {
             row["resource_kind"] == "diffmerge.session.change" && row["action"] == "take-both"

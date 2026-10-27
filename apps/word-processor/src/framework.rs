@@ -280,9 +280,8 @@ mod tests {
     fn the_document_publishes_file_effects_and_views() {
         let mut app = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
         let surface = app.agent_surface();
-        let ids: Vec<&str> = surface["actions"]
-            .as_array()
-            .unwrap()
+        let ids: Vec<&str> = surface
+            .rows()
             .iter()
             .filter(|row| row["resource"] == "word-processor.document")
             .filter_map(|row| row["action"].as_str())

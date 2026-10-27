@@ -320,10 +320,8 @@ fn run(app: &mut App, plan: &[(&'static str, serde_json::Value)]) -> Vec<String>
 fn typed_arm(receipt: &mut Receipt) -> App {
     let mut app = open();
     let surface = app.agent_surface();
-    let published: Vec<&str> = surface["actions"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default()
+    let published: Vec<&str> = surface
+        .rows()
         .iter()
         .filter(|row| row["resource"] == DOCUMENT)
         .filter_map(|row| row["action"].as_str())

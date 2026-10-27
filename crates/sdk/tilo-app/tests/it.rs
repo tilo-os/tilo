@@ -9,6 +9,8 @@ pub mod action_groups;
 pub mod actors;
 #[path = "add_item_work.rs"]
 pub mod add_item_work;
+#[path = "agent_surface.rs"]
+pub mod agent_surface;
 #[path = "attached_view.rs"]
 pub mod attached_view;
 #[path = "child_records.rs"]

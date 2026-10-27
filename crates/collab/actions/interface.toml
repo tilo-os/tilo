@@ -1,0 +1,28 @@
+# Written by `python3 tools/policy/check_interfaces.py write` from the code;
+# review a change here like an API change (docs/architecture/compatibility.md).
+# Everything above [schema] is authored; [schema] and `version` are written.
+
+# App ↔ agent: the surface document an app publishes of what an agent may do
+# with it (`AgentSurface`, answered by `TestApp::agent_surface`), read by the
+# agent, a script, or a tool in another language. Its own number, apart from
+# the shell-ui connection the app and the shell talk on: a vocabulary change
+# and a connection change are not the same change. The document carries this
+# version in its `version` field, beside the `format` that names it; a reader
+# of another version refuses it rather than reading half of it.
+name = "agent-surface"
+version = 1
+version_const = "crates/collab/actions/src/agent_surface.rs:AGENT_SURFACE_VERSION"
+encoding = "json"
+served_to_apps = false
+sources = ["crates/collab/actions/src/agent_surface.rs"]
+roots = ["AgentSurface"]
+
+[opaque]
+Value = "serde_json::Value: one row, as `door::survey` publishes it, and one definition's schema"
+
+[schema]
+"AgentSurface" = "struct deny_unknown_fields"
+"AgentSurface.$defs" = "BTreeMap<String, Value>"
+"AgentSurface.actions" = "Vec<Value>"
+"AgentSurface.format" = "String"
+"AgentSurface.version" = "u32"

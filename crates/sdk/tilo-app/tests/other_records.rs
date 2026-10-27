@@ -137,9 +137,9 @@ fn checkbox(app: &mut TestApp<BoardApp>, field: &str) -> String {
 }
 
 fn published<A: ResourceApp>(app: &mut TestApp<A>, resource: &str) -> Vec<String> {
-    let mut actions: Vec<String> = app.agent_surface()["actions"]
-        .as_array()
-        .unwrap()
+    let mut actions: Vec<String> = app
+        .agent_surface()
+        .rows()
         .iter()
         .filter(|row| row["resource"] == resource)
         .map(|row| row["action"].as_str().unwrap().to_owned())

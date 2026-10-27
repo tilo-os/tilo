@@ -235,7 +235,7 @@ fn markdown_text_an_agent_hands_over_becomes_a_shown_note() {
 fn a_notes_own_effects_are_offered_on_the_note() {
     let (mut app, page) = with_note("Guide", "Intro");
     let surface = app.agent_surface();
-    let rows = surface["actions"].as_array().unwrap();
+    let rows = surface.rows();
     let on = |resource: &str, action: &str| {
         rows.iter()
             .any(|row| row["resource"] == resource && row["action"] == action)
@@ -261,9 +261,9 @@ fn a_notes_own_effects_are_offered_on_the_note() {
             "`{effect}` is the note's, not the notebook's"
         );
     }
-    let opened = app.agent_surface()["actions"]
-        .as_array()
-        .unwrap()
+    let opened = app
+        .agent_surface()
+        .rows()
         .iter()
         .find(|row| row["resource"] == note.as_str() && row["action"] == "open-note")
         .map(|row| row["params"].clone())
