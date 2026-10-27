@@ -66,6 +66,16 @@ impl ChatApp {
                 self.scroll = 220.0;
                 self.timeline_at_end = false;
             }
+            "long-thread" => {
+                // A conversation long enough that no window holds it, read in
+                // the middle: the frame a list used to spend laying out every
+                // message it held.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.scroll = 9_000.0;
+                self.timeline_at_end = false;
+            }
             "compact" => {
                 // Medium window: docked channel list, conversation reflowed,
                 // members/thread summoned on demand (not forced open), no call.
