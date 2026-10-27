@@ -14,7 +14,7 @@ use ui::widget::{
     Text, TextInput, TextInputKind, ToggleGroup, Widget,
 };
 
-use crate::i18n::t;
+use crate::i18n::{t, t_args, text};
 use crate::link::{Intent, Link};
 use crate::model::{ConnectionProfile, Engine};
 
@@ -281,7 +281,7 @@ pub fn confirm_dialog(link: &Link) -> ModalDialog<Column> {
                     if model.active_name.is_empty() {
                         t("db-no-connection-open")
                     } else {
-                        format!("This runs on {}.", model.active_name)
+                        t_args("db-runs-on", &[("name", text(&model.active_name))])
                     }
                 })
             })
