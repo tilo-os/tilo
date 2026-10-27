@@ -59,13 +59,13 @@ if tests tilo-pdf pdf-viewer tilo-thumbnail; then
 fi
 
 # The imager's native syscall tests need a cache on a qualified filesystem
-# (ext4, XFS or Btrfs), never an overlay or tmpfs: the build directory where it
-# is one, else the job's scratch TMPDIR (t mounts the build directory as an
-# overlay when it stacks it on earlier builds).
+# (ext4, XFS or Btrfs), never an overlay or tmpfs: /var/tmp, which t keeps a plain
+# directory on its store for this, else the build directory or the job's TMPDIR
+# where one is (t mounts both as overlays when it stacks a build on earlier ones).
 if tests imager && [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
     qualified() { case $(stat -f -c %t "$1") in ef53|58465342|9123683e) return 0 ;; esac; return 1; }
-    for candidate in "${CARGO_TARGET_DIR:-$root/target}/ci/imager-test-fs" "${TMPDIR:-/tmp}/imager-test-fs"; do
-        mkdir -p "$candidate"
+    for candidate in "/var/tmp/imager-test-fs" "${CARGO_TARGET_DIR:-$root/target}/ci/imager-test-fs" "${TMPDIR:-/tmp}/imager-test-fs"; do
+        mkdir -p "$candidate" 2>/dev/null || continue
         chmod 700 "$candidate"
         if qualified "$candidate"; then
             export TILO_IMAGER_TEST_CACHE_ROOT=$candidate
@@ -73,7 +73,7 @@ if tests imager && [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
         fi
     done
     if [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
-        echo "t-nextest.sh: neither the build directory nor TMPDIR is on ext4, XFS or Btrfs, which the imager's cache tests need" >&2
+        echo "t-nextest.sh: neither /var/tmp, the build directory nor TMPDIR is on ext4, XFS or Btrfs, which the imager's cache tests need" >&2
         exit 1
     fi
 fi
