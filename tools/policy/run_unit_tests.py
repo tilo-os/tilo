@@ -31,6 +31,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from pathlib import Path
+import os
 import re
 import subprocess
 import sys
@@ -38,7 +39,7 @@ import time
 
 PATTERN = "test_*.py"
 # The tests mostly wait, so more of them run at once than there are cores to give them.
-DEFAULT_JOBS = 24
+DEFAULT_JOBS = 32
 RAN = re.compile(r"^Ran (\d+) tests? in ", re.MULTILINE)
 # Files whose tests are run in this many processes, by name: those whose tests each take
 # seconds, measured on t (the run's "Slowest files"). A share should take under ten seconds there.
@@ -77,6 +78,9 @@ class Result:
     seconds: float
     tests: int
     output: str
+    # The processor time the file's processes and those they waited for took: on a loaded node
+    # the suite is bound by the sum of these, not by its slowest file.
+    cpu: float = 0.0
 
 
 def files(directories: list[Path]) -> list[Path]:
@@ -91,16 +95,14 @@ def run(path: Path, shard: tuple[int, int] | None = None) -> Result:
     start = time.monotonic()
     command = ([sys.executable, str(Path(__file__).resolve()), "--shard", str(shard[0]), str(shard[1]), str(path)]
                if shard else [sys.executable, "-m", "unittest", "discover", "-s", str(path.parent), "-p", path.name])
-    done = subprocess.run(
-        command,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        errors="replace",
-    )
-    tests = sum(int(n) for n in RAN.findall(done.stdout))
-    return Result(path, done.returncode == 0, time.monotonic() - start, tests, done.stdout)
+    with subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, errors="replace") as process:
+        output = process.stdout.read()
+        _, status, usage = os.wait4(process.pid, 0)
+        process.returncode = os.waitstatus_to_exitcode(status)
+    tests = sum(int(n) for n in RAN.findall(output))
+    return Result(path, process.returncode == 0, time.monotonic() - start, tests, output,
+                  usage.ru_utime + usage.ru_stime)
 
 
 def run_shard(index: int, count: int, path: Path) -> int:
@@ -128,7 +130,8 @@ def joined(results: list[Result]) -> Result:
     """A file's shards as one result: t names a file's test once."""
     first = results[0]
     return replace(first, ok=all(r.ok for r in results), seconds=max(r.seconds for r in results),
-                   tests=sum(r.tests for r in results), output="\n".join(r.output for r in results))
+                   tests=sum(r.tests for r in results), output="\n".join(r.output for r in results),
+                   cpu=sum(r.cpu for r in results))
 
 
 def failed_tests(output: str) -> dict[str, str]:
@@ -205,6 +208,9 @@ def main(argv: list[str]) -> int:
     print("\nSlowest files:")
     for result in sorted(results, key=lambda r: r.seconds, reverse=True)[:10]:
         print(f"  {result.seconds:7.1f}s  {result.path}")
+    print(f"\nMost processor time ({sum(r.cpu for r in results):.0f}s in all):")
+    for result in sorted(results, key=lambda r: r.cpu, reverse=True)[:15]:
+        print(f"  {result.cpu:7.1f}s  {result.path}")
     print(f"\nRan {sum(r.tests for r in results)} tests in {len(results)} files in "
           f"{time.monotonic() - start:.1f}s, {args.jobs} at a time")
     if failed:

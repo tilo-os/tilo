@@ -44,7 +44,7 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "tools/apps/dev_app_versions.py", "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
         ):
             self.write(relative, (ROOT / relative).read_text())
-        self.write("bin/cargo", """#!/usr/bin/env python3
+        self.write("bin/cargo", """#!/usr/bin/env -S python3 -S
 import json, os, pathlib, sys, tomllib
 arch = os.environ['FIXTURE_ARCH']
 config = tomllib.loads(pathlib.Path('.cargo/config.toml').read_text())
@@ -56,7 +56,7 @@ with open(os.environ['FIXTURE_CARGO_LOG'], 'a') as log:
     log.write(json.dumps({'args': sys.argv[1:], 'flags': actual}) + '\\n')
 """)
         self.write("bin/rustc", "#!/bin/sh\nprintf '%s\\n' \"$FIXTURE_STDLIB\"\n")
-        self.write("tools/font-catalog.py", """#!/usr/bin/env python3
+        self.write("tools/font-catalog.py", """#!/usr/bin/env -S python3 -S
 import os, pathlib, sys
 a = sys.argv[1:]
 assert a[-2:] == ['--scope', 'product']
@@ -77,12 +77,12 @@ else:
         self.write("stdlib/libstd-fixture.so", "\x7fELF fixture standard library")
         self.write("native/libc.so.6", "\x7fELF fixture native dependency")
         self.write("keyboard/libxkbcommon.so.0", "\x7fELF fixture default keyboard library")
-        self.write("bin/pkg-config", """#!/usr/bin/env python3
+        self.write("bin/pkg-config", """#!/usr/bin/env -S python3 -S
 import pathlib, sys
 assert sys.argv[1:] == ['--variable=libdir', 'xkbcommon']
 print(pathlib.Path('keyboard').resolve())
 """)
-        self.write("bin/ldd", """#!/usr/bin/env python3
+        self.write("bin/ldd", """#!/usr/bin/env -S python3 -S
 import pathlib, sys
 dependency = pathlib.Path('native/libc.so.6').resolve()
 for object in sys.argv[1:]:
@@ -90,7 +90,7 @@ for object in sys.argv[1:]:
     print(f'{object}:')
     print(f'libc.so.6 => {dependency} (0x1000)')
 """)
-        self.write("bin/readelf", """#!/usr/bin/env python3
+        self.write("bin/readelf", """#!/usr/bin/env -S python3 -S
 import os, pathlib, sys
 object = pathlib.Path(sys.argv[-1])
 assert object.read_bytes().startswith(b'\\x7fELF')
@@ -120,7 +120,7 @@ printf '\\177ELF fixture typst engine' > target/thin-app/libtilo_typst_engine.so
 printf 'libtilo_typst_engine.so\\n' > target/thin-app/runtime-engines
 """)
         self.write("os/scripts/verify-elf-hardening.sh", "#!/bin/bash\nset -euo pipefail\nfor f; do test -x \"$f\"; done\n")
-        self.write("target/release/tilo-runtime-bundle", """#!/usr/bin/env python3
+        self.write("target/release/tilo-runtime-bundle", """#!/usr/bin/env -S python3 -S
 import pathlib, shutil, sys
 a = sys.argv[1:]
 if a[:2] == ['key', 'generate']:
@@ -139,7 +139,7 @@ elif a[0] == 'build':
     # The loader at its interpreter path, answering the closure check's --list.
     loader = out/'lib'/('lib64/ld-linux-x86-64.so.2' if arch == 'x86_64' else 'lib/ld-linux-aarch64.so.1')
     loader.parent.mkdir(parents=True)
-    loader.write_text('#!/usr/bin/env python3\\nimport sys\\na = sys.argv[1:]\\n'
+    loader.write_text('#!/usr/bin/env -S python3 -S\\nimport sys\\na = sys.argv[1:]\\n'
                       "assert a[:2] == ['--inhibit-cache', '--library-path'] and a[3] == '--list', a\\n"
                       "print(f'\\\\tlibc.so.6 => {a[2]}/libc.so.6 (0x1000)')\\n")
     loader.chmod(0o755)
@@ -156,7 +156,7 @@ elif a[0] == 'verify':
 else:
     raise SystemExit('unexpected runtime fixture invocation')
 """)
-        self.write("target/release/tilo-app-package", """#!/usr/bin/env python3
+        self.write("target/release/tilo-app-package", """#!/usr/bin/env -S python3 -S
 import pathlib, sys, os, tomllib
 a = sys.argv[1:]
 runtime = 'tilo-runtime/2026.07+native.' + 'ab'*16
