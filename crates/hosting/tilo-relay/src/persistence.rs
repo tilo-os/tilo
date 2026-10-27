@@ -95,7 +95,7 @@ const SEQUENCE_RESERVATION_NS: u64 = 10_000_000_000;
 /// One blocking-pool task runs a transaction's quanta for up to this long: a
 /// many-quantum transaction then pays a pool round trip per slice instead of
 /// per quantum, and other workspaces still get a worker within a slice.
-const SLICE: std::time::Duration = std::time::Duration::from_millis(4);
+pub(crate) const SLICE: std::time::Duration = std::time::Duration::from_millis(4);
 
 type Job = Box<dyn FnOnce(Arc<Mutex<State>>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 struct NormalJob {
