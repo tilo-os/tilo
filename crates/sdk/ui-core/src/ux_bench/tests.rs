@@ -249,3 +249,136 @@ fn region_evidence_cannot_be_certified_from_the_wrong_capture() {
         assert_eq!(report.failures.len(), 2);
     }
 }
+
+/// A surface whose shape changes with its width: a navigation shell around a
+/// page holding one primary action. Every width class must keep that action
+/// reachable with the keyboard, not merely drawn.
+fn responsive_surface(present_content: bool) -> Box<dyn crate::widget::Widget> {
+    use crate::widget::{
+        Button, Column, ContentKind, NavItem, NavList, NavPane, NavSection, NavShell,
+    };
+    let sidebar = NavList::new(vec![NavSection::untitled(
+        "places",
+        vec![NavItem::new("home", "Home")],
+    )]);
+    let mut shell = NavShell::new()
+        .content_kind(ContentKind::Page)
+        .sidebar(Box::new(sidebar))
+        .content(Box::new(Column::new().with_intrinsic_height().push(
+            Box::new(Button::new("save", "Save changes").on_view(|| {})),
+        )));
+    if present_content {
+        // The journey is already on the page, as a person who chose a
+        // destination is: this asks whether its action still takes the
+        // keyboard once the window narrows, not whether the destination can
+        // be reached.
+        shell.show(NavPane::Content);
+    }
+    Box::new(shell)
+}
+
+fn tab_to_first_action(driver: &mut crate::headless::FrameHarness) {
+    use winit::{event::ElementState, keyboard::Key};
+    driver.send_host_event(&crate::synthetic_input::keyboard_input(
+        crate::synthetic_input::key_event(
+            Key::Named(winit::keyboard::NamedKey::Tab),
+            None,
+            ElementState::Pressed,
+        ),
+    ));
+}
+
+/// The journey that asks the question: on a page whose action is the point,
+/// one Tab must land on that action.
+fn focus_journey(name: &str, viewport: (u32, u32), keys: u32) -> Scenario {
+    Scenario::parse(&format!(
+        r#"{{"name":"{name} focus","goal":"reach the primary action with the keyboard","viewport":[{},{}],"budget":{{"clicks":0,"keys":{keys}}},"steps":[{{"op":"checkpoint","name":"result","checks":[{{"kind":"focus","target":"Save changes"}},{{"kind":"focus","target":"semantic:Save changes"}},{{"kind":"visible","target":"semantic:Save changes"}}]}}]}}"#,
+        viewport.0, viewport.1
+    ))
+    .unwrap()
+}
+
+#[test]
+fn keyboard_focus_on_the_primary_action_survives_every_width_class_and_theme() {
+    // phase: focus_reaches_the_primary_action_at_every_supported_width
+    {
+        for (name, viewport) in crate::launch::RESPONSIVE_VIEWPORTS {
+            for theme in ["dark", "light", "high-contrast"] {
+                let mut driver = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    responsive_surface(true),
+                    viewport,
+                    crate::theme::Theme::named(theme).expect("a supported theme"),
+                );
+                tab_to_first_action(&mut driver);
+                let out = tempfile::tempdir().unwrap();
+                let report =
+                    run(&mut driver, &focus_journey(name, viewport, 1), out.path()).unwrap();
+                assert!(
+                    report.passed,
+                    "the primary action must hold focus at {name} ({}x{}) in {theme}: {:?}",
+                    viewport.0, viewport.1, report.failures
+                );
+            }
+        }
+    }
+    // phase: an_action_the_keyboard_cannot_reach_is_not_certified
+    {
+        // A phone keeps one column: choosing nothing yet shows the sidebar, so
+        // the page's action is not where the keyboard goes. The same journey
+        // must fail rather than pass on the target's name alone.
+        let viewport = (390, 844);
+        let mut driver = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            responsive_surface(false),
+            viewport,
+        );
+        tab_to_first_action(&mut driver);
+        let out = tempfile::tempdir().unwrap();
+        let report = run(
+            &mut driver,
+            &focus_journey("sidebar", viewport, 1),
+            out.path(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.contains("Focus")),
+            "a page the keyboard never reached must fail the focus check: {:?}",
+            report.failures
+        );
+    }
+    // phase: focus_is_read_back_as_evidence_not_assumed_from_the_target
+    {
+        let mut driver = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            responsive_surface(true),
+            (1366, 768),
+        );
+        // Nothing has taken focus, so naming the action must not pass even
+        // though it is visible.
+        let scenario = Scenario::parse(r#"{"name":"unfocused","goal":"prove focus","viewport":[1366,768],"budget":{"clicks":0,"keys":0},"steps":[{"op":"checkpoint","name":"result","checks":[{"kind":"focus","target":"Save changes"},{"kind":"visible","target":"semantic:Save changes"}]}]}"#).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let report = run(&mut driver, &scenario, out.path()).unwrap();
+        assert!(
+            !report.passed,
+            "an unfocused action is not evidence of focus"
+        );
+        let frame = report.frames.last().unwrap();
+        let observed = frame
+            .checks
+            .iter()
+            .find(|check| check.check.get("kind").and_then(Value::as_str) == Some("focus"))
+            .map(|check| check.observed.clone())
+            .unwrap();
+        assert_eq!(observed["focused"], Value::Bool(false));
+        assert!(
+            out.path()
+                .join(format!("{}.inspection.json", frame.name))
+                .is_file(),
+            "the focus owner ships with the run's evidence"
+        );
+    }
+}
