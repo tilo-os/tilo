@@ -170,10 +170,23 @@ fn a_fork_bomb_is_contained_and_the_runner_survives() {
     cleanup();
 }
 
+/// Wait up to a second for `cg` to hold at least `n` processes, or none when `n` is 0.
+fn await_pids(cg: &tilo_sandbox::job::cgroup::JobCgroup, n: usize) -> Vec<u32> {
+    let mut pids = cg.pids();
+    for _ in 0..500 {
+        if (n == 0 && pids.is_empty()) || (n > 0 && pids.len() >= n) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        pids = cg.pids();
+    }
+    pids
+}
+
 #[test]
-fn cgroup_kill_removes_a_daemon_the_job_left_running() {
+fn cgroup_kill_removes_a_daemon_the_job_started() {
     needs_sandbox!();
-    let (direct, _g) = needs_cgroup!(cgroup_kill_removes_a_daemon_the_job_left_running);
+    let (direct, _g) = needs_cgroup!(cgroup_kill_removes_a_daemon_the_job_started);
     let cg = match direct.create("daemon", &Limits::default()) {
         Ok(c) => c,
         Err(e) => {
@@ -183,8 +196,53 @@ fn cgroup_kill_removes_a_daemon_the_job_left_running() {
         }
     };
     let mut spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/sh"]);
-    // setsid a sleeper that outlives the command: the sort of listener a
-    // test leaves behind. The command returns at once.
+    // setsid a sleeper, the sort of listener a test leaves behind, and keep the
+    // command running: a job's daemons die with its init (the end of its PID
+    // namespace), so cgroup.kill is what stops a job that is still running.
+    spec.argv = [
+        "/bin/sh",
+        "-c",
+        "setsid sh -c 'sleep 300' </dev/null >/dev/null 2>&1 & echo started; exec sleep 300",
+    ]
+    .map(Into::into)
+    .to_vec();
+    let (out_r, out_w) = pipe();
+    let mut job = Launch::new(&spec)
+        .cgroup(&cg)
+        .stdout(out_w)
+        .spawn()
+        .expect("spawn a daemon starter");
+    let mut line = String::new();
+    let _ = std::io::BufRead::read_line(&mut std::io::BufReader::new(out_r), &mut line);
+    assert_eq!(line, "started\n");
+
+    // The init, the command and the daemon.
+    let before = await_pids(&cg, 3);
+    assert!(
+        before.len() >= 3,
+        "the daemon is not in the cgroup: {before:?}"
+    );
+    cg.kill().expect("cgroup.kill");
+    assert!(!job.wait().unwrap().success());
+    let after = await_pids(&cg, 0);
+    assert!(after.is_empty(), "cgroup.kill left {after:?} running");
+    drop(cg);
+    cleanup();
+}
+
+#[test]
+fn a_daemon_the_job_left_dies_with_it() {
+    needs_sandbox!();
+    let (direct, _g) = needs_cgroup!(a_daemon_the_job_left_dies_with_it);
+    let cg = match direct.create("left", &Limits::default()) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("skipped: {e}");
+            cleanup();
+            return;
+        }
+    };
+    let mut spec = JobSpec::new(Root::Host { extra: vec![] }, ["/bin/sh"]);
     spec.argv = [
         "/bin/sh",
         "-c",
@@ -202,21 +260,10 @@ fn cgroup_kill_removes_a_daemon_the_job_left_running() {
     let mut out = String::new();
     let _ = out_r.read_to_string(&mut out);
     assert!(out.contains("started"), "{out}");
-
-    // The daemon is still in the cgroup after the command exited.
-    let before = cg.pids();
-    assert!(
-        !before.is_empty(),
-        "the setsid daemon did not stay in the cgroup"
-    );
-    cg.kill().expect("cgroup.kill");
-    // It is gone within a moment.
-    let mut tries = 0;
-    while !cg.pids().is_empty() && tries < 500 {
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        tries += 1;
-    }
-    assert!(cg.pids().is_empty(), "cgroup.kill left the daemon running");
+    // The init's exit ends the job's PID namespace, and the kernel kills the
+    // daemon with it: nothing of the job is left once it has been waited for.
+    let left = await_pids(&cg, 0);
+    assert!(left.is_empty(), "the daemon outlived its job: {left:?}");
     drop(cg);
     cleanup();
 }
