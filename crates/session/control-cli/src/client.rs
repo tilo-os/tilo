@@ -38,7 +38,9 @@ pub fn round_trip(stream: &mut UnixStream, request: &str) -> io::Result<serde_js
 
 /// The `actions_invoke` request, carrying `device` and `wait_ms` only when
 /// they are given.
-#[must_use]
+///
+/// # Errors
+/// Arguments are not an object, or the request cannot be serialized.
 pub fn invoke_wire(
     provider: &str,
     id: &str,
