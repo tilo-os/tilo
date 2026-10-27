@@ -2654,3 +2654,63 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     assert_eq!(snapshot.entries[1].label, "n:plan");
     assert_eq!(snapshot.active.as_ref(), Some(&snapshot.entries[1].route));
 }
+
+/// Another action than opening, asked of an app's resource (a launchpad
+/// card's "show tasks", an app launching another with an action): the
+/// page's session opens the app on the record and hands the action to the
+/// host, which invokes it in that window once it is up, as the workspace
+/// broker delivers an action to an app it launched.
+#[test]
+fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
+    use ui::tilo_actions::remote::{
+        ActionHost as _, Caller, InvokeRequest, application_record_target,
+    };
+    let mut minter = IdMinter::new(7);
+    let chat = tab(&mut minter, "Chat");
+    let tree = seed_tree(&mut minter, "Desk", vec![chat]);
+    let opened = Rc::default();
+    let (surface, handle) = DesktopSurface::new(
+        tree,
+        7,
+        Box::new(RecordWindows {
+            opened: Rc::clone(&opened),
+        }),
+    );
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1200, 800),
+        ui::Theme::dark(),
+    );
+    let (session, openings) =
+        tilo_desktop_surface::session::serve("room", std::sync::Arc::default());
+    let caller = Caller::local_person("tester").in_room("room");
+    let ask = |argument: serde_json::Value| -> InvokeRequest {
+        serde_json::from_value(serde_json::json!({
+            "invocation": ui::tilo_actions::InvocationId::new(),
+            "target": application_record_target("room", "so.tilo.notes", "n:plan", "plan", "pin"),
+            "argument": argument,
+        }))
+        .unwrap()
+    };
+    drop(session.invoke(&caller, ask(serde_json::json!({"Json": {"place": "top"}}))));
+    assert!(openings.open(&handle, "g", |_, _| Ok(())));
+    driver.relayout();
+    assert_eq!(opened.borrow().len(), 1, "the app opens on the record");
+    let reveals = openings.take_reveals();
+    assert_eq!(reveals.len(), 1, "{reveals:?}");
+    assert_eq!(
+        (
+            reveals[0].app.as_str(),
+            reveals[0].record.as_str(),
+            reveals[0].resource.as_str(),
+            reveals[0].action.as_str(),
+        ),
+        ("so.tilo.notes", "n:plan", "plan", "pin")
+    );
+    assert_eq!(
+        reveals[0].arguments.get("place"),
+        Some(&serde_json::json!("top"))
+    );
+}

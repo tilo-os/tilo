@@ -2181,7 +2181,14 @@ impl BrowserShell {
             LaunchpadAction::Invite => self.invite(),
             LaunchpadAction::Activity => self.activity(),
             other => {
-                if let Some((app, _)) = other.app_target() {
+                // A card that names an action of its app does it in one
+                // step, as on a native desktop: the session opens the app
+                // and hands it the action.
+                if let Some(target) = other.app_action()
+                    && crate::desktop::known_application(target.app_id).is_some()
+                {
+                    self.chrome.shared.ask_app_action(target);
+                } else if let Some((app, _)) = other.app_target() {
                     self.launch(app);
                 }
             }

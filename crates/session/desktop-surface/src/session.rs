@@ -10,7 +10,12 @@
 //!
 //! A window may also ask to open a resource another app keeps, by its
 //! record ([`tilo_actions::remote::application_record_target`]), as Chat's
-//! shared windows do: the desktop opens that app on that record.
+//! shared windows do: the desktop opens that app on that record. Any other
+//! action of an app's resource
+//! ([`tilo_actions::remote::application_action_target`]) is delivered the
+//! same way: the desktop opens the app, and once its window is up the host
+//! invokes the action there ([`Reveal`]), as the workspace broker delivers
+//! it to an app it launched.
 //!
 //! The windows ask during their frame, on the desktop's thread; the desktop
 //! opens the apps when it next takes [`Openings::open`]. Until then the ask
@@ -72,6 +77,10 @@ struct Opening {
     /// The resource the open names in the record, which the app's window
     /// is to show once it is open.
     resource: Option<String>,
+    /// What the window is to do with the resource once it is open: show it
+    /// ([`APPLICATION_OPEN_ACTION`]) or another of its actions.
+    action: String,
+    arguments: serde_json::Map<String, serde_json::Value>,
     invocation: InvocationId,
     answer: Answer,
 }
@@ -169,9 +178,10 @@ pub struct Openings {
     reveals: std::cell::RefCell<Vec<Reveal>>,
 }
 
-/// A resource an open named in an app's record: once the window on that
-/// record is up, the host invokes the resource's `open` in it, as the
-/// workspace broker delivers it to an app it launched.
+/// An action a window asked of a resource in an app's record: once the
+/// window on that record is up, the host invokes it there, as the
+/// workspace broker delivers it to an app it launched. Most often the
+/// resource's `open`, which shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reveal {
     /// The app, by package id.
@@ -179,8 +189,12 @@ pub struct Reveal {
     /// The record, as its route names it: empty for the app's own record of
     /// the workspace.
     pub record: String,
-    /// The resource whose `open` shows it.
+    /// The resource the action is of.
     pub resource: String,
+    /// The action ([`APPLICATION_OPEN_ACTION`] to show the resource).
+    pub action: String,
+    /// What the action is invoked with.
+    pub arguments: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The session for the workspace `room`, and the desktop's end of it.
@@ -209,12 +223,13 @@ pub fn serve(room: impl Into<String>, woken: Arc<AtomicBool>) -> (Arc<DesktopSes
 }
 
 impl DesktopSession {
-    /// The app `request` opens in this desktop's workspace.
+    /// The app `request` opens in this desktop's workspace, and the record
+    /// it opens it on (`None` for the app's own).
     ///
     /// # Errors
-    /// A request for another workspace, for something other than opening an
-    /// app, or with content to open in it, which a desktop hosting windows
-    /// in process cannot hand over yet.
+    /// A request for another workspace, for something other than an app's
+    /// action, or with content to open in it, which a desktop hosting
+    /// windows in process cannot hand over yet.
     fn app_to_open<'a>(
         &self,
         caller: &Caller,
@@ -249,19 +264,18 @@ impl DesktopSession {
         Ok((app, None))
     }
 
-    /// The record an open of a resource in `room` names, `None` for the
+    /// The record an action of a resource in `room` names, `None` for the
     /// app's own.
     ///
     /// # Errors
-    /// Another action than opening, another workspace, or a caller from
-    /// outside it.
+    /// An unnamed action, another workspace, or a caller from outside it.
     fn record_to_open<'a>(
         &self,
         caller: &Caller,
         request: &'a InvokeRequest,
         room: &str,
     ) -> Result<Option<&'a str>, ActionHostError> {
-        if request.target.address.action != APPLICATION_OPEN_ACTION || caller.room().is_none() {
+        if request.target.address.action.is_empty() || caller.room().is_none() {
             return Err(ActionHostError::UnknownAction);
         }
         if room != self.room {
@@ -334,15 +348,26 @@ impl ActionHost for DesktopSession {
             Ok((app, record)) => (app.to_owned(), record.map(str::to_owned)),
             Err(error) => return Pending::ready(Err(error)),
         };
-        // An open on a record names what in it to show; an app's own open
-        // names the app.
+        // An action of an app's resource names the resource; an app's own
+        // open names the app.
         let resource = application_provider(&request.target.provider)
             .map(|_| request.target.address.resource.clone());
+        let arguments = match request.argument {
+            InvokeArgument::None => serde_json::Map::new(),
+            InvokeArgument::Json(arguments) => arguments,
+            InvokeArgument::Text(_) => {
+                return Pending::ready(Err(ActionHostError::Refused {
+                    reason: "Asking another app for that isn't available here yet".into(),
+                }));
+            }
+        };
         let (answer, receipt) = pending();
         self.asked.lock_recover().push(Opening {
             app,
             record,
             resource,
+            action: request.target.address.action,
+            arguments,
             invocation: request.invocation,
             answer,
         });
@@ -408,6 +433,8 @@ impl Openings {
             app,
             record,
             resource,
+            action,
+            arguments,
             invocation,
             answer,
         } in asked
@@ -419,6 +446,8 @@ impl Openings {
                         app: app.clone(),
                         record: record.clone().unwrap_or_default(),
                         resource,
+                        action,
+                        arguments,
                     });
                 }
                 let app = match record {

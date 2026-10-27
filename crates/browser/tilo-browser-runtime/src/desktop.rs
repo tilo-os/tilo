@@ -391,6 +391,9 @@ pub(crate) struct Shared {
     /// Node applications the person asked to open, by id, for the page to
     /// ask the node.
     node_app_requests: Rc<RefCell<Vec<String>>>,
+    /// Actions of apps the person chose in the desktop's own chrome (a
+    /// launchpad card), for the desktop's session to deliver as theirs.
+    app_actions: Rc<RefCell<Vec<tilo_desktop::launchpad::LaunchpadAppAction>>>,
     /// Pages a host streams as display lists (`tilo-paint`), by window key:
     /// drawn here by the toolkit instead of decoded as video.
     paint_pages: Rc<RefCell<HashMap<String, Arc<tilo_browser_peer::remote_page::RemotePage>>>>,
@@ -722,6 +725,18 @@ impl Shared {
     /// The node applications the person asked to open since the last call.
     pub fn take_node_app_requests(&self) -> Vec<String> {
         std::mem::take(&mut *self.node_app_requests.borrow_mut())
+    }
+
+    /// Have the desktop's session deliver `action` to its app as the
+    /// person's, opening the app first, on the next frame.
+    pub fn ask_app_action(&self, action: tilo_desktop::launchpad::LaunchpadAppAction) {
+        self.app_actions.borrow_mut().push(action);
+        self.wake();
+    }
+
+    /// The app actions asked since the last call.
+    pub fn take_app_actions(&self) -> Vec<tilo_desktop::launchpad::LaunchpadAppAction> {
+        std::mem::take(&mut *self.app_actions.borrow_mut())
     }
 
     /// The applications this desktop opens: the bundle's, then the node's.
