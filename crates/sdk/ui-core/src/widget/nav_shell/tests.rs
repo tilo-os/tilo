@@ -2106,13 +2106,31 @@ fn slides_after_push(push: impl FnOnce(&mut NavShell)) -> bool {
     let shell = h.root::<NavShell>();
     assert_eq!(shell.front_pane(), NavPane::Content);
     let moving = shell.inputs.borrow().push.is_moving(crate::time::now());
-    assert_eq!(
-        moving,
-        shell.needs_animation_frame(),
-        "the shell asks for frames exactly while the push moves"
-    );
+    if moving {
+        assert!(
+            shell.needs_animation_frame(),
+            "the shell asks for frames while the push moves"
+        );
+    } else {
+        // Landed at once: the shell owes the frames that lay the landed pose out and drop
+        // what it hides, and asks for nothing after them.
+        for _ in 0..LANDING_FRAMES {
+            if !h.root::<NavShell>().needs_animation_frame() {
+                break;
+            }
+            h.relayout_at((560, 800)).expect("a landing frame lays out");
+        }
+        assert!(
+            !h.root::<NavShell>().needs_animation_frame(),
+            "a push that landed asks for no frames beyond its landing's"
+        );
+    }
     moving
 }
+
+/// The frames a slide that landed still owes: the one whose tick finds it ended, the one that
+/// lays the landed pose out, and the structural one that drops what that pose hides.
+const LANDING_FRAMES: usize = 3;
 
 /// A push follows the input that asked for it (HIG §9.7): a click or a tap
 /// the person just made slides the content in; a key, an agent's action, or a
