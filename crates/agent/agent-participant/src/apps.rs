@@ -407,41 +407,9 @@ impl Replica {
         let kind = catalogue
             .kind(app_id)
             .ok_or_else(|| AppError::UnknownApp(app_id.to_owned()))?;
-        let mut invoker = tilo_actions::ActionInvoker::actor(participant);
         let offers_reads = matches!(actor, ReplicaActor::Bot { .. });
         let runs_effects = matches!(actor, ReplicaActor::Agent);
-        let permissions = match actor {
-            ReplicaActor::Agent => {
-                let operator = policy::roles::AgentPreset::Operator.grants(
-                    room,
-                    participant,
-                    &policy::Subject::person(participant),
-                );
-                PermissionContext::member_of(room, participant, Role::Editor)
-                    .acting_as(policy::Subject::agent(participant), operator)
-            }
-            ReplicaActor::Owner => PermissionContext::member_of(room, participant, Role::Owner),
-            ReplicaActor::Bot {
-                installer,
-                standing,
-                ..
-            } => {
-                invoker = invoker
-                    .with_kind(tilo_actions::ActorKind::Bot)
-                    .acting_for(installer);
-                PermissionContext::from_standing(room, standing)
-            }
-            ReplicaActor::Member {
-                standing,
-                sandbox,
-                unix_time,
-            } => PermissionContext::new(
-                ui::permissions::Actor::person(standing.person.clone()).in_room(room),
-                sandbox,
-                standing,
-            )
-            .at_unix_time(unix_time),
-        };
+        let (invoker, permissions) = replica_standing(actor, room, participant);
         let (checkout, bytes, created) = match seed {
             Seed::New => {
                 let checkout = if definition.keeps_room_record() {
@@ -979,4 +947,48 @@ fn discover_views(
                 })
         })
         .collect()
+}
+
+/// Who a replica acts as and what it may do in `room`: an agent with the
+/// operator preset under its person, an owner, a bot acting for whoever
+/// installed it, or a member with their standing.
+fn replica_standing(
+    actor: ReplicaActor,
+    room: &str,
+    participant: &str,
+) -> (tilo_actions::ActionInvoker, PermissionContext) {
+    let mut invoker = tilo_actions::ActionInvoker::actor(participant);
+    let permissions = match actor {
+        ReplicaActor::Agent => {
+            let operator = policy::roles::AgentPreset::Operator.grants(
+                room,
+                participant,
+                &policy::Subject::person(participant),
+            );
+            PermissionContext::member_of(room, participant, Role::Editor)
+                .acting_as(policy::Subject::agent(participant), operator)
+        }
+        ReplicaActor::Owner => PermissionContext::member_of(room, participant, Role::Owner),
+        ReplicaActor::Bot {
+            installer,
+            standing,
+            ..
+        } => {
+            invoker = invoker
+                .with_kind(tilo_actions::ActorKind::Bot)
+                .acting_for(installer);
+            PermissionContext::from_standing(room, standing)
+        }
+        ReplicaActor::Member {
+            standing,
+            sandbox,
+            unix_time,
+        } => PermissionContext::new(
+            ui::permissions::Actor::person(standing.person.clone()).in_room(room),
+            sandbox,
+            standing,
+        )
+        .at_unix_time(unix_time),
+    };
+    (invoker, permissions)
 }
