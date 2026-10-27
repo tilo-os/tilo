@@ -82,6 +82,9 @@ impl Source for Actions<'_> {
         let flat: Vec<FlatAction<'_>> = tilo_actions::flatten(self.resources)
             .into_iter()
             .filter(|flat| offered(flat.action) && !mirrors_a_control(&flat.resource_kind))
+            // An item's own view is what its row among what the window
+            // holds opens: it is not listed again as something to do.
+            .filter(|flat| flat.depth == 0 || flat.action.kind != tilo_actions::OperationKind::View)
             .collect();
         // Two items offering the same action read alike: only then is the
         // item named under each. The same label on one item names nothing.
@@ -287,7 +290,13 @@ mod tests {
     /// the selection.
     fn notebook() -> Vec<Resource> {
         let note = |id: &str, label: &str| {
-            Resource::new(id, "notes.page", label).with_action(action("rename", "Rename note"))
+            Resource::new(id, "notes.page", label)
+                .with_action(action("rename", "Rename note"))
+                .with_action({
+                    let mut open = action("open-note", "Open note");
+                    open.kind = OperationKind::View;
+                    open
+                })
         };
         let mut notebook = Resource::new("notes.notebook", "notes.notebook", "Notebook")
             .with_action(open())
