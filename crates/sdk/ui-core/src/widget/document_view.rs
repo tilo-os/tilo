@@ -414,6 +414,12 @@ where
     ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
         crate::search::capability::search_provider_descriptors(self.child.as_ref())
     }
+    fn search_index_state(&self) -> Option<crate::search::index_publication::IndexState> {
+        crate::search::capability::search_index_state(self.child.as_ref())
+    }
+    fn search_index_entries(&self) -> Vec<crate::search::index_publication::IndexEntry> {
+        crate::search::capability::search_index_entries(self.child.as_ref())
+    }
     fn activate_search_result(
         &mut self,
         action_id: &str,

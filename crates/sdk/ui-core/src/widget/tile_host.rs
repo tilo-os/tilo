@@ -3465,35 +3465,6 @@ impl crate::presence::capability::PublishesPresence for TileHost {
     }
 }
 
-impl crate::search::capability::SearchSource for TileHost {
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        match &self.content {
-            TileContent::App(app) => crate::search::capability::search_providers(app.as_ref()),
-            _ => Vec::new(),
-        }
-    }
-    fn search_provider_descriptors(
-        &self,
-    ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
-        match &self.content {
-            TileContent::App(app) => {
-                crate::search::capability::search_provider_descriptors(app.as_ref())
-            }
-            _ => Vec::new(),
-        }
-    }
-    fn activate_search_result(
-        &mut self,
-        action_id: &str,
-        doc: &mut crate::widget::Edits<'_>,
-        path: &ModelPath,
-    ) {
-        if let TileContent::App(app) = &mut self.content {
-            crate::search::capability::activate_search_result(app.as_mut(), action_id, doc, path);
-        }
-    }
-}
-
 impl crate::widget::controls::ActionControls for TileHost {
     fn install_control_custody(
         &mut self,
@@ -3981,6 +3952,7 @@ fn draw_card_text(
 
 mod arrival;
 mod held;
+mod search;
 pub use held::{hold_windows, release_windows};
 #[cfg(test)]
 mod held_tests;

@@ -1551,6 +1551,16 @@ mod component_adapter {
         ) -> Vec<crate::search::capability::SearchProviderDescriptor> {
             self.component.search_provider_descriptors()
         }
+        /// The component's entries for the session's search index: what
+        /// its root publishes, read inside its binding as its providers are.
+        fn search_index_state(&self) -> Option<crate::search::index_publication::IndexState> {
+            self.in_root(|root| crate::search::capability::search_index_state(root))
+                .flatten()
+        }
+        fn search_index_entries(&self) -> Vec<crate::search::index_publication::IndexEntry> {
+            self.in_root(|root| crate::search::capability::search_index_entries(root))
+                .unwrap_or_default()
+        }
         fn activate_search_result(
             &mut self,
             action_id: &str,

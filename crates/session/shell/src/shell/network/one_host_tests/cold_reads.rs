@@ -94,6 +94,29 @@ impl Device {
             socket: socket.to_path_buf(),
             app,
             room,
+            record: None,
+            device: hex::encode(self.cert().device_public_key),
+            identity: self.endpoint_identity(room),
+        }
+    }
+
+    /// What a window of `app` in `room` that this device's session opens
+    /// as `instance` connects to its broker at `socket` with: the launch the
+    /// session records for a window, which the broker attests as that
+    /// window's, as the session's window doors do.
+    pub(crate) fn app_window_launch(
+        &self,
+        socket: &Path,
+        app: &'static str,
+        room: RoomId,
+        instance: u64,
+    ) -> AppLaunch {
+        crate::shell::launcher::register_in_process_window(app, &room.to_string(), Some(instance));
+        AppLaunch {
+            socket: socket.to_path_buf(),
+            app,
+            room,
+            record: None,
             device: hex::encode(self.cert().device_public_key),
             identity: self.endpoint_identity(room),
         }
@@ -129,11 +152,21 @@ pub(crate) struct AppLaunch {
     socket: std::path::PathBuf,
     app: &'static str,
     room: RoomId,
+    /// The record the window opens, on the wire; `None` for the package's
+    /// own record of the room.
+    record: Option<String>,
     device: String,
     identity: CertifiedEndpointIdentity,
 }
 
 impl AppLaunch {
+    /// This launch opening the record `record` names, as the session
+    /// launches a window on a document a person picked.
+    pub(crate) fn on_record(mut self, record: &RecordId) -> Self {
+        self.record = (!record.is_package_primary()).then(|| record.route().to_owned());
+        self
+    }
+
     /// Connect to the broker as the launcher connects an app.
     pub(crate) fn connect(self) -> ui::collaboration::CollaborationManager {
         let mut stream =
@@ -144,7 +177,7 @@ impl AppLaunch {
             stream.into_raw_fd(),
             self.app,
             self.room.to_string().parse().expect("a room is a UUID"),
-            None,
+            self.record,
             Some(self.device),
             self.identity,
         )
@@ -272,6 +305,27 @@ pub(crate) fn open_cold(
     author: &str,
     collaboration: ui::collaboration::CollaborationManager,
 ) -> (ui::App, RecordOwners) {
+    open_record_cold(
+        profile,
+        definition,
+        room,
+        author,
+        collaboration,
+        RecordCheckout::package_primary(definition.record_kind.clone()),
+    )
+}
+
+/// [`open_cold`] on the record `checkout` names: a document the room holds
+/// besides the package's own record, as the session opens one a person
+/// picked.
+pub(crate) fn open_record_cold(
+    profile: &Path,
+    definition: &'static ApplicationDefinition,
+    room: RoomId,
+    author: &str,
+    collaboration: ui::collaboration::CollaborationManager,
+    checkout: RecordCheckout,
+) -> (ui::App, RecordOwners) {
     open_in_fresh_profile(
         profile,
         definition,
@@ -279,7 +333,6 @@ pub(crate) fn open_cold(
         author,
         collaboration,
         |_, records| {
-            let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
             records.try_open_record(&checkout)?;
             Ok(LaunchTarget::Record {
                 checkout,
