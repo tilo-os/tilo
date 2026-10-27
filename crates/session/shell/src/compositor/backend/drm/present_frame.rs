@@ -4,6 +4,7 @@
 
 use std::time::{Duration, Instant};
 
+use super::paint;
 use super::paint::BridgePhaseTiming;
 use super::scanout;
 use super::{
