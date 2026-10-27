@@ -1544,13 +1544,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         };
         if app_id == SHORTCUTS_APP_ID && action == SHORTCUT_RUN_ACTION {
             let called = resource.as_deref().and_then(shortcut_id_of);
-            if called.as_deref() == Some(self.shortcut.id.as_str()) {
-                return Err(StepFailure::Recursion);
-            }
             // A shortcut already running above this one is not run again: the
             // check that reads the saved library caught the chains it could
             // see, and this is what stops a loop between two shortcuts saved
-            // before one of them learned to call the other.
+            // before one of them learned to call the other. It also covers the
+            // shortcut running itself.
             if called.is_some_and(|id| self.chain.iter().any(|running| *running == id)) {
                 return Err(StepFailure::Recursion);
             }

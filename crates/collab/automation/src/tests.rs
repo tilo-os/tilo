@@ -1569,12 +1569,15 @@ fn a_shortcut_that_could_run_itself_is_refused() {
             chain: vec!["a".into(), "a".into()]
         }]
     );
-    let report = run_with(
+    // The run is told its own id is running, as every host says of a run it
+    // starts, and the step that would run it is refused.
+    let report = run_chained(
         &host,
         &Hooks::default(),
         &direct,
         RunId::new(),
         RunMode::Interactive,
+        vec!["a".into()],
     );
     assert!(
         matches!(failure(&report), Some((_, StepFailure::Recursion))),
