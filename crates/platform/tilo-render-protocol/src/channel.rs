@@ -157,6 +157,17 @@ impl Channel {
         Ok(Received { message, fds })
     }
 
+    /// End the channel in both directions: a receive waiting on it, on any
+    /// thread, returns [`ChannelError::Closed`], and so does every later one.
+    ///
+    /// # Errors
+    ///
+    /// When the socket refuses the shutdown.
+    pub fn shut_down(&self) -> io::Result<()> {
+        rustix::net::shutdown(&self.socket, rustix::net::Shutdown::Both)?;
+        Ok(())
+    }
+
     /// Make receives return `WouldBlock` instead of waiting.
     ///
     /// # Errors
