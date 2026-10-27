@@ -106,8 +106,24 @@ done <<< "$staged_rs"
 if [ -n "$fmt_rs" ] && command -v rustfmt >/dev/null 2>&1; then
   unformatted=$(printf '%s' "$fmt_rs" | xargs rustfmt --edition 2024 --check -- 2>/dev/null | grep -c '^Diff in' || true)
   if [ "${unformatted:-0}" -gt 0 ]; then
-    note "rustfmt: $unformatted hunk(s) unformatted in staged files. Run: cargo fmt"
-    fail=1
+    # Formatting is not a judgement call, so do it rather than ask. A file with
+    # unstaged changes is left alone: rewriting it would stage those too.
+    dangerous=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if git diff --quiet -- "$f"; then
+        rustfmt --edition 2024 -- "$f" && git add -- "$f"
+      else
+        dangerous="$dangerous$f"$'\n'
+      fi
+    done <<< "$fmt_rs"
+    if [ -n "$dangerous" ]; then
+      note "rustfmt: cannot format files with unstaged changes, stage the whole file first:"
+      printf '%s' "$dangerous" | sed 's/^/  /' >&2
+      fail=1
+    else
+      note "rustfmt: formatted $unformatted hunk(s) in staged files and staged them"
+    fi
   fi
 fi
 
