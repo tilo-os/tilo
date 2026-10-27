@@ -272,6 +272,58 @@ pub(crate) fn open_cold(
     author: &str,
     collaboration: ui::collaboration::CollaborationManager,
 ) -> (ui::App, RecordOwners) {
+    open_in_fresh_profile(
+        profile,
+        definition,
+        room,
+        author,
+        collaboration,
+        |_, records| {
+            let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
+            records.try_open_record(&checkout)?;
+            Ok(LaunchTarget::Record {
+                checkout,
+                reveal: None,
+            })
+        },
+    )
+}
+
+/// An app of `definition` launched in `room` as a window with no saved
+/// record is, in a fresh profile at `profile`, over `collaboration`: it
+/// opens the room's record when the room holds it, and makes it otherwise
+/// ([`ApplicationDefinition::unsaved_target`]), as the session's launch
+/// does. The app and the records it opened.
+pub(crate) fn open_launched(
+    profile: &Path,
+    definition: &'static ApplicationDefinition,
+    room: RoomId,
+    author: &str,
+    collaboration: ui::collaboration::CollaborationManager,
+) -> (ui::App, RecordOwners) {
+    open_in_fresh_profile(
+        profile,
+        definition,
+        room,
+        author,
+        collaboration,
+        |definition, records| definition.unsaved_target(records),
+    )
+}
+
+/// An app of `definition` in `room`, in a fresh profile at `profile`, over
+/// `collaboration`, on the record `target` picks.
+fn open_in_fresh_profile(
+    profile: &Path,
+    definition: &'static ApplicationDefinition,
+    room: RoomId,
+    author: &str,
+    collaboration: ui::collaboration::CollaborationManager,
+    target: impl FnOnce(
+        &'static ApplicationDefinition,
+        &ui::record::RecordStore,
+    ) -> Result<LaunchTarget, ui::record::RecordOpenError>,
+) -> (ui::App, RecordOwners) {
     assert!(!profile.exists(), "the profile is fresh");
     std::fs::create_dir_all(profile).unwrap();
     let device_id = ui::application::NativeProfile::open(profile, None)
@@ -284,20 +336,16 @@ pub(crate) fn open_cold(
     let room = room.to_string();
     let app = {
         let mut owners = owners.clone();
-        ui::App::from_prepared_component_with_collaboration(
+        // As the session's launch mounts it: `target` decides whether the
+        // record exists or the app makes it.
+        ui::App::from_launched_component_with_collaboration(
             collaboration,
             || {
                 let records = owners
                     .open(definition.app_id, &room)
                     .map_err(ui::launch::LaunchError::Record)?;
-                let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
-                records
-                    .try_open_record(&checkout)
-                    .map_err(ui::launch::LaunchError::Record)?;
-                let target = LaunchTarget::Record {
-                    checkout,
-                    reveal: None,
-                };
+                let target =
+                    target(definition, &records).map_err(ui::launch::LaunchError::Record)?;
                 let views = Rc::new(
                     ui::application_view::InstanceViewStore::with_store(
                         Rc::clone(&store),
@@ -332,7 +380,7 @@ pub(crate) fn open_cold(
             },
             |context, target, restore| definition.instantiate(context, target, restore),
         )
-        .expect("the app opens cold")
+        .expect("the app opens")
     };
     (app, owners)
 }

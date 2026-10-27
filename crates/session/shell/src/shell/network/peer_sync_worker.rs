@@ -296,6 +296,14 @@ impl ShellNetwork {
             PeerSyncRequest::AskForBot { room, ask } => self
                 .ask_for_bot(room, &ask)
                 .map(|()| PeerSyncResponse::Message(String::new())),
+            PeerSyncRequest::ShareWindow {
+                room,
+                tab,
+                app_id,
+                share,
+            } => self
+                .share_window(room, tab, &app_id, share)
+                .map(|()| PeerSyncResponse::Message(String::new())),
             PeerSyncRequest::ResendInvitation(id) => {
                 self.resend_invitation(&id).map(PeerSyncResponse::Message)
             }

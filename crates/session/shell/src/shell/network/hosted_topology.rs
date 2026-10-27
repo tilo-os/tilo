@@ -505,6 +505,7 @@ mod tests {
     use super::*;
 
     mod peer_window_tabs;
+    mod personal_window_shares;
     use crate::shell::state::{Tab, WindowGroup, WindowWidth};
 
     fn tab(id: u64, tile: TileContent) -> Tab {

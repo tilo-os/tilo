@@ -92,6 +92,15 @@ pub enum PeerSyncRequest {
         room: crate::shell::state::RoomId,
         ask: crate::shell::network::BotAsk,
     },
+    /// Share this device's window `tab` of `app_id` with the workspace in
+    /// `room` (`share`), or stop sharing it: the room's record of the share,
+    /// written by its host ([`tilo_desktop_model::window_share`]).
+    ShareWindow {
+        room: crate::shell::state::RoomId,
+        tab: crate::shell::state::TabId,
+        app_id: String,
+        share: bool,
+    },
 }
 
 /// What an `invitation.issue` action asks to be minted for the active
@@ -125,6 +134,9 @@ pub fn network_action_output(
         ) => Ok(serde_json::json!({ "invite": token })),
         (PeerSyncRequest::CancelInvitation(_), PeerSyncResponse::Message(_)) => {
             Ok(serde_json::json!({ "canceled": true }))
+        }
+        (PeerSyncRequest::ShareWindow { tab, share, .. }, PeerSyncResponse::Message(_)) => {
+            Ok(serde_json::json!({ "tab": tab.to_string(), "shared": share }))
         }
         (PeerSyncRequest::ListPendingInvitations, PeerSyncResponse::PendingInvitations(rows)) => {
             let invitations: Vec<serde_json::Value> = rows
@@ -630,7 +642,8 @@ impl PeerSyncOverlay {
                 | PeerSyncRequest::ReportWorkspace { .. }
                 | PeerSyncRequest::Publication(_)
                 | PeerSyncRequest::Publish { .. }
-                | PeerSyncRequest::AskForBot { .. },
+                | PeerSyncRequest::AskForBot { .. }
+                | PeerSyncRequest::ShareWindow { .. },
                 _,
             ) => {}
 
