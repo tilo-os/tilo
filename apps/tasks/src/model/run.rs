@@ -501,7 +501,10 @@ impl Run {
     /// where one does, so a paused run never reads as if it were working.
     #[must_use]
     pub fn shown_phase(&self) -> RunPhase {
-        self.paused.and_then(PausedRun::phase).unwrap_or(self.phase)
+        self.paused
+            .as_ref()
+            .and_then(PausedRun::phase)
+            .unwrap_or(self.phase)
     }
 
     /// Whether the run waits for its person's answer to an action that asks
