@@ -18,5 +18,6 @@ mod native;
 mod outcomes;
 mod principal;
 mod roundtrip;
+mod search;
 mod semantics;
 mod wasm;

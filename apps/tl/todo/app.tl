@@ -8,6 +8,12 @@ type Todo {
     due: Option<Date> = .none
     /// Anything worth remembering about it.
     notes: Text (body)
+
+    search {
+        filter "Open" = not done (icon: .circle)
+        filter done (icon: .circle_check)
+        filter due
+    }
 }
 
 /// A list of things to do, with the text of the item being typed.
@@ -16,13 +22,6 @@ type TodoList {
     items: Collection<Todo>
     tags: Set<Text>
     draft: Text
-}
-
-/// Which items a list shows.
-enum Show {
-    all (icon: .list)
-    open (icon: .circle)
-    done (icon: .circle_check)
 }
 
 root TodoList
@@ -83,19 +82,9 @@ action rename(list: TodoList, name: Text) {
     list.name = name
 }
 
-/// The items a list shows.
-fn shown(list: TodoList, show: Show) -> List<Todo> {
-    match show {
-        .all => list.items,
-        .open => list.items.filter(t -> not t.done),
-        .done => list.items.filter(t -> t.done),
-    }
-}
-
-/// The list's window. Which items it shows is the window's: everyone looking sees the same.
+/// The list's window: its items, open and done ones apart as the item's filters say.
 view todo_list(todos: TodoList) {
-    window show: Show = .all
-    std.list(todos, shown(todos, show), filter: show, count: s -> shown(todos, s).len(), empty: "Nothing to do")
+    std.list(todos, todos.items, everything: "All", empty: "Nothing to do")
 }
 
 /// One item in a list: a checkbox for whether it is done.

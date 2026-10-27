@@ -37,10 +37,12 @@
 //! search host through the committed-document reads they already make.
 
 pub mod codec;
+pub mod columns;
 pub mod derive;
 pub mod lists;
 pub mod merged;
 pub mod overlay;
+pub mod select;
 pub mod text;
 pub mod view;
 
@@ -59,7 +61,7 @@ use self::codec::Corrupt;
 use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.
@@ -75,6 +77,10 @@ const DIRS: TableDefinition<&str, &[u8]> = TableDefinition::new("dirs");
 const PAGES: TableDefinition<(&str, u32), &[u8]> = TableDefinition::new("pages");
 /// `(word, resource)`: how much the word weighs there.
 const POSTINGS: TableDefinition<(&str, &str), u8> = TableDefinition::new("postings");
+/// `(list, value)`: how many entries of a column's list hold the value, for a column whose
+/// values are few (a toggle, an enum): where a value's run starts and ends, and the counts
+/// of a filter's chips, without reading the list's pages.
+const COUNTS: TableDefinition<(&str, &str), u64> = TableDefinition::new("counts");
 
 /// The pseudo-field holding a resource's type.
 pub const TYPE: &str = "$type";
@@ -285,6 +291,7 @@ fn create_tables(txn: &WriteTransaction) -> Result<(), IndexError> {
     txn.open_table(DIRS)?;
     txn.open_table(PAGES)?;
     txn.open_table(POSTINGS)?;
+    txn.open_table(COUNTS)?;
     Ok(())
 }
 
@@ -420,6 +427,7 @@ impl Index {
         txn.delete_table(DIRS)?;
         txn.delete_table(PAGES)?;
         txn.delete_table(POSTINGS)?;
+        txn.delete_table(COUNTS)?;
         create_tables(&txn)?;
         {
             let mut meta = txn.open_table(META)?;
@@ -451,6 +459,7 @@ impl Index {
             dirs: txn.open_table(DIRS)?,
             pages: txn.open_table(PAGES)?,
             postings: txn.open_table(POSTINGS)?,
+            counts: txn.open_table(COUNTS)?,
             stats: Arc::clone(&self.stats),
         }))
     }
@@ -507,6 +516,7 @@ pub struct Snapshot {
     dirs: ReadOnlyTable<&'static str, &'static [u8]>,
     pages: ReadOnlyTable<(&'static str, u32), &'static [u8]>,
     postings: ReadOnlyTable<(&'static str, &'static str), u8>,
+    counts: ReadOnlyTable<(&'static str, &'static str), u64>,
     stats: Arc<IndexStats>,
 }
 
@@ -658,6 +668,28 @@ impl Snapshot {
         self.checked(read)
     }
 
+    /// How many entries of the list `list` hold each value, for a column that counts them
+    /// ([`COUNTS`]), in the values' order: one read, counted as one field's.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn counts(&self, list: &str) -> Result<Vec<(String, u64)>, IndexError> {
+        self.stats.count_field();
+        let read = (|| {
+            let mut out = Vec::new();
+            for entry in self.counts.range((list, "")..)? {
+                let (key, count) = entry?;
+                let (held, value) = key.value();
+                if held != list {
+                    break;
+                }
+                out.push((value.to_owned(), count.value()));
+            }
+            Ok(out)
+        })();
+        self.checked(read)
+    }
+
     /// The postings of the words starting with `prefix` (of the word itself, with `exact`):
     /// each resource holding one, and how much it weighs there.
     ///
@@ -688,6 +720,7 @@ pub struct Contents {
     pub fields: std::collections::BTreeMap<(String, String), String>,
     pub lists: std::collections::BTreeMap<String, Vec<Entry>>,
     pub postings: std::collections::BTreeMap<(String, String), u8>,
+    pub counts: std::collections::BTreeMap<(String, String), u64>,
 }
 
 impl Snapshot {
@@ -733,6 +766,14 @@ impl Snapshot {
             out.postings
                 .insert((word.to_owned(), resource.to_owned()), weight.value());
         }
+        for entry in self.counts.iter()? {
+            let (key, count) = entry?;
+            let (list, value) = key.value();
+            if count.value() > 0 {
+                out.counts
+                    .insert((list.to_owned(), value.to_owned()), count.value());
+            }
+        }
         Ok(out)
     }
 }
@@ -755,6 +796,7 @@ pub struct Tables<'t> {
     dirs: Table<'t, &'static str, &'static [u8]>,
     pages: Table<'t, (&'static str, u32), &'static [u8]>,
     postings: Table<'t, (&'static str, &'static str), u8>,
+    counts: Table<'t, (&'static str, &'static str), u64>,
 }
 
 impl ListSource for Tables<'_> {
@@ -783,6 +825,7 @@ impl<'t> Writer<'t> {
                 dirs: txn.open_table(DIRS)?,
                 pages: txn.open_table(PAGES)?,
                 postings: txn.open_table(POSTINGS)?,
+                counts: txn.open_table(COUNTS)?,
             },
             lists: ListEdits::default(),
         })
@@ -942,19 +985,58 @@ impl<'t> Writer<'t> {
         self.lists.remove(&self.tables, list, entry)
     }
 
+    /// How many entries `list` holds, as this commit leaves it.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn list_len(&mut self, list: &str) -> Result<usize, IndexError> {
+        Ok(self.lists.read(&self.tables, list)?.len())
+    }
+
     /// # Errors
     /// The index cannot be read or is corrupt.
     pub fn list_replace(&mut self, list: &str, entries: Vec<Entry>) -> Result<(), IndexError> {
         self.lists.replace(&self.tables, list, entries)
     }
 
-    /// Drop every list whose name starts with `prefix`.
+    /// Drop every list whose name starts with `prefix`, and its counts.
     ///
     /// # Errors
     /// The index cannot be read or is corrupt.
     pub fn drop_lists(&mut self, prefix: &str) -> Result<(), IndexError> {
         for name in self.lists_from(prefix)? {
             self.lists.drop_list(&self.tables, &name)?;
+        }
+        let mut counted = Vec::new();
+        for entry in self.tables.counts.range((prefix, "")..)? {
+            let (key, _) = entry?;
+            let (list, value) = key.value();
+            if !list.starts_with(prefix) {
+                break;
+            }
+            counted.push((list.to_owned(), value.to_owned()));
+        }
+        for (list, value) in counted {
+            self.tables.counts.remove((list.as_str(), value.as_str()))?;
+        }
+        Ok(())
+    }
+
+    /// Add `delta` to how many entries of `list` hold `value`.
+    ///
+    /// # Errors
+    /// The index cannot be read or written.
+    pub fn count(&mut self, list: &str, value: &str, delta: i64) -> Result<(), IndexError> {
+        let held = self
+            .tables
+            .counts
+            .get((list, value))?
+            .map_or(0, |v| v.value());
+        let now = held.saturating_add_signed(delta);
+        if now == 0 {
+            self.tables.counts.remove((list, value))?;
+        } else {
+            self.tables.counts.insert((list, value), now)?;
         }
         Ok(())
     }

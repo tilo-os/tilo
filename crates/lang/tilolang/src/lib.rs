@@ -27,13 +27,16 @@
 
 pub mod abi;
 pub mod ast;
+pub mod calendar;
 mod checker;
 pub mod cli;
 mod codegen;
 pub mod diag;
+pub mod duration;
 mod effects;
 mod hash;
 pub mod host;
+pub mod identifier;
 pub mod ids;
 pub mod ir;
 pub mod lexer;
@@ -44,6 +47,7 @@ pub mod pred;
 mod prims;
 pub mod print;
 pub mod resolve;
+pub mod search;
 pub mod source;
 pub mod stdlib;
 pub mod toolkit;

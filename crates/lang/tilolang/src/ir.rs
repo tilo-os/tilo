@@ -141,6 +141,9 @@ pub struct Module {
     pub funcs: Vec<Func>,
     /// The views the checker made of UI loop bodies, after the declared functions in `funcs`.
     pub views: Vec<SynthView>,
+    /// The view state templates declare where they expand (`std.list`'s query), by the id of
+    /// the view they expand in.
+    pub states: Vec<(String, crate::resolve::StateInfo)>,
 }
 
 /// A view the checker made of the body of a UI `for`: one boundary per item, keyed by it, which

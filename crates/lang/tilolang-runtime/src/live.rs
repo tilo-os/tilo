@@ -104,11 +104,6 @@ fn item_of(resource: &str) -> Option<(&str, &str)> {
     Some((parent, field))
 }
 
-/// Whether a change to the item field `field` may change what `pred` holds of the item.
-fn reads(pred: &crate::store::Pred, field: &str) -> bool {
-    field == ANY_FIELD || pred.fields().iter().any(|read| read.spec.id == field)
-}
-
 /// Which boundaries read what.
 ///
 /// A view over a list reads a field of every item, so a boundary can hold tens of thousands of
@@ -441,7 +436,7 @@ impl Live {
                         Some([]) => {}
                         // The steps are the collection's; a filtered one's rows are not its
                         // items, and are built again by their boundary.
-                        Some(splices) if key.field != ANY_FIELD && rows.coll.filter.is_none() => {
+                        Some(splices) if key.field != ANY_FIELD && !rows.coll.derived() => {
                             reach.steps.push(Pending {
                                 holder: id,
                                 rows: Rc::clone(rows),
@@ -458,12 +453,10 @@ impl Live {
                 self.reach_colls(core, parent, coll, true, &mut reach);
                 for (id, field) in self.index.loop_holders(parent, coll) {
                     let held = self.bound(id).into_iter().flat_map(|b| &b.loops);
-                    if held.filter(|rows| rows.coll.field == field).any(|rows| {
-                        rows.coll
-                            .filter
-                            .as_deref()
-                            .is_some_and(|pred| reads(pred, &key.field))
-                    }) {
+                    if held
+                        .filter(|rows| rows.coll.field == field)
+                        .any(|rows| rows.coll.reads_field(&key.field))
+                    {
                         reach.hit.push(id);
                     }
                 }
@@ -491,7 +484,7 @@ impl Live {
                 .colls
                 .iter()
                 .filter(|seen| seen.resource == resource && seen.coll.field == coll)
-                .filter(|seen| !filtered || seen.coll.filter.is_some())
+                .filter(|seen| !filtered || seen.coll.derived())
                 .any(|seen| !seen.holds_now(core));
             if stale {
                 reach.hit.push(id);

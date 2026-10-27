@@ -9,7 +9,8 @@ use tilolang_runtime::meta::{
     parse_ty,
 };
 
-use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup_in};
+use crate::schema::{ColumnKind, ColumnSchema, FieldSchema, MergeKind, TypeSchema, lookup_in};
+use tilolang::meta::FilterKind;
 
 /// The contract kind an effect class stands for.
 #[must_use]
@@ -75,7 +76,14 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
             let schema = FieldSchema::new(&field.id, MergeKind::Register);
             if matches!(
                 ty,
-                Ty::Int | Ty::Float | Ty::Bool | Ty::Text | Ty::Date | Ty::Time | Ty::Choice(_)
+                Ty::Int
+                    | Ty::Float
+                    | Ty::Bool
+                    | Ty::Text
+                    | Ty::Date
+                    | Ty::Time
+                    | Ty::Identifier
+                    | Ty::Choice(_)
             ) {
                 schema
             } else {
@@ -87,6 +95,90 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
         schema = schema.with_default(default.clone());
     }
     schema
+}
+
+/// The kind of a column holding a value of `ty`, and the cases it can hold when they are
+/// known: `None` for a type no column holds.
+fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
+    Some(match ty {
+        Ty::Option(inner) | Ty::Set(inner) => return kind_of_ty(meta, inner),
+        Ty::Bool => (ColumnKind::Bool, Vec::new()),
+        Ty::Int => (ColumnKind::Int, Vec::new()),
+        Ty::Float => (ColumnKind::Float, Vec::new()),
+        Ty::Text => (ColumnKind::Text, Vec::new()),
+        Ty::Date => (ColumnKind::Date, Vec::new()),
+        Ty::Time => (ColumnKind::Time, Vec::new()),
+        Ty::Identifier => (ColumnKind::Ident, Vec::new()),
+        Ty::Record(_) => (ColumnKind::Ref, Vec::new()),
+        Ty::Enum(key) => {
+            let cases = meta
+                .enums
+                .iter()
+                .find(|e| key.app == meta.app && e.name == key.name)
+                .map(|e| e.variants.iter().map(|v| v.id.clone()).collect())
+                .unwrap_or_default();
+            (ColumnKind::Enum, cases)
+        }
+        _ => return None,
+    })
+}
+
+/// The filter columns of the type `ty`, whose fields' schemas are `fields`: one per filter,
+/// then one per other field a `filter` compares (a register of a scalar, a counter).
+fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSchema> {
+    let mut out = Vec::new();
+    for f in &ty.search.filters {
+        let parsed = parse_ty(&f.ty, &meta.app).ok();
+        let (kind, cases) = match f.kind {
+            FilterKind::Bool | FilterKind::Predicate => (ColumnKind::Bool, Vec::new()),
+            _ => match parsed.as_ref().and_then(|t| kind_of_ty(meta, t)) {
+                Some(found) => found,
+                None => continue,
+            },
+        };
+        out.push(ColumnSchema {
+            name: f.field.clone().unwrap_or_else(|| format!("={}", f.key)),
+            field: f.field.clone(),
+            kind,
+            many: f.many,
+            pred: f.pred.clone(),
+            filter: true,
+            cases,
+        });
+    }
+    for (field, schema) in ty.fields.iter().zip(fields) {
+        if out
+            .iter()
+            .any(|c| c.field.as_deref() == Some(schema.id.as_str()))
+        {
+            continue;
+        }
+        let columned = match schema.kind {
+            MergeKind::Register => !matches!(
+                parse_ty(&field.ty, &meta.app),
+                Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..) | Ty::Principal)
+            ),
+            MergeKind::Counter => true,
+            _ => false,
+        };
+        let Some((kind, cases)) = parse_ty(&field.ty, &meta.app)
+            .ok()
+            .filter(|_| columned)
+            .and_then(|t| kind_of_ty(meta, &t))
+        else {
+            continue;
+        };
+        out.push(ColumnSchema {
+            name: schema.id.clone(),
+            field: Some(schema.id.clone()),
+            kind,
+            many: false,
+            pred: None,
+            filter: false,
+            cases,
+        });
+    }
+    out
 }
 
 impl MetaExt for Meta {
@@ -112,6 +204,7 @@ impl MetaExt for Meta {
                 for field in &ty.fields {
                     schema.fields.push(field_schema(self, field));
                 }
+                schema.columns = columns(self, ty, &schema.fields);
                 schema
             })
             .collect()

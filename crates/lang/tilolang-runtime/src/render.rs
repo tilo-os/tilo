@@ -529,7 +529,7 @@ impl Core {
                     parent: parent.to_owned(),
                     rows: template.clone(),
                 });
-            } else if coll.filter.is_some() {
+            } else if coll.derived() {
                 // Which items a filtered collection has is no field of it: the rows depend on
                 // each of them.
                 acc.colls.push(CollSeen::shown(coll, listing, total));

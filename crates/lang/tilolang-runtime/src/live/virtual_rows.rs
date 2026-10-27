@@ -10,8 +10,10 @@
 //!
 //! The rows follow their collection's steps as the loops of other containers do. When the
 //! boundary holding the list runs again, the rows built that still stand are kept by key, and
-//! if what the rows are made of changed (a filter or an order chosen, steps that did not fit)
-//! the steps from the rows the host holds to the new ones are found by key.
+//! if what the rows are made of changed (steps that did not fit, another list of values) the
+//! steps from the rows the host holds to the new ones are found by key. Rows made of another
+//! query (a filter or an order chosen) are new rows: the host reads them anew, as it reads a
+//! list new to the tree, and choosing a filter costs the rows it shows, not the collection's.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -468,6 +470,16 @@ impl Live {
     }
 }
 
+/// Whether `now` is made of another query than `before`: another collection, filter or order,
+/// or a collection where there were values or values where there was a collection.
+fn another_query(before: &Rows, now: &Rows) -> bool {
+    match (before, now) {
+        (Rows::Coll { coll: a, .. }, Rows::Coll { coll: b, .. }) => !Rc::ptr_eq(a, b) && a != b,
+        (Rows::List(_), Rows::List(_)) => false,
+        _ => true,
+    }
+}
+
 impl Builder<'_> {
     /// The rows of a virtual list as the boundary holding it runs: those built before that still
     /// stand, rendered again if they changed, as the list's children. What became of the rows
@@ -492,7 +504,8 @@ impl Builder<'_> {
             .live
             .lists
             .remove(&key)
-            .filter(|old| old.holder == self.id && !old.lost);
+            .filter(|old| old.holder == self.id && !old.lost)
+            .filter(|old| !another_query(&old.rows, &rows));
         let Some(before) = before else {
             // A list new to the tree: the host reads its rows.
             self.live

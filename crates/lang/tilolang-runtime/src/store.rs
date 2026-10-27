@@ -64,16 +64,92 @@ impl FieldRead {
     ///
     /// `Invalid` for a stored value a predicate does not compare.
     pub fn lit(&self, value: FieldValue) -> Result<Lit, StoreError> {
-        match value {
-            FieldValue::Absent => Ok(self.absent.clone()),
-            FieldValue::Scalar(Scalar::Bool(b)) => Ok(Lit::Bool(b)),
-            FieldValue::Scalar(Scalar::Int(i)) | FieldValue::Counter(i) => Ok(Lit::Int(i)),
-            FieldValue::Scalar(Scalar::Text(t)) | FieldValue::Text(t) => Ok(Lit::Text(t)),
-            other => Err(StoreError::Invalid(format!(
-                "field {} holds {other:?}, which a filter does not compare",
-                self.spec.id
-            ))),
+        lit_of(&self.spec.id, value, &self.absent)
+    }
+}
+
+/// What the field `id` holds, `value` being what the store holds of it and `absent` what an
+/// unwritten one reads as, as a predicate compares it: a set as its members, a collection as
+/// how many items it has.
+///
+/// # Errors
+///
+/// `Invalid` for a stored value a predicate does not compare.
+pub fn lit_of(id: &str, value: FieldValue, absent: &Lit) -> Result<Lit, StoreError> {
+    let invalid = |what: &dyn std::fmt::Debug| {
+        StoreError::Invalid(format!(
+            "field {id} holds {what:?}, which a filter does not compare"
+        ))
+    };
+    match value {
+        FieldValue::Absent => Ok(absent.clone()),
+        FieldValue::Scalar(Scalar::Bool(b)) => Ok(Lit::Bool(b)),
+        FieldValue::Scalar(Scalar::Int(i)) | FieldValue::Counter(i) => Ok(Lit::Int(i)),
+        FieldValue::Scalar(Scalar::Float(f)) => Ok(Lit::Float(tilolang::pred::Float(f))),
+        FieldValue::Scalar(Scalar::Text(t)) | FieldValue::Text(t) => Ok(Lit::Text(t)),
+        FieldValue::Scalar(Scalar::Json(j)) => Lit::of_json(&j).ok_or_else(|| invalid(&j)),
+        FieldValue::Keys(keys) => Ok(Lit::Set(keys.into_iter().map(Lit::Text).collect())),
+        FieldValue::Items(items) => Ok(Lit::Int(i64::try_from(items.len()).unwrap_or(i64::MAX))),
+        FieldValue::Entries(entries) => Err(invalid(&entries)),
+    }
+}
+
+/// How two values of the field a query orders by compare: an absent value first, text
+/// without regard to case.
+#[must_use]
+pub fn order_cmp(a: &Lit, b: &Lit) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Lit::Absent, Lit::Absent) => Ordering::Equal,
+        (Lit::Absent, _) => Ordering::Less,
+        (_, Lit::Absent) => Ordering::Greater,
+        (Lit::Text(x), Lit::Text(y)) => x.to_lowercase().cmp(&y.to_lowercase()),
+        _ => {
+            if a.compare(tilolang::pred::CmpOp::Lt, b) == Some(true) {
+                Ordering::Less
+            } else if a.compare(tilolang::pred::CmpOp::Gt, b) == Some(true) {
+                Ordering::Greater
+            } else {
+                a.cmp(b)
+            }
         }
+    }
+}
+
+impl FieldRead {
+    /// The field read as a filter reads it, with what an unwritten one of type `ty` (declared
+    /// default `default`) holds: `None` for a field no filter reads (a map).
+    #[must_use]
+    pub fn of(
+        id: &str,
+        kind: FieldKind,
+        ty: &crate::meta::Ty,
+        default: Option<&Json>,
+    ) -> Option<Self> {
+        use crate::meta::Ty;
+        let absent = match kind {
+            FieldKind::Counter | FieldKind::Collection => Lit::Int(0),
+            FieldKind::Text => Lit::Text(String::new()),
+            FieldKind::Set => Lit::Set(Vec::new()),
+            FieldKind::Map => return None,
+            FieldKind::Register => match default {
+                Some(json) => Lit::of_json(json)?,
+                None => match ty {
+                    Ty::Bool => Lit::Bool(false),
+                    Ty::Int => Lit::Int(0),
+                    Ty::Float => Lit::Float(tilolang::pred::Float(0.0)),
+                    Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Lit::Text(String::new()),
+                    _ => Lit::Absent,
+                },
+            },
+        };
+        Some(Self {
+            spec: FieldSpec {
+                id: id.to_owned(),
+                kind,
+            },
+            absent,
+        })
     }
 }
 
@@ -499,6 +575,66 @@ pub trait Store {
             }
         }
         Ok(Rc::new(Listing::from_items(items)))
+    }
+
+    /// The items of the collection `field` of `at` (of the type `item`) that `pred` holds of,
+    /// all of them when it is `None`, in the order `order` (the collection's when `None`),
+    /// shared. A store with an index answers both from it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::listing_where`], and as reading the field `order` is by.
+    fn listing_query(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        item: &TypeId,
+        pred: Option<&Pred>,
+        order: Option<&crate::query::Order>,
+    ) -> Result<Rc<Listing>, StoreError> {
+        let base = match pred {
+            Some(pred) => self.listing_where(at, field, item, pred)?,
+            None => self.listing(at, field)?,
+        };
+        let Some(order) = order else {
+            return Ok(base);
+        };
+        let spec = FieldSpec {
+            id: order.field.clone(),
+            kind: order.kind,
+        };
+        let mut keyed = Vec::with_capacity(base.len());
+        for id in base.iter() {
+            let target = at.item(&field.id, &id, item.clone());
+            let value = lit_of(&spec.id, self.read(&target, &spec)?, &Lit::Absent)?;
+            keyed.push((value, id));
+        }
+        keyed.sort_by(|(a, _), (b, _)| order_cmp(a, b));
+        if order.descending {
+            keyed.reverse();
+        }
+        Ok(Rc::new(Listing::from_items(
+            keyed.into_iter().map(|(_, id)| id).collect(),
+        )))
+    }
+
+    /// The resources of the type `ty` anywhere in the store that `pred` holds of, in the order
+    /// `order`: a query that looks inside no one resource (search.md section 2.1). A store
+    /// with an index answers it from the index's columns of the type; this one has none.
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot answer it.
+    fn select(
+        &self,
+        ty: &TypeId,
+        pred: &Pred,
+        order: Option<&crate::query::Order>,
+    ) -> Result<Vec<ResourceRef>, StoreError> {
+        let _ = (pred, order);
+        Err(StoreError::Invalid(format!(
+            "this store answers no query of every {ty}; look inside a resource (`in:`)"
+        )))
     }
 
     /// The notes of a document's changes, oldest first.

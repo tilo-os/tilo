@@ -11,6 +11,7 @@
 )]
 
 mod collab;
+mod columns;
 mod fixtures;
 mod incremental;
 mod index;

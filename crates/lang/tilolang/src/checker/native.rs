@@ -609,10 +609,15 @@ impl Checker<'_> {
                     ty,
                 )
             };
-            let title = field(0, Ty::Text);
+            let at = |name: &str| {
+                crate::host::value_field("Meta", name)
+                    .and_then(|at| i32::try_from(at).ok())
+                    .unwrap_or(0)
+            };
+            let title = field(at("title"), Ty::Text);
             self.prop(node.clone(), "title", title, value.span);
             let icon_ty = Ty::Option(Box::new(Ty::Text));
-            let icon = field(3, icon_ty);
+            let icon = field(at("icon"), icon_ty);
             self.set_when_some(node, "icon", icon, &Ty::Text, value.span);
             return None;
         }
@@ -638,8 +643,10 @@ impl Checker<'_> {
 
     fn text_prop(&mut self, node: &Ex, name: &str, v: Ex, span: Span) {
         let v = match &v.ty {
-            Ty::Text | Ty::Date | Ty::Time | Ty::Error => v,
-            Ty::Option(inner) if matches!(**inner, Ty::Text | Ty::Date | Ty::Time) => {
+            Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Error => v,
+            Ty::Option(inner)
+                if matches!(**inner, Ty::Text | Ty::Date | Ty::Time | Ty::Identifier) =>
+            {
                 let held = (**inner).clone();
                 self.set_when_some(node, name, v, &held, span);
                 return;
@@ -1006,6 +1013,7 @@ impl Checker<'_> {
             | Ty::Principal
             | Ty::Date
             | Ty::Time
+            | Ty::Identifier
             | Ty::Error => true,
             Ty::Option(inner) => matches!(**inner, Ty::Date | Ty::Time),
             _ => false,
@@ -1058,9 +1066,14 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
             ast::StrPart::Interp(x) => mentions(x, names),
             ast::StrPart::Lit(_) => None,
         }),
+        ExprKind::Range { lo, hi } => [lo, hi]
+            .into_iter()
+            .flatten()
+            .find_map(|end| mentions(end, names)),
         ExprKind::Int(_)
         | ExprKind::Float(_)
         | ExprKind::Length(..)
+        | ExprKind::Duration(..)
         | ExprKind::Bool(_)
         | ExprKind::Ref(_)
         | ExprKind::Lambda { .. }

@@ -75,8 +75,7 @@ view note_row(n: Note) {
 }
 
 view notebook(nb: Notebook) {
-    window filter: NoteFilter = .all
-    std.list(nb, nb.notes, filter: filter, empty: "No notes yet")
+    std.list(nb, nb.notes, empty: "No notes yet")
 }
 
 scenario "a week of notes" {
@@ -602,7 +601,7 @@ fn a_window_is_what_its_view_builds_and_std_frames_check_their_parts() {
     expect(
         "E066",
         &with_t(
-            "view v(x: T) {\n    std.list(x, x.items, filter: x.n) { i ->\n        row(i.t)\n    }\n}",
+            "view v(x: T) {\n    std.list(x, x.items, sort: x.n) { i ->\n        row(i.t)\n    }\n}",
         ),
     );
     expect(

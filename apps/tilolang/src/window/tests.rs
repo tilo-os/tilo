@@ -487,7 +487,10 @@ fn a_notebook_is_the_native_list_and_detail_shell_with_the_header_the_platform_f
         room.shell().has_overview(),
         "the notes list is the overview column"
     );
-    assert!(room.shell().has_sidebar(), "the filter is the sidebar");
+    assert!(
+        room.shell().has_sidebar(),
+        "the note's filters are the sidebar's places"
+    );
     let rows = room.rows();
     assert!(rows.len() >= 3, "{rows:?}");
     let shell = room.composed();

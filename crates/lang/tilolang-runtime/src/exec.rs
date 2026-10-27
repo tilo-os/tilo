@@ -78,7 +78,7 @@ impl Core {
             }
             // A host value (an action, a lens, a type's metadata) is held as its fields.
             (Ty::Record(key), Value::Tuple(_)) => tilolang::host::is_value(key),
-            (Ty::Text | Ty::Date | Ty::Time, Value::Text(_))
+            (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Value::Text(_))
             | (Ty::List(_) | Ty::Set(_) | Ty::Map(_) | Ty::Collection(_), Value::List(_))
             | (Ty::List(_) | Ty::Collection(_), Value::Coll(_))
             | (Ty::Option(_), Value::Opt(_))

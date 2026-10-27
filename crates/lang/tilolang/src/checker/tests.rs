@@ -204,11 +204,10 @@ fn count(calls: &[String], want: &str) -> usize {
 
 const NOTES: &str = "type Note {\n    title: Text (title)\n    body: Text (body)\n    pinned: Bool = false\n}\n\
 type Notebook {\n    notes: Collection<Note>\n}\n\
-/// Which notes a notebook lists.\nenum NoteFilter {\n    /// All notes\n    all\n    /// Pinned\n    pinned\n}\n\
 enum NoteOrder {\n    created\n    title\n}\n\
 root Notebook\ndefault view notebook for Notebook\n\
-fn listed(nb: Notebook, order: NoteOrder, filter: NoteFilter) -> List<Note> {\n    return match filter {\n        .all => nb.notes.filter(n -> true),\n        .pinned => nb.notes.filter(n -> n.pinned),\n    }\n}\n\
-view notebook(nb: Notebook) {\n    window order: NoteOrder = .created\n    window filter: NoteFilter = .all\n    std.list(nb, listed(nb, order, filter), sort: order, filter: filter, count: f -> listed(nb, order, f).len(), empty: \"No notes yet\") { n ->\n        row(n.title, secondary: n.body, mark: if n.pinned { .pin }, checkbox: n.pinned)\n    }\n}";
+fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {\n    return match order {\n        .created => nb.notes.filter(n -> true),\n        .title => nb.notes.sort_by(n -> n.title),\n    }\n}\n\
+view notebook(nb: Notebook) {\n    window order: NoteOrder = .created\n    std.list(nb, listed(nb, order), sort: order, empty: \"No notes yet\") { n ->\n        row(n.title, secondary: n.body, mark: if n.pinned { .pin }, checkbox: n.pinned)\n    }\n}";
 
 #[test]
 fn a_type_with_a_row_view_lists_without_an_item_block() {
@@ -313,11 +312,13 @@ fn listed(b: Bag) -> Int {\n    let l = b.items.filter(i -> true)\n    return l.
             .any(|s| format!("{s:?}").contains("ForList")),
         "the loop"
     );
-    // A lambda reading a local of its caller, a set, or text by order is the loop's alone; so
-    // is a list, which is no collection the store keeps.
-    for loop_only in ["outer", "tagged", "ordered"] {
+    // A lambda reading a local of its caller, or text by order, is the loop's alone; so is a
+    // list, which is no collection the store keeps. How many members a set holds is the
+    // store's to count.
+    for loop_only in ["outer", "ordered"] {
         assert!(asked(func(&m, loop_only)).is_empty(), "{loop_only}");
     }
+    assert_eq!(asked(func(&m, "tagged")).len(), 1);
     assert_eq!(
         asked(func(&m, "listed")).len(),
         1,
@@ -391,27 +392,42 @@ fn std_list_is_a_shell_over_a_virtual_list_whose_rows_render_as_shown() {
 }
 
 #[test]
-fn sort_and_filter_become_a_sort_menu_and_the_sidebars_places_one_per_case() {
-    let (m, _) = lower(NOTES);
-    let calls = ui_calls(func(&m, "notebook"));
-    assert_eq!(
-        count(&calls, "node ui.NavItem"),
-        2,
-        "one place per filter case"
-    );
+fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
+    let (m, ids) = lower(NOTES);
+    let f = func(&m, "notebook");
+    let calls = ui_calls(f);
+    assert!(has(&calls, "node ui.NavList"), "the places: {calls:#?}");
     assert!(has(&calls, "node ui.MenuButton"), "the sort menu");
-    // Each place and each sort case sets its view state, as `set(state, .case)` lowers. The
-    // header is the list's column's, the overview's or the content's as the item type opens
-    // or not, so the sort menu is there in both, one of them shown.
-    assert_eq!(count(&calls, "set"), 2 + 2 * 2);
-    // The counts re-evaluate the items for each case through the view's lambda: one
-    // evaluation of `listed` per case, plus the list's own.
+    // The places are the item type's filters, asked of the platform where the list expands;
+    // the list as the place chosen shows it, and each place's count, are queries the index
+    // answers, of the items the view passed once.
+    let note = ids.get("Note").expect("id").to_string();
+    let mut filters = Vec::new();
+    let mut queries = 0;
+    for g in m.funcs.iter().filter(|g| g.name.starts_with("notebook")) {
+        visit(g, &mut |e| match &e.kind {
+            Ek::Host(Imp::Filters, args) => {
+                filters.push(args.first().and_then(text).map(str::to_owned));
+            }
+            Ek::Host(Imp::Query, _) => queries += 1,
+            _ => {}
+        });
+    }
+    assert_eq!(filters, [Some(note)]);
+    assert!(queries >= 2, "the list and the places' counts: {queries}");
     let listed = m
         .funcs
         .iter()
         .position(|x| x.name == "listed")
         .expect("listed");
-    assert_eq!(calls_of(func(&m, "notebook"), listed), 3);
+    assert_eq!(calls_of(f, listed), 1, "the items are listed once");
+    // Which place is chosen is the window's state, the library's own, kept under the view.
+    let notebook = ids.get("notebook").expect("id");
+    assert!(
+        strings(f).contains(&format!("{notebook}:list.query")),
+        "{:?}",
+        strings(f)
+    );
 }
 
 #[test]
