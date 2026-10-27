@@ -93,6 +93,11 @@ pub enum Picture {
     /// beside a page, and which way the page moves: with the fingers
     /// (natural) or against them.
     ScrollDirection { natural: bool, wheel: bool },
+    /// Rows of a list at a spacing density (`ThemeDensity`'s factor).
+    Density(f32),
+    /// The sample screen warmed to a colour temperature in kelvin, as
+    /// night light tints the display.
+    Warmth(u32),
 }
 
 impl Picture {
@@ -113,6 +118,11 @@ impl Picture {
                 filter.paint(scene, transform, area);
             }
             Self::Touchpad(gesture) => paint_touchpad(scene, transform, area, *gesture, theme),
+            Self::Density(density) => paint_density(scene, transform, area, *density, theme),
+            Self::Warmth(kelvin) => {
+                paint_screen_sample(scene, transform, area, theme);
+                paint_warmth(scene, transform, area, *kelvin);
+            }
             Self::ScrollDirection { natural, wheel } => {
                 paint_scroll_direction(scene, transform, area, (*natural, *wheel), theme);
             }
@@ -198,6 +208,15 @@ fn paint_pointer(scene: &mut Scene, transform: Affine, area: Rect, size: f64, th
 /// switch that is on. The colours a filter changes, side by side.
 fn paint_screen_sample(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {
     let colors = &theme.tokens.colors;
+    // The screen's own ground, so a filter or a warmth blends over a
+    // window rather than over nothing.
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.content,
+        None,
+        &area,
+    );
     let inset = (area.height() * 0.14).round();
     let content = area.inset(-inset);
     let unit = (content.height() / 6.0).max(1.0);
@@ -554,6 +573,103 @@ fn paint_scroll_direction(
     );
 }
 
+/// Three rows of a list, each an icon and a line of text with a hairline
+/// under it, spaced by `density` (1 is regular): what a density setting
+/// does to every list.
+fn paint_density(scene: &mut Scene, transform: Affine, area: Rect, density: f32, theme: &Theme) {
+    let density = f64::from(density);
+    let inset = (area.height() * 0.14).round();
+    let content = area.inset(-inset);
+    // A regular row is a quarter of the tile; the others scale from it.
+    let row = content.height() / 3.6 * density;
+    let mark = row * 0.36;
+    let edge = crate::surface::edge_on(theme.tokens.colors.surfaces.raised);
+    for index in 0..3_u8 {
+        let top = content.y0 + f64::from(index) * row;
+        if top + row > area.y1 {
+            break;
+        }
+        let middle = top + row / 2.0;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.text_dim,
+            None,
+            &RoundedRect::from_rect(
+                Rect::from_center_size((content.x0 + mark / 2.0, middle), (mark, mark)),
+                mark * 0.25,
+            ),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.text_primary,
+            None,
+            &RoundedRect::new(
+                content.x0 + mark * 1.8,
+                middle - mark * 0.25,
+                content.x0 + content.width() * if index == 1 { 0.6 } else { 0.8 },
+                middle + mark * 0.25,
+                mark * 0.25,
+            ),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            edge,
+            None,
+            &vello::kurbo::Line::new((content.x0, top + row), (content.x1, top + row)),
+        );
+    }
+}
+
+/// The colour a black body glows at `kelvin`, as display gamma tables warm
+/// a screen (Tanner Helland's fit, good from 1000 K to 40000 K).
+fn black_body(kelvin: u32) -> Color {
+    let t = f64::from(kelvin.clamp(1_000, 40_000)) / 100.0;
+    let red = if t <= 66.0 {
+        255.0
+    } else {
+        329.698_727_446 * (t - 60.0).powf(-0.133_204_759_2)
+    };
+    let green = if t <= 66.0 {
+        99.470_802_586_1 * t.ln() - 161.119_568_166_1
+    } else {
+        288.122_169_528_3 * (t - 60.0).powf(-0.075_514_849_2)
+    };
+    let blue = if t >= 66.0 {
+        255.0
+    } else if t <= 19.0 {
+        0.0
+    } else {
+        138.517_731_223_1 * (t - 10.0).ln() - 305.044_792_730_7
+    };
+    let channel = |value: f64| f32_of(value.clamp(0.0, 255.0) / 255.0);
+    Color::new([channel(red), channel(green), channel(blue), 1.0])
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a colour channel in 0..=1 fits an f32"
+)]
+fn f32_of(value: f64) -> f32 {
+    value as f32
+}
+
+/// Warm what was drawn under `area` to `kelvin`: each channel multiplied by
+/// the black body's colour, as night light's gamma ramps do.
+fn paint_warmth(scene: &mut Scene, transform: Affine, area: Rect, kelvin: u32) {
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::new(Mix::Multiply, Compose::SrcOver),
+        1.0,
+        transform,
+        &area,
+    );
+    scene.fill(Fill::NonZero, transform, black_body(kelvin), None, &area);
+    scene.pop_layer();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,6 +701,10 @@ mod tests {
         ] {
             assert!(painted(&Picture::Touchpad(gesture)) > 0, "{gesture:?}");
         }
+        assert!(painted(&Picture::Density(1.0)) > 0);
+        assert!(
+            painted(&Picture::Warmth(2_800)) > painted(&Picture::ColourFilter(ColourFilter::None))
+        );
         for wheel in [false, true] {
             assert!(
                 painted(&Picture::ScrollDirection {
