@@ -1,6 +1,9 @@
 //! The commands the bar, the menus and the palette run: sheets and tabs, document settings, the command palette, row and column verbs, navigation, and the effects an answer comes back as.
 
-use super::*;
+use super::{
+    CellFormat, CommandEntry, Edits, Id, Interchange, Invoke, MenuItem, PendingReveal, SettingKind,
+    SettingsPanel, SheetsApp, Workbook, a1_to_addr, actions, date_label, time_label, verbs,
+};
 
 impl SheetsApp {
     pub(super) fn switch_sheet(&mut self, doc: &mut Edits<'_>, idx: usize) {
@@ -176,7 +179,7 @@ impl SheetsApp {
         self.apply_cmds(doc, out);
         let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
         let target_r = r1.saturating_add(1);
-        let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
+        let mut writes: Vec<(crate::model::Addr, String, Option<CellFormat>)> = Vec::new();
         for c in c0..=c1 {
             let formula = format!(
                 "=SUM({}:{})",
