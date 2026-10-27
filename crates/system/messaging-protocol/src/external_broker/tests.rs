@@ -2,6 +2,15 @@ use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ui::prelude::Id;
 
+/// Whether an accessible `label` says `text`: the whole label, or one part of
+/// a conversation line. The shared conversation list speaks each line as who
+/// said it, when, whether it arrived and what it says
+/// (`ui::widget::ConversationList`), so a message body or a delivery word is
+/// one comma-separated part of its list item's name.
+pub(crate) fn speaks(label: Option<&str>, text: &str) -> bool {
+    label.is_some_and(|label| label == text || label.split(", ").any(|part| part == text))
+}
+
 pub(super) fn owner(service: crate::Service) -> Owner {
     Owner {
         principal: "11".repeat(32),
@@ -424,7 +433,7 @@ fn messages_actions_use_hosted_whatsapp_and_sms_and_keep_text_outside_shared_sta
             app.harness()
                 .a11y_nodes()
                 .iter()
-                .any(|(_, node)| node.label() == Some("private fixture message"))
+                .any(|(_, node)| speaks(node.label(), "private fixture message"))
         );
         assert!(
             !app.harness()

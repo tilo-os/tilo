@@ -1144,7 +1144,7 @@ impl RemoteApp {
     /// action), in the window's bar. It holds no credential material.
     /// Record what happened in the ledger: Remote's outcomes do not expire
     /// and nothing of them takes the keyboard.
-    fn notify(&mut self, message: impl Into<String>) {
+    fn notify(message: impl Into<String>) {
         ui::attention::publish(ui::attention::Notice::did(owner(), message));
     }
 
@@ -1187,7 +1187,7 @@ impl RemoteApp {
                 .item(purpose, &id.to_string())
                 .put_blocking(secret.as_bytes())
         {
-            self.notify(format!(
+            Self::notify(format!(
                 "Couldn't save the password on this device: {error}"
             ));
         }

@@ -162,7 +162,7 @@ fn morning_digest() -> Value {
         "steps": [
             {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
              "resource": {"fixed": "notes.folder:inbox"}},
-            {"id": "ai", "step": "ai", "transform": "summarise",
+            {"id": "ai", "step": "ai", "prompt": "Write a short digest of these titles",
              "input": {"template": "{{step.list/titles}}"}},
             {"id": "send", "step": "invoke", "action": {"app": MAIL, "kind": "mail.outbox", "action": "send"},
              "resource": {"fixed": "mail.outbox"},
@@ -179,7 +179,7 @@ fn weekly_summary() -> Value {
         "steps": [
             {"id": "list", "step": "invoke", "action": {"app": NOTES, "kind": "notes.folder", "action": "list"},
              "resource": {"fixed": "notes.folder:inbox"}},
-            {"id": "ai", "step": "ai", "transform": "summarise",
+            {"id": "ai", "step": "ai", "prompt": "Write a short digest of these titles",
              "input": {"template": "{{step.list/titles}}"}},
             {"id": "send", "step": "invoke", "action": {"app": MAIL, "kind": "mail.outbox", "action": "send"},
              "resource": {"fixed": "mail.outbox"},
@@ -262,7 +262,7 @@ fn tidy_notes() -> Value {
              ]},
             {"id": "if", "step": "if", "cond": {"truthy": {"input": "keyword"}},
              "then": [
-                {"id": "ai", "step": "ai", "transform": "summarise",
+                {"id": "ai", "step": "ai", "prompt": "Summarise this",
                  "input": {"input": "keyword"}}
              ],
              "else": []}

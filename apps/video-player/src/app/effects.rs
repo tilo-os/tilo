@@ -1,6 +1,6 @@
 //! The effects the host asks Video Player for, and what each answers with.
 
-use super::*;
+use super::{EffectStatus, Id, LibraryTab, PLAYBACK_RATES, PlayerApp, VideoEffect};
 
 impl PlayerApp {
     /// What differs from the effects' declarations right now: playback

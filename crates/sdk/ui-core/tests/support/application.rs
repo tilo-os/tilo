@@ -228,6 +228,14 @@ pub fn permissions() -> Rc<RefCell<PermissionContext>> {
         PermissionContext::stranger("probe-author").at_unix_time(100),
     ))
 }
+/// The author as the room's Owner: everything is allowed, so an outside
+/// effect runs without asking.
+pub fn owner_permissions() -> Rc<RefCell<PermissionContext>> {
+    Rc::new(RefCell::new(
+        PermissionContext::member("probe-author", tilo_ui::permissions::Role::Owner)
+            .at_unix_time(100),
+    ))
+}
 /// The author as an Editor of the room: may make undoable changes.
 pub fn editor_permissions() -> Rc<RefCell<PermissionContext>> {
     Rc::new(RefCell::new(

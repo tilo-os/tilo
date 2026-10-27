@@ -87,8 +87,14 @@ impl AccountCredentials {
         Self::from_vault(SecretVault::open())
     }
 
-    /// Open explicit-root custody for recovery and isolated tests.
+    /// Open the credentials kept under the config root `root`. The person's
+    /// own root ([`crate::config_root`]) is sealed under session custody, so
+    /// it opens as [`Self::open`] does; any other root (a test, capture or
+    /// `--data-dir` profile, a recovery copy) under its own private key.
     pub fn open_in(root: &Path) -> Result<Self, String> {
+        if crate::config_root().as_deref() == Some(root) {
+            return Self::open();
+        }
         Self::from_vault(SecretVault::open_in(root))
     }
 
@@ -311,5 +317,24 @@ impl ServiceCredentials {
         vault.remove(&legacy);
         vault.try_save().map_err(BrokerError::Storage)?;
         Ok(reference)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The person's vault opened by its root is the session's vault: the
+    /// same custody, refused or opened alike, and never sealed afresh under
+    /// a key file of its own.
+    #[test]
+    fn the_persons_root_opens_under_session_custody() {
+        let Some(root) = crate::config_root() else {
+            return;
+        };
+        let by_root =
+            AccountCredentials::open_in(&root).map(|credentials| credentials.vault.custody());
+        let session = AccountCredentials::open().map(|credentials| credentials.vault.custody());
+        assert_eq!(by_root, session);
     }
 }

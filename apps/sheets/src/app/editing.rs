@@ -1,6 +1,10 @@
 //! The commands the chrome hands back: the name box, the formula entry, bold and formula view, a tab's rename, the find bar and the menu rows each action names.
 
-use super::*;
+use super::{
+    Addr, Atom, Cell, EditOutcome, EditableLabel, Edits, Invoke, MenuItem, Point, SheetsApp,
+    TabAction, TabRename, TextInput, TextRole, Widget, Workbook, actions, parse_ref_target,
+    reference_box_char, verbs,
+};
 
 impl SheetsApp {
     // --- name box (Go-To) + fx formula entry -------------------------------

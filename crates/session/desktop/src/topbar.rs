@@ -1512,7 +1512,7 @@ impl Widget for TopBarChrome {
         let Some(target) = self.control_targets().get(index).cloned() else {
             return false;
         };
-        self.focused_control = Some(target.to_string());
+        self.focused_control = Some(target);
         true
     }
 
@@ -1593,7 +1593,7 @@ impl Widget for TopBarChrome {
             self.focus_origin = FocusOrigin::Placed;
         }
         if focused && self.focused_control.is_none() {
-            self.focused_control = self.control_targets().first().map(|target| target.clone());
+            self.focused_control = self.control_targets().first().cloned();
         }
     }
 

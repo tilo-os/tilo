@@ -1814,7 +1814,6 @@ impl CollaboratorsOverlay {
     /// press by target: each control says where it is painted and carries
     /// its place in the focus order as its action target (`people:<n>`),
     /// which [`Self::hit_for_target`] turns back into what it does.
-    #[must_use]
     pub fn accessibility_with_targets(&self) -> ui::a11y::AccessNode {
         let order = self.focus_order();
         let mut node = self.accessibility_snapshot().with_bounds(self.panel_rect());

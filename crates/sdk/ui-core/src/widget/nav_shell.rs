@@ -4052,7 +4052,12 @@ impl Widget for NavShell {
         changed |= self.follow_navigation();
         changed |= self.notice.expire();
         self.publish_notice();
-        changed || self.animating
+        // A slide moves the columns, which the layout places; it changes no
+        // model, so the frame neither syncs nor republishes for it.
+        if self.animating || self.settling {
+            crate::widget::note_layout_moved();
+        }
+        changed
     }
 
     fn build_layout(

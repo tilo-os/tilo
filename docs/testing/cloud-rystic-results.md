@@ -1,5 +1,33 @@
 # Dropbox and Google Drive import/sync test results
 
+## Latest Dropbox verification — 0.0.4, 2026-10-17
+
+The current developer-facing issue list and tested standalone reproduction are
+in [rystic-feedback.md](rystic-feedback.md). Dropbox 0.0.4 produced **3 passed,
+1 failed, 0 ignored** in the production-adapter contract target. The remaining
+failure is ID-addressed replacement changing identity; a standalone HTTP-only
+script reproduces the same defect through both direct upload and session finish.
+The continuation contract now passes, valid-cursor longpoll returns HTTP 200,
+and an exact 1,048,577-byte upload returns HTTP 200 with the correct size.
+The version handshake reports contract 26 and a 157,286,400-byte blob cap.
+
+The four current target names are `id_addressed_replacement_preserves_identity_and_checks_revision`
+(failed), `importing_writing_and_resuming_use_the_production_adapter`,
+`mounted_folder_rejects_foreign_ids`, and
+`sync_delivers_new_items_after_initial_enumeration` (all passed).
+A fresh Cargo-reported executable was built remotely and explicitly fetched
+before starting the paid instance. The normal runner's artifact discovery was
+incompatible with the current build-tool output; no stale executable was used.
+That harness problem is not a Rystic defect. Owned instances were stopped and
+removed, including after strict assertion failures. The separate HTTP-only
+reproduction took 1.425 seconds including startup/cleanup; this is not billed
+instance time.
+
+Google Drive 0.0.5 remains latest according to an Oct 17 metadata-only check.
+Its latest runtime verification remains the Oct 14 run below. Historical Dropbox
+0.0.2 and Drive 0.0.3 failures later in this document must not be counted as
+remaining defects on the newer tested twins.
+
 ## Google Drive 0.0.5: Changes, resumable upload and real filesystem roundtrip
 
 Latest Drive-only re-run on 2026-10-14 first executed

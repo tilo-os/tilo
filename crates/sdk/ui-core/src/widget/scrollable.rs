@@ -1038,7 +1038,7 @@ impl Widget for Scrollable {
     /// so it does not report one; reporting it synced the app and
     /// republished its resources on every frame of every fling. The host
     /// places the content where the glide took it
-    /// ([`crate::widget::note_placement_moved`]).
+    /// ([`crate::widget::note_layout_moved`]).
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         if self.glide.is_active() {
             self.advance_momentum(crate::time::now());
@@ -1057,7 +1057,7 @@ impl Widget for Scrollable {
             (self.offset_x, self.offset_y) != before
         };
         if self.scroll_dirty {
-            crate::widget::note_placement_moved();
+            crate::widget::note_layout_moved();
         }
         let child = self.child.as_mut().is_some_and(|c| c.update(s, p));
         held || child

@@ -48,7 +48,8 @@ on main named its findings, is refused instead: what fails can't be told from ma
   pre_push.py unpassed --run RUN.jsonl CHECK...
       Every check of the gate (CHECK...) that the run (`t test --json`) did not pass, one per
       line with why, and t's own errors: what a refused push names, and what a push passed
-      although it fails, since main fails it too.
+      although it fails, since main fails it too. A refusal lists the checks that refused it
+      apart from those that fail on main too or are flaky, which don't block it.
 """
 from __future__ import annotations
 
@@ -299,12 +300,26 @@ def blame_note(result: dict) -> str:
     return ""
 
 
+def blocks(result: dict) -> bool:
+    """Whether a check that did not pass refuses the push: all but a failure t blamed on main (it fails
+    there too) or on a flaky test."""
+    return not (result.get("outcome") == "fail"
+                and (result.get("blame") or {}).get("kind") in ("inherited", "flaky"))
+
+
+REFUSED_BY = "refused by:"
+NOT_BLOCKING = "fails on main too, or flaky, not blocking:"
+
+
 def unpassed(events: list[dict], asked: list[str]) -> list[str]:
     """Each check of `asked` the run did not pass, with why, and each error t reported. A refusal
-    names every one of these: an outcome nobody prints is a refusal nobody can act on."""
+    names every one of these: an outcome nobody prints is a refusal nobody can act on. When some
+    refuse the push and others only fail on main too (or are flaky), the two are listed apart, under
+    REFUSED_BY and NOT_BLOCKING, so what to fix is not lost among what main fails anyway."""
     planned: list[str] = []
     results: dict[str, dict] = {}
     lines: list[str] = []
+    informational: list[str] = []
     for event in events:
         kind = event.get("type")
         if kind == "planned":
@@ -333,8 +348,11 @@ def unpassed(events: list[dict], asked: list[str]) -> list[str]:
             text = f"{check}: not run, since a check it is gated on failed"
         else:
             text = f"{check}: {outcome or 'no outcome'}, which this hook can't tell apart from a failure"
-        lines.append(f"{text}: {why}" if why else text)
-    return lines
+        (lines if blocks(result) else informational).append(f"{text}: {why}" if why else text)
+    if lines and informational:
+        return [REFUSED_BY, *(f"  {line}" for line in lines),
+                NOT_BLOCKING, *(f"  {line}" for line in informational)]
+    return lines + informational
 
 
 def load_events(path: Path) -> list[dict]:

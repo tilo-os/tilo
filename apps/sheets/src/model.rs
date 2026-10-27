@@ -289,20 +289,23 @@ impl CellFormat {
     }
 
     /// Parse the stored string back into a format. Unknown subtypes fall
-    /// back to a default (USD currency, ISO date, 24h time) so an
-    /// unrecognized variant never loses the *category*. The supplied
-    /// `default_currency` seeds a bare `"currency"` with no subtype.
-    pub fn from_str_with(s: &str, default_currency: Currency) -> CellFormat {
+    /// back to a fixed default (USD currency, ISO date, 24h time), never the
+    /// reader's locale, so an unrecognized variant keeps its *category* and
+    /// reads the same for everyone.
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "parsing cannot fail (an unknown code reads as `General`); `FromStr` would hand every caller a `Result` to unwrap for no gain"
+    )]
+    pub fn from_str(s: &str) -> CellFormat {
         let (head, sub) = match s.split_once(':') {
             Some((h, t)) => (h, Some(t)),
             None => (s, None),
         };
         match head {
             "number" => CellFormat::Number,
-            "currency" => CellFormat::Currency(
-                sub.and_then(Currency::from_code)
-                    .unwrap_or(default_currency),
-            ),
+            "currency" => {
+                CellFormat::Currency(sub.and_then(Currency::from_code).unwrap_or(Currency::USD))
+            }
             "percent" => CellFormat::Percent,
             "date" => {
                 CellFormat::Date(sub.and_then(date_style_from_code).unwrap_or(DateStyle::Iso))
@@ -314,16 +317,6 @@ impl CellFormat {
             "text" => CellFormat::Text,
             _ => CellFormat::General,
         }
-    }
-
-    /// Convenience parse with the USD/ISO/24h defaults — used where the
-    /// document currency isn't handy (e.g. tests).
-    #[allow(
-        clippy::should_implement_trait,
-        reason = "parsing cannot fail (an unknown code reads as `General`); `FromStr` would hand every caller a `Result` to unwrap for no gain"
-    )]
-    pub fn from_str(s: &str) -> CellFormat {
-        Self::from_str_with(s, Currency::USD)
     }
 
     /// The high-level category label shown in the type indicator. For
@@ -822,6 +815,11 @@ mod tests {
                 let s = fmt.as_str();
                 assert_eq!(CellFormat::from_str(&s), fmt, "round trip {s}");
             }
+            // A code-less "currency" reads the same for every reader.
+            assert_eq!(
+                CellFormat::from_str("currency"),
+                CellFormat::Currency(Currency::USD)
+            );
         }
 
         {

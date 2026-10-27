@@ -437,7 +437,7 @@ impl Compositor {
         tilo_test_env::require_isolated_desktop();
         let mut command = Command::new(tilo_test_env::package_binary!("shell"));
         if let Some(home) = home {
-            command.env("HOME", home).env("TILO_USER_HOME", home);
+            command.env("TILO_USER_HOME", home);
             // A fixture home may carry stand-ins for system tools (an audio
             // device's `wpctl`, say) in `bin/`; they come first on PATH.
             let tools = home.join("bin");
@@ -450,6 +450,17 @@ impl Compositor {
                 );
             }
         }
+        // The compositor's own home, never the one this test process has: a
+        // test that points the process's `HOME` at a temporary tree for its
+        // own run deletes that tree when it ends, and a compositor that read
+        // it after that would refuse to start (see `private_home`).
+        command.env(
+            "HOME",
+            home.map_or_else(
+                || crate::support::desktop::private_home(runtime_dir),
+                Path::to_path_buf,
+            ),
+        );
         command.args(["--mode", "native", "--backend", "headless"]);
         if host_desktop {
             command.arg("--host-desktop-session");

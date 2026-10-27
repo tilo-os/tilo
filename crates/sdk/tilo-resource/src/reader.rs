@@ -102,6 +102,9 @@ struct Following {
     last: Delta,
     /// Why the document last failed to read, until it reads again.
     unreadable: Option<crate::Unreadable>,
+    /// The committed heads the state was last read whole at: a whole read
+    /// again at the same heads would read the same state, and is not done.
+    read_at: Option<Vec<ChangeHash>>,
 }
 
 impl Following {
@@ -110,7 +113,11 @@ impl Following {
     /// calls the one copy in the runtime.
     #[inline(never)]
     fn at(heads: Option<Vec<ChangeHash>>) -> Self {
-        Self::new(heads.map(Tracker::at).unwrap_or_default())
+        let read_at = heads.clone();
+        Self {
+            read_at,
+            ..Self::new(heads.map(Tracker::at).unwrap_or_default())
+        }
     }
 
     /// Following `doc` from where it stands, out of line as [`Self::at`].
@@ -118,7 +125,10 @@ impl Following {
     fn started(doc: &mut Doc) -> Self {
         let mut tracker = Tracker::new();
         tracker.start(doc);
-        Self::new(tracker)
+        Self {
+            read_at: heads_of(doc),
+            ..Self::new(tracker)
+        }
     }
 
     fn new(tracker: Tracker) -> Self {
@@ -131,6 +141,7 @@ impl Following {
             uncommitted: None,
             last: Delta::everything(),
             unreadable: None,
+            read_at: None,
         }
     }
 }
@@ -324,6 +335,13 @@ impl<R: Resource> Reader<R> {
     /// Returns [`ModelError`] when the document no longer holds this
     /// resource; the state is left as it was last read successfully.
     pub fn reread_whole(&mut self, doc: &Doc) -> Result<bool, ModelError> {
+        // The state was read at exactly this document: reading it whole
+        // again would find the same, and must not present it as new.
+        if self.core.unreadable.is_none()
+            && heads_of(doc).is_some_and(|heads| self.core.read_at.as_ref() == Some(&heads))
+        {
+            return Ok(false);
+        }
         let before = self.core.revision;
         self.core.stale = true;
         self.core
@@ -444,6 +462,13 @@ impl Following {
         if let Some(fresh) = replaced {
             state.set(fresh);
         }
+        // Only a whole read stands for what the document holds: one applied
+        // as a delta is still read whole once ([`Reader::reread_whole`]).
+        self.read_at = if self.last.is_everything() {
+            heads_of(doc)
+        } else {
+            None
+        };
         self.stale = false;
         self.revision = self.revision.wrapping_add(1);
         Ok(())
