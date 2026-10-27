@@ -71,6 +71,9 @@ pub struct EmbeddedApp {
     deadline: Cell<Option<crate::time::Instant>>,
     /// The app has not run since `deadline` was asked for.
     deadline_known: Cell<bool>,
+    /// The app ran since its host last found it with no intent for the host
+    /// ([`AppWidget::take_host_intent`]): only an app that runs raises one.
+    intents_owed: Cell<bool>,
     /// Tells this app's damage hints from every other source's.
     source: u64,
     /// Where the app's frames changed since `painted` was last replaced.
@@ -149,6 +152,7 @@ impl EmbeddedApp {
             woken,
             deadline: Cell::new(None),
             deadline_known: Cell::new(false),
+            intents_owed: Cell::new(true),
             source: NEXT_SOURCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             damage: super::SurfaceDamage::default(),
             painted_damage: PaintedDamage::default(),
@@ -249,6 +253,7 @@ impl EmbeddedApp {
     /// The app runs: its deadlines may move.
     fn runs(&self) {
         self.deadline_known.set(false);
+        self.intents_owed.set(true);
     }
 
     pub fn app_mut(&mut self) -> &mut App {
@@ -978,8 +983,25 @@ impl AppWidget for EmbeddedApp {
         self.app_widget_mut()
             .is_some_and(AppWidget::request_device_shell)
     }
+    /// Its host asks on every pump; the app is reached only when it ran
+    /// since it last had none, and only taking one runs it.
     fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
-        self.app_widget_mut()?.take_host_intent()
+        if !self.intents_owed.get() {
+            return None;
+        }
+        let intent = self
+            .app
+            .root_widget
+            .as_any_mut()
+            .and_then(|root| root.downcast_mut::<crate::widget::BoundAppWidget>())
+            .and_then(AppWidget::take_host_intent);
+        if intent.is_some() {
+            self.runs();
+            self.app.mark_semantic_tree_stale();
+        } else {
+            self.intents_owed.set(false);
+        }
+        intent
     }
 }
 
@@ -1533,6 +1555,13 @@ mod wake_deadline_tests {
             assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
         }
         assert_eq!(asks.get(), settled, "idle pumps and paints asked again");
+        // Its host asks for its intents on every pump: an app that did not
+        // run since it had none is not reached, so nothing it holds moved.
+        for _ in 0..10 {
+            assert!(AppWidget::take_host_intent(&mut tile).is_none());
+            assert_eq!(Widget::next_wake_deadline(&tile), Some(deadline));
+        }
+        assert_eq!(asks.get(), settled, "asking for intents ran the app");
         // Whatever reaches into the app may move it: asked again.
         let _ = tile.app_mut();
         let _ = Widget::next_wake_deadline(&tile);
