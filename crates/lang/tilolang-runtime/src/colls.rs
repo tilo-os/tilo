@@ -56,13 +56,7 @@ impl CollSeen {
     pub fn shown(coll: &Rc<CollRef>, listing: &Listing, shown: usize) -> Self {
         let mut seen = Self::new(coll);
         seen.len = Some(listing.len());
-        seen.at = listing
-            .items
-            .iter()
-            .take(shown)
-            .enumerate()
-            .map(|(i, id)| (i, Rc::clone(id)))
-            .collect();
+        seen.at = listing.iter().take(shown).enumerate().collect();
         seen
     }
 
@@ -78,9 +72,12 @@ impl CollSeen {
         // Read whole, it depends on the collection's field instead.
         self.whole
             || self.len.is_none_or(|len| len == listing.len())
-                && self.first.holds(listing.items.first())
-                && self.last.holds(listing.items.last())
-                && self.at.iter().all(|(i, id)| listing.get(*i) == Some(id))
+                && self.first.holds(listing.first().as_ref())
+                && self.last.holds(listing.last().as_ref())
+                && self
+                    .at
+                    .iter()
+                    .all(|(i, id)| listing.get(*i).as_ref() == Some(id))
     }
 
     /// Whether everything seen is still so in the store.
@@ -288,19 +285,18 @@ impl Core {
                 listing.len()
             ));
         };
-        self.saw(coll, Read::At(index, Rc::clone(id)), listing.len());
-        Ok(self.item_ref(coll, id))
+        self.saw(coll, Read::At(index, Rc::clone(&id)), listing.len());
+        Ok(self.item_ref(coll, &id))
     }
 
     /// The first or last item of `coll`, as an option.
     pub(crate) fn coll_end(&self, coll: &Rc<CollRef>, last: bool) -> HResult<Value> {
         let listing = self.coll_listing(coll)?;
         let end = if last {
-            listing.items.last()
+            listing.last()
         } else {
-            listing.items.first()
-        }
-        .cloned();
+            listing.first()
+        };
         let value = end
             .as_deref()
             .map_or_else(Value::none, |id| Value::some(self.item_ref(coll, id)));
@@ -326,19 +322,15 @@ impl Core {
         let listing = self.coll_listing(coll)?;
         if coll.filter.is_some() {
             self.saw(coll, Read::Len(listing.len()), listing.len());
-            for (i, id) in listing.items.iter().enumerate() {
-                self.saw(coll, Read::At(i, Rc::clone(id)), listing.len());
+            for (i, id) in listing.iter().enumerate() {
+                self.saw(coll, Read::At(i, id), listing.len());
             }
         } else if let Ok(frame) = self.frames.borrow_mut().top_mut()
             && let FrameKind::View(vs) = &mut frame.kind
         {
             vs.reads.push((coll.target.id_string(), coll.field.clone()));
         }
-        Ok(listing
-            .items
-            .iter()
-            .map(|id| self.item_ref(coll, id))
-            .collect())
+        Ok(listing.iter().map(|id| self.item_ref(coll, &id)).collect())
     }
 
     /// `v`, with a collection read whole into a list: what goes into another value.
