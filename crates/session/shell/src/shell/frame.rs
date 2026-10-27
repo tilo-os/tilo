@@ -10065,33 +10065,6 @@ mod tests {
         }
     }
 
-    /// Look up a widget's rect by its *last* path segment
-    /// (`.../TopBarChrome[0]` → `TopBarChrome`) — registry keys are full
-    /// paths, so an exact-key lookup on a nested widget would miss. The
-    /// widgets asserted on here are unique in the rendered tree, so the
-    /// first match is deterministic.
-    #[cfg(test)]
-    fn rect_named(reg: &HashMap<String, vello::kurbo::Rect>, name: &str) -> vello::kurbo::Rect {
-        reg.iter()
-            .find(|(k, _)| {
-                let seg = k.rsplit('/').next().unwrap_or(k);
-                let leaf = match seg.find('[') {
-                    Some(i) => &seg[..i],
-                    None => seg,
-                };
-                leaf == name
-            })
-            .map_or_else(
-                || {
-                    panic!(
-                        "widget `{name}` not found in registry; keys: {:?}",
-                        reg.keys().collect::<Vec<_>>()
-                    )
-                },
-                |(_, r)| *r,
-            )
-    }
-
     #[test]
     fn the_magnifier_centres_on_the_keyboard_focus_once_it_moves_past_a_resting_pointer() {
         let mut fb = FrameBuilder::new((1280, 800));
@@ -10528,6 +10501,9 @@ mod native_field_tests;
 )]
 #[path = "frame_native_tab_scenarios.rs"]
 mod native_tab_scenarios;
+
+#[cfg(test)]
+pub(super) use native_tab_scenarios::rect_named;
 
 #[cfg(test)]
 #[allow(
