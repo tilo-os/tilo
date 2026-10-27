@@ -268,6 +268,22 @@ impl ShellNetwork {
             workspace: Some(local),
             progress: JoinProgress::Joining,
         });
+        // The invitation names the room's host by the devices that answer
+        // for it: a site whose entry names that host makes it its workspace.
+        let hosts: Vec<[u8; 32]> = join
+            .grant()
+            .transport
+            .iter()
+            .map(|hint| hint.host.device_public_key)
+            .chain([join.grant().issuer.device_public_key])
+            .collect();
+        self.expect_arrival(
+            room,
+            &super::site_join::Arriving {
+                hosts: &hosts,
+                ..Default::default()
+            },
+        );
         let answer = self.accept_invitation_via(local, token.trim(), via);
         if let Ok(PeerSyncResponse::EnrollmentPending { id }) = &answer
             && let Err(error) = self.finish_when_enrolled(room, *id, true)

@@ -690,6 +690,46 @@ fn a_workspace_joined_from_an_invitation_alone_is_arrived_in() {
     site.shutdown();
 }
 
+/// Someone the Lounge lets in by invitation only pastes the invitation its
+/// host issued into the join field: they arrive in the Lounge's Chat, the
+/// app its site's entry names, as a person who came through the site's door
+/// does. Their computer follows the site as its community, and the site
+/// names the host the invitation is for. One rule chooses where a join
+/// arrives, however it was made.
+#[test]
+#[serial_test::serial]
+fn joining_by_an_invitation_in_the_join_field_arrives_in_the_sites_app() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let site = Site::start(dir.path());
+    let room = RoomId::parse(&site.room).unwrap();
+    site.open.store(false, std::sync::atomic::Ordering::SeqCst);
+    let (grace, tree) = computer(&dir.path().join("grace"), key(2), "Grace's computer");
+    grace.hosted_sites.follow_community(&site.entry);
+    assert_eq!(
+        grace.join_site(&site.entry),
+        Err(hosted_sites::SiteError::InvitationOnly("Lounge".into()))
+    );
+    let text = site.invite_text();
+    assert!(grace.join_from_field(&text).is_ok());
+    held(&grace, &tree, room);
+    let arrivals = until("Grace to arrive in the Lounge", || {
+        grace.tick();
+        Some(grace.take_arrivals()).filter(|arrivals| !arrivals.is_empty())
+    });
+    assert_eq!(
+        arrivals,
+        vec![hosted_sites::Arrival {
+            room,
+            app: Some(CHAT.into()),
+        }],
+        "she arrives in the Lounge's Chat, once"
+    );
+    assert!(grace.take_arrivals().is_empty());
+    drop(grace);
+    site.shutdown();
+}
+
 #[test]
 #[serial_test::serial]
 fn an_invitation_only_site_says_so() {

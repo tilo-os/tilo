@@ -92,6 +92,24 @@ impl ShellNetwork {
         }
         if let Some((local, invitation)) = self.retained_join(room)? {
             let via = self.route_to(room)?;
+            // Trying again arrives where the join first chose to; a join
+            // from before arrivals were kept chooses now.
+            if !self.hosted_sites.expects_arrival(room) {
+                let hosted = self.hosted_sites.hosted(room);
+                let hosts: Vec<[u8; 32]> = hosted
+                    .as_ref()
+                    .and_then(|hosted| hex::decode(hosted.host.as_deref()?).ok()?.try_into().ok())
+                    .into_iter()
+                    .collect();
+                self.expect_arrival(
+                    room,
+                    &super::site_join::Arriving {
+                        site: hosted.as_ref().and_then(|hosted| hosted.app.as_deref()),
+                        hosts: &hosts,
+                        ..Default::default()
+                    },
+                );
+            }
             self.hosted_sites.set_join(SiteJoinState {
                 room,
                 site: self
