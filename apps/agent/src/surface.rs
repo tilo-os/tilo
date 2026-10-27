@@ -569,6 +569,29 @@ pub enum NoMatch {
     NeedsText(String),
 }
 
+impl NoMatch {
+    /// Why no single action answered the request, as a person reads it: what
+    /// the words did not settle, named where naming it is actionable.
+    #[must_use]
+    pub fn explanation(&self) -> String {
+        match self {
+            Self::Nothing => "No published action carries the words of the request.".to_owned(),
+            Self::Ambiguous(labels) if labels.is_empty() => {
+                "More than one published action answers it.".to_owned()
+            }
+            Self::Ambiguous(labels) => {
+                format!(
+                    "More than one published action answers it: {}.",
+                    labels.join(", ")
+                )
+            }
+            Self::NeedsText(label) => {
+                format!("“{label}” needs the text to work with, and the request quotes none.")
+            }
+        }
+    }
+}
+
 /// The floor: what the agent decides on its own when no model answered.
 ///
 /// A keyword vocabulary cannot enumerate an open-ended action set, so this
