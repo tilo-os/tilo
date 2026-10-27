@@ -44,20 +44,19 @@ fn the_preview_follows_the_inputs_and_undo_reverts() {
     assert_eq!(App::label(&app.state()), "Untitled document");
 }
 
-/// Clearing is destructive, so it needs confirmation; the document is stored
-/// and survives a relaunch.
+/// Clearing is destructive but Undo takes it back, so it runs at once and
+/// undo restores the document; the document is stored and survives a
+/// relaunch.
 #[test]
-fn clearing_needs_confirmation_and_the_document_survives_a_relaunch() {
+fn clearing_runs_at_once_with_undo_and_the_document_survives_a_relaunch() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.invoke(Document::SET_CONTENT.with(("Plan".into(), "Ship it".into())))
         .expect("set content");
-    assert!(
-        app.invoke(Document::CLEAR.invoke()).is_err(),
-        "a destructive action needs confirmation"
-    );
-    let mut app = app.reopen().expect("the app reopens");
-    assert_eq!(app.state().body, "Ship it");
-    app.invoke_confirmed(Document::CLEAR.invoke())
-        .expect("a confirmed clear");
+    app.invoke(Document::CLEAR.invoke())
+        .expect("an undoable clear asks nothing");
     assert_eq!(app.state(), Document::default());
+    assert!(app.undo(), "the clear is undoable");
+    assert_eq!(app.state().body, "Ship it");
+    let app = app.reopen().expect("the app reopens");
+    assert_eq!(app.state().body, "Ship it");
 }
