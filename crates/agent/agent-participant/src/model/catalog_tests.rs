@@ -359,6 +359,51 @@ fn mode_all_tells_the_reference_as_system_content() {
     assert!(used.listed.is_empty());
 }
 
+/// An operation the reference describes is named in the list of what is
+/// published without its signature again (`<resource># a, b`), and may be
+/// planned; one whose record publishes other parameters or choices than
+/// the reference shows (its own sheets) is listed in full.
+#[test]
+fn the_published_list_does_not_repeat_what_the_reference_describes() {
+    use tilo_actions::{ActionParam, ParamType};
+    for catalog in [Catalog::All, Catalog::Relevant] {
+        let mut context = casework();
+        context.catalog = catalog;
+        let sheet = |choices: &[&str]| {
+            let mut set = operation(
+                "sheets.workbook",
+                "set-cells",
+                tilo_actions::OperationKind::Document,
+                vec![
+                    ActionParam::required("sheet", ParamType::Text, "The sheet")
+                        .with_choices(choices.iter().map(|choice| (*choice).to_owned())),
+                ],
+            );
+            set.description = None;
+            set
+        };
+        context.reference[4].1 = vec![sheet(&[])];
+        context
+            .open
+            .push((route(SHEETS, "w1"), vec![sheet(&["Cases"])]));
+        let (request, _) = first_request(CASE_TASK, &context);
+        let turn = first_user_text(&request);
+        assert!(turn.contains("  chat.channel# post, rename\n"), "{turn}");
+        assert!(!turn.contains("chat.channel#post — "), "{turn}");
+        assert!(
+            turn.contains("  sheets.workbook#set-cells — set-cells {sheet: text [Cases]}"),
+            "{turn}"
+        );
+        assert!(turn.contains("names operations whose parameters are described"));
+    }
+    // A plan naming a compacted operation runs.
+    let post = serde_json::json!({"steps": [{"operation": "chat.channel#post",
+        "arguments": {}}], "reply": "Posted."});
+    let (mut planner, _) = scripted(vec![called("p1", tilo_agent::tools::PLAN, &post)], false);
+    let steps = planner.plan(CASE_TASK, &casework()).unwrap();
+    assert_eq!(steps[0].record.as_deref(), Some("c1"));
+}
+
 /// What a new record of `app` publishes.
 fn survey(app: &str) -> Vec<ActionDescriptor> {
     crate::worker::ConfinedReplica::open(

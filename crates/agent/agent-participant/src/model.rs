@@ -78,9 +78,10 @@ pub struct Briefing {
     /// model is offered `describe_operation` for them.
     pub left_out: bool,
     /// The operations the reference describes in full, by app, resource
-    /// kind and operation name: the list of what is published names them
-    /// without repeating their parameters.
-    pub described: std::collections::BTreeSet<(String, String, String)>,
+    /// kind and operation name, with the signature of their parameters:
+    /// the list of what is published names one whose signature is the same
+    /// without repeating it.
+    pub described: BTreeMap<(String, String, String), String>,
     /// The prompt-cache routing key every planning request in the room
     /// shares, so its agents' requests reach the cache their common prefix
     /// is in.

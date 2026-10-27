@@ -9,7 +9,7 @@ use tilo_relay_protocol::agents::TaskState;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use super::{
-    CANVAS, CHAT, MESSAGES, SHEETS, endpoint_planner, enrol, message_text, model_endpoint,
+    CANVAS, CHAT, MESSAGES, SHEETS, endpoint_planner, enrol, message_text, model_endpoint, offers,
     planning_agent, run_task, set_cells_plan, start_host, steward, tool_call,
 };
 
@@ -106,7 +106,11 @@ async fn a_task_is_told_its_apps_in_full_and_looks_up_another() {
         );
     }
     assert!(reference.contains(&format!("## {SHEETS}\n")), "{reference}");
-    assert!(turn.contains(set_cells), "{turn}");
+    assert!(offers(&turn, set_cells), "{turn}");
+    assert!(
+        reference.contains(&format!("{set_cells} — ")),
+        "{reference}"
+    );
     for left in [CANVAS, NOTES] {
         assert!(
             !reference.contains(&format!("## {left}\n")),

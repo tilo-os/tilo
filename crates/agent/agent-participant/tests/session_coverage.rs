@@ -886,6 +886,23 @@ fn first_turn(request: &serde_json::Value) -> String {
         .unwrap_or_default()
 }
 
+/// Whether `turn` offers the operation `id` (`<resource>#<action>`): on a
+/// line of its own, or named in its resource's line of the operations the
+/// reference describes in full already (`<resource># a, b`).
+fn offers(turn: &str, id: &str) -> bool {
+    let Some((resource, action)) = id.split_once('#') else {
+        return false;
+    };
+    let line = format!("{resource}# ");
+    turn.contains(&format!("{id} — "))
+        || turn.lines().any(|named| {
+            named
+                .trim_start()
+                .strip_prefix(&line)
+                .is_some_and(|names| names.split(", ").any(|name| name == action))
+        })
+}
+
 /// Run `text` as a task of `agent` to its end.
 fn run_task(
     agent: &mut AgentParticipant,
@@ -956,7 +973,7 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
     let turn = first_turn(&first);
     // The task names Sheets, which the room has no record of: one is made
     // before the plan, so its operations are listed and nothing is opened.
-    assert!(turn.contains(set_cells), "{turn}");
+    assert!(offers(&turn, set_cells), "{turn}");
     assert!(!turn.contains("app.so.tilo.sheets#open"), "{turn}");
 
     agent.close();
@@ -1025,10 +1042,15 @@ async fn a_view_is_read_in_the_planning_conversation() {
     assert_eq!(requests.len(), 2, "a read and a plan, no re-plan");
     let turn = first_turn(&requests[0]);
     assert!(
-        turn.contains("canvas.artwork#draw")
+        offers(&turn, "canvas.artwork#draw")
             && turn.contains(&format!("(document {})", canvas.record))
             && turn.contains("canvas.artwork#inspect answered"),
-        "the first turn shows draw in full and what the artwork holds: {turn}"
+        "the first turn offers draw and shows what the artwork holds: {turn}"
+    );
+    let reference = message_text(&requests[0]["messages"][1]);
+    assert!(
+        reference.contains("canvas.artwork#draw — "),
+        "draw in full before it: {reference}"
     );
     let read = requests[1]["messages"]
         .as_array()

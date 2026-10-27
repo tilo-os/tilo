@@ -33,8 +33,9 @@ pub struct Section {
     pub text: String,
     /// The ids it shows that a plan may name now: those offered.
     pub shown: Vec<String>,
-    /// The operations it describes, by resource kind and name.
-    pub described: Vec<(String, String)>,
+    /// The operations it describes, by resource kind and name, with the
+    /// signature of their parameters.
+    pub described: Vec<(String, String, String)>,
     /// How many operations it left out, over the budget.
     pub left_out: usize,
     /// The resources and resource kinds its operations act on, by which an
@@ -104,6 +105,7 @@ pub(crate) fn app_section(
         section.described.push((
             offer.descriptor.resource_kind.clone(),
             offer.descriptor.address.action.clone(),
+            tilo_agent::tools::parameter_signature(&offer),
         ));
         if offered.contains(&id) {
             section.shown.push(id);
@@ -136,12 +138,14 @@ pub(crate) fn describe(briefing: &mut Briefing, app: &str, section: &Section, in
         );
     }
     briefing.shown.extend(section.shown.iter().cloned());
-    briefing.described.extend(
-        section
-            .described
-            .iter()
-            .map(|(kind, action)| (app.to_owned(), kind.clone(), action.clone())),
-    );
+    briefing
+        .described
+        .extend(section.described.iter().map(|(kind, action, signature)| {
+            (
+                (app.to_owned(), kind.clone(), action.clone()),
+                signature.clone(),
+            )
+        }));
     briefing.described_apps.push(app.to_owned());
 }
 
