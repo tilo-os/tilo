@@ -213,7 +213,9 @@ impl ContentDamage {
             .filter(|(placed, _)| *placed == placement)
             .and_then(|(_, before)| {
                 let (_, after) = self.painted.as_ref()?;
-                Some(crate::damage::changed_boxes(&before, after))
+                Some(crate::damage::changed_boxes_besides_own_damage(
+                    app, &before, after,
+                ))
             });
         let Some(moved) = moved.filter(|_| !presence.places_content_marks(crate::time::now()))
         else {

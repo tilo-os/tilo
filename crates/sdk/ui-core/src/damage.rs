@@ -96,7 +96,6 @@ pub(crate) fn widget_boxes(root: &dyn crate::widget::Widget) -> Vec<(WidgetIdent
 
 /// Every widget whose own damage covers a change to its box this frame
 /// ([`crate::widget::Widget::damage_covers_own_box`]), by identity as [`widget_boxes`] has it.
-#[cfg(feature = "native")]
 pub(crate) fn boxes_covered_by_own_damage(
     root: &dyn crate::widget::Widget,
 ) -> std::collections::HashSet<WidgetIdentity> {
@@ -140,6 +139,32 @@ pub(crate) fn changed_boxes(
             .map(|(_, rect)| *rect),
     );
     changed
+}
+
+/// [`changed_boxes`], leaving the box of a widget whose own damage this
+/// draw covers where its box was and is (a block editor that grew by a
+/// paragraph) to that damage; its children's boxes still count.
+pub(crate) fn changed_boxes_besides_own_damage(
+    root: &dyn crate::widget::Widget,
+    before: &[(WidgetIdentity, Rect)],
+    after: &[(WidgetIdentity, Rect)],
+) -> Vec<Rect> {
+    let moved = changed_boxes(before, after);
+    if moved.is_empty() {
+        return moved;
+    }
+    let covered = boxes_covered_by_own_damage(root);
+    if covered.is_empty() {
+        return moved;
+    }
+    let uncovered = |boxes: &[(WidgetIdentity, Rect)]| -> Vec<_> {
+        boxes
+            .iter()
+            .filter(|(widget, _)| !covered.contains(widget))
+            .copied()
+            .collect()
+    };
+    changed_boxes(&uncovered(before), &uncovered(after))
 }
 
 #[cfg(test)]
