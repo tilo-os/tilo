@@ -360,10 +360,20 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
 
     /// The live row `id`, when [`live_rows`](Self::live_rows) leaves it out,
     /// so an action addressed to any entity the surface knows still reaches
-    /// it.
+    /// it. Never reads what the surface reads off the UI thread: a row it
+    /// has not read yet is [`live_row_pending`](Self::live_row_pending).
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         let _ = id;
         None
+    }
+
+    /// Whether the live row `id`, which [`live_row`](Self::live_row) does
+    /// not know now, may be known once what the surface is reading lands:
+    /// an agent addressing it is answered then. Start that read here if it
+    /// has not started; the window must be woken when it lands.
+    fn live_row_pending(&self, id: &str) -> bool {
+        let _ = id;
+        false
     }
 
     /// Whether [`row_declarations`](Self::row_declarations) binds edits on
@@ -462,6 +472,7 @@ pub(crate) trait SurfacePublication {
     fn availability(&self) -> Vec<EffectStatus>;
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
+    fn live_row_pending(&self, id: &str) -> bool;
     /// Whether the surface binds edits on rows at all
     /// ([`ResourceSurface::ROW_DECLARATIONS`]).
     fn binds_rows(&self) -> bool;
@@ -1258,6 +1269,9 @@ impl SurfacePublication for HostedSurface {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.host.live_row(id)
     }
+    fn live_row_pending(&self, id: &str) -> bool {
+        self.host.live_row_pending(id)
+    }
     fn binds_rows(&self) -> bool {
         self.host.binds_rows()
     }
@@ -1343,6 +1357,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublicat
 
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         self.surface.live_row(id)
+    }
+
+    fn live_row_pending(&self, id: &str) -> bool {
+        self.surface.live_row_pending(id)
     }
 
     fn binds_rows(&self) -> bool {

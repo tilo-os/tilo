@@ -7887,7 +7887,39 @@ impl FrameHarness {
 
     /// Invoke `address` as `delivered` says: under its invocation, for its
     /// actor; a fresh invocation by the person at this device without one.
+    /// As the broker's resolution of a resource the app is still reading is
+    /// answered once its read lands
+    /// ([`crate::resources::PublishesResources::resource_pending`]), an
+    /// invocation of one waits for that here, then runs.
     fn invoke_bound_action_for(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        confirmed: bool,
+        ambient: Option<&tilo_actions::ActionContext>,
+        delivered: Option<(tilo_actions::InvocationId, Option<&str>)>,
+    ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
+    {
+        let answered =
+            self.invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered);
+        #[cfg(any(test, feature = "test-support"))]
+        if let Err(crate::bound_dispatch::BoundActionError::Door(tilo_actions::DoorError::Unknown(
+            unknown,
+        ))) = &answered
+            && crate::bound_dispatch::any_resource_pending(self.root.as_ref(), &unknown.resource)
+        {
+            let resource = unknown.resource.clone();
+            self.wait_until(tilo_test_env::hang_bound(), |harness| {
+                !crate::bound_dispatch::any_resource_pending(harness.root.as_ref(), &resource)
+            });
+            return self
+                .invoke_bound_action_resolved(address, arguments, confirmed, ambient, delivered);
+        }
+        answered
+    }
+
+    /// [`Self::invoke_bound_action_for`] with the resource resolved now.
+    fn invoke_bound_action_resolved(
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
