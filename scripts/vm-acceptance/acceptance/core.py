@@ -1276,10 +1276,14 @@ def assert_terminal_shell_performance(seconds: float | None) -> None:
 
 # Terminal's shells are not the app's processes: each runs in a guest the
 # `tilo-ush` user service starts, so they are found in its cgroup.
-_USH_SHELLS = ('cg=$(systemctl --user show -p ControlGroup --value tilo-ush.service 2>/dev/null); '
-               '[ -n "$cg" ] || exit 0; '
-               'for p in $(cat $(find "/sys/fs/cgroup$cg" -name cgroup.procs 2>/dev/null) 2>/dev/null); do '
-               '[ "$(cat /proc/$p/comm 2>/dev/null)" = bash ] && echo "$p"; done; true')
+# A guest's shell is a bash whose ancestors include the `tilo-ush run` that built its guest.
+# It runs as a job of the app that asked for it (the Terminal's cgroup), not in
+# tilo-ush.service's, so it is found by ancestry, not by cgroup.
+_USH_SHELLS = ('for p in $(pgrep -u "$(id -u)" -x bash); do q=$p; '
+               'for _ in 1 2 3 4 5 6; do q=$(awk \'/^PPid:/ {print $2}\' /proc/$q/status 2>/dev/null); '
+               '[ -n "$q" ] && [ "$q" -gt 1 ] || break; '
+               'case "$(tr \'\\0\' \' \' < /proc/$q/cmdline 2>/dev/null)" in *"tilo-ush run"*) echo "$p"; break;; esac; '
+               'done; done; true')
 
 
 def terminal_shells(ctx) -> set[int]:
