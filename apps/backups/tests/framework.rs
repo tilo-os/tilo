@@ -225,6 +225,8 @@ fn the_window_bars_sidebar_button_flips_the_sidebar() {
         ui::framework::testing::TestApp::<BackupsShell>::drive("status")
     })
     .unwrap_or_else(|error| panic!("{error}"));
+}
+
 /// A backup is a job in the registry, with a body the person can read: what it
 /// was doing, and how it ended.
 #[test]
