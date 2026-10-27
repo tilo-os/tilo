@@ -105,9 +105,11 @@ impl ShellNetwork {
         background: bool,
     ) -> Result<Option<SiteJoin>, SiteError> {
         if tree.read().holds_room(room) {
+            self.arrive_elsewhere(room, background);
             return Ok(Some(SiteJoin::Held { room }));
         }
         if let Some((local, enrollment)) = self.enrolling_site_room(room) {
+            self.arrive_elsewhere(room, background);
             return Ok(Some(SiteJoin::Enrolling {
                 room,
                 local,
@@ -142,7 +144,9 @@ impl ShellNetwork {
     }
 
     /// Join the workspace a site's entry named; its enrollment installs in
-    /// the `background`, else by its caller.
+    /// the `background`, else by its caller. The person arrives in the
+    /// workspace once it installs, as someone following a site link does: a
+    /// join is entered on the site, not from a list that would show it.
     pub(super) fn join_site_workspace(
         &self,
         site: &SiteWorkspace,
@@ -211,7 +215,7 @@ impl ShellNetwork {
             .join_native_room(&site.name, room)
             .ok_or_else(|| SiteError::Refused("the door named a room that is not joined".into()))?;
         tracing::info!(%room, name = %site.name, "joining a site's workspace");
-        self.enroll_site(
+        let joined = self.enroll_site(
             site,
             SiteEnrollment {
                 room,
@@ -220,7 +224,16 @@ impl ShellNetwork {
                 via,
             },
             background,
-        )
+        )?;
+        if let SiteJoin::Enrolling { enrollment, .. } = joined
+            && !background
+            && self.poll_enrollment(enrollment).is_ok()
+        {
+            // Its caller installs the enrollment, so the workspace is here
+            // now: the person arrives in it as from a site link.
+            self.hosted_sites.arrive(room);
+        }
+        Ok(joined)
     }
 
     /// Redeem `enrollment`'s invitation into its slot, and say that the
@@ -278,6 +291,15 @@ impl ShellNetwork {
     /// joining, or failed and why.
     pub(crate) fn site_joins(&self) -> Vec<SiteJoinState> {
         self.hosted_sites.joins()
+    }
+
+    /// Arrive in `room` when its caller installs the enrollment itself: a
+    /// join installing in the background arrives through
+    /// [`Self::take_arrivals`] like any other.
+    fn arrive_elsewhere(&self, room: RoomId, background: bool) {
+        if !background {
+            self.hosted_sites.arrive(room);
+        }
     }
 
     /// The site workspaces whose joins installed since this was last asked:
@@ -353,8 +375,10 @@ impl ShellNetwork {
 
     /// An enrollment into `room`'s workspace `local` ended: installed, or
     /// failed with its error, which is logged as the failure it is. A
-    /// workspace held through the web that installed is arrived in; one
-    /// that failed stays, saying why, for the person to try again.
+    /// workspace that installed is arrived in, whether it was reached
+    /// through a site or an invitation alone, in the app its site names when
+    /// it has one; one that failed stays, saying why, for the person to try
+    /// again.
     pub(super) fn enrollment_ended(
         &self,
         room: RoomId,
@@ -364,9 +388,7 @@ impl ShellNetwork {
         match outcome {
             Ok(()) => {
                 self.hosted_sites.end_join(room);
-                if self.hosted_sites.hosted(room).is_some() {
-                    self.hosted_sites.arrive(room);
-                }
+                self.hosted_sites.arrive(room);
             }
             Err(error) => {
                 tracing::error!(%room, %error, "a workspace was not enrolled");

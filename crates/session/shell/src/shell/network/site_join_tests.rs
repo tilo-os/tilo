@@ -402,6 +402,27 @@ impl Site {
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
     }
 
+    /// The text of an invitation the host issues here to whoever holds it,
+    /// as a room's owner shares one: no site stands behind it.
+    fn invite_text(&self) -> String {
+        let issued = self
+            .runtime
+            .block_on(self.relay().rooms().unwrap().issue(
+                &self.room,
+                &self.host_cert,
+                tilo_peer_state::join::invitations::IssueInvitationRequest {
+                    request_id: random(),
+                    role: tilo_peer_state::join::MemberRole::Editor,
+                    recipient_user_public_key: None,
+                    invitee_name: None,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                    inviter_name: Some("Ada".into()),
+                },
+            ))
+            .unwrap();
+        tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation)
+    }
+
     /// Whether `user` is a member of the room by its governance.
     pub(super) fn member(&self, user: [u8; 32]) -> bool {
         self.runtime
@@ -630,6 +651,42 @@ fn a_link_to_a_sites_workspace_joins_it_and_the_join_field_takes_the_site() {
         "the site's workspace is held already"
     );
     drop(net);
+    site.shutdown();
+}
+
+/// An invitation typed into the join field is an invitation alone: no site
+/// stands behind it, yet the person still arrives in the workspace it
+/// joined, as from a site link. An arrival carries no app to open, so the
+/// workspace is what they land in.
+#[test]
+#[serial_test::serial]
+fn a_workspace_joined_from_an_invitation_alone_is_arrived_in() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let site = Site::start(dir.path());
+    let room = RoomId::parse(&site.room).unwrap();
+    let ada = key(1);
+    let (net, tree) = computer(&dir.path().join("computer"), ada.clone(), "Ada's computer");
+    let text = site.invite_text();
+    let announced = net.join_from_field(&text);
+    assert!(
+        matches!(
+            announced,
+            Ok(
+                super::super::peer_sync_overlay::PeerSyncResponse::EnrollmentPending { .. }
+                    | super::super::peer_sync_overlay::PeerSyncResponse::EnrollmentJoined { .. }
+            )
+        ),
+        "{announced:?}"
+    );
+    held(&net, &tree, room);
+    let arrivals = net.take_arrivals();
+    assert_eq!(
+        arrivals,
+        vec![hosted_sites::Arrival { room, app: None }],
+        "the invitation's workspace is arrived in, once"
+    );
+    assert!(net.take_arrivals().is_empty());
     site.shutdown();
 }
 
