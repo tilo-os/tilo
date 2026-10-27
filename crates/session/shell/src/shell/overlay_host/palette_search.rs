@@ -561,7 +561,7 @@ impl ShellOverlayHost {
             return groups;
         }
         self.note_present_kinds(&groups);
-        ui::search::system::trim_groups(
+        self.search_registry.trim_groups(
             groups,
             self.palette.entry_row_capacity(),
             &self.expanded_kinds,

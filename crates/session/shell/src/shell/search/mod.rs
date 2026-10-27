@@ -15,6 +15,7 @@ pub mod action_api;
 pub mod app_content_index;
 #[cfg(test)]
 mod fallback_tests;
+mod fallbacks;
 pub mod files_index;
 pub mod invocation_wake;
 pub mod launcher;
@@ -1651,7 +1652,7 @@ impl SearchRegistry {
                 };
                 if interactive
                     && !direct
-                    && directly_matched(provider, &r, needle, top, intent + chosen)
+                    && fallbacks::directly_matched(provider, &r, needle, top, intent + chosen)
                 {
                     direct = true;
                 }
@@ -1869,14 +1870,15 @@ impl SearchRegistry {
                 (heading, row)
             })
             .collect();
-        system::group_by_kind(ranked, |(heading, _)| heading, row_budget)
+        let groups = system::group_by_kind(ranked, |(heading, _)| heading, 0)
             .into_iter()
             .map(|group| KindGroup {
                 kind: group.kind,
                 total: group.total,
                 results: group.results.into_iter().map(|(_, row)| row).collect(),
             })
-            .collect()
+            .collect();
+        self.trim_groups(groups, row_budget, &[])
     }
 }
 
@@ -1963,54 +1965,6 @@ fn window_intent(needle: &str, row: &SearchResult, top: i32) -> f32 {
 )]
 fn loose_share() -> f32 {
     provider_score(tilo_search::SPANNING_RANK) as f32 / system::MAX_PROVIDER_SCORE as f32
-}
-
-/// Whether `row` matches `needle` directly, as a thing the person named:
-/// an app, an action or a window, which are found only by their names
-/// (however loosely: a typo, initials, a word they are known by); a row its
-/// provider ranks in the upper half of its scale, which is how a provider
-/// says the query named it rather than something inside it; a row whose
-/// title or another of its names ([`SearchProvider::match_reason`]) the
-/// whole query fits, or whose title and subtitle show every word of it; or
-/// a row the query names some other way the merge already credits
-/// (`boost`: a service it searches, an open window it names, the row
-/// chosen for this text before). Content found only by what is inside it,
-/// or by a stray word of a longer sentence, is not.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "provider scores are small integers"
-)]
-fn directly_matched(
-    provider: &dyn SearchProvider,
-    row: &SearchResult,
-    needle: &str,
-    top: i32,
-    boost: f32,
-) -> bool {
-    /// The share of its provider's scale from which a row was named.
-    const NAMED_SHARE: f32 = 0.5;
-    use ui::search::FieldWeight;
-    let named = |name: &str| system::lexical_strength(needle, &row.kind, name, None) > 0.0;
-    let shown = |word: &str| {
-        tilo_search::locate(word, &row.title, FieldWeight::TITLE).is_some()
-            || row.subtitle.as_deref().is_some_and(|subtitle| {
-                tilo_search::locate(word, subtitle, FieldWeight::SUBTITLE).is_some()
-            })
-    };
-    boost > 0.0
-        || matches!(
-            row.kind,
-            ResourceKind::Application
-                | ResourceKind::Action
-                | ResourceKind::Tab
-                | ResourceKind::WindowGroup
-        )
-        || row.score as f32 / top.max(1) as f32 >= NAMED_SHARE
-        || named(&row.title)
-        || needle.split_whitespace().all(shown)
-        || provider
-            .match_reason(row, needle)
-            .is_some_and(|name| named(&name))
 }
 
 /// Whether `row` matched `needle` only loosely: by a typo, with nothing of
