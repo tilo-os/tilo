@@ -6,15 +6,14 @@ use std::time::{Duration, Instant};
 
 use super::paint;
 use super::paint::BridgePhaseTiming;
+use super::runtime::ScanoutCommand;
 use super::scanout;
 use super::{
-    DIRECT_RETIREMENT_TIMEOUT, DirectOutcome, DirectRender, DrmPresenter, FlipVblank, OutputId,
-    OwedFlip, PaintScanoutSample, ScanoutFrame, demote_direct, direct_failures, direct_reason,
-    direct_status, fastest_direct_refresh, flip_wait, paint_scanouts, physical_flip_proof,
-    publish_client_planes, quiesce_presentations, refresh_of, report_signal_status,
+    DirectOutcome, DirectRender, DrmPresenter, FlipVblank, FlipWait, OutputId, OwedFlip,
+    PaintScanoutSample, ScanoutFrame, demote_direct, direct_failures, direct_reason, direct_status,
+    fastest_direct_refresh, flip_wait, paint_scanouts, physical_flip_proof, publish_client_planes,
+    quiesce_presentations, refresh_of, report_signal_status, route_flip_completions,
 };
-use crate::compositor::frame::FramePaint;
-use crate::compositor::present::Presenter;
 use tilo_lock::MutexRecover as _;
 
 impl DrmPresenter {

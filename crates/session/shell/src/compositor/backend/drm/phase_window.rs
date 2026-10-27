@@ -3,13 +3,11 @@
 
 use std::time::{Duration, Instant};
 
-use super::paint;
-
 /// How often the presenter reports its frame timing.
 const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
-struct PhaseWindow {
+pub(super) struct PhaseWindow {
     started: Instant,
     frames: u64,
     direct_frames: u64,
@@ -51,6 +49,7 @@ struct PhaseWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compositor::backend::drm::paint;
 
     fn timing(value: u64) -> paint::BridgePhaseTiming {
         paint::BridgePhaseTiming {
