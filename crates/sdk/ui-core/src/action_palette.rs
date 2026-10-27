@@ -3391,12 +3391,9 @@ impl Widget for ActionPalette {
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
                 .with_name(self.confirm.as_ref().map_or_else(
-                    || {
-                        if self.in_argument_mode() {
-                            "Action confirmation"
-                        } else {
-                            "Search"
-                        }
+                    || match self.in_argument_mode() {
+                        true => "Action confirmation",
+                        false => "Search",
                     },
                     |confirm| confirm.question.as_str(),
                 ))
