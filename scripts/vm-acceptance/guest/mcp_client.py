@@ -29,7 +29,9 @@ PROTOCOL = "2025-06-18"
 # The note the agent makes, found again by its title (ACC_MCP_TITLE from the harness).
 TITLE = os.environ.get("ACC_MCP_TITLE", "Acceptance agent note")
 # How long an app's directory may take to appear on the door after it opens.
-LISTED_S = 20.0
+LISTED_S = float(os.environ.get("ACC_MCP_LISTED_S", "20"))
+# How long a server may take to exit once its stdin closes, before it is killed.
+CLOSE_S = float(os.environ.get("ACC_MCP_CLOSE_S", "5"))
 
 
 def daemons() -> set[int]:
@@ -117,7 +119,7 @@ class Client:
         try:
             # Drain stdout too: a server may finish by writing notifications.
             self.proc.stdin = None
-            self.proc.communicate(timeout=5)
+            self.proc.communicate(timeout=CLOSE_S)
         except subprocess.TimeoutExpired:
             self.proc.kill()
             self.proc.communicate()
@@ -157,7 +159,7 @@ def tool_until(client: Client, name: str, arguments: dict, ready, timeout: float
             return reply
         if not isinstance(reply, dict) or time.monotonic() >= deadline:
             return reply
-        time.sleep(1.0)
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
 
 def initialize(client: Client):

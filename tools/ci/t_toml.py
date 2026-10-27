@@ -87,9 +87,8 @@ GROUP_FIELDS = {
            "needs": ["vm-test-binaries"], "env": {"TILO_STAGING_HANDOFF_BIN": "/target/debug/tilo-staging-handoff"},
            **HEAVY},
     "dist": {"why": "writes under target/ in the source tree", "writable_sources": True},
-    "vm-acceptance": {"why": "writes under target/ in the source tree, and as root gives its probe fixtures "
-                               "another uid, which the capability-less job sandbox cannot",
-                      "writable_sources": True, "isolation": "vm", **HEAVY},
+    "vm-acceptance": {"why": "writes under target/ in the source tree",
+                      "writable_sources": True, **HEAVY},
     "browser-compute-web": {"why": "installs the MoQ library's npm dependencies in scripts/moq-browser",
                             "writable_sources": True, "prepare": "bash tools/ci/prepare-moq-library.sh"},
     "browser-runtime-web": {"why": "builds the MoQ library with npm in scripts/moq-browser",
