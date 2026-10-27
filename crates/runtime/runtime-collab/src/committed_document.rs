@@ -367,8 +367,9 @@ mod tests {
     use super::*;
     #[test]
     fn busy_is_a_tag_of_its_own_after_every_earlier_reply() {
-        assert_eq!(Reply::Busy.encode().unwrap(), [11]);
-        assert_eq!(Reply::decode(&[11]).unwrap(), Reply::Busy);
+        assert_eq!(Reply::Absent.encode().unwrap(), [11]);
+        assert_eq!(Reply::Busy.encode().unwrap(), [12]);
+        assert_eq!(Reply::decode(&[12]).unwrap(), Reply::Busy);
         assert_eq!(Request::Leave.encode().unwrap(), [8]);
         assert_eq!(Request::decode(&[8]).unwrap(), Request::Leave);
     }
