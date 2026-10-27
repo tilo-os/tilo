@@ -7,10 +7,20 @@ use crate::html::Document;
 
 /// The form its search box submits. Asked by link instead, the endpoint
 /// answers clients without a browser history with a challenge page.
-pub(super) fn request(query: &str) -> Option<EngineRequest> {
+pub(super) fn request(query: &str, safe: super::SafeMode) -> Option<EngineRequest> {
     EngineRequest::post(
         "https://html.duckduckgo.com/html/",
-        &[("q", query), ("b", "")],
+        &[
+            ("q", query),
+            ("b", ""),
+            (
+                "kp",
+                match safe {
+                    super::SafeMode::Off => "-1",
+                    super::SafeMode::Strict => "1",
+                },
+            ),
+        ],
     )
 }
 

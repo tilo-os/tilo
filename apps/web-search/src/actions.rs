@@ -9,15 +9,13 @@
 //! page each, so a search's results are what they answered this time; asking
 //! past the end says so by leaving `next_offset` out.
 //!
-//! `search` also takes `safe_search`. Its default, `off`, is exactly what the
-//! engines are asked with today (Google's own request hard-codes `safe=off`).
-//! `strict` is published because a household or a work profile has to be able
-//! to ask for filtered results, and it is answered with
-//! [`code::SAFE_SEARCH_UNAVAILABLE`] rather than with unfiltered results: the
-//! engine layer builds each engine's request inside
-//! `tilo_web_search::search` and accepts no filter, and asking a site that was
-//! never given one for filtered results would be a claim this service cannot
-//! keep. Wiring `strict` through needs the engine crate to take the choice.
+//! `search` also takes `safe_search`, and the choice reaches every engine's
+//! own request: Google is asked `safe=active`, Bing `adlt=strict`, Brave
+//! `safesearch=strict` and `DuckDuckGo` `kp=1`. A household or work profile
+//! asks for `strict` and gets filtered results. An engine that offers no
+//! filter (Marginalia) is not asked unfiltered: its report says it was
+//! skipped and names it, so the answer never claims a filter it did not
+//! apply while the engines that can honour it still answer.
 //!
 //! ## Why these are reads
 //!
@@ -34,7 +32,9 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use tilo_web_search::{Engine, FetchError, FetchLimits, SearchError, SearchLimits, SearchState};
+use tilo_web_search::{
+    Engine, FetchError, FetchLimits, SafeMode as SafeSearch, SearchError, SearchLimits, SearchState,
+};
 use ui::collaboration::{CollabRequest, ExportedAction, ExportedInput};
 use ui::tilo_actions::contract::{
     AGENTS_AUDIENCE_TAG, ActionContract, ActionKind, ConfirmationPolicy, ExecutionMode, ResultSpec,
@@ -89,9 +89,6 @@ pub mod code {
     pub const TIMED_OUT: &str = "timed_out";
     /// The service is already running as many invocations as it allows.
     pub const BUSY: &str = "busy";
-    /// Filtered results were asked for and this build's engines cannot be
-    /// asked for them.
-    pub const SAFE_SEARCH_UNAVAILABLE: &str = "safe_search_unavailable";
 }
 
 /// A typed failure, boxed so results stay small.
@@ -112,53 +109,7 @@ pub fn failure(code: &str, message: impl Into<String>, retryable: bool) -> Failu
     })
 }
 
-/// What a caller asked the engines to filter out.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SafeSearch {
-    /// No filter: the engines are asked exactly as they are today, which for
-    /// Google means `safe=off`.
-    Off,
-    /// Filtered results were asked for. See the module docs: this build
-    /// answers with [`code::SAFE_SEARCH_UNAVAILABLE`] rather than with
-    /// unfiltered results.
-    Strict,
-}
-
-impl SafeSearch {
-    /// The value as the parameter names it.
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Strict => "strict",
-        }
-    }
-
-    /// The choice named `id`.
-    pub fn from_id(id: &str) -> Option<Self> {
-        [Self::Off, Self::Strict]
-            .into_iter()
-            .find(|safe| safe.id() == id)
-    }
-
-    /// Why this choice cannot be honoured, when it cannot: the engine layer
-    /// takes no filter, so a filtered search is refused rather than answered
-    /// with results nothing filtered.
-    pub fn unavailable(self) -> Option<Failure> {
-        match self {
-            Self::Off => None,
-            Self::Strict => Some(failure(
-                code::SAFE_SEARCH_UNAVAILABLE,
-                "these search engines cannot be asked for filtered results through this \
-                 service's engine layer, which builds every request itself and takes no \
-                 filter; ask again with safe_search \"off\" to search unfiltered",
-                false,
-            )),
-        }
-    }
-}
-
-/// The filter a search is asked for when the caller does not say: what the
-/// engines are asked with today, Google included.
+/// The filter a search is asked for when the caller does not say.
 pub const DEFAULT_SAFE_SEARCH: SafeSearch = SafeSearch::Off;
 
 fn search_params() -> Vec<ActionParam> {
@@ -190,11 +141,10 @@ fn search_params() -> Vec<ActionParam> {
         ActionParam::optional(
             "safe_search",
             ParamType::Text,
-            "Whether to ask for filtered results. `off`, the default, is what the engines \
-             are asked with today (Google is asked with safe=off). `strict` asks for \
-             filtered results and is refused with safe_search_unavailable: the engine \
-             layer builds every request itself and accepts no filter, and unfiltered \
-             results are never returned for a filtered request.",
+            "Whether to ask for filtered results. `off`, the default, asks for \
+             unfiltered results. `strict` is honoured by every engine that offers a \
+             filter; an engine that cannot filter (Marginalia) is named as skipped in \
+             the answer's engines list rather than asked unfiltered.",
         )
         .with_schema(json!({"type": "string", "enum": ["off", "strict"]})),
         ActionParam::optional(
@@ -532,14 +482,7 @@ pub async fn run(
             offset,
             engines,
             safe,
-        } => {
-            // The choice reaches the engine layer's one doorway here; where it
-            // cannot be honoured the call fails rather than lying downward.
-            if let Some(gap) = safe.unavailable() {
-                return Err(gap);
-            }
-            search(client, state, &query, count, offset, &engines, safe).await?
-        }
+        } => search(client, state, &query, count, offset, &engines, safe).await?,
         Call::Fetch {
             url,
             offset,
@@ -564,7 +507,7 @@ async fn search(
     let limits = SearchLimits::default();
     let searched = tokio::time::timeout(
         SEARCH_TIMEOUT,
-        tilo_web_search::search(client, state, query, engines, &limits),
+        tilo_web_search::search(client, state, query, engines, safe, &limits),
     )
     .await
     .map_err(|_| failure(code::TIMED_OUT, "the search engines took too long", true))?;
@@ -1007,11 +950,10 @@ mod tests {
         assert!(past.get("next_offset").is_none());
     }
 
-    /// A filtered search is refused, never answered with unfiltered results:
-    /// the engine layer builds each request itself and accepts no filter, so
-    /// `safe_search: "off"` is the only choice this build can keep.
+    /// A filtered search is honoured: the choice is bound and reaches the
+    /// engine layer, where each engine's own request carries it.
     #[test]
-    fn a_filtered_search_is_refused_rather_than_answered_unfiltered() {
+    fn a_filtered_search_is_honoured_by_the_engine_layer() {
         let call = bind(
             RESOURCE_ID,
             SEARCH_ACTION,
@@ -1025,23 +967,45 @@ mod tests {
                 ..
             }
         ));
-        let client = tilo_web_search::client().expect("the HTTP client");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("a runtime");
-        let Err(error) = runtime.block_on(run(&client, &SearchState::default(), call)) else {
-            panic!("a filtered search is refused");
-        };
-        assert_eq!(error.code, code::SAFE_SEARCH_UNAVAILABLE);
-        assert!(!error.retryable, "asking again changes nothing");
+        assert_eq!(SafeSearch::Strict.id(), "strict");
+        assert_eq!(SafeSearch::from_id("strict"), Some(SafeSearch::Strict));
+        // Each engine that offers a filter builds its own request with it.
+        for engine in [
+            tilo_web_search::Engine::Google,
+            tilo_web_search::Engine::Bing,
+            tilo_web_search::Engine::Brave,
+            tilo_web_search::Engine::DuckDuckGo,
+        ] {
+            assert!(engine.filters(), "{engine}");
+            let request = engine.request("x", SafeSearch::Strict).unwrap();
+            let asked = request
+                .form
+                .as_ref()
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .map(|(k, v)| ((*k).to_owned(), v.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| {
+                    request
+                        .url
+                        .query_pairs()
+                        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                        .collect()
+                });
+            assert!(
+                asked.iter().any(|(key, value)| {
+                    matches!(key.as_str(), "safe" | "adlt" | "safesearch" | "kp")
+                        && matches!(value.as_str(), "active" | "strict" | "1")
+                }),
+                "{engine} was not asked to filter"
+            );
+        }
         assert!(
-            error.message.contains("safe_search"),
-            "the refusal names the parameter to change: {}",
-            error.message
+            !tilo_web_search::Engine::Marginalia.filters(),
+            "an engine with no filter says so instead of being asked unfiltered"
         );
-        // The default choice is the one the engines are actually asked with.
         assert_eq!(DEFAULT_SAFE_SEARCH, SafeSearch::Off);
-        assert!(SafeSearch::Off.unavailable().is_none());
     }
 }

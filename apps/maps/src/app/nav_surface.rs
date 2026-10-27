@@ -2,8 +2,8 @@
 
 use super::{
     Affine, Button, ButtonFace, ButtonRole, ControlSize, Hit, Icon, MapsApp, PaintCtx, Point,
-    PropertyListFace, PropertyRow, Rect, Scene, TextKind, TextRenderer, TextRole, Theme, draw, geo,
-    on_panel,
+    PropertyListFace, PropertyRow, Rect, Scene, TextKind, TextRenderer, TextRole, Theme, draw,
+    failure, geo, on_panel,
 };
 
 impl MapsApp {
@@ -43,7 +43,8 @@ impl MapsApp {
 
         // The next instruction: its manoeuvre icon and the instruction across
         // the card's width; the distance to it on the line below.
-        let end_face = ButtonFace::new(Rect::ZERO, "End").control_size(ControlSize::Small);
+        let end_label = failure::t("maps-end");
+        let end_face = ButtonFace::new(Rect::ZERO, &end_label).control_size(ControlSize::Small);
         let end_w = end_face.intrinsic_width(tr, theme);
         let end_h = ButtonFace::height(ControlSize::Small, theme);
         let row = Rect::new(
@@ -57,7 +58,10 @@ impl MapsApp {
         ui::surface::floating_drag_grip(ctx.scene, visual, rect, ink.text_tertiary);
         let instruction = route.steps.first();
         let icon = instruction.map_or(Icon::ArrowUp, |step| step.maneuver.icon());
-        let text = instruction.map_or("Continue on the route", |step| step.instruction.as_str());
+        let default_instruction = failure::t("maps-continue-on-route");
+        let text = instruction.map_or(default_instruction.as_str(), |step| {
+            step.instruction.as_str()
+        });
         let icon_side = f64::from(theme.tokens.metrics.icon_lg);
         let icon_rect = Rect::new(
             row.x0,
@@ -114,7 +118,10 @@ impl MapsApp {
             &duration_style,
             ink.text_primary,
         );
-        let remaining = format!("{} to go", geo::fmt_distance(route.distance_m));
+        let remaining = failure::t_args(
+            "maps-remaining",
+            &[("distance", geo::fmt_distance(route.distance_m).into())],
+        );
         let rem_top = summary_y + draw::baseline(ctx.text, &duration, &duration_style)
             - draw::baseline(ctx.text, &remaining, &numeric_caption);
         let rem_x = summary.x0 + draw::measure_w(ctx.text, &duration, &duration_style) + s2;
@@ -137,7 +144,7 @@ impl MapsApp {
             visual,
             ctx.text,
             &ink,
-            &ButtonFace::new(end, "End")
+            &ButtonFace::new(end, &end_label)
                 .control_size(ControlSize::Small)
                 .hovered(self.navigation_end_hovered),
         );
@@ -171,18 +178,22 @@ impl MapsApp {
         let pad = s4;
 
         // The facts OpenStreetMap has for this place.
+        let address_label = failure::t("maps-address");
+        let hours_label = failure::t("maps-hours");
+        let phone_label = failure::t("maps-phone");
+        let website_label = failure::t("maps-website");
         let mut facts: Vec<PropertyRow<'_>> = Vec::new();
         if !poi.address.is_empty() {
-            facts.push(PropertyRow::new("Address", &poi.address));
+            facts.push(PropertyRow::new(&address_label, &poi.address));
         }
         if let Some(hours) = &poi.opening_hours {
-            facts.push(PropertyRow::new("Hours", hours));
+            facts.push(PropertyRow::new(&hours_label, hours));
         }
         if let Some(phone) = &poi.phone {
-            facts.push(PropertyRow::new("Phone", phone).with_kind(TextKind::Numeric));
+            facts.push(PropertyRow::new(&phone_label, phone).with_kind(TextKind::Numeric));
         }
         if let Some(web) = &poi.website {
-            facts.push(PropertyRow::new("Website", web).with_kind(TextKind::Identifier));
+            facts.push(PropertyRow::new(&website_label, web).with_kind(TextKind::Identifier));
         }
         let properties = PropertyListFace::new(&facts);
 
@@ -223,7 +234,7 @@ impl MapsApp {
         self.icon_button(
             &mut PaintCtx::new(scene, t, tr, &ink),
             close,
-            (Icon::X, "Close"),
+            (Icon::X, &failure::t("maps-close")),
             ButtonRole::Plain,
             false,
             Hit::ClosePoi,
@@ -258,7 +269,7 @@ impl MapsApp {
         let btn = Rect::new(x, y, right, y + button_h);
         self.text_button(
             &mut PaintCtx::new(scene, t, tr, &ink),
-            ButtonFace::new(btn, "Directions").role(ButtonRole::Primary),
+            ButtonFace::new(btn, &failure::t("maps-directions")).role(ButtonRole::Primary),
             btn,
             Some(Hit::PoiDirections),
         );

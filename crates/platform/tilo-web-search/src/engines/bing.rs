@@ -8,8 +8,12 @@ use url::Url;
 use super::{EngineError, EngineRequest, EngineResult, Layout, Query, query_param};
 use crate::html::{Document, NodeId, Selector, collapse_whitespace};
 
-pub(super) fn request(query: &str) -> Option<EngineRequest> {
+pub(super) fn request(query: &str, safe: super::SafeMode) -> Option<EngineRequest> {
     let cvid = conversation_id();
+    let filter = match safe {
+        super::SafeMode::Off => "off",
+        super::SafeMode::Strict => "strict",
+    };
     let mut request = EngineRequest::get(
         "https://www.bing.com/search",
         &[
@@ -24,6 +28,7 @@ pub(super) fn request(query: &str) -> Option<EngineRequest> {
             ("qs", "n"),
             ("sk", ""),
             ("sp", "-1"),
+            ("adlt", filter),
         ],
     )?;
     request

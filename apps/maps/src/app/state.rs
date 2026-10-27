@@ -6,6 +6,7 @@ use super::{
     SegmentedTouch, Spacing, Theme, TileFault, TileLayer, TrafficData, TravelMode, Workspace,
     navigation_card_size, sample,
 };
+use crate::failure;
 
 impl MapsApp {
     /// Live app: spawns the background tile worker (network + decode off the
@@ -118,6 +119,7 @@ impl MapsApp {
             pending: 0,
             search_asked: None,
             online,
+            offline_downloading: false,
             location_rx: None,
             locating: false,
             location_reply: None,
@@ -125,9 +127,9 @@ impl MapsApp {
             overflow: {
                 let mut m = ContextMenu::new();
                 // Indices are mapped in `dispatch` via `take_selection`.
-                m.push(MenuItem::action("Attribution", || {}));
-                m.push(MenuItem::action("Offline maps", || {}));
-                m.push(MenuItem::action("Licenses", || {}));
+                m.push(MenuItem::action(failure::t("maps-attribution"), || {}));
+                m.push(MenuItem::action(failure::t("maps-offline-maps"), || {}));
+                m.push(MenuItem::action(failure::t("maps-licenses"), || {}));
                 m
             },
             menu_for: MapMenu::More,
@@ -156,9 +158,9 @@ impl MapsApp {
     pub(super) fn open_overflow(&mut self) {
         self.menu_for = MapMenu::More;
         self.overflow.set_items(vec![
-            MenuItem::action("Attribution", || {}),
-            MenuItem::action("Offline maps", || {}),
-            MenuItem::action("Licenses", || {}),
+            MenuItem::action(failure::t("maps-attribution"), || {}),
+            MenuItem::action(failure::t("maps-offline-maps"), || {}),
+            MenuItem::action(failure::t("maps-licenses"), || {}),
         ]);
         self.overflow.open_anchored(self.overflow_rect(), self.rect);
     }
@@ -168,7 +170,8 @@ impl MapsApp {
     pub(super) fn open_layers(&mut self) {
         self.menu_for = MapMenu::Layers;
         self.overflow.set_items(vec![
-            MenuItem::action("Traffic", || {}).with_checked(self.map_controls.traffic_enabled()),
+            MenuItem::action(failure::t("maps-traffic"), || {})
+                .with_checked(self.map_controls.traffic_enabled()),
         ]);
         self.overflow
             .open_anchored(self.map_controls.rect(MapControlAction::Layers), self.rect);

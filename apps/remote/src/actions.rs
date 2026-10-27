@@ -15,7 +15,7 @@ use tilo_actions::ActionSpec;
 use ui::framework::LiveRow;
 use ui::tilo_resource::{self, Effect};
 
-use crate::model::{Connection, ConnectionId};
+use crate::model::{Connection, ConnectionId, ConnectionKind};
 
 /// What Remote does that is no edit of the saved connections: showing them,
 /// opening and closing live sessions, typing into one, and the SSH host-key
@@ -54,6 +54,28 @@ pub enum RemoteEffect {
         connection: ConnectionId,
         #[param("Text to deliver to the connected SSH terminal")]
         text: String,
+    },
+    /// Send file to session: copy one local file to the connected SSH
+    /// machine.
+    #[effect(row, job, privileged)]
+    PutFile {
+        #[param("The saved connection whose SSH session receives it")]
+        connection: ConnectionId,
+        #[param("The file on this device to send")]
+        local_path: String,
+        #[param("Where to write it on the remote machine")]
+        remote_path: String,
+    },
+    /// Fetch file from session: copy one file from the connected SSH
+    /// machine to this device.
+    #[effect(row, job, privileged)]
+    FetchFile {
+        #[param("The saved connection whose SSH session reads it")]
+        connection: ConnectionId,
+        #[param("The file on the remote machine to read")]
+        remote_path: String,
+        #[param("Where to write it on this device")]
+        local_path: String,
     },
     /// Trust SSH host key.
     #[effect(row, job, privileged)]
@@ -130,6 +152,34 @@ pub fn session_row(
         RemoteEffect::Disconnect { connection: id }.bound(),
         &["network", "session"],
     ));
+    let row = if connection.kind == ConnectionKind::Ssh {
+        row.operation(tagged(
+            RemoteEffect::PutFile {
+                connection: id,
+                local_path: String::new(),
+                remote_path: String::new(),
+            }
+            .bound_asking(&["local_path", "remote_path"])
+            .with_description(
+                "Send one local file to this SSH machine: name the local path and where to write it remotely.",
+            ),
+            &["network", "session", "files"],
+        ))
+        .operation(tagged(
+            RemoteEffect::FetchFile {
+                connection: id,
+                remote_path: String::new(),
+                local_path: String::new(),
+            }
+            .bound_asking(&["remote_path", "local_path"])
+            .with_description(
+                "Fetch one file from this SSH machine: name the remote path and where to write it here.",
+            ),
+            &["network", "session", "files"],
+        ))
+    } else {
+        row
+    };
     match host_key_issue {
         Some(crate::ssh::HostKeyIssue::FirstContact { observed }) => row.operation(tagged(
             RemoteEffect::TrustHostKey {
@@ -256,6 +306,35 @@ mod tests {
     ) -> (String, Vec<ActionSpec>) {
         let row = session_row(connection, issue).into_resource();
         (row.id.as_str().to_owned(), row.actions)
+    }
+
+    #[test]
+    fn ssh_sessions_offer_file_transfer_in_both_directions() {
+        let (_, actions) = session_actions(&sample(Uuid::new_v4(), "Build Box"), None);
+        for id in ["put-file", "fetch-file"] {
+            let action = actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("an SSH session offers {id}"));
+            assert_eq!(action.contract.risk, RiskLevel::Privileged, "{id}");
+            assert_eq!(action.contract.result, ResultSpec::Job, "{id}");
+            for path in ["local_path", "remote_path"] {
+                assert!(
+                    action
+                        .params()
+                        .iter()
+                        .any(|param| param.name == path && param.ty == ParamType::Text),
+                    "{id} asks for {path}"
+                );
+            }
+        }
+        let mut desktop = sample(Uuid::new_v4(), "Desktop");
+        desktop.kind = ConnectionKind::Vnc;
+        let (_, actions) = session_actions(&desktop, None);
+        assert!(
+            !actions.iter().any(|action| action.id == "put-file"),
+            "a framebuffer session has no shell to move a file through"
+        );
     }
 
     #[test]

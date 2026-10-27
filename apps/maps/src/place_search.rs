@@ -17,6 +17,7 @@ use ui::icons::Icon;
 use ui::search::SearchQuery;
 use ui::tilo_resource::{SearchEntry, SearchWeight};
 
+use crate::failure;
 use crate::geo;
 use crate::model::{Category, LatLon, Place, Poi};
 use crate::resource::MapsEffect;
@@ -237,11 +238,11 @@ pub fn entries(shown: &Shown<'_>) -> Vec<SearchEntry> {
         .iter()
         .map(|place| {
             let group = if place.saved {
-                "Saved places"
+                failure::t("maps-saved-places")
             } else {
-                "Places"
+                failure::t("maps-panel-places")
             };
-            Spot::from(place).entry(group, &PlaceHit::Place(place.id.clone()), shown.anchor)
+            Spot::from(place).entry(&group, &PlaceHit::Place(place.id.clone()), shown.anchor)
         })
         .collect();
     entries.extend(shown.pois.iter().filter(|poi| !known(&poi.id)).map(|poi| {
@@ -252,7 +253,11 @@ pub fn entries(shown: &Shown<'_>) -> Vec<SearchEntry> {
             pos: poi.pos,
             saved: false,
         };
-        let entry = spot.entry("Nearby", &PlaceHit::Poi(poi.id.clone()), shown.anchor);
+        let entry = spot.entry(
+            &failure::t("maps-nearby"),
+            &PlaceHit::Poi(poi.id.clone()),
+            shown.anchor,
+        );
         match &poi.kind {
             Some(kind) => entry.field(kind.as_str(), SearchWeight::Metadata),
             None => entry,
@@ -262,7 +267,7 @@ pub fn entries(shown: &Shown<'_>) -> Vec<SearchEntry> {
         let hit = PlaceHit::Recent(query.clone());
         SearchEntry::new(query.as_str(), String::new())
             .opening(hit.resource_id(), &hit.effect())
-            .grouped("Recent searches")
+            .grouped(&failure::t("maps-recent-searches"))
             .with_icon(Icon::History.name())
     }));
     if let Some((query, found)) = shown.found {
@@ -270,7 +275,7 @@ pub fn entries(shown: &Shown<'_>) -> Vec<SearchEntry> {
             // The geocoder found it by the query, whatever its name says.
             Spot::from(place)
                 .entry(
-                    "Addresses and places",
+                    &failure::t("maps-addresses-places"),
                     &PlaceHit::Geocoded(place.id.clone()),
                     shown.anchor,
                 )
