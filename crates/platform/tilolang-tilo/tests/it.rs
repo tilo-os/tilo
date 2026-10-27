@@ -19,3 +19,4 @@ mod records;
 mod scenarios;
 mod surface;
 mod sync;
+mod upgrade;

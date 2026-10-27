@@ -1566,6 +1566,11 @@ pub(crate) struct SessionLaunches {
     /// Launches held until the session's services are up.
     #[cfg(any(test, target_os = "linux"))]
     gate: Mutex<Gate>,
+    /// Signalled whenever the gate opens.
+    #[cfg(any(test, target_os = "linux"))]
+    gate_opened: std::sync::Condvar,
+    /// The session's broker for native openings, once it has bound.
+    opening: Mutex<Option<NativeAppOpening>>,
 }
 
 impl Default for SessionLaunches {
@@ -1592,6 +1597,9 @@ impl Default for SessionLaunches {
             gate: Mutex::new(Gate::open_with_capacity(
                 crate::shell::launch_gate::MAX_HELD_LAUNCHES,
             )),
+            #[cfg(any(test, target_os = "linux"))]
+            gate_opened: std::sync::Condvar::new(),
+            opening: Mutex::default(),
         }
     }
 }
@@ -1638,6 +1646,17 @@ impl LaunchSession {
                 .get_or_insert_with(Self::for_new_thread)
                 .clone()
         })
+    }
+
+    /// Block while launches are held: until the broker the session is starting has bound, or
+    /// its start has failed.
+    #[cfg(any(test, target_os = "linux"))]
+    fn wait_while_launches_held(&self) {
+        drop(
+            self.gate_opened
+                .wait_while(lock(&self.gate), |gate| gate.is_holding())
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
     }
 
     #[cfg(not(test))]
@@ -1704,6 +1723,8 @@ static APP_CACHE_REVISION: AtomicU64 = AtomicU64::new(0);
 /// recursive inotify walk must not look like a new generation of apps.
 static APP_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
 static APP_CACHE_WATCH: Mutex<Option<Vec<PathBuf>>> = Mutex::new(None);
+/// The registries the memoised snapshot was read from, as they were just before the read.
+static APP_CACHE_STAMP: Mutex<Option<Vec<Option<RegistryStamp>>>> = Mutex::new(None);
 /// Capabilities of the workspace apps are being launched into, published
 /// by [`set_workspace_capabilities`] or [`launch_in_workspace`]. Empty is
 /// the safe default: an app launched before publish gets manifest-only.
@@ -2162,18 +2183,52 @@ pub(crate) fn installed_app(
     app
 }
 
+/// Which version of a registry file is on disk. An install replaces the registry by one
+/// rename, its commit point, so a completed install always shows as another file here.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct RegistryStamp {
+    device: u64,
+    inode: u64,
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+fn registry_stamps() -> Vec<Option<RegistryStamp>> {
+    use std::os::unix::fs::MetadataExt as _;
+    app_cache_roots()
+        .iter()
+        .map(|root| {
+            let metadata =
+                std::fs::metadata(root.join(package_store::layout::REGISTRY_FILE)).ok()?;
+            Some(RegistryStamp {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                modified: metadata.modified().ok(),
+                len: metadata.len(),
+            })
+        })
+        .collect()
+}
+
 /// Pair records with their cache revision while holding the cache lock.
+///
+/// A memoised snapshot answers only while the registries are the ones it was read from: the
+/// watch that expires it runs on its own thread, and an app launched right after an install
+/// completed must start the installed package, not the one before it.
 fn installed_apps_snapshot() -> Result<(u64, Vec<InstalledApp>), LaunchError> {
+    let stamps = registry_stamps();
     {
         let cache = lock(&APP_CACHE);
         if let Some((apps, Some(at))) = cache.as_ref()
             && at.elapsed() < APP_CACHE_TTL
+            && lock(&APP_CACHE_STAMP).as_ref() == Some(&stamps)
         {
             return Ok((APP_CACHE_REVISION.load(Ordering::Acquire), apps.clone()));
         }
     }
     let epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
     let apps = read_installed_apps()?;
+    *lock(&APP_CACHE_STAMP) = Some(stamps);
     let generation = record_app_read(epoch, &apps);
     // Watch after the first memoize so opening the registry to fill the
     // cache cannot look like an install and wipe the snapshot we just wrote.
@@ -2258,6 +2313,7 @@ pub fn invalidate_app_cache() {
     APP_CACHE_EPOCH.fetch_add(1, Ordering::Release);
     APP_CACHE_REVISION.fetch_add(1, Ordering::Relaxed);
     *cache = None;
+    *lock(&APP_CACHE_STAMP) = None;
 }
 
 /// Cheap installed-store invalidation token for session-owned services.
@@ -4295,6 +4351,11 @@ pub(crate) fn queue_package_open(
 #[derive(Clone)]
 pub(crate) struct NativeAppOpening(pub tilo_action_broker::collab_broker::WeakAppActionBroker);
 
+/// The session's broker has bound: native openings asked for while it was binding use it.
+pub(crate) fn attach_native_app_opening(opening: NativeAppOpening) {
+    *lock(&LaunchSession::current().opening) = Some(opening);
+}
+
 impl std::fmt::Debug for NativeAppOpening {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("NativeAppOpening")
@@ -4313,6 +4374,7 @@ pub(crate) fn queue_native_authoring_launch(
     room: RoomId,
     opening: Option<NativeAppOpening>,
 ) -> Result<(), LaunchError> {
+    let session = LaunchSession::current();
     let native_owner = tree.read().installed_native_owner();
     let package = app.package_id.clone();
     let expected = tree
@@ -4328,6 +4390,10 @@ pub(crate) fn queue_native_authoring_launch(
         room,
         move || {
             let prepare = || -> Result<LaunchGrants, String> {
+                // Asked for while the session's broker was still binding (an app opened as
+                // the session starts): it is prepared once the broker is there, as held
+                // launches run.
+                session.wait_while_launches_held();
                 let (_, certificate) =
                     tilo_identity_host::broker::trusted_current_device(&room.to_string())
                         .map_err(|error| error.to_string())?;
@@ -4346,7 +4412,9 @@ pub(crate) fn queue_native_authoring_launch(
                         access,
                     ));
                 }
-                let broker = opening.ok_or("native app authorship broker unavailable")?;
+                let broker = opening
+                    .or_else(|| lock(&session.opening).clone())
+                    .ok_or("native app authorship broker unavailable")?;
                 let broker = broker.0.upgrade()?;
                 let job = broker.change_workspace_membership(
                     &room.to_string(),
@@ -4977,6 +5045,7 @@ pub fn release_held_launches() {
             held.retained,
         );
     });
+    session.gate_opened.notify_all();
 }
 
 /// Report every held launch as failed with `reason`, and let later launches
@@ -4991,6 +5060,7 @@ pub fn fail_held_launches(reason: &str) {
         );
         session.push(held_launch_failure(launch, reason));
     });
+    session.gate_opened.notify_all();
 }
 
 #[cfg(any(test, target_os = "linux"))]
@@ -6813,6 +6883,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_native_opening_asked_for_while_the_broker_binds_is_prepared_once_it_is_there() {
+        let session = LaunchSession::current();
+        assert!(
+            lock(&session.opening).is_none(),
+            "no broker is attached yet"
+        );
+        hold_launches();
+        let (prepared, prepared_now) = std::sync::mpsc::channel();
+        let waiting = session.clone();
+        let preflight = std::thread::spawn(move || {
+            waiting.wait_while_launches_held();
+            prepared.send(()).expect("the test waits for it");
+        });
+        assert!(
+            prepared_now
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "nothing is prepared while launches are held"
+        );
+        release_held_launches();
+        prepared_now
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("prepared once launches run");
+        preflight.join().expect("the preflight ends");
+        // Not holding: a later opening is prepared at once.
+        session.wait_while_launches_held();
+    }
+
     fn test_gate() -> Mutex<Gate> {
         Mutex::new(Gate::open_with_capacity(2))
     }
@@ -7937,267 +8036,7 @@ mod tests {
         payload
     }
 
-    /// The compositor loop asks for installed apps while building tiles and
-    /// naming apps in Activity. It is served the last enumeration, stale or
-    /// not, and never reads the registry itself: a stale list is refreshed
-    /// on a worker and the refresh lands for a later ask.
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn the_loop_is_served_the_last_app_list_while_a_worker_refreshes_it() {
-        let tmp = tempfile::tempdir().unwrap();
-        let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_APPS_DATA_DIR", tmp.path());
-        invalidate_app_cache();
-        let initial = installed_apps().unwrap();
-        assert_eq!(initial[0].version, "1.2.3");
-
-        let manifest = payload.join("manifest.toml");
-        let changed_manifest = std::fs::read_to_string(&manifest)
-            .unwrap()
-            .replace("1.2.3", "1.2.4");
-        std::fs::write(&manifest, changed_manifest).unwrap();
-        lock(&APP_CACHE).as_mut().unwrap().1 = None;
-
-        let served = installed_apps_without_waiting();
-        assert_eq!(
-            served, initial,
-            "the stale list is served; the registry was not read here"
-        );
-        let refreshed = tilo_test_env::wait_for("the refreshed app list", || {
-            let served = installed_apps_without_waiting();
-            served
-                .first()
-                .is_some_and(|app| app.version == "1.2.4")
-                .then_some(served)
-        });
-        env.remove("TILO_APPS_DATA_DIR");
-        invalidate_app_cache();
-        assert_eq!(refreshed.len(), 1);
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn app_registry_enumeration_reads_signed_manifests_and_keeps_generations() {
-        fn unchanged_app_cache_refresh_preserves_search_generation() {
-            let tmp = tempfile::tempdir().unwrap();
-            let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_APPS_DATA_DIR", tmp.path());
-            invalidate_app_cache();
-            let (snapshot_generation, initial_gui) = gui_apps_snapshot();
-            let initial_generation = gui_apps_generation();
-            assert_eq!(
-                snapshot_generation, initial_generation,
-                "populating a cold cache must not invalidate its own snapshot"
-            );
-            assert_eq!(initial_gui.len(), 1);
-            let initial = installed_apps().unwrap();
-            let expire = || {
-                lock(&APP_CACHE).as_mut().unwrap().1 = None;
-            };
-            expire();
-            let unchanged = installed_apps().unwrap();
-            let unchanged_generation = gui_apps_generation();
-
-            let manifest = payload.join("manifest.toml");
-            let changed_manifest = std::fs::read_to_string(&manifest)
-                .unwrap()
-                .replace("1.2.3", "1.2.4");
-            std::fs::write(&manifest, changed_manifest).unwrap();
-            expire();
-            let changed = installed_apps().unwrap();
-            let changed_generation = gui_apps_generation();
-
-            std::fs::write(tmp.path().join("registry.toml"), "").unwrap();
-            expire();
-            let removed = installed_apps().unwrap();
-            let removed_generation = gui_apps_generation();
-            env.remove("TILO_APPS_DATA_DIR");
-            invalidate_app_cache();
-
-            assert_eq!(unchanged, initial);
-            assert_eq!(
-                unchanged_generation, initial_generation,
-                "an unchanged TTL refresh must not invalidate retained search results"
-            );
-            assert_eq!(changed[0].version, "1.2.4");
-            assert_ne!(changed_generation, unchanged_generation);
-            assert!(removed.is_empty());
-            assert_ne!(removed_generation, changed_generation);
-        }
-
-        fn raced_app_cache_refresh_keeps_its_read_as_the_baseline() {
-            let tmp = tempfile::tempdir().unwrap();
-            let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_APPS_DATA_DIR", tmp.path());
-            invalidate_app_cache();
-            // Seed and re-read through `record_app_read` only. `installed_apps`
-            // arms the real watch; earlier helpers (or a dropped tempdir) can
-            // leave that watch firing `expire_watched_app_cache` mid-read and
-            // falsely fail the uncontested memoisation assert below.
-            record_app_read(
-                APP_CACHE_EPOCH.load(Ordering::Acquire),
-                &read_installed_apps().unwrap(),
-            );
-            let manifest = payload.join("manifest.toml");
-            let changed_manifest = std::fs::read_to_string(&manifest)
-                .unwrap()
-                .replace("1.2.3", "1.2.4");
-            std::fs::write(&manifest, changed_manifest).unwrap();
-            let before_race = gui_apps_generation();
-            // A watch event lands while this refresh is reading the registry.
-            let read_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
-            let raced = read_installed_apps().unwrap();
-            expire_watched_app_cache();
-            let raced_snapshot_generation = record_app_read(read_epoch, &raced);
-            assert_eq!(raced_snapshot_generation, 0, "a raced read stays stale");
-            let raced_generation = gui_apps_generation();
-            let stale = lock(&APP_CACHE).as_ref().unwrap().1.is_none();
-            let reread_epoch = APP_CACHE_EPOCH.load(Ordering::Acquire);
-            let reread = read_installed_apps().unwrap();
-            record_app_read(reread_epoch, &reread);
-            let reread_generation = gui_apps_generation();
-            let fresh = lock(&APP_CACHE).as_ref().unwrap().1.is_some();
-            env.remove("TILO_APPS_DATA_DIR");
-            invalidate_app_cache();
-
-            assert_eq!(raced[0].version, "1.2.4");
-            assert_ne!(raced_generation, before_race, "the raced read saw a change");
-            assert!(stale, "a raced read must not be memoised as fresh");
-            assert_eq!(reread, raced);
-            assert_eq!(
-                reread_generation, raced_generation,
-                "an identical re-read after a raced refresh keeps the generation"
-            );
-            assert!(fresh, "the uncontested re-read is memoised");
-        }
-
-        fn enumeration_reads_the_registry_and_flags_gui_apps() {
-            let tmp = tempfile::tempdir().unwrap();
-            install_fixture(tmp.path(), "so.tilo.hello", "gui");
-            install_fixture(tmp.path(), "so.tilo.notes-cli", "cli");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_APPS_DATA_DIR", tmp.path());
-            invalidate_app_cache();
-            let apps = read_installed_apps().expect("registry readable");
-            let offered = gui_apps(); // what the palette actually offers
-            env.remove("TILO_APPS_DATA_DIR");
-            invalidate_app_cache();
-
-            assert_eq!(apps.len(), 2, "both packages enumerate: {apps:?}");
-            let hello = apps
-                .iter()
-                .find(|a| a.package_id == "so.tilo.hello")
-                .expect("hello present");
-            assert!(hello.has_gui, "gui entrypoint must be flagged as GUI");
-            assert_eq!(hello.display_name, "Hello");
-            assert_eq!(hello.version, "1.2.3");
-            let cli = apps
-                .iter()
-                .find(|a| a.package_id == "so.tilo.notes-cli")
-                .expect("cli package present");
-            assert!(!cli.has_gui, "a cli-only package is not a GUI app");
-
-            // Enumerating it is fine; offering it to launch is not — a
-            // headless package has no window to show.
-            let offered_ids: Vec<&str> = offered.iter().map(|a| a.package_id.as_str()).collect();
-            assert_eq!(
-                offered_ids,
-                vec!["so.tilo.hello"],
-                "only the GUI package is launchable from the palette",
-            );
-        }
-
-        fn installed_continuity_lookup_reads_signed_manifest_contract() {
-            let tmp = tempfile::tempdir().unwrap();
-            let payload = install_fixture(tmp.path(), "so.tilo.browser", "gui");
-            let manifest_path = payload.join("manifest.toml");
-            let mut manifest = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&manifest_path)
-                .unwrap();
-            writeln!(
-                manifest,
-                "\n[continuity]\nrequired = [\"presentation\", \"semantic\"]\nsemantic-schema = \"web-location-v1\""
-            )
-            .unwrap();
-
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_APPS_DATA_DIR", tmp.path());
-            let required = installed_continuity_contract("so.tilo.browser");
-            let legacy = installed_continuity_contract("so.tilo.not-installed");
-            env.remove("TILO_APPS_DATA_DIR");
-
-            assert_eq!(
-                required,
-                InstalledContinuityRequirements::Required(launcher::manifest::ContinuityContract {
-                    required: vec![
-                        launcher::manifest::ContinuityFacet::Presentation,
-                        launcher::manifest::ContinuityFacet::Semantic,
-                    ],
-                    semantic_schema: Some(
-                        launcher::manifest::ContinuitySemanticSchema::WebLocationV1,
-                    ),
-                })
-            );
-            assert_eq!(legacy, InstalledContinuityRequirements::NotInstalled);
-        }
-
-        fn display_name_title_cases_the_trailing_component() {
-            assert_eq!(display_name_for_package_id("so.tilo.hello"), "Hello");
-            assert_eq!(
-                display_name_for_package_id("so.tilo.text-editor"),
-                "Text Editor"
-            );
-            assert_eq!(display_name_for_package_id("Notes"), "Notes");
-            // A degenerate id must not produce an empty (unclickable) label.
-            assert!(!display_name_for_package_id("so.tilo.").is_empty());
-        }
-
-        fn managed_entry_registry_generation_changes_only_with_its_snapshot() {
-            let first = set_windows_compat_entry_ids(vec!["windows-one".into()]);
-            let unchanged = set_windows_compat_entry_ids(vec!["windows-one".into()]);
-            let second = set_windows_compat_entry_ids(vec!["windows-two".into()]);
-            assert_eq!(unchanged, first);
-            assert!(second > first);
-        }
-
-        raced_app_cache_refresh_keeps_its_read_as_the_baseline();
-        unchanged_app_cache_refresh_preserves_search_generation();
-        enumeration_reads_the_registry_and_flags_gui_apps();
-        installed_continuity_lookup_reads_signed_manifest_contract();
-        display_name_title_cases_the_trailing_component();
-        managed_entry_registry_generation_changes_only_with_its_snapshot();
-    }
-
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn app_registry_watch_invalidates_without_waiting_for_ttl() {
-        let tmp = tempfile::tempdir().unwrap();
-        let payload = install_fixture(tmp.path(), "dev.tilo.calculator", "gui");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_APPS_DATA_DIR", tmp.path());
-        invalidate_app_cache();
-        let initial = installed_apps().unwrap();
-        assert_eq!(initial[0].version, "1.2.3");
-        let manifest = payload.join("manifest.toml");
-        let changed = std::fs::read_to_string(&manifest)
-            .unwrap()
-            .replace("1.2.3", "1.2.4");
-        std::fs::write(&manifest, changed).unwrap();
-        tilo_test_env::wait_until("inotify invalidates the app cache", || {
-            installed_apps()
-                .is_ok_and(|apps| apps.first().is_some_and(|app| app.version == "1.2.4"))
-        });
-        env.remove("TILO_APPS_DATA_DIR");
-        invalidate_app_cache();
-    }
+    mod app_registry;
 
     #[test]
     #[allow(
