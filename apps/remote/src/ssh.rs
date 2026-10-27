@@ -500,6 +500,35 @@ async fn load_key(
         .map_err(|e| anyhow!("load key {}: {e}", path.display()))
 }
 
+/// Authenticate the session the way `cfg` says: a password, or a key from
+/// `path`, ordered by whatever hash the server supports.
+async fn authenticate(
+    session: &mut client::Handle<Handler>,
+    cfg: &SshConfig,
+) -> anyhow::Result<()> {
+    let auth_ok = match &cfg.auth {
+        SshAuth::Password(pw) => session
+            .authenticate_password(cfg.user.clone(), pw.clone())
+            .await?
+            .success(),
+        SshAuth::Key { path, passphrase } => {
+            let key = load_key(path, passphrase.as_deref()).await?;
+            let hash = session.best_supported_rsa_hash().await?.flatten();
+            session
+                .authenticate_publickey(
+                    cfg.user.clone(),
+                    PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                )
+                .await?
+                .success()
+        }
+    };
+    if !auth_ok {
+        bail!("Authentication failed");
+    }
+    Ok(())
+}
+
 async fn run_session(
     cfg: SshConfig,
     status: Arc<Mutex<SessionStatus>>,
@@ -533,26 +562,7 @@ async fn run_session(
         )
     })?;
 
-    let auth_ok = match &cfg.auth {
-        SshAuth::Password(pw) => session
-            .authenticate_password(cfg.user.clone(), pw.clone())
-            .await?
-            .success(),
-        SshAuth::Key { path, passphrase } => {
-            let key = load_key(path, passphrase.as_deref()).await?;
-            let hash = session.best_supported_rsa_hash().await?.flatten();
-            session
-                .authenticate_publickey(
-                    cfg.user.clone(),
-                    PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-                )
-                .await?
-                .success()
-        }
-    };
-    if !auth_ok {
-        bail!("Authentication failed");
-    }
+    authenticate(&mut session, &cfg).await?;
 
     let channel = session.channel_open_session().await?;
     channel
@@ -715,8 +725,14 @@ async fn put_file(
         if read == 0 {
             break;
         }
+        let filled = buffer.get(..read).ok_or_else(|| {
+            format!(
+                "the read returned {read}, past the {}-byte buffer",
+                buffer.len()
+            )
+        })?;
         channel
-            .data(&buffer[..read])
+            .data(filled)
             .await
             .map_err(|error| format!("the remote machine closed the transfer: {error}"))?;
         sent = sent.saturating_add(u64::try_from(read).unwrap_or(0));
@@ -996,10 +1012,24 @@ mod tests {
 
     /// The loopback server's tiny file system, and the transfers it is
     /// receiving, by channel.
+    /// What the loopback server holds for a path: its bytes, and for a `cat >`
+    /// the channel and path they are being written to.
+    type Served = Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>;
+    type Receiving = Arc<Mutex<std::collections::HashMap<ChannelId, (String, Vec<u8>)>>>;
+
     #[derive(Clone, Default)]
     struct TestFiles {
-        files: Arc<Mutex<std::collections::HashMap<String, Vec<u8>>>>,
-        open: Arc<Mutex<std::collections::HashMap<ChannelId, (String, Vec<u8>)>>>,
+        files: Served,
+        open: Receiving,
+    }
+
+    impl TestFiles {
+        /// The bytes served for `path`, read under the lock and handed on
+        /// outside it so no guard outlives the call.
+        fn served(&self, path: &str) -> Option<Vec<u8>> {
+            let files = self.files.lock().unwrap();
+            files.get(path).cloned()
+        }
     }
 
     #[derive(Clone)]
@@ -1070,7 +1100,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .insert(channel, (path, Vec::new()));
-            } else if let Some(bytes) = self.files.files.lock().unwrap().get(&path).cloned() {
+            } else if let Some(bytes) = self.files.served(&path) {
                 session.data(channel, bytes)?;
                 session.exit_status_request(channel, 0)?;
                 session.eof(channel)?;
@@ -1150,9 +1180,11 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
                     .unwrap();
                 let port = listener.local_addr().unwrap().port();
                 let files = TestFiles::default();
-                let served = files.clone();
+                let for_the_server = files.clone();
                 tokio::spawn(async move {
-                    let mut server = TestServer { files: served };
+                    let mut server = TestServer {
+                        files: for_the_server,
+                    };
                     let _ = server.run_on_socket(config, &listener).await;
                 });
                 (port, files)
@@ -1246,33 +1278,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
     #[test]
     fn a_file_crosses_a_real_session_both_ways_and_a_missing_one_says_why() {
-        let (port, files) = ui::rt::app()
-            .block_on(async {
-                let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
-                let config = Arc::new(server::Config {
-                    inactivity_timeout: None,
-                    auth_rejection_time: Duration::from_millis(50),
-                    keys: vec![host_key],
-                    ..Default::default()
-                });
-                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-                    .await
-                    .unwrap();
-                let port = listener.local_addr().unwrap().port();
-                let files = TestFiles::default();
-                files
-                    .files
-                    .lock()
-                    .unwrap()
-                    .insert("remote.txt".into(), b"from the remote machine".to_vec());
-                let served = files.clone();
-                tokio::spawn(async move {
-                    let mut server = TestServer { files: served };
-                    let _ = server.run_on_socket(config, &listener).await;
-                });
-                (port, files)
-            })
-            .unwrap();
+        let (port, files) = served_files([("remote.txt", b"from the remote machine".to_vec())]);
 
         let (known_hosts, known_hosts_directory) = test_known_hosts();
         let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
@@ -1307,7 +1313,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         let done = ssh
             .transfer(
                 TransferDirection::Put {
-                    local_path: local.clone(),
+                    local_path: local,
                     remote_path: "upload.bin".into(),
                 },
                 put.clone(),
@@ -1388,5 +1394,36 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         drop(ssh);
         drop(known_hosts_directory);
+    }
+
+    /// A loopback server holding `served` by path, on a port of its own.
+    fn served_files(served: impl IntoIterator<Item = (&'static str, Vec<u8>)>) -> (u16, TestFiles) {
+        ui::rt::app()
+            .block_on(async move {
+                let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
+                let config = Arc::new(server::Config {
+                    inactivity_timeout: None,
+                    auth_rejection_time: Duration::from_millis(50),
+                    keys: vec![host_key],
+                    ..Default::default()
+                });
+                let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                    .await
+                    .unwrap();
+                let port = listener.local_addr().unwrap().port();
+                let files = TestFiles::default();
+                for (path, bytes) in served {
+                    files.files.lock().unwrap().insert(path.into(), bytes);
+                }
+                let for_the_server = files.clone();
+                tokio::spawn(async move {
+                    let mut server = TestServer {
+                        files: for_the_server,
+                    };
+                    let _ = server.run_on_socket(config, &listener).await;
+                });
+                (port, files)
+            })
+            .unwrap()
     }
 }
