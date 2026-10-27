@@ -223,6 +223,28 @@ impl CollRef {
         out
     }
 
+    /// Whether it lists other items than its collection's, or in another order: which items it
+    /// holds, and where, depend on fields of each item.
+    #[must_use]
+    pub fn derived(&self) -> bool {
+        self.filter.is_some() || self.order.is_some()
+    }
+
+    /// Whether a change to the item field `field` may change which items it holds or their
+    /// order.
+    #[must_use]
+    pub fn reads_field(&self, field: &str) -> bool {
+        field == crate::store::ANY_FIELD
+            || self
+                .filter
+                .as_deref()
+                .is_some_and(|pred| pred.fields().iter().any(|read| read.spec.id == field))
+            || self
+                .order
+                .as_ref()
+                .is_some_and(|order| order.field == field)
+    }
+
     /// A reference to the item `id` of the collection.
     pub fn item_ref(&self, id: &str) -> Value {
         Value::Ref(RefValue {

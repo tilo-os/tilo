@@ -23,6 +23,10 @@
 //! * `peer_edit`: another replica retitles an item, or bumps the root's counter; the change
 //!   merges into the room and the main view is brought up to date.
 //! * `scroll`: the list shows the next page of rows.
+//! * `filter`: the first of the main window's places that filters (the item type's first
+//!   toggle filter) is chosen and the list shows the first page of what it holds: a filtered
+//!   query read from the index's columns. Every third seeded item has its flags (Bool fields)
+//!   set, so a filter holds of some items and not of others.
 //! * `memory_anon`: an app process's anonymous memory with the room open, measured in a
 //!   process of its own.
 //! * `idle`: ten seconds with nothing happening: how often the process was woken, and how
@@ -204,6 +208,9 @@ struct List {
     item_ty: String,
     /// The item's text fields, the first being its title.
     texts: Vec<String>,
+    /// The item's flags (its Bool fields): every third item has them set, so a filter on one
+    /// holds of some items and not of others.
+    flags: Vec<String>,
     /// The item's own collection, when it has one: a conversation's messages.
     nested: Option<Nested>,
 }
@@ -251,6 +258,12 @@ fn shape_of(meta: &Meta, others: &[&Meta]) -> Result<Shape, String> {
                 .filter(|f| f.kind == MergeKind::Text)
                 .map(|f| f.id.clone())
                 .collect::<Vec<_>>();
+            let flags = lookup(&item_ty)?
+                .fields
+                .iter()
+                .filter(|f| f.kind == MergeKind::Register && f.default.is_boolean())
+                .map(|f| f.id.clone())
+                .collect::<Vec<_>>();
             let nested = lookup(&item_ty)?
                 .fields
                 .iter()
@@ -265,6 +278,7 @@ fn shape_of(meta: &Meta, others: &[&Meta]) -> Result<Shape, String> {
                 field: f.id.clone(),
                 item_ty,
                 texts,
+                flags,
                 nested,
             })
         });
@@ -322,6 +336,11 @@ fn seeded_root(shape: &Shape, n: usize) -> Result<DynRecord, String> {
                     } else {
                         format!("Text of item {i}")
                     };
+                }
+            }
+            for field in &list.flags {
+                if let Some(DynValue::Register(flag)) = item.get_mut(field) {
+                    *flag = json!(i % 3 == 0);
                 }
             }
             items.push(Id::from_raw(item_id(i)), item);
@@ -1189,6 +1208,9 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         if let Some(record) = scroll(&sized, &mut room)? {
             out.push(record);
         }
+        if let Some(record) = filter(&sized, &mut room)? {
+            out.push(record);
+        }
         out.push(idle(&sized, &mut room)?);
     }
     if let Some(list) = &shape.list
@@ -1741,6 +1763,65 @@ fn scroll(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> 
     });
     Ok(Some(sized.record(
         "scroll",
+        "ms",
+        samples,
+        with_work(extra, work),
+    )))
+}
+
+/// The keys of the places of the main window's sidebar: `std.list`'s, the item type's filters,
+/// after all of the items (`all`).
+fn places(node: &UiNode, out: &mut Vec<(String, String)>) {
+    if node.kind == "ui.NavItem"
+        && let Some(tilolang_runtime::Value::Text(key)) = node.props.get("key")
+    {
+        out.push((key.clone(), node.key.clone()));
+    }
+    for child in &node.children {
+        places(child, out);
+    }
+}
+
+/// Choosing a place of the main window's sidebar, the first of the item type's filters, and
+/// back to all of the items: the first page of a filtered query, as the window shows it, and
+/// the list again. Only for a package whose main view lists places.
+fn filter(sized: &Sized<'_>, room: &mut Room) -> Result<Option<Record>, String> {
+    let mut found = Vec::new();
+    places(room.list.tree(), &mut found);
+    let (Some((_, all)), Some((_, place))) = (
+        found.iter().find(|(key, _)| key == "all").cloned(),
+        found.iter().find(|(key, _)| key != "all").cloned(),
+    ) else {
+        return Ok(None);
+    };
+    let Some(list) = frame_list(room.list.tree()) else {
+        return Ok(None);
+    };
+    let mut samples = Vec::new();
+    let mut work = Work::default();
+    for _ in 0..sized.config.samples {
+        let before = Work::of(room, &[]);
+        let start = Instant::now();
+        room.list
+            .fire(&place, "select")
+            .map_err(|e| e.to_string())?;
+        let mut patches = room.frame(&mut [])?;
+        let shown = room.list.list_len(&list).unwrap_or(0).min(PAGE);
+        for i in 0..shown {
+            room.list.row(&list, i).map_err(|e| e.to_string())?;
+        }
+        patches =
+            patches.saturating_add(room.list.poll_patches().map_err(|e| e.to_string())?.len());
+        samples.push(ms(start.elapsed()));
+        let mut done = Work::of(room, &[]).since(before);
+        done.patches = patches as u64;
+        work = work.max(done);
+        room.list.fire(&all, "select").map_err(|e| e.to_string())?;
+        room.frame(&mut [])?;
+    }
+    let extra = json!({ "shown": PAGE });
+    Ok(Some(sized.record(
+        "filter",
         "ms",
         samples,
         with_work(extra, work),
