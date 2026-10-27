@@ -1039,7 +1039,7 @@ pub(crate) fn distrobox_page(engine: &Engine, controls: bool, intents: &Intents)
                     Intent::EnterDistrobox(b.name.clone()),
                     intents,
                 )
-                .on_activate(intents.sender(Intent::EnterDistrobox(b.name.clone())));
+                .on_effect(intents.sender(Intent::EnterDistrobox(b.name.clone())));
             }
             Box::new(row) as Element
         })

@@ -123,7 +123,7 @@ fn connection_row(requests: &Requests, row: &RowModel) -> ListRow {
         .secondary(&row.address)
         .meta(&row.meta)
         .selected(row.selected)
-        .on_activate(queue(requests, Action::RequestConnect(row.id)))
+        .on_effect(queue(requests, Action::RequestConnect(row.id)))
         .action(
             Icon::Pencil,
             "Edit connection",
@@ -306,7 +306,7 @@ fn device_list(requests: &Requests, devices: &[DeviceModel]) -> Element {
             let row = ListRow::new(format!("remote.device:{index}"), &device.name)
                 .icon(kind_icon(ConnectionKind::Tilo))
                 .selected(device.picked)
-                .on_activate(queue(requests, Action::PickTiloDevice(index)));
+                .on_view(queue(requests, Action::PickTiloDevice(index)));
             Box::new(if device.online {
                 row.active()
             } else {
