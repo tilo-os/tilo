@@ -591,6 +591,14 @@ impl OriginalInvocationData {
         matches!(&self.caller, InvocationCaller::Local { admitted, .. } if admitted.agent_id.is_none())
     }
 
+    /// Whether application `app` invoked this itself through its own door,
+    /// as [`Self::through_app_door`], rather than the person on a
+    /// connection of their own.
+    pub(super) fn through_door_of(&self, app: &str) -> bool {
+        self.through_app_door()
+            && matches!(&self.caller, InvocationCaller::Local { route, .. } if route.app_id == app)
+    }
+
     /// Whether this was delivered to application `app` in `room`.
     pub(super) fn delivered_to(&self, app: &str, room: &str) -> bool {
         self.route.app_id == app && self.route.cluster_id == room

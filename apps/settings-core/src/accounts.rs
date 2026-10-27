@@ -117,13 +117,7 @@ impl VaultOpener {
     /// Open the vault: a Secret Service round trip for its key on the live
     /// root.
     pub fn open(&self) -> accounts::SecretVault {
-        crate::device_read::off_ui_thread();
-        #[cfg(test)]
-        {
-            if let Some(gate) = &self.gate.0 {
-                gate();
-            }
-        }
+        self.reach();
         match &self.explicit {
             Some(root) => accounts::SecretVault::open_in(root),
             None => accounts::SecretVault::open(),
@@ -134,6 +128,36 @@ impl VaultOpener {
     /// itself when it publishes.
     pub fn custodian(&self) -> account_custody::Custodian {
         account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
+    }
+
+    /// Which of the accounts `ids` custody holds an `OAuth` grant for: it
+    /// opens the vault, a Secret Service round trip on the live root.
+    pub fn oauth_granted(&self, ids: Vec<String>) -> std::collections::BTreeSet<String> {
+        self.reach();
+        let custodian = self.custodian();
+        ids.into_iter()
+            .filter(|id| {
+                custodian
+                    .oauth_scopes(&accounts::AccountId::from(id.clone()))
+                    .is_ok()
+            })
+            .collect()
+    }
+
+    /// About to reach the vault: never on the UI thread, and in a test only
+    /// once its gate lets it.
+    #[cfg_attr(
+        not(test),
+        expect(clippy::unused_self, reason = "only a test's gate is kept on it")
+    )]
+    fn reach(&self) {
+        crate::device_read::off_ui_thread();
+        #[cfg(test)]
+        {
+            if let Some(gate) = &self.gate.0 {
+                gate();
+            }
+        }
     }
 }
 
