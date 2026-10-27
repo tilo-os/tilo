@@ -8,7 +8,7 @@
 #
 #   signin-e2e.sh MEDIUM OUT
 #
-# OUT receives report.md / report.json, the boot sign-in and greeter screenshots, and per-boot
+# OUT/<variant> receives report.md / report.json, the boot sign-in and greeter screenshots, and per-boot
 # serial logs and journals, each searched for every secret the run used.
 set -euo pipefail
 cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
@@ -24,12 +24,21 @@ out=${2:?usage: signin-e2e.sh MEDIUM OUT}
 bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt
 python3 os/dev/probe-kvm.py x86_64 || { echo 'this node cannot create a KVM VM' >&2; exit 1; }
 
-rm -rf "$out"
-mkdir -p "$out"
-storage=/var/tmp/signin-e2e
-rm -rf "$storage"
-mkdir -p "$storage"
+# The two variants install and boot apart, so they are t's shards (t.toml `shards`): each is a
+# check of its own with its outputs in OUT/<variant>, run as jobs side by side when the nodes
+# have room. T_SHARDS names the ones this job runs (both when t gives none).
 status=0
-TMPDIR=/var/tmp python3 -I tools/ci/signin_e2e.py --medium "$medium" --out "$out" --storage "$storage" || status=$?
-rm -rf "$storage"
+for variant in ${T_SHARDS:-one-secret separate-disk-secret}; do
+  storage=/var/tmp/signin-e2e/$variant
+  rm -rf "$out/$variant" "$storage"
+  mkdir -p "$out/$variant" "$storage"
+  if TMPDIR=/var/tmp python3 -I tools/ci/signin_e2e.py --variant "$variant" --medium "$medium" \
+      --out "$out/$variant" --storage "$storage"; then
+    echo "t-shard: $variant passed"
+  else
+    status=1
+    echo "t-shard: $variant failed"
+  fi
+  rm -rf "$storage"
+done
 exit "$status"

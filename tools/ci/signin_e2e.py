@@ -36,6 +36,7 @@ import json
 import os
 import re
 import secrets
+import select
 import shutil
 import socket
 import subprocess
@@ -130,12 +131,16 @@ class Cycle:
         return self.vm("status", check=False).stdout.strip().startswith("running")
 
     def wait_stopped(self, limit: float) -> bool:
-        deadline = time.monotonic() + limit
-        while time.monotonic() < deadline:
-            if not self.running():
-                return True
-            time.sleep(2)
-        return False
+        """Blocks on QEMU's exit (a pidfd), not on a polled status."""
+        try:
+            pid = int((self.run / "qemu.pid").read_text().strip())
+            fd = os.pidfd_open(pid)
+        except (OSError, ValueError):
+            return not self.running()
+        try:
+            return bool(select.select([fd], [], [], limit)[0])
+        finally:
+            os.close(fd)
 
     def stop(self) -> None:
         self.vm("stop", check=False)
@@ -294,9 +299,9 @@ WantedBy=multi-user.target
 
 
 class Run:
-    def __init__(self, args: argparse.Namespace, variant: str) -> None:
+    def __init__(self, args: argparse.Namespace, variant: str, alone: bool) -> None:
         self.variant = variant
-        self.out = args.out / variant
+        self.out = args.out if alone else args.out / variant
         self.out.mkdir(parents=True, exist_ok=True)
         self.private = Path(tempfile.mkdtemp(prefix="signin-e2e-", dir="/var/tmp"))
         self.cycle = Cycle(f"signin-{variant}-{os.getpid()}", args.medium, args.storage, self.out)
@@ -393,9 +398,9 @@ class Run:
                             quiet=True)
         if code:
             raise Failed(f"the recipe could not be written: {SECRETS.redact(text.strip())[-300:]}")
-        sh.run("setsid -f sh -c '/usr/libexec/tilo/tilo-installer --unattended-file /run/e2e/recipe.json "
-               "--unattended-recovery-file /run/e2e/recovery >/run/e2e/unattended.log 2>&1; "
-               "echo $? >/run/e2e/rc' </dev/null >/dev/null 2>&1", 30)
+        sh.run("setsid -f sh -c 'echo $$ >/run/e2e/pid; /usr/libexec/tilo/tilo-installer "
+               "--unattended-file /run/e2e/recipe.json --unattended-recovery-file /run/e2e/recovery "
+               ">/run/e2e/unattended.log 2>&1; echo $? >/run/e2e/rc' </dev/null >/dev/null 2>&1", 30)
         started = time.monotonic()
         seen: list = []
         while True:
@@ -408,7 +413,11 @@ class Run:
                         f"{SECRETS.redact(str(stage))}")
             except Exception:  # noqa: BLE001 - the stage log is best effort; the rc file decides
                 pass
-            _, rc = sh.run("cat /run/e2e/rc 2>/dev/null || true", 30, quiet=True)
+            # Blocks in the guest until the installer's shell exits (at most 20 s, so the stages
+            # above keep being logged), instead of sleeping between looks.
+            _, rc = sh.run("until test -s /run/e2e/pid; do sleep 0.2; done; "
+                           "timeout 20 tail --pid=\"$(cat /run/e2e/pid)\" -f /dev/null; "
+                           "cat /run/e2e/rc 2>/dev/null || true", 60, quiet=True)
             if rc.strip():
                 break
             _, log = sh.run("tail -n 5 /run/e2e/unattended.log 2>/dev/null", 30, quiet=True)
@@ -417,7 +426,6 @@ class Run:
             if time.monotonic() - started > 3600:
                 raise Failed("the install did not finish within an hour; its last lines: "
                              + SECRETS.redact(log.strip())[-600:])
-            time.sleep(20)
         _, log = sh.run("tail -n 40 /run/e2e/unattended.log; rm -f /run/e2e/recipe.json", 30, quiet=True)
         self.save("unattended.log", log)
         self.facts["install_seconds"] = round(time.monotonic() - started)
@@ -1344,6 +1352,11 @@ cryptsetup close e2e-target
         self.facts["first_boot"] = result
 
 
+# The items each variant reports; a run of one variant (one of t's shards) owes only its own.
+VARIANT_ITEMS = {"one-secret": ("1", "2", "3", "4", "5", "8"),
+                 "separate-disk-secret": ("6", "7")}
+
+
 def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
     items: dict[str, dict] = {}
     for run in runs:
@@ -1359,6 +1372,8 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "7": "Separate disk passphrase: migration through the linked volume key, then boot sign-in",
         "8": "One secret: the recovery key the installer hands over opens its own keyslot after install",
     }
+    names = {key: name for key, name in names.items()
+             if any(key in VARIANT_ITEMS[run.variant] for run in runs)}
     for key in names:
         items.setdefault(key, {"status": "not-run", "summary": "an earlier step failed", "evidence": {}})
     document = {"items": {k: {"name": names[k], **items[k]} for k in sorted(items)},
@@ -1455,8 +1470,9 @@ def main(argv: list[str]) -> int:
     global LOG
     LOG = args.out / "log.txt"
     runs = []
-    for variant in args.variant or ["one-secret", "separate-disk-secret"]:
-        run = Run(args, variant)
+    variants = args.variant or list(VARIANT_ITEMS)
+    for variant in variants:
+        run = Run(args, variant, len(variants) == 1)
         runs.append(run)
         try:
             run.execute()

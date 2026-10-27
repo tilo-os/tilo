@@ -4666,16 +4666,17 @@ lifetime = "3600"
 # commit's development installer medium installs an encrypted system in a KVM guest with a
 # software TPM, which then boots through first boot, migration at the greeter, the boot sign-in
 # screen, wrong entries, lock screen/sudo/polkit and the recovery key; a second install uses the
-# installer's separate disk secret. `t outputs signin-e2e-x86_64` gives report.md and the boot
-# sign-in and greeter screenshots. Two installs and about a dozen cold boots: an hour or more on
-# top of the image and medium builds.
+# installer's separate disk secret. The two variants are shards, each an install and four boots
+# in a VM of its own; `t outputs signin-e2e-x86_64` gives each one's report.md and its boot
+# sign-in and greeter screenshots under signin-e2e/<variant>.
 [[check]]
 name = "signin-e2e-x86_64"
 run = "bash tools/ci/signin-e2e.sh /target/publish/dev-installer-medium/x86_64/disk.qcow2 /target/signin-e2e"
 setup = { run = "bash tools/ci/install-packages.sh tools/ci/packages/signin-e2e.txt", inputs = ["tools/ci/install-packages.sh", "tools/ci/packages/signin-e2e.txt"] }
 inputs = ["tools/ci/signin-e2e.sh", "tools/ci/install-packages.sh", "tools/ci/packages/signin-e2e.txt", "tools/ci/signin_e2e.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/probe-kvm.py"]
+shards = ["one-secret", "separate-disk-secret"]
 needs = ["dev-installer-medium-x86_64"]
-outputs = ["/target/signin-e2e/**"]
+outputs = ["/target/signin-e2e/{shard}/**"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 cost = "heavy"
