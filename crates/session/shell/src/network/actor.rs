@@ -3177,7 +3177,15 @@ impl ActorState {
         if self.gossip_topics.contains(&ws) {
             self.subscribe_topic(ws);
         }
-        if !self.native_routes.contains(ws)
+        // Only a topic travels through this device's hosts, as the
+        // heartbeat and a newly known host dial them: a room travels on its
+        // own route alone. A session to a host for anything else would be
+        // let go as soon as it came up (`handle_host_connected`), and its
+        // subscription would already have opened the workspace at the host,
+        // which keeps it: a person's home relay holding an empty copy of a
+        // room nobody chose it for.
+        if self.topics.contains_key(&ws)
+            && !self.native_routes.contains(ws)
             && let Some(identity) = self.host_identity.as_ref()
         {
             let mut routes = HostRouteScheduler {
