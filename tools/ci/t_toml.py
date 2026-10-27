@@ -487,12 +487,12 @@ CARGO_CHECKS: dict[str, dict] = {
         "packages": lambda packages, root: {"tilo-relay"},
         "inputs": [],
     },
-    # The imager's tests, archived for the micro-VM check that runs them on an ext4 of its own
-    # (imager-tests). Built beside workspace-unify, as the test family builds them, which
-    # decides only the features they are built with: its manifest counts, not the sources of
-    # every crate it names.
+    # The tests of the imager and its backend, archived for the micro-VM check that runs them on
+    # an ext4 of its own (imager-tests-<arch>). Built beside workspace-unify, as the test family
+    # builds them, which decides only the features they are built with: its manifest counts, not
+    # the sources of every crate it names.
     "imager-tests-build": {
-        "packages": lambda packages, root: {"imager"},
+        "packages": lambda packages, root: {"imager", "imager-backend"},
         "inputs": ["crates/dev/workspace-unify/Cargo.toml"],
     },
     # The browser desktop's wasm modules (tools/ci/publish/web-desktop-bundle.sh wasm): what wasm32
@@ -914,7 +914,7 @@ def untested(packages: dict[str, dict]) -> list[str]:
 
 def micro_vm_tested() -> list[str]:
     """The packages .config/nextest-filters.toml's `micro_vm` filter names: their tests run in a
-    micro-VM check of their own (imager-tests), not in the test family."""
+    micro-VM check of their own (imager-tests-<arch>), not in the test family."""
     import tomllib
     filters = tomllib.loads((ROOT / ".config" / "nextest-filters.toml").read_text(encoding="utf-8"))
     return re.findall(r"package\(([\w-]+)\)", filters["micro_vm"])
