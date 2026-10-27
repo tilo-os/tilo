@@ -484,12 +484,12 @@ CARGO_CHECKS: dict[str, dict] = {
         "packages": lambda packages, root: {"tilo-relay"},
         "inputs": [],
     },
-    # The imager's tests, archived for the micro-VM check that runs them on an ext4 of its own
-    # (imager-tests). Built beside workspace-unify, as the test family builds them, which
-    # decides only the features they are built with: its manifest counts, not the sources of
-    # every crate it names.
+    # The imager's and its backend's tests, archived for the micro-VM check that runs them on an
+    # ext4 of its own (imager-tests). Built beside workspace-unify, as the test family builds
+    # them, which decides only the features they are built with: its manifest counts, not the
+    # sources of every crate it names.
     "imager-tests-build": {
-        "packages": lambda packages, root: {"imager"},
+        "packages": lambda packages, root: {"imager", "imager-backend"},
         "inputs": ["crates/dev/workspace-unify/Cargo.toml"],
     },
     # The browser desktop's wasm modules (tools/ci/publish/web-desktop-bundle.sh wasm): what wasm32
