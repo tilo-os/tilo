@@ -1150,16 +1150,34 @@ pub(crate) fn answer_call(
 /// The first turn's text: the operations published now (the same while
 /// the agent's records are), then the briefing's state and the request,
 /// which change every plan. The apps' reference comes before it as system
-/// content ([`super::catalog::system_messages`]). Every id the reference or
-/// the operations show is revealed.
+/// content ([`super::catalog::system_messages`]); an operation published
+/// as it describes it (the same parameters and choices) is named without
+/// its signature again. Every id the reference or the operations show is
+/// revealed.
 pub(crate) fn first_turn_text(
     task: &str,
     briefing: &Briefing,
     catalogue: &Catalogue,
     revealed: &mut tilo_agent::tools::Revealed,
 ) -> String {
-    let turn =
-        tilo_agent::model::action_user_turn_listing(task, catalogue, revealed, MOST_PUBLISHED);
+    let described = |offer: &Offer| {
+        let key = (
+            offer.app.clone(),
+            offer.descriptor.resource_kind.clone(),
+            offer.descriptor.address.action.clone(),
+        );
+        briefing
+            .described
+            .get(&key)
+            .is_some_and(|signature| *signature == tilo_agent::tools::parameter_signature(offer))
+    };
+    let turn = tilo_agent::model::action_user_turn_listing(
+        task,
+        catalogue,
+        revealed,
+        MOST_PUBLISHED,
+        &described,
+    );
     for id in &briefing.shown {
         revealed.reveal(id.clone());
     }
