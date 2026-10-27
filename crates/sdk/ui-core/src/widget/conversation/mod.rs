@@ -51,7 +51,8 @@ pub use day::{ConversationClock, ConversationDay, DayBreaks, DayDividerFace, day
 pub use delivery::{DeliveryFace, DeliveryState, DeliveryStep};
 pub use draft::{DRAFT_PREVIEW_CHARS, DraftBook, line as draft_line, preview as draft_preview};
 pub use list::{
-    ConversationLine, ConversationList, ConversationRole, ListFace, bubble_colors, run_breaks,
+    ConversationLine, ConversationList, ConversationRole, ListCache, ListFace, ListWork,
+    bubble_colors, run_breaks,
 };
 pub use unread::UnreadDividerFace;
 
