@@ -131,6 +131,13 @@ impl<W: Widget + 'static> Placed<W> {
     }
 }
 
+/// A part of the painted page: retained widgets the page lays out and
+/// paints where it puts them. The painting app lists the part among its
+/// children ([`Self::child`], [`Self::child_mut`]), so the window reaches its
+/// controls as any retained child's: the actions they are bound to and what
+/// they publish. Laid out by the page rather than the window, the part has
+/// no node of the window's own: the page represents it in its accessibility
+/// tree ([`Self::access_nodes`], [`Self::perform`]).
 pub struct PagePart<A> {
     pub host: Placed<Column>,
     key: String,
@@ -173,6 +180,8 @@ impl<A> PagePart<A> {
             .map_or_else(Vec::new, |column| collect(column, &self.key, self.target))
     }
 
+    /// Operate the control whose test id is `id`, as assistive technology
+    /// asked through [`Self::access_nodes`].
     pub fn perform(
         &mut self,
         id: &str,
@@ -208,6 +217,19 @@ impl<A> PagePart<A> {
             asked: Rc::default(),
             target,
         }
+    }
+
+    /// The part's widgets while they are placed in view: one of the
+    /// painting app's children, which its accessibility tree represents.
+    pub fn child(&self) -> Option<&dyn Widget> {
+        self.host.visible().map(|column| column as &dyn Widget)
+    }
+
+    /// [`Self::child`], to route to.
+    pub fn child_mut(&mut self) -> Option<&mut dyn Widget> {
+        self.host
+            .visible_mut()
+            .map(|column| column as &mut dyn Widget)
     }
 
     /// Bring the part up to date: rebuild it with `build` when `key` says

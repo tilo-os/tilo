@@ -530,6 +530,7 @@ impl Widget for MusicApp {
                 .iter()
                 .filter_map(|grid| grid.host.visible().map(|grid| grid as &dyn Widget)),
         );
+        children.extend(self.page_parts.iter().filter_map(PagePart::child));
         let mode = self.source_widget_mode();
         match mode {
             2 | 3 => children.extend(
@@ -556,6 +557,27 @@ impl Widget for MusicApp {
         children
     }
 
+    /// The page parts are represented in the page's own accessibility tree
+    /// ([`PagePart::access_nodes`]), where they are operable.
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        let before = self
+            .track_tables
+            .iter()
+            .filter(|slot| slot.table.host.visible().is_some())
+            .count()
+            + self
+                .media_grids
+                .iter()
+                .filter(|grid| grid.host.visible().is_some())
+                .count();
+        let parts = self
+            .page_parts
+            .iter()
+            .filter(|part| part.child().is_some())
+            .count();
+        (before..before + parts).contains(&child_index)
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mode = self.source_widget_mode();
         let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
@@ -570,6 +592,7 @@ impl Widget for MusicApp {
                 .visible_mut()
                 .map(|grid| grid as &mut (dyn Widget + '_))
         }));
+        children.extend(self.page_parts.iter_mut().filter_map(PagePart::child_mut));
         match mode {
             2 | 3 => children.extend(
                 self.source_buttons
@@ -657,6 +680,22 @@ impl Widget for MusicApp {
             self.dirty = true;
         }
         self.drain_table_requests(state);
+        // What the page's own controls asked for through the host (an
+        // agent's press, a control's published effect) is carried out here.
+        let asked = self
+            .page_parts
+            .iter()
+            .flat_map(PagePart::take_asked)
+            .chain(
+                self.media_grids
+                    .iter()
+                    .flat_map(super::media_grid::MediaGridHost::take_asked),
+            )
+            .collect::<Vec<_>>();
+        for action in asked {
+            self.dispatch(action, state);
+            self.dirty = true;
+        }
         // Progress in-flight downloads and re-apply their device-local cache
         // projection on top of the just-reloaded shared library.
         self.advance_downloads(state);
