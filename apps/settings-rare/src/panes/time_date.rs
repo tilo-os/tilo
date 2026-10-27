@@ -416,6 +416,7 @@ pub const AUTOMATIC_ZONE: &str = "automatic";
     serde::Deserialize,
     ui::tilo_resource::Model,
 )]
+#[model(defaults)]
 pub struct ClockPrefs {
     /// The zone follows the device's location.
     #[serde(default)]

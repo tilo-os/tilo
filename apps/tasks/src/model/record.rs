@@ -161,7 +161,12 @@ fn push_message(issue: &mut Issue, cx: &mut ActionCx, message: Message) {
     issue.comments.push(id, message);
 }
 
-#[resource(kind = "tasks.tracker", label = "Tasks", search = crate::model::search::entries)]
+#[resource(
+    kind = "tasks.tracker",
+    label = "Tasks",
+    search = crate::model::search::entries,
+    effects = crate::note::TasksEffect
+)]
 impl Tracker {
     /// Create an issue.
     ///

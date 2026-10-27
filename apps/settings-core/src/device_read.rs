@@ -58,7 +58,16 @@ impl<T: Send + 'static> DeviceRead<T> {
         let value = self.read.take()?.downcast::<T>().ok()?;
         Some(*value)
     }
+
+    /// What waits, off the UI thread, for the started read to end, after
+    /// which [`Self::take`] answers at once. `None` when no read runs.
+    pub fn wait(&self) -> Option<Wait> {
+        self.read.wait()
+    }
 }
+
+/// Waiting for a [`DeviceRead`] to end; run only off the UI thread.
+pub type Wait = Box<dyn FnOnce() + Send>;
 
 /// [`DeviceRead`] for a result of any type: the reading, compiled once.
 #[derive(Default)]
@@ -98,6 +107,24 @@ impl ErasedRead {
                 true
             }
         }
+    }
+
+    /// The running read's result is relayed through the waiter, so the
+    /// read is still on its way to the area until the waiter has it.
+    fn wait(&self) -> Option<Wait> {
+        let mut pending = self.pending.borrow_mut();
+        let running = pending.take()?;
+        let (sender, relayed) = std::sync::mpsc::channel();
+        *pending = Some(relayed);
+        let wake = ui::WakeHandle::new();
+        Some(Box::new(move || {
+            off_ui_thread();
+            if let Ok(value) = running.recv() {
+                wake.wake();
+                let _ = sender.send(value);
+                wake.wake();
+            }
+        }))
     }
 
     fn take(&self) -> Option<Erased> {

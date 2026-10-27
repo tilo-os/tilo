@@ -1613,10 +1613,10 @@ async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
             .count()
     };
 
-    let mut followed = requested::Followed::default();
+    let mut known = requested::Followed::default();
     push("0.1.0-dev.1", &first).await;
-    follower.follow_requests(&mut followed).await;
-    let (installation, _) = followed.running(ENTRY).expect("the pushed bot runs");
+    follower.follow_requests(&mut known).await;
+    let (installation, _) = known.running(ENTRY).expect("the pushed bot runs");
     let installation = installation.to_owned();
     assert_eq!(
         row_program(installation.clone()).await,
@@ -1626,8 +1626,8 @@ async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
     let first_answers = welcomes(rooms.clone(), room.clone()).await;
 
     push("0.1.0-dev.2", &second).await;
-    follower.follow_requests(&mut followed).await;
-    let (now, release) = followed.running(ENTRY).expect("the bot still runs");
+    follower.follow_requests(&mut known).await;
+    let (now, release) = known.running(ENTRY).expect("the bot still runs");
     assert_eq!(now, installation, "the same bot, not a new one");
     assert!(release.starts_with("0.1.0-dev.2#"), "{release}");
     assert_eq!(

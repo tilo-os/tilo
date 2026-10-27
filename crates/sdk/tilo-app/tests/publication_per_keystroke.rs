@@ -36,7 +36,11 @@ pub struct Checklist {
     pub tasks: Collection<Task>,
 }
 
-#[resource(kind = "test.keystroke-checklist", label = "Checklist")]
+#[resource(
+    kind = "test.keystroke-checklist",
+    label = "Checklist",
+    app = "so.tilo.test-keystroke-checklist"
+)]
 impl Checklist {
     /// Set the next task's title.
     #[action]

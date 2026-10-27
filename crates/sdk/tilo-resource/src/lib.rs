@@ -150,8 +150,8 @@ pub mod vocabulary;
 
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
-    Outcome, Params, Refusal, Reverting, Stamped, Undoing, fresh_uuid, minted_ids, reverting_type,
-    take_minted,
+    Outcome, Params, Refusal, Reverting, Stamped, Undoing, fresh_uuid, minted_ids, minted_keys,
+    reverting_type, take_minted,
 };
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;
@@ -601,6 +601,91 @@ pub mod __private {
     impl<T> NoDefault<T> for &DefaultOf<T> {
         fn default_value(&self) -> Option<T> {
             None
+        }
+    }
+
+    /// A number a field's `#[model(range = ..)]` bounds: its value, `None`
+    /// for an absent optional one.
+    pub trait DeclaredNumber {
+        fn declared_number(&self) -> Option<f64>;
+    }
+
+    macro_rules! declared_number {
+        ($($ty:ty),*) => {$(
+            impl DeclaredNumber for $ty {
+                #[allow(clippy::cast_precision_loss, clippy::cast_lossless, reason = "bounds are compared, not stored")]
+                fn declared_number(&self) -> Option<f64> {
+                    Some(*self as f64)
+                }
+            }
+        )*};
+    }
+    declared_number!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, f32, f64);
+
+    impl<T: DeclaredNumber> DeclaredNumber for Option<T> {
+        fn declared_number(&self) -> Option<f64> {
+            self.as_ref().and_then(DeclaredNumber::declared_number)
+        }
+    }
+
+    /// A text a field's `#[model(choices = ..)]` names: its value, `None` for
+    /// an absent optional one.
+    pub trait DeclaredChoice {
+        fn declared_choice(&self) -> Option<&str>;
+    }
+
+    impl DeclaredChoice for String {
+        fn declared_choice(&self) -> Option<&str> {
+            Some(self)
+        }
+    }
+
+    impl<T: DeclaredChoice> DeclaredChoice for Option<T> {
+        fn declared_choice(&self) -> Option<&str> {
+            self.as_ref().and_then(DeclaredChoice::declared_choice)
+        }
+    }
+
+    /// A declared range's bound, as the number it is.
+    #[must_use]
+    pub fn declared_bound(bound: &impl DeclaredNumber) -> f64 {
+        bound.declared_number().unwrap_or(f64::NAN)
+    }
+
+    /// Refused unless `value` lies within `low..=high`; `key` names the
+    /// field as a field edit's path does.
+    ///
+    /// # Errors
+    /// The value is outside the declared range, or not a number.
+    pub fn declared_range(
+        value: &impl DeclaredNumber,
+        low: f64,
+        high: f64,
+        key: &str,
+    ) -> Result<(), crate::Refusal> {
+        match value.declared_number() {
+            Some(number) if !(number.is_finite() && (low..=high).contains(&number)) => Err(
+                crate::Refusal::new(format!("`{key}` is between {low} and {high}")),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    /// Refused unless `value` is one of `choices`.
+    ///
+    /// # Errors
+    /// The value is none of the declared choices.
+    pub fn declared_choices(
+        value: &impl DeclaredChoice,
+        choices: &[&str],
+        key: &str,
+    ) -> Result<(), crate::Refusal> {
+        match value.declared_choice() {
+            Some(chosen) if !choices.contains(&chosen) => Err(crate::Refusal::new(format!(
+                "`{key}` is one of {}",
+                choices.join(", ")
+            ))),
+            _ => Ok(()),
         }
     }
 

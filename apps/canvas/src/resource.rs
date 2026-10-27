@@ -20,154 +20,169 @@ use crate::model::Artwork;
 use crate::selection::{Combine as Combination, Select as Selecting, UseSelection as SelectionUse};
 use crate::svg::ImportSvg as SvgImport;
 
+/// The kind the artwork's typed references name, so a control binding one
+/// finds the action it publishes.
+pub const ARTWORK_KIND: tilo_resource::ResourceKind = tilo_resource::ResourceKind::of::<Artwork>();
+
 /// Parts of the artwork's verbs that controls bind.
 impl Artwork {
     /// `remove-marks` by id.
     pub const REMOVE_MARKS_BY_ID: ActionRef<Self, Vec<String>> =
-        ActionRef::new("remove-marks", &["ids"]);
+        ActionRef::new("remove-marks", &["ids"], ARTWORK_KIND);
     /// `add-layer`: its name and medium (empty for plain).
     pub const ADD_LAYER_OF: ActionRef<Self, (String, String)> =
-        ActionRef::new("add-layer", &["name", "medium"]);
+        ActionRef::new("add-layer", &["name", "medium"], ARTWORK_KIND);
     /// `edit-layer` showing or hiding a layer.
     pub const SET_LAYER_VISIBLE: ActionRef<Self, (String, bool)> =
-        ActionRef::new("edit-layer", &["id", "visible"]);
+        ActionRef::new("edit-layer", &["id", "visible"], ARTWORK_KIND);
     /// `edit-layer` moving a layer `front`, `back`, `forward` or `backward`.
     pub const MOVE_LAYER: ActionRef<Self, (String, String)> =
-        ActionRef::new("edit-layer", &["id", "to"]);
+        ActionRef::new("edit-layer", &["id", "to"], ARTWORK_KIND);
     /// `remove-layer` by id.
-    pub const REMOVE_LAYER_BY_ID: ActionRef<Self, String> = ActionRef::new("remove-layer", &["id"]);
+    pub const REMOVE_LAYER_BY_ID: ActionRef<Self, String> =
+        ActionRef::new("remove-layer", &["id"], ARTWORK_KIND);
     /// `arrange`: marks, then `front`, `back`, `forward` or `backward`.
     pub const ARRANGE_TO: ActionRef<Self, (Vec<String>, String)> =
-        ActionRef::new("arrange", &["ids", "to"]);
+        ActionRef::new("arrange", &["ids", "to"], ARTWORK_KIND);
     /// `edit-layer` renaming a layer.
     pub const RENAME_LAYER: ActionRef<Self, (String, String)> =
-        ActionRef::new("edit-layer", &["id", "name"]);
+        ActionRef::new("edit-layer", &["id", "name"], ARTWORK_KIND);
     /// `edit-layer` placing a layer in an organisational folder.
     pub const SET_LAYER_GROUP: ActionRef<Self, (String, String)> =
-        ActionRef::new("edit-layer", &["id", "group"]);
+        ActionRef::new("edit-layer", &["id", "group"], ARTWORK_KIND);
     /// `edit-layer` locking or unlocking a layer.
     pub const SET_LAYER_LOCKED: ActionRef<Self, (String, bool)> =
-        ActionRef::new("edit-layer", &["id", "locked"]);
+        ActionRef::new("edit-layer", &["id", "locked"], ARTWORK_KIND);
     /// `edit-layer` setting a layer's opacity.
     pub const SET_LAYER_OPACITY: ActionRef<Self, (String, f64)> =
-        ActionRef::new("edit-layer", &["id", "opacity"]);
+        ActionRef::new("edit-layer", &["id", "opacity"], ARTWORK_KIND);
     /// `edit-layer` changing the medium that paints a layer.
     pub const SET_LAYER_MEDIUM: ActionRef<Self, (String, String)> =
-        ActionRef::new("edit-layer", &["id", "medium"]);
+        ActionRef::new("edit-layer", &["id", "medium"], ARTWORK_KIND);
     /// `edit-marks` setting the fill.
     pub const SET_FILL: ActionRef<Self, (Vec<String>, String)> =
-        ActionRef::new("edit-marks", &["ids", "fill"]);
+        ActionRef::new("edit-marks", &["ids", "fill"], ARTWORK_KIND);
     /// `edit-marks` setting a gradient fill.
     pub const SET_GRADIENT: ActionRef<Self, (Vec<String>, crate::model::Gradient)> =
-        ActionRef::new("edit-marks", &["ids", "gradient"]);
+        ActionRef::new("edit-marks", &["ids", "gradient"], ARTWORK_KIND);
     /// `edit-marks` setting the outline colour.
     pub const SET_STROKE: ActionRef<Self, (Vec<String>, String)> =
-        ActionRef::new("edit-marks", &["ids", "stroke"]);
+        ActionRef::new("edit-marks", &["ids", "stroke"], ARTWORK_KIND);
     /// `edit-marks` setting the outline width.
     pub const SET_STROKE_WIDTH: ActionRef<Self, (Vec<String>, f64)> =
-        ActionRef::new("edit-marks", &["ids", "stroke_width"]);
+        ActionRef::new("edit-marks", &["ids", "stroke_width"], ARTWORK_KIND);
     /// `edit-marks` setting the opacity.
     pub const SET_OPACITY: ActionRef<Self, (Vec<String>, f64)> =
-        ActionRef::new("edit-marks", &["ids", "opacity"]);
+        ActionRef::new("edit-marks", &["ids", "opacity"], ARTWORK_KIND);
     /// `edit-marks` setting the blend mode.
     pub const SET_BLEND: ActionRef<Self, (Vec<String>, String)> =
-        ActionRef::new("edit-marks", &["ids", "blend"]);
+        ActionRef::new("edit-marks", &["ids", "blend"], ARTWORK_KIND);
     /// `edit-marks` setting the outline dashes.
     pub const SET_DASH: ActionRef<Self, (Vec<String>, Vec<f64>)> =
-        ActionRef::new("edit-marks", &["ids", "dash"]);
+        ActionRef::new("edit-marks", &["ids", "dash"], ARTWORK_KIND);
     /// `edit-marks` setting the outline ends.
     pub const SET_CAP: ActionRef<Self, (Vec<String>, String)> =
-        ActionRef::new("edit-marks", &["ids", "cap"]);
+        ActionRef::new("edit-marks", &["ids", "cap"], ARTWORK_KIND);
     /// `edit-marks` setting the outline corners.
     pub const SET_JOIN: ActionRef<Self, (Vec<String>, String)> =
-        ActionRef::new("edit-marks", &["ids", "join"]);
+        ActionRef::new("edit-marks", &["ids", "join"], ARTWORK_KIND);
     /// `edit-marks` setting the shadow.
     pub const SET_SHADOW: ActionRef<Self, (Vec<String>, crate::model::Shadow)> =
-        ActionRef::new("edit-marks", &["ids", "shadow"]);
+        ActionRef::new("edit-marks", &["ids", "shadow"], ARTWORK_KIND);
     /// `edit-marks` replacing a mark's geometry (a text's style).
     pub const SET_SHAPE: ActionRef<Self, (Vec<String>, crate::model::Shape)> =
-        ActionRef::new("edit-marks", &["ids", "shape"]);
+        ActionRef::new("edit-marks", &["ids", "shape"], ARTWORK_KIND);
     /// `edit-marks` setting strokes' brush preset.
     pub const SET_BRUSH: ActionRef<Self, (Vec<String>, String)> =
-        ActionRef::new("edit-marks", &["ids", "brush"]);
+        ActionRef::new("edit-marks", &["ids", "brush"], ARTWORK_KIND);
     /// `edit-marks` setting strokes' width.
     pub const SET_SIZE: ActionRef<Self, (Vec<String>, f64)> =
-        ActionRef::new("edit-marks", &["ids", "size"]);
+        ActionRef::new("edit-marks", &["ids", "size"], ARTWORK_KIND);
     /// `edit-marks` setting strokes' brush dynamics or a medium's parameters.
     pub const SET_PARAMS: ActionRef<Self, (Vec<String>, std::collections::BTreeMap<String, f64>)> =
-        ActionRef::new("edit-marks", &["ids", "params"]);
+        ActionRef::new("edit-marks", &["ids", "params"], ARTWORK_KIND);
     /// `edit-marks` smoothing strokes' paths.
     pub const SMOOTH: ActionRef<Self, (Vec<String>, f64)> =
-        ActionRef::new("edit-marks", &["ids", "smooth"]);
+        ActionRef::new("edit-marks", &["ids", "smooth"], ARTWORK_KIND);
     /// `edit-marks` simplifying strokes' paths.
     pub const SIMPLIFY: ActionRef<Self, (Vec<String>, f64)> =
-        ActionRef::new("edit-marks", &["ids", "simplify"]);
+        ActionRef::new("edit-marks", &["ids", "simplify"], ARTWORK_KIND);
     /// `edit-marks` joining strokes into the first.
     pub const MERGE: ActionRef<Self, (Vec<String>, bool)> =
-        ActionRef::new("edit-marks", &["ids", "merge"]);
+        ActionRef::new("edit-marks", &["ids", "merge"], ARTWORK_KIND);
     /// `set-artwork` with a title.
-    pub const SET_TITLE: ActionRef<Self, String> = ActionRef::new("set-artwork", &["title"]);
+    pub const SET_TITLE: ActionRef<Self, String> =
+        ActionRef::new("set-artwork", &["title"], ARTWORK_KIND);
     /// `set-artwork` with a width.
-    pub const SET_WIDTH: ActionRef<Self, f64> = ActionRef::new("set-artwork", &["width"]);
+    pub const SET_WIDTH: ActionRef<Self, f64> =
+        ActionRef::new("set-artwork", &["width"], ARTWORK_KIND);
     /// `set-artwork` with a height.
-    pub const SET_HEIGHT: ActionRef<Self, f64> = ActionRef::new("set-artwork", &["height"]);
+    pub const SET_HEIGHT: ActionRef<Self, f64> =
+        ActionRef::new("set-artwork", &["height"], ARTWORK_KIND);
     /// `set-artwork` with a ground texture.
-    pub const SET_TEXTURE: ActionRef<Self, String> = ActionRef::new("set-artwork", &["texture"]);
+    pub const SET_TEXTURE: ActionRef<Self, String> =
+        ActionRef::new("set-artwork", &["texture"], ARTWORK_KIND);
     /// `set-artwork` with a ground colour.
     pub const SET_GROUND: ActionRef<Self, String> =
-        ActionRef::new("set-artwork", &["ground_colour"]);
+        ActionRef::new("set-artwork", &["ground_colour"], ARTWORK_KIND);
     /// `undo`: the caller's last step.
-    pub const UNDO: ActionRef<Self, ()> = ActionRef::new("undo", &[]);
+    pub const UNDO: ActionRef<Self, ()> = ActionRef::new("undo", &[], ARTWORK_KIND);
     /// `redo`: what the last undo took back.
-    pub const REDO: ActionRef<Self, ()> = ActionRef::new("redo", &[]);
+    pub const REDO: ActionRef<Self, ()> = ActionRef::new("redo", &[], ARTWORK_KIND);
     /// `undo` of an agent run, whole.
-    pub const UNDO_RUN: ActionRef<Self, String> = ActionRef::new("undo", &["run"]);
+    pub const UNDO_RUN: ActionRef<Self, String> = ActionRef::new("undo", &["run"], ARTWORK_KIND);
     /// `restore` a past version as a new change.
-    pub const RESTORE: ActionRef<Self, String> = ActionRef::new("restore", &["version"]);
+    pub const RESTORE: ActionRef<Self, String> =
+        ActionRef::new("restore", &["version"], ARTWORK_KIND);
     /// `select` inverting the selection.
-    pub const SELECT_INVERT: ActionRef<Self, bool> = ActionRef::new("select", &["invert"]);
+    pub const SELECT_INVERT: ActionRef<Self, bool> =
+        ActionRef::new("select", &["invert"], ARTWORK_KIND);
     /// `select` growing (or, negative, shrinking) the selection by units.
-    pub const SELECT_GROW: ActionRef<Self, f64> = ActionRef::new("select", &["grow"]);
+    pub const SELECT_GROW: ActionRef<Self, f64> = ActionRef::new("select", &["grow"], ARTWORK_KIND);
     /// `select` softening the selection's edge over units.
-    pub const SELECT_FEATHER: ActionRef<Self, f64> = ActionRef::new("select", &["feather"]);
+    pub const SELECT_FEATHER: ActionRef<Self, f64> =
+        ActionRef::new("select", &["feather"], ARTWORK_KIND);
     /// `select` with a mode alone: `none` selects nothing.
-    pub const SELECT_MODE: ActionRef<Self, String> = ActionRef::new("select", &["mode"]);
+    pub const SELECT_MODE: ActionRef<Self, String> =
+        ActionRef::new("select", &["mode"], ARTWORK_KIND);
     /// `combine`: marks, then `union`, `subtract`, `intersect` or `exclude`.
     pub const COMBINE_AS: ActionRef<Self, (Vec<String>, String)> =
-        ActionRef::new("combine", &["ids", "op"]);
+        ActionRef::new("combine", &["ids", "op"], ARTWORK_KIND);
     /// `align` spacing marks evenly, `horizontal` or `vertical`.
     pub const DISTRIBUTE: ActionRef<Self, (Vec<String>, String)> =
-        ActionRef::new("align", &["ids", "distribute"]);
+        ActionRef::new("align", &["ids", "distribute"], ARTWORK_KIND);
     /// `edit-layer` giving a layer a mask (`reveal`, `hide`) or removing it.
     pub const SET_LAYER_MASK: ActionRef<Self, (String, String)> =
-        ActionRef::new("edit-layer", &["id", "mask"]);
+        ActionRef::new("edit-layer", &["id", "mask"], ARTWORK_KIND);
     /// `edit-layer` inverting a layer's mask.
     pub const SET_MASK_INVERT: ActionRef<Self, (String, bool)> =
-        ActionRef::new("edit-layer", &["id", "invert"]);
+        ActionRef::new("edit-layer", &["id", "invert"], ARTWORK_KIND);
     /// `edit-layer` clipping a layer to the one below.
     pub const SET_LAYER_CLIP: ActionRef<Self, (String, bool)> =
-        ActionRef::new("edit-layer", &["id", "clip"]);
+        ActionRef::new("edit-layer", &["id", "clip"], ARTWORK_KIND);
     /// `checkpoint`: name the current version.
-    pub const CHECKPOINT: ActionRef<Self, String> = ActionRef::new("checkpoint", &["name"]);
+    pub const CHECKPOINT: ActionRef<Self, String> =
+        ActionRef::new("checkpoint", &["name"], ARTWORK_KIND);
     /// `edit-marks` changing colour and tone adjustments.
     pub const SET_ADJUST: ActionRef<Self, (Vec<String>, crate::model::Adjust)> =
-        ActionRef::new("edit-marks", &["ids", "adjust"]);
+        ActionRef::new("edit-marks", &["ids", "adjust"], ARTWORK_KIND);
     /// `edit-marks` cropping a picture: fractions, or `[]` for all of it.
     pub const SET_CROP: ActionRef<Self, (Vec<String>, Vec<f64>)> =
-        ActionRef::new("edit-marks", &["ids", "crop"]);
+        ActionRef::new("edit-marks", &["ids", "crop"], ARTWORK_KIND);
     /// `edit-marks` straightening a picture, in degrees.
     pub const SET_PIXELATED: ActionRef<Self, (Vec<String>, bool)> =
-        ActionRef::new("edit-marks", &["ids", "pixelated"]);
+        ActionRef::new("edit-marks", &["ids", "pixelated"], ARTWORK_KIND);
     pub const SET_STRAIGHTEN: ActionRef<Self, (Vec<String>, f64)> =
-        ActionRef::new("edit-marks", &["ids", "straighten"]);
+        ActionRef::new("edit-marks", &["ids", "straighten"], ARTWORK_KIND);
     /// `edit-marks` mirroring marks `horizontal` or `vertical`.
     pub const FLIP: ActionRef<Self, (Vec<String>, String)> =
-        ActionRef::new("edit-marks", &["ids", "flip"]);
+        ActionRef::new("edit-marks", &["ids", "flip"], ARTWORK_KIND);
     /// `set-artwork` cropping the artwork to what a mark shows.
-    pub const FIT_ARTWORK: ActionRef<Self, String> = ActionRef::new("set-artwork", &["fit"]);
+    pub const FIT_ARTWORK: ActionRef<Self, String> =
+        ActionRef::new("set-artwork", &["fit"], ARTWORK_KIND);
     /// `edit-layer` changing a layer's adjustments.
     pub const SET_LAYER_ADJUST: ActionRef<Self, (String, Box<crate::model::Adjust>)> =
-        ActionRef::new("edit-layer", &["id", "adjust"]);
+        ActionRef::new("edit-layer", &["id", "adjust"], ARTWORK_KIND);
 }
 
 /// Look at the artwork, or a region of it, as a picture.
@@ -304,7 +319,7 @@ pub struct SaveArtwork {
 /// file of it. Each takes its fields as named arguments, as its schema
 /// describes them, and answers with JSON.
 #[derive(Clone, Debug, PartialEq, ui::tilo_resource::Effect)]
-#[effect(operation = "canvas.view")]
+#[effect(operation = "canvas.view", app = "so.tilo.canvas")]
 pub enum ViewOp {
     /// Look at the artwork.
     ///
@@ -666,6 +681,7 @@ mod prepare {
 #[resource(
     kind = "canvas.artwork",
     label = "Artwork",
+    app = "so.tilo.canvas",
     initialize = Artwork::genesis,
     load = Artwork::loaded,
     lands = Artwork::lands,

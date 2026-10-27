@@ -1,6 +1,6 @@
 //! The drivers integration tests press: thin pass-throughs to the production action each one names, so a test drives the exact path the window does.
 
-use super::*;
+use super::{BranchAction, ChangeArea, Confirm, ConfirmChoice, GitClientApp, change_list};
 
 impl GitClientApp {
     // --- Test-facing drivers --------------------------------------------

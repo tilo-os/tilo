@@ -665,3 +665,211 @@ fn choose(app: &mut TestApp<App>, name: &str) {
         .unwrap_or_else(|error| panic!("{name} is chosen: {error}"));
     let _ = harness.poll_frame();
 }
+
+/// Notes as the session's door reaches it: makes the note each call asks
+/// for and answers its resource, as `create-page` does.
+#[derive(Default)]
+struct NotesDoor {
+    asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+}
+
+impl ui::tilo_actions::remote::ActionHost for NotesDoor {
+    fn query(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: ui::tilo_actions::remote::CatalogueQuery,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
+    > {
+        ui::tilo_actions::remote::Pending::ready(Err(
+            ui::tilo_actions::remote::ActionHostError::NotPermitted,
+        ))
+    }
+
+    fn invoke(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        request: ui::tilo_actions::remote::InvokeRequest,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<
+            ui::tilo_actions::remote::InvocationReceipt,
+            ui::tilo_actions::remote::ActionHostError,
+        >,
+    > {
+        let invocation = request.invocation;
+        let count = {
+            let mut asked = self.asked.lock().unwrap();
+            asked.push(request);
+            asked.len()
+        };
+        let note = format!("notes.notebook/pages/{count}");
+        ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
+            invocation,
+            status: ui::tilo_actions::remote::ReceiptStatus::Completed {
+                output: ui::tilo_actions::ActionOutput {
+                    value: Some(json!({ "resource": note })),
+                    resources: vec![note],
+                },
+            },
+        }))
+    }
+
+    fn observe(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: &ui::tilo_actions::InvocationId,
+    ) -> Option<ui::tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _: &ui::tilo_actions::remote::Caller,
+        _: &ui::tilo_actions::InvocationId,
+    ) -> ui::tilo_actions::remote::Pending<Result<(), ui::tilo_actions::remote::ActionHostError>>
+    {
+        ui::tilo_actions::remote::Pending::ready(Ok(()))
+    }
+}
+
+/// Writing an issue's note asks Notes through its own published action, as
+/// whoever asked: an agent's invocation is continued, so the host decides
+/// the note as the agent's. The note Notes made is linked once, as theirs,
+/// and their undo takes the link back. Pressed here, it is the app's own
+/// request.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one story: the agent's note, its undo, then the person's press"
+)]
+fn an_issues_note_is_made_by_notes_for_whoever_asked_and_linked_once() {
+    use ui::tilo_actions::{ActionInvoker, InvocationUpdate};
+    let mut env = tilo_test_env::ScopedEnv::new();
+    let room = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
+    env.set("TILO_WORKSPACE_ID", room);
+    let door = std::sync::Arc::new(NotesDoor::default());
+    let _served = ui::RemoteActions::enter(
+        door.clone(),
+        ui::tilo_actions::remote::Caller::local_person("ada"),
+    );
+    let mut app = open();
+    app.call("create", json!({ "title": "Plan the launch" }))
+        .expect("create");
+    let issue = only(&app);
+    let before = app.versions().len();
+
+    let scribe = ActionInvoker::actor("agent:scribe");
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: app.harness().component_instance_id().unwrap(),
+        address: ui::tilo_resource::Effect::address_on(
+            &tasks::TasksEffect::WriteNote {
+                issue: issue.clone(),
+            },
+            "tasks.tracker",
+        ),
+    };
+    let (invocation, _) = app
+        .harness()
+        .start_bound_job_for(
+            Some(scribe.clone()),
+            &address,
+            json!({ "issue": issue }).as_object().unwrap(),
+            true,
+        )
+        .expect("the agent's invocation starts");
+    app.settle();
+
+    let asked = door.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1, "one call of Notes: {asked:?}");
+    let notebook = ui::tilo_reference::ResourceRef::whole("notes.notebook", "notes.notebook", "");
+    assert_eq!(
+        asked[0].target,
+        notebook.action_target(room, tasks::NOTES, None, "create-page")
+    );
+    assert_eq!(
+        asked[0].argument,
+        ui::tilo_actions::remote::InvokeArgument::Json(
+            json!({ "title": "#1 Plan the launch" })
+                .as_object()
+                .unwrap()
+                .clone()
+        )
+    );
+    assert_eq!(
+        asked[0].on_behalf_of,
+        Some(invocation),
+        "the call continues the agent's invocation"
+    );
+    assert!(
+        app.harness()
+            .job_updates(invocation)
+            .iter()
+            .any(|update| matches!(
+                update,
+                InvocationUpdate::Succeeded { output, .. }
+                    if output.value == Some(json!({ "resource": "notes.notebook/pages/1" }))
+            )),
+        "{:?}",
+        app.harness().job_updates(invocation)
+    );
+
+    let links: Vec<_> = app
+        .state()
+        .issues
+        .get(&issue)
+        .unwrap()
+        .links
+        .values()
+        .cloned()
+        .collect();
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(links[0].app, tasks::NOTES);
+    assert_eq!(links[0].kind, "notes.notebook.pages");
+    assert_eq!(links[0].resource, "notes.notebook/pages/1");
+    assert_eq!(links[0].label, "#1 Plan the launch");
+    assert_eq!(links[0].record, None);
+
+    let versions = app.versions();
+    assert_eq!(versions.len(), before + 1, "one step: {versions:?}");
+    let by = versions
+        .last()
+        .and_then(|version| version.context.as_ref())
+        .and_then(|context| context.invoker.as_ref())
+        .expect("the step names who made it");
+    assert_eq!(by.actor, "agent:scribe");
+
+    app.call_by(scribe, "tasks.tracker", "undo", json!({}))
+        .expect("the agent undoes its step");
+    assert!(app.state().issues.get(&issue).unwrap().links.is_empty());
+
+    // The person pressing it in the window: no invocation of anyone else's
+    // is behind it, so it is the app's own request of Notes.
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    let button = app
+        .harness()
+        .a11y_node_named("Write a note")
+        .expect("the issue offers to write its note");
+    app.harness()
+        .perform_a11y_action(button, &ui::a11y::Action::Activate)
+        .unwrap();
+    app.settle();
+    let asked = door.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[1].on_behalf_of, None);
+    assert_eq!(
+        app.state().issues.get(&issue).unwrap().links.len(),
+        1,
+        "the note linked as the person's"
+    );
+}
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(|| {
+        ui::framework::testing::TestApp::<App>::for_person("ada")
+    })
+    .unwrap_or_else(|error| panic!("{error}"));
+}

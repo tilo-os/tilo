@@ -297,6 +297,7 @@ mod palette_window_tests;
 mod retained_layout;
 mod root_wake;
 mod search_open;
+mod sidebar_button;
 mod slot_row;
 pub use slot_row::WINDOW_SLOTS;
 mod cursor;
@@ -306,6 +307,7 @@ pub mod test_support;
 pub use self::app::{HeadlessApp, MOUNT_VIEWPORT, fixture_runner_inputs};
 mod tooltip_layer;
 mod window_bar;
+pub use sidebar_button::SidebarShown;
 pub use window_bar::{WindowBarNotice, WindowBarNoticeButton};
 
 /// What answers another provider's action in a harness, in place of the

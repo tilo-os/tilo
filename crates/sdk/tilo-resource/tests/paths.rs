@@ -738,8 +738,12 @@ fn a_path_reads_its_value_and_names_its_tree_node() {
             .action(tilo_resource::FIELD_EDIT)
     );
     assert_eq!(
-        Library::STAR.key("app"),
-        tilo_resource::ActionKey::new("app", "test.library", "star")
+        Library::STAR.key(),
+        tilo_resource::ActionKey::new(
+            <Library as tilo_resource::Resource>::APP_ID,
+            "test.library",
+            "star",
+        )
     );
 }
 

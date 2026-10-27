@@ -558,3 +558,13 @@ fn the_root_is_a_named_window() {
     assert_eq!(tree.role, ui::a11y::Role::Window);
     assert_eq!(tree.name.as_deref(), Some("Containers"));
 }
+
+/// The window bar's sidebar button flips the sidebar on every click, in a
+/// window wide enough to dock it and in a narrow one.
+#[test]
+fn the_window_bars_sidebar_button_flips_the_sidebar() {
+    ui::framework::testing::check_window_sidebar_button(
+        ui::framework::testing::TestApp::<ContainersShell>::new,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+}

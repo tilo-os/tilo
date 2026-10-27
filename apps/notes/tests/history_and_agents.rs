@@ -122,3 +122,55 @@ fn an_agent_changes_notes_in_one_call_each_and_history_tells_what_it_did() {
         "the entry names the agent and the person it acted for"
     );
 }
+
+/// A note another app's effect asks for someone (Tasks writing an issue's
+/// note) is theirs: `create-page` answers the note's resource, which the
+/// asking app links, makes one step in the notebook's history by them, and
+/// their undo takes it back while the person's own notes stay.
+#[test]
+fn a_note_made_for_someone_through_another_app_is_one_step_of_theirs() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<NotesShell>::new().unwrap();
+    app.call("new-note", serde_json::json!({ "title": "Groceries" }))
+        .unwrap();
+    let kind = <Notebook as ui::tilo_resource::Resource>::KIND;
+    let before = app.versions().len();
+    let agent = ActionInvoker::actor("agent:scribe")
+        .with_kind(ActorKind::Agent)
+        .acting_for("ada");
+
+    let made = app
+        .call_by(
+            agent.clone(),
+            kind,
+            "create-page",
+            serde_json::json!({ "title": "#1 Plan the launch" }),
+        )
+        .unwrap();
+    let note = note_titled(&app, "#1 Plan the launch");
+    let resource = notes::actions::page_resource_id(note);
+    assert_eq!(made.resources.first(), Some(&resource), "{made:?}");
+    assert_eq!(
+        ui::tilo_resource::items::item_kind(&resource).as_deref(),
+        Some("notes.notebook.pages")
+    );
+
+    let versions = app.versions();
+    assert_eq!(versions.len(), before + 1, "one step: {versions:?}");
+    let by = versions
+        .last()
+        .and_then(|version| version.context.as_ref())
+        .and_then(|context| context.invoker.as_ref())
+        .expect("the step names who made it");
+    assert_eq!(by.actor, "agent:scribe");
+    assert_eq!(by.on_behalf_of.as_deref(), Some("ada"));
+
+    app.call_by(agent, kind, "undo", serde_json::json!({}))
+        .unwrap();
+    let titles: Vec<String> = crate::framework_support::shown(&app)
+        .pages()
+        .iter()
+        .map(|page| page.title.clone())
+        .collect();
+    assert_eq!(titles, ["Groceries"]);
+}

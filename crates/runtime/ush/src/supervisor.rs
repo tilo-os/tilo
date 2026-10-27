@@ -31,7 +31,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::FromRawFd;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -47,6 +47,9 @@ use crate::images::Images;
 use crate::policy::Policy;
 use crate::records::Records;
 use crate::store::Store;
+
+mod session_end;
+use session_end::{EndReport, EndWatch, GuestEnd, watch_relay_bridge, watch_setup};
 
 /// What the user asked for on the command line.
 #[derive(Debug, Clone)]
@@ -65,6 +68,10 @@ pub struct SessionOptions {
     pub runs: Option<String>,
     /// Connected participant-private editing endpoint from this served session.
     pub editor: Option<Arc<runtime_portal::editor::Socket>>,
+    /// A served session's terminal ([`crate::setup`]): standard error is the
+    /// supervisor's, and the guest's shell gets this as its own. `None` when
+    /// `ush` runs on a terminal of its own.
+    pub terminal: Option<Arc<OwnedFd>>,
 }
 
 impl Default for SessionOptions {
@@ -79,6 +86,7 @@ impl Default for SessionOptions {
                 .ok()
                 .filter(|key| crate::runs::valid_key(key)),
             editor: None,
+            terminal: None,
         }
     }
 }
@@ -337,6 +345,7 @@ impl Session {
             env: Vec::new(),
             resolver: None,
             editor: None,
+            terminal: None,
         })
     }
 
@@ -455,7 +464,14 @@ impl Session {
             || vec![format!("{}/tilo-ush", crate::GUEST_BIN_DIR)],
             crate::helper_runtime::HelperRuntime::entry,
         );
-        command.extend(["guest-init".into(), "--".into()]);
+        command.push("guest-init".into());
+        if self.opts.terminal.is_some() {
+            command.extend([
+                crate::setup::TERMINAL_FD_ARG.to_owned(),
+                crate::setup::TERMINAL_FD.to_string(),
+            ]);
+        }
+        command.push("--".into());
         if user_command.is_empty() {
             // The session's login shell, started as the Host's is.
             command.extend(
@@ -467,6 +483,7 @@ impl Session {
             command.extend(user_command);
         }
         plan.command = command;
+        plan.terminal.clone_from(&self.opts.terminal);
 
         let mut child = crate::guest::spawn(&plan, Some(&netns))?;
         plan.editor = None; // the parent must not retain the inherited producer FD
@@ -488,6 +505,11 @@ impl Session {
         let status = child.wait()?;
         let code = status.code().unwrap_or(1);
         if code != 0 && !broker.guest_connected() {
+            // Served, the setup error above went to the supervisor's log;
+            // the session reports that no shell started.
+            if self.opts.terminal.is_some() {
+                anyhow::bail!("{NOT_STARTED}");
+            }
             eprintln!("{SANDBOX_SETUP_FAILED}");
         }
         let restart = broker.restart_requested();
@@ -566,10 +588,11 @@ pub enum ServeRequest {
         /// Explicit opt-in; existing clients continue to receive exactly one FD.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
-        /// Explicit opt-in: before a relay session's lease closes, tell the
-        /// app on it how the session ended (`EndReport`): its shell exited,
-        /// the connection to the relay was lost, or another terminal took
-        /// it over. Existing clients get a lease that only closes.
+        /// Explicit opt-in: before a session's lease closes, tell the app on
+        /// it how the session ended (`EndReport`): its shell exited, its
+        /// guest could not be set up, or, for a relay session, the
+        /// connection to the relay was lost or another terminal took it
+        /// over. Existing clients get a lease that only closes.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         end_report: bool,
     },
@@ -999,6 +1022,7 @@ fn open_environment(
         command,
         runs,
         editor_protocol,
+        end_report,
         ..
     } = req
     else {
@@ -1037,10 +1061,11 @@ fn open_environment(
         || "Shell".to_owned(),
         |program| runtime_portal::jobs::program_label(program.as_ref()),
     );
-    let child = spawn_attached(&launch, &slave, session_job(transport, &label))?;
+    let (child, diagnostics) = spawn_attached(&launch, &slave, session_job(transport, &label))?;
     // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
+    let session_id = id.clone();
     hand_off_session(
         transport,
         writer,
@@ -1055,7 +1080,12 @@ fn open_environment(
         master,
         child,
         editor.map(|(app, _)| app),
-        || None,
+        || {
+            Some(EndWatch {
+                ended: watch_setup(diagnostics, session_id),
+                report: end_report,
+            })
+        },
     )?;
     Ok(Served::Done)
 }
@@ -1087,7 +1117,7 @@ fn hand_off_session(
     master: std::fs::File,
     child: std::process::Child,
     editor: Option<runtime_portal::editor::Socket>,
-    on_started: impl FnOnce() -> Option<RelayWatch>,
+    on_started: impl FnOnce() -> Option<EndWatch>,
 ) -> anyhow::Result<()> {
     use std::os::fd::AsFd;
     #[derive(serde::Serialize)]
@@ -1145,7 +1175,7 @@ fn hand_off_session(
         drop(editor);
         drop(master);
         // The legacy lease carries no report: it only closes.
-        let watch = on_started().map(|watch| RelayWatch {
+        let watch = on_started().map(|watch| EndWatch {
             report: false,
             ..watch
         });
@@ -1603,8 +1633,8 @@ fn serve_relay(
         child,
         None,
         || {
-            Some(RelayWatch {
-                bridge: watch_relay_bridge(status, store.records_root().to_path_buf()),
+            Some(EndWatch {
+                ended: watch_relay_bridge(status, store.records_root().to_path_buf()),
                 report: *end_report,
             })
         },
@@ -1700,94 +1730,6 @@ fn start_relay_bridge(
     }
 }
 
-/// How a relay session's bridge ended, as it said on its status channel.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RelayEnd {
-    Exited,
-    /// The connection to the relay was lost; the session may still run
-    /// there, and the tab re-attaches to it.
-    Lost(String),
-    /// Another terminal took the session over; it runs on there.
-    Superseded,
-}
-
-impl RelayEnd {
-    /// The end a bridge's last status line names; a bridge that stopped
-    /// without saying lost its connection, as far as the tab can tell.
-    fn of(status: Option<crate::relay::BridgeStatus>) -> Self {
-        match status {
-            Some(crate::relay::BridgeStatus::Ended { code: Some(_), .. }) => Self::Exited,
-            Some(crate::relay::BridgeStatus::Ended {
-                superseded: true, ..
-            }) => Self::Superseded,
-            Some(crate::relay::BridgeStatus::Ended {
-                reason: Some(reason),
-                ..
-            }) => Self::Lost(reason),
-            _ => Self::Lost("the connection to the relay ended".into()),
-        }
-    }
-}
-
-/// What an app that asked (`end_report`) reads on its lease just before it
-/// closes: one JSON line.
-#[derive(Debug, serde::Serialize)]
-#[serde(tag = "ended", rename_all = "kebab-case")]
-enum EndReport<'a> {
-    Exited,
-    Lost { reason: &'a str },
-    Superseded,
-}
-
-impl<'a> From<&'a RelayEnd> for EndReport<'a> {
-    fn from(end: &'a RelayEnd) -> Self {
-        match end {
-            RelayEnd::Exited => Self::Exited,
-            RelayEnd::Lost(reason) => Self::Lost { reason },
-            RelayEnd::Superseded => Self::Superseded,
-        }
-    }
-}
-
-/// A relay session's bridge, watched: how it ended, and whether the app
-/// asked to be told.
-pub(crate) struct RelayWatch {
-    bridge: std::thread::JoinHandle<RelayEnd>,
-    report: bool,
-}
-
-/// Read a relay session's status channel to its end: the tools the relay
-/// builds for it become the record's, as a `pkg install` on this device
-/// would, and its last line says how it ended.
-fn watch_relay_bridge(
-    mut status: crate::relay::StatusReader,
-    records_root: PathBuf,
-) -> std::thread::JoinHandle<RelayEnd> {
-    std::thread::spawn(move || {
-        let records = Records::at(records_root);
-        let mut ended = None;
-        while let Some(line) = status.next(None) {
-            match line {
-                crate::relay::BridgeStatus::ToolBuilt {
-                    record,
-                    packages,
-                    images,
-                } => {
-                    for (arch, image) in images {
-                        let _ = records.apply(
-                            &record,
-                            Environment::ADD_TOOL.with((packages.clone(), arch, image)),
-                        );
-                    }
-                }
-                line @ crate::relay::BridgeStatus::Ended { .. } => ended = Some(line),
-                crate::relay::BridgeStatus::Session { .. } => {}
-            }
-        }
-        RelayEnd::of(ended)
-    })
-}
-
 /// Wait for whichever side of a served session ends first and tear the
 /// other down; returns the line the audit log records.
 ///
@@ -1801,30 +1743,36 @@ fn watch_relay_bridge(
 fn finish_session(
     stream: &UnixStream,
     mut child: std::process::Child,
-    relay: Option<RelayWatch>,
+    watch: Option<EndWatch>,
 ) -> String {
     match wait_for_guest_or_terminal(stream, &child) {
         LifetimeEnd::GuestExited => {
             let status = child.wait();
-            // A relay session's bridge said how it ended: a terminal that
-            // asked reads it before the lease closes, and tells a shell that
-            // exited from a connection that was lost.
-            if let Some(relay) = relay {
-                let end = relay
-                    .bridge
+            // How it ended — a relay bridge's status, a local guest's setup
+            // report: a terminal that asked reads it before the lease closes,
+            // and tells a shell that exited from a connection that was lost
+            // or a guest that never started.
+            let mut failed = None;
+            if let Some(watch) = watch {
+                let end = watch
+                    .ended
                     .join()
-                    .unwrap_or_else(|_| RelayEnd::Lost("the relay bridge failed".into()));
-                if relay.report
+                    .unwrap_or_else(|_| GuestEnd::Lost("the session's watch failed".into()));
+                if watch.report
                     && let Ok(mut line) = serde_json::to_vec(&EndReport::from(&end))
                 {
                     line.push(b'\n');
                     let _ = (&*stream).write_all(&line);
                 }
+                if let GuestEnd::SetupFailed(reason) = end {
+                    failed = Some(reason);
+                }
             }
             let _ = stream.shutdown(std::net::Shutdown::Both);
-            match status {
-                Ok(status) => format!("exit {}", status.code().unwrap_or(-1)),
-                Err(error) => format!("wait failed: {error}"),
+            match (status, failed) {
+                (_, Some(reason)) => format!("not set up: {reason}"),
+                (Ok(status), None) => format!("exit {}", status.code().unwrap_or(-1)),
+                (Err(error), None) => format!("wait failed: {error}"),
             }
         }
         LifetimeEnd::TerminalClosed => match child.try_wait() {
@@ -1921,17 +1869,31 @@ fn spawn_attached(
     launch: &Launch<'_>,
     slave: &std::fs::File,
     job: Option<runtime_portal::jobs::Slot>,
-) -> std::io::Result<std::process::Child> {
+) -> std::io::Result<(std::process::Child, OwnedFd)> {
     let exe = runtime_binary()?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("run");
+    // The pty is the guest's; `ush run`'s own standard error is this
+    // supervisor's, read by `watch_setup` (`crate::setup`).
+    cmd.arg(crate::setup::TERMINAL_FD_ARG)
+        .arg(crate::setup::TERMINAL_FD.to_string());
     if let Some(record) = launch.environment {
         cmd.arg("--environment").arg(record);
     }
     cmd.arg("--host-root").arg(launch.host_root);
+    // Held until the spawn: the editor endpoint, moved off the descriptor
+    // the terminal takes in the child.
+    let moved_editor = match launch.editor {
+        Some(editor) if editor.as_fd().as_raw_fd() == crate::setup::TERMINAL_FD => {
+            Some(editor.as_fd().try_clone_to_owned()?)
+        }
+        _ => None,
+    };
     if let Some(editor) = launch.editor {
         use std::os::unix::process::CommandExt;
-        let fd = editor.as_fd().as_raw_fd();
+        let fd = moved_editor
+            .as_ref()
+            .map_or_else(|| editor.as_fd().as_raw_fd(), AsRawFd::as_raw_fd);
         cmd.arg("--editor-fd").arg(fd.to_string());
         // SAFETY: only this owned endpoint is inherited by the trusted runtime.
         unsafe {
@@ -1956,7 +1918,10 @@ fn spawn_attached(
         Some(key) => cmd.env(crate::runs::KEY_ENV, key),
         None => cmd.env_remove(crate::runs::KEY_ENV),
     };
-    spawn_on_pty(cmd, slave, job)
+    let (read, write) = crate::relay::status_pipe()?;
+    let child = spawn_on_pty_with(cmd, slave, job, Some(write))?;
+    drop(moved_editor);
+    Ok((child, read))
 }
 
 /// Every session is an independent job of the app that asked for it (the
@@ -1976,9 +1941,20 @@ fn session_job(
 /// Start `cmd` with `slave` as its stdio, in its own session, with the pty as
 /// its controlling terminal; in `job` when it has one.
 fn spawn_on_pty(
+    cmd: std::process::Command,
+    slave: &std::fs::File,
+    job: Option<runtime_portal::jobs::Slot>,
+) -> std::io::Result<std::process::Child> {
+    spawn_on_pty_with(cmd, slave, job, None)
+}
+
+/// [`spawn_on_pty`], with `diagnostics` as standard error in place of the
+/// pty, which the child then holds at [`crate::setup::TERMINAL_FD`] as well.
+fn spawn_on_pty_with(
     mut cmd: std::process::Command,
     slave: &std::fs::File,
     job: Option<runtime_portal::jobs::Slot>,
+    diagnostics: Option<OwnedFd>,
 ) -> std::io::Result<std::process::Child> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
@@ -1990,7 +1966,11 @@ fn spawn_on_pty(
 
     cmd.stdin(Stdio::from(slave.try_clone()?));
     cmd.stdout(Stdio::from(slave.try_clone()?));
-    cmd.stderr(Stdio::from(slave.try_clone()?));
+    let terminal_too = diagnostics.is_some();
+    match diagnostics {
+        Some(diagnostics) => cmd.stderr(Stdio::from(diagnostics)),
+        None => cmd.stderr(Stdio::from(slave.try_clone()?)),
+    };
 
     let slave_fd = slave.as_raw_fd();
     // SAFETY: `pre_exec` runs between fork and exec in the child. Both calls
@@ -2004,6 +1984,13 @@ fn spawn_on_pty(
             }
             if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) < 0 {
                 return Err(std::io::Error::last_os_error());
+            }
+            if terminal_too {
+                // Standard input is the pty already; dup2 leaves the copy
+                // open across exec.
+                if libc::dup2(libc::STDIN_FILENO, crate::setup::TERMINAL_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
             }
             Ok(())
         });
@@ -2383,41 +2370,41 @@ mod tests {
                 superseded,
             })
         };
-        assert_eq!(RelayEnd::of(ended(Some(0), None, false)), RelayEnd::Exited);
-        assert_eq!(RelayEnd::of(ended(Some(3), None, false)), RelayEnd::Exited);
+        assert_eq!(GuestEnd::of(ended(Some(0), None, false)), GuestEnd::Exited);
+        assert_eq!(GuestEnd::of(ended(Some(3), None, false)), GuestEnd::Exited);
         assert_eq!(
-            RelayEnd::of(ended(None, Some("relay unreachable"), false)),
-            RelayEnd::Lost("relay unreachable".into())
+            GuestEnd::of(ended(None, Some("relay unreachable"), false)),
+            GuestEnd::Lost("relay unreachable".into())
         );
         assert_eq!(
-            RelayEnd::of(ended(None, Some("attached on another terminal"), true)),
-            RelayEnd::Superseded
+            GuestEnd::of(ended(None, Some("attached on another terminal"), true)),
+            GuestEnd::Superseded
         );
         assert!(
-            matches!(RelayEnd::of(None), RelayEnd::Lost(_)),
+            matches!(GuestEnd::of(None), GuestEnd::Lost(_)),
             "a bridge that stopped without a word did not see the shell exit"
         );
 
         for (end, line, report) in [
-            (RelayEnd::Exited, Some(r#"{"ended":"exited"}"#), true),
+            (GuestEnd::Exited, Some(r#"{"ended":"exited"}"#), true),
             (
-                RelayEnd::Lost("relay unreachable".into()),
+                GuestEnd::Lost("relay unreachable".into()),
                 Some(r#"{"ended":"lost","reason":"relay unreachable"}"#),
                 true,
             ),
             (
-                RelayEnd::Superseded,
+                GuestEnd::Superseded,
                 Some(r#"{"ended":"superseded"}"#),
                 true,
             ),
-            (RelayEnd::Exited, None, false),
+            (GuestEnd::Exited, None, false),
         ] {
             let (supervisor, terminal) = UnixStream::pair().expect("socket pair");
             let child = std::process::Command::new("true")
                 .spawn()
                 .expect("spawn the bridge");
-            let watch = RelayWatch {
-                bridge: std::thread::spawn(move || end),
+            let watch = EndWatch {
+                ended: std::thread::spawn(move || end),
                 report,
             };
             let termination = finish_session(&supervisor, child, Some(watch));
