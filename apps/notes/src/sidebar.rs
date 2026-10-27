@@ -66,6 +66,7 @@ pub enum OutEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidebarTransfer {
     ImportMarkdown,
+    ImportNotion,
     CopyLink(PageId),
     ExportMarkdown(PageId),
     InsertImage(PageId),
@@ -115,6 +116,11 @@ fn empty_area_items() -> Vec<MenuItem> {
     vec![
         MenuItem::icon_action(Icon::FilePlus, ui::i18n!("notes-empty-action"), || {}),
         MenuItem::icon_action(Icon::CloudDownload, ui::i18n!("notes-import-title"), || {}),
+        MenuItem::icon_action(
+            Icon::CloudDownload,
+            ui::i18n!("notes-notion-menu-import"),
+            || {},
+        ),
     ]
 }
 
@@ -448,6 +454,7 @@ impl PageSidebar {
                     (None, _) => match index {
                         0 => outbox.events.push(OutEvent::CreateChild { parent: None }),
                         1 => outbox.transfer = Some(SidebarTransfer::ImportMarkdown),
+                        2 => outbox.transfer = Some(SidebarTransfer::ImportNotion),
                         _ => {}
                     },
                     (Some(key), Some(page)) => match index {

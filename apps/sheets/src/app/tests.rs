@@ -2327,3 +2327,86 @@ fn accessibility_exposes_cells_busy_state_and_live_controls() {
         }
     }
 }
+
+/// A Notion export's databases arrive as sheets: every table it holds, in
+/// one action, so one undo takes the whole import back.
+#[test]
+fn a_notion_export_lands_as_every_table_in_one_undoable_step() {
+    use std::io::Write as _;
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buffer);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, text) in [
+            ("Tasks 1a2b3c4d5e_all.csv", "Name,Done\nShip,yes\n"),
+            ("People ef60718293.csv", "Name,Role\nSam,Design\n"),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(text.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Notion Export.zip");
+    std::fs::write(&path, buffer.into_inner()).unwrap();
+
+    let mut app = sample_app();
+    let before = app.state().sheets.len();
+    app.effect(&SheetsEffect::ImportNotion {
+        path: Some(path.display().to_string()),
+    })
+    .unwrap();
+    app.settle();
+    assert_eq!(app.state().sheets.len(), before + 2, "both databases");
+    assert_eq!(
+        app.state()
+            .sheets
+            .values()
+            .nth(before)
+            .map(|sheet| sheet.name.0.as_str()),
+        Some("People"),
+        "the export's names are kept, in name order"
+    );
+    assert_eq!(raw_at(&app, before, (0, 0)), "Name");
+    assert_eq!(raw_at(&app, before + 1, (1, 1)), "yes");
+
+    assert!(app.undo(), "the import is one undo step");
+    assert_eq!(
+        app.state().sheets.len(),
+        before,
+        "one undo takes back both sheets"
+    );
+}
+
+/// A Notion file that holds no table fails its import, and the workbook is
+/// unchanged.
+#[test]
+fn a_notion_export_with_no_table_fails_its_import() {
+    use std::io::Write as _;
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buffer);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        writer.start_file("Notes 1a2b3c4d5e.md", options).unwrap();
+        writer.write_all(b"# Notes\n").unwrap();
+        writer.finish().unwrap();
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("No tables.zip");
+    std::fs::write(&path, buffer.into_inner()).unwrap();
+
+    let mut app = sample_app();
+    let before = app.state().sheets.len();
+    let error = app
+        .effect(&SheetsEffect::ImportNotion {
+            path: Some(path.display().to_string()),
+        })
+        .expect_err("an export with no table fails");
+    assert!(
+        matches!(error, tilo_actions::DoorError::Failed(_)),
+        "{error:?}"
+    );
+    assert_eq!(app.state().sheets.len(), before, "nothing was added");
+}

@@ -52,6 +52,12 @@ pub enum NotesEffect {
     #[effect(attended, job, cancellable)]
     #[effect(keywords = "open markdown, import md")]
     ImportMarkdownFile,
+    /// Import Notion export
+    ///
+    /// Choose a Notion export and add every page in it to the notebook as one
+    /// action, so one undo takes the whole import back.
+    #[effect(attended, job, cancellable)]
+    ImportNotionExport,
     /// Import Markdown content
     ///
     /// Add Markdown text to the notebook as a note, with no file to choose.
