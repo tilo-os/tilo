@@ -64,11 +64,10 @@ mod without_runner {
 #[cfg(all(not(feature = "native"), not(target_family = "wasm")))]
 pub use without_runner::{run, run_or_exit};
 
-/// A wasm build publishes no `render`, so it answers no request with one.
-#[cfg(target_family = "wasm")]
-pub(crate) const RENDER_TYPE: &str = "tilo.app.render";
-
-#[cfg(not(target_family = "wasm"))]
+/// The `render` operation: the app's answer to "show me this resource". A
+/// wasm build publishes none, so it answers no request with one (see
+/// [`rendered_anchor`]); the id is named on every target so the framework's
+/// request path reads the same everywhere.
 pub(crate) const RENDER_TYPE: &str = "tilo.app.render";
 
 #[cfg(not(target_family = "wasm"))]
