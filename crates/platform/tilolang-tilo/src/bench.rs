@@ -7,8 +7,14 @@
 //! and the patches for the host come out. Drawing is the host's share and is not measured here.
 //! Each scenario prints one JSON record per item count in the format of `tools/perf/record.py`.
 //!
-//! * `open`: a host over the seeded room loads the compiled module and opens the root view,
-//!   to its first tree; `ready`, until search and publication have read the room.
+//! * `open`: a host over the seeded room, its index kept from an earlier session, loads the
+//!   compiled module and opens the root view, to its first tree; `ready`, until publication
+//!   has read the room; `load`, loading the room's record from its saved bytes;
+//!   `index_build`, building the package's index from the record, as a room opened for the
+//!   first time (or with an index it cannot trust) does off the frame.
+//! * `first_frame`: from the saved room to the first frame, the record loading on a thread of
+//!   its own while the window opens over the index; `first_write`, the first change right
+//!   after that frame, which waits for the record.
 //! * `keystroke`: one character typed where a person types: into the title of an item in the
 //!   item's own window, or, when items have none, into the main window's first text input. The
 //!   change goes through the executor into the room and back, and the views are brought up to
@@ -33,7 +39,9 @@
 
 mod thread;
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value as Json, json};
@@ -47,11 +55,10 @@ use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_runtime::{Decision, EngineProfile, Principal, Translation, UiNode, ViewInstance};
 
 use crate::action::{Authorship, DynAction, DynEdit};
-use crate::host::Host;
+use crate::host::{Host, Opening};
 use crate::publish::{Planner, Publications};
 use crate::record::{DynRecord, DynValue};
 use crate::schema::{MergeKind, lookup};
-use crate::search::SearchIndex;
 
 type Doc = tilo_resource::Doc;
 
@@ -395,9 +402,85 @@ struct Room {
     host: Host,
     list: ViewInstance,
     phases: Phases,
-    search: SearchIndex,
     published: Publications,
     planner: std::sync::Arc<dyn Planner>,
+    /// The index the room reads, removed with it.
+    _index: Option<IndexDir>,
+}
+
+/// A directory of indexes of the bench's own, removed when dropped.
+struct IndexDir(PathBuf);
+
+impl IndexDir {
+    fn new() -> Result<Self, String> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("tilolang-bench-index-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        Ok(Self(dir))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    /// A copy of the indexes, for a room that changes them.
+    fn copy(&self) -> Result<Self, String> {
+        let copy = Self::new()?;
+        for entry in std::fs::read_dir(&self.0).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            std::fs::copy(entry.path(), copy.0.join(entry.file_name()))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(copy)
+    }
+
+    /// How many bytes the indexes take.
+    fn bytes(&self) -> u64 {
+        std::fs::read_dir(&self.0)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| entry.metadata().ok())
+            .map(|meta| meta.len())
+            .fold(0, u64::saturating_add)
+    }
+}
+
+impl Drop for IndexDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Build the indexes of `packages` over `doc` in a directory of their own, as an earlier
+/// session left them: how long it took.
+fn prepare_index(doc: &Doc, packages: &[Compiled]) -> Result<(IndexDir, f64), String> {
+    let dir = IndexDir::new()?;
+    let start = Instant::now();
+    {
+        let host = Host::open(
+            Opening {
+                record: Some(doc),
+                index_dir: Some(dir.path().to_owned()),
+                device: None,
+            },
+            Principal::new("bench"),
+            |_, _| Decision::Allow,
+        )
+        .map_err(|e| e.to_string())?;
+        for compiled in packages {
+            host.load_wasm(&compiled.wasm).map_err(|e| e.to_string())?;
+        }
+        host.wait_index();
+        if !host.index_ready() {
+            return Err("the index was not built".into());
+        }
+        host.persist_index();
+    }
+    Ok((dir, ms(start.elapsed())))
 }
 
 /// Where a frame's time went, per sample.
@@ -476,10 +559,24 @@ impl Phases {
 }
 
 impl Room {
-    fn open(doc: Doc, packages: &[Compiled], app: &str, profile: bool) -> Result<Self, String> {
+    fn open(
+        doc: Doc,
+        packages: &[Compiled],
+        app: &str,
+        profile: bool,
+        index: Option<IndexDir>,
+    ) -> Result<Self, String> {
         let start = Instant::now();
-        let host = Host::new(&doc, Principal::new("bench"), |_, _| Decision::Allow)
-            .map_err(|e| e.to_string())?;
+        let host = Host::open(
+            Opening {
+                record: Some(&doc),
+                index_dir: index.as_ref().map(|dir| dir.path().to_owned()),
+                device: None,
+            },
+            Principal::new("bench"),
+            |_, _| Decision::Allow,
+        )
+        .map_err(|e| e.to_string())?;
         host.runtime().engine().profile(profile);
         let hosted = Instant::now();
         // As a launcher does: from the modules built with Tilo, compiling no source.
@@ -503,21 +600,17 @@ impl Room {
                 list.row(&key, i).map_err(|e| e.to_string())?;
             }
         }
-        // The first frame starts search and publication; they read the room off the frame.
+        // The first frame starts publication; it reads the room off the frame.
         let indexing = Instant::now();
         let mut phases = Phases::default();
         phases.open_host.push(ms(hosted.duration_since(start)));
         phases.open_load.push(ms(loaded.duration_since(hosted)));
         phases.open_view.push(ms(viewed.duration_since(loaded)));
         phases.open_rows.push(ms(indexing.duration_since(viewed)));
-        let mut search = SearchIndex::new(&host);
-        search.update(&host);
-        let publishing = Instant::now();
         let planner: std::sync::Arc<dyn Planner> = std::sync::Arc::new(host.handle());
         let mut published = Publications::new(&host);
         published.update(&host, &planner);
-        phases.search.push(ms(publishing.duration_since(indexing)));
-        phases.publish.push(ms(publishing.elapsed()));
+        phases.publish.push(ms(indexing.elapsed()));
         let profiled = host.runtime().engine().profiled();
         phases.engine(profiled.map(|_| EngineProfile::default()), profiled);
         Ok(Self {
@@ -525,15 +618,15 @@ impl Room {
             host,
             list,
             phases,
-            search,
             published,
             planner,
+            _index: index,
         })
     }
 
-    /// Wait for search and publication to have read the room, and take it in.
+    /// Wait for publication to have read the room, and take it in.
     fn settle(&mut self) {
-        self.search.settle(&self.host);
+        self.host.wait_index();
         self.published.settle(&self.host, &self.planner);
     }
 
@@ -553,14 +646,11 @@ impl Room {
             patches = patches.saturating_add(view.poll_patches().map_err(|e| e.to_string())?.len());
         }
         let polled = Instant::now();
-        self.search.update(&self.host);
-        let searched = Instant::now();
         self.published.update(&self.host, &self.planner);
         self.phases.execute.push(ms(executed.duration_since(start)));
         self.phases.sync.push(ms(synced.duration_since(executed)));
         self.phases.poll.push(ms(polled.duration_since(synced)));
-        self.phases.search.push(ms(searched.duration_since(polled)));
-        self.phases.publish.push(ms(searched.elapsed()));
+        self.phases.publish.push(ms(polled.elapsed()));
         let after = self.host.runtime().engine().profiled();
         self.phases.engine(profiled, after);
         Ok(patches)
@@ -575,17 +665,18 @@ pub struct Work {
     pub renders: u64,
     /// References to collection items built (one per item a view read as a value).
     pub items: u64,
-    /// Resources the store found by walking the record.
+    /// Of the room record: resources found by walking it, field values read, collections
+    /// listed by walking their entries, and those entries. A store reading its index reads
+    /// none of them; deriving changes into the index reads what they changed.
     pub located: u64,
-    /// Field values the store read one by one.
     pub fields: u64,
-    /// Collections the store listed by walking their entries.
     pub listings: u64,
-    /// Collection entries those listings read: the room's items, read once when opened.
     pub entries: u64,
-    /// Scalar fields of items read with those listings.
-    pub scanned: u64,
-    /// Items a filter was evaluated on.
+    /// Of the index: list directories and pages read, and field values.
+    pub dirs: u64,
+    pub pages: u64,
+    pub index_fields: u64,
+    /// Items a filter was evaluated on one by one (one no column of the index answers).
     pub evaluated: u64,
     /// Patches the views sent the window: what a frame changed on screen.
     pub patches: u64,
@@ -604,62 +695,107 @@ impl Work {
         Self {
             renders,
             items: room.host.runtime().items_built(),
-            located: reads.located,
-            fields: reads.fields,
-            listings: reads.listings,
-            entries: reads.entries,
-            scanned: reads.scanned,
+            located: reads.doc.located,
+            fields: reads.doc.fields,
+            listings: reads.doc.listings,
+            entries: reads.doc.entries,
+            dirs: reads.index.dirs,
+            pages: reads.index.pages,
+            index_fields: reads.index.fields,
             evaluated: reads.evaluated,
             patches: 0,
             allocations: allocations(),
         }
     }
 
+    fn counts(self) -> [u64; 12] {
+        [
+            self.renders,
+            self.items,
+            self.located,
+            self.fields,
+            self.listings,
+            self.entries,
+            self.dirs,
+            self.pages,
+            self.index_fields,
+            self.evaluated,
+            self.patches,
+            self.allocations,
+        ]
+    }
+
+    fn from_counts(c: [u64; 12]) -> Self {
+        let [
+            renders,
+            items,
+            located,
+            fields,
+            listings,
+            entries,
+            dirs,
+            pages,
+            index_fields,
+            evaluated,
+            patches,
+            allocations,
+        ] = c;
+        Self {
+            renders,
+            items,
+            located,
+            fields,
+            listings,
+            entries,
+            dirs,
+            pages,
+            index_fields,
+            evaluated,
+            patches,
+            allocations,
+        }
+    }
+
+    const NAMES: [&'static str; 12] = [
+        "renders",
+        "items",
+        "located",
+        "fields",
+        "listings",
+        "entries",
+        "dirs",
+        "pages",
+        "index_fields",
+        "evaluated",
+        "patches",
+        "allocations",
+    ];
+
+    fn zip(self, other: Self, f: impl Fn(u64, u64) -> u64) -> Self {
+        let (a, b) = (self.counts(), other.counts());
+        let mut out = [0u64; 12];
+        for ((slot, x), y) in out.iter_mut().zip(a).zip(b) {
+            *slot = f(x, y);
+        }
+        Self::from_counts(out)
+    }
+
     /// What was done between `before` and this.
     fn since(self, before: Self) -> Self {
-        Self {
-            renders: self.renders.saturating_sub(before.renders),
-            items: self.items.saturating_sub(before.items),
-            located: self.located.saturating_sub(before.located),
-            fields: self.fields.saturating_sub(before.fields),
-            listings: self.listings.saturating_sub(before.listings),
-            entries: self.entries.saturating_sub(before.entries),
-            scanned: self.scanned.saturating_sub(before.scanned),
-            evaluated: self.evaluated.saturating_sub(before.evaluated),
-            patches: self.patches.saturating_sub(before.patches),
-            allocations: self.allocations.saturating_sub(before.allocations),
-        }
+        self.zip(before, u64::saturating_sub)
     }
 
     /// The most of each count, of this and `other`.
     fn max(self, other: Self) -> Self {
-        Self {
-            renders: self.renders.max(other.renders),
-            items: self.items.max(other.items),
-            located: self.located.max(other.located),
-            fields: self.fields.max(other.fields),
-            listings: self.listings.max(other.listings),
-            entries: self.entries.max(other.entries),
-            scanned: self.scanned.max(other.scanned),
-            evaluated: self.evaluated.max(other.evaluated),
-            patches: self.patches.max(other.patches),
-            allocations: self.allocations.max(other.allocations),
-        }
+        self.zip(other, u64::max)
     }
 
     fn json(self) -> Json {
-        json!({
-            "renders": self.renders,
-            "items": self.items,
-            "located": self.located,
-            "fields": self.fields,
-            "listings": self.listings,
-            "entries": self.entries,
-            "scanned": self.scanned,
-            "evaluated": self.evaluated,
-            "patches": self.patches,
-            "allocations": self.allocations,
-        })
+        let mut out = serde_json::Map::new();
+        for (name, count) in Self::NAMES.into_iter().zip(self.counts()) {
+            out.insert(name.to_owned(), json!(count));
+        }
+        Json::Object(out)
     }
 
     /// The work of a record, as [`Self::json`] wrote it in its `work` field.
@@ -676,19 +812,13 @@ impl Work {
     }
 
     fn from_json(work: &Json) -> Option<Self> {
-        let count = |name: &str| work.get(name).and_then(Json::as_u64);
-        Some(Self {
-            renders: count("renders")?,
-            items: count("items")?,
-            located: count("located")?,
-            fields: count("fields")?,
-            listings: count("listings")?,
-            entries: count("entries")?,
-            scanned: count("scanned")?,
-            evaluated: count("evaluated")?,
-            patches: count("patches")?,
-            allocations: count("allocations")?,
-        })
+        work.get("renders")?;
+        let mut counts = [0u64; 12];
+        for (slot, name) in counts.iter_mut().zip(Self::NAMES) {
+            // A record of before the index counts none of its reads.
+            *slot = work.get(name).and_then(Json::as_u64).unwrap_or(0);
+        }
+        Some(Self::from_counts(counts))
     }
 }
 
@@ -923,6 +1053,10 @@ struct Sized<'a> {
     short: &'a str,
     n: usize,
     base: Doc,
+    /// The package's indexes over `base`, as an earlier session left them.
+    index: IndexDir,
+    /// How long building them took.
+    index_build: f64,
 }
 
 impl Sized<'_> {
@@ -950,13 +1084,14 @@ impl Sized<'_> {
             self.packages,
             &self.meta.app,
             self.config.profile,
+            Some(self.index.copy()?),
         )
     }
 
     /// The item the edits go to: on screen, in the middle of the list or of the page a
     /// virtual list shows.
-    fn target(&self, room: &Room) -> usize {
-        if frame_list(room.list.tree()).is_some() {
+    fn target(&self, list: &UiNode) -> usize {
+        if frame_list(list).is_some() {
             PAGE.min(self.n) / 2
         } else {
             self.n / 2
@@ -1008,16 +1143,23 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         samples: vec![compiled_in],
         meta: json!({"package": meta.app, "packages": packages.len()}),
     });
-    for n in counts {
-        let sized = Sized {
+    // A room of `n` items seeded as `base`, its indexes kept from an earlier session.
+    let sized = |n: usize, base: Doc| -> Result<Sized<'_>, String> {
+        let (index, index_build) = prepare_index(&base, &packages)?;
+        Ok(Sized {
             config,
             packages: &packages,
             meta: &meta,
             shape: &shape,
             short: &short,
             n,
-            base: seeded_room(&shape, n)?,
-        };
+            base,
+            index,
+            index_build,
+        })
+    };
+    for n in counts {
+        let sized = sized(n, seeded_room(&shape, n)?)?;
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }
@@ -1050,15 +1192,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         && has_default_view(&packages, &list.item_ty)
     {
         for &n in &config.sizes {
-            let sized = Sized {
-                config,
-                packages: &packages,
-                meta: &meta,
-                shape: &shape,
-                short: &short,
-                n,
-                base: thread::seeded(&packages, &shape, list, nested, n)?,
-            };
+            let sized = sized(n, thread::seeded(&packages, &shape, list, nested, n)?)?;
             for record in thread::run(&sized, list, nested)? {
                 out.push(record);
             }
@@ -1084,6 +1218,7 @@ fn anon_mib() -> Option<f64> {
 /// The room a memory child loads, saved, and the package it opens it with.
 const MEMORY_ROOM: &str = "TILOLANG_BENCH_MEMORY_ROOM";
 const MEMORY_PACKAGE: &str = "TILOLANG_BENCH_MEMORY_PACKAGE";
+const MEMORY_INDEX: &str = "TILOLANG_BENCH_MEMORY_INDEX";
 /// How a memory child reports.
 const MEMORY_LINE: &str = "tilolang-bench-memory-anon-mib=";
 
@@ -1106,10 +1241,12 @@ fn memory(sized: &Sized<'_>, isolation: &Isolation) -> Result<Record, String> {
         sized.n
     ));
     std::fs::write(&room, sized.base.clone().save()).map_err(|e| e.to_string())?;
+    let index = sized.index.copy()?;
     let output = std::process::Command::new(&isolation.program)
         .args(&isolation.args)
         .env(MEMORY_ROOM, &room)
         .env(MEMORY_PACKAGE, &sized.config.package)
+        .env(MEMORY_INDEX, index.path())
         .output();
     let _ = std::fs::remove_file(&room);
     let output = output.map_err(|e| format!("the memory process: {e}"))?;
@@ -1133,14 +1270,15 @@ fn memory(sized: &Sized<'_>, isolation: &Isolation) -> Result<Record, String> {
 pub fn memory_child() -> Option<Result<(), String>> {
     let room = std::env::var_os(MEMORY_ROOM)?;
     let package = std::env::var_os(MEMORY_PACKAGE)?;
+    let index = std::env::var_os(MEMORY_INDEX).map(PathBuf::from);
     Some(
-        measure_memory(Path::new(&room), Path::new(&package)).map(|mib| {
+        measure_memory(Path::new(&room), Path::new(&package), index).map(|mib| {
             println!("{MEMORY_LINE}{mib}");
         }),
     )
 }
 
-fn measure_memory(room: &Path, package: &Path) -> Result<f64, String> {
+fn measure_memory(room: &Path, package: &Path, index: Option<PathBuf>) -> Result<f64, String> {
     let packages = compile(package)?;
     for compiled in &packages {
         crate::meta::MetaExt::register_schemas(&compiled.meta);
@@ -1148,7 +1286,9 @@ fn measure_memory(room: &Path, package: &Path) -> Result<f64, String> {
     let app = packages.last().ok_or("no package")?.meta.app.clone();
     let doc =
         Doc::load(&std::fs::read(room).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    let mut room = Room::open(doc, &packages, &app, false)?;
+    // The parent's directory, which it removes.
+    let index = index.map(IndexDir);
+    let mut room = Room::open(doc, &packages, &app, false, index)?;
     room.settle();
     room.frame(&mut [])?;
     anon_mib().ok_or_else(|| "the process's memory is not readable".to_owned())
@@ -1158,7 +1298,7 @@ fn measure_memory(room: &Path, package: &Path) -> Result<f64, String> {
 /// search and publication, which read the room off the frame, have it all. Beside them, loading
 /// the room's record from its saved bytes, which opening a room from disk adds first: the one
 /// part of opening that reads the whole record, and grows with it.
-fn open(sized: &Sized<'_>) -> Result<[Record; 3], String> {
+fn open(sized: &Sized<'_>) -> Result<[Record; 6], String> {
     let mut samples = Vec::new();
     let mut nodes = 0;
     let mut phases = Phases::default();
@@ -1178,7 +1318,6 @@ fn open(sized: &Sized<'_>) -> Result<[Record; 3], String> {
         room.settle();
         ready.push(ms(start.elapsed()));
         nodes = room.list.tree().count();
-        phases.search.append(&mut room.phases.search);
         phases.publish.append(&mut room.phases.publish);
         phases.wasm.append(&mut room.phases.wasm);
         phases.imports.append(&mut room.phases.imports);
@@ -1200,10 +1339,140 @@ fn open(sized: &Sized<'_>) -> Result<[Record; 3], String> {
         std::hint::black_box(Doc::load(&saved).map_err(|e| e.to_string())?);
         loads.push(ms(start.elapsed()));
     }
+    let [first, write] = first_frame(sized, &saved)?;
     Ok([
         sized.record("open", "ms", samples, extra),
         sized.record("ready", "ms", ready, Json::Null),
         sized.record("load", "ms", loads, json!({"bytes": saved.len()})),
+        sized.record(
+            "index_build",
+            "ms",
+            vec![sized.index_build],
+            json!({"bytes": sized.index.bytes()}),
+        ),
+        first,
+        write,
+    ])
+}
+
+/// The room's record, loading on a thread of its own: what a window opening over its index
+/// takes when it is ready, or waits for when it needs it.
+struct Loading {
+    thread: Option<std::thread::JoinHandle<Result<Doc, String>>>,
+    doc: Option<Doc>,
+}
+
+impl Loading {
+    fn start(saved: Vec<u8>) -> Self {
+        Self {
+            thread: Some(std::thread::spawn(move || {
+                Doc::load(&saved).map_err(|e| e.to_string())
+            })),
+            doc: None,
+        }
+    }
+
+    /// The record, waiting for it.
+    fn wait(&mut self) -> Result<&mut Doc, String> {
+        if let Some(thread) = self.thread.take() {
+            let doc = thread
+                .join()
+                .map_err(|_| "loading the record panicked".to_owned())??;
+            self.doc = Some(doc);
+        }
+        self.doc.as_mut().ok_or_else(|| "no record".to_owned())
+    }
+}
+
+/// From the saved room to the first frame of a window opening over its index while the
+/// record loads beside it (and to the record had and taken in, in its meta); and the first
+/// change right after that frame, which waits for the record.
+fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<[Record; 2], String> {
+    let (mut frames, mut loaded, mut taken, mut writes) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut work = None;
+    for sample in 0..sized.config.samples {
+        let index = sized.index.copy()?;
+        let start = Instant::now();
+        let loading = Rc::new(RefCell::new(Loading::start(saved.to_vec())));
+        let host = Host::open(
+            Opening {
+                record: None,
+                index_dir: Some(index.path().to_owned()),
+                device: None,
+            },
+            Principal::new("bench"),
+            |_, _| Decision::Allow,
+        )
+        .map_err(|e| e.to_string())?;
+        let held = Rc::clone(&loading);
+        host.set_record_loader(Box::new(move || {
+            held.borrow_mut().wait().ok().map(|doc| doc.clone())
+        }));
+        for compiled in sized.packages {
+            host.load_wasm(&compiled.wasm).map_err(|e| e.to_string())?;
+        }
+        let mut list = host.open_main(&sized.meta.app).map_err(|e| e.to_string())?;
+        if let Some(key) = frame_list(list.tree()) {
+            for i in 0..PAGE {
+                list.row(&key, i).map_err(|e| e.to_string())?;
+            }
+        }
+        frames.push(ms(start.elapsed()));
+        if work.is_none() {
+            let reads = host.store().read_stats();
+            work = Some(json!({
+                "located": reads.doc.located,
+                "entries": reads.doc.entries,
+                "pages": reads.index.pages,
+                "index_fields": reads.index.fields,
+                "evaluated": reads.evaluated,
+            }));
+        }
+        if sample % 2 == 0 {
+            // The record had in the background, then taken in.
+            loading.borrow_mut().wait()?;
+            loaded.push(ms(start.elapsed()));
+            let doc = loading.borrow_mut().wait()?.clone();
+            host.sync_from(&doc);
+            taken.push(ms(start.elapsed()));
+        } else {
+            // A change at once: it waits for the record.
+            let after_frame = Instant::now();
+            // Where the keystroke phase types: an item's window, else the main window.
+            let (typing, text) = typing(sized, &host, list.tree())?;
+            let value = Value::text(format!("{text}x"));
+            let mut editor = match typing {
+                Typing::Item(editor, input) => {
+                    editor.edit(&input, &value).map_err(|e| e.to_string())?;
+                    Some(editor)
+                }
+                Typing::Main(input) => {
+                    list.edit(&input, &value).map_err(|e| e.to_string())?;
+                    None
+                }
+            };
+            let mut loading = loading.borrow_mut();
+            let doc = loading.wait()?;
+            for committed in host.take_committed() {
+                execute(doc, &committed.action, "bench")?;
+            }
+            host.sync_from(doc);
+            list.poll_patches().map_err(|e| e.to_string())?;
+            if let Some(editor) = editor.as_mut() {
+                editor.poll_patches().map_err(|e| e.to_string())?;
+            }
+            writes.push(ms(after_frame.elapsed()));
+        }
+    }
+    let extra = json!({
+        "record_loaded_ms": loaded,
+        "record_taken_ms": taken,
+        "work": work,
+    });
+    Ok([
+        sized.record("first_frame", "ms", frames, extra),
+        sized.record("first_write", "ms", writes, Json::Null),
     ])
 }
 
@@ -1267,31 +1536,28 @@ fn text_input(host: &Host, node: &UiNode) -> Option<(String, String)> {
     node.children.iter().find_map(|c| text_input(host, c))
 }
 
-fn typing(sized: &Sized<'_>, room: &Room) -> Result<(Typing, String), String> {
+/// Where a person types in the window `main` of `host` shows.
+fn typing(sized: &Sized<'_>, host: &Host, main: &UiNode) -> Result<(Typing, String), String> {
     if let Some((root, list)) = sized.shape.subject()
         && has_default_view(sized.packages, &list.item_ty)
     {
-        let target = sized.target(room);
+        let target = sized.target(main);
         let item = ResourceRef::root(root_id(root), root.root_ty.clone()).item(
             &list.field,
             &item_id(target),
             list.item_ty.clone(),
         );
-        let editor = room
-            .host
-            .open_resource(&item, None)
-            .map_err(|e| e.to_string())?;
+        let editor = host.open_resource(&item, None).map_err(|e| e.to_string())?;
         // A person types into the item's title where its window edits it (a note), else into
         // the window's first text input (a conversation's draft).
         let title = list.texts.first().cloned().unwrap_or_default();
         let (input, text) = match bound_input(editor.tree(), &title) {
             Some(input) => (input, format!("Item {target}")),
-            None => text_input(&room.host, editor.tree())
-                .ok_or("the item's window has no text input")?,
+            None => text_input(host, editor.tree()).ok_or("the item's window has no text input")?,
         };
         return Ok((Typing::Item(Box::new(editor), input), text));
     }
-    let (key, text) = text_input(&room.host, room.list.tree())
+    let (key, text) = text_input(host, main)
         .ok_or("the main window has no text input, and the items no window of their own")?;
     Ok((Typing::Main(key), text))
 }
@@ -1299,7 +1565,7 @@ fn typing(sized: &Sized<'_>, room: &Room) -> Result<(Typing, String), String> {
 /// Typing one letter a frame where a person types in the package: into the title of an item
 /// in the item's own window, or else into the main window's first text input.
 fn keystroke(sized: &Sized<'_>, room: &mut Room) -> Result<Record, String> {
-    let (mut typing, mut text) = typing(sized, room)?;
+    let (mut typing, mut text) = typing(sized, &room.host, room.list.tree())?;
     let mut changes = Changes::default();
     for _ in 0..sized.config.samples {
         text.push('x');
@@ -1385,7 +1651,7 @@ fn peer_change<'a>(
         let edit = Edit::new(
             vec![
                 Segment::Field(list.field.clone()),
-                Segment::Item(Id::from_raw(item_id(sized.target(room)))),
+                Segment::Item(Id::from_raw(item_id(sized.target(room.list.tree())))),
                 Segment::Field(title),
             ],
             EditOp::Replace {

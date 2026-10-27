@@ -14,7 +14,6 @@
 //! previewed in History builds its own runtime over the old record and publishes nothing.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tilolang_tilo::action::{DynAction, EDIT_TEXT_ACTION};
@@ -23,7 +22,7 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::{
     Caller, Committer, Planner, Publications, host_resource, publish_package,
 };
-use tilolang_tilo::search::{Hit, SearchIndex};
+use tilolang_tilo::search::{Hit, every_hit};
 use ui::tilo_actions::{ActionInvoker, ActorKind};
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry, SearchWeight};
 
@@ -37,16 +36,14 @@ pub struct RoomState {
 }
 
 /// What a live window publishes of the room, kept up to date with the record change by change:
-/// the records with their items and actions, and what search finds.
+/// the records with their items and actions. What search finds is read from the room's index
+/// when asked.
 struct Published {
     hold: u64,
     host: Host,
     planner: Arc<dyn Planner>,
     committer: Arc<dyn Committer>,
     publications: Publications,
-    search: SearchIndex,
-    /// What search finds, by the published id of the resource each entry opens.
-    entries: BTreeMap<String, SearchEntry>,
 }
 
 impl Published {
@@ -57,17 +54,6 @@ impl Published {
             self.publications.settle(&self.host, &self.planner);
         } else {
             self.publications.update(&self.host, &self.planner);
-        }
-        let delta = if wait {
-            self.search.settle(&self.host)
-        } else {
-            self.search.update(&self.host)
-        };
-        for gone in delta.removed {
-            self.entries.remove(&gone);
-        }
-        for hit in delta.upserted {
-            self.entries.insert(hit.resource.clone(), entry(&hit));
         }
     }
 
@@ -111,17 +97,13 @@ impl Live {
         });
         let (planner, committer) = door_handles(host);
         let mut publications = Publications::new(host);
-        publications.set_waker(Arc::clone(&wake));
-        let mut search = SearchIndex::new(host);
-        search.set_waker(wake);
+        publications.set_waker(wake);
         let mut published = Published {
             hold,
             host: host.clone(),
             planner,
             committer,
             publications,
-            search,
-            entries: BTreeMap::new(),
         };
         published.update(false);
         LIVE.with(|live| live.borrow_mut().push(published));
@@ -151,10 +133,9 @@ impl Live {
     pub fn pending(&self) -> bool {
         let hold = self.0;
         LIVE.with(|live| {
-            live.borrow().iter().any(|published| {
-                published.hold == hold
-                    && (published.publications.is_building() || published.search.is_reading())
-            })
+            live.borrow()
+                .iter()
+                .any(|published| published.hold == hold && published.publications.is_building())
         })
     }
 }
@@ -225,7 +206,8 @@ fn entry(hit: &Hit) -> SearchEntry {
 /// What search finds of the live window's room: every record and item with text.
 #[must_use]
 pub fn search_entries() -> Vec<SearchEntry> {
-    with_live(|published| published.entries.values().cloned().collect()).unwrap_or_default()
+    with_live(|published| every_hit(&published.host).iter().map(entry).collect())
+        .unwrap_or_default()
 }
 
 impl Resource for Room {

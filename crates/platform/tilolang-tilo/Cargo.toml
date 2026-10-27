@@ -8,11 +8,12 @@ license.workspace = true
 description = "Tilo platform integration for tilolang apps: dynamic records in the room record, replayable actions, the published surface, and the UI graph translation."
 
 [dependencies]
-# A seeded hasher several times faster than SipHash, for the read cache and index keyed by
-# resource ids.
-foldhash = { version = "0.1", default-features = false, features = ["std"] }
 automerge.workspace = true
 chrono = { workspace = true, features = ["std"] }
+crc32fast.workspace = true
+# The index each package's records are listed and searched from: B-trees in one file, read
+# from snapshots that later commits leave as they were.
+redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

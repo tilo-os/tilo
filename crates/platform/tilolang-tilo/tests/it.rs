@@ -13,6 +13,7 @@
 mod collab;
 mod fixtures;
 mod incremental;
+mod index;
 mod outbox;
 mod outcomes;
 mod records;

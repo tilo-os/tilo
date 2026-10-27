@@ -46,9 +46,9 @@ impl Rows {
     /// The key of row `index`, built from `template` without a reference to its item.
     fn key(&self, template: &RowsOf, index: usize) -> Option<String> {
         match self {
-            Self::Coll { coll, listing } => {
-                listing.get(index).map(|id| template.coll_row_key(coll, id))
-            }
+            Self::Coll { coll, listing } => listing
+                .get(index)
+                .map(|id| template.coll_row_key(coll, &id)),
             Self::List(values) => values
                 .get(index)
                 .map(|item| template.key_of(&item_key(item, index))),
@@ -58,7 +58,7 @@ impl Rows {
     /// The item of row `index`.
     fn item(&self, core: &Core, index: usize) -> Option<Value> {
         match self {
-            Self::Coll { coll, listing } => listing.get(index).map(|id| core.item_ref(coll, id)),
+            Self::Coll { coll, listing } => listing.get(index).map(|id| core.item_ref(coll, &id)),
             Self::List(values) => values.get(index).cloned(),
         }
     }
@@ -454,7 +454,7 @@ impl Live {
         };
         let fits = list.len == listing.len()
             && list.built.iter().all(|(index, id)| {
-                let key = listing.get(*index).map(|item| rows.row_key(item));
+                let key = listing.get(*index).map(|item| rows.row_key(&item));
                 self.bound(*id)
                     .is_some_and(|b| Some(&b.key) == key.as_ref())
             });
