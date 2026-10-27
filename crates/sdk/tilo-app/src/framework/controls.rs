@@ -227,11 +227,6 @@ impl ActionTable {
         ActionKey::new(self.app, self.kind, id)
     }
 
-    /// The published spec of the action `key` names, or why there is none.
-    fn spec(&self, key: &ActionKey) -> Result<tilo_actions::ActionSpec, String> {
-        self.spec_of(key, self.app)
-    }
-
     /// The published spec of the action `key` names, read as a control opened
     /// in the app `opened_in` names it: a window drawing another app's record
     /// binds it under the app id it publishes that record by, which
@@ -278,34 +273,31 @@ impl ActionTable {
     }
 
     /// The binding of one fully specified invocation of action `id`, or why
-    /// there is none.
+    /// there is none: `key`'s app id read in `opened_in`'s place as
+    /// [`Self::binding_in`] reads it, so a button and a typed control bind
+    /// the same published action.
     fn invocation(
         &self,
         key: ActionKey,
+        opened_in: &str,
         refusal: Option<&str>,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionBinding<()>, (ActionKey, String)> {
         if let Some(refusal) = refusal {
             return Err((key, refusal.to_owned()));
         }
-        let spec = self.spec(&key).map_err(|why| (key.clone(), why))?;
+        let spec = self
+            .spec_of(&key, opened_in)
+            .map_err(|why| (key.clone(), why))?;
         let published = self.exporting(spec.clone());
         ActionBinding::static_json(&published, &spec, arguments)
             .map_err(|error| (key, error.to_string()))
     }
 
-    /// [`Self::binding`] for a control being built: an action the resource
-    /// does not publish fails tests and `tilo-app check`.
-    fn control_binding<I: 'static>(
-        &self,
-        key: ActionKey,
-        arguments: Arguments<I>,
-    ) -> Option<ActionBinding<I>> {
-        self.control_binding_in(key, self.kind, arguments)
-    }
-
-    /// [`Self::control_binding`], `key`'s app id read in `opened_in`'s place
-    /// where a control built from a typed reference names the app by
+    /// [`Self::binding`] for a control being built, where an action the
+    /// resource does not publish fails tests and `tilo-app check`: `key`'s
+    /// app id read in `opened_in`'s place where a control built from a typed
+    /// reference names the app by
     /// [`Resource::APP_ID`](tilo_resource::Resource::APP_ID) and this table
     /// was opened for another app: a window drawing another app's record
     /// binds it under the id that record is published by.
@@ -594,6 +586,7 @@ impl<R: Resource> Actions<R> {
         self.table
             .invocation(
                 self.table.key(invoke.id),
+                R::APP_ID,
                 refusal.as_deref(),
                 invoke.arguments,
             )
@@ -619,7 +612,7 @@ impl<R: Resource> Actions<R> {
         let refusal = invoke.refusal().map(str::to_owned);
         let key = self.table.key(invoke.id);
         self.table
-            .invocation(key, refusal.as_deref(), invoke.arguments)
+            .invocation(key, R::APP_ID, refusal.as_deref(), invoke.arguments)
             .map_err(|(key, why)| unbound_of(R::KIND, &format!("`{key}`"), &why))
             .ok()
     }
@@ -635,7 +628,7 @@ impl<R: Resource> Actions<R> {
         + 'static,
     ) -> Option<ActionBinding<()>> {
         self.table
-            .control_binding(key, Box::new(move |()| arguments()))
+            .control_binding_in(key, R::APP_ID, Box::new(move |()| arguments()))
     }
 
     /// The binding of the field at `path` for a control with input `V`:
