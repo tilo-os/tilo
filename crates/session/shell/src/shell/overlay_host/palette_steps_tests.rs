@@ -131,28 +131,6 @@ impl SearchProvider for StepsFixture {
             },
         );
         rows.push(lock);
-        let mut open = self.action(
-            "open",
-            "Zqfixture open",
-            vec![ActionParam::optional(
-                "path",
-                ParamType::Text,
-                "Folder; omit to choose one",
-            )],
-            96,
-        );
-        open.on_open = Rc::new(
-            |_: &mut ui::widget::Edits<'_>,
-             _: &ObjId,
-             _: &crate::shell::chrome_state::Chrome,
-             _: &ActionArgs|
-             -> Result<(), ActionError> {
-                Err(ActionError::Explained(
-                    "Another file is being opened. Finish that first.".into(),
-                ))
-            },
-        );
-        rows.push(open);
         let runs = self.runs.clone();
         rows.push(SearchResult::nullary(
             ResourceKind::Application,
@@ -556,12 +534,66 @@ fn rows_wear_their_own_pictures() {
     );
 }
 
+/// One action whose argument may be left out, which fails when it runs.
+struct FailingOpen;
+
+impl SearchProvider for FailingOpen {
+    fn id(&self) -> &'static str {
+        "failing-open"
+    }
+    fn name(&self) -> &'static str {
+        "Failing open"
+    }
+    fn resource_kinds(&self) -> &[ResourceKind] {
+        &[ResourceKind::Action]
+    }
+    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        if !ctx.needle.starts_with("zqopen") || !ctx.wanted.contains(&ResourceKind::Action) {
+            return Vec::new();
+        }
+        let mut row = SearchResult::nullary(
+            ResourceKind::Action,
+            "failing-open",
+            "open",
+            "Zqopen folder",
+            None,
+            100,
+            |_, _, _| {},
+        );
+        row.params = vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "Folder; omit to choose one",
+        )];
+        row.on_open = Rc::new(
+            |_: &mut ui::widget::Edits<'_>,
+             _: &ObjId,
+             _: &crate::shell::chrome_state::Chrome,
+             _: &ActionArgs|
+             -> Result<(), ActionError> {
+                Err(ActionError::Explained(
+                    "Another file is being opened. Finish that first.".into(),
+                ))
+            },
+        );
+        vec![row]
+    }
+}
+
 /// An action whose arguments may all be left out runs at once; when it
 /// fails, the failure is told on its row, as for one that takes none.
 #[test]
 fn a_failed_run_with_nothing_to_ask_is_told_on_its_row() {
-    let (mut h, _) = steps_harness(QUERY);
-    select(&mut h, "Zqfixture open");
+    let mut h = build_harness_sized(1280.0, 800.0);
+    h.host.search_registry.register(Rc::new(FailingOpen));
+    h.host.set_palette_visible(true);
+    h.host.set_palette_focus(true);
+    h.host.force_palette_settled();
+    h.host.set_palette_query("zqopen");
+    h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+    settle(&mut h, 1280.0, 800.0);
+    select(&mut h, "Zqopen folder");
     assert!(press(&mut h, NamedKey::Enter));
     assert!(
         h.host.palette_visible(),
@@ -572,13 +604,15 @@ fn a_failed_run_with_nothing_to_ask_is_told_on_its_row() {
         .palette
         .visible_entries()
         .iter()
-        .find(|entry| entry.label == "Zqfixture open")
-        .cloned()
+        .find(|entry| entry.label == "Zqopen folder")
+        .map(|entry| (entry.description.clone(), entry.badge.is_some()))
         .expect("the row that ran is still listed");
     assert_eq!(
-        row.description.as_deref(),
-        Some("Another file is being opened. Finish that first."),
-        "the failure is on the row that ran"
+        row,
+        (
+            Some("Another file is being opened. Finish that first.".to_owned()),
+            true
+        ),
+        "the failure is on the row that ran, marked as failed"
     );
-    assert!(row.badge.is_some(), "the row is marked as failed");
 }
