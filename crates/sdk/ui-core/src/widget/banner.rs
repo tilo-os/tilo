@@ -1117,6 +1117,11 @@ impl Widget for Banner {
             self.dismiss_now();
         }
         changed |= before != self.visible();
+        // A banner that has come to rest takes its place in the layout, and
+        // one setting off leaves it.
+        if self.laid_in_flow != self.in_flow() {
+            crate::widget::note_layout_moved();
+        }
         changed
     }
 

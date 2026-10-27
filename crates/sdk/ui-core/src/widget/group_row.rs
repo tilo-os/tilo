@@ -4708,9 +4708,9 @@ impl Widget for GroupRow {
     fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
         // A pan in motion (a throw, a settle, a reveal, fingers resampled at
         // the frame clock) advances here, once per host frame. Moving marks
-        // the row `scroll_dirty`, a layout pass that re-applies the windows'
-        // positions; it never rebuilds or re-measures the strip, which a
-        // structural invalidation per animation frame used to do.
+        // the row `scroll_dirty` and asks for a layout pass that re-applies
+        // the windows' positions; it never rebuilds or re-measures the strip,
+        // which a structural invalidation per animation frame used to do.
         if !self.hidden {
             // A close that has played out ends on the frame, not on the
             // next input event. One prune per layout keeps the slots in
@@ -4722,6 +4722,9 @@ impl Widget for GroupRow {
             self.tick_snap_at(now);
             self.advance_drag_reach(now);
             self.advance_edge_autoscroll(now);
+            if self.scroll_dirty {
+                crate::widget::note_layout_moved();
+            }
         }
         let mut any = false;
         for g in &mut self.groups {

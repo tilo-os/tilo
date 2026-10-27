@@ -4727,6 +4727,12 @@ impl Widget for TabBar {
     ) -> bool {
         let before = self.hover_intent.open();
         self.settle_hover_intent();
+        // The bar's curves (a pill revealing, tabs springing into place, the
+        // title growing into tabs, the toolbar row following) advance as it
+        // is laid out.
+        if self.needs_animation_frame() {
+            crate::widget::note_layout_moved();
+        }
         // A busy arc's step (or its coming to rest) is due: paint it.
         let now = crate::time::now();
         let busy_step = self

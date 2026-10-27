@@ -31,11 +31,11 @@ struct HostedAuthorityWitness {
     owner: Option<crate::permissions::DirectoryPermissionWitness>,
 }
 
-/// Every input of the trailing `publish_action_surface` that can change
-/// without a resource-cache invalidation. Equal stamps mean that publication
-/// would recompute the same resources, descriptors and directory snapshot.
+/// Every input of `publish_action_surface` that can change without a
+/// rebuild of the widget tree. Equal stamps mean that publication would
+/// recompute the same resources, descriptors and directory snapshot.
 #[derive(PartialEq, Eq)]
-struct HostedPublicationStamp {
+pub(super) struct PublicationStamp {
     resource_generation: u64,
     permission_generation: u64,
     registry_generation: u64,
@@ -48,7 +48,6 @@ pub(super) struct HostedPumpState {
     #[cfg(test)]
     pub(super) calls: usize,
     authority: Option<HostedAuthorityWitness>,
-    publication: Option<HostedPublicationStamp>,
 }
 
 /// What one hosted pump did; used by focused tests and the timing trace.
@@ -230,10 +229,7 @@ impl super::App {
         }
         #[cfg(test)]
         let _publish_probe = crate::profiling::frame_probe::span("pump.publish");
-        if always_refresh
-            || self.actions.hosted.publication.is_none()
-            || self.hosted_publication_stamp() != self.actions.hosted.publication
-        {
+        if always_refresh || !self.publication_current() {
             report.published = true;
             self.publish_action_surface();
         } else if self.collaboration.manager.is_connected() {
@@ -247,9 +243,6 @@ impl super::App {
         // timer): the session's index follows it here too, not only on input.
         self.publish_search_index();
         self.finish_model_directory_refresh(directory);
-        if report.published {
-            self.actions.hosted.publication = self.hosted_publication_stamp();
-        }
         if let Some(started) = started {
             crate::diag!(
                 "[hosted-pump] app={} late_us={:?} us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations} record={record}",
@@ -297,7 +290,7 @@ impl super::App {
     /// `None` whenever publication cannot be proven current: disconnected,
     /// nothing published yet, an evicted directory snapshot or stamp, or an
     /// exhausted generation that no longer distinguishes later mutations.
-    fn hosted_publication_stamp(&self) -> Option<HostedPublicationStamp> {
+    pub(super) fn publication_stamp(&self) -> Option<PublicationStamp> {
         let resource_generation = self.actions.resource_generation.get();
         let permission_generation = self.actions.permission_generation.get();
         let registry_generation = self.actions.action_registry_generation;
@@ -314,13 +307,20 @@ impl super::App {
             return None;
         }
         let (_, revision) = self.actions.action_directory_stamp.as_ref()?;
-        Some(HostedPublicationStamp {
+        Some(PublicationStamp {
             resource_generation,
             permission_generation,
             registry_generation,
             route: self.bound_broker_route().cloned(),
             revision: revision.clone(),
         })
+    }
+
+    /// Whether a publication now would recompute what the last one
+    /// published, as far as the widget tree it reads stands.
+    pub(super) fn publication_current(&self) -> bool {
+        self.actions.published_stamp.is_some()
+            && self.publication_stamp() == self.actions.published_stamp
     }
 
     /// A native model pass acknowledges only wakes preceding this drain.
@@ -337,12 +337,13 @@ impl super::App {
         let (root, state, presence) = (&mut self.root_widget, &self.state, &self.presence_ctx);
         // What this update moved, not what a widget updated outside an app
         // noted before it.
-        let _ = crate::widget::take_placement_moved();
+        let _ = crate::widget::take_layout_moved();
         let updated = presence.with_permissions(self.permission_ctx.clone(), || {
             crate::presence::frame::lend(presence, || root.update(&state.doc, &state.root))
         });
-        // A glide moved content its widgets lay out: they are placed again.
-        self.layout.layout_dirty |= crate::widget::take_placement_moved();
+        // An animation moved what its widget lays out: the window is laid
+        // out again. Any other animation frame is only drawn.
+        self.layout.layout_dirty |= crate::widget::take_layout_moved();
         if !updated {
             return false;
         }
