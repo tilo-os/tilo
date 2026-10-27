@@ -2,6 +2,9 @@
 # a non-publishing build signs them with keys it generates, so a key taken from
 # another stage (native-builder-payload, which buildkit may serve from an
 # earlier invocation's cache while the builder re-runs) would not be theirs.
+# What those keys sign (each bundle's bundle.toml) and the keys themselves leave
+# /image for /signatures, so the runtimes' bytes are the same layer in every
+# build that bakes the same runtimes, and only the signatures' small one is new.
 FROM ${BASE_REF} AS runtime-image-payload
 RUN --network=none \
     --mount=type=bind,from=apps-payload,source=/usr/lib/tilo-runtime,target=/tilo-runtime,ro \
@@ -13,6 +16,7 @@ RUN --network=none \
     --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
     --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
     --mount=type=bind,source=os/scripts/hardlink-identical.py,target=/tilo-src/hardlink-identical.py,ro \
+    --mount=type=bind,source=os/scripts/signed-records.py,target=/tilo-src/signed-records.py,ro \
     mkdir -p /image/usr/lib /image/usr/share/tilo/font-catalogs /image/usr/share/fonts \
     && cp -a /tilo-runtime /image/usr/lib/tilo-runtime \
     && cp /tilo-runtime-publisher.hex /image/usr/share/tilo/runtime-bundle-publisher.hex \
@@ -28,4 +32,5 @@ RUN --network=none \
     # same glibc the native runtime signs at lib/): one inode each.
     && python3 /tilo-src/hardlink-identical.py /image/usr \
     && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i /image/usr/share/fonts/tilo/NotoSansCJK-VF.ttc)" \
-    && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i "/image/usr/share/tilo/font-catalogs/$catalog/NotoSansCJK-VF.ttc")"
+    && test "$(stat -c %i "$fonts/NotoSansCJK-VF.ttc")" = "$(stat -c %i "/image/usr/share/tilo/font-catalogs/$catalog/NotoSansCJK-VF.ttc")" \
+    && python3 /tilo-src/signed-records.py runtimes /image /signatures
