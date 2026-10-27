@@ -53,6 +53,25 @@ hints), and its class comes from its own name, never from
 `TILO_AGENT_MODEL_CLASS`. The usage log names each call's model beside its
 role and item, so a run's cost is summed per model.
 
+## How much of the apps a plan is told
+
+`TILO_AGENT_CATALOG` says how much of what the agent's apps can do each plan
+is told. `all`, the default, describes every granted app's operations in full
+(for an agent granted more than four apps, those open, previewed or named).
+`relevant` ends the instructions with one line per granted app (the same for
+every plan of the agent) and describes in full, in a system message after
+them, only the apps the request is about: named by app, name or a
+word for its records, a record named by its title or holding a tag the request
+gives (`#logins`), a record the task made, touched, read or has open, and
+those named in news or in what a wait received. `list_operations` with an
+app's id answers with the others' operations, at the cost of a turn; a plan
+naming an operation of an app it was not told is refused as any unshown id is,
+with that app described for its next turn. The plan log's `catalog` gives the
+mode, the apps described, listed and looked up, and how many steps named an app
+the plan was not told. A provider caches a prompt up to the end of a system
+message, not within the request after it, so plans describing the same apps
+read the reference from the cache rather than writing it again.
+
 ## Context and authority remain separate
 
 Request hints do not authorise automatic record creation, discovery reads,

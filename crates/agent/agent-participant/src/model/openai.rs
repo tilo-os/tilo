@@ -569,7 +569,8 @@ impl ModelChoice {
 
     /// A planner over this model, built on the agent's own thread. The
     /// profile (preset and explicit settings) says whether its tasks are
-    /// checked once done, and whether they are coordinated.
+    /// checked once done, whether they are coordinated and how much of what
+    /// the apps can do their plans are told.
     #[must_use]
     pub fn planner(&self) -> ModelPlanner {
         let env = |name: &str| std::env::var(name).ok();
@@ -583,6 +584,7 @@ impl ModelChoice {
                 ModelPlanner::new(Box::new(model))
                     .checking_work(profile.checks_work())
                     .decomposing(profile.decomposes())
+                    .cataloguing(profile.catalog())
             }
             Self::Decomposed { coordinator, items } => {
                 let planner = coordinator.planner();
@@ -597,6 +599,7 @@ impl ModelChoice {
                     ModelPlanner::new(Box::new(GatewayModel::new(selection, PLAN_TIMEOUT)))
                         .checking_work(profile.checks_work())
                         .decomposing(profile.decomposes())
+                        .cataloguing(profile.catalog())
                 }
                 None => ModelPlanner::new(Box::new(Unconfigured)),
             },

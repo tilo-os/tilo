@@ -16,6 +16,7 @@ use super::{
 };
 use crate::apps::Seed;
 use crate::planner::{PlanContext, observation_within, readable};
+use crate::profile::Catalog;
 use crate::worker::ConfinedReplica;
 
 impl AgentParticipant {
@@ -117,19 +118,16 @@ impl AgentParticipant {
             .collect();
         let mut snapshots = self.snapshots(&about, &open);
         snapshots.extend(content_facts(task, &self.content));
-        // What the apps can do, the same whatever the room holds: every
-        // granted app's, or for an agent granted many, those in play.
-        let referenced: Vec<String> = apps
-            .iter()
-            .filter(|app| {
-                apps.len() <= MOST_REFERENCED_APPS
-                    || open.iter().any(|(route, _)| route.app_id == **app)
-                    || previews.iter().any(|(previewed, _)| previewed == *app)
-                    || crate::model::task_names_app(&naming, app)
-            })
-            .cloned()
-            .collect();
-        let reference = self.reference(referenced);
+        let reference = self.referenced(&apps, |app| {
+            open.iter().any(|(route, _)| route.app_id == app)
+                || previews.iter().any(|(previewed, _)| previewed == app)
+                || crate::model::task_names_app(&naming, app)
+        });
+        let app_names = if self.catalog == Catalog::Relevant {
+            self.app_names(&apps)
+        } else {
+            Vec::new()
+        };
         let (produced, observed, (pictures, rendered), obligations) = self
             .running
             .as_ref()
@@ -165,7 +163,34 @@ impl AgentParticipant {
             retries: self.task_retries.clone(),
             obligations: obligations.unwrap_or_default(),
             role: crate::planner::Role::Whole,
+            catalog: self.catalog,
+            app_names,
         }
+    }
+
+    /// What `apps` can do, the same whatever the room holds
+    /// ([`PlanContext::reference`]): every granted app's, or for an agent
+    /// granted many, those `in_play` (open, previewed or named). Told only
+    /// the relevant ones, the planner chooses among them all.
+    fn referenced(
+        &mut self,
+        apps: &[String],
+        in_play: impl Fn(&str) -> bool,
+    ) -> Vec<(String, Vec<ActionDescriptor>)> {
+        let every = self.catalog == Catalog::Relevant || apps.len() <= MOST_REFERENCED_APPS;
+        let referenced: Vec<String> = apps
+            .iter()
+            .filter(|app| every || in_play(app))
+            .cloned()
+            .collect();
+        self.reference(referenced)
+    }
+
+    /// What each of `apps` is called, by app id ([`PlanContext::app_names`]).
+    fn app_names(&self, apps: &[String]) -> Vec<(String, String)> {
+        apps.iter()
+            .filter_map(|app| Some((app.clone(), self.catalogue.get(app)?.title.to_owned())))
+            .collect()
     }
 
     /// The apps the running task is offered a new document of
