@@ -85,14 +85,20 @@ pub struct SearchEntry {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchEntryKind {
-    /// `filter unread "Unread"`: a filter on a field, its control derived from the field's type.
-    Field { field: Ident, label: Option<String> },
-    /// `filter "Has attachment" = not attachments.is_empty()`: a named predicate over the
-    /// resource's own fields, shown as a toggle.
+    /// `filter unread "Unread" (icon: .mail)`: a filter on a field, its control derived from
+    /// the field's type.
+    Field {
+        field: Ident,
+        label: Option<String>,
+        opts: Vec<ActionOpt>,
+    },
+    /// `filter "Open" = not done (icon: .circle)`: a named predicate over the resource's own
+    /// fields, shown as a toggle.
     Named {
         label: String,
         label_span: Span,
         expr: Expr,
+        opts: Vec<ActionOpt>,
     },
     /// `sort received newest`: the default order, and an order offered.
     Sort { field: Ident, order: Ident },

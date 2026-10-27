@@ -13,6 +13,51 @@ use crate::diag::{Diagnostic, Span};
 use crate::lexer::{StrPiece, Tok, Token, lex, lex_at};
 use crate::types::MergeKind;
 
+/// A named filter's predicate and the options written after it: `not done (icon: .circle)`
+/// parses as a call of `done`, told from one by naming only options.
+fn split_opts(e: Expr) -> (Expr, Vec<ActionOpt>) {
+    let span = e.span;
+    match e.kind {
+        ExprKind::Call { callee, args }
+            if !args.is_empty()
+                && args
+                    .iter()
+                    .all(|a| a.name.as_ref().is_some_and(|n| n.name == "icon")) =>
+        {
+            let opts = args
+                .into_iter()
+                .filter_map(|a| {
+                    Some(ActionOpt {
+                        name: a.name?,
+                        value: a.value,
+                    })
+                })
+                .collect();
+            (*callee, opts)
+        }
+        ExprKind::Unary { op, operand } => {
+            let (inner, opts) = split_opts(*operand);
+            let span = Span::new(span.start, inner.span.end);
+            let kind = ExprKind::Unary {
+                op,
+                operand: Box::new(inner),
+            };
+            (Expr { kind, span }, opts)
+        }
+        ExprKind::Binary { op, lhs, rhs } => {
+            let (inner, opts) = split_opts(*rhs);
+            let span = Span::new(span.start, inner.span.end);
+            let kind = ExprKind::Binary {
+                op,
+                lhs,
+                rhs: Box::new(inner),
+            };
+            (Expr { kind, span }, opts)
+        }
+        kind => (Expr { kind, span }, Vec::new()),
+    }
+}
+
 /// A syntax error that was already reported.
 struct Abort;
 
@@ -824,11 +869,12 @@ impl<'a> Parser<'a> {
                             "`=` and what the filter holds of: `filter \"Open\" = not done`",
                         );
                     }
-                    let expr = self.expr()?;
+                    let (expr, opts) = split_opts(self.expr()?);
                     SearchEntryKind::Named {
                         label,
                         label_span,
                         expr,
+                        opts,
                     }
                 } else {
                     let field = self.ident("the field a filter is on")?;
@@ -837,7 +883,8 @@ impl<'a> Parser<'a> {
                     } else {
                         None
                     };
-                    SearchEntryKind::Field { field, label }
+                    let opts = self.action_opts()?;
+                    SearchEntryKind::Field { field, label, opts }
                 }
             }
             "sort" => {

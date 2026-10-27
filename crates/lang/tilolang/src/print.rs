@@ -513,13 +513,20 @@ impl Printer {
         self.level += 1;
         for entry in &search.entries {
             let text = match &entry.kind {
-                SearchEntryKind::Field { field, label } => match label {
-                    Some(label) => format!("filter {} {}", field.name, quote(label)),
-                    None => format!("filter {}", field.name),
+                SearchEntryKind::Field { field, label, opts } => match label {
+                    Some(label) => {
+                        format!("filter {} {}{}", field.name, quote(label), self.opts(opts))
+                    }
+                    None => format!("filter {}{}", field.name, self.opts(opts)),
                 },
-                SearchEntryKind::Named { label, expr, .. } => {
-                    format!("filter {} = {}", quote(label), self.ex(expr))
-                }
+                SearchEntryKind::Named {
+                    label, expr, opts, ..
+                } => format!(
+                    "filter {} = {}{}",
+                    quote(label),
+                    self.ex(expr),
+                    self.opts(opts)
+                ),
                 SearchEntryKind::Sort { field, order } => {
                     format!("sort {} {}", field.name, order.name)
                 }
