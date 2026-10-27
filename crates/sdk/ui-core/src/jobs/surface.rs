@@ -247,9 +247,8 @@ fn bar(job: &Job) -> Element {
                 ("total", crate::i18n::ArgValue::from(unit.format(*total))),
             ],
         ),
-        (Progress::Seen { seen: _ }, Unit::Steps) => String::new(),
+        (Progress::Seen { seen: _ }, Unit::Steps) | (Progress::Starting, _) => String::new(),
         (Progress::Seen { seen }, unit) => unit.format(*seen),
-        (Progress::Starting, _) => String::new(),
     };
     let bar = if line.is_empty() {
         bar
