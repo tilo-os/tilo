@@ -3255,10 +3255,7 @@ impl Widget for ActionPalette {
     }
     fn is_focused(&self) -> bool {
         self.is_presented()
-            && (self
-                .field
-                .accessibility()
-                .is_some_and(|field| field.state.focused)
+            && (self.field.is_focused()
                 || self
                     .confirm
                     .as_ref()
@@ -3391,9 +3388,11 @@ impl Widget for ActionPalette {
         {
             children.push(results.with_hashed_key(self.target("results")));
         }
+        let confirm = self.confirm.as_ref();
+        let description = confirm.map_or("", |confirm| confirm.detail.as_str());
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
-                .with_name(self.confirm.as_ref().map_or_else(
+                .with_name(confirm.map_or_else(
                     || {
                         if self.in_argument_mode() {
                             "Action confirmation"
@@ -3403,12 +3402,12 @@ impl Widget for ActionPalette {
                     },
                     |confirm| confirm.question.as_str(),
                 ))
-                .with_description(
-                    self.confirm
-                        .as_ref()
-                        .map_or("", |confirm| confirm.detail.as_str()),
+                .with_description(description)
+                .with_state(
+                    crate::a11y::AccessState::new()
+                        .modal(true)
+                        .focused(self.is_focused()),
                 )
-                .with_state(crate::a11y::AccessState::new().modal(true))
                 .with_children(children),
         )
     }

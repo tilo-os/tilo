@@ -276,7 +276,7 @@ pub struct Bench {
     pub seated: i64,
 }
 
-#[resource(kind = "test.bench", label = "Bench")]
+#[resource(kind = "test.bench", label = "Bench", app = "so.tilo.test-bench")]
 impl Bench {
     /// Sit down.
     #[action]

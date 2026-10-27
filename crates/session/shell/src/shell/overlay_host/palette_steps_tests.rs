@@ -533,3 +533,86 @@ fn rows_wear_their_own_pictures() {
         Some(ui::icons::app_glyph("so.tilo.notes", None))
     );
 }
+
+/// One action whose argument may be left out, which fails when it runs.
+struct FailingOpen;
+
+impl SearchProvider for FailingOpen {
+    fn id(&self) -> &'static str {
+        "failing-open"
+    }
+    fn name(&self) -> &'static str {
+        "Failing open"
+    }
+    fn resource_kinds(&self) -> &[ResourceKind] {
+        &[ResourceKind::Action]
+    }
+    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        if !ctx.needle.starts_with("zqopen") || !ctx.wanted.contains(&ResourceKind::Action) {
+            return Vec::new();
+        }
+        let mut row = SearchResult::nullary(
+            ResourceKind::Action,
+            "failing-open",
+            "open",
+            "Zqopen folder",
+            None,
+            100,
+            |_, _, _| {},
+        );
+        row.params = vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "Folder; omit to choose one",
+        )];
+        row.on_open = Rc::new(
+            |_: &mut ui::widget::Edits<'_>,
+             _: &ObjId,
+             _: &crate::shell::chrome_state::Chrome,
+             _: &ActionArgs|
+             -> Result<(), ActionError> {
+                Err(ActionError::Explained(
+                    "Another file is being opened. Finish that first.".into(),
+                ))
+            },
+        );
+        vec![row]
+    }
+}
+
+/// An action whose arguments may all be left out runs at once; when it
+/// fails, the failure is told on its row, as for one that takes none.
+#[test]
+fn a_failed_run_with_nothing_to_ask_is_told_on_its_row() {
+    let mut h = build_harness_sized(1280.0, 800.0);
+    h.host.search_registry.register(Rc::new(FailingOpen));
+    h.host.set_palette_visible(true);
+    h.host.set_palette_focus(true);
+    h.host.force_palette_settled();
+    h.host.set_palette_query("zqopen");
+    h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+    settle(&mut h, 1280.0, 800.0);
+    select(&mut h, "Zqopen folder");
+    assert!(press(&mut h, NamedKey::Enter));
+    assert!(
+        h.host.palette_visible(),
+        "search stays to tell what happened"
+    );
+    let row = h
+        .host
+        .palette
+        .visible_entries()
+        .iter()
+        .find(|entry| entry.label == "Zqopen folder")
+        .map(|entry| (entry.description.clone(), entry.badge.is_some()))
+        .expect("the row that ran is still listed");
+    assert_eq!(
+        row,
+        (
+            Some("Another file is being opened. Finish that first.".to_owned()),
+            true
+        ),
+        "the failure is on the row that ran, marked as failed"
+    );
+}

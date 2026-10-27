@@ -8,7 +8,9 @@
 //! another member), by their own grants, and admitted under the custody the
 //! broker kept for them, so the child's history names them and their undo
 //! takes it back. The app's own identity adds nothing, and its own grants
-//! are not used.
+//! are not used. It reaches no further than that invocation was admitted
+//! to ([`tilo_action_policy::Reach`]): a reading invocation's edit, say, is
+//! put to the person as its own request first.
 //!
 //! An invocation the app made of its own action through this same door (a
 //! button in its window runs its published action) speaks for the app, not
@@ -146,7 +148,7 @@ impl CapnpBrokerState {
         {
             return Some(Continuing::OwnDoor);
         }
-        self.continuing_caller(peer_id, parent)
+        self.child_caller(peer_id, parent)
             .map(|caller| Continuing::Invocation(Box::new(Continued { caller, original })))
     }
 

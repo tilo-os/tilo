@@ -450,7 +450,6 @@ impl FirewallApp {
         if self.applying.as_deref() == Some(canonical.as_str()) && jobs.is_running(APPLY_JOB) {
             return;
         }
-        self.applying = Some(canonical);
         let app_writes = self.host_writes;
         jobs.start::<Self>(APPLY_JOB, move |cx| {
             Ok(cx.thread(
@@ -476,6 +475,10 @@ impl FirewallApp {
                 },
             ))
         });
+        // Applying only while the job runs: where jobs do not run (a
+        // scenario's drive stages a fixture and starts nothing), the window
+        // never shows an apply that will not finish.
+        self.applying = jobs.is_running(APPLY_JOB).then_some(canonical);
     }
 
     /// Whether there is a configuration to edit and apply.

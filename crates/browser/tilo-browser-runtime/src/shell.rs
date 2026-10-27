@@ -633,6 +633,39 @@ pub struct ChromeSources {
 }
 
 impl BrowserShell {
+    /// The open People popover takes the keyboard and the pointer over it; a
+    /// press elsewhere closes it, and the bar's avatars toggle it. Answers
+    /// whether the popover took the event.
+    fn people_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        if !(self.people_open || self.people.wants_pointer_capture()) {
+            return false;
+        }
+        let on_bar = self
+            .cursor
+            .is_some_and(|point| point.y < f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
+        let hit = self
+            .people
+            .handle_event(event, ctx, self.people_open, self.cursor);
+        if let Some(hit) = hit {
+            if !(hit == CollaboratorsHit::Dismiss && on_bar) {
+                self.apply_people_hit(hit);
+            }
+            *ctx.handled = !(hit == CollaboratorsHit::Dismiss && on_bar);
+        }
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && self.people_open
+            && !*ctx.handled
+            && key.state == ElementState::Pressed
+            && let Some(hit) = self
+                .people
+                .key(&key.logical_key, ctx.modifiers.state().shift_key())
+        {
+            self.apply_people_hit(hit);
+            *ctx.handled = true;
+        }
+        *ctx.handled
+    }
+
     /// Whether anything of the page besides a hint changed since it was
     /// drawn: the clock's minute, a menu or picker in motion, or a child.
     fn page_needs_redraw(&self) -> bool {
@@ -2438,35 +2471,8 @@ impl Widget for BrowserShell {
             return;
         }
         self.hints.heard(event, ui::time::now());
-        // The open popover takes the keyboard and the pointer over it; a
-        // press elsewhere closes it, and the bar's avatars toggle it.
-        if self.people_open || self.people.wants_pointer_capture() {
-            let on_bar = self
-                .cursor
-                .is_some_and(|point| point.y < f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
-            let hit = self
-                .people
-                .handle_event(event, ctx, self.people_open, self.cursor);
-            if let Some(hit) = hit {
-                if !(hit == CollaboratorsHit::Dismiss && on_bar) {
-                    self.apply_people_hit(hit);
-                }
-                *ctx.handled = !(hit == CollaboratorsHit::Dismiss && on_bar);
-            }
-            if let WindowEvent::KeyboardInput { event: key, .. } = event
-                && self.people_open
-                && !*ctx.handled
-                && key.state == ElementState::Pressed
-                && let Some(hit) = self
-                    .people
-                    .key(&key.logical_key, ctx.modifiers.state().shift_key())
-            {
-                self.apply_people_hit(hit);
-                *ctx.handled = true;
-            }
-            if *ctx.handled {
-                return;
-            }
+        if self.people_event(event, ctx) {
+            return;
         }
         if self.pinned_people_event(event, ctx) {
             return;

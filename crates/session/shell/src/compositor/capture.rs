@@ -33,6 +33,9 @@ use crate::shell::capture_surface::{
     CaptureMirrorHandoffLayer, CaptureSurfaceKind, CaptureSurfaceRequest,
 };
 
+mod outcome;
+pub use outcome::tell_outcome;
+
 const MAX_CAPTURE_EDGE: f64 = 8_192.0;
 const GRID_GAP: f64 = 16.0;
 const STACK_OFFSET: f64 = 28.0;
@@ -146,11 +149,6 @@ impl CaptureDone {
 
     fn outcome(outcome: CaptureOutcome) -> Self {
         Self::new(move |_, _| Some(outcome))
-    }
-
-    /// `result` as the outcome, or the failure it carries.
-    fn result(result: Result<CaptureOutcome, String>) -> Self {
-        Self::outcome(result.unwrap_or_else(CaptureOutcome::Failed))
     }
 }
 
@@ -1242,26 +1240,14 @@ impl CaptureExecutor {
     fn reveal_last_recording(&mut self) {
         let last = self.last_recording.clone();
         self.with_last_artifact(&last, "there is no completed recording to reveal", |path| {
-            CaptureDone::result(
-                path.parent()
-                    .ok_or_else(|| format!("recording path has no parent: {}", path.display()))
-                    .and_then(|folder| {
-                        xdg_open(folder)
-                            .map_err(|error| format!("show recording in Files: {error}"))
-                    })
-                    .map(|_| CaptureOutcome::RecordingRevealed(path.clone())),
-            )
+            show_in_files(path, CaptureOutcome::RecordingRevealed)
         });
     }
 
     fn open_last_recording(&mut self) {
         let last = self.last_recording.clone();
         self.with_last_artifact(&last, "there is no completed recording to play", |path| {
-            CaptureDone::result(
-                xdg_open(&path)
-                    .map_err(|error| format!("play recording {}: {error}", path.display()))
-                    .map(|_| CaptureOutcome::RecordingOpened(path.clone())),
-            )
+            open_in_workspace(path, CaptureOutcome::RecordingOpened)
         });
     }
 
@@ -1412,26 +1398,14 @@ impl CaptureExecutor {
     fn reveal_last_screenshot(&mut self) {
         let last = self.last_screenshot.clone();
         self.with_last_artifact(&last, "there is no saved screenshot to reveal", |path| {
-            CaptureDone::result(
-                path.parent()
-                    .ok_or_else(|| format!("screenshot path has no parent: {}", path.display()))
-                    .and_then(|folder| {
-                        xdg_open(folder)
-                            .map_err(|error| format!("show screenshot in Files: {error}"))
-                    })
-                    .map(|_| CaptureOutcome::ScreenshotRevealed(path.clone())),
-            )
+            show_in_files(path, CaptureOutcome::ScreenshotRevealed)
         });
     }
 
     fn open_last_screenshot(&mut self) {
         let last = self.last_screenshot.clone();
         self.with_last_artifact(&last, "there is no saved screenshot to open", |path| {
-            CaptureDone::result(
-                xdg_open(&path)
-                    .map_err(|error| format!("open screenshot {}: {error}", path.display()))
-                    .map(|_| CaptureOutcome::ScreenshotOpened(path.clone())),
-            )
+            open_in_workspace(path, CaptureOutcome::ScreenshotOpened)
         });
     }
 
@@ -2321,13 +2295,45 @@ fn compose_spatial(source: &Scene, regions: &[Rect]) -> Result<(Scene, u32, u32)
 
 /// Hand `target` to the desktop's default handler, detached from the
 /// compositor's stdio.
-fn xdg_open(target: &std::path::Path) -> std::io::Result<std::process::Child> {
-    std::process::Command::new("xdg-open")
-        .arg(target)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+/// Open a finished capture in the workspace app that claims its type, on
+/// the loop, through the one document-open path: `opened` is the outcome.
+/// A failure is told the way every other open's is.
+fn open_in_workspace(path: PathBuf, opened: fn(PathBuf) -> CaptureOutcome) -> CaptureDone {
+    CaptureDone::new(move |_, frame_builder| {
+        let chrome = frame_builder.chrome_handle();
+        match crate::shell::doc_open::open_in_workspace(&path, &chrome) {
+            Ok(_) => Some(opened(path)),
+            Err(error) => {
+                crate::shell::doc_open::report_open_failure(
+                    &chrome,
+                    &path,
+                    &error.user_message(),
+                    None,
+                );
+                None
+            }
+        }
+    })
+}
+
+/// Show a finished capture selected in its folder in Files, on the loop:
+/// `shown` is the outcome. A failure is told the way an open's is.
+fn show_in_files(path: PathBuf, shown: fn(PathBuf) -> CaptureOutcome) -> CaptureDone {
+    CaptureDone::new(move |_, frame_builder| {
+        let chrome = frame_builder.chrome_handle();
+        match crate::shell::doc_open::show_in_files(&path, &chrome) {
+            Ok(()) => Some(shown(path)),
+            Err(error) => {
+                crate::shell::doc_open::report_open_failure(
+                    &chrome,
+                    &path,
+                    &error.user_message(),
+                    None,
+                );
+                None
+            }
+        }
+    })
 }
 
 /// Draw each region scaled into its placement from `geometry`, which is

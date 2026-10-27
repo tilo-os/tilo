@@ -18,15 +18,18 @@ COPY --from=github-assets / /
 FROM ${BASE_REF} AS configured-base
 
 # Snapshot creation must not inherit a randomly selected, stale mirror and then
-# retry every RPM serially. Use a current Fedora HTTPS mirror and bounded
+# retry every RPM serially. Use current Fedora HTTPS mirrors and bounded
 # parallelism; RPM signatures still provide the package authenticity check.
+# Two, both current: ftp.fau.de, and Fedora's own master (dl.fedoraproject.org)
+# where a download from it fails, so one mirror throttling or resetting
+# connections does not fail the snapshot ("All mirrors were tried").
 RUN sed -i \
-      -e 's|^#baseurl=http://download.example/pub/fedora/linux/releases/|baseurl=https://ftp.fau.de/fedora/linux/releases/|' \
+      -e 's|^#baseurl=http://download.example/pub/fedora/linux/releases/\(.*\)$|baseurl=https://ftp.fau.de/fedora/linux/releases/\1 https://dl.fedoraproject.org/pub/fedora/linux/releases/\1|' \
       -e '/^metalink=.*repo=fedora-/s/^/#/' \
       /etc/yum.repos.d/fedora.repo \
  && sed -i \
-      -e 's|^#baseurl=http://download.example/pub/fedora/linux/updates/|baseurl=https://ftp.fau.de/fedora/linux/updates/|' \
-      -e 's|/Everything/SRPMS/|/Everything/source/tree/|' \
+      -e 's|^#baseurl=http://download.example/pub/fedora/linux/updates/\(.*\)$|baseurl=https://ftp.fau.de/fedora/linux/updates/\1 https://dl.fedoraproject.org/pub/fedora/linux/updates/\1|' \
+      -e 's|/Everything/SRPMS/|/Everything/source/tree/|g' \
       -e '/^metalink=.*repo=updates-/s/^/#/' \
       /etc/yum.repos.d/fedora-updates.repo \
  && printf '[main]\nmax_parallel_downloads=20\n' > /etc/dnf/dnf.conf

@@ -3167,6 +3167,15 @@ pub(crate) fn invoke_resource_action(
                     } else {
                         None
                     };
+                    // A record's route names the app owning it, and one without
+                    // a route is the component's own; History reads that app's words.
+                    let owner_app = route
+                        .as_ref()
+                        .map_or(binding.app_id.as_str(), |route| route.app_id.as_str());
+                    let ambient = ambient
+                        .unwrap_or(&binding.operation_context)
+                        .clone()
+                        .with_app(owner_app, owner_app);
                     let encoded = encode_resource_action(
                         &resources,
                         &target.address.address,
@@ -3191,7 +3200,7 @@ pub(crate) fn invoke_resource_action(
                                 broker_admitted,
                                 invocation,
                                 source_invocation,
-                                ambient: ambient.or(Some(&binding.operation_context)),
+                                ambient: Some(&ambient),
                                 scope,
                                 door: match door.as_mut() {
                                     Some(door) => Some(&mut **door as &mut dyn crate::session_door::SessionDoor),

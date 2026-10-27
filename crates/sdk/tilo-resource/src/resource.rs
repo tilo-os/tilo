@@ -53,6 +53,12 @@ pub trait Resource: Sized + 'static {
     const KIND: &'static str;
     /// Human name of one resource of this kind, e.g. `"Notebook"`.
     const LABEL: &'static str;
+    /// The app that publishes records of this kind, e.g. `"so.tilo.notes"`:
+    /// the framework app's id, or for a resource that names its app in its
+    /// `#[resource(app = "…")]` declaration, that. It is part of the
+    /// [`ActionKey`](tilo_actions::ActionKey) every typed reference of the
+    /// resource names its actions by.
+    const APP_ID: &'static str = crate::kind::DEFAULT_APP;
     /// The registry type id every action of this resource is replayed under.
     const ACTION_TYPE: &'static str = Self::KIND;
 
@@ -2620,6 +2626,9 @@ fn publish_own(
     let mut resource = tilo_actions::Resource::new(id, vocabulary.kind, label);
     // Describe the declared domain ID before any host dispatch alias projection.
     resource.semantic_identity = tilo_actions::ResourceSemanticIdentity::new(vocabulary.kind, id);
+    // The app it publishes under: what an action's `ActionKey` names, and
+    // what a control bound by key is checked against.
+    resource.app_id = Some(vocabulary.app.to_owned());
     for decl in vocabulary.declarations().iter() {
         let _phase = crate::profiling::Phase::start("resource.declaration_spec");
         let mut spec = spec_of_declaration(decl);

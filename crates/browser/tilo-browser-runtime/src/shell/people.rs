@@ -105,10 +105,12 @@ pub(crate) struct OwnAsk {
     pub arguments: serde_json::Map<String, serde_json::Value>,
 }
 
+/// What came of each message, by the id it was sent under.
+type Answers = std::collections::HashMap<u32, Result<(), String>>;
+
 thread_local! {
     /// The last message id handed out, and the page's answers not taken yet.
-    static ANSWERS: std::cell::RefCell<(u32, std::collections::HashMap<u32, Result<(), String>>)> =
-        std::cell::RefCell::default();
+    static ANSWERS: std::cell::RefCell<(u32, Answers)> = std::cell::RefCell::default();
     /// The person's own asks the page has not run yet.
     static OWN_ASKS: std::cell::RefCell<Vec<OwnAsk>> = std::cell::RefCell::default();
 }
@@ -558,7 +560,7 @@ impl PagePeople {
             Some(answer) => {
                 let sending = self.sending.take();
                 match answer {
-                    Ok(_) => true,
+                    Ok(()) => true,
                     Err(reason) => {
                         self.failed_send = sending.map(|sending| (sending.name, reason));
                         false

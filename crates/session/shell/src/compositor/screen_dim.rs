@@ -7,6 +7,8 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use super::idle::SessionManager;
+
 /// Set while the idle dim holds the backlight, so the ambient-light loop does not raise it
 /// again behind the user's back; the dim restores the level itself on input.
 static BACKLIGHT_HELD: AtomicBool = AtomicBool::new(false);
@@ -110,6 +112,15 @@ impl<B: Backlight> ScreenDimmer<B> {
             BACKLIGHT_HELD.store(false, Ordering::Relaxed);
         }
         self.dim = Dim::Off;
+    }
+
+    /// Keep the session's dim state what the panel shows. A restore the
+    /// driver refused leaves the panel dimmed, so the session must not take
+    /// it for lifted: the next input then lifts it again.
+    pub fn keep_session_truthful(&self, session: &mut SessionManager) {
+        if matches!(self.dim, Dim::Backlight(_)) {
+            session.keep_dimmed();
+        }
     }
 
     /// Opacity of the dimming overlay the paint path must draw on top of the scene, if any.
@@ -220,6 +231,46 @@ mod tests {
         backlight.refuses.set(false);
         dimmer.restore();
         assert_eq!(*backlight.level.borrow(), Some(0.8));
+    }
+
+    #[test]
+    fn a_refused_restore_leaves_the_session_dimmed_for_the_next_input() {
+        use crate::compositor::idle::{IdleConfig, SessionTransition};
+        use std::time::{Duration, Instant};
+        let backlight = FakeBacklight::at(0.8);
+        let mut dimmer = ScreenDimmer::new(&backlight);
+        let start = Instant::now();
+        let mut session = SessionManager::new(
+            IdleConfig {
+                blank_timeout: Some(Duration::from_secs(600)),
+                lock_timeout: None,
+                suspend_timeout: None,
+            },
+            start,
+        );
+        let mut apply = |transitions: Vec<SessionTransition>, session: &mut SessionManager| {
+            for transition in transitions {
+                match transition {
+                    SessionTransition::Dimmed => dimmer.dim(),
+                    SessionTransition::Undimmed => dimmer.restore(),
+                    _ => {}
+                }
+            }
+            dimmer.keep_session_truthful(session);
+        };
+        let at = |seconds| start + Duration::from_secs(seconds);
+        apply(session.tick(at(590)), &mut session);
+        assert!(session.is_dimmed());
+        backlight.refuses.set(true);
+        apply(session.note_activity(at(591)), &mut session);
+        assert!(
+            session.is_dimmed(),
+            "a dim that could not be lifted is still the display's state"
+        );
+        backlight.refuses.set(false);
+        apply(session.note_activity(at(592)), &mut session);
+        assert_eq!(*backlight.level.borrow(), Some(0.8));
+        assert!(!session.is_dimmed());
     }
 
     #[test]

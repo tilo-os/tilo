@@ -213,7 +213,11 @@ pub(crate) fn statuses(speech: bool) -> Vec<EffectStatus> {
             effect(AccessibilityEffect::SET_SPEECH_VOICE).id,
         ] {
             statuses.push(EffectStatus::unavailable(
-                ActionRef::<SettingsEffect, ()>::new(unavailable, &[]),
+                ActionRef::<SettingsEffect, ()>::new(
+                    unavailable,
+                    &[],
+                    <SettingsEffect as ui::tilo_resource::Effect>::kind(),
+                ),
                 "not_installed",
                 t("a11y-screen-reader-missing"),
             ));

@@ -29,8 +29,8 @@ use crate::shell::search::providers::store_catalogue::{
     StoreCatalogueTestSource, StoreCatalogueTestState,
 };
 use crate::shell::search::providers::{
-    ActionsProvider, ApplicationsProvider, ContinueProvider, FilesProvider, SessionActionPolicy,
-    SessionActionsProvider, SettingsPagesProvider, WebProvider,
+    ActionsProvider, AppContentProvider, ApplicationsProvider, ContinueProvider, FilesProvider,
+    SessionActionPolicy, SessionActionsProvider, SettingsPagesProvider, WebProvider,
 };
 use crate::shell::search::providers::{HostApplicationsProvider, StoreCatalogueProvider};
 use crate::shell::search::{
@@ -236,6 +236,39 @@ impl Palette {
             .register(Rc::new(ContinueProvider::without_broker(Arc::new(
                 crate::shell::search::app_content_index::AppContentIndex::in_memory(),
             ))));
+        self
+    }
+
+    /// The palette over what `app` published in the workspace in front, as
+    /// its window publishes it to the session's index of apps' content.
+    fn with_app_content(
+        mut self,
+        app: &str,
+        entries: Vec<ui::search::index_publication::IndexEntry>,
+    ) -> Self {
+        use ui::search::index_publication::{IndexState, Publisher};
+        let room = self
+            .chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("a workspace in front")
+            .room()
+            .to_string();
+        let index = Arc::new(crate::shell::search::app_content_index::AppContentIndex::in_memory());
+        let state = IndexState {
+            generation: 1,
+            secrets_unlocked: None,
+        };
+        for delta in Publisher::default().publish(state, entries) {
+            let bytes = delta.encode().expect("a delta encodes");
+            index
+                .publish(&room, app, "tab:0001", &bytes)
+                .expect("the index takes the delta");
+        }
+        self.registry
+            .register(Rc::new(AppContentProvider::without_broker(index)));
         self
     }
 
@@ -1341,6 +1374,81 @@ fn a_query_only_a_flatpak_matches_still_finds_its_store_page() {
         assert_eq!(
             rows.first().map(|row| row.id.as_str()),
             Some("flathub:org.musicbrainz.Picard"),
+            "{:?}",
+            titles(&rows)
+        );
+    }
+}
+
+/// One of Tube's rows as its window publishes it: found by `text` (the
+/// query a row answers), ordered among Tube's own rows by `boost`, steps of
+/// 101 below the row that searches as Tube boosts them.
+fn tube_entry(
+    anchor: &str,
+    title: &str,
+    text: &str,
+    boost: i32,
+) -> ui::search::index_publication::IndexEntry {
+    use ui::search::index_publication::{IndexEntry, IndexWeight};
+    IndexEntry {
+        key: anchor.into(),
+        resource: anchor.into(),
+        action: None,
+        title: title.into(),
+        subtitle: None,
+        group: Some("YouTube".into()),
+        icon: None,
+        boost,
+        fields: vec![(text.into(), IndexWeight::Body)],
+        secret: false,
+    }
+}
+
+/// Typing "lofi" with Tube open: its row that searches `YouTube` leads, so
+/// Enter searches, though the videos `YouTube` suggests begin with the word
+/// and the row only contains it; the videos follow in `YouTube`'s order.
+/// The app's boosts order its own rows, whatever their titles say.
+#[test]
+fn an_apps_boosts_order_its_rows_over_their_titles_lexical_fit() {
+    let palette = Palette::new().with_app_content(
+        "so.tilo.tube",
+        vec![
+            tube_entry("tube.video:b", "lofi beats to sleep to", "lofi", 798),
+            tube_entry(
+                "tube.video:a",
+                "lofi hip hop radio 📚 beats to relax/study to",
+                "lofi",
+                899,
+            ),
+            tube_entry(
+                "tube.search:lofi",
+                "Search YouTube for “lofi”",
+                "lofi",
+                1000,
+            ),
+            tube_entry("tube.video:c", "chill lofi mix", "lofi", 697),
+        ],
+    );
+    for rows in [palette.ask("lofi"), palette.shown("lofi")] {
+        let tube: Vec<&str> = rows
+            .iter()
+            .filter(|row| row.kind == ResourceKind::Record)
+            .map(|row| row.title.as_str())
+            .collect();
+        assert_eq!(
+            tube,
+            [
+                "Search YouTube for “lofi”",
+                "lofi hip hop radio 📚 beats to relax/study to",
+                "lofi beats to sleep to",
+                "chill lofi mix",
+            ],
+            "{:?}",
+            titles(&rows)
+        );
+        assert_eq!(
+            rows.first().map(|row| row.title.as_str()),
+            Some("Search YouTube for “lofi”"),
             "{:?}",
             titles(&rows)
         );

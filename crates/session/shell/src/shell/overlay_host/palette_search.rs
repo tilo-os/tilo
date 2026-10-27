@@ -79,6 +79,7 @@ impl ShellOverlayHost {
             self.open_palette_with_scope(SearchScope::ActiveApp);
         }
         let query = request.query.clone().unwrap_or_default();
+        self.palette_asked = request.asked();
         if let Some(scope) = resource_scope {
             let label = scope.label.clone();
             {
@@ -153,6 +154,7 @@ impl ShellOverlayHost {
         use crate::shell::chrome_state::SearchScope;
         // An app's prepared action belongs to the search it opened.
         self.palette_offer = None;
+        self.palette_asked = None;
         let effective = if matches!(scope, SearchScope::ActiveApp)
             && self
                 .chrome
@@ -635,6 +637,9 @@ impl ShellOverlayHost {
                 crate::shell::search::launcher::wanted(&args),
             )
         };
+        if self.start_asked_action(&groups) {
+            return;
+        }
         let groups = self.fit_to_card(groups, launcher);
 
         // Provider revisions may insert/re-rank rows without a query edit.
