@@ -1147,9 +1147,13 @@ name = "sandbox-jobs-real-kernel"
 requires = ["arch=x86_64"]
 isolation = "vm"
 needs = ["sandbox-jobs-real-kernel-build"]
+# The guest's init gives no controller to its root's children, as systemd would: the tests of
+# limits need memory, pids and cpu in the cgroup they delegate to themselves. The startup test
+# that holds a 4 GiB heap needs more memory than the guest's 4 GiB, so it is left out here.
 run = """
+echo "+cpu +memory +pids" > /sys/fs/cgroup/cgroup.subtree_control
 cd crates/platform/tilo-sandbox
-/target/vm/tilo-sandbox-job --skip clone_fallback:: --nocapture --test-threads=1
+/target/vm/tilo-sandbox-job --skip clone_fallback:: --skip startup::startup_does_not_grow_with_the_callers_heap --nocapture --test-threads=1
 /target/vm/tilo-sandbox-job clone_fallback:: --nocapture --test-threads=1
 """
 inputs = []
