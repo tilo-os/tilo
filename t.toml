@@ -1122,12 +1122,15 @@ cd crates/hosting/tilo-relay
 """
 inputs = []
 
-# The job sandbox's tests of jobs with host ids of their own map blocks of host ids and make
-# idmapped mounts, which take real root; the job sandbox never gives it, so there they skip. They
-# are built here and run in a micro-VM, as root, with the tests of overlays, which need to mount
-# them.
+# The job sandbox's tests start jobs, and in a check's own job sandbox none can start: clone3
+# answers ENOSYS there and clone, without nested sandboxes, EPERM, so test-x86_64/tilo-sandbox
+# skips every one of them. They are built here and run in a micro-VM, as root, on a kernel of its
+# own: jobs start with clone3, user namespaces and a delegated cgroup work, and the tests of host
+# ids (blocks of host ids, idmapped mounts) and overlays have the root they need. The test that
+# starts a job with clone, as where clone3 is missing, and compares it with clone3's runs in a
+# process of its own: from it on, that process starts every job with clone.
 [[check]]
-name = "sandbox-host-ids-build"
+name = "sandbox-jobs-real-kernel-build"
 requires = ["arch=x86_64"]
 run = """
 test=$(cargo test --locked -p tilo-sandbox --test job --no-run --message-format json \
@@ -1140,15 +1143,17 @@ cargo_packages = ["tilo-sandbox"]
 inputs = []
 
 [[check]]
-name = "sandbox-host-ids"
+name = "sandbox-jobs-real-kernel"
 requires = ["arch=x86_64"]
 isolation = "vm"
-needs = ["sandbox-host-ids-build"]
+needs = ["sandbox-jobs-real-kernel-build"]
 run = """
 cd crates/platform/tilo-sandbox
-/target/vm/tilo-sandbox-job host_ids:: overlays:: --nocapture --test-threads=1
+/target/vm/tilo-sandbox-job --skip clone_fallback:: --nocapture --test-threads=1
+/target/vm/tilo-sandbox-job clone_fallback:: --nocapture --test-threads=1
 """
 inputs = []
+cost = "minutes"
 
 # ---------------------------------------------------------------------------
 # Scheduled suites: nightly-* every night, weekly-* on Sundays, and on request:
