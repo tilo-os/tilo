@@ -814,6 +814,9 @@ impl SheetsApp {
             }),
         );
         self.reload();
+        // The rows arrive where they were put: the band opens, and the rows
+        // below make room on the standard disclosure.
+        self.grid.rows_inserted(r0, count);
         self.status = format!(
             "Inserted {} above row {}",
             if count == 1 {
@@ -838,6 +841,7 @@ impl SheetsApp {
             }),
         );
         self.reload();
+        self.grid.rows_inserted(r1.saturating_add(1), count);
         self.status = format!(
             "Inserted {} below row {}",
             if count == 1 {
@@ -858,6 +862,9 @@ impl SheetsApp {
             Workbook::DELETE_ROWS.with(verbs::DeleteRows { sheet, rows }),
         );
         self.reload();
+        // The gap closes: the rows below rise into it rather than jumping.
+        self.grid
+            .rows_removed(r0, u32::try_from(count).unwrap_or(u32::MAX));
         self.status = format!(
             "Deleted {}",
             if count == 1 {
@@ -881,6 +888,7 @@ impl SheetsApp {
             }),
         );
         self.reload();
+        self.grid.columns_inserted(c0, count);
         self.status = format!("Inserted {count} column(s) left of {at}");
     }
 
