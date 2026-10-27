@@ -1,6 +1,6 @@
 # Apps that still draw a toolbar row of their own under the window bar
 # (tools/policy/check_app_toolbars.py). Counts only shrink.
-history-in-row 2 apps/maps/src/app.rs
+history-in-row 1 apps/maps/src/app.rs
 # Search and find entries of an app's own, and a subpage Back of its own; the
 # window bar's search and navigation take them over batch by batch.
 own-search 1 apps/maps/src/offline_panel.rs
@@ -13,3 +13,4 @@ toolbar-band 1 apps/ebook/src/app.rs
 # Not a toolbar row, only the band's hairline borrowed: Writer's ruler wants
 # a divider of its own instead.
 window-header 1 apps/maps/src/app.rs
+history-in-row 1 apps/maps/src/app/state.rs
