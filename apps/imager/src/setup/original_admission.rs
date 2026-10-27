@@ -73,8 +73,7 @@ impl ReviewedOriginalImage {
         &self,
         cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<VerifiedOriginalImage> {
-        use sha2::{Digest, Sha256};
-        use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
+        use std::os::unix::fs::OpenOptionsExt;
         self.proof.validate()?;
         super::migration::check_cancel(cancel)?;
         let file = std::fs::OpenOptions::new()
@@ -88,9 +87,36 @@ impl ReviewedOriginalImage {
         {
             return Err(invalid());
         }
+        self.check_digest(&file, cancel)?;
+        let after = file.metadata()?;
+        let stamp = ImageStamp::from_metadata(&after);
+        if ImageStamp::from_metadata(&before) != stamp {
+            return Err(invalid());
+        }
+        super::migration::check_cancel(cancel)?;
+        let racy = stamp.is_racy()?;
+        let verified = VerifiedOriginalImage {
+            file,
+            reviewed: self.clone(),
+            stamp,
+            racy: std::sync::atomic::AtomicBool::new(racy),
+        };
+        verified.validate()?;
+        Ok(verified)
+    }
+    /// Reads all of `file` and refuses it unless it is the reviewed image's
+    /// exact length and digest.
+    #[cfg(all(target_os = "linux", feature = "installation"))]
+    fn check_digest(
+        &self,
+        file: &std::fs::File,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> io::Result<()> {
+        use sha2::{Digest, Sha256};
+        use std::os::unix::fs::FileExt;
         let mut hash = Sha256::new();
         let mut offset = 0_u64;
-        let mut buffer = [0_u8; 128 * 1024];
+        let mut buffer = vec![0_u8; 128 * 1024];
         loop {
             super::migration::check_cancel(cancel)?;
             let count = file.read_at(&mut buffer, offset)?;
@@ -103,38 +129,12 @@ impl ReviewedOriginalImage {
             }
             hash.update(&buffer[..count]);
         }
-        let after = file.metadata()?;
         if offset != self.source.size
             || self.source.expected_sha256.as_deref() != Some(hex::encode(hash.finalize()).as_str())
-            || (
-                before.dev(),
-                before.ino(),
-                before.len(),
-                before.mtime(),
-                before.mtime_nsec(),
-                before.ctime(),
-                before.ctime_nsec(),
-            ) != (
-                after.dev(),
-                after.ino(),
-                after.len(),
-                after.mtime(),
-                after.mtime_nsec(),
-                after.ctime(),
-                after.ctime_nsec(),
-            )
         {
             return Err(invalid());
         }
-        super::migration::check_cancel(cancel)?;
-        let stamp = ImageStamp::from_metadata(&after);
-        let verified = VerifiedOriginalImage {
-            file,
-            reviewed: self.clone(),
-            stamp,
-        };
-        verified.validate()?;
-        Ok(verified)
+        Ok(())
     }
 }
 
@@ -163,6 +163,25 @@ impl ImageStamp {
             changed: (m.ctime(), m.ctime_nsec()),
         }
     }
+    /// Whether a write could still leave this stamp unchanged. File times come
+    /// from the kernel's coarse clock, so a write in the same tick as the last
+    /// one keeps the length and both times: only times older than the current
+    /// tick prove that every later write shows in them.
+    fn is_racy(&self) -> io::Result<bool> {
+        let now = coarse_now()?;
+        Ok(self.modified >= now || self.changed >= now)
+    }
+}
+#[cfg(all(target_os = "linux", feature = "installation"))]
+fn coarse_now() -> io::Result<(i64, i64)> {
+    let mut now = std::mem::MaybeUninit::<libc::timespec>::uninit();
+    // SAFETY: clock_gettime writes a timespec into the pointer it is given.
+    if unsafe { libc::clock_gettime(libc::CLOCK_REALTIME_COARSE, now.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: clock_gettime succeeded, so it initialised `now`.
+    let now = unsafe { now.assume_init() };
+    Ok((now.tv_sec, now.tv_nsec))
 }
 /// Retains the actual digest-checked inode and its immutable observation through
 /// source permission and pending setup preparation. A bare File is not proof.
@@ -171,11 +190,16 @@ pub(crate) struct VerifiedOriginalImage {
     file: std::fs::File,
     reviewed: ReviewedOriginalImage,
     stamp: ImageStamp,
+    /// The stamp was taken in the tick of the image's last write, so a write
+    /// since may not show in it: validation reads the bytes again until a
+    /// match is proven after that tick.
+    racy: std::sync::atomic::AtomicBool,
 }
 #[cfg(all(target_os = "linux", feature = "installation"))]
 impl VerifiedOriginalImage {
     pub(crate) fn validate(&self) -> io::Result<()> {
         use std::os::unix::fs::MetadataExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
         self.reviewed.proof.validate()?;
         if ImageStamp::read(&self.file)? != self.stamp {
             return Err(invalid());
@@ -183,6 +207,17 @@ impl VerifiedOriginalImage {
         let named = std::fs::symlink_metadata(&self.reviewed.source.path)?;
         if !named.is_file() || named.dev() != self.stamp.device || named.ino() != self.stamp.inode {
             return Err(invalid());
+        }
+        if self.racy.load(Ordering::Acquire) {
+            let settled = !self.stamp.is_racy()?;
+            self.reviewed
+                .check_digest(&self.file, &AtomicBool::new(false))?;
+            if ImageStamp::read(&self.file)? != self.stamp {
+                return Err(invalid());
+            }
+            if settled {
+                self.racy.store(false, Ordering::Release);
+            }
         }
         Ok(())
     }
