@@ -119,12 +119,27 @@ room's governance as grants: who shared it (`granted_by`), which window (the
 node) and until when (the grant's lifetime). It takes the share only from
 the device the tab's topology namespace is registered to, so nobody shares
 another device's window and the registry says which device hosts it
-(`tilo_desktop_model::window_share`). The sharer streams that window, and no
-other, to the members viewing it and to the room's hosts. Every other member
-shows it as a tab of the sharer's window (`HostedWindow`, under the sharer's
-tab id, which the stream names) in their own layout, a window group at the
-end of the workspace's last strip, marked with the sharer's presence while
-they are here, and drops it when the share ends.
+(`tilo_desktop_model::window_share`). Every other member shows it as a tab
+under the sharer's tab id in their own layout, a window group at the end of
+the workspace's last strip, marked with the sharer's presence while they
+are here, and drops it when the share ends.
+
+How that tab shows the window depends on what the window is. An outside
+window (a terminal, any Wayland or X client) keeps its state in its process,
+so the sharer streams that window, and no other, to the members viewing it
+and to the room's hosts, and the tab is a `HostedWindow`, which the stream
+names. A Tilo app's window is a view of a resource that already lives in the
+room, so none of its pixels are streamed: its sharer also shares what it
+shows, under the share id `window.<tab>:shows`, on the resource's own node
+(the record the app says the window shows, at the item its bar anchors, or
+the window's node again for the app's own record as a whole;
+`window_share::shows_node`). Ending the window's share ends both. Every other
+member's tab is a `PeerWindow` of the same app, which opens it on that
+record (`WorkspaceTree::room_tab_record`) like any peer's window, and the
+sharer's cursor and selection show in it as any collaborator's do. When the
+share ends, a Tilo app's window the member used here (gave input to) stays,
+as their own window under an id of their device's; one they left alone
+closes.
 
 The sharer reaches it on the window itself: its window menu and its bar's
 menu offer "Share with <workspace>", and "Stop sharing" while shared, for a
@@ -132,8 +147,10 @@ window this device runs in a personal room only. While the room's record
 holds the share, the window's bar says "Shared with <workspace>" with the
 faces of the people there (`ui::widget::SharedWith`). A share outlives
 neither its window nor its sharer's stay: a window this device closed or
-moved out of the workspace has its share stopped, and leaving the workspace
-stops its shares before the room is released. Every door makes the one
+moved out of the workspace has its share stopped, through the room's outbox,
+which asks again on the host's next event until the room no longer holds the
+share; leaving or deleting the workspace stops its shares before the room is
+released. Every door makes the one
 request `tab.share` / `tab.unshare` make (`overlay_host::window_share_controls`).
 
 **Presence is per resource, layout is per person.** Inside a resource

@@ -813,6 +813,9 @@ pub struct FrameBuilder {
     /// Source that fills [`Self::presence`]. `None` in a session with
     /// no peer sync, which paints no peers because there are none.
     peer_presence: Option<crate::shell::peer_presence::PeerPresence>,
+    /// The tabs marked with a sharer's presence because they show a window
+    /// shared with their room ([`crate::shell::mark_shared_windows`]).
+    shared_window_marks: Vec<(u64, String)>,
     /// Compositor-authorised OSK, deliberately outside the workspace/tile
     /// tree. Its widget only mirrors pixels; protocol trust lives in State.
     osk_overlay: Option<ForeignSurfaceWidget>,
@@ -1210,6 +1213,7 @@ impl FrameBuilder {
                 ctx
             },
             peer_presence: None,
+            shared_window_marks: Vec::new(),
             osk_overlay: None,
             floating_overlays: Vec::new(),
             fullscreen_overlay: None,
@@ -4376,8 +4380,13 @@ impl FrameBuilder {
                 Instant::now(),
             );
         }
+        let marked = crate::shell::mark_shared_windows(
+            &self.chrome.borrow().tree(),
+            &mut self.presence,
+            &mut self.shared_window_marks,
+        );
         let Some(relay) = self.peer_presence.as_ref() else {
-            return !arrived.is_empty();
+            return !arrived.is_empty() || marked;
         };
         let tiles = self.host.tab_tiles();
         relay.set_shown_strip(self.host.shown_strip());

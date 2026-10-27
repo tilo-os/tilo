@@ -183,7 +183,7 @@ impl ShellNetwork {
             .read()
             .own_window_shares(room, tilo_clock::unix_now_ms());
         for share in shares {
-            if let Err(error) = self.share_window(room, share.tab, &share.app_id, false) {
+            if let Err(error) = self.share_window(room, share.tab, &share.app_id, false, None) {
                 tracing::warn!(%room, tab = share.tab, %error, "a window shared with a room left is still shared");
             }
         }
