@@ -88,6 +88,10 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
                     notifications::area(app)
                         .is_none_or(notifications::NotificationsArea::read_finished)
                 },
+                wait: |app| {
+                    notifications::area(app).and_then(notifications::NotificationsArea::wait_read)
+                },
+                answers: Vec::new,
             }),
         },
     ),
@@ -112,6 +116,11 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
                     personal_apps::area(app)
                         .is_none_or(personal_apps::DefaultAppsArea::read_finished)
                 },
+                wait: |app| {
+                    personal_apps::area(app).and_then(personal_apps::DefaultAppsArea::wait_read)
+                },
+                answers:
+                    <personal_apps::DefaultAppsEffect as ui::tilo_resource::Effect>::declarations,
             }),
         },
     ),
@@ -147,6 +156,8 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
                 finished: |app| {
                     bluetooth::area(app).is_none_or(bluetooth::BluetoothArea::read_finished)
                 },
+                wait: |app| bluetooth::area(app).and_then(bluetooth::BluetoothArea::wait_read),
+                answers: <bluetooth::BluetoothEffect as ui::tilo_resource::Effect>::declarations,
             }),
         },
     ),
@@ -164,6 +175,8 @@ pub(crate) const LIVE_AREAS: &[(u16, crate::effects::LiveArea)] = &[
             background: Some(crate::effects::BackgroundRead {
                 start: |app| audio::area(app).is_some_and(audio::AudioArea::start_read),
                 finished: |app| audio::area(app).is_none_or(audio::AudioArea::read_finished),
+                wait: |app| audio::area(app).and_then(audio::AudioArea::wait_read),
+                answers: <audio::AudioEffect as ui::tilo_resource::Effect>::declarations,
             }),
         },
     ),
