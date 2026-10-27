@@ -1118,7 +1118,7 @@ impl Rooms {
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
             governance::INSTALL_APP | UNINSTALL_APP => self.governance_apps(action, call).await,
-            UPLOAD_APP_FILE => self.upload_app_piece(&call),
+            UPLOAD_APP_FILE => self.upload_app_piece(call),
             SET_CONNECTOR_SECRET => connector_secret(call.args),
             _ => self.governance_members(action, call).await,
         }
@@ -1259,8 +1259,8 @@ impl Rooms {
     /// A piece of an app version's package file, for this host to keep and
     /// answer members with. Answers how many bytes are in, or that the
     /// whole file is.
-    fn upload_app_piece(&self, call: &GovernanceCall<'_>) -> Result<Value, ActionHostError> {
-        let args = &call.args;
+    fn upload_app_piece(&self, call: GovernanceCall<'_>) -> Result<Value, ActionHostError> {
+        let GovernanceCall { room, args, .. } = call;
         let file = args.required_text("file")?;
         let offset = args
             .integer("offset")?
@@ -1274,7 +1274,7 @@ impl Rooms {
             return Err(invalid("a piece is at most 256 KiB"));
         }
         match self
-            .upload_app_file(call.room, file, offset, total, &data)
+            .upload_app_file(room, file, offset, total, &data)
             .map_err(|error| refused(&error))?
         {
             super::app_files::Uploaded::Partial(received) => Ok(json!({ "received": received })),
@@ -1471,6 +1471,7 @@ fn membership_command(
 }
 
 /// One governance invocation, as its room method takes it.
+#[derive(Clone, Copy)]
 struct GovernanceCall<'a> {
     room: &'a str,
     device: &'a DeviceCert,
