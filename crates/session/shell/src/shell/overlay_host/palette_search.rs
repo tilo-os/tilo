@@ -967,8 +967,13 @@ impl ShellOverlayHost {
                 t("palette-open-new-window"),
             );
         }
-        // Choosing an app for an app opens nothing, anywhere.
-        if r.params.is_empty() && palette_flow::opens_a_window(&r.kind) && !self.choosing_app() {
+        // Choosing an app for an app opens nothing, anywhere; a row of a
+        // window's own search runs in that window.
+        if r.params.is_empty()
+            && palette_flow::opens_a_window(&r.kind)
+            && !self.choosing_app()
+            && r.provider_id != crate::shell::search::providers::focused_window::PROVIDER_ID
+        {
             use ui::widget::command_palette::ActivationModifier;
             e = e
                 .alternate(

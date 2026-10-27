@@ -58,7 +58,7 @@ pub enum CodeEditorEffect {
         #[param("Absolute path of the folder; omit to choose one")]
         path: Option<String>,
     },
-    /// New file.
+    /// New untitled file.
     #[effect(icon = "file-plus")]
     NewBuffer,
     /// Save file.
