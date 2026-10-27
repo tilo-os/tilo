@@ -23,6 +23,7 @@ tilolang-invocation-declined = Abgelehnt
 tilolang-invocation-failed = Fehlgeschlagen
 tilolang-invocation-denied = Nicht erlaubt
 tilolang-embed-error = Dieser Block konnte nicht ausgeführt werden
+tilolang-all = Alle
 tilolang-empty = Noch nichts hier
 tilolang-none-selected = Nichts ausgewählt
 tilolang-sort = Sortieren

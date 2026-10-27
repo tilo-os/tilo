@@ -11,6 +11,7 @@ mod native;
 mod outcomes;
 mod platform;
 mod pred;
+mod query;
 mod template;
 #[cfg(test)]
 mod tests;
@@ -126,6 +127,8 @@ pub(crate) struct Checker<'a> {
     /// ones, from `synth_base` on.
     synth: Vec<(ir::Func, ir::SynthView)>,
     synth_base: usize,
+    /// The view state templates declared where they expanded, by the view's id.
+    states: Vec<(String, crate::resolve::StateInfo)>,
 }
 
 /// What a checked agent block evaluates to.
@@ -151,6 +154,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         st: FnState::default(),
         synth: Vec::new(),
         synth_base: declared,
+        states: Vec::new(),
     };
     let mut funcs = Vec::new();
     for item in &module.items {
@@ -219,7 +223,11 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             "internal: the declared functions and their indexes disagree",
         );
     }
-    ir::Module { funcs, views }
+    ir::Module {
+        funcs,
+        views,
+        states: c.states,
+    }
 }
 
 /// Checks a block that is one expression.
@@ -230,6 +238,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         st: FnState::default(),
         synth: Vec::new(),
         synth_base: 0,
+        states: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     let ex = c.expr(e, None);
@@ -244,6 +253,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         module: ir::Module {
             funcs: vec![f],
             views: Vec::new(),
+            states: Vec::new(),
         },
         ty,
     }
@@ -257,6 +267,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         st: FnState::default(),
         synth: Vec::new(),
         synth_base: 0,
+        states: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
@@ -265,6 +276,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         module: ir::Module {
             funcs: vec![f],
             views: Vec::new(),
+            states: Vec::new(),
         },
         ty: Ty::View,
     }

@@ -61,6 +61,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Principal
         | Ty::Date
         | Ty::Time
+        | Ty::Identifier
         | Ty::Action
         | Ty::View
         | Ty::Length(_)
@@ -87,7 +88,7 @@ pub(crate) fn declared_default(ty: &Ty, default: Option<&Json>) -> Result<Value,
             .as_bool()
             .map(Value::Bool)
             .ok_or_else(|| "default is not a bool".into()),
-        (Ty::Text | Ty::Date | Ty::Time, Some(j)) => j
+        (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Some(j)) => j
             .as_str()
             .map(Value::text)
             .ok_or_else(|| "default is not text".into()),
@@ -104,7 +105,7 @@ pub(crate) fn to_scalar(v: &Value, ty: &Ty) -> Result<Scalar, String> {
         (Value::Int(i), Ty::Int) => Ok(Scalar::Int(*i)),
         (Value::Float(f), Ty::Float) => Ok(Scalar::Float(*f)),
         (Value::Text(s), Ty::Text) => Ok(Scalar::Text(s.clone())),
-        (Value::Text(s), Ty::Date | Ty::Time) => {
+        (Value::Text(s), Ty::Date | Ty::Time | Ty::Identifier) => {
             check_dated(s, ty)?;
             Ok(Scalar::Text(s.clone()))
         }
@@ -129,6 +130,15 @@ pub(crate) fn check_dated(text: &str, ty: &Ty) -> Result<(), String> {
     match ty {
         Ty::Date => tilolang::types::check_date(text),
         Ty::Time => tilolang::types::check_time(text),
+        Ty::Identifier => tilolang::identifier::normalize(text).and_then(|held| {
+            if held == text {
+                Ok(())
+            } else {
+                Err(format!(
+                    "`{text}` is not an identifier as it is held; write `{held}`"
+                ))
+            }
+        }),
         _ => Ok(()),
     }
 }
@@ -421,6 +431,7 @@ impl Core {
                     item: item.id.clone(),
                     author: Some(author.clone()),
                     filter: None,
+                    order: None,
                 })));
             }
             let value = self.read_value(target, f, Some(author))?;

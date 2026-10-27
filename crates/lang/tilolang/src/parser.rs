@@ -5,9 +5,9 @@
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AppHeader, Arg, AssignOp, BinOp, Block, DefaultViewDecl,
     EnumDecl, Expr, ExprKind, FieldDecl, FlowDecl, FnDecl, Ident, Item, MatchArm, MergeSpec,
-    Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl, StateDecl, StateLayer,
-    Stmt, StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp,
-    UseDecl, VariantDecl, ViewDecl,
+    Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl, SearchBlock,
+    SearchEntry, SearchEntryKind, StateDecl, StateLayer, Stmt, StmtKind, StrPart, TypeDecl,
+    TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{StrPiece, Tok, Token, lex, lex_at};
@@ -729,6 +729,7 @@ impl<'a> Parser<'a> {
         let name = self.ident("a type name")?;
         self.expect(&Tok::LBrace)?;
         let mut fields = Vec::new();
+        let mut search: Option<SearchBlock> = None;
         loop {
             self.skip_nl();
             if self.eat(&Tok::RBrace) {
@@ -736,6 +737,24 @@ impl<'a> Parser<'a> {
             }
             if matches!(self.peek(), Tok::Eof) {
                 return self.unexpected("`}` to close the type");
+            }
+            if matches!(self.peek(), Tok::Ident(w) if w == "search")
+                && matches!(self.peek_at(1), Tok::LBrace)
+            {
+                match self.search_block() {
+                    Ok(block) => {
+                        if search.is_some() {
+                            let _: PResult<()> = self.fail(
+                                block.span,
+                                "a type has one `search` block; put every filter, sort and hide in it",
+                            );
+                        } else {
+                            search = Some(block);
+                        }
+                    }
+                    Err(Abort) => self.recover_stmt(),
+                }
+                continue;
             }
             match self.field() {
                 Ok(f) => {
@@ -755,6 +774,91 @@ impl<'a> Parser<'a> {
             doc,
             name,
             fields,
+            search,
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
+    /// `search { ... }`: one `filter`, `sort` or `hide` per line (search.md section 2.2).
+    fn search_block(&mut self) -> PResult<SearchBlock> {
+        let start = self.bump().span;
+        self.expect(&Tok::LBrace)?;
+        let mut entries = Vec::new();
+        loop {
+            self.skip_nl();
+            if self.eat(&Tok::RBrace) {
+                break;
+            }
+            if matches!(self.peek(), Tok::Eof) {
+                return self.unexpected("`}` to close the search block");
+            }
+            match self.search_entry() {
+                Ok(entry) => {
+                    entries.push(entry);
+                    if !self.eat(&Tok::Comma) && !matches!(self.peek(), Tok::Newline | Tok::RBrace)
+                    {
+                        let _: PResult<()> =
+                            self.unexpected("a new line or `}` after the search line");
+                        self.recover_stmt();
+                    }
+                }
+                Err(Abort) => self.recover_stmt(),
+            }
+        }
+        Ok(SearchBlock {
+            entries,
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
+    fn search_entry(&mut self) -> PResult<SearchEntry> {
+        let start = self.span();
+        let word = self.ident("`filter`, `sort` or `hide`")?;
+        let kind = match word.name.as_str() {
+            "filter" => {
+                if matches!(self.peek(), Tok::Str(_)) {
+                    let label_span = self.span();
+                    let label = self.plain_string("a filter's label")?;
+                    if !self.eat(&Tok::Assign) {
+                        return self.unexpected(
+                            "`=` and what the filter holds of: `filter \"Open\" = not done`",
+                        );
+                    }
+                    let expr = self.expr()?;
+                    SearchEntryKind::Named {
+                        label,
+                        label_span,
+                        expr,
+                    }
+                } else {
+                    let field = self.ident("the field a filter is on")?;
+                    let label = if matches!(self.peek(), Tok::Str(_)) {
+                        Some(self.plain_string("a filter's label")?)
+                    } else {
+                        None
+                    };
+                    SearchEntryKind::Field { field, label }
+                }
+            }
+            "sort" => {
+                let field = self.ident("the field to sort by")?;
+                let order = self.ident("`newest`, `oldest`, `a_z` or `z_a`")?;
+                SearchEntryKind::Sort { field, order }
+            }
+            "hide" => SearchEntryKind::Hide {
+                field: self.ident("the field to keep out of filters")?,
+            },
+            other => {
+                return self.fail(
+                    word.span,
+                    format!(
+                        "a search block holds `filter`, `sort` and `hide` lines; `{other}` is none of them"
+                    ),
+                );
+            }
+        };
+        Ok(SearchEntry {
+            kind,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
     }
@@ -1174,7 +1278,39 @@ impl<'a> Parser<'a> {
                 span,
             });
         }
-        self.or_expr()
+        if self.is(&Tok::DotDot) {
+            let start = self.bump().span;
+            let hi = self.or_expr()?;
+            let span = start.to(hi.span);
+            return Ok(Expr {
+                kind: ExprKind::Range {
+                    lo: None,
+                    hi: Some(Box::new(hi)),
+                },
+                span,
+            });
+        }
+        let lo = self.or_expr()?;
+        if !self.is(&Tok::DotDot) {
+            return Ok(lo);
+        }
+        let dots = self.bump().span;
+        let hi = if matches!(
+            self.peek(),
+            Tok::RParen | Tok::RBracket | Tok::RBrace | Tok::Comma | Tok::Newline | Tok::Eof
+        ) {
+            None
+        } else {
+            Some(Box::new(self.or_expr()?))
+        };
+        let span = lo.span.to(hi.as_ref().map_or(dots, |hi| hi.span));
+        Ok(Expr {
+            kind: ExprKind::Range {
+                lo: Some(Box::new(lo)),
+                hi,
+            },
+            span,
+        })
     }
 
     fn or_expr(&mut self) -> PResult<Expr> {
@@ -1366,6 +1502,10 @@ impl<'a> Parser<'a> {
                     _ => crate::types::LengthUnit::Fr,
                 };
                 ExprKind::Length(v, unit)
+            }
+            Tok::Duration(v, u) => {
+                self.bump();
+                ExprKind::Duration(v, u)
             }
             Tok::Kw("true") => {
                 self.bump();

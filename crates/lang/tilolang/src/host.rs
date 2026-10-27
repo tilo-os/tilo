@@ -126,6 +126,30 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
         ],
     },
+    ValueType {
+        name: "Filter",
+        id: "host-filter",
+        doc: "A filter of a type, as a list's places and search's chips show it: one per case of an enum's.",
+        fields: &[
+            ("key", "Text", "What a query names it by: `done`, `status`."),
+            ("label", "Text", "What its control shows."),
+            (
+                "icon",
+                "Option<Text>",
+                "The name of its icon, when its case declares one.",
+            ),
+            (
+                "query",
+                "Text",
+                "What choosing it asks, as people type it in search: `is:done`, `status:open`; empty for one whose value is picked.",
+            ),
+            (
+                "toggle",
+                "Bool",
+                "Whether it is on or off: a place of a list, a chip of search.",
+            ),
+        ],
+    },
 ];
 
 /// The value type `name` of the host.
@@ -189,6 +213,7 @@ pub fn host_meta() -> PackageMeta {
                     "The suggestion's run on the device that made it.",
                 ),
             ],
+            search: crate::meta::SearchMeta::default(),
         })
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
@@ -208,6 +233,7 @@ pub fn host_meta() -> PackageMeta {
                         role: None,
                     })
                     .collect(),
+                search: crate::meta::SearchMeta::default(),
             }
         }))
         .collect(),

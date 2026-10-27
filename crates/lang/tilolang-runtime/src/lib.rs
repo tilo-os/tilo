@@ -32,6 +32,8 @@ pub mod meta;
 mod num;
 pub mod platform;
 pub mod project;
+pub mod query;
+mod query_host;
 pub mod registry;
 mod render;
 pub mod runtime;

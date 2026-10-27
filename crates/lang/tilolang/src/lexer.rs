@@ -44,6 +44,8 @@ pub enum Tok {
     Float(f64),
     /// A number with a unit suffix: `11rem`.
     Length(f64, &'static str),
+    /// A whole number of a unit of time: `7d`, `5m` (search.md section 2.2.1).
+    Duration(i64, &'static str),
     Str(Vec<StrPiece>),
     Ref(RefLit),
     Doc(String),
@@ -58,6 +60,8 @@ pub enum Tok {
     Comma,
     Colon,
     Dot,
+    /// `..`, between the ends of a range: `a..b`, `a..`, `..b`.
+    DotDot,
     Arrow,
     /// `=>`, between a match pattern and its arm.
     FatArrow,
@@ -84,7 +88,9 @@ impl Tok {
         match self {
             Self::Ident(n) => format!("`{n}`"),
             Self::Kw(k) => format!("`{k}`"),
-            Self::Int(_) | Self::Float(_) | Self::Length(..) => "a number".into(),
+            Self::Int(_) | Self::Float(_) | Self::Length(..) | Self::Duration(..) => {
+                "a number".into()
+            }
             Self::Str(_) => "a string".into(),
             Self::Ref(_) => "a reference".into(),
             Self::Doc(_) => "a doc comment".into(),
@@ -99,6 +105,7 @@ impl Tok {
             Self::Comma => "`,`".into(),
             Self::Colon => "`:`".into(),
             Self::Dot => "`.`".into(),
+            Self::DotDot => "`..`".into(),
             Self::Arrow => "`->`".into(),
             Self::FatArrow => "`=>`".into(),
             Self::Assign => "`=`".into(),
@@ -393,6 +400,27 @@ impl Lexer<'_> {
             }
             return;
         }
+        let duration = crate::duration::UNITS
+            .iter()
+            .map(|(u, _)| *u)
+            .find(|u| *u == self.slice(suffix_start, self.pos));
+        if let Some(u) = duration
+            && !float
+        {
+            match text.parse::<i64>() {
+                Ok(v) => self.push(Tok::Duration(v, u), start),
+                Err(_) => {
+                    self.error(
+                        "E004",
+                        start,
+                        self.pos,
+                        format!("`{text}{u}` does not fit in an Int (64-bit signed)"),
+                    );
+                    self.push(Tok::Duration(0, u), start);
+                }
+            }
+            return;
+        }
         self.pos = suffix_start;
         if float {
             match text.parse::<f64>() {
@@ -431,6 +459,7 @@ impl Lexer<'_> {
             (b'+', Some(b'=')) => (Tok::PlusAssign, 2),
             (b'=', Some(b'=')) => (Tok::EqEq, 2),
             (b'=', Some(b'>')) => (Tok::FatArrow, 2),
+            (b'.', Some(b'.')) => (Tok::DotDot, 2),
             (b'!', Some(b'=')) => (Tok::NotEq, 2),
             (b'<', Some(b'=')) => (Tok::Le, 2),
             (b'>', Some(b'=')) => (Tok::Ge, 2),

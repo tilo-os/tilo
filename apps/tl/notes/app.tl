@@ -21,14 +21,6 @@ enum NoteOrder {
     title
 }
 
-/// Which notes a notebook lists.
-enum NoteFilter {
-    /// All notes
-    all (icon: .file_text)
-    /// Pinned
-    pinned (icon: .pin)
-}
-
 root Notebook
 
 default view notebook for Notebook
@@ -62,24 +54,20 @@ action tag(n: Note, t: Text) (icon: .tag) {
     n.tags.add(t)
 }
 
-/// The notes a notebook lists, in its order.
-fn listed(nb: Notebook, order: NoteOrder, filter: NoteFilter) -> List<Note> {
-    let notes: List<Note> = match filter {
-        .all => nb.notes,
-        .pinned => nb.notes.filter(n -> n.pinned),
-    }
+/// The notes of a notebook, in its order.
+fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {
+    let notes: List<Note> = nb.notes
     match order {
         .created => notes,
         .title => notes.sort_by(n -> n.title),
     }
 }
 
-/// The notebook's window: its notes, each opening in a window of its own. The order and the
-/// filter are the window's, so everyone looking at it sees the same list.
+/// The notebook's window: its notes, each opening in a window of its own. The order is the
+/// window's, so everyone looking at it sees the same list.
 view notebook(nb: Notebook) {
     window order: NoteOrder = .created
-    window filter: NoteFilter = .all
-    std.list(nb, listed(nb, order, filter), sort: order, filter: filter, count: f -> listed(nb, order, f).len(), empty: "No notes yet")
+    std.list(nb, listed(nb, order), sort: order, empty: "No notes yet")
 }
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.
