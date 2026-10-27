@@ -1321,13 +1321,22 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             files.files.lock().unwrap().get("upload.bin").cloned(),
             Some(b"from this device".to_vec())
         );
+        let put_row = ui::jobs::rows()
+            .into_iter()
+            .find(|job| job.id() == put.id())
+            .expect("the put job is in the jobs surface");
         assert!(matches!(
-            ui::jobs::rows()
-                .iter()
-                .find(|job| job.id() == put.id())
-                .map(ui::jobs::Job::outcome),
-            Some(Some(ui::jobs::Outcome::Done(_)))
+            put_row.outcome(),
+            Some(ui::jobs::Outcome::Done(_))
         ));
+        assert_eq!(
+            put_row.progress(),
+            &ui::jobs::Progress::Measured {
+                done: b"from this device".len() as u64,
+                total: b"from this device".len() as u64,
+            },
+            "the put reports the bytes it moved against the file's size"
+        );
 
         let fetched = directory.path().join("fetched.txt");
         let fetch = ui::jobs::start(ui::jobs::Spec::new("Fetch a file"));
@@ -1337,7 +1346,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
                     remote_path: "remote.txt".into(),
                     local_path: fetched.clone(),
                 },
-                fetch,
+                fetch.clone(),
             )
             .unwrap();
         assert_eq!(
@@ -1345,6 +1354,17 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             Ok(b"from the remote machine".len() as u64)
         );
         assert_eq!(std::fs::read(&fetched).unwrap(), b"from the remote machine");
+        let fetch_row = ui::jobs::rows()
+            .into_iter()
+            .find(|job| job.id() == fetch.id())
+            .expect("the fetch job is in the jobs surface");
+        assert_eq!(
+            fetch_row.progress(),
+            &ui::jobs::Progress::Seen {
+                seen: b"from the remote machine".len() as u64,
+            },
+            "the fetch reports the bytes it has seen"
+        );
 
         let missing = directory.path().join("missing.txt");
         let job = ui::jobs::start(ui::jobs::Spec::new("Fetch a missing file"));
