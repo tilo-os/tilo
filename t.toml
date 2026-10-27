@@ -1176,7 +1176,8 @@ for test in $tests; do
     limits::a_disk_quota_stops_writes_where_the_filesystem_enforces_it)
       [ -n "${JOB_SANDBOX_TEST_XFS:-}" ] || continue ;;
   esac
-  if printf '%s\n' "$out" | grep -q '^skipped'; then skipped="$skipped $test"; fi
+  # libtest prints `test NAME ... ` before the test runs, so its skip line follows on that line.
+  if printf '%s\n' "$out" | grep -qE '(^|[.][.][.] )skipped'; then skipped="$skipped $test"; fi
 done
 if [ -n "$failed" ]; then echo "failed:$failed"; fi
 if [ -n "$skipped" ]; then echo "skipped, so untested:$skipped"; fi
