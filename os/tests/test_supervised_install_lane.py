@@ -24,7 +24,7 @@ lane=importlib.util.module_from_spec(spec);spec.loader.exec_module(lane)
 
 def node(name,*,disk=False,kvm=False,ready=True):
     labels={'kubernetes.io/arch':'arm64'}
-    if disk:labels['agent-sandbox.podesta.ai/disk-kernel']='e23e6ab7f708'
+    if disk:labels['agent-sandbox.sandbox.example/disk-kernel']='e23e6ab7f708'
     return {'metadata':{'name':name,'labels':labels},'spec':{'unschedulable':False},
       'status':{'conditions':[{'type':'Ready','status':'True' if ready else 'False'}],
                 'allocatable':{'devic.es/kvm':'1' if kvm else '0'}}}
@@ -426,7 +426,7 @@ class LaneAdmission(unittest.TestCase):
             self.assertEqual((disk['metadata']['name'],vm['metadata']['name']),('disk','vm'))
             self.assertEqual(verifier['metadata']['name'],'verify')
             manifest=lane.disk_manifest('tilo-disk-run1',disk)
-            self.assertEqual(manifest['spec']['nodeSelector']['agent-sandbox.podesta.ai/kata'],'true')
+            self.assertEqual(manifest['spec']['nodeSelector']['agent-sandbox.sandbox.example/kata'],'true')
             self.assertEqual(manifest['spec']['nodeSelector']['katacontainers.io/kata-runtime'],'true')
             self.assertEqual(manifest['spec']['tolerations'][-2:], [
               {'key':'node.kubernetes.io/not-ready','operator':'Exists','effect':'NoExecute','tolerationSeconds':300},
