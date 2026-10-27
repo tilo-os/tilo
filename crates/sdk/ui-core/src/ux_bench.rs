@@ -136,6 +136,16 @@ pub enum Check {
         target: String,
         min: [f64; 2],
     },
+    /// The keyboard focus is on `target`.
+    ///
+    /// Shape decides which controls exist at which width (a sidebar taken
+    /// for a drawer, a toolbar collected into one button), so a journey that
+    /// only reads values can pass while the keyboard can no longer reach the
+    /// primary action. This asserts the runner's focus owner: the widget
+    /// itself, or a control inside it that publishes `focused`.
+    Focus {
+        target: String,
+    },
     Contrast {
         label: String,
         foreground: [u32; 2],

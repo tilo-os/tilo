@@ -107,6 +107,13 @@ pub(super) fn validate(c: &Check, viewport: [u32; 2]) -> Result<(), String> {
             range(0.0, min[0])?;
             range(0.0, min[1])
         }
+        Check::Focus { target } => {
+            if target.trim().is_empty() {
+                Err("empty focus target".into())
+            } else {
+                Ok(())
+            }
+        }
         Check::Contrast {
             foreground,
             background,
