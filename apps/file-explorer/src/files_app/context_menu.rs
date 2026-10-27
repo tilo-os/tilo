@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    FileExplorerWidget, conflict_strategy_label, merge_supported_path, share_expiry_label,
+    share_permission_label, short_fingerprint, short_uuid, tidy_menu,
+};
+use crate::command::FileCommand;
+use crate::i18n::{arg, t, t_args};
+use crate::model::SortBy;
+use std::path::PathBuf;
 
 impl FileExplorerWidget {
     /// The menu item specs for the current selection / clipboard / state, given
