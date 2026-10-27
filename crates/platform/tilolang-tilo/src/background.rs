@@ -34,6 +34,7 @@ impl<T: Send + 'static> Pending<T> {
         let spawned = std::thread::Builder::new()
             .name("tilolang-read".to_owned())
             .spawn(move || {
+                crate::index::read_off_frame();
                 let work = taken.lock().ok().and_then(|mut slot| slot.take());
                 if let Some(work) = work {
                     // The receiver is gone only when its owner was dropped: nobody wants it.

@@ -4,8 +4,8 @@
 //! The gate holds the work each scenario does, in counts that do not depend on the machine or
 //! its load ([`Work`]), as docs/measurements/performance.md has pull requests gate: what a
 //! window shows, and what a change re-renders, patches and reads, is the same in a room of 10k
-//! items as in one of 1k. Opening lists each collection it shows once, which grows with its
-//! items and nothing else.
+//! items as in one of 1k. Opening over the index a room kept reads no more of it at 10k than at
+//! 1k: the pages of the rows it shows, and nothing of the room's record.
 //!
 //! The budgets in time and memory depend on the machine and what else runs on it, so no test
 //! asserts them: the bench checks and records them on the machine they are for,
@@ -75,8 +75,9 @@ fn find<'a>(records: &'a [Record], scenario: &str, size: &str) -> Option<&'a Rec
 }
 
 /// The counts of what a scenario shows and changes: the boundaries it renders, the item
-/// references it builds, the patches it sends, and what it reads of the store one by one.
-fn shown(work: Work) -> [(&'static str, u64); 6] {
+/// references it builds, the patches it sends, what it reads of the record one by one, and the
+/// index's directories, pages and fields it reads.
+fn shown(work: Work) -> [(&'static str, u64); 9] {
     [
         ("renders", work.renders),
         ("items", work.items),
@@ -84,17 +85,16 @@ fn shown(work: Work) -> [(&'static str, u64); 6] {
         ("located", work.located),
         ("fields", work.fields),
         ("listings", work.listings),
+        ("dirs", work.dirs),
+        ("pages", work.pages),
+        ("index_fields", work.index_fields),
     ]
 }
 
-/// What the store reads of a collection's items as a whole: its entries, and the fields of
-/// every item a filter reads, and the items it evaluates.
-fn loaded(work: Work) -> [(&'static str, u64); 3] {
-    [
-        ("entries", work.entries),
-        ("scanned", work.scanned),
-        ("evaluated", work.evaluated),
-    ]
+/// What would read a collection's items as a whole: its entries walked in the record, and the
+/// items a filter no column answers is evaluated on.
+fn loaded(work: Work) -> [(&'static str, u64); 2] {
+    [("entries", work.entries), ("evaluated", work.evaluated)]
 }
 
 /// The work `of` reads off the record of `scenario`, at 1k and at 10k.
@@ -122,28 +122,19 @@ fn same_shown(app: &str, label: &str, (small, large): (Work, Work), misses: &mut
 }
 
 fn gate(app: &str, records: &[Record], misses: &mut Vec<String>) {
-    // Opening shows the same at 10k as at 1k, and loads each collection it lists once: every
-    // count of the collection's items grows with them (ten times the items, at most ten times
-    // the count), and its entries are read once per listing.
+    // Opening over the room's index shows the same at 10k as at 1k and reads the same: of the
+    // index, the directories and pages of what it shows; of the record, nothing that grows.
     for scenario in ["open", "thread_open"] {
         let Some((small, large)) = both(records, scenario, Work::of_record) else {
             continue;
         };
         same_shown(app, scenario, (small, large), misses);
-        let growth = u64::try_from(LARGE / SMALL).unwrap_or(u64::MAX);
         for ((name, at_large), (_, at_small)) in loaded(large).into_iter().zip(loaded(small)) {
-            if at_large > at_small.saturating_mul(growth) {
+            if at_large != at_small {
                 misses.push(format!(
-                    "{app} {scenario}: {name} {at_large} at 10k, {at_small} at 1k: more than once per item"
+                    "{app} {scenario}: {name} {at_large} at 10k, {at_small} at 1k: opening reads the room"
                 ));
             }
-        }
-        let items = u64::try_from(LARGE).unwrap_or(u64::MAX);
-        if large.entries > large.listings.saturating_mul(items) {
-            misses.push(format!(
-                "{app} {scenario}: {} entries read for {} listings of {LARGE}",
-                large.entries, large.listings
-            ));
         }
     }
     let nodes = |size: &str| find(records, "open", size).and_then(|r| r.meta.get("nodes"));

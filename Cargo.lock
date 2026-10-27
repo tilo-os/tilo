@@ -20192,7 +20192,8 @@ name = "tilolang-tilo"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "foldhash 0.1.5",
+ "crc32fast",
+ "redb",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

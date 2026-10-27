@@ -106,6 +106,17 @@ pub struct Host {
     pub(crate) inner: Rc<HostInner>,
 }
 
+/// How a host opens: over which record, keeping its indexes where.
+#[derive(Default)]
+pub struct Opening<'a> {
+    /// The room record; `None` to open over the indexes alone and take it later.
+    pub record: Option<&'a tilo_resource::Doc>,
+    /// Where each package's index is kept; `None` keeps them in memory.
+    pub index_dir: Option<std::path::PathBuf>,
+    /// The device that carries out the outside effects this host queues.
+    pub device: Option<&'a str>,
+}
+
 /// What the door's closures hold in place of the host: see the module docs.
 #[derive(Clone)]
 pub struct HostHandle {
@@ -324,12 +335,46 @@ impl Host {
         device: Option<&str>,
         invoker: impl Fn(&Principal, &ActionInfo) -> Decision + 'static,
     ) -> Result<Self, HostError> {
+        Self::open(
+            Opening {
+                record: Some(record),
+                index_dir: None,
+                device,
+            },
+            viewer,
+            invoker,
+        )
+    }
+
+    /// A host as `opening` says: over the room record, or (without it) over the indexes kept
+    /// in its index directory alone, taking the record when it is had (see
+    /// [`TiloStore::detached`]).
+    ///
+    /// # Errors
+    /// The runtime cannot be set up, which is a bug.
+    pub fn open(
+        opening: Opening<'_>,
+        viewer: Principal,
+        invoker: impl Fn(&Principal, &ActionInfo) -> Decision + 'static,
+    ) -> Result<Self, HostError> {
+        let store = match (opening.record, opening.index_dir) {
+            (Some(record), dir) => {
+                let store = TiloStore::new(record);
+                if let Some(dir) = dir {
+                    store.set_index_dir(dir);
+                }
+                store
+            }
+            (None, Some(dir)) => TiloStore::detached(dir),
+            (None, None) => TiloStore::new(&tilo_resource::Doc::new()),
+        };
+        if let Some(device) = opening.device {
+            store.set_device(device);
+        }
         // The host's own record types (`Invocation`) are stored like any other resource.
-        tilolang::host_meta().register_schemas();
-        let store = device.map_or_else(
-            || TiloStore::new(record),
-            |device| TiloStore::on_device(record, device),
-        );
+        let host_meta = tilolang::host_meta();
+        host_meta.register_schemas();
+        store.open_index(&host_meta.app, &host_meta.schema_text());
         // An agent is a task of a person under that person's narrowed rights. Before anyone
         // chooses, reading and undoable changes are allowed to it and outside effects ask first;
         // the person narrows that per app and kind of action (`set_agent_answer`), and trusting
@@ -372,6 +417,39 @@ impl Host {
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
         Ok(Self { inner })
+    }
+
+    /// Whether every loaded package's index is read from: until then its lists show nothing,
+    /// and the window shows the platform's loading state (see [`TiloStore::index_ready`]).
+    #[must_use]
+    pub fn index_ready(&self) -> bool {
+        self.inner.store.index_ready()
+    }
+
+    /// Take in indexes built off the frame; whether one was (see [`TiloStore::poll_index`]).
+    pub fn poll_index(&self) -> bool {
+        self.inner.store.poll_index()
+    }
+
+    /// Wait for the indexes being built and take them in: for a host without frames.
+    pub fn wait_index(&self) -> bool {
+        self.inner.store.wait_index()
+    }
+
+    /// Have `wake` called when an index built off the frame is ready to be taken in.
+    pub fn set_index_waker(&self, wake: crate::background::Waker) {
+        self.inner.store.set_waker(wake);
+    }
+
+    /// Wait for what the indexes hold to reach the disk: when the window closes.
+    pub fn persist_index(&self) {
+        self.inner.store.persist_index();
+    }
+
+    /// How the host gets the room record when it opened without it: for a write, or a field
+    /// no index holds.
+    pub fn set_record_loader(&self, loader: crate::store::Loader) {
+        self.inner.store.set_loader(loader);
     }
 
     /// Replace what `now` reads (the system time until then): tests and captures fix it. The
@@ -554,6 +632,7 @@ impl Host {
     pub fn load_module(&self, wasm: &[u8], meta: Meta, ids: String) -> Result<Package, HostError> {
         let id = self.inner.runtime.reload_package(wasm, meta.clone())?;
         meta.register_schemas();
+        self.inner.store.open_index(&meta.app, &meta.schema_text());
         self.inner.authority.trust(&id);
         let package = Package { meta, id, ids };
         let mut packages = self.inner.packages.borrow_mut();
