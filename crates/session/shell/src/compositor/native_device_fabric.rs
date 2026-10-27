@@ -415,3 +415,49 @@ pub(super) fn install_device_fabric_bridge(
         })
     });
 }
+
+/// End a spatial control session: the device it controlled gets the
+/// release of every key and button still held there.
+pub(super) fn end_spatial_control(
+    network: &crate::shell::network::ShellNetwork,
+    active: &mut Option<super::SpatialControlSession>,
+) {
+    let Some(session) = active.take() else {
+        return;
+    };
+    let events = session
+        .pressed_keys
+        .into_iter()
+        .map(
+            |keycode| crate::shell::device_fabric::FabricInputEvent::Key {
+                keycode,
+                pressed: false,
+                modifiers: 0,
+            },
+        )
+        .chain(session.pressed_buttons.into_iter().map(|button| {
+            crate::shell::device_fabric::FabricInputEvent::PointerButton {
+                button,
+                pressed: false,
+            }
+        }))
+        .collect();
+    let _ = crate::shell::device_fabric_runtime::queue_spatial_input_cleanup_bound(
+        network,
+        &session.target,
+        session.lease_nonce,
+        events,
+    );
+}
+
+/// [`end_spatial_control`] in a session with a network; one without has no
+/// device to tell, and only forgets the session.
+pub(super) fn end_spatial_control_or_forget(
+    network: Option<&crate::shell::network::ShellNetwork>,
+    active: &mut Option<super::SpatialControlSession>,
+) {
+    match network {
+        Some(network) => end_spatial_control(network, active),
+        None => *active = None,
+    }
+}

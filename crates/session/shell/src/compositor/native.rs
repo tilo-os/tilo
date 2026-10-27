@@ -7422,38 +7422,6 @@ fn queue_personal_fabric_input(
     }
 }
 
-fn end_spatial_control(
-    network: &crate::shell::network::ShellNetwork,
-    active: &mut Option<SpatialControlSession>,
-) {
-    let Some(session) = active.take() else {
-        return;
-    };
-    let events = session
-        .pressed_keys
-        .into_iter()
-        .map(
-            |keycode| crate::shell::device_fabric::FabricInputEvent::Key {
-                keycode,
-                pressed: false,
-                modifiers: 0,
-            },
-        )
-        .chain(session.pressed_buttons.into_iter().map(|button| {
-            crate::shell::device_fabric::FabricInputEvent::PointerButton {
-                button,
-                pressed: false,
-            }
-        }))
-        .collect();
-    let _ = crate::shell::device_fabric_runtime::queue_spatial_input_cleanup_bound(
-        network,
-        &session.target,
-        session.lease_nonce,
-        events,
-    );
-}
-
 #[cfg(test)]
 pub(crate) fn teardown_spatial_control_for_test(
     network: &crate::shell::network::ShellNetwork,
@@ -8213,7 +8181,8 @@ fn priority_route(
 #[path = "native_device_fabric.rs"]
 mod device_fabric;
 use device_fabric::{
-    active_physical_gamepad_binding, install_device_fabric_bridge, start_device_fabric,
+    active_physical_gamepad_binding, end_spatial_control, end_spatial_control_or_forget,
+    install_device_fabric_bridge, start_device_fabric,
 };
 
 /// Start the authenticated peer transport and install the chrome commands
@@ -11430,11 +11399,7 @@ pub fn run() {
                         steps.steps.mark("route");
                     }
                     if locked {
-                        if let Some(network) = peer_sync.as_ref() {
-                            end_spatial_control(network, &mut spatial_control);
-                        } else {
-                            spatial_control = None;
-                        }
+                        end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                         if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
                             // Keep both chord routing and Smithay's XKB state in step even
                             // while the lock owns the visible key.  Dropping a release here
@@ -11561,11 +11526,7 @@ pub fn run() {
                             &mut frame_builder,
                             spatial_control.is_some(),
                         );
-                        if let Some(network) = peer_sync.as_ref() {
-                            end_spatial_control(network, &mut spatial_control);
-                        } else {
-                            spatial_control = None;
-                        }
+                        end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                         session_changed = true;
                     } else if (state.pointer_lock.is_engaged()
                         || state.shortcut_inhibit.is_active())
@@ -11786,11 +11747,7 @@ pub fn run() {
                     time_usec,
                 } => {
                     if session.is_locked() {
-                        if let Some(network) = peer_sync.as_ref() {
-                            end_spatial_control(network, &mut spatial_control);
-                        } else {
-                            spatial_control = None;
-                        }
+                        end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                     } else if state.pointer_lock.is_engaged() {
                         // A game holding the pointer reads every delta; the
                         // pointer must not wander onto another device.
@@ -11877,11 +11834,7 @@ pub fn run() {
                     // chrome's modifier snapshot, before accepting another
                     // physical event.
                     state.reset_client_keyboard_state();
-                    if let Some(network) = peer_sync.as_ref() {
-                        end_spatial_control(network, &mut spatial_control);
-                    } else {
-                        spatial_control = None;
-                    }
+                    end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                     test_control_ctx.modifiers = Modifiers::default();
                 }
                 BackendEvent::OutputsChanged => {
@@ -11973,11 +11926,7 @@ pub fn run() {
                 }
                 BackendEvent::Focus(focused) => {
                     if !focused {
-                        if let Some(network) = peer_sync.as_ref() {
-                            end_spatial_control(network, &mut spatial_control);
-                        } else {
-                            spatial_control = None;
-                        }
+                        end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
                     }
                 }
                 BackendEvent::VisualAlert => {
@@ -12622,11 +12571,7 @@ pub fn run() {
             crate::portal::inhibit::publish_screensaver_state(session.is_locked());
             if session.is_locked() {
                 let _ = state.release_all_personal_fabric_input();
-                if let Some(network) = peer_sync.as_ref() {
-                    end_spatial_control(network, &mut spatial_control);
-                } else {
-                    spatial_control = None;
-                }
+                end_spatial_control_or_forget(peer_sync.as_deref(), &mut spatial_control);
             }
         }
         // Authority may disappear without another physical input event. A
