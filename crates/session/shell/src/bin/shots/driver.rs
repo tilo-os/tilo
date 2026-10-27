@@ -604,6 +604,20 @@ impl ShellDriver {
         self.fb.feed_active_terminal_for_shots(text.as_bytes())
     }
 
+    /// What the active window's focused field asks an input method for, read
+    /// off the live widget tree as the compositor reads it off the wire.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn active_ime_content_for_shots(&self) -> Option<ui::ime::InputContent> {
+        self.fb.active_ime_content_for_shots()
+    }
+
+    /// Draw the on-screen keyboard in the frame, in the layout `content`'s
+    /// purpose asks for; `None` puts it away.
+    #[cfg(feature = "hosted-test-control")]
+    pub fn set_shots_keyboard(&mut self, content: Option<ui::ime::InputContent>) {
+        self.fb.set_shots_keyboard(content);
+    }
+
     pub fn type_str(&mut self, s: &str) {
         for c in s.chars() {
             if c.is_control() {
