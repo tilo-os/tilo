@@ -30,7 +30,7 @@ async fn the_hosts_person_grants_app_authorship_through_the_hosts_action() {
     let relay = start(scratch.path(), &alice, &host).await;
     let room = create_and_enter(&relay, &host, &laptop, "Private app opening").await;
     let workspace = room.workspace_id;
-    topology_namespace::admit(&relay, &host, &member, &room.room).await;
+    members::admit(&relay, &host, &member, &room.room).await;
     let grant = |app: &str| {
         host_operation(
             GRANT_APP_AUTHORSHIP,

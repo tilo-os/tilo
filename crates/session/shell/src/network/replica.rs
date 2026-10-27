@@ -1641,12 +1641,15 @@ mod tests {
         deliver(&member_rep, &mut host_rep, 2);
         deliver(&host_rep, &mut member_rep, 1);
         assert!(
-            tilo_desktop_model::projection::contents_of(
-                host.read().room_docs.get(&room).expect("room A's document")
+            tilo_desktop_model::shared_record::read(
+                host.read().room_docs.get(&room).expect("room A's document"),
+                None
             )
-            .iter()
-            .flat_map(|strip| &strip.groups)
-            .flat_map(|group| &group.tabs)
+            .into_iter()
+            .flat_map(|layout| layout.tree.workspaces)
+            .flat_map(|workspace| workspace.strips)
+            .flat_map(|strip| strip.window_groups)
+            .flat_map(|group| group.tabs)
             .all(|shown| shown.title != WITHDRAWN_TITLE),
             "{withdrawal:?}: the room no longer holds the window"
         );
