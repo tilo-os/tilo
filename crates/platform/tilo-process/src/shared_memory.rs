@@ -61,7 +61,7 @@ impl SharedMemory {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 mod imp {
     use std::io;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -186,8 +186,6 @@ mod imp {
         Ok(())
     }
 
-    /// The platforms with shared memory objects but no memfd: Android's libc
-    /// has no `shm_open`, and macOS sizes an object once, so neither seals.
     #[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
     fn create_descriptor(_name: &str) -> io::Result<OwnedFd> {
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -230,7 +228,7 @@ mod imp {
     }
 
     /// macOS sizes a shared memory object once: it cannot shrink later.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(target_os = "linux"), not(target_os = "android")))]
     #[allow(
         clippy::unnecessary_wraps,
         clippy::missing_const_for_fn,
@@ -238,6 +236,38 @@ mod imp {
     )]
     fn seal(_descriptor: &OwnedFd) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// Android's libc has neither `memfd_create` nor `shm_open`, so neither shape
+/// is built there and the memory says so, as it does where there is no `unix`.
+#[cfg(target_os = "android")]
+mod imp {
+    use std::io;
+    use std::process::Command;
+
+    pub struct Memory(std::convert::Infallible);
+
+    impl Memory {
+        pub fn create(_name: &str, _len: usize) -> io::Result<Self> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+
+        pub const fn as_ptr(&self) -> *mut u8 {
+            match self.0 {}
+        }
+
+        pub const fn len(&self) -> usize {
+            match self.0 {}
+        }
+
+        pub const fn hand_to(&self, _command: &mut Command, _flag: &str) {
+            match self.0 {}
+        }
+
+        pub const fn handed_over(&self) {
+            match self.0 {}
+        }
     }
 }
 
