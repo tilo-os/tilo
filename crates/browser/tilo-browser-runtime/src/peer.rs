@@ -336,6 +336,18 @@ struct JsHostInfo {
     webtransport_origin: Option<String>,
 }
 
+/// The own room of the person whose root is `user_public_key_hex`: the room
+/// every one of their devices names for their own desktop, and which any
+/// host that trusts them carries for them alone.
+#[wasm_bindgen(js_name = ownRoom)]
+pub fn own_room(user_public_key_hex: &str) -> Result<String, JsError> {
+    let root: [u8; 32] = hex::decode(user_public_key_hex)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| JsError::new("a root public key is 32 bytes as hex"))?;
+    Ok(tilo_relay_protocol::own_room(&root))
+}
+
 /// What the host publishes before certification: its certificate, the
 /// WebTransport port (absent behind an HTTPS-only proxy without a direct
 /// origin), the origin to dial WebTransport at when it is not the page's
