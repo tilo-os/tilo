@@ -511,7 +511,9 @@ impl RoomActions {
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::RecordRequest { .. }
-            | RemoteActionMessage::RecordResponse { .. } => return None,
+            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::ConfirmationRequest { .. }
+            | RemoteActionMessage::ConfirmationResponse { .. } => return None,
         })
     }
 
@@ -600,7 +602,9 @@ impl HostActions {
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
             | RemoteActionMessage::RecordRequest { .. }
-            | RemoteActionMessage::RecordResponse { .. } => return None,
+            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::ConfirmationRequest { .. }
+            | RemoteActionMessage::ConfirmationResponse { .. } => return None,
         };
         if supervisor {
             tilo_actions::remote::serve(&self.supervisor, caller, message)

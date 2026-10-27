@@ -1911,6 +1911,7 @@ pub(crate) use action_host::{LEGACY_DOOR_FOREIGN_APP, legacy_door_may_act_as_per
 mod admission_memo;
 mod app_consent;
 mod app_open_door;
+mod foreign_ask;
 mod host_action_admission;
 mod host_steps;
 mod launchable;
