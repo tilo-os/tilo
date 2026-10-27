@@ -1266,10 +1266,18 @@ impl MainPanel {
 
     /// Carry a glide on to `now`. It moves only the body, which the frame
     /// lays out and draws (a copy of what stays on screen, in whole device
-    /// pixels): no change of the model, so nothing is reported. It stops at
-    /// either end of the note.
+    /// pixels): no change of the model, so nothing is reported but the move
+    /// ([`ui::widget::note_layout_moved`]). It stops at either end of the
+    /// note.
     pub fn advance_glide(&mut self) {
-        let now = ui::motion::frame_now();
+        let before = self.scroll_y;
+        self.glide_to(ui::motion::frame_now());
+        if self.scroll_y.to_bits() != before.to_bits() {
+            ui::widget::note_layout_moved();
+        }
+    }
+
+    fn glide_to(&mut self, now: ui::time::Instant) {
         if let Some(at) = self
             .scroll_to
             .offset_in_device_pixels(now, self.device_scale)

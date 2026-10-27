@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use tilo_boot_signin::auth::CliAuth;
 use tilo_boot_signin::flow::{self, Exit};
+use tilo_boot_signin::glyphs::{self, Glyphs};
 use tilo_boot_signin::relay::{Relay, Relayed};
 use tilo_boot_signin::screen::{BootScreen, Plymouth};
 use tilo_boot_signin::unlock_prompt;
@@ -100,9 +101,16 @@ fn main() -> ExitCode {
         volume: volume.clone(),
         runtime: program("TILO_SIGNIN_RUNTIME", "/run/tilo-signin"),
     };
+    // Plymouth draws in the theme's one face; a console draws its own.
+    let glyphs = if plymouth.is_some() {
+        Glyphs::read(&program("TILO_SIGNIN_GLYPHS", glyphs::GLYPHS))
+    } else {
+        Glyphs::any()
+    };
     let mut screen = BootScreen {
         ask_password: program("TILO_SIGNIN_ASK_PASSWORD", "systemd-ask-password"),
         plymouth,
+        glyphs,
         volume,
     };
     let exit = flow::run(&mut auth, &mut screen);

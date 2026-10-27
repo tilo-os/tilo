@@ -136,25 +136,8 @@ impl AccountStore {
         }
     }
 
-    /// Compatibility loader; reports a sanitized error if custody cannot be opened.
-    pub fn load() -> Self {
-        Self::try_load().unwrap_or_else(|_| {
-            tracing::error!("mail account credentials could not be opened");
-            Self::default()
-        })
-    }
-
-    /// Load accounts, returning credential custody failures to the caller.
-    pub fn try_load() -> Result<Self, String> {
-        let root = accounts::config_root().ok_or("no config dir for mail accounts")?;
-        let credentials = AccountCredentials::open()?;
-        Ok(Self::from_shared(
-            &SharedStore::load_in(&root),
-            &credentials,
-        ))
-    }
-
-    /// Compatibility loader under an explicit recovery/test config root.
+    /// The accounts kept under the config root `config_root`, none when its
+    /// credentials cannot be opened.
     pub fn load_in(config_root: &Path) -> Self {
         Self::try_load_in(config_root).unwrap_or_else(|_| {
             tracing::error!("mail account credentials could not be opened");
@@ -192,24 +175,6 @@ impl AccountStore {
             .and_then(|id| accounts.iter().position(|a| a.id == id.as_str()))
             .unwrap_or(0);
         Self { accounts, active }
-    }
-
-    /// Persist to the default Tilo config root
-    /// (`$XDG_CONFIG_HOME/tilo/accounts/`). The in-app account add/edit/remove
-    /// flow calls this so accounts survive a restart. An unavailable config
-    /// root is an error, not a successful save.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if writing the shared account store or the secret vault
-    /// fails (see [`AccountStore::persist_in`]).
-    pub fn persist(&self) -> std::io::Result<()> {
-        let root = accounts::config_root()
-            .ok_or_else(|| std::io::Error::other("no config dir for mail accounts"))?;
-        self.persist_with_vault(
-            &root,
-            AccountCredentials::open().map_err(std::io::Error::other)?,
-        )
     }
 
     /// Write these accounts into the shared store + vault under an explicit

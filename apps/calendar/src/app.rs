@@ -305,6 +305,10 @@ pub struct CalendarApp {
     /// The accounts are a capture's sample ones: their servers answer from
     /// bundled sample calendars, and display choices are not saved.
     sample_accounts: bool,
+    /// The configuration directory of the host's profile, where this
+    /// window's accounts, their credentials and their sync health are kept;
+    /// `None` outside a live window.
+    config_root: Option<std::path::PathBuf>,
     /// The person's accounts, which Settings keeps and every device of theirs
     /// shares, followed in a live window; and the revision last shown.
     person_accounts: Option<(
@@ -472,6 +476,7 @@ impl CalendarApp {
             selection: None,
             detail_open: false,
             accounts: accounts.clone(),
+            config_root: None,
             device_accounts: std::rc::Rc::new(std::cell::RefCell::new(accounts.clone())),
             configured: accounts,
             display: crate::display::CalendarDisplay::default(),
@@ -799,8 +804,12 @@ impl CalendarApp {
         // for it frame by frame while a slow server keeps the request open.
         let (tx, rx) = ui::wake::waking_channel();
         let today = self.today;
+        let config_root = self.config_root.clone();
         for id in &sync_account_ids {
-            if let Err(error) = accounts::AccountSyncReporter::new(id.clone()).started() {
+            if let Some(root) = &config_root
+                && let Err(error) =
+                    accounts::AccountSyncReporter::in_root(id.clone(), root).started()
+            {
                 tracing::warn!(%error, account = id, "calendar: could not persist sync start");
             }
         }
@@ -815,18 +824,20 @@ impl CalendarApp {
                     &sync_tokens,
                 )
                 .await;
-                let reporter = accounts::AccountSyncReporter::new(id.clone());
-                let persisted = match &account_outcome {
-                    caldav::SyncOutcome::Synced { .. } => reporter.succeeded(),
-                    caldav::SyncOutcome::Offline => reporter.offline(),
-                    caldav::SyncOutcome::Failed(reason)
-                        if reason.contains("401") || reason.contains("403") =>
-                    {
-                        reporter.needs_authentication()
+                let persisted = config_root.as_ref().map(|root| {
+                    let reporter = accounts::AccountSyncReporter::in_root(id.clone(), root);
+                    match &account_outcome {
+                        caldav::SyncOutcome::Synced { .. } => reporter.succeeded(),
+                        caldav::SyncOutcome::Offline => reporter.offline(),
+                        caldav::SyncOutcome::Failed(reason)
+                            if reason.contains("401") || reason.contains("403") =>
+                        {
+                            reporter.needs_authentication()
+                        }
+                        caldav::SyncOutcome::Failed(_) => reporter.failed(),
                     }
-                    caldav::SyncOutcome::Failed(_) => reporter.failed(),
-                };
-                if let Err(error) = persisted {
+                });
+                if let Some(Err(error)) = persisted {
                     tracing::warn!(%error, account = id, "calendar: could not persist sync result");
                 }
                 result.events.append(&mut account_result.events);
@@ -2215,6 +2226,15 @@ impl CalendarApp {
         &self.configured
     }
 
+    /// Keep this window's accounts in the host profile at `config_root`, and
+    /// the accounts that profile holds on this device.
+    pub(crate) fn bind_profile(&mut self, config_root: Option<std::path::PathBuf>) -> AccountStore {
+        self.config_root = config_root;
+        self.config_root
+            .as_deref()
+            .map_or_else(AccountStore::default, AccountStore::load_from_settings_in)
+    }
+
     /// Follow the person's accounts, which Settings keeps, in this window.
     pub(crate) fn follow_person_accounts(
         &mut self,
@@ -2243,11 +2263,17 @@ impl CalendarApp {
         // The accounts show whether or not this device's credential store
         // opens: without it their servers refuse the sign-in, and the sync
         // says so, instead of the calendars vanishing.
-        let credentials = accounts::AccountCredentials::open()
-            .inspect_err(|error| {
-                tracing::error!(%error, "calendar account credentials could not be opened");
-            })
-            .ok();
+        let credentials = self
+            .config_root
+            .as_deref()
+            .map(accounts::AccountCredentials::open_in)
+            .and_then(|opened| {
+                opened
+                    .inspect_err(|error| {
+                        tracing::error!(%error, "calendar account credentials could not be opened");
+                    })
+                    .ok()
+            });
         let adopted = AccountStore::from_shared(&person.store(), credentials.as_ref());
         if adopted != self.configured {
             self.configured = adopted;

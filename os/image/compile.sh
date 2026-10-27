@@ -229,7 +229,7 @@ case "$TILO_RUST_LTO" in \
          *) printf '%s\n' 'TILO_CARGO_FRESHNESS must be cargo, clean or content' >&2; exit 1 ;; \
        esac \
     && if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi \
-    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,tube/runtime-engine,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,mail/runtime-engine,settings/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine,pdf-viewer/runtime-engine,file-explorer/runtime-engine,print-centre/runtime-engine,imager/runtime-engine,browser/runtime-engine,store/runtime-engine,chat/runtime-engine,osk/runtime-engine" \
+    && APP_FEATURES="music/audio,music/live,music/runtime-engine,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,tube/runtime-engine,mail/live,disks/live,video-editor/decode,video-editor/gst,typst-editor/runtime-engine,canvas/runtime-engine,mail/runtime-engine,settings/runtime-engine,calendar/runtime-engine,clocks/runtime-engine,contacts/runtime-engine,messages/runtime-engine,pdf-viewer/runtime-engine,file-explorer/runtime-engine,print-centre/runtime-engine,imager/runtime-engine,browser/runtime-engine,store/runtime-engine,chat/runtime-engine,osk/runtime-engine,notes/runtime-engine" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \

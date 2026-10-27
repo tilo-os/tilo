@@ -437,7 +437,7 @@ impl Compositor {
         tilo_test_env::require_isolated_desktop();
         let mut command = Command::new(tilo_test_env::package_binary!("shell"));
         if let Some(home) = home {
-            command.env("HOME", home).env("TILO_USER_HOME", home);
+            command.env("TILO_USER_HOME", home);
             // A fixture home may carry stand-ins for system tools (an audio
             // device's `wpctl`, say) in `bin/`; they come first on PATH.
             let tools = home.join("bin");
@@ -461,6 +461,17 @@ impl Compositor {
                 command.env("TILO_LAUNCHER_BIN", &launcher);
             }
         }
+        // The compositor's own home, never the one this test process has: a
+        // test that points the process's `HOME` at a temporary tree for its
+        // own run deletes that tree when it ends, and a compositor that read
+        // it after that would refuse to start (see `private_home`).
+        command.env(
+            "HOME",
+            home.map_or_else(
+                || crate::support::desktop::private_home(runtime_dir),
+                Path::to_path_buf,
+            ),
+        );
         command.args(["--mode", "native", "--backend", "headless"]);
         if host_desktop {
             command.arg("--host-desktop-session");
@@ -2502,6 +2513,15 @@ fn serve_x11_clipboard(
     window: u32,
     text: String,
 ) -> X11ClipboardOwner {
+    serve_x11_clipboard_gated(conn, window, text, |_| {})
+}
+
+fn serve_x11_clipboard_gated(
+    conn: x11rb::rust_connection::RustConnection,
+    window: u32,
+    text: String,
+    mut gate: impl FnMut(usize) + Send + 'static,
+) -> X11ClipboardOwner {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::Event;
     use x11rb::protocol::xproto::{
@@ -2523,6 +2543,7 @@ fn serve_x11_clipboard(
     let cleared = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let lost = Arc::clone(&cleared);
     let thread = std::thread::spawn(move || {
+        let mut payload_requests: usize = 0;
         while !flag.load(std::sync::atomic::Ordering::SeqCst) {
             let Ok(Some(event)) = conn.poll_for_event() else {
                 std::thread::sleep(Duration::from_millis(5));
@@ -2542,6 +2563,10 @@ fn serve_x11_clipboard(
             } else {
                 request.property
             };
+            if request.target != targets {
+                payload_requests = payload_requests.saturating_add(1);
+                gate(payload_requests);
+            }
             let served = if request.target == targets {
                 conn.change_property32(
                     PropMode::REPLACE,
@@ -2597,10 +2622,80 @@ fn serve_x11_clipboard(
 /// is gone, for a short string and a long one.
 #[test]
 fn x11_clipboard_source_pastes_into_a_wayland_client() {
-    for text in [
-        "short from x11".to_string(),
-        "long x11 line. ".repeat(20_000),
-    ] {
+    exercise_x11_clipboard_source(
+        false,
+        [
+            "short from x11".to_string(),
+            "long x11 line. ".repeat(20_000),
+        ],
+    );
+}
+
+/// Hold the final mirror reply until two real receives through the original
+/// offer are queued. Then let the manager adopt while the external reply is
+/// still withheld. Both the active conversion and the queued one must survive.
+#[test]
+fn x11_clipboard_mirror_handoff_preserves_pending_pastes() {
+    exercise_x11_clipboard_source(true, ["short from x11".to_string()]);
+}
+
+#[test]
+fn x11_clipboard_mirror_handoff_preserves_pending_large_pastes() {
+    exercise_x11_clipboard_source(true, ["long x11 line. ".repeat(20_000)]);
+}
+
+/// Queue two receives on satellite's original offer, release the final mirror
+/// format, and answer the external conversion only once the manager's offer has
+/// reached satellite. Both pastes must still deliver the exact bytes.
+fn paste_across_handoff(
+    compositor: &Compositor,
+    terminal: &mut TestClient,
+    text: &str,
+    last_mirror_tx: &mpsc::Sender<()>,
+    requested_rx: &mpsc::Receiver<()>,
+    external_tx: &mpsc::Sender<()>,
+) {
+    terminal.wait_until(|s| s.clipboard_offer.is_some(), "original satellite offer");
+    let offer = terminal
+        .state
+        .clipboard_offer
+        .clone()
+        .expect("original offer");
+    let pipes: Vec<_> = (0..2)
+        .map(|_| {
+            let (read_fd, write_fd) = make_pipe();
+            offer.receive(TEXT_MIME.to_owned(), write_fd.as_fd_ref());
+            drop(write_fd);
+            read_fd
+        })
+        .collect();
+    terminal.roundtrip();
+    last_mirror_tx.send(()).expect("release last mirror");
+    requested_rx
+        .recv_timeout(deadline())
+        .expect("external request before takeover");
+    // An unpatched bridge takes ownership at once; the patched one keeps the
+    // X11 queue until it drains. Either way the real Wayland mirror offer has
+    // reached satellite before the external conversion may answer.
+    tilo_test_env::wait_until("the mirror offer to reach satellite", || {
+        terminal.pump();
+        let log = compositor.full_log();
+        log.contains("Clipboard set from Wayland")
+            || log.contains("Deferring Wayland selection ownership until X11 conversions finish")
+    });
+    external_tx.send(()).expect("release external conversion");
+    for (index, pipe) in pipes.into_iter().enumerate() {
+        assert_eq!(
+            String::from_utf8(drain_bytes(pipe, terminal, None)).unwrap(),
+            text,
+            "in-flight paste {index} while the X11 owner lives"
+        );
+    }
+    compositor.wait_for_log(&["Clipboard set from Wayland"], "handoff never completed");
+}
+
+fn exercise_x11_clipboard_source(handoff: bool, texts: impl IntoIterator<Item = String>) {
+    for text in texts {
         let compositor = Compositor::start_host_desktop();
         let mut native = TestClient::new(compositor.connect(), "org.tilo.test.x11-paste-native");
         native.map_window(&compositor);
@@ -2610,10 +2705,30 @@ fn x11_clipboard_source_pastes_into_a_wayland_client() {
             "xwayland-satellite is not installed, so no X11 clipboard path can be tested"
         );
         let (conn, window) = x11_focused_window(&compositor, &mut native, &token);
-        let owner = serve_x11_clipboard(conn, window, text.clone());
+        let (last_mirror_tx, last_mirror_rx) = mpsc::channel();
+        let (external_tx, external_rx) = mpsc::channel();
+        let (requested_tx, requested_rx) = mpsc::channel();
+        let owner = serve_x11_clipboard_gated(conn, window, text.clone(), move |request| {
+            if handoff {
+                match request {
+                    3 => last_mirror_rx
+                        .recv_timeout(deadline())
+                        .expect("release last mirror"),
+                    4 => {
+                        requested_tx
+                            .send(())
+                            .expect("external conversion requested");
+                        external_rx
+                            .recv_timeout(deadline())
+                            .expect("release external receive");
+                    }
+                    _ => (),
+                }
+            }
+        });
         // The copy lands while the X11 window is focused; opening another
         // window first would take focus before satellite's request arrives.
-        let end = Instant::now() + deadline();
+        let end = deadline_end();
         while compositor.chrome_paste(false).as_deref() != Some(text.as_str()) {
             assert!(
                 Instant::now() < end,
@@ -2624,13 +2739,24 @@ fn x11_clipboard_source_pastes_into_a_wayland_client() {
         }
         let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.alacritty");
         terminal.map_window(&compositor);
-        assert_eq!(
-            terminal.read_clipboard(None),
-            text,
-            "paste while the X11 owner lives"
-        );
+        if handoff {
+            paste_across_handoff(
+                &compositor,
+                &mut terminal,
+                &text,
+                &last_mirror_tx,
+                &requested_rx,
+                &external_tx,
+            );
+        } else {
+            assert_eq!(
+                terminal.read_clipboard(None),
+                text,
+                "paste while the X11 owner lives"
+            );
+        }
         // Tilo has mirrored it by now; the X11 program exits.
-        let deadline = Instant::now() + deadline();
+        let deadline = deadline_end();
         while compositor.chrome_paste(false).as_deref() != Some(text.as_str()) {
             assert!(
                 Instant::now() < deadline,
@@ -7311,95 +7437,7 @@ fn closing_an_x11_window_returns_keyboard_focus_to_the_previous_wayland_window()
 #[path = "overlay_touch_e2e.rs"]
 mod overlay_touch_e2e;
 
-/// An X11 window reaches Tilo through satellite's connection, so the
-/// compositor asks the X server which process owns it (X-Resource, which no
-/// client can fake, unlike `_NET_WM_PID`) and takes its `_NET_WM_ICON` as
-/// the window's own icon.
-#[test]
-fn an_x11_window_is_traced_to_its_process_and_keeps_its_own_icon() {
-    use x11rb::connection::Connection as _;
-    use x11rb::protocol::xproto::{
-        AtomEnum, ConnectionExt as _, CreateGCAux, CreateWindowAux, PropMode, Rectangle,
-        WindowClass,
-    };
-    use x11rb::wrapper::ConnectionExt as _;
-    assert!(
-        Path::new("/usr/bin/xwayland-satellite").is_file(),
-        "xwayland-satellite is not installed, so no X11 window can be traced"
-    );
-    let compositor = Compositor::start_host_desktop();
-    let mut native = TestClient::new(compositor.connect(), "org.tilo.test.x11-traced-native");
-    native.map_window(&compositor);
-    let conn = x11_connect(&compositor);
-    let screen = &conn.setup().roots[0];
-    let window = conn.generate_id().unwrap();
-    conn.create_window(
-        screen.root_depth,
-        window,
-        screen.root,
-        0,
-        0,
-        200,
-        100,
-        0,
-        WindowClass::INPUT_OUTPUT,
-        0,
-        &CreateWindowAux::new(),
-    )
-    .unwrap();
-    conn.change_property8(
-        PropMode::REPLACE,
-        window,
-        AtomEnum::WM_CLASS,
-        AtomEnum::STRING,
-        b"x11-traced\0X11Traced\0",
-    )
-    .unwrap();
-    // A 16-pixel opaque blue square, and a non-square image that is skipped.
-    let mut icon = vec![3_u32, 2];
-    icon.extend([0_u32; 6]);
-    icon.extend([16_u32, 16]);
-    icon.extend(std::iter::repeat_n(0xff_2a_3f_d1_u32, 256));
-    let net_wm_icon = conn
-        .intern_atom(false, b"_NET_WM_ICON")
-        .unwrap()
-        .reply()
-        .unwrap()
-        .atom;
-    conn.change_property32(
-        PropMode::REPLACE,
-        window,
-        net_wm_icon,
-        AtomEnum::CARDINAL,
-        &icon,
-    )
-    .unwrap();
-    conn.map_window(window).unwrap();
-    let gc = conn.generate_id().unwrap();
-    conn.create_gc(
-        gc,
-        window,
-        &CreateGCAux::new().foreground(screen.white_pixel),
-    )
-    .unwrap();
-    conn.poly_fill_rectangle(
-        window,
-        gc,
-        &[Rectangle {
-            x: 0,
-            y: 0,
-            width: 200,
-            height: 100,
-        }],
-    )
-    .unwrap();
-    conn.flush().unwrap();
-    // This test process owns the window: the X server says so.
-    compositor.wait_for_log(
-        &[&format!(
-            "traced an X11 window to its process Some({}) with 1 icon sizes",
-            std::process::id()
-        )],
-        "the X11 window was never traced to this process with its icon",
-    );
-}
+/// An X11 window traced to the process that owns it, on this suite's
+/// compositor and host-desktop harness.
+#[path = "x11_window_identity_e2e.rs"]
+mod x11_window_identity_e2e;

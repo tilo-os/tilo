@@ -1111,6 +1111,21 @@ impl ComputeTransportState {
         true
     }
 
+    /// Forget the delivery channel of a session that fetched the device's
+    /// durable queue, leaving the session and the device's other compute
+    /// state as they were. A requester's results belong to the device, not
+    /// to the session that attached: a newer session of it queues to its own
+    /// channel, while the departing one's frames go nowhere.
+    pub fn leave_requester(&mut self, device: &DeviceKey, disconnect: &mpsc::Sender<()>) {
+        if self
+            .sessions
+            .get(device)
+            .is_some_and(|current| current.disconnect.same_channel(disconnect))
+        {
+            self.sessions.remove(device);
+        }
+    }
+
     /// End every job still bound to `worker` as
     /// [`ComputeJobPhase::Failed`] with `code` ([`WORKER_LOST`],
     /// [`WORKER_REVOKED`] or [`WORKER_NOT_ADMITTED`]) and tell each

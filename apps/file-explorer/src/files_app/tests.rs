@@ -5213,8 +5213,8 @@ mod responsive_body_tests {
     /// asks the host for the window's Undo, and Ctrl+Z is the host's.
     #[test]
     fn changes_announce_once_with_the_windows_undo() {
-        let _serial = crate::files_app::serial();
         use crate::file_ops::Change;
+        let _serial = crate::files_app::serial();
         ui::attention::clear();
         let dir = tempfile::tempdir().unwrap();
         for name in ["a.txt", "b.txt", "c.txt"] {
@@ -5302,8 +5302,8 @@ mod responsive_body_tests {
     /// wherever the person is.
     #[test]
     fn a_move_to_trash_keeps_its_undo_where_the_person_can_take_it() {
-        let _serial = crate::files_app::serial();
         use crate::file_ops::Change;
+        let _serial = crate::files_app::serial();
         ui::attention::clear();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), b"x").unwrap();

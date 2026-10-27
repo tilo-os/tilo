@@ -726,6 +726,9 @@ pub struct FileExplorerWidget {
     /// the renaming row's name (list) or label (grid), published by `FileView`
     /// each paint. `None` when not renaming or the row is scrolled off-screen.
     rename_rect: Rc<Cell<Option<vello::kurbo::Rect>>>,
+    /// What the rename editor painted, this frame and last: the window's
+    /// own paint over the shell, which damages where it changed.
+    rename_paint: crate::own_paint::OwnPaint,
     /// Set on `begin_rename` so the first `sync` after the seed selects the
     /// whole name (typing then replaces it, Finder-style).
     rename_select_pending: bool,
@@ -1570,7 +1573,7 @@ impl FileExplorerWidget {
 
     /// Keep the widths the person dragged as their preferences, so a column
     /// stays where they put it after a relaunch.
-    fn store_widths(&mut self) {
+    fn store_widths(&self) {
         let widths = self.list_slot.widths();
         let stored = self.preferences.as_ref().map(ui::framework::Setting::get);
         if stored.as_ref().is_some_and(|prefs| prefs.widths == widths) {
@@ -1934,6 +1937,7 @@ impl FileExplorerWidget {
                 .with_id("files.rename_input")
                 .with_placeholder(t("files-new-name-placeholder")),
             rename_rect: Rc::new(Cell::new(None)),
+            rename_paint: crate::own_paint::OwnPaint::default(),
             rename_select_pending: false,
             rect: vello::kurbo::Rect::ZERO,
             // Placeholder panes; the real places list + file view are swapped
@@ -7205,14 +7209,20 @@ impl FileExplorerWidget {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if self.renaming.is_none() {
+        let Some(rect) = self.rename_rect.get().filter(|_| self.renaming.is_some()) else {
+            self.rename_paint.skip();
             return;
-        }
-        if let Some(rect) = self.rename_rect.get() {
-            self.rename_input.apply_layout_external(rect);
-            self.rename_input
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        };
+        self.rename_input.apply_layout_external(rect);
+        let input = &mut self.rename_input;
+        self.rename_paint.record(scene, transform, |scene| {
+            input.draw(scene, transform, text_renderer, theme, presence);
+            // The field, its focus ring and the correction chip it floats
+            // past itself.
+            let reach = f64::from(theme.tokens.spacing.s2);
+            let ring = input.get_rect().inflate(reach, reach);
+            input.overhang().map_or(ring, |chip| ring.union(chip))
+        });
     }
 
     /// Mark the folder (or Up affordance) a live drag is hovering, so the drop
@@ -9947,7 +9957,7 @@ impl ui::widget::Filterable for FileExplorerWidget {
         if self.find == query {
             return;
         }
-        self.find = query.to_owned();
+        query.clone_into(&mut self.find);
         self.structure_dirty = true;
     }
 
@@ -10387,6 +10397,24 @@ impl Widget for FileExplorerWidget {
         self.collaborative_record_pager.borrow().has_more() || self.nav.needs_idle_sync()
     }
 
+    /// What the shell changed, and the rename editor where it changed. The
+    /// window's other paint (menus, the preview, the drag ghost) is in its
+    /// overlay, which the host repaints whole.
+    fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        if self.collab_panel.is_none() {
+            self.nav.collect_damage(regions);
+        }
+        self.rename_paint.damage(regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.rename_paint.present();
+        self.rename_input.mark_drawn();
+        for child in self.children_mut() {
+            child.mark_drawn();
+        }
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         if self.collab_panel.is_some() {
             return Vec::new();
@@ -10673,6 +10701,10 @@ mod notice_action_tests;
 #[cfg(test)]
 #[path = "files_app/launch_argument_tests.rs"]
 mod launch_argument_tests;
+
+#[cfg(test)]
+#[path = "files_app/sidebar_button_tests.rs"]
+mod sidebar_button_tests;
 
 /// What the palette, agents and scripts reach of a Files window, for the
 /// tests that drive the widget without a framework host: the resource's

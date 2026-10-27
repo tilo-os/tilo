@@ -1,4 +1,7 @@
-use super::{NativeAppOpenAccess, native_app_open_access, native_launch_capabilities};
+use super::{
+    LaunchError, LaunchFailure, NativeAppOpenAccess, native_app_open_access,
+    native_launch_capabilities,
+};
 use crate::shell::native_workspace_owner::{NativeWorkspaceOwner, test_enrolled_owner};
 use crate::shell::state::RoomId;
 use ed25519_dalek::SigningKey;
@@ -66,10 +69,16 @@ fn native_viewer_only_reopens_real_record_without_mutation() {
         native_app_open_access(&owner, room, &certificate, "so.tilo.chat").unwrap(),
         NativeAppOpenAccess::Viewer
     ));
-    assert!(native_app_open_access(&owner, room, &certificate, "so.tilo.missing").is_err());
+    assert_eq!(
+        native_app_open_access(&owner, room, &certificate, "so.tilo.missing"),
+        Err(not_in_workspace("so.tilo.missing"))
+    );
     let mut forged = certificate;
     forged.device_label.push_str(" forged");
-    assert!(native_app_open_access(&owner, room, &forged, "so.tilo.chat").is_err());
+    assert!(matches!(
+        native_app_open_access(&owner, room, &forged, "so.tilo.chat"),
+        Err(LaunchError::DeviceNotAdmitted { .. })
+    ));
     owner
         .with_current(room, |view| {
             assert_eq!(view.generation(), generation);
@@ -138,7 +147,10 @@ fn a_member_opens_an_app_the_governor_authorized_before_its_document_arrives() {
             Ok((view.device().clone(), view.governor().user_public_key))
         })
         .unwrap();
-    assert!(native_app_open_access(&owner, room, &certificate, "so.tilo.notes").is_err());
+    assert_eq!(
+        native_app_open_access(&owner, room, &certificate, "so.tilo.notes"),
+        Err(not_in_workspace("so.tilo.notes"))
+    );
     signed_governance(
         &owner,
         room,
@@ -153,7 +165,10 @@ fn a_member_opens_an_app_the_governor_authorized_before_its_document_arrives() {
         native_app_open_access(&owner, room, &certificate, "so.tilo.notes").unwrap(),
         NativeAppOpenAccess::Author
     ));
-    assert!(native_app_open_access(&owner, room, &certificate, "so.tilo.missing").is_err());
+    assert_eq!(
+        native_app_open_access(&owner, room, &certificate, "so.tilo.missing"),
+        Err(not_in_workspace("so.tilo.missing"))
+    );
 }
 
 #[test]
@@ -206,7 +221,10 @@ fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() 
         native_app_open_access(&owner, room, &viewer, "so.tilo.chat").unwrap(),
         NativeAppOpenAccess::Viewer
     ));
-    assert!(native_app_open_access(&owner, room, &viewer, "so.tilo.missing").is_err());
+    assert_eq!(
+        native_app_open_access(&owner, room, &viewer, "so.tilo.missing"),
+        Err(not_in_workspace("so.tilo.missing"))
+    );
     let grants = owner
         .with_current(room, |view| {
             Ok(view
@@ -355,6 +373,56 @@ fn access_as(
         })
         .unwrap();
     (access, authors)
+}
+
+/// The refusal a room gives an app it never authorized: the person is not an
+/// administrator, and the room's governor does not let them author it.
+fn not_in_workspace(package: &str) -> LaunchError {
+    LaunchError::AppNotInWorkspace {
+        package_id: package.to_string(),
+    }
+}
+
+/// Someone who is neither an administrator nor allowed to author the app is
+/// told the workspace does not include it, not that its identity is broken
+/// and not that trying again might help.
+#[test]
+fn a_member_opening_an_app_the_room_never_authorized_is_told_so() {
+    let (_directory, owner, room, now, _key) = test_enrolled_owner();
+    let certificate = owner
+        .with_current(room, |view| {
+            assert!(
+                view.peer()
+                    .workspace()
+                    .check_workspace_administration(view.device().device_public_key, now)
+                    .is_err(),
+                "the fixture's person does not administer the workspace"
+            );
+            assert!(
+                view.peer().document("so.tilo.notes", "").is_none(),
+                "the room never authorized this app here"
+            );
+            Ok(view.device().clone())
+        })
+        .unwrap();
+    let refusal = native_app_open_access(&owner, room, &certificate, "so.tilo.notes")
+        .expect_err("an app the room never authorized does not open");
+    assert_eq!(refusal, not_in_workspace("so.tilo.notes"));
+    assert_eq!(refusal.failure(), LaunchFailure::AppNotInWorkspace);
+    assert_eq!(
+        refusal.notification_message(),
+        crate::shell::i18n::t_args(
+            "launch-error-app-not-in-workspace",
+            &[("app", "so.tilo.notes".into())]
+        ),
+        "the person reads what happened, not a broken workspace identity"
+    );
+    assert!(
+        !refusal
+            .notification_message()
+            .contains(&crate::shell::i18n::t("launch-error-identity-unavailable")),
+        "a refusal is never reported as an identity failure"
+    );
 }
 
 fn access_name(access: NativeAppOpenAccess) -> &'static str {

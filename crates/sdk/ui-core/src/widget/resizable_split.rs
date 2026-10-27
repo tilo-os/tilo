@@ -1142,6 +1142,11 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     /// Forward the per-frame update pass to both panes, so a pane that
     /// polls a model (a data table, a pending image) keeps updating.
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+        // A glide is laid out at its wide end when it starts and at rest
+        // when it ends; between the two it only paints.
+        if self.glide_laid != self.is_gliding() {
+            crate::widget::note_layout_moved();
+        }
         let left = self.left.update(state, path);
         let right = self.right.update(state, path);
         left || right

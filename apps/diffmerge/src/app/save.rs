@@ -38,15 +38,15 @@ impl DiffMergeApp {
     /// where it was last written, asking for a place when there is none (or
     /// when `ask` is set, as Save as… does).
     pub(super) fn answer_save(
-        &mut self,
+        &self,
         cx: &mut EffectCx<Session, Self>,
         path: Option<String>,
         ask: bool,
     ) -> EffectAnswer {
-        if !self.merge_open {
+        let Some(merged) = &self.merged else {
             return Err("no merge is open, so there is no merged result to save".into());
-        }
-        let bytes = self.merged_text.clone().into_bytes();
+        };
+        let bytes = merged.clone().into_bytes();
         if let Some(path) = path {
             return Ok(cx.thread(
                 move |_progress| write_text(Path::new(&path), &bytes),
@@ -96,7 +96,7 @@ impl DiffMergeApp {
         self.invalidation.paint = true;
         match result {
             Ok(name) => {
-                self.saved_text = Some(self.merged_text.clone());
+                self.saved_text.clone_from(&self.merged);
                 self.notice = Some(t_args("save-saved", &[("name", text(&name))]));
                 Ok(Effected::done())
             }

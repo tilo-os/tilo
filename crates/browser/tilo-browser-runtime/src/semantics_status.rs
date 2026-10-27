@@ -198,7 +198,7 @@ impl SemanticsGate {
             return SemanticsDecision::Deferred(due);
         }
         let base = self.sequence;
-        self.sequence += 1;
+        self.sequence = self.sequence.wrapping_add(1);
         self.text.clear();
         if requested || self.last.is_none() {
             self.ops.clear();
@@ -219,8 +219,9 @@ impl SemanticsGate {
             })
             .to_string();
             self.text.extend_from_slice(b"\"semanticsPatch\":");
+            // The object's closing brace is left off so the ops follow inside it.
             self.text
-                .extend_from_slice(&head.as_bytes()[..head.len() - 1]);
+                .extend_from_slice(head.strip_suffix('}').unwrap_or(&head).as_bytes());
             self.text.extend_from_slice(b",\"ops\":");
             self.text.extend_from_slice(&self.ops);
             self.text.push(b'}');

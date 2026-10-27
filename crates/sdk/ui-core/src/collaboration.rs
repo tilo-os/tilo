@@ -1592,9 +1592,22 @@ impl CollaborationManager {
         self.primary_route.accepted = None;
     }
 
-    pub(crate) fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
+    pub(crate) fn set_document_owner_routes(
+        &mut self,
+        routes: Vec<RouteSpec>,
+        document_generation: u64,
+    ) {
         if let Backend::Transport(transport) = &mut self.backend {
-            transport.set_document_owner_routes(routes);
+            transport.set_document_owner_routes(routes, document_generation);
+        }
+    }
+
+    /// Whether invocation `id` from the drained batch may still run in the
+    /// current document; see [`CollabTransport::invocation_owner_current`].
+    pub(crate) fn invocation_owner_current(&mut self, id: u64) -> bool {
+        match &mut self.backend {
+            Backend::Transport(transport) => transport.invocation_owner_current(id),
+            Backend::Disabled(_) => true,
         }
     }
 

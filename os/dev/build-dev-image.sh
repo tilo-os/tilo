@@ -255,6 +255,7 @@ podman build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile.dev"
   --build-context "compiled-dev=$(realpath "$TILO_COMPILED_DEV")" \
   --build-context "dev-env-runtime=$dev_env_runtime" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+  --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
   "${_extra_build_args[@]}" \
   --tag "$dev_image" \
   "$TILO_REPO"

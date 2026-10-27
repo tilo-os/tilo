@@ -369,6 +369,8 @@ pub(super) struct BrokerTransport {
     inbound_rx: tokio_mpsc::Receiver<QueuedCollabEvent>,
     // Native read turns remain held through the owner's event batch.
     document_turns: Vec<tokio::sync::OwnedSemaphorePermit>,
+    /// The document owner each invocation in the drained batch arrived for.
+    invocation_owners: std::collections::BTreeMap<u64, committed_document::DeliveryOwner>,
     state: BridgeState,
     /// The receiver stays on the application's owner thread.  RPC servers
     /// own only the cloneable sender, so a Cap'n Proto callback cannot touch
@@ -676,6 +678,7 @@ impl CollabTransport for BrokerTransport {
 
     fn drain(&mut self, out: &mut Vec<CollabEvent>) {
         self.document_turns.clear();
+        self.invocation_owners.clear();
         self.state.begin_poll();
         self.flush_spill();
         if !self.wifi_bridge_registered
@@ -685,7 +688,12 @@ impl CollabTransport for BrokerTransport {
         }
         while let Ok(mut evt) = self.inbound_rx.try_recv() {
             match evt._turn.take() {
-                Some(EventTurn::Document(turns)) => self.document_turns.extend(turns),
+                Some(EventTurn::Invocation(turns, owner)) => {
+                    self.document_turns.extend(turns);
+                    if let CollabEvent::Invocation { id, .. } = &evt.event {
+                        self.invocation_owners.insert(*id, owner);
+                    }
+                }
                 Some(EventTurn::Snapshot(turn)) => drop(turn),
                 None => {}
             }
@@ -693,14 +701,22 @@ impl CollabTransport for BrokerTransport {
         }
     }
 
-    fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>) {
-        self.state
-            .document_reads
-            .set_document_owner_routes(routes.iter().map(RouteSpec::channel_id).collect());
+    fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>, document_generation: u64) {
+        self.state.document_reads.set_document_owner_routes(
+            routes.iter().map(RouteSpec::channel_id).collect(),
+            document_generation,
+        );
+    }
+
+    fn invocation_owner_current(&mut self, id: u64) -> bool {
+        self.invocation_owners
+            .remove(&id)
+            .is_none_or(|owner| self.state.document_reads.owns(&owner))
     }
 
     fn finish_event_batch(&mut self) {
         self.document_turns.clear();
+        self.invocation_owners.clear();
     }
 
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
@@ -2185,7 +2201,13 @@ struct QueuedSdkCommand {
 
 enum EventTurn {
     Snapshot(tokio::sync::OwnedSemaphorePermit),
-    Document(Vec<tokio::sync::OwnedSemaphorePermit>),
+    /// An accepted invocation: its native document turns, which transfer to
+    /// the owner until its dispatch batch ends, and the document owner it
+    /// arrived for.
+    Invocation(
+        Vec<tokio::sync::OwnedSemaphorePermit>,
+        committed_document::DeliveryOwner,
+    ),
 }
 
 struct QueuedCollabEvent {
@@ -3944,6 +3966,7 @@ impl CollaborationManager {
             media: Some(media_tx),
             inbound_rx,
             document_turns: Vec::new(),
+            invocation_owners: std::collections::BTreeMap::new(),
             state,
             action_directory_rx,
             action_directory_tx,
@@ -5502,6 +5525,10 @@ async fn spawn_invocation_stream(
         let key = spec.channel_id();
         tokio::task::spawn_local(async move {
             while let Ok(invocation) = stream.read().await {
+                // Bound to the document current on arrival: if the App
+                // replaces it before dispatch, the job is refused, never run
+                // in the replacement.
+                let owner = tx.state.document_reads.delivery_owner(&key);
                 let turn = match native_invocation_delivery_turn(&key, &tx.state).await {
                     Ok(turn) => turn,
                     Err(error) => {
@@ -5543,7 +5570,10 @@ async fn spawn_invocation_stream(
                             actor: invocation.actor,
                             context: context.map(Box::new),
                         },
-                        turn.map(|turn| EventTurn::Document(turn.permits)),
+                        Some(EventTurn::Invocation(
+                            turn.map(|turn| turn.permits).unwrap_or_default(),
+                            owner,
+                        )),
                         None,
                     )
                     .await
@@ -9884,6 +9914,7 @@ mod tests {
             media: None,
             inbound_rx,
             document_turns: Vec::new(),
+            invocation_owners: std::collections::BTreeMap::new(),
             state: BridgeState::new(),
             action_directory_rx,
             action_directory_tx,
@@ -10938,6 +10969,7 @@ mod tests {
             media: None,
             inbound_rx,
             document_turns: Vec::new(),
+            invocation_owners: std::collections::BTreeMap::new(),
             state,
             action_directory_rx,
             action_directory_tx,
@@ -11590,7 +11622,7 @@ mod tests {
         primary.store(true, Ordering::Release);
         state
             .document_reads
-            .set_document_owner_routes(vec!["original-route".into(), "live-owner".into()]);
+            .set_document_owner_routes(vec!["original-route".into(), "live-owner".into()], 0);
         let held = state
             .document_reads
             .delivery_turn("live-owner")

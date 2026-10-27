@@ -47,7 +47,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use tilo_actions::{ActionContext, ActionError, ActionInvoker, OperationKind};
@@ -137,6 +137,9 @@ pub(crate) struct ChainState<P: Chained> {
     id: String,
     kind: RecordKind,
     parts: RefCell<BTreeMap<u64, Live<P>>>,
+    /// Parts held from their genesis while the room sends what it has of
+    /// them ([`Self::hold`]).
+    arriving: RefCell<BTreeSet<u64>>,
     /// What a part holds before anything was written to it: what the chain
     /// publishes before it has a head.
     empty: Rc<P::State>,
@@ -165,6 +168,7 @@ impl<P: Chained> ChainState<P> {
             id: ui_core::record::chain_resource_id(&P::chain()),
             kind: RecordKind::new(P::KIND),
             parts: RefCell::default(),
+            arriving: RefCell::default(),
             empty,
             revision: Cell::new(0),
             looked: Cell::new(None),
@@ -216,7 +220,11 @@ impl<P: Chained> ChainState<P> {
                 .store
                 .read(&P::chain().part(*index), |doc| live.sync(doc))
             {
-                Some(Ok(true)) => moved = true,
+                Some(Ok(true)) => {
+                    // Its history arrived, or a first change was made here.
+                    self.arriving.borrow_mut().remove(index);
+                    moved = true;
+                }
                 Some(Err(error)) => {
                     tracing::warn!(kind = P::KIND, part = index, %error, "chain part unreadable");
                 }
@@ -283,7 +291,7 @@ impl<P: Chained> ChainState<P> {
             return false;
         }
         let opened = if kept.is_some_and(|kept| kept >= newest) {
-            self.hold(newest)
+            self.hold_kept(newest)
         } else {
             self.start(newest)
         };
@@ -294,8 +302,9 @@ impl<P: Chained> ChainState<P> {
             .is_ok()
     }
 
-    /// Hold part `index`, which this device has or asks its room for.
-    pub(crate) fn hold(&self, index: u64) -> Result<(), String> {
+    /// Hold part `index`, which this device keeps: a part a history verb
+    /// names is one someone here wrote to.
+    fn hold_kept(&self, index: u64) -> Result<(), String> {
         if self.parts.borrow().contains_key(&index) {
             return Ok(());
         }
@@ -309,24 +318,53 @@ impl<P: Chained> ChainState<P> {
         self.follow(index)
     }
 
+    /// Hold part `index`: read it from this device, or, when this device
+    /// has none of it, start it from its genesis (the same change on every
+    /// device), so it is open here and the room's record sync asks the room
+    /// for its history, which merges in as it arrives ([`Self::arriving`]
+    /// until then).
+    pub(crate) fn hold(&self, index: u64) -> Result<(), String> {
+        if self.open_or_start(index)? {
+            self.arriving.borrow_mut().insert(index);
+            self.moved();
+        }
+        Ok(())
+    }
+
+    /// Whether part `index` is held from its genesis while what the room
+    /// has of it is on its way.
+    pub(crate) fn arriving(&self, index: u64) -> bool {
+        self.arriving.borrow().contains(&index)
+    }
+
     /// Hold part `index`, starting it when nobody has.
     fn start(&self, index: u64) -> Result<(), String> {
+        self.open_or_start(index).map(drop)
+    }
+
+    /// Hold part `index`, kept on this device or started from its genesis:
+    /// whether it was started here.
+    fn open_or_start(&self, index: u64) -> Result<bool, String> {
         if self.parts.borrow().contains_key(&index) {
-            return Ok(());
+            return Ok(false);
         }
         let checkout = self.checkout(index);
+        let mut started = false;
         if !self.room.store.is_ready(&checkout.id) {
             match self.room.store.try_open_record(&checkout) {
                 Ok(_) => {}
-                // A store that keeps no canonical records (a test's) has no
-                // record it could open: it is started as every record is.
+                // Nothing of it on this device, or a store that keeps no
+                // canonical records (a test's) and has no record it could
+                // open: it is started as every record is.
                 Err(RecordOpenError::MissingRecord | RecordOpenError::IdentityMismatch) => {
                     self.create(&checkout)?;
+                    started = true;
                 }
                 Err(error) => return Err(error.to_string()),
             }
         }
-        self.follow(index)
+        self.follow(index)?;
+        Ok(started)
     }
 
     /// Create the part `checkout` names, with the part resource's genesis:
@@ -489,7 +527,7 @@ impl<P: Chained> ChainState<P> {
                 P::LABEL.to_lowercase()
             )));
         }
-        self.hold(edit.part).map_err(ActionError::Refused)?;
+        self.hold_kept(edit.part).map_err(ActionError::Refused)?;
         let encoded = edit.encoded().map_err(ActionError::Refused)?;
         self.write(edit.part, &edit.action::<P>(), encoded, invoker, None)?;
         let now = self
@@ -766,11 +804,24 @@ impl<P: Chained> Chain<P> {
         self.state.revision()
     }
 
-    /// Hold the earlier part `index` too: read it from this device, which
-    /// asks the room for it when it has not got it yet (its changes arrive
-    /// and [`Self::revision`] moves).
+    /// Hold the earlier part `index` too: read it from this device, or
+    /// start it from its genesis when this device has none of it, so the
+    /// room's record sync asks the room for it. Its history merges in as it
+    /// arrives ([`Self::revision`] moves); [`Self::arriving`] says it is on
+    /// its way until then.
+    ///
+    /// # Errors
+    /// The part could not be opened or started here.
     pub fn hold(&self, index: u64) -> Result<(), String> {
         self.state.hold(index)
+    }
+
+    /// Whether part `index` is held but what the room has of it has not
+    /// arrived yet: a view shows it loading, not empty.
+    #[must_use]
+    pub fn arriving(&self, index: u64) -> bool {
+        self.state.refresh();
+        self.state.arriving(index)
     }
 
     /// Apply `action` now, as the window's person, to the part it changes.
