@@ -117,8 +117,9 @@ pub enum NotesEffect {
     },
     /// Open link
     ///
-    /// Open a web or mail link in the person's browser.
-    #[effect(job)]
+    /// Open a web or mail link in the person's browser. What following a
+    /// link in a note asks for: a person clicks the link.
+    #[effect(job, audience = "agents")]
     #[effect(icon = "external-link")]
     OpenLink {
         #[param("The address, http(s) or mailto")]
@@ -128,7 +129,8 @@ pub enum NotesEffect {
     ///
     /// Open something another app keeps — a file, an event, a message — by
     /// the address a link in a note gives it, and show it where it lives.
-    #[effect(view)]
+    /// What following such a link asks for: a person clicks the link.
+    #[effect(view, audience = "agents")]
     #[effect(icon = "external-link")]
     OpenResource {
         #[param("The resource's link address, as tilo://open#…")]
